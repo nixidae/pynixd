@@ -80,11 +80,11 @@ def _adopt_store_dir(local_store: Store) -> None:
     `StoreLayout` answers both, so this reads the layout of the store rather
     than a root. It used to set the real directory alone, from the root, and
     a relocated store then got `/nix/store` for the logical one and answered
-    a store path that no client could read. Issue Lillecarl/nanopynix#176.
+    a store path that no client could read. Issue nixidae/nixidae#215.
 
     A store at `/` changes neither, and it is the default.
 
-    Issue Lillecarl/nanopynix#173 holds what one constant did instead: it put `/nix/store/` in
+    Issue nixidae/nixidae#212 holds what one constant did instead: it put `/nix/store/` in
     front of a path that already named another store, and reported nothing.
     """
     layout = getattr(local_store, "layout", None)
@@ -613,7 +613,7 @@ class Server:
             self.ctx.db = None
             # Say which store it is and why. The line carried no field at all,
             # so a reader could see that the SQLite fast path was off and not
-            # what had turned it off. Issue Lillecarl/nanopynix#163 holds the
+            # what had turned it off. Issue nixidae/nixidae#202 holds the
             # decision.
             #
             # **Reaching here means a caller named the class.** Both ways of

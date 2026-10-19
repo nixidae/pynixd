@@ -7,10 +7,10 @@ difference, and then state that the goal corrects it.
 
 `EnsureDerivedPathGoal` makes the correction, and `BuildDerivationGoal` does
 not. That goal holds the original derivation, and the build goal holds the
-resolved one alone since issue Lillecarl/nanopynix#184.
+resolved one alone since issue nixidae/nixidae#223.
 
 `test_drv_hash.py` holds the same two derivations, and it states why they are
-the oracle for the hash itself. Issue Lillecarl/nanopynix#182.
+the oracle for the hash itself. Issue nixidae/nixidae#221.
 """
 
 from __future__ import annotations
@@ -149,7 +149,7 @@ class FakeBuildGoal:
     """The build that the daemon made, and the path it left in the store."""
 
     may_reach_a_root_goal = False
-    """A build goal reaches no root goal, so a caller keeps its place. Issue Lillecarl/nanopynix#207."""
+    """A build goal reaches no root goal, so a caller keeps its place. Issue nixidae/nixidae#246."""
 
     def __init__(self, store: FakeLocalStore, request: BuildDerivationRequest, response: BuildResult) -> None:
         self.store = store
@@ -160,7 +160,7 @@ class FakeBuildGoal:
         del client
 
     async def start(self) -> None:
-        """`Goal.start` begins the build and does not wait. Issue Lillecarl/nanopynix#207."""
+        """`Goal.start` begins the build and does not wait. Issue nixidae/nixidae#246."""
 
     async def wait_until_it_reached_the_queue(self) -> None:
         """This fake needs no queue, so the build is on it at once."""
@@ -174,7 +174,7 @@ class FakeBuildGoal:
 
 class FakeSubstituteGoal:
     may_reach_a_root_goal = False
-    """A substitute goal reaches no root goal. Issue Lillecarl/nanopynix#207."""
+    """A substitute goal reaches no root goal. Issue nixidae/nixidae#246."""
 
     async def result(self) -> SubstituteAttempt:
         return SubstituteAttempt(found=False, result=goal_success())

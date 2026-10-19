@@ -5,7 +5,7 @@ a daemon as one of its substituters asks it, at `daemon.cc:851`. The response
 carries no path, because the request named one.
 
 pynixd knew no codec for it, and an unknown operation desynced the wire.
-Issue Lillecarl/nanopynix#193 holds that fault and the rule that replaced it.
+Issue nixidae/nixidae#232 holds that fault and the rule that replaced it.
 """
 
 from __future__ import annotations

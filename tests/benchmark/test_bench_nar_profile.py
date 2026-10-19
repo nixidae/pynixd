@@ -14,7 +14,7 @@ byte loop, so read `peak_mib` against `sent_mib`: a streaming forward holds
 roughly one chunk, and a buffering one holds the whole payload. One path of
 many files varies what is *inside* a NAR, which the forward never parses -- it
 measured about twice the per-byte cost of few-large, so it does not explain
-nixkube#53's core-pegged-with-no-progress.
+nixidae/nixidae#487's core-pegged-with-no-progress.
 
 The metrics are reported, not asserted. Bounds belong here once the numbers are
 known -- a guessed threshold either passes forever or fails on a slower runner.
@@ -46,7 +46,7 @@ Adding backpressure to the write loop moved `peak_over_sent` on few-large from
 0.979 to 0.267 and left CPU unchanged at 3.07s, which is the same conclusion
 from the other direction.
 
-**`max_loop_lag_ms` is the number nixkube#37 and #53 turn on**, because a TCP
+**`max_loop_lag_ms` is the number nixidae/nixidae#432 and #53 turn on**, because a TCP
 liveness probe is answered by the loop accepting a connection. `checkpoint()`
 in the two transfer loops took the worst shape from 214.6 ms to 54.4 ms for no
 measurable CPU.
@@ -164,7 +164,7 @@ log = structlog.get_logger(__name__)
 # number can be quoted in an issue.
 _MANY_SMALL = (200, 64)
 _FEW_LARGE = (2, 64 * 1024)
-# Files inside one path, not paths. nixkube#53 reports 8871 in a single 49 MiB
+# Files inside one path, not paths. nixidae/nixidae#487 reports 8871 in a single 49 MiB
 # path; 4000 of 8 KiB is the same shape at a size a test can afford.
 _ONE_PATH_MANY_FILES = (4000, 8)
 
@@ -195,7 +195,7 @@ async def _add_tree(src: Path, files: int, size_kib: int) -> list[str]:
     depend on this at all -- which is exactly what makes it worth measuring.
 
     A cluster reported 999m of CPU and no progress pushing 8871 files inside a
-    single 49 MiB path (nixkube#53). The forward path cannot explain that, so
+    single 49 MiB path (nixidae/nixidae#487). The forward path cannot explain that, so
     either the cost is elsewhere or this shape is cheap and the search moves on.
     """
     tree = _CONTENT_DIR / f"tree-{files}x{size_kib}k"
@@ -539,7 +539,7 @@ async def test_profile_nar_forward_one_path_many_files(pynixd_server: Server, sr
     and never parses the NAR, so the two should agree; a large gap says the
     cost is somewhere that does look inside.
 
-    This exists for nixkube#53, where a cluster pegged a core with no progress
+    This exists for nixidae/nixidae#487, where a cluster pegged a core with no progress
     pushing 8871 files inside one 49 MiB path.
     """
     files, size_kib = _ONE_PATH_MANY_FILES

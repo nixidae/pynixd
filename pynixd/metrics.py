@@ -148,7 +148,7 @@ STORE_HEALTHY = Gauge(
 #
 # A TCP probe cannot see this. `connect()` is completed by the kernel from the
 # listen backlog whether or not the application ever accepts, so it passes
-# against a wedged process and fails only on a timeout. That is nixkube#53.
+# against a wedged process and fails only on a timeout. That is nixidae/nixidae#487.
 EVENT_LOOP_LAG = Gauge(
     "pynixd_event_loop_lag_seconds",
     "Seconds the event loop went without running a ready callback, over the last window",

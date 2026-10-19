@@ -7,7 +7,7 @@ against Nix 2.34.8.
 
 pynixd read the wire value where it needed the file-system one, and the
 `inputSrcs` of every derivation it sent lost the inputs it could not read.
-Issue Lillecarl/nanopynix#173.
+Issue nixidae/nixidae#212.
 """
 
 from __future__ import annotations

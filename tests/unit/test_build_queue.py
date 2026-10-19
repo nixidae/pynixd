@@ -52,7 +52,7 @@ async def test_a_build_that_no_goal_waits_for_ends() -> None:
     the only reader is `fast-fail`, which fails. The test then removes the
     directory of the fifo, so no reader can ever appear. Nix answers in about
     two seconds and kills that builder, and pynixd left it running until the
-    300 s timeout of the test. Issue Lillecarl/nanopynix#196.
+    300 s timeout of the test. Issue nixidae/nixidae#235.
     """
     queue = BuildQueue()
     drv_path = StorePath("/nix/store/00000000000000000000000000000001-slow.drv")
@@ -72,7 +72,7 @@ async def test_a_build_that_another_request_still_wants_runs_on() -> None:
 
     `_the_result_unless_it_stops` in `goals/requests.py` states the rule, and
     this is the count that makes it hold: one request that gives up takes no
-    work from the other. Issue Lillecarl/nanopynix#196.
+    work from the other. Issue nixidae/nixidae#235.
     """
     queue = BuildQueue()
     drv_path = StorePath("/nix/store/00000000000000000000000000000001-slow.drv")
@@ -128,7 +128,7 @@ async def test_a_goal_build_names_its_request() -> None:
         await queue.enqueue(_build_request(drv_path), from_goal_path=True)
 
 
-# ── A request that stopped takes no further build slot. Issue Lillecarl/nanopynix#286 ───
+# ── A request that stopped takes no further build slot. Issue nixidae/nixidae#325 ───
 
 
 def _options(*, keep_going: bool) -> SetOptionsRequest:
@@ -201,7 +201,7 @@ async def test_a_failure_makes_the_rest_of_that_request_unwanted() -> None:
     takes the decision here instead, where the failure first becomes a fact.
     Measured before this: the goal system reached its decision 2280 us after
     the completion and the next build reached the daemon at 2328 us, so the
-    old answer rested on 48 us. Issue Lillecarl/nanopynix#286.
+    old answer rested on 48 us. Issue nixidae/nixidae#325.
     """
     queue = BuildQueue()
     request = RequestId(1)
@@ -234,7 +234,7 @@ async def test_a_build_that_a_second_request_wants_stays_wanted() -> None:
     """A build of pynixd serves every client that asked for the same derivation.
 
     `AGENTS.md` states the property, and the subset test is what keeps it: the
-    failure of one request must not take the work of another. Issue Lillecarl/nanopynix#286.
+    failure of one request must not take the work of another. Issue nixidae/nixidae#325.
     """
     queue = BuildQueue()
     gone, live = RequestId(1), RequestId(2)

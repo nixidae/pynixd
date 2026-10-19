@@ -44,7 +44,7 @@ Measured with 14,013 entries in `/tmp`: a glob of `/tmp/pynixd-test-*` after
 each test cost 5.5 of 27 seconds. Still 17 characters, so `NAME_BUDGET`
 does not move."""
 # Anchored on this file, and not on the working directory. The suite ran
-# from `pynixd/` alone until issue Lillecarl/nanopynix#131, and `nix build --file tests/nix`
+# from `pynixd/` alone until issue nixidae/nixidae#166, and `nix build --file tests/nix`
 # then resolved against the checkout root and reported that the path does
 # not exist. 30 tests failed that way, and none of them said why.
 TEST_NIX = Path(__file__).resolve().parent.parent / "nix"

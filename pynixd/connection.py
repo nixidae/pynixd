@@ -83,7 +83,7 @@ class ClientConn:
         client reaches every operation of that client. pynixd holds a pool,
         and it gave the option to whichever connection was free. The client
         then set `--post-build-hook` and the hook ran for three of the five
-        derivations that the request built. Issue Lillecarl/nanopynix#192.
+        derivations that the request built. Issue nixidae/nixidae#231.
 
         `Connection.call` reads this and applies the set to the connection it
         holds, when that connection carries another set.
@@ -189,7 +189,7 @@ class Connection:
         A daemon keeps the options of a `SetOptions` request until the next
         one, so a pooled connection carries the options of whichever client
         used it last. `apply_options` reads this field, and it sends nothing
-        when the set does not change. Issue Lillecarl/nanopynix#192.
+        when the set does not change. Issue nixidae/nixidae#231.
         """
         self.current_op: tuple[str, float] | None = None
         """The operation this connection waits on, and when it was sent.
@@ -249,7 +249,7 @@ class Connection:
         connection that is about to do the work.
 
         It sends nothing when the connection carries the set already, so the
-        common case costs one comparison. Issue Lillecarl/nanopynix#192.
+        common case costs one comparison. Issue nixidae/nixidae#231.
         """
         if options is None or options == self.applied_options:
             return

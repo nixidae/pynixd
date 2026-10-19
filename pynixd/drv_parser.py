@@ -1103,7 +1103,7 @@ async def read_drv_file(drv_store_path: StorePath | str, layout: StoreLayout) ->
     #
     # `real_store_dir` is where the files are. `store_dir` is what a store path
     # says. A chroot store makes the two differ, and only the first one names a
-    # file. Issue Lillecarl/nanopynix#173.
+    # file. Issue nixidae/nixidae#212.
     name = str(drv_store_path)
     prefix = f"{layout.store_dir}/"
     if not name.startswith(prefix):

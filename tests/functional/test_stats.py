@@ -53,7 +53,7 @@ class StatsTestStore(LocalDBStore):
 
     @asynccontextmanager
     async def build_conn(self, options: SetOptionsRequest | None = None):  # type: ignore[override]
-        # **The `options` parameter is not decoration.** Issue Lillecarl/nanopynix#192 gave a
+        # **The `options` parameter is not decoration.** Issue nixidae/nixidae#231 gave a
         # build the option set of the client that asked for it, and
         # `Scheduler.execute_build` has passed it ever since. A stand-in
         # without it made the build crash with a `TypeError` that the

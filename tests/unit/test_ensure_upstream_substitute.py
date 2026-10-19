@@ -3,7 +3,7 @@
 `QueryMissingPlanGoal` answers `willSubstitute` for a path that the cache of
 the client holds, and `EnsureDerivedPathGoal` must then fetch that path the
 same way. `tests/unit/test_client_named_substituter.py` holds the plan half.
-Issue Lillecarl/nanopynix#187.
+Issue nixidae/nixidae#226.
 """
 
 from __future__ import annotations

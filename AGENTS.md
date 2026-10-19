@@ -167,7 +167,7 @@ is too wide when only some of its differences have a reason. An exemption on
 `response.will_build` covers the seven differences of issue #26, and it
 covers the eighth one as well, which has another cause. When a whole field is
 the only key available, that is a fault of the comparison, and it is not a
-reason to widen the exemption. Issue Lillecarl/nanopynix#202 holds that work.
+reason to widen the exemption. Issue nixidae/nixidae#241 holds that work.
 
 **Do not add a "Nix-correct mode" and a "correct-result mode".** A mode splits
 every behaviour in two, and the parity run can prove only one of them. A flag

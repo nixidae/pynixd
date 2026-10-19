@@ -73,7 +73,7 @@ class _Primitive:
     round-trips the bytes Nix never validates -- log and error text -- so a
     compiled codec answers byte-identical to the interpreted one. Any other
     node carrying a handler is a declaration bug, and `_wire_node` refuses
-    it. Issue Lillecarl/pynixd#62.
+    it. Issue nixidae/nixidae#662.
     """
 
 
@@ -97,7 +97,7 @@ class _OptionalScalar:
     """An optional scalar: absent travels as the empty string, both ways.
 
     This is the compile-time form of the rule in `_find_reader` /
-    `_find_writer` (issue Lillecarl/nanopynix#194): Nix spells an absent
+    `_find_writer` (issue nixidae/nixidae#233): Nix spells an absent
     scalar as `""`, so writing `None` emits `""` and reading `""` answers
     `None`. It holds for every scalar rather than for `StorePath` alone.
     """

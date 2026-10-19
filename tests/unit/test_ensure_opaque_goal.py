@@ -5,7 +5,7 @@ _collect_outputs` records where each one went in `ctx.output_locations`, and
 `DaemonProxy` and `NarFromPathHandler` both read a path from the backend that
 holds it. `EnsureDerivedPathGoal` asked the local store alone, so the build
 succeeded and the very next request for its outputs failed with `opaque path
-is not valid locally` -- issue Lillecarl/nanopynix#160.
+is not valid locally` -- issue nixidae/nixidae#199.
 
 `nix copy` asks this way. It realises its installables against the source
 store before it copies anything, and a store path installable is an opaque
@@ -102,7 +102,7 @@ def _goal(engine: FakeEngine) -> EnsureDerivedPathGoal:
 
 @pytest.mark.anyio
 async def test_an_opaque_path_a_backend_holds_is_ensured() -> None:
-    """The defect of issue Lillecarl/nanopynix#160, stated at the goal that reported it."""
+    """The defect of issue nixidae/nixidae#199, stated at the goal that reported it."""
     local = FakeLocalStore()
     builder = _backend("builder")
     ctx = _context(

@@ -1,4 +1,4 @@
-"""A holder of a shared build enforces its own timeouts. Issue Lillecarl/nanopynix#192.
+"""A holder of a shared build enforces its own timeouts. Issue nixidae/nixidae#231.
 
 The upstream build runs with the options of the client that made it, as the
 first of two Nix clients builds while the second waits on the output lock.

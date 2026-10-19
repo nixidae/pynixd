@@ -138,7 +138,7 @@ CORPUS: tuple[Case, ...] = (
             "a builder that prints bytes no UTF-8 decoder accepts. Both "
             "engines must build it and register the output; before the "
             "lossless log codec, pynixd failed the build and held nothing. "
-            "Issue Lillecarl/pynixd#62."
+            "Issue nixidae/nixidae#662."
         ),
     ),
 )

@@ -93,7 +93,7 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
     `--substituters file:///...` is one, and so is any cache that the
     configuration of pynixd does not list. The daemon behind pynixd speaks to
     every kind of substituter already, so this asks that daemon rather than
-    building a second binary-cache client. Issue Lillecarl/nanopynix#187.
+    building a second binary-cache client. Issue nixidae/nixidae#226.
     """
 
     engine: GoalEngine
@@ -219,7 +219,7 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
             # `worker.cc:340` calls it again inside the daemon. The second
             # walk answers the same question about the same paths, and the
             # daemon holds no result of the first one. pynixd walks once, so
-            # it writes one warning, and issue Lillecarl/nanopynix#189 holds that difference.
+            # it writes one warning, and issue nixidae/nixidae#228 holds that difference.
             walk.warnings.append(
                 f"Ignoring dynamic derivation {derived_path.outer.to_string()} "
                 "while querying missing paths; not yet implemented",
@@ -309,8 +309,8 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         output through the same daemon, and a plan that still said "will be
         built" made pynixd announce a build that never happened.
         `build-cache.sh:39` reads exactly that: it greps the output of
-        `nix build` for the absence of ` will be built:`. Issues Lillecarl/nanopynix#187 and
-        Lillecarl/nanopynix#198.
+        `nix build` for the absence of ` will be built:`. Issues nixidae/nixidae#226 and
+        nixidae/nixidae#237.
 
         Answers True when the upstream plan does not name this derivation as
         one to build, and it then merges what that plan says. Answers False
@@ -359,7 +359,7 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         pynixd read the derivation alone. A content-addressed derivation names
         no output path, so pynixd answered `willBuild` for one that it had
         already built, and the client then took a different code path from the
-        one it takes with `nix-daemon`. Issue Lillecarl/nanopynix#175.
+        one it takes with `nix-daemon`. Issue nixidae/nixidae#214.
 
         Answers `None` when a wanted output has no realisation, and also for
         an impure derivation, which Nix never treats as built. That is the
@@ -407,7 +407,7 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
 
         `ca:build-cache`, `ca:issue-13247` and `ca:new-build-cmd` pass
         `--option substituters file:///...` and then read the plan: a build
-        there is a defect, because the cache holds every path. Issue Lillecarl/nanopynix#187.
+        there is a defect, because the cache holds every path. Issue nixidae/nixidae#226.
 
         **The question is `QuerySubstitutablePathInfos`, and not
         `QuerySubstitutablePaths`.** `Store::querySubstitutablePaths` at

@@ -2,7 +2,7 @@
 
 A Nix client compares `StoreDir` with its own and refuses a cache when the two
 differ. pynixd answered `/nix/store` for every store, so a client of another
-store got a wrong answer rather than a clear refusal. Issue Lillecarl/nanopynix#173.
+store got a wrong answer rather than a clear refusal. Issue nixidae/nixidae#212.
 """
 
 from __future__ import annotations

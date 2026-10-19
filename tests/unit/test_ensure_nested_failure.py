@@ -9,7 +9,7 @@ answers "failed to obtain derivation of '<outer>'". pynixd answered
 `pynixd: nested derived path did not produce out: <path>!out!out`, which names
 an internal state and prints the separator that Nix does not print.
 
-`dyn-drv/failing-outer.sh:48` reads the sentence of Nix. Refs Lillecarl/nanopynix#175.
+`dyn-drv/failing-outer.sh:48` reads the sentence of Nix. Refs nixidae/nixidae#214.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ class FakeOuterGoal:
     """The goal that makes the derivation, and it fails."""
 
     may_reach_a_root_goal = True
-    """An ensure goal can reach a root goal of the request. Issue Lillecarl/nanopynix#207."""
+    """An ensure goal can reach a root goal of the request. Issue nixidae/nixidae#246."""
 
     def note_a_parent(self) -> None:
         """The goal of the nested path waits for this one."""

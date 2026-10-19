@@ -89,7 +89,7 @@ def _case_params() -> list[Any]:
     The oracle cannot carry bytes it refuses to decode yet: its log pump
     strict-decodes record fields, so a binary log crashes the Nix arm while
     the pynixd arm succeeds. `strict`, so the mark goes away with the
-    correction and does not hide it. Issue Lillecarl/nanopynix#312.
+    correction and does not hide it. Issue nixidae/nixidae#664.
     """
     params: list[Any] = []
     for case in (*CORPUS, *CA_CORPUS):
@@ -97,7 +97,7 @@ def _case_params() -> list[Any]:
             params.append(
                 pytest.param(
                     case,
-                    marks=pytest.mark.xfail(strict=True, reason="issue Lillecarl/nanopynix#312"),
+                    marks=pytest.mark.xfail(strict=True, reason="issue nixidae/nixidae#664"),
                     id=case.name,
                 )
             )
@@ -332,7 +332,7 @@ async def test_a_distributed_build_reassembles_the_same_store(
     copying `ValidPaths` and `Refs` rows out of the builder's SQLite database,
     where a reference to a path that had not arrived yet inserted nothing and
     reported nothing. `Scheduler._pull_outputs` streams the closure over the
-    wire now, so a reference cannot go missing -- issue Lillecarl/nanopynix#158.
+    wire now, so a reference cannot go missing -- issue nixidae/nixidae#197.
     """
     roots = differential_roots
     drv = await _instantiate_both(roots.pynixd, roots.nix, case)
@@ -464,7 +464,7 @@ async def test_a_client_fetches_a_backend_built_output_through_pynixd(
     process copying out of pynixd over its Unix socket. What the client ends up
     with is compared against what Nix produced.
 
-    Issue Lillecarl/nanopynix#160 has two layers, and the first one is fixed. `nix copy`
+    Issue nixidae/nixidae#199 has two layers, and the first one is fixed. `nix copy`
     realises its installables against the source store before it copies, so a
     store path installable arrives as an opaque derived path in a `BuildPaths`
     request -- and `DaemonProxy.execute` hands that to the goal engine before

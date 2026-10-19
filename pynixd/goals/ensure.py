@@ -132,7 +132,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
     every goal before it decided. A goal below the root holds none, and it
     enqueues as soon as it is ready: the order of Nix reaches the top goals
     of a request, and an input build that waited for a root goal would wait
-    for a goal that waits for that input. Issue Lillecarl/nanopynix#207.
+    for a goal that waits for that input. Issue nixidae/nixidae#246.
     """
 
     _wanted_by_a_goal: bool = False
@@ -154,7 +154,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         request already started. Neither goal can take the order of this
         request: the first one keeps the order it has, and the second one is
         past the gate and would hold this turn for ever. This marks such a
-        turn decided at once, so the goals behind it enqueue. Issue Lillecarl/nanopynix#207.
+        turn decided at once, so the goals behind it enqueue. Issue nixidae/nixidae#246.
         """
         if self._turn is None and not self.has_started():
             self._turn = turn
@@ -189,7 +189,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         `Goal.may_reach_a_root_goal` answers whether the child can reach such
         a goal. A build goal and a substitute goal cannot, so a wait for one
         of those keeps the place, which is what makes the order of the
-        request visible to the scheduler at all. Issue Lillecarl/nanopynix#207.
+        request visible to the scheduler at all. Issue nixidae/nixidae#246.
         """
         if child.may_reach_a_root_goal:
             self._note_that_it_decided()
@@ -219,7 +219,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         x1 to x4, and x4 depends on x2 and x3. The hash mismatch of x2 reached
         the client twice from here, and once more as the answer of the
         request, so the client wrote three `error:` lines for one failure.
-        `build.sh:167` asserts one. Issue Lillecarl/nanopynix#196.
+        `build.sh:167` asserts one. Issue nixidae/nixidae#235.
         """
         if client is None:
             return
@@ -242,7 +242,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         goal keeps building because a build of pynixd serves every client that
         asked for it. Without this the build of that goal still writes its log
         to a client that has had its answer, and `build.sh:167` counts the
-        `error:` lines. Issue Lillecarl/nanopynix#196.
+        `error:` lines. Issue nixidae/nixidae#235.
         """
         if client is None:
             return
@@ -259,7 +259,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         # **A goal that ends without a build still decided.** It substituted,
         # or the output was valid already, or it failed. Each road lets the
         # root goals after it enqueue, so none of them waits for a turn that
-        # cannot come. Issue Lillecarl/nanopynix#207.
+        # cannot come. Issue nixidae/nixidae#246.
         try:
             result = self._name_what_really_failed(await self._produce())
             return await self._tell_the_client_it_failed(result)
@@ -279,7 +279,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         does not reach it when the request stops: `Worker::removeGoal` at
         `worker.cc:173` clears `topGoals`, and `entry-points.cc:93` skips
         every goal that is still `ecBusy`. The name is how pynixd tells the
-        two apart. Issue Lillecarl/nanopynix#196.
+        two apart. Issue nixidae/nixidae#235.
         """
         if result_succeeded(result.result) or result.failing_derivation is not None:
             return result
@@ -303,7 +303,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         reads the reason of the input first, and "1 dependency failed" after
         it. pynixd wrote the second line alone, so the reason was lost.
 
-        Issue Lillecarl/nanopynix#188 holds the measurement, and `main:build-remote` reads both
+        Issue nixidae/nixidae#227 holds the measurement, and `main:build-remote` reads both
         blocks.
 
         NIX-DEFECT (#23): Nix takes this decision from the shape of the goal
@@ -340,7 +340,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         # the local store. `NarFromPathHandler` and `DaemonProxy` both read it
         # from the backend that holds it, so a client that asks for it gets it.
         #
-        # Only the local store was asked here until issue Lillecarl/nanopynix#160. A fleet build
+        # Only the local store was asked here until issue nixidae/nixidae#199. A fleet build
         # therefore succeeded, recorded its outputs in `ctx.output_locations`,
         # and then failed the very next request for those outputs with "opaque
         # path is not valid locally". `nix copy` asks this way: it realises its
@@ -478,7 +478,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         # both, and this takes the same decision for every derivation rather
         # than for the kinds of output that a predicate lists. That predicate
         # was wrong twice: it missed a floating content-addressed output
-        # (Lillecarl/nanopynix#183), and it missed a fixed-output derivation with a
+        # (nixidae/nixidae#222), and it missed a fixed-output derivation with a
         # content-addressed input, which carries a placeholder as well.
         domain_drv_path = StorePath(str(drv_path))
         if parsed.dynamic_input_drvs:
@@ -498,7 +498,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         # output unrewritten, and the builder read a path that is not there.
         # The name of the derivation is also the dedup key of the build, so a
         # request for `drv^out` and a request for `drv^bin` made two builds of
-        # one derivation. Issue Lillecarl/nanopynix#178.
+        # one derivation. Issue nixidae/nixidae#217.
         selected_paths = {name: path for name, path in basic.output_paths().items() if name in selected_outputs}
         substituted = await self._try_substitute_known_outputs(selected_paths)
         if substituted is not None:
@@ -532,7 +532,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         # moment that decides which build the queue holds first. The goal
         # waits for the goals before it, starts the build, and waits for that
         # build to reach the queue. It does not wait for the build to end, so
-        # the goal after it enqueues while this one builds. Issue Lillecarl/nanopynix#207.
+        # the goal after it enqueues while this one builds. Issue nixidae/nixidae#246.
         await self._wait_for_my_turn()
         await build_goal.start()
         await build_goal.wait_until_it_reached_the_queue()
@@ -645,7 +645,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
 
         Answers `None` when any wanted output names a path already, or when
         the store holds no realisation for one of them. The caller then goes
-        on to the inputs and the build. Issue Lillecarl/nanopynix#185.
+        on to the inputs and the build. Issue nixidae/nixidae#224.
         """
         paths_of_drv = parsed.output_paths()
         if not wanted or any(str(paths_of_drv.get(name, "")) for name in wanted):
@@ -779,7 +779,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         to pass and `EnsurePath` upstream has nothing to take. The path exists
         only in a realisation, and the realisation lives in the cache that the
         client named. `_already_realised` asks the store for one and finds
-        none, so the goal took the build road. Issue Lillecarl/nanopynix#198 measured what that
+        none, so the goal took the build road. Issue nixidae/nixidae#237 measured what that
         costs: `--max-jobs 0` says "substitute this, do not build it", pynixd
         built anyway, and a build makes **every** output, so
         `use-a-more-outputs^first` also produced `second`.
@@ -791,7 +791,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         goal is the one thing that reads a realisation out of a substituter,
         and pynixd has no such client of its own. `_try_substitute_upstream`
         takes the same decision for a path that is already known, and states
-        the same reason. Issues Lillecarl/nanopynix#187, Lillecarl/nanopynix#195 and Lillecarl/nanopynix#198.
+        the same reason. Issues nixidae/nixidae#226, nixidae/nixidae#234 and nixidae/nixidae#237.
 
         It runs only for a client that named a substituter, and only for a
         derivation whose wanted outputs name no path. A derivation that names
@@ -839,7 +839,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         except (BackendError, DaemonProtocolError, OSError, EOFError) as ex:
             # An upstream miss is the normal answer for a derivation that the
             # client must build, and a broken upstream connection must not end
-            # the goal either: the build road is still there. Issue Lillecarl/nanopynix#195 holds
+            # the goal either: the build road is still there. Issue nixidae/nixidae#234 holds
             # what an escape from here costs.
             log.debug("upstream_realise_miss", drv_path=str(drv_path), reason=str(ex))
             return None
@@ -866,10 +866,10 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         Nix makes the same correction. `DerivationGoal` builds the resolved
         derivation and then re-registers each output under the hash of the
         original one, at `derivation-goal.cc:193-236`. The signatures go,
-        because a signature covers the id. Issue Lillecarl/nanopynix#182.
+        because a signature covers the id. Issue nixidae/nixidae#221.
 
         This goal makes the correction, and the build goal does not, because
-        this goal is the one that holds the original derivation. Issue Lillecarl/nanopynix#184
+        this goal is the one that holds the original derivation. Issue nixidae/nixidae#223
         gave the build goal the path of the resolved derivation, so the build
         goal can no longer read the original one. A build goal is also shared
         between the clients that ask for it, and each one holds its own
@@ -1012,7 +1012,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         output path".
 
         Nix writes the resolved derivation to the store and builds that path,
-        at `derivation-resolution-goal.cc`. This does the same. Issue Lillecarl/nanopynix#184.
+        at `derivation-resolution-goal.cc`. This does the same. Issue nixidae/nixidae#223.
 
         A store that cannot take a text file keeps the original path, which is
         what pynixd did before.
@@ -1128,7 +1128,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         build '...-x4.drv'. Reason: 2 dependencies failed."
 
         The answer was therefore right and the road to it was wrong: pynixd
-        asked a daemon to tell it something it already knew. Issue Lillecarl/nanopynix#196.
+        asked a daemon to tell it something it already knew. Issue nixidae/nixidae#235.
 
         **The number in the message is not the number of inputs that failed.**
         `Goal::amDone` at `goal.cc:242` gives the rule: the first waitee that
@@ -1271,7 +1271,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         `parseStorePath` throws, and `daemon.cc:1213` rethrows for that
         reason. The client of pynixd read the end of the file and reported
         `IncompleteReadError`. `ca:build-cache` and `ca:issue-13247` both
-        failed that way. Issue Lillecarl/nanopynix#195.
+        failed that way. Issue nixidae/nixidae#234.
         """
         selected = {name: path for name, path in output_paths.items() if path is not None and path.base()}
         if not selected:
@@ -1316,7 +1316,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         paths out of them. pynixd answered an already-valid derived path with
         an empty map, so `nix build --json` wrote no `outputs` key at all:
         `BuiltPath::Built::toJSON` writes that key once for each output.
-        Issue Lillecarl/nanopynix#179.
+        Issue nixidae/nixidae#218.
 
         **The realisation also goes into the store.**
         `DerivationGoal::checkPathValidity` at `derivation-goal.cc:445` does
@@ -1324,7 +1324,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         writes one. A client then reads the path back through
         `queryPartialDerivationOutputMap`. `ca:build` needs it, at the second
         build of `dependentNonCA`: that build is a cut-off, so nothing is
-        built and this answer is the whole answer. Issue Lillecarl/nanopynix#184.
+        built and this answer is the whole answer. Issue nixidae/nixidae#223.
         """
         if result.result.built_outputs:
             return result
@@ -1379,7 +1379,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         this never starts a build. It runs only for a client that names a
         substituter; `client_names_a_substituter` in `goals/query_missing.py`
         states that rule, and the same rule keeps the plan and the work in
-        agreement. Issue Lillecarl/nanopynix#187.
+        agreement. Issue nixidae/nixidae#226.
 
         **A failure here is not a failure of the goal.** `EnsurePath` answers
         an error when no substituter holds the path, and that answer is the
@@ -1391,7 +1391,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         path, and each client has its own options. Nix has no such sharing, so
         it has no answer to copy. The first watcher is the client that made
         the goal, and `_run` of `goals/build_derivation.py` takes the same
-        rule for a build. Issue Lillecarl/nanopynix#192 holds the question.
+        rule for a build. Issue nixidae/nixidae#231 holds the question.
         """
         client = next((c for c in self._watchers if c.options is not None), None)
         if not client_names_a_substituter(client):

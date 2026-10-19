@@ -353,7 +353,7 @@ class Scheduler:
         interchangeable: `_local_slot_is_full` read `override_in_flight` first,
         so one active connection filled the single slot of `-j1` and every
         build waited for a completion that no build was running to give.
-        Issue Lillecarl/nanopynix#196.
+        Issue nixidae/nixidae#235.
         """
         schedulable: list[QueuedBuild] = []
 
@@ -421,7 +421,7 @@ class Scheduler:
             # root that has not answered -- and that root is what runs
             # `release_request`, so a build left pending waits for a release that waits
             # for the build. `cancel_unwanted` holds the measurement.
-            # Issue Lillecarl/nanopynix#286.
+            # Issue nixidae/nixidae#325.
             if self.queue.nobody_wants(build):
                 log.debug("build_wanted_by_nobody", build_id=build.build_id)
                 await self.queue.cancel_unwanted(build.build_id)
@@ -525,7 +525,7 @@ class Scheduler:
         limited the root goals of one request already, and that is not the
         whole fan-out: a root goal realises the input derivations of its
         derivation at the same time, and each one is a separate build. Three
-        builds ran together under `-j1` for that reason. Issue Lillecarl/nanopynix#196.
+        builds ran together under `-j1` for that reason. Issue nixidae/nixidae#235.
 
         **`running_builds` counts builds, and not connections.**
         `DaemonStore.in_flight` answers `pool.active_connections`, which one
@@ -808,7 +808,7 @@ class Scheduler:
         # pynixd wrote one `pynixd: <line>` for each line of the message. A
         # `BuildPathsWithResults` request then carried a log that `nix-daemon`
         # does not send, and the client printed the same text twice. Issue
-        # Lillecarl/nanopynix#188.
+        # nixidae/nixidae#227.
         log.debug(
             "build_executed",
             build_id=build.build_id,
@@ -917,7 +917,7 @@ class Scheduler:
         NAR: `UDSRemoteStore::narFromPath` calls `Store::narFromPath`, which
         reads the store directory through `LocalFSStore::getFSAccessor`. So
         `nix copy --from unix://...` of a backend-built path reported "path
-        ... does not exist" and named the local store directory -- issue Lillecarl/nanopynix#160.
+        ... does not exist" and named the local store directory -- issue nixidae/nixidae#199.
 
         `ctx.output_locations` still holds, and it still answers for the
         clients that do use the wire, such as `ssh-ng://` and the HTTP cache.
@@ -926,7 +926,7 @@ class Scheduler:
         One route, over the wire, for every backend. A second route copied the
         store directory and then the SQLite rows of the builder database
         straight into the local one, when both ends were a `LocalDBStore`.
-        Issue Lillecarl/nanopynix#158 removed it, and it was wrong in four ways:
+        Issue nixidae/nixidae#197 removed it, and it was wrong in four ways:
 
         - No NAR was written and no hash was checked, so a truncated copy
           registered as valid.

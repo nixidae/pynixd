@@ -54,7 +54,7 @@ where Nix builds an impure derivation every time; and
 a content hash, so it called the derivation fixed-output and gave every
 realisation an id that no Nix agrees with.
 
-Issue Lillecarl/nanopynix#175.
+Issue nixidae/nixidae#214.
 """
 
 from __future__ import annotations
@@ -131,7 +131,7 @@ derivation {
 # expression (Python), which are one on the shell (Nix `"..."`), which the
 # shell reads as octal. Before the lossless codec, pynixd failed the whole
 # build with `internal scheduler error` on these bytes and registered no
-# outputs. Issue Lillecarl/pynixd#62.
+# outputs. Issue nixidae/nixidae#662.
 BINARY_LOG = """
 derivation {
   name = "binary-log";
@@ -421,7 +421,7 @@ async def _failure(run: Runner, root: Path, work: Path) -> None:
     derivation that the client asked for, because the client holds that
     failure in the `BuildResult` and prints it itself.
 
-    pynixd wrote both, and it wrote each one as a `pynixd: ` note. Issue Lillecarl/nanopynix#188
+    pynixd wrote both, and it wrote each one as a `pynixd: ` note. Issue nixidae/nixidae#227
     corrected the frame: a goal that another goal waits for writes its failure
     as one error message, and a goal at the top of the request writes none.
     """
@@ -437,7 +437,7 @@ async def _binary_log(run: Runner, root: Path, work: Path) -> None:
     register the output so the second build is a no-op, and carry the bytes
     on the wire. pynixd decoded the log stream as strict UTF-8, so it failed
     the build with `internal scheduler error` and registered nothing, and
-    the recordings differed in the response. Issue Lillecarl/pynixd#62.
+    the recordings differed in the response. Issue nixidae/nixidae#662.
     """
     del root, work
     for words in (
@@ -601,11 +601,11 @@ async def clean_base() -> AsyncIterator[None]:
         _queries,
         _modes,
         _impure,
-        # **Issue Lillecarl/nanopynix#187.** pynixd reads the substituters of its own
+        # **Issue nixidae/nixidae#226.** pynixd reads the substituters of its own
         # configuration alone, so it answers `willBuild` where `nix-daemon`
         # answers `willSubstitute`, and it then builds. `strict`, so the
         # marker goes away with the correction and does not hide it.
-        pytest.param(_substitute, marks=pytest.mark.xfail(strict=True, reason="issue Lillecarl/nanopynix#187")),
+        pytest.param(_substitute, marks=pytest.mark.xfail(strict=True, reason="issue nixidae/nixidae#226")),
         _failure,
         _binary_log,
     ],

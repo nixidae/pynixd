@@ -35,7 +35,7 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
     may_reach_a_root_goal: ClassVar[bool] = False
     """A substitute goal reaches substitute goals alone, and no root goal.
 
-    `Goal.may_reach_a_root_goal` gives the rule. Issue Lillecarl/nanopynix#207.
+    `Goal.may_reach_a_root_goal` gives the rule. Issue nixidae/nixidae#246.
     """
 
     def __init__(self, engine: GoalEngine, path: StorePath, substituter_ids: tuple[str, ...]) -> None:

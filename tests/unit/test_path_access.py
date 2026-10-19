@@ -12,7 +12,7 @@ that was missing.
 
 `PynixdPathAccess` is the second half. `registrationTime` says "when this
 path entered the store", and `nix path-info --json` reports it as that, so
-one number cannot answer both questions afterwards. Issue Lillecarl/nanopynix#166.
+one number cannot answer both questions afterwards. Issue nixidae/nixidae#205.
 `registrationTime` is therefore read, never written, and the flush expands
 each queued seed over its closure: the runtime closure for served paths,
 the build closure for decided builds, upserting the union. Unmarked paths

@@ -18,7 +18,7 @@ walks invalid UTF-8 one byte at a time). A builder prints whatever it
 prints -- a gzip stream in the middle of `nixpkgs` fixup output -- and the
 daemon forwards it without looking. Strict UTF-8 decoding fails the whole
 build on those bytes, so each field below takes `text_errors` and
-round-trips them. Issue Lillecarl/pynixd#62.
+round-trips them. Issue nixidae/nixidae#662.
 """
 
 from __future__ import annotations

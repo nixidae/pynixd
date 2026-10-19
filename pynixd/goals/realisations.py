@@ -11,12 +11,12 @@ made.
 of pynixd read the derivation alone and drew that conclusion, and each one was
 wrong in its own way:
 
-- `EnsureDerivedPathGoal` built the derivation again. Issue Lillecarl/nanopynix#185.
+- `EnsureDerivedPathGoal` built the derivation again. Issue nixidae/nixidae#224.
 - `QueryMissingPlanGoal` answered `willBuild`, and `nix-daemon` answers an
   empty set, because `misc.cc:217` reads the same map and finds every output
   valid.
 
-Issue Lillecarl/nanopynix#175.
+Issue nixidae/nixidae#214.
 """
 
 from __future__ import annotations

@@ -211,7 +211,7 @@ def _sanitize_for_journal(value: Any) -> Any:
     Log and error text travels as bytes (`surrogateescape` keeps each one),
     and the journal is UTF-8: `StreamHandler.emit` encodes the rendered line,
     and a lone surrogate raises `UnicodeEncodeError` there. The wire copy
-    stays exact; only what a human reads is lossy. Issue Lillecarl/pynixd#62.
+    stays exact; only what a human reads is lossy. Issue nixidae/nixidae#662.
     """
     if isinstance(value, str):
         return value.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")

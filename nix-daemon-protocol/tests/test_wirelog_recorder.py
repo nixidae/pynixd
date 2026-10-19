@@ -2,7 +2,7 @@
 
 The recorder sits between a Nix client and a daemon, so a defect in it shows
 as a defect in pynixd. These tests use a server that speaks no protocol at
-all, because the recorder must not care what the bytes mean. Issue Lillecarl/nanopynix#175.
+all, because the recorder must not care what the bytes mean. Issue nixidae/nixidae#214.
 """
 
 from __future__ import annotations

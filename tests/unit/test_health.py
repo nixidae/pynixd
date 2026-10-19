@@ -3,7 +3,7 @@
 A kubelet `tcpSocket` probe calls `connect()`, and the kernel completes it from
 the listen backlog whether or not the application ever accepts. So it passes
 against a wedged process, and fails only when a stall outlasts its timeout --
-which a busy process also does. nixkube#37 and #53.
+which a busy process also does. nixidae/nixidae#432 and #53.
 
 These test the verdict, not the endpoint: the report is what decides the status
 code, and it is where the logic is.

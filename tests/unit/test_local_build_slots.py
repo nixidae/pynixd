@@ -8,7 +8,7 @@ one ends. A build on a backend costs no slot.
 already, and that is not the whole fan-out: a root goal realises the input
 derivations of its derivation at the same time, and each one is a separate
 build. `main:build` of the functional suite measured three builds together
-under `-j1`. Issue Lillecarl/nanopynix#196.
+under `-j1`. Issue nixidae/nixidae#235.
 """
 
 from __future__ import annotations
@@ -242,7 +242,7 @@ async def test_a_shared_build_starts_when_any_client_wanting_it_has_a_slot() -> 
     assert _waits(queue, shared) is False
 
 
-# ── A build that no live request wants takes no slot. Issue Lillecarl/nanopynix#286 ─────
+# ── A build that no live request wants takes no slot. Issue nixidae/nixidae#325 ─────
 
 
 class _LocalStore:
@@ -326,7 +326,7 @@ async def test_the_slot_a_failure_frees_does_not_go_to_the_same_request() -> Non
     `nix build -f fod-failing.nix -j1 -L` builds four fixed-output derivations
     that all give the wrong hash, and asserts one `error:` line naming x1. The
     scheduling pass that hands out the freed slot runs from the completion of
-    x1, so without this rule x2 takes it. Issue Lillecarl/nanopynix#286.
+    x1, so without this rule x2 takes it. Issue nixidae/nixidae#325.
     """
     queue, pending = await _queue_with_a_failed_first_build(keep_going=False)
     scheduler = _AssignScheduler(queue)
@@ -346,7 +346,7 @@ async def test_the_slot_a_failure_frees_does_not_go_to_the_same_request() -> Non
     # answered -- and that root is what releases the build. Leaving it pending
     # deadlocks, and `main:build` measured that: build 12 of
     # `nix build -f fod-failing.nix -L x4` was skipped, never cancelled and
-    # never completed, and the test hit its 300 s cap. Issue Lillecarl/nanopynix#286.
+    # never completed, and the test hit its 300 s cap. Issue nixidae/nixidae#325.
     assert pending.is_done
     # **And it says nothing to the client.** Nix reports nothing for the
     # waitees that `Goal::amDone` drops, and `build.sh:167` counts the

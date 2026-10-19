@@ -116,7 +116,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
 
     `_run_and_let_the_next_goal_enqueue` calls the scheduler and nothing else
     before the build is on the queue. `Goal.may_reach_a_root_goal` gives the
-    rule. Issue Lillecarl/nanopynix#207.
+    rule. Issue nixidae/nixidae#246.
     """
 
     engine: GoalEngine
@@ -130,7 +130,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
 
     A root goal of a request waits for this before it lets the next root goal
     enqueue. The end of the build is far later, and the order needs the
-    earlier moment. Issue Lillecarl/nanopynix#207.
+    earlier moment. Issue nixidae/nixidae#246.
     """
 
     def __post_init__(self) -> None:
@@ -158,7 +158,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
         """Stop sending the log of this build to *client*.
 
         The build runs on for every other client that asked for it. This says
-        one client stopped listening, and nothing more. Issue Lillecarl/nanopynix#196.
+        one client stopped listening, and nothing more. Issue nixidae/nixidae#235.
         """
         if client is None:
             return
@@ -188,7 +188,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
     async def _run(self) -> GoalResult:
         # **Every road out of this method must let the next goal enqueue.**
         # A goal that fails before it reaches the queue would otherwise hold
-        # every root goal after it in the order. Issue Lillecarl/nanopynix#207.
+        # every root goal after it in the order. Issue nixidae/nixidae#246.
         try:
             return await self._run_and_let_the_next_goal_enqueue()
         finally:
@@ -200,7 +200,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
 
         # **The build carries the options of the client that asked for it.**
         # A build runs after the request of the client returned, so the
-        # connection that runs it must get the set from the queue. Issue Lillecarl/nanopynix#192.
+        # connection that runs it must get the set from the queue. Issue nixidae/nixidae#231.
         options = next((c.options for c in self._subscribers if c.options is not None), None)
         build_id, future = await self.engine.ctx.scheduler.build_derivation(
             self.request,
@@ -209,7 +209,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
             options=options,
         )
         # The build is on the queue now, so the next root goal of the request
-        # may enqueue behind it and the order of the queue decides. Issue Lillecarl/nanopynix#207.
+        # may enqueue behind it and the order of the queue decides. Issue nixidae/nixidae#246.
         self._reached_the_queue.set()
         async with self._lock:
             self._build_id = build_id
@@ -253,7 +253,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
         # cannot appear, so the wait ended at its deadline every time.
         # Measured: 2.0498 s for each failed build of
         # `nix build -f fod-failing.nix -j1 -L`, holding 226 `IsValidPath`
-        # queries and nothing else. Issue Lillecarl/nanopynix#287.
+        # queries and nothing else. Issue nixidae/nixidae#326.
         if result_succeeded(response.result):
             await self._wait_for_local_paths(produced)
 
@@ -271,7 +271,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
             # message, and it says the request that wanted this build had
             # already stopped. The mark travels up so the request leaves the
             # place of that root empty rather than reporting a build it chose
-            # not to run. Issue Lillecarl/nanopynix#286.
+            # not to run. Issue nixidae/nixidae#325.
             abandoned=not result_succeeded(response.result) and not response.result.error_msg,
         )
 
@@ -293,7 +293,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
         enforces its own limits on its wait instead, and lets go when one
         passes; the build ends only when its last holder lets go. To reverse
         it, measure a client that a later holder's limit failed wrongly.
-        Issue Lillecarl/nanopynix#192.
+        Issue nixidae/nixidae#231.
         """
         scheduler = self.engine.ctx.scheduler
         build = None if scheduler is None else scheduler.queue.by_id.get(build_id)

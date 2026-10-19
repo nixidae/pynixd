@@ -7,7 +7,7 @@ asks `get_build_stats_hint` how long a derivation took last time, so a
 statistics table that empties on each start answers "no record" forever.
 
 These tests state what the framework must do before a second table is worth
-adding. Issue Lillecarl/nanopynix#166 wants that second table.
+adding. Issue nixidae/nixidae#205 wants that second table.
 """
 
 from __future__ import annotations

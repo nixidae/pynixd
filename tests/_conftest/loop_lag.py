@@ -3,7 +3,7 @@
 A TCP probe is answered by the loop accepting a connection, and `/healthz` by
 the loop running a handler. Either way, a stretch of work that does not
 suspend answers neither -- so the probe fails against a process that is busy
-rather than wedged, and the restart destroys the evidence (nixkube#37, #53).
+rather than wedged, and the restart destroys the evidence (nixidae/nixidae#432, #53).
 
 `await` alone does not suspend. A coroutine that returns from a buffer
 finishes without reaching the loop, and asyncio's `drain` returns straight

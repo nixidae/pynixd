@@ -35,7 +35,7 @@ async def test_pynixd_delegation_build(tmp_path: Path) -> None:
     **This carried an `xfail` that named a defect pynixd does not have.** The
     mark read "build output path tracking mismatch between servers", and two
     faults of the test hid behind it. `SSHSubprocessStoreSpec` gained a
-    required `known_hosts` in issue Lillecarl/nanopynix#165 and this call never grew one, so the
+    required `known_hosts` in issue nixidae/nixidae#204 and this call never grew one, so the
     test died in construction and reached no build at all. With that fixed it
     reached the build and the scheduler sent it to server A's own store,
     because nothing here said not to.
@@ -96,7 +96,7 @@ async def test_pynixd_delegation_build(tmp_path: Path) -> None:
                 client_keys=[key],
                 # The builder is a server this test just started on the
                 # loopback interface, so there is no host key to pin and
-                # nothing in the path to substitute an output. Issue Lillecarl/nanopynix#165
+                # nothing in the path to substitute an output. Issue nixidae/nixidae#204
                 # gives the field no default for exactly this reason: the
                 # choice belongs in the configuration and not in a default.
                 known_hosts=None,

@@ -157,7 +157,7 @@ class BuildResult(WireModel):
     `BuildResult.errorMsg` is a `std::string` that the daemon forwards
     without validating, and pynixd quotes `LogError.msg` into it on the
     `queue.fail` path -- both already carry bytes no UTF-8 decoder accepts.
-    Strict decoding would move the crash of issue Lillecarl/pynixd#62 from
+    Strict decoding would move the crash of issue nixidae/nixidae#662 from
     the log stream to the result that follows it.
     """
 

@@ -18,7 +18,7 @@ derivation and not the replacement map.
 that run wrote to its `Realisations` table.** So this test compares pynixd
 with Nix, and not with itself.
 
-Refs Lillecarl/nanopynix#175.
+Refs nixidae/nixidae#214.
 """
 
 from __future__ import annotations

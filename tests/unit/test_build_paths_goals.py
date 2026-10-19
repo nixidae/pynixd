@@ -46,7 +46,7 @@ class FakeEnsureGoal(Goal[GoalResult]):
         # `FakeEngine.get_ensure_derived_path_goal` fills this in, the way the
         # real goal carries the path it was made for. `_goal_order` reads it to
         # take the goals in the order that Nix takes them, which is the order
-        # of the derivation name. Issue Lillecarl/nanopynix#196.
+        # of the derivation name. Issue nixidae/nixidae#235.
         self.derived_path: DerivedPath | None = None
         self.subscribers: list[ClientConn] = []
 
@@ -55,7 +55,7 @@ class FakeEnsureGoal(Goal[GoalResult]):
 
         The real goal keeps the turn until its build reaches the queue. This
         fake enqueues no build, so it marks the turn decided at once and the
-        goals after it start with no delay. Issue Lillecarl/nanopynix#207.
+        goals after it start with no delay. Issue nixidae/nixidae#246.
         """
         turn.decided()
 
@@ -73,9 +73,9 @@ class FakeEngine:
     def __init__(self, goals: dict[str, FakeEnsureGoal]) -> None:
         self.goals = goals
         # A backend is present, so `max-jobs` of the client does not reach the
-        # loop of the root goals. `_build_slots` gives the reason. Issue Lillecarl/nanopynix#190.
+        # loop of the root goals. `_build_slots` gives the reason. Issue nixidae/nixidae#229.
         # `no_schedule` is the property that separates a builder from a
-        # substituter, and `_build_slots` counts the builders alone. Issue Lillecarl/nanopynix#196.
+        # substituter, and `_build_slots` counts the builders alone. Issue nixidae/nixidae#235.
         self.ctx = SimpleNamespace(
             stores={
                 LOCAL_STORE_ID: SimpleNamespace(no_schedule=False),
@@ -174,7 +174,7 @@ async def test_build_paths_reports_failure_when_any_root_fails() -> None:
     # **An error, and not a value.** `daemon.cc:558` of Nix writes a constant
     # `1` after `buildPaths`, and `buildPaths` throws when a build fails. A
     # client of Nix reads that number and drops it, so a failure carried in
-    # the number reached nobody. Issue Lillecarl/nanopynix#177.
+    # the number reached nobody. Issue nixidae/nixidae#216.
     with pytest.raises(BackendError, match="expected test failure"):
         await GoalEngine.build_paths(
             cast("GoalEngine", engine),
@@ -251,7 +251,7 @@ async def test_the_answers_come_back_in_the_order_of_the_request() -> None:
     answers one result for each request in that order. pynixd held the request
     in a set and then sorted it, so the answer followed the hash part of each
     store path. `build.sh:8` of the functional suite passed or failed by luck
-    of that hash. Issue Lillecarl/nanopynix#180.
+    of that hash. Issue nixidae/nixidae#219.
     """
     # `z...` sorts after `a...`, and the request asks for it first.
     later = "/nix/store/zz111111111111111111111111111111-later.drv!out"

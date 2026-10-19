@@ -18,7 +18,7 @@ outlives every channel opened on it, so the first build would pin the builder
 just as hard and half as visibly. `ConnectionPool` reports when it holds
 nothing at all, and the store drops the transport there.
 
-See issue Lillecarl/nanopynix#164.
+See issue nixidae/nixidae#203.
 """
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ def _store(*, persistent: bool = True) -> RecordingSSHStore:
             monitor=False,
             persistent_connection=persistent,
             # The peer of this fixture is a local virtual machine, which is
-            # the case the `null` form is for. Issue Lillecarl/nanopynix#165.
+            # the case the `null` form is for. Issue nixidae/nixidae#204.
             known_hosts=None,
         )
     )
@@ -203,7 +203,7 @@ async def test_the_host_key_file_of_the_spec_reaches_asyncssh(monkeypatch: pytes
     paths that the client registers as valid, so the host key is the check
     that makes the far side the machine the configuration named. A field that
     the spec holds and the connection ignores would read as that check being
-    on. Issue Lillecarl/nanopynix#165.
+    on. Issue nixidae/nixidae#204.
     """
     seen: dict[str, object] = {}
 
@@ -232,7 +232,7 @@ async def test_accepting_any_host_key_is_written_and_not_implied(monkeypatch: py
 
     A loopback peer has no exposure worth the ceremony, and pynixd often runs
     as root where the `known_hosts` of a user holds nothing. What changed is
-    that a configuration writes it. Issue Lillecarl/nanopynix#165.
+    that a configuration writes it. Issue nixidae/nixidae#204.
     """
     seen: dict[str, object] = {}
 

@@ -22,7 +22,7 @@ class BuildPathsRequest(WireRequest):
     `std::vector<DerivedPath>`, and `Store::buildPaths` keeps the order of it.
     `BuildPathsWithResults` then answers one result for each request, in the
     same order, and a client reads the answers by position. A set also drops a
-    repeated path, and Nix answers one result for each one. Issue Lillecarl/nanopynix#180.
+    repeated path, and Nix answers one result for each one. Issue nixidae/nixidae#219.
     """
 
     op: ClassVar[int] = 9

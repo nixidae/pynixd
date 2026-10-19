@@ -34,7 +34,7 @@ is the payload, and the decoder keeps it as bytes. A comparison of two
 recordings compares those bytes, so a NAR and a `ValidPathInfo` both work and
 neither needs a model.
 
-Issue Lillecarl/nanopynix#175.
+Issue nixidae/nixidae#214.
 """
 
 from __future__ import annotations
@@ -107,7 +107,7 @@ class Operation:
 
     A replacement inside the raw bytes could not answer it either: a string on
     the wire carries an 8-byte length, and two pids of different width give
-    two lengths. So the comparison has to read the decoded value. Issue Lillecarl/nanopynix#202.
+    two lengths. So the comparison has to read the decoded value. Issue nixidae/nixidae#241.
     """
 
     response_fields: dict[str, str] | None = None

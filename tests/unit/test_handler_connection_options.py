@@ -9,8 +9,8 @@ signed with the key the client had just named. `require-sigs` and
 
 `ca:signatures` of the Nix functional suite measured it. This test is the
 machine-checkable half: prose said "a connection carries the options of one
-client" from issue Lillecarl/nanopynix#192 onward, and three call sites did not. Issues Lillecarl/nanopynix#197 and
-Lillecarl/nanopynix#192.
+client" from issue nixidae/nixidae#231 onward, and three call sites did not. Issues nixidae/nixidae#236 and
+nixidae/nixidae#231.
 """
 
 from __future__ import annotations
@@ -81,7 +81,7 @@ def test_a_handler_that_writes_passes_the_options_of_the_client() -> None:
     assert bare == [], (
         f"these handlers take a transfer connection with no options: {sorted(set(bare))}. "
         f"The daemon then reads its own settings, and `trusted-public-keys`, `require-sigs` "
-        f"and `secret-key-files` of the client decide nothing. Issue Lillecarl/nanopynix#197."
+        f"and `secret-key-files` of the client decide nothing. Issue nixidae/nixidae#236."
     )
 
 
@@ -103,7 +103,7 @@ def test_a_handler_that_writes_applies_the_options_it_asked_for() -> None:
 
     assert missing == [], (
         f"these handlers ask for a connection with options and never apply them: {sorted(missing)}. "
-        f"Add `await conn.apply_options(options)` after the acquire. Issue Lillecarl/nanopynix#197."
+        f"Add `await conn.apply_options(options)` after the acquire. Issue nixidae/nixidae#236."
     )
 
 

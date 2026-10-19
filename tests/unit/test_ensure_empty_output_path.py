@@ -12,7 +12,7 @@ store path of `EnsurePath` **before** `logger->startWork()`, so
 `canSendStderr` is still false when `parseStorePath` throws `BadStorePath`,
 and `daemon.cc:1213` rethrows an error it cannot report. The client read the
 end of the file, and `nix build` failed with `IncompleteReadError`.
-`ca:build-cache` and `ca:issue-13247` both failed that way. Issue Lillecarl/nanopynix#195.
+`ca:build-cache` and `ca:issue-13247` both failed that way. Issue nixidae/nixidae#234.
 """
 
 from __future__ import annotations

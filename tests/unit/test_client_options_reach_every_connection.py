@@ -7,7 +7,7 @@ that passed `--post-build-hook` then saw the hook run for three of the five
 derivations that its request built, because pynixd built the five at the same
 time on several connections.
 
-Issue Lillecarl/nanopynix#192 holds the measurement, and `scratchpad/probe_posthook.py` is the
+Issue nixidae/nixidae#231 holds the measurement, and `scratchpad/probe_posthook.py` is the
 program that made it.
 """
 
@@ -233,7 +233,7 @@ class FakeEngine:
     def __init__(self, scheduler: FakeScheduler) -> None:
         self.ctx = FakeCtx(scheduler)
         # The engine is the request, as far as the build queue is concerned.
-        # Issue Lillecarl/nanopynix#286.
+        # Issue nixidae/nixidae#325.
         self.request_id = RequestId(1)
 
     async def subscribe_build(self, build_id: BuildId, client: ClientConn) -> bool:

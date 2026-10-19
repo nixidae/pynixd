@@ -6,7 +6,7 @@ and the log stream decoded as strict UTF-8. The reference daemon forwards
 those bytes raw (checked against `NIX_DAEMON_SOCKET_PATH=.../upstream`),
 so this builds the issue's reproducer through the session server and
 asserts the build succeeds and the bytes reach the client. Issue
-Lillecarl/pynixd#62.
+nixidae/nixidae#662.
 
 The client runs on raw subprocess pipes, and not on `run_subproc`: the
 helper decodes strict UTF-8, so it would crash on the very bytes this test
@@ -25,7 +25,7 @@ arrive, and pynixd's own record of the same line is raw (measured in the
 guest against the session store's `.bz2`). Reported on the fork as
 Lillecarl/nix#369. The FFFD assertion below is a
 tripwire: it fails when the fork fixes its JSON logger, and then it should
-assert the raw bytes. Issue Lillecarl/pynixd#63.
+assert the raw bytes. Issue nixidae/nixidae#663.
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ whole stdenv closure first -- 565 derivations in a guest without them. The
 bytes on the wire are what the test is about, and `minimal.leaf` in
 `tests/nix/minimal.nix` proves a bare `/bin/sh` derivation builds through
 this harness, so this one matches that shape exactly: no `__noChroot`, and
-the proven `echo > $out` form. Issue Lillecarl/pynixd#62.
+the proven `echo > $out` form. Issue nixidae/nixidae#662.
 """
 
 

@@ -30,7 +30,7 @@ class SetOptionsHandler(Handler):
         connection was free, and every later operation of the client reached
         another one. A client that set `--post-build-hook` then saw the hook
         run for three of the five derivations that its request built, because
-        pynixd built the five on several connections. Issue Lillecarl/nanopynix#192.
+        pynixd built the five on several connections. Issue nixidae/nixidae#231.
 
         `Connection.apply_options` now sends the set on the connection that is
         about to do the work, so nothing goes upstream here.

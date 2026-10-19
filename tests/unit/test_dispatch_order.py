@@ -6,7 +6,7 @@ and every one of them gives the wrong hash. `build.sh:167` asserts one
 `error:` line, and `build.sh:176` asserts that the line names x1. Both hold
 only when the one slot of `-j1` goes to the goal that sorts first by
 derivation name. `dispatch_order.py` gives the mechanism and the measurement.
-Issue Lillecarl/nanopynix#207, and issue Lillecarl/nanopynix#196 holds the assertion.
+Issue nixidae/nixidae#246, and issue nixidae/nixidae#235 holds the assertion.
 """
 
 from __future__ import annotations
@@ -176,7 +176,7 @@ async def test_a_second_request_does_not_take_the_goal_from_the_first() -> None:
 
     The engine gives one goal to every request that names the same derived
     path. That goal keeps the order of the request that reached it first, and
-    the order of the second request must move without it. Issue Lillecarl/nanopynix#207.
+    the order of the second request must move without it. Issue nixidae/nixidae#246.
     """
     first = DispatchOrder(2)
     second = DispatchOrder(2)
@@ -200,7 +200,7 @@ async def test_two_root_goals_that_depend_on_each_other_do_not_deadlock() -> Non
     A request names the derivations in the order of the key, and that order
     does not follow the dependencies. `a` sorts before `z` and can still
     depend on `z`. `a` holds the first place; `z` waits for `a` to decide;
-    and `a` gives its place up before it waits for `z`. Issue Lillecarl/nanopynix#207.
+    and `a` gives its place up before it waits for `z`. Issue nixidae/nixidae#246.
     """
     order = DispatchOrder(2)
     early = _ensure_goal()
@@ -232,7 +232,7 @@ async def test_a_goal_that_already_started_takes_no_turn() -> None:
     The engine gives one goal to every request that names the same derived
     path, so a request can meet a goal that another one runs. That goal took
     no turn of this request, and it never reads one, so a turn it held would
-    hold every goal behind it for ever. Issue Lillecarl/nanopynix#207.
+    hold every goal behind it for ever. Issue nixidae/nixidae#246.
     """
     order = DispatchOrder(2)
     goal = _ensure_goal(_NeverEndingEnsureGoal)

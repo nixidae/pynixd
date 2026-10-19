@@ -440,7 +440,7 @@ class DaemonProxy:
         before `logger->startWork()`. `canSendStderr` is therefore false, so
         `errorAllowed` at `daemon.cc:1218` is false and the handler re-throws.
         The outer catch at `daemon.cc:1232` writes the error, flushes and
-        returns, which closes the connection. Issue Lillecarl/nanopynix#193.
+        returns, which closes the connection. Issue nixidae/nixidae#232.
         """
         while True:
             try:
@@ -686,7 +686,7 @@ class DaemonProxy:
         if self._temp_roots is None:
             # The state directory of the store that pynixd serves, which is
             # `<root>/nix/var/nix` for a chroot store and `NIX_STATE_DIR` for
-            # a relocated one. `StoreLayout` answers both. Issue Lillecarl/nanopynix#176.
+            # a relocated one. `StoreLayout` answers both. Issue nixidae/nixidae#215.
             layout = getattr(self.local_store, "layout", None) or StoreLayout.chroot(None)
             self._temp_roots = TempRoots(layout.state_dir)
         await self._temp_roots.add(path)

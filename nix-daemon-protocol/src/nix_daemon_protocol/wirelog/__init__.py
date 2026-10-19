@@ -10,7 +10,7 @@ running one workload twice and comparing the two recordings:
 A test of Nix that fails for its own reasons fails the same way in both runs,
 so the two recordings agree and the comparison reports nothing. Only a
 difference between the two is a finding, and the finding names one operation.
-Issue Lillecarl/nanopynix#175.
+Issue nixidae/nixidae#214.
 """
 
 from __future__ import annotations

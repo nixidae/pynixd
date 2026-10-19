@@ -42,7 +42,7 @@ class AddMultipleToStoreHandler(Handler):
         # `--trusted-public-keys` was refused with "cannot add path ...
         # because it lacks a signature by a trusted key" for a path the cache
         # had signed correctly. `require-sigs` and `secret-key-files` travel
-        # the same way. Issues Lillecarl/nanopynix#197 and Lillecarl/nanopynix#192.
+        # the same way. Issues nixidae/nixidae#236 and nixidae/nixidae#231.
         options = ctx.proxy.client.options if ctx.proxy.client is not None else None
         async with ctx.proxy.local_store.transfer_conn(options) as conn:
             await conn.apply_options(options)

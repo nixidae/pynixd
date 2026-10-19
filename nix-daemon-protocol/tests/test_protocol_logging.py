@@ -92,7 +92,7 @@ class _Stalled:
 
 
 async def test_a_cancelled_read_is_not_a_deserialization_failure() -> None:
-    """A client hangup cancels a read of a build's answer. pynixd#91."""
+    """A client hangup cancels a read of a build's answer. nixidae/nixidae#766."""
     logger = _RecordingLogger()
 
     with anyio.move_on_after(0.01):

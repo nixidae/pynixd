@@ -1,7 +1,7 @@
 """What "healthy" means for pynixd, and the loop measurement behind it.
 
 Two things a probe has to tell apart, and a TCP accept on the data port tells
-neither (nixkube#37, #53):
+neither (nixidae/nixidae#432, #53):
 
 - **Wedged.** The kernel completes `connect()` from the listen backlog whether
   or not the application ever accepts, so a TCP probe passes against a process

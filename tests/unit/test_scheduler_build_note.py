@@ -9,7 +9,7 @@ Nix itself writes the location for a remote build only: `building '<drv>' on
 '<machine>'...`. The backend daemon writes the plain `building '<drv>'...`
 line, and pynixd forwards it.
 
-Refs Lillecarl/nanopynix#175.
+Refs nixidae/nixidae#214.
 """
 
 from __future__ import annotations

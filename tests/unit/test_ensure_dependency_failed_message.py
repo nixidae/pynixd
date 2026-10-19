@@ -11,7 +11,7 @@ after the line feed. Those seven spaces belong to the log line alone:
 carried them twice. `tests/parity/test_wire_parity.py::...[failure]` read
 the difference from a real `nix-daemon`.
 
-Refs Lillecarl/nanopynix#175.
+Refs nixidae/nixidae#214.
 """
 
 from __future__ import annotations

@@ -81,7 +81,7 @@ class TestStorePathWithStorePrefix:
 def other_store():
     """A store at a directory that is not `/nix/store`.
 
-    Issue Lillecarl/nanopynix#173: the store directory was a constant, so a path of another store
+    Issue nixidae/nixidae#212: the store directory was a constant, so a path of another store
     got `/nix/store/` in front of it and named no file at all.
     """
     set_store_dir("/scratch/root/nix/store")

@@ -12,7 +12,7 @@ derivation, so one of the two roads carried the logs and the other did not.
 `nix-daemon` also writes `resolved derivation: 'A' -> 'B'...`, which names the
 derivation that it really builds. pynixd resolved and said nothing.
 
-Refs Lillecarl/nanopynix#175.
+Refs nixidae/nixidae#214.
 """
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ class FakeClient:
     def __init__(self) -> None:
         self.lines: list[str] = []
         self.options = None
-        """No option set, so this client names no substituter. Issue Lillecarl/nanopynix#187."""
+        """No option set, so this client names no substituter. Issue nixidae/nixidae#226."""
 
     async def send(self, msg: Any) -> None:
         self.lines.append(str(msg.text))
@@ -119,7 +119,7 @@ class FakeLocalStore:
 
 class FakeBuildGoal:
     may_reach_a_root_goal = False
-    """A build goal reaches no root goal, so a caller keeps its place. Issue Lillecarl/nanopynix#207."""
+    """A build goal reaches no root goal, so a caller keeps its place. Issue nixidae/nixidae#246."""
 
     def __init__(self, request: BuildDerivationRequest) -> None:
         self.request = request
@@ -128,7 +128,7 @@ class FakeBuildGoal:
         del client
 
     async def start(self) -> None:
-        """`Goal.start` begins the build and does not wait. Issue Lillecarl/nanopynix#207."""
+        """`Goal.start` begins the build and does not wait. Issue nixidae/nixidae#246."""
 
     async def wait_until_it_reached_the_queue(self) -> None:
         """This fake needs no queue, so the build is on it at once."""
@@ -141,7 +141,7 @@ class FakeChildGoal:
     """The goal of the input derivation, and who watches it."""
 
     may_reach_a_root_goal = True
-    """The goal of an input can reach a root goal of the request. Issue Lillecarl/nanopynix#207."""
+    """The goal of an input can reach a root goal of the request. Issue nixidae/nixidae#246."""
 
     def __init__(self) -> None:
         self.subscribers: list[Any] = []
@@ -161,7 +161,7 @@ class FakeChildGoal:
 
 class FakeSubstituteGoal:
     may_reach_a_root_goal = False
-    """A substitute goal reaches no root goal. Issue Lillecarl/nanopynix#207."""
+    """A substitute goal reaches no root goal. Issue nixidae/nixidae#246."""
 
     async def result(self) -> SubstituteAttempt:
         return SubstituteAttempt(found=False, result=goal_success())
@@ -330,7 +330,7 @@ async def test_a_client_that_watches_one_goal_twice_reads_each_line_once() -> No
 
     `main:build` counts them. `nix build -f fod-failing.nix -j1 -L` names x1
     to x4, and x4 depends on x2 and x3. `build.sh:167` asserts one `error:`
-    line, and pynixd wrote three for the one failure of x2. Issue Lillecarl/nanopynix#196.
+    line, and pynixd wrote three for the one failure of x2. Issue nixidae/nixidae#235.
     """
     goal = EnsureDerivedPathGoal(
         engine=cast("GoalEngine", FakeEngine()),

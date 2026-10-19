@@ -209,7 +209,7 @@ async def test_operation_30_reads_back_two_entries_in_order() -> None:
     # belongs to the package rather than to this codec: every optional
     # `WireScalar` field reads the same way, and
     # `UnkeyedValidPathInfo.deriver` is the other declaration of this one.
-    # Issue Lillecarl/nanopynix#194.
+    # Issue nixidae/nixidae#233.
     assert response.infos[0].deriver is None
     assert [(one.download_size, one.nar_size) for one in response.infos] == [(1, 2), (3, 4)]
 

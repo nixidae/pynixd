@@ -1,7 +1,7 @@
 """Where a local store keeps its paths and its state.
 
 **Nix has two ways to put a store somewhere other than `/nix/store`, and they
-are not the same way.** pynixd served one of them until issue Lillecarl/nanopynix#176.
+are not the same way.** pynixd served one of them until issue nixidae/nixidae#215.
 
 - **A chroot store.** `--store <root>` puts the files at `<root>/nix/store`
   and the state at `<root>/nix/var/nix`. It moves no store path:
@@ -130,7 +130,7 @@ class StoreLayout:
     def daemon_environment(self) -> dict[str, str]:
         """What `nix daemon` needs in its environment to serve this store.
 
-        A chroot store gets nothing here. Issue Lillecarl/nanopynix#171 measured that Nix reads
+        A chroot store gets nothing here. Issue nixidae/nixidae#210 measured that Nix reads
         no `NIX_STATE_DIR` when `--store <root>` gives it a root, so a name
         set here would say one thing and the daemon would do another.
         """

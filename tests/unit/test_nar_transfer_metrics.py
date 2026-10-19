@@ -6,7 +6,7 @@ and `pynixd_nar_forward_bytes_total` stayed flat throughout.
 
 That also makes the split the discriminator. Given a push whose op nobody
 recorded, whichever receive counter moved names the loop it took -- which is
-the question nixkube#58 turns on.
+the question nixidae/nixidae#507 turns on.
 
 The counters live on the handlers, not in `pynixd.wire`, because the op is
 known at the handler. These tests therefore drive the wire helpers with the
@@ -78,7 +78,7 @@ async def test_the_counter_moves_during_the_transfer() -> None:
     """Not once at the end: a dashboard has to see a long transfer progressing.
 
     A push that only reports on completion looks identical to a push that has
-    hung, which is the state nixkube#58 needed to tell apart.
+    hung, which is the state nixidae/nixidae#507 needed to tell apart.
     """
     seen: list[float] = []
 

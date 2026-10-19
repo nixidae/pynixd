@@ -7,7 +7,7 @@ passed between them.
 
 It skips when there is no `nix` on the PATH, which is the case inside the
 build sandbox that runs `checks.nix-daemon-protocol`. It runs in the dev
-shell. Issue Lillecarl/nanopynix#175.
+shell. Issue nixidae/nixidae#214.
 """
 
 from __future__ import annotations

@@ -105,7 +105,7 @@ async def test_compiled_optional_scalar_roundtrips_absence() -> None:
     """`None` writes `""` and `""` reads back as `None`, on both codecs.
 
     The generic codec spells this rule in `_find_reader`/`_find_writer`
-    (issue Lillecarl/nanopynix#194); the compiler must spell the same one.
+    (issue nixidae/nixidae#233); the compiler must spell the same one.
     A hot path hits it constantly: an empty `deriver` is the common case.
     """
     version = SUPPORTED_PROTOCOL_VERSIONS[-1]

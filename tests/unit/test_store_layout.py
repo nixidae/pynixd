@@ -2,7 +2,7 @@
 
 Nix moves a store two ways, and they are not the same way. A chroot store
 puts the files under a root and moves no store path. A relocated store moves
-the store path itself. pynixd served the first alone until issue Lillecarl/nanopynix#176, and
+the store path itself. pynixd served the first alone until issue nixidae/nixidae#215, and
 four readers had the chroot layout written into them.
 
 `pynixd/store_layout.py` states the difference, and these tests state it too.

@@ -80,7 +80,7 @@ class SSHStore(DaemonStore):
         self.persistent_connection = persistent_connection
         # The spec has no default for this, so a configuration answered it.
         # `None` is `asyncssh`'s "accept any host key", and it is now written
-        # rather than implied. Issue Lillecarl/nanopynix#165.
+        # rather than implied. Issue nixidae/nixidae#204.
         self.known_hosts = known_hosts
         if not persistent_connection and monitor_enabled:
             # The monitor polls over this store's own SSH connection, so it
@@ -114,7 +114,7 @@ class SSHStore(DaemonStore):
         builder that starts on demand. `create_conn` already calls
         `ensure_ssh()`, so the connection is then made by the first thing that
         needs it, and `_on_pool_empty` drops it once the last channel closes.
-        Issue Lillecarl/nanopynix#164.
+        Issue nixidae/nixidae#203.
         """
         if self.persistent_connection:
             await self.ensure_ssh()

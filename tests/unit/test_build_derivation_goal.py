@@ -69,7 +69,7 @@ class FakeEngine:
             ),
         )
         # The engine *is* the request, as far as the build queue is
-        # concerned, and `BuildDerivationGoal` passes this on. Issue Lillecarl/nanopynix#286.
+        # concerned, and `BuildDerivationGoal` passes this on. Issue nixidae/nixidae#325.
         self.request_id = RequestId(1)
         self.subscribed: list[tuple[BuildId, ClientConn]] = []
         self.unsubscribed: list[tuple[BuildId, ClientConn]] = []
@@ -170,7 +170,7 @@ async def test_a_failed_build_asks_the_store_nothing() -> None:
     `nix build -f fod-failing.nix -j1 -L` at `build.sh:164` took 2.0498 s
     between `build_completed` for x1 and the moment its request acted on the
     failure, and the gap held 226 `IsValidPath` queries and nothing else.
-    Issue Lillecarl/nanopynix#287, and issue Lillecarl/nanopynix#286 holds what the delay costs the scheduler.
+    Issue nixidae/nixidae#326, and issue nixidae/nixidae#325 holds what the delay costs the scheduler.
     """
     store = CountingStore(valid=False)
 
@@ -185,7 +185,7 @@ async def test_a_successful_build_still_waits_for_its_output() -> None:
 
     The local store registers an output a moment after the build reports it,
     so a success that asks once and gives up reads a missing output. Issue
-    Lillecarl/nanopynix#287 narrows the wait to the successes; it does not remove it.
+    nixidae/nixidae#326 narrows the wait to the successes; it does not remove it.
     """
     store = CountingStore(valid=True)
 

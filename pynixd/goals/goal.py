@@ -27,7 +27,7 @@ class Goal[T]:
     A root goal holds a place in the order of its request, and it gives that
     place up before it waits for a goal that carries this flag. The two would
     otherwise wait for each other: the root goal behind it cannot start, and
-    this goal cannot finish until that one does. Issue Lillecarl/nanopynix#207.
+    this goal cannot finish until that one does. Issue nixidae/nixidae#246.
 
     The value is True here, so a new kind of goal is safe before anybody reads
     this file. A goal that reaches no other goal of the request sets it False,
@@ -45,7 +45,7 @@ class Goal[T]:
         `result` waits as well, and a caller that wants the goal to run
         beside it needs the two apart. `EnsureDerivedPathGoal` starts a build
         goal and then waits for the build to reach the queue, which is
-        earlier than the end of the build. Issue Lillecarl/nanopynix#207.
+        earlier than the end of the build. Issue nixidae/nixidae#246.
 
         The instance keeps the task, so nothing else must hold a reference to
         it.
@@ -59,7 +59,7 @@ class Goal[T]:
 
         A goal serves every request that names its derived path, so a request
         can meet a goal that another one already runs. Such a goal is past
-        every gate that a request sets for it. Issue Lillecarl/nanopynix#207.
+        every gate that a request sets for it. Issue nixidae/nixidae#246.
         """
         return self._task is not None
 

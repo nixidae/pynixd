@@ -65,7 +65,7 @@ class PynixdContext:
         This lives on the context, and not on `DaemonProxy`, because both the
         proxy and the goal engine have to ask the question. It was a method of
         the proxy alone, so `EnsureDerivedPathGoal` could not reach it and
-        reported every backend-resident path as invalid -- issue Lillecarl/nanopynix#160.
+        reported every backend-resident path as invalid -- issue nixidae/nixidae#199.
         """
         store_id = self.output_locations.get(path)
         if store_id is None:

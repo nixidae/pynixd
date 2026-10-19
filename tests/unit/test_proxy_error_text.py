@@ -5,7 +5,7 @@ read `error: BackendError("Cannot build '\\x1b[35;1m/nix/store/...")` -- the
 name of a Python class, a quoted string, and every escape of the message
 doubled. Nix sends the message alone.
 
-Refs Lillecarl/nanopynix#175, Lillecarl/nanopynix#188.
+Refs nixidae/nixidae#214, nixidae/nixidae#227.
 """
 
 from __future__ import annotations

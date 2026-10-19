@@ -7,7 +7,7 @@ for each of those names, at `derivation-builder.cc:802` of Nix.
 `EnsureDerivedPathGoal` removed each output that the derived path does not
 name, so `drv^out` sent a derivation of one output. The builder then read
 `${placeholder "bin"}` as a path, and no file is there. `main:placeholders` of
-the functional suite is that build. Issue Lillecarl/nanopynix#178.
+the functional suite is that build. Issue nixidae/nixidae#217.
 
 The removal also split one build in two: the derivation is the dedup key of a
 `BuildDerivationGoal`, so `drv^out` and `drv^bin` made two derivations and two
@@ -101,7 +101,7 @@ class FakeBuildGoal:
     """A build goal that records its request and answers for every output."""
 
     may_reach_a_root_goal = False
-    """A build goal reaches no root goal, so a caller keeps its place. Issue Lillecarl/nanopynix#207."""
+    """A build goal reaches no root goal, so a caller keeps its place. Issue nixidae/nixidae#246."""
 
     def __init__(self, request: BuildDerivationRequest) -> None:
         self.request = request
@@ -110,7 +110,7 @@ class FakeBuildGoal:
         del client
 
     async def start(self) -> None:
-        """`Goal.start` begins the build and does not wait. Issue Lillecarl/nanopynix#207."""
+        """`Goal.start` begins the build and does not wait. Issue nixidae/nixidae#246."""
 
     async def wait_until_it_reached_the_queue(self) -> None:
         """This fake needs no queue, so the build is on it at once."""
@@ -136,7 +136,7 @@ class FakeSubstituteGoal:
     """A substituter that holds nothing."""
 
     may_reach_a_root_goal = False
-    """A substitute goal reaches no root goal. Issue Lillecarl/nanopynix#207."""
+    """A substitute goal reaches no root goal. Issue nixidae/nixidae#246."""
 
     async def result(self) -> SubstituteAttempt:
         return SubstituteAttempt(found=False, result=goal_success())
@@ -181,7 +181,7 @@ def test_the_helper_answers_what_nix_answers() -> None:
 
 @pytest.mark.anyio
 async def test_one_wanted_output_still_sends_every_output() -> None:
-    """The defect of issue Lillecarl/nanopynix#178, stated where the derivation goes on the wire."""
+    """The defect of issue nixidae/nixidae#217, stated where the derivation goes on the wire."""
     engine = FakeEngine()
 
     await _goal(engine, f"{_DRV}!out").result()
@@ -248,7 +248,7 @@ async def test_two_wanted_outputs_make_one_derivation() -> None:
 
 @pytest.mark.anyio
 async def test_an_already_valid_output_still_names_its_path() -> None:
-    """The defect of issue Lillecarl/nanopynix#179.
+    """The defect of issue nixidae/nixidae#218.
 
     pynixd answered "this succeeded" and said nothing about what it produced.
     `nix build --json` then wrote no `outputs` key at all, because

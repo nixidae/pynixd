@@ -18,7 +18,7 @@ that `makeOutputPath` builds from each hash is the path that the derivation
 itself states.
 
 The hash names a derivation output on the wire, as `sha256:<hex>!<name>`.
-Issue Lillecarl/nanopynix#179 gives the answer that needs it.
+Issue nixidae/nixidae#218 gives the answer that needs it.
 """
 
 from __future__ import annotations

@@ -300,13 +300,13 @@ class LocalStore(DaemonStore):
         # <root>` gives the store a rootDir, and `local-fs-store.hh:54-70`
         # then builds `<root>/nix/var/nix` and `<root>/nix/var/log/nix` from
         # that root and ignores NIX_DATA_DIR, NIX_LOG_DIR and NIX_STATE_DIR.
-        # Setting the three was how issue Lillecarl/nanopynix#171 started, and the values were
+        # Setting the three was how issue nixidae/nixidae#210 started, and the values were
         # wrong as well: they said `<root>/var/nix`, without the `nix`
         # element that Nix puts there.
         #
         # A relocated store is the other case. It has no root, so the two
         # names below are the only way to say where its store and its state
-        # are. Issue Lillecarl/nanopynix#176.
+        # are. Issue nixidae/nixidae#215.
         env.update(self.layout.daemon_environment())
 
         self.daemon_proc = await asyncio.create_subprocess_exec(

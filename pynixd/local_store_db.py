@@ -877,7 +877,7 @@ class LocalStoreDB:
         reads it as entry age, and pynixd needs no code for either.
         `PynixdPathAccess` is the column that says what pynixd saw, and
         it is the only column pynixd writes. Issue
-        Lillecarl/nanopynix#166 has the whole argument; issue #65 picks
+        nixidae/nixidae#205 has the whole argument; issue #65 picks
         the closure by context.
         """
         if not self.active or self.read_only:
@@ -1010,7 +1010,7 @@ def resolve_db_path(layout: StoreLayout) -> Path | None:
     """
     # `StoreLayout` answers this for a chroot store and for a relocated one.
     # This used to build `<root>/nix/var/nix/db/db.sqlite` itself, which named
-    # the wrong file for a store that `NIX_STORE_DIR` moved. Issue Lillecarl/nanopynix#176.
+    # the wrong file for a store that `NIX_STORE_DIR` moved. Issue nixidae/nixidae#215.
     db_path = layout.db_path
 
     if db_path.exists():

@@ -1,7 +1,7 @@
 """The codec finds a scalar by its methods, not by its base class.
 
 `StorePath` has to stop being a `str`: Nix's own holds the base name and the
-store directory belongs to the store, not to the value (pynixd#4). It still
+store directory belongs to the store, not to the value (nixidae/nixidae#393). It still
 has to travel through the same codec afterwards.
 
 So `wire_message` tests for `from_wire` and `to_wire` rather than for
@@ -56,7 +56,7 @@ class Tag:
         only because a `WireScalar` is a `str`.** Hand a non-`str` scalar to
         it and pydantic refuses the value it just produced: "Input should be
         a valid string ... input_type=Tag". So a scalar that keeps its own
-        type needs the instance arm as well. pynixd#5.
+        type needs the instance arm as well. nixidae/nixidae#394.
         """
         return core_schema.union_schema(
             [

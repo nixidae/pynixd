@@ -6,7 +6,7 @@ option. So the SQLite fast paths were on for a programmatic server and for
 every test, and off for every deployment of `pynixd daemon` -- the one
 configuration nobody could change, because `use_db` was never read there.
 
-See issue Lillecarl/nanopynix#163.
+See issue nixidae/nixidae#202.
 """
 
 from __future__ import annotations

@@ -65,7 +65,7 @@ async def test_handshake_feature_announcement(tmp_path: Path) -> None:
                 client_keys=[key],
                 # The builder is a server this test just started on the
                 # loopback interface, so there is no host key to pin and
-                # nothing in the path to substitute an output. Issue Lillecarl/nanopynix#165
+                # nothing in the path to substitute an output. Issue nixidae/nixidae#204
                 # gives the field no default for exactly this reason: the
                 # choice belongs in the configuration and not in a default.
                 known_hosts=None,

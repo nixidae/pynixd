@@ -12,7 +12,7 @@ class WireScalarLike(Protocol):
     """One Python value, one string on the wire.
 
     **The codec tests for this pair of methods, not for a base class.**
-    `StorePath` has to stop being a `str` (pynixd#4: Nix's own holds the base
+    `StorePath` has to stop being a `str` (nixidae/nixidae#393: Nix's own holds the base
     name and the store directory belongs to the store), and it still has to
     travel through the same codec. Only `WireScalar` satisfies this today, so
     nothing moves yet.

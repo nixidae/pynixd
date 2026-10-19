@@ -217,7 +217,7 @@ class ConnectionPool:
         `--auto-optimise-store` therefore left that setting on, and the next
         client got a store that optimises when it asked for none.
         `main:optimise-store` reads exactly that. So an idle connection with
-        another set is of no use here, and this discards it. Issue Lillecarl/nanopynix#192.
+        another set is of no use here, and this discards it. Issue nixidae/nixidae#231.
         """
 
         """Pop an idle connection or create a new one."""

@@ -148,7 +148,7 @@ async def test_an_absent_optional_scalar_reads_back_as_none(model_type: type[Wir
 
     This compares the **model**. A field that reads back as the empty scalar
     is not equal to the one that was written, so a caller that tests
-    `is None` would take a branch that never runs. Issue Lillecarl/nanopynix#194.
+    `is None` would take a branch that never runs. Issue nixidae/nixidae#233.
     """
     value = _example_model(model_type)
     # Every optional field, and not the scalar ones alone. A field that a

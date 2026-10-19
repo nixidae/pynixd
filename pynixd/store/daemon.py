@@ -228,7 +228,7 @@ class DaemonStore(Store):
         super().__init__(spec)
         self.store_path = spec.store_path
         self.layout: StoreLayout = spec.layout()
-        """The three directories of this store. Issue Lillecarl/nanopynix#176.
+        """The three directories of this store. Issue nixidae/nixidae#215.
 
         A store that is not local has no layout of its own, so it takes the
         chroot layout of its root. Nothing reads the state directory of such

@@ -27,13 +27,13 @@ class GoalResult:
     #: input failed names that input, or whatever the input named, so the whole
     #: chain points at the one build that really failed. `None` on a success.
     #: `BuildPathsWithResultsGoal` reads it to decide which root of a request
-    #: carries the answer. Issue Lillecarl/nanopynix#196.
+    #: carries the answer. Issue nixidae/nixidae#235.
     failing_derivation: StorePath | None = None
     #: Whether pynixd ended this build because the request that wanted it had
     #: already stopped. Such a result is not an answer: the client asked for
     #: the derivation, pynixd chose not to build it, and Nix reports nothing
     #: for the waitees that `Goal::amDone` drops. `_run_the_root_goals` reads
-    #: it and leaves the place of that root empty. Issue Lillecarl/nanopynix#286.
+    #: it and leaves the place of that root empty. Issue nixidae/nixidae#325.
     abandoned: bool = False
 
     def copy(self) -> GoalResult:

@@ -13,7 +13,7 @@ daemon needs a change.
 that reads the protocol can hold a defect of the codecs, and the recording
 then measures the recorder. `tests/wirelog/test_recorder_is_dumb.py` states
 the rule: this module imports `framing` from this package, and nothing else
-of it. Issue Lillecarl/nanopynix#175.
+of it. Issue nixidae/nixidae#214.
 """
 
 from __future__ import annotations

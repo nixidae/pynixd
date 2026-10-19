@@ -6,7 +6,7 @@ replayed the whole log each time, so the client printed the error of one
 build two or three times.
 
 `build.sh:167` of the Nix functional suite counts the `error:` lines of
-`nix build -f fod-failing.nix -j1 -L`. It expects one. Issue Lillecarl/nanopynix#196.
+`nix build -f fod-failing.nix -j1 -L`. It expects one. Issue nixidae/nixidae#235.
 """
 
 from __future__ import annotations
@@ -119,7 +119,7 @@ async def test_a_client_that_is_gone_drops_out_of_the_fan_out(error: BaseExcepti
     `RuntimeError` was not in the caught set, so it left the task group of
     `post_log_bytes` as an `ExceptionGroup`, then left
     `Scheduler.execute_build` through its own error path. Nothing retrieves
-    the exception of that task. Issue Lillecarl/nanopynix#196.
+    the exception of that task. Issue nixidae/nixidae#235.
     """
     build = _build()
     good: Any = FakeClient()

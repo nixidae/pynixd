@@ -43,7 +43,7 @@ reaches no test of the suite: the four derivations of `fod-failing.nix` that
 **The measurement.** `main - nix-functional-tests:build`, 10 runs before and 20
 runs after, against Nix 2.34. Before: 7 runs failed. After: 0 runs failed.
 
-Issue Lillecarl/nanopynix#207.
+Issue nixidae/nixidae#246.
 """
 
 from __future__ import annotations

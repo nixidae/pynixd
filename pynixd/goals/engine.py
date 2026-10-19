@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 _REQUEST_IDS = itertools.count(1)
-"""Names the live goal systems apart, for `BuildQueue`. Issue Lillecarl/nanopynix#286."""
+"""Names the live goal systems apart, for `BuildQueue`. Issue nixidae/nixidae#325."""
 
 
 def _build_failure_message(failed: list[Any]) -> str:
@@ -75,7 +75,7 @@ class GoalEngine:
         # for one request, so the engine *is* the request, and the queue needs
         # a name for it to answer "does any live request still want this
         # build". A counter is enough: the queue compares the names of live
-        # engines and nothing else. Issue Lillecarl/nanopynix#286.
+        # engines and nothing else. Issue nixidae/nixidae#325.
         self.request_id = RequestId(next(_REQUEST_IDS))
         self._lock = anyio.Lock()
         self._goals: dict[Any, Goal[Any]] = {}
@@ -147,7 +147,7 @@ class GoalEngine:
         # `buildPaths` throws when a build fails. A client of Nix reads the
         # number and drops it, so a value of 0 for success reached no client
         # and no test, and a value of 1 for failure read as success. Issue
-        # Lillecarl/nanopynix#177 holds the measurement that found this.
+        # nixidae/nixidae#216 holds the measurement that found this.
         failed = [item for item in response.results if not result_succeeded(item.result)]
         if failed:
             raise BackendError(_build_failure_message(failed))

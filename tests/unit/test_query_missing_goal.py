@@ -284,7 +284,7 @@ async def test_a_realised_content_addressed_output_is_in_no_bucket() -> None:
     map answers from the realisation when the derivation names no path.
     pynixd read the derivation alone, so a second `nix build` of a
     content-addressed derivation asked for a build. `tests/parity/` recorded
-    the difference. Issue Lillecarl/nanopynix#175.
+    the difference. Issue nixidae/nixidae#214.
     """
     drv_path = "/nix/store/11111111111111111111111111111111-example.drv"
     out_path = "/nix/store/22222222222222222222222222222222-example"

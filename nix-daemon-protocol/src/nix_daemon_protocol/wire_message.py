@@ -137,7 +137,7 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
                 # `_write_optional_scalar` below answers for `None`. Without this the
                 # value comes back as the empty scalar rather than as `None`,
                 # so a caller that tests `is None` never takes that branch.
-                # The bytes do not move; only the Python value does. Issue Lillecarl/nanopynix#194.
+                # The bytes do not move; only the Python value does. Issue nixidae/nixidae#233.
                 async def _read_optional_scalar(ctx: Any) -> Any:
                     value = await inner(ctx)
                     # `not value` and not `value == ""`. A scalar that keeps
@@ -297,7 +297,7 @@ def _find_writer(ann: type, version: int = 0, features: frozenset[str] = frozens
                     # not as the textual representation of the Python value.
                     # This is the write half of the rule that `_find_reader`
                     # reads back, and it holds for every scalar rather than for
-                    # `StorePath` alone. Issue Lillecarl/nanopynix#194.
+                    # `StorePath` alone. Issue nixidae/nixidae#233.
                     if val is None:
                         ctx.writer.write_string("")
                         return
@@ -441,7 +441,7 @@ def WireField(  # noqa: N802
     takes when Nix treats it as opaque bytes that it never validates: log and
     error text. A builder prints whatever it prints, and the daemon forwards
     it without looking, so strict decoding fails the whole build on a gzip
-    stream in the log. Issue Lillecarl/pynixd#62. Anything but `"strict"` or
+    stream in the log. Issue nixidae/nixidae#662. Anything but `"strict"` or
     `"surrogateescape"` is refused here: a lossy handler would round-trip the
     bytes into something else, silently.
     """
@@ -568,7 +568,7 @@ def _lossless_optional_reader(errors: str) -> Any:
     """The `str | None` half of `_lossless_reader`.
 
     The empty-wire-string-answers-`None` rule of `_find_reader`, spelled for
-    a codec that never raises on the bytes. Issue Lillecarl/nanopynix#194.
+    a codec that never raises on the bytes. Issue nixidae/nixidae#233.
     """
 
     async def _read_lossless_optional(ctx: Any) -> Any:
