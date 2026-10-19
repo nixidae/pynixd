@@ -12,6 +12,8 @@ import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
+import anyio
+
 from nix_daemon_protocol.ids import RequestId
 from pynixd.build_queue import BuildQueue, QueuedBuild
 from pynixd.connection import ClientConn
@@ -19,7 +21,9 @@ from pynixd.goals.build_derivation import BuildDerivationGoal, limit_reached, li
 from pynixd.serde import (
     BasicDerivation,
     BuildDerivationRequest,
+    BuildDerivationResponse,
     BuildMode,
+    BuildResult,
     BuildResultStatus,
     SetOptionsRequest,
     StorePath,
@@ -130,3 +134,44 @@ async def test_a_later_holder_with_a_tighter_silence_limit_times_out_alone() -> 
     assert result.result.error_msg == "timed out after 2 seconds"
     # The owner still holds the build, and it runs on.
     assert not shared.done()
+
+
+async def test_a_holder_that_goes_away_leaves_the_build_to_the_others() -> None:
+    """A reaped goal must not cancel the future that every holder awaits. nixidae/nixidae#15."""
+    scheduler = _QueueScheduler()
+    request = BuildDerivationRequest(
+        drv_path=StorePath(path="/nix/store/00000000000000000000000000000001-shared.drv"),
+        derivation=BasicDerivation(platform="x86_64-linux", builder=""),
+        build_mode=BuildMode.NORMAL,
+    )
+    goals: list[BuildDerivationGoal] = []
+    for request_id in (1, 2):
+        engine = FakeEngine(cast("object", scheduler))  # type: ignore[arg-type] -- a fake scheduler
+        engine.request_id = RequestId(request_id)
+        goal = BuildDerivationGoal(cast("GoalEngine", engine), request)
+        await goal.start()
+        await goal.wait_until_it_reached_the_queue()
+        goals.append(goal)
+    hung_up, waiting = goals
+    shared = next(iter(scheduler.queue.by_id.values())).future
+
+    hung_up.cancel()
+    await anyio.sleep(0)
+    await anyio.sleep(0)
+
+    assert not shared.cancelled()
+    shared.set_result(
+        BuildDerivationResponse(
+            result=BuildResult(
+                status=BuildResultStatus.BUILT,
+                error_msg="",
+                times_built=1,
+                is_non_deterministic=0,
+                start_time=0,
+                stop_time=0,
+                built_outputs={},
+            ),
+        )
+    )
+    result = await waiting.result()
+    assert result.result.status == BuildResultStatus.BUILT

@@ -95,6 +95,18 @@ def _timed_out(seconds: int) -> BuildDerivationResponse:
     )
 
 
+async def _the_shared_answer(future: asyncio.Future[BuildDerivationResponse]) -> BuildDerivationResponse:
+    """The answer of a build that other requests may hold too.
+
+    `await future` would cancel the future when this waiter is cancelled, and
+    so fail the build for every holder: a reaped request took the builds of
+    the others with it. `asyncio.wait` cancels only its own wait.
+    Issue nixidae/nixidae#15.
+    """
+    await asyncio.wait({future})
+    return future.result()
+
+
 @dataclass
 class BuildDerivationGoal(ExecutionGoal[GoalResult]):
     """Execute a single derivation build via the scheduler's build queue."""
@@ -286,10 +298,10 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
         scheduler = self.engine.ctx.scheduler
         build = None if scheduler is None else scheduler.queue.by_id.get(build_id)
         if build is None:
-            return await future
+            return await _the_shared_answer(future)
         silent, timeout = limits_the_owner_leaves(mine, build.options)
         if not silent and not timeout:
-            return await future
+            return await _the_shared_answer(future)
         while not future.done():
             passed, wait = limit_reached(build, silent, timeout, time.monotonic())
             if passed is not None:
