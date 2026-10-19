@@ -62,6 +62,10 @@ pythonBuilder (finalAttrs: {
       lib.cleanSourceFilter name type
       && !lib.hasSuffix ".nix" name
       && !lib.hasSuffix ".md" name
+      # lock-subtrees rewrites it at every landing of nixidae, which moved
+      # this package, nixkube's cacheEnv and its init image on commits that
+      # changed none of their code.
+      && baseNameOf name != "flake.lock"
       # The C agent builds in nix/agent.nix.
       && !(type == "directory" && baseNameOf name == "agent");
     src = ../.;
