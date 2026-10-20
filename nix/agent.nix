@@ -16,9 +16,13 @@
 rustPlatform.buildRustPackage {
   pname = "pynixd-agent";
   version = "1.0.0";
-  src = lib.cleanSourceWith {
-    src = ../agent;
-    filter = name: type: lib.cleanSourceFilter name type && baseNameOf name != "target";
+  src = lib.fileset.toSource {
+    root = ../agent;
+    fileset = lib.fileset.unions [
+      ../agent/Cargo.toml
+      ../agent/Cargo.lock
+      ../agent/src
+    ];
   };
   cargoLock.lockFile = ../agent/Cargo.lock;
   # nixpkgs links Rust on musl dynamically unless told otherwise.

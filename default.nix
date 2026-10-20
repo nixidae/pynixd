@@ -86,16 +86,21 @@ let
       (sources.vivarium + "/pkgs/vivarium-runner")
     ];
     overlay = pySelf: _pyPrev: {
-      pynixd = pySelf.callPackage (mkProject ./.) { };
-      nix-daemon-protocol = pySelf.callPackage (mkProject ./nix-daemon-protocol) { };
-      vivarium-runner = pySelf.callPackage (mkProject (sources.vivarium + "/pkgs/vivarium-runner")) { };
+      pynixd = pySelf.callPackage (mkProject "pynixd" ./.) { };
+      nix-daemon-protocol = pySelf.callPackage (mkProject "nix-daemon-protocol" ./nix-daemon-protocol) { };
+      vivarium-runner = pySelf.callPackage (mkProject "vivarium-runner" (
+        sources.vivarium + "/pkgs/vivarium-runner"
+      )) { };
     };
   };
 
   mkProject =
-    projectRoot:
+    name: projectRoot:
     nanopynix.ps.mkProject {
-      inherit projectRoot;
+      projectRoot = nanopynix.ps.projectSource {
+        src = projectRoot;
+        name = "${name}-source";
+      };
       inherit (nanopynix.pythonSet) python;
     };
 

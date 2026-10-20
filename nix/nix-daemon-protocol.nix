@@ -9,7 +9,17 @@ pythonBuilder (finalAttrs: {
   version = "0.1.0";
   pyproject = true;
 
-  src = lib.cleanSource ../nix-daemon-protocol;
+  src = lib.fileset.toSource {
+    root = ../nix-daemon-protocol;
+    fileset = lib.fileset.unions [
+      ../nix-daemon-protocol/pyproject.toml
+      ../nix-daemon-protocol/README.md
+      ../nix-daemon-protocol/LICENSE
+      (lib.fileset.fileFilter (
+        file: file.hasExt "py" || file.name == "py.typed"
+      ) ../nix-daemon-protocol/src)
+    ];
+  };
 
   build-system = [ hatchling ];
   dependencies = [ pydantic ];

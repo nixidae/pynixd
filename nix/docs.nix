@@ -21,7 +21,15 @@ stdenvNoCC.mkDerivation {
   pname = "pynixd-docs";
   version = "0";
 
-  src = lib.cleanSource ../.;
+  # `docs/conf.py` puts the repository on `sys.path`, so autodoc reads
+  # `pynixd/` from here.
+  src = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../docs
+      (lib.fileset.fileFilter (file: file.hasExt "py") ../pynixd)
+    ];
+  };
 
   nativeBuildInputs = [ pythonEnv ];
 
