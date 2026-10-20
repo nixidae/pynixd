@@ -49,6 +49,38 @@ def _refused_as_invalid(e: BaseException) -> str | None:
     return found.pop() if len(found) == 1 else None
 
 
+def _referenced_first(infos: list[ValidPathInfo]) -> list[ValidPathInfo]:
+    """*infos*, each after every path of *infos* that it references.
+
+    nix-daemon registers the paths of `AddMultipleToStore` in the order they
+    arrive, and refuses one whose reference it does not hold: `path '...' is
+    not valid`. `copyPaths` in `src/libstore/store-api.cc` sorts with
+    `topoSortPaths` for this. The SQLite closure query orders by
+    `ValidPaths.id`, and a path registered again after a delete gets an id
+    above its referrers' (nixidae/nixidae#897).
+    """
+    by_path = {info.path: info for info in infos}
+    out: list[ValidPathInfo] = []
+    placed: set[StorePath] = set()
+    for root in infos:
+        stack = [(root, False)]
+        while stack:
+            info, expanded = stack.pop()
+            if info.path in placed:
+                continue
+            if expanded:
+                placed.add(info.path)
+                out.append(info)
+                continue
+            stack.append((info, True))
+            stack.extend(
+                (by_path[ref], False)
+                for ref in info.info.references
+                if ref != info.path and ref in by_path and ref not in placed
+            )
+    return out
+
+
 async def stream_paths_store_to_store(
     src: DaemonStore,
     dst: DaemonStore,
@@ -105,10 +137,11 @@ async def stream_paths_store_to_store(
     # 2. Filter out paths already in destination
     from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest
 
-    closure_paths = {info.path for info in closure_resp.infos}
+    closure = _referenced_first(closure_resp.infos)
+    closure_paths = {info.path for info in closure}
     check = await dst.execute(QueryValidPathsRequest(paths=closure_paths, substitute=0))
     check_paths_set = set(check.paths)
-    to_transfer: list[ValidPathInfo] = [info for info in closure_resp.infos if info.path not in check_paths_set]
+    to_transfer: list[ValidPathInfo] = [info for info in closure if info.path not in check_paths_set]
     for _ in range(_SELF_HEAL_ROUNDS):
         log.debug(
             "stream_paths_filtered",
@@ -121,7 +154,7 @@ async def stream_paths_store_to_store(
             await _stream_checked(src, dst, to_transfer, cancel_event, peer_store_id, direction)
         except Exception as e:
             refused = _refused_as_invalid(e)
-            healed = [info for info in closure_resp.infos if str(info.path) == refused and info.path in check_paths_set]
+            healed = [info for info in closure if str(info.path) == refused and info.path in check_paths_set]
             if not healed:
                 raise
             # NIX-DEVIATION (#27): `copyPaths` in `src/libstore/store-api.cc`
@@ -132,7 +165,7 @@ async def stream_paths_store_to_store(
             # when no `builder_refused_a_valid_path` is logged any more.
             log.warning("builder_refused_a_valid_path", dst=dst.store_id, path=refused)
             check_paths_set.discard(healed[0].path)
-            to_transfer = [info for info in closure_resp.infos if info.path not in check_paths_set]
+            to_transfer = [info for info in closure if info.path not in check_paths_set]
         else:
             return
     raise BackendError(
