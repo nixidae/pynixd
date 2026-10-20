@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Any, cast
 import anyio
 import structlog
 
-from nix_daemon_protocol.exceptions import DaemonProtocolError
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.wire_ops import WIRE_REGISTRY, WireResponse
@@ -24,7 +23,7 @@ from . import metrics, wire
 from ._lazy import ssh_connection_lost
 from .config import ScheduleMode
 from .connection import ClientConn
-from .exceptions import ClosingError, OpNotImplementedError, PynixdError
+from .exceptions import ClosingError, OpNotImplementedError, error_text
 from .goals import GoalEngine
 from .handlers._base import HANDLER_REGISTRY
 from .protocol import get_extension_features
@@ -60,34 +59,6 @@ if TYPE_CHECKING:
 from .store import DaemonStore as DaemonStore
 
 log = structlog.get_logger(__name__)
-
-
-def _error_text(ex: BaseException) -> str:
-    """The text that `STDERR_ERROR` carries for *ex*.
-
-    **A client prints this text after the word "error:", so it must read as
-    one.** This was `repr(ex)`, which gave the client
-    `error: BackendError("Cannot build '\\x1b[35;1m/nix/store/...")` -- the
-    name of a Python class, a quoted string, and every escape of the message
-    doubled. Nix writes the message alone.
-
-    A `PynixdError` carries a message that pynixd wrote for a reader, and a
-    `DaemonProtocolError` carries the message of a daemon behind pynixd. Both
-    are the whole text. Any other exception is a fault of pynixd, and the name
-    of the class is the part that says so.
-
-    **A task group carries the failure of its task, and the group itself says
-    nothing.** Every handler that fans out uses `anyio.create_task_group`, and
-    a task that raises leaves an `ExceptionGroup`. The client then read
-    `error: ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)`
-    and never learned the reason. `ca:signatures` reads the reason, which is
-    "cannot add path '...' because it lacks a signature by a trusted key".
-    """
-    if isinstance(ex, BaseExceptionGroup):
-        return "\n".join(_error_text(inner) for inner in ex.exceptions)
-    if isinstance(ex, PynixdError | DaemonProtocolError):
-        return str(ex)
-    return f"{type(ex).__name__}: {ex}"
 
 
 NIX_VERSION: str = "pynixd-0.1.0"
@@ -481,7 +452,7 @@ class DaemonProxy:
                 result = "error"
                 log.exception("handle_op_error", name=op_name)
                 await self.client.flush()
-                await self.send_error(_error_text(ex))
+                await self.send_error(error_text(ex))
             finally:
                 self.current_op = None
                 elapsed = time.monotonic() - t0

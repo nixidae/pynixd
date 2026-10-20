@@ -26,7 +26,7 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID
 from . import metrics, state
 from .allocator import BuildAllocator, RankedStore, TelemetryStoreRanker
 from .build_queue import BuildQueue, QueuedBuild
-from .exceptions import BackendError, InfrastructureError
+from .exceptions import BackendError, InfrastructureError, error_text, leaves
 from .serde import LogNext, QueryValidPathsRequest
 from .store import DaemonStore, LocalDBStore
 from .store.transfer import stream_paths_store_to_store
@@ -197,7 +197,7 @@ class Scheduler:
                         store_id=store_id,
                     )
                     build.cancel_worker()
-                build.reset_for_retry(store_id)
+                build.reset_for_retry(store_id, f"{store_id} was removed while the build ran")
 
         self.trigger()
 
@@ -271,12 +271,12 @@ class Scheduler:
                 return
             with scope:
                 await self.execute_build(build, store)
-        except Exception:
+        except Exception as e:
             # Failed, not left pending: the loop would retry a deterministic
             # crash on every pass. `fail` raises ValueError for a pruned build.
             log.exception("build_worker_crashed", build_id=build.build_id)
             with contextlib.suppress(ValueError):
-                await self.queue.fail(build.build_id, "Internal scheduler error")
+                await self.queue.fail(build.build_id, f"pynixd internal error: {error_text(e)}")
         finally:
             build.worker_ended(scope)
             self.trigger()
@@ -620,11 +620,13 @@ class Scheduler:
         compatible: list[DaemonStore],
     ) -> None:
         """Permanently fail a build blacklisted by all compatible stores."""
-        failed_ids = [s.store_id for s in compatible]
         error_msg = (
             f"All compatible stores failed for {build.request.derivation.platform}"
             + (f" (requires {', '.join(sorted(build_features))})" if build_features else "")
-            + f": {', '.join(failed_ids)}"
+            + ":"
+            + "".join(
+                f"\n  {s.store_id}: {build.store_errors.get(s.store_id, 'no error recorded')}" for s in compatible
+            )
         )
         await self.queue.fail(build.build_id, error_msg)
         for line in error_msg.split("\n"):
@@ -711,15 +713,20 @@ class Scheduler:
                     completed = True
                     self.trigger()
 
-        except (BackendError, InfrastructureError) as e:
-            log.warning("build_failed_retryable", build_id=build.build_id, error=str(e))
-            await build.post_log_and_fanout(LogNext(text=f"pynixd: build failed on {store.store_id}, retrying: {e}\n"))
-            build.reset_for_retry(store.store_id)
-            self.trigger()
-        except Exception:
-            log.exception("build_crashed", build_id=build.build_id)
-            await build.post_log_and_fanout(LogNext(text="pynixd: internal scheduler error, failing build\n"))
-            await self.queue.fail(build.build_id, "Internal scheduler error")
+        except Exception as e:
+            # Decided by the leaves: a task group on the way wraps a
+            # BackendError in a group, which no `except BackendError` matches.
+            reason = error_text(e)
+            if all(isinstance(leaf, BackendError | InfrastructureError) for leaf in leaves(e)):
+                log.warning("build_failed_retryable", build_id=build.build_id, error=reason)
+                await build.post_log_and_fanout(
+                    LogNext(text=f"pynixd: build failed on {store.store_id}, retrying: {reason}\n")
+                )
+                build.reset_for_retry(store.store_id, reason)
+            else:
+                log.exception("build_crashed", build_id=build.build_id)
+                await build.post_log_and_fanout(LogNext(text=f"pynixd: internal error, failing build: {reason}\n"))
+                await self.queue.fail(build.build_id, f"pynixd internal error: {reason}")
             self.trigger()
 
         if build_resp is not None and not completed:

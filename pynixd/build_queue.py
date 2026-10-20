@@ -145,6 +145,8 @@ class QueuedBuild:
         self.finished_at: float | None = None
         self.retries = 0
         self.store_failures: dict[StoreId, int] = {}
+        self.store_errors: dict[StoreId, str] = {}
+        """The last failure of each store, which the final error names."""
         self.worker: anyio.CancelScope | None = None
         """The scope of the worker that runs this build, from assignment until it ends.
 
@@ -218,7 +220,7 @@ class QueuedBuild:
         """Check if a specific store has exceeded the retry limit for this build."""
         return self.store_failures.get(store_id, 0) >= MAX_STORE_RETRIES
 
-    def reset_for_retry(self, failed_store_id: StoreId) -> None:
+    def reset_for_retry(self, failed_store_id: StoreId, reason: str) -> None:
         """Reset state for retry on next scheduling pass.
 
         Called after a build or infrastructure failure. The build will
@@ -231,6 +233,7 @@ class QueuedBuild:
 
         # Increment failure count for this specific store
         self.store_failures[failed_store_id] = self.store_failures.get(failed_store_id, 0) + 1
+        self.store_errors[failed_store_id] = reason
 
     @property
     def wait_time(self) -> float | None:
