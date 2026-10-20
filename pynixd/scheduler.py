@@ -26,13 +26,15 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID
 from . import metrics, state
 from .allocator import BuildAllocator, RankedStore, TelemetryStoreRanker
 from .build_queue import BuildQueue, QueuedBuild
+from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from .exceptions import BackendError, InfrastructureError, error_text, leaves
-from .serde import LogNext, QueryValidPathsRequest
+from .serde import AddTempRootRequest, AddTempRootsRequest, LogNext, QueryValidPathsRequest
 from .store import DaemonStore, LocalDBStore
 from .store.transfer import stream_paths_store_to_store
 from .store_path import StorePath
 from .substitution_queue import SubstitutionQueue
 from .system_features import effective_required_features
+from .wire import FEATURE_ADD_TEMP_ROOTS
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Mapping
@@ -751,6 +753,7 @@ class Scheduler:
         input_srcs = build.request.derivation.input_srcs
         if input_srcs:
             paths_to_check = {StorePath(path=str(p)) for p in input_srcs}
+            await self._hold_inputs_on(conn, paths_to_check)
             try:
                 check = await store.execute(
                     QueryValidPathsRequest(
@@ -779,6 +782,24 @@ class Scheduler:
                 peer_store_id=store.store_id,
                 direction="out",
             )
+
+    async def _hold_inputs_on(self, conn: Connection, inputs: set[StorePath]) -> None:
+        """Root the closure of *inputs* on the builder, for the build connection's life.
+
+        Before the validity check, as `copyPaths` in `src/libstore/store-api.cc`
+        does: a path the builder holds and its collector deletes between the
+        check and the copy is neither sent nor present, and the copy fails on
+        it. The whole closure and not the inputs alone, because a root keeps
+        alive only the closure of a path that is valid, and an input the
+        builder lacks protects none of its references there. Issue #887.
+        """
+        closure = await self.local_store.execute(QueryClosureWithInfoRequest(paths=inputs), client=None)
+        held = inputs | {info.path for info in closure.infos}
+        if FEATURE_ADD_TEMP_ROOTS in conn.standard_features:
+            await conn.call(AddTempRootsRequest(paths=held), raise_on_error=True)
+            return
+        for path in sorted(held, key=str):
+            await conn.call(AddTempRootRequest(path=path), raise_on_error=True)
 
     async def _execute(
         self,

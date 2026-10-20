@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Final, Literal
 
 import anyio
@@ -12,7 +13,7 @@ from nix_daemon_protocol.nar_from_path import NarFromPathRequest
 
 from .. import metrics, wire
 from ..daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
-from ..exceptions import BackendError
+from ..exceptions import BackendError, leaves
 from ..serde.context import ReadContext, WriteContext
 from ..store_path import StorePath
 
@@ -30,6 +31,22 @@ _UNSIZED_PATHS_NAMED: Final[int] = 3
 """How many paths of an unsized closure the error names.
 
 Enough to see a pattern, and not the whole closure in one log line."""
+
+_SELF_HEAL_ROUNDS: Final[int] = 4
+"""Sends of one copy: the first, and one per path the destination refused
+after it reported the path valid. Issue #887."""
+
+_INVALID_PATH = re.compile(r"path '(?:\x1b\[[0-9;]*m)?([^'\x1b]+)(?:\x1b\[[0-9;]*m)?' is not valid")
+"""`InvalidPath` of Nix (`src/libstore/store-api.cc`), coloured or not."""
+
+
+def _refused_as_invalid(e: BaseException) -> str | None:
+    """The path a destination called invalid, when that is all that failed."""
+    failures = list(leaves(e))
+    if not all(isinstance(leaf, BackendError) for leaf in failures):
+        return None
+    found = {m.group(1) for leaf in failures if (m := _INVALID_PATH.search(str(leaf)))}
+    return found.pop() if len(found) == 1 else None
 
 
 async def stream_paths_store_to_store(
@@ -92,13 +109,46 @@ async def stream_paths_store_to_store(
     check = await dst.execute(QueryValidPathsRequest(paths=closure_paths, substitute=0))
     check_paths_set = set(check.paths)
     to_transfer: list[ValidPathInfo] = [info for info in closure_resp.infos if info.path not in check_paths_set]
-    log.debug(
-        "stream_paths_filtered",
-        src=src.store_id,
-        dst=dst.store_id,
-        already_valid=len(check_paths_set),
-        to_transfer=len(to_transfer),
+    for _ in range(_SELF_HEAL_ROUNDS):
+        log.debug(
+            "stream_paths_filtered",
+            src=src.store_id,
+            dst=dst.store_id,
+            already_valid=len(check_paths_set),
+            to_transfer=len(to_transfer),
+        )
+        try:
+            await _stream_checked(src, dst, to_transfer, cancel_event, peer_store_id, direction)
+        except Exception as e:
+            refused = _refused_as_invalid(e)
+            healed = [info for info in closure_resp.infos if str(info.path) == refused and info.path in check_paths_set]
+            if not healed:
+                raise
+            # NIX-DEVIATION (#27): `copyPaths` in `src/libstore/store-api.cc`
+            # trusts `queryValidPaths` of the destination and fails the copy
+            # when it was wrong. pynixd sends the refused path and tries
+            # again, because a builder that answered "valid" and then refused
+            # the path costs a round trip here and not the build. Reverse it
+            # when no `builder_refused_a_valid_path` is logged any more.
+            log.warning("builder_refused_a_valid_path", dst=dst.store_id, path=refused)
+            check_paths_set.discard(healed[0].path)
+            to_transfer = [info for info in closure_resp.infos if info.path not in check_paths_set]
+        else:
+            return
+    raise BackendError(
+        f"{dst.store_id} kept refusing paths it reported valid, after {_SELF_HEAL_ROUNDS} rounds",
     )
+
+
+async def _stream_checked(
+    src: DaemonStore,
+    dst: DaemonStore,
+    to_transfer: list[ValidPathInfo],
+    cancel_event: anyio.Event | None,
+    peer_store_id: str | None,
+    direction: Literal["in", "out"] | None,
+) -> None:
+    """Steps 3 and 4 of `stream_paths_store_to_store` for one selection."""
     if not to_transfer:
         return
 
