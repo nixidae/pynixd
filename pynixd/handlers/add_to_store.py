@@ -86,7 +86,9 @@ class AddToStoreHandler(Handler):
             # The cache update below stays whether signing runs or not: it
             # holds what the daemon answered, signed by whoever signs.
             if resp.info is not None:
-                if ctx.proxy.local_store.settings.sign_added_paths:
+                # Nix signs build outputs alone; an untrusted client's path
+                # carries no attestation of pynixd's key (nixidae/nixidae#1009).
+                if ctx.proxy.local_store.settings.sign_added_paths and ctx.role >= Role.ADMIN:
                     sign_resp = await ctx.proxy.local_store.sign_path_info(
                         SignPathInfoRequest(info=resp.info),
                         client=ctx.proxy.client,

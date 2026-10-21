@@ -364,3 +364,18 @@ async def test_the_pool_reuses_a_connection_that_carries_no_set() -> None:
     handed = await pool.get_or_create_conn(_options("/hook.sh"))
 
     assert handed is fresh
+
+
+@pytest.mark.anyio
+async def test_a_second_set_adds_to_the_first() -> None:
+    """`ClientSettings::apply` sets only the names it is given (`daemon.cc:221-300`). nixidae/nixidae#1009."""
+    ctx = FakeContext(FakeProxy(await _body(_options("/hook.sh"))), Role.ADMIN)
+    await SetOptionsHandler().handle(cast("Any", ctx))
+    second = _options("/hook.sh").model_copy(update={"overrides": {"timeout": "5"}})
+    ctx.proxy.r = BytesReader(await _body(second), identifier="test:set-options-2")
+
+    await SetOptionsHandler().handle(cast("Any", ctx))
+
+    options = ctx.proxy.client.options
+    assert options is not None
+    assert options.overrides == {"post-build-hook": "/hook.sh", "timeout": "5"}

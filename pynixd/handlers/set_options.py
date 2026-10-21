@@ -51,5 +51,10 @@ class SetOptionsHandler(Handler):
                 for warning in warnings:
                     resp.logs.add(LogNext(text=warning_text(warning)))
 
+        # `ClientSettings::apply` sets the names it is given and leaves every
+        # other one as an earlier SetOptions set it (`daemon.cc:221-300`).
+        previous = ctx.proxy.client.options
+        if previous is not None:
+            req = req.model_copy(update={"overrides": {**previous.overrides, **req.overrides}})
         ctx.proxy.client.options = req
         return resp

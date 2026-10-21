@@ -176,3 +176,11 @@ def test_peer_of_reads_this_process():
     with left, right:
         peer = peer_of(left)
     assert peer == Peer(pid=os.getpid(), uid=os.getuid(), gid=os.getgid())
+
+
+def test_dropped_settings_warn_in_name_order():
+    """`ClientSettings::apply` walks a `std::map`, so its warnings come sorted (`daemon.cc:232`)."""
+    _kept, warnings = restrict_overrides({"zzz-setting": "1", "aaa-setting": "1"}, TrustPolicy())
+
+    assert "'aaa-setting'" in warnings[0]
+    assert "'zzz-setting'" in warnings[1]

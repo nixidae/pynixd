@@ -484,6 +484,14 @@ class DaemonProxy:
         ):
             # `daemon.cc:554,572`, before `startWork`, so Nix closes the connection.
             raise ClosingError("repairing is not allowed because you are not in 'trusted-users'")
+        if isinstance(request, BuildPathsRequest | BuildPathsWithResultsRequest) and request.build_mode not in (
+            BuildMode.NORMAL,
+            BuildMode.REPAIR,
+            BuildMode.CHECK,
+        ):
+            # `WorkerProto::Serialise<BuildMode>::read` throws while the
+            # request is read, before `startWork` (`worker-protocol.cc:70`).
+            raise ClosingError("Invalid build mode")
         if isinstance(request, BuildPathsRequest | BuildPathsWithResultsRequest | QueryMissingRequest):
             # Nix parses each derived path while it reads the request, before
             # `startWork` (`derived-path.cc:117`, `path.cc:12`), so a bad

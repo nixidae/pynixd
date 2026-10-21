@@ -100,7 +100,8 @@ def restrict_overrides(overrides: Mapping[str, str], policy: TrustPolicy) -> tup
     trusted_subs = set(policy.trusted_substituters) | set(policy.substituters)
     kept: dict[str, str] = {}
     warnings: list[str] = []
-    for name, value in overrides.items():
+    # Sorted, as `ClientSettings::apply` walks a `std::map` (`daemon.cc:232`).
+    for name, value in sorted(overrides.items()):
         if name in _PASSED_TO_EVERYONE or name in _UNRESTRICTED_SETTINGS or (name == "builders" and value == ""):
             kept[name] = value
         elif name in _SUBSTITUTER_NAMES:
