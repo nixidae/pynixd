@@ -47,7 +47,7 @@ from ..serde import (
 )
 from ..serde.context import WriteContext
 from ..store_layout import StoreLayout
-from ..system_features import KNOWN_FEATURES, PROBE_SYSTEMS
+from ..system_features import BUILTIN_SYSTEM, KNOWN_FEATURES, PROBE_SYSTEMS
 from ..utils import random_nix32_hash
 from .base import Store
 from .pool import ConnectionPool
@@ -345,6 +345,11 @@ class DaemonStore(Store):
         fm = self._feature_matrix
         if fm is not None:
             sys_features = fm.get(system)
+            if sys_features is None and system == BUILTIN_SYSTEM and fm:
+                # Every machine takes `builtin`: `Machine::systemSupported`
+                # at `machines.cc:42`, and `derivation-building-goal.cc:421`
+                # for the local one. The daemon itself runs the builder.
+                sys_features = set().union(*fm.values())
             if sys_features is None:
                 return False
             if not features:

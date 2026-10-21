@@ -1231,8 +1231,6 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         parsed = await self.engine.ctx.local_store.read_derivation(str(drv_path))
         if parsed is None:
             return set(output_names)
-        if parsed.builder.startswith("builtin:"):
-            return set()
         paths = parsed.output_paths()
         needed: set[str] = set()
         for output_name in output_names:

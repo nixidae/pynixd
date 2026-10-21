@@ -36,7 +36,7 @@ from .store import DaemonStore, LocalDBStore
 from .store.transfer import stream_paths_store_to_store
 from .store_path import StorePath
 from .substitution_queue import SubstitutionQueue
-from .system_features import effective_required_features
+from .system_features import BUILTIN_SYSTEM, effective_required_features
 from .wire import FEATURE_ADD_TEMP_ROOTS
 
 if TYPE_CHECKING:
@@ -175,6 +175,8 @@ class Scheduler:
     def _dynamic_supports(self, system: str, features: set[str] | None = None) -> bool:
         """Check if the dynamic_feature_matrix declares support for a system+features combo."""
         sys_features = self._dynamic_feature_matrix.get(system)
+        if sys_features is None and system == BUILTIN_SYSTEM and self._dynamic_feature_matrix:
+            sys_features = set().union(*self._dynamic_feature_matrix.values())
         if sys_features is None:
             return False
         if not features:

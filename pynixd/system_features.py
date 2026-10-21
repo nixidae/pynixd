@@ -11,6 +11,8 @@ arbitrary/custom feature strings (not in this module) are fully supported.
 
 from __future__ import annotations
 
+from typing import Final
+
 from nix_daemon_protocol.basic_derivation import BasicDerivation
 
 
@@ -87,6 +89,9 @@ def effective_required_features(derivation: BasicDerivation) -> set[str]:
     """
     return derivation.required_system_features - PYNIXD_HANDLED_FEATURES
 
+
+BUILTIN_SYSTEM: Final = "builtin"
+"""The system of a derivation whose builder is `builtin:*`, which the daemon runs itself."""
 
 # Platforms to probe when discovering store capabilities.
 # Each is a Nix system triple (machine-kernel).
