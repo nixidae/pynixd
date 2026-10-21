@@ -57,6 +57,12 @@ class AddToStoreNarHandler(Handler):
                     update={"dont_check_sigs": 0, "info": req.info.model_copy(update={"ultimate": False})},
                 )
 
+            # The session holds the path, not the pooled worker: `addToStore`
+            # roots it for the client first (`local-store.cc:1052`), and a
+            # pooled worker's roots end when `CollectGarbage` retires it.
+            # nixidae/nixidae#1007.
+            await ctx.proxy.add_temp_root(req.info.path)
+
             # 2. Write request header to daemon
             await req.to_writer(WriteContext.from_conn(conn))
             await conn.w.drain()

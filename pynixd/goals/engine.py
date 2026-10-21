@@ -22,6 +22,7 @@ from ..serde import (
     QueryMissingRequest,
     QueryMissingResponse,
 )
+from ..store_path import StorePath
 from .build_derivation import BuildDerivationGoal
 from .ensure import EnsureDerivedPathGoal
 from .keys import BuildDerivationKey, EnsureDerivedPathKey, SubstitutePathKey
@@ -31,21 +32,40 @@ from .results import result_succeeded
 from .substitute import SubstitutePathGoal, substituter_fingerprint
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Awaitable, Callable, Iterable
 
     from nix_daemon_protocol.ids import BuildId
 
     from ..connection import ClientConn
     from ..context import PynixdContext
     from ..derived_path import DerivedPath
+    from ..serde import BuildPathsWithResultsResponse
     from ..store import Store
-    from ..store_path import StorePath
     from .goal import Goal
+
+    Hold = Callable[[StorePath], Awaitable[None]]
+    """Roots one path for the client's session: `DaemonProxy.add_temp_root`."""
 
 log = structlog.get_logger(__name__)
 
 _REQUEST_IDS = itertools.count(1)
 """Names the live goal systems apart, for `BuildQueue`. Issue nixidae/nixidae#325."""
+
+
+def _realised_paths(response: BuildPathsWithResultsResponse) -> list[StorePath]:
+    """Each output path a successful entry names, and each opaque path that succeeded."""
+    paths: list[StorePath] = []
+    for item in response.results:
+        if not result_succeeded(item.result):
+            continue
+        if "!" not in str(item.path):
+            paths.append(StorePath(str(item.path)))
+        paths.extend(
+            StorePath(str(realisation.out_path))
+            for realisation in item.result.realised_outputs().values()
+            if realisation.out_path
+        )
+    return paths
 
 
 def _build_failure_message(failed: list[Any]) -> str:
@@ -131,7 +151,9 @@ class GoalEngine:
             log.debug("goals_reaped", request_id=int(self.request_id), count=0)
         return reaped
 
-    async def build_paths(self, request: BuildPathsRequest, client: ClientConn | None = None) -> BuildPathsResponse:
+    async def build_paths(
+        self, request: BuildPathsRequest, client: ClientConn | None = None, hold: Hold | None = None
+    ) -> BuildPathsResponse:
         """Execute a BuildPaths request, returning a simple success/failure response."""
         if request.build_mode != BuildMode.NORMAL:
             return await self._straight_to_the_store(request, client)
@@ -141,6 +163,7 @@ class GoalEngine:
                 build_mode=request.build_mode,
             ),
             client=client,
+            hold=hold,
         )
         # **The value is always 1, and a failure is an error and not a value.**
         # `daemon.cc:558` of Nix writes `conn.to << 1` after `buildPaths`, and
@@ -157,12 +180,24 @@ class GoalEngine:
         self,
         request: BuildPathsWithResultsRequest,
         client: ClientConn | None = None,
+        hold: Hold | None = None,
     ):
-        """Execute a BuildPathsWithResults request, returning per-path results."""
+        """Execute a BuildPathsWithResults request, returning per-path results.
+
+        *hold* roots each path the request realised for the client's session
+        before the answer goes out. Nix's worker holds them as temp roots of
+        that client (`derivation-goal.cc:67`, `substitution-goal.cc`); pynixd
+        brought them in over a pooled connection, whose roots end when
+        `CollectGarbage` retires it. nixidae/nixidae#1007.
+        """
         if request.build_mode != BuildMode.NORMAL:
             return await self._straight_to_the_store(request, client)
         try:
-            return await BuildPathsWithResultsGoal(self, request, client).result()
+            response = await BuildPathsWithResultsGoal(self, request, client).result()
+            if hold is not None:
+                for path in _realised_paths(response):
+                    await hold(path)
+            return response
         finally:
             # The answer of this request is the moment it wants nothing more.
             # `let_go_of_every_build` says what the build queue does with that.

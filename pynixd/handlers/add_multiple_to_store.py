@@ -89,6 +89,10 @@ class AddMultipleToStoreHandler(Handler):
 
             # Update path info cache
             ctx.proxy.local_store.add_path_infos(infos)
+            # The session holds each path, as Nix's worker does for its
+            # client. nixidae/nixidae#1007.
+            for info in infos:
+                await ctx.proxy.add_temp_root(info.path)
 
             return resp
 

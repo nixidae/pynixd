@@ -70,6 +70,10 @@ class AddToStoreHandler(Handler):
             resp = await AddToStoreResponse.from_reader(
                 ReadContext.from_conn(conn),
             )
+            # The session holds the path, as Nix's worker does for its client
+            # (`local-store.cc:1264`). nixidae/nixidae#1007.
+            if resp.info is not None:
+                await ctx.proxy.add_temp_root(resp.info.path)
 
             # 5. Sign the path info over the transfer connection, idle now that
             # the NAR and the response crossed it. A sign through the store

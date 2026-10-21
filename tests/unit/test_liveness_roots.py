@@ -436,3 +436,15 @@ def test_a_target_inside_a_store_path_roots_that_store_path(tmp_path: Path) -> N
 
     assert paths["d"] in walk_volatile(state, store, proc)
     assert walk_stable(state, store)[str(auto / "into")][0] == paths["b"]
+
+
+def test_pynixd_own_temp_roots_files_seed_the_walk(tmp_path: Path) -> None:
+    """`findTempRoots` reads every file but a dotfile (`gc.cc:166`).
+
+    pynixd names its own files `pynixd-<pid>-<n>` (`temp_roots.py`), and
+    the walk kept pid names only, so a root a client asked pynixd for never
+    reached the plan. nixidae/nixidae#1007.
+    """
+    state, proc, _auto, paths = _layout(tmp_path)
+    with live_temp_root(state, "pynixd-4242-1", f"{paths['d']}\x00".encode()):
+        assert paths["d"] in walk_volatile(state, str(tmp_path / "store"), proc)

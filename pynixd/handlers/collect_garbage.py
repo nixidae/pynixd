@@ -28,4 +28,7 @@ class CollectGarbageHandler(Handler):
         # collector reads those roots and frees nothing. `nix-daemon` has no
         # such connection, because the client that made the root is gone.
         await ctx.proxy.local_store.retire_idle_connections()
-        return await ctx.proxy.local_store.call(req)
+        # `execute`, not `call`: `DaemonStore.collect_garbage` forgets the
+        # cached info of each deleted path, as `invalidatePath` does
+        # (`local-store.cc:1016`). nixidae/nixidae#1007.
+        return await ctx.proxy.local_store.execute(req)

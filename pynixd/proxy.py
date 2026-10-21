@@ -28,6 +28,7 @@ from .goals import GoalEngine
 from .handlers._base import HANDLER_REGISTRY
 from .protocol import get_extension_features
 from .serde import (
+    AddTempRootRequest,
     BuildMode,
     BuildPathsRequest,
     BuildPathsWithResultsRequest,
@@ -481,9 +482,9 @@ class DaemonProxy:
             # `daemon.cc:554,572`, before `startWork`, so Nix closes the connection.
             raise ClosingError("repairing is not allowed because you are not in 'trusted-users'")
         if isinstance(request, BuildPathsWithResultsRequest):
-            return await self.goal_engine.build_paths_with_results(request, client=self.client)
+            return await self.goal_engine.build_paths_with_results(request, client=self.client, hold=self.add_temp_root)
         if isinstance(request, BuildPathsRequest):
-            return await self.goal_engine.build_paths(request, client=self.client)
+            return await self.goal_engine.build_paths(request, client=self.client, hold=self.add_temp_root)
         if isinstance(request, QueryMissingRequest):
             return await self.goal_engine.query_missing(request, client=self.client)
 
@@ -660,7 +661,16 @@ class DaemonProxy:
             # a relocated one. `StoreLayout` answers both. Issue nixidae/nixidae#215.
             layout = getattr(self.local_store, "layout", None) or StoreLayout.chroot(None)
             self._temp_roots = TempRoots(layout.state_dir)
-        await self._temp_roots.add(path)
+        if await self._temp_roots.add(path):
+            return
+        # NIX-DEVIATION (#27): Nix fails `AddTempRoot` when it cannot write
+        # its roots file (`gc.cc:84-143`). An unprivileged pynixd always
+        # would, and `nix build` asks for a root on every derivation, so
+        # pynixd gives the root to the daemon instead. That root lives as
+        # long as the pooled connection, not the session. Reverse it if
+        # pynixd ever runs only where it can write the state directory.
+        # nixidae/nixidae#1007.
+        await self.local_store.execute(AddTempRootRequest(path=StorePath(str(path))))
 
     # ── Helpers ───────────────────────────────────────────────────────
 

@@ -50,9 +50,13 @@ COLLECTOR_ACK = b"1"
 
 # How long to wait before pynixd asks the collector again, and how many times.
 # The collector is between two states when it refuses the socket: it holds the
-# big lock, and it has not made the socket yet. Nix waits 100 ms and tries
-# again, with no limit. pynixd gives up after 10 s, because a client waits for
-# the answer and a daemon that never answers is worse than an error.
+# big lock, and it has not made the socket yet.
+#
+# NIX-DEVIATION (#27): `addTempRoot` at `gc.cc:95-135` waits 100 ms and tries
+# again with no limit. pynixd gives up after 10 s, because a client waits for
+# the answer and a daemon that never answers is worse than an error. The cost
+# is an error where Nix would still be waiting; reverse it if a collector is
+# measured to stay in that state longer than 10 s.
 RETRY_DELAY = 0.1
 RETRY_LIMIT = 100
 
@@ -72,12 +76,9 @@ class TempRoots:
     below guards only the collector path against itself, and not `add`
     against `close`.
 
-    pynixd degrades to nothing when it cannot write the directory, which
-    happens when it serves the system store as an unprivileged user. The
-    client then gets the same answer that a non-admin client got before: the
-    operation reports success and adds no root. A collector that runs at that
-    moment can delete the path, so this is not correct; it is what pynixd can
-    do without write access, and it says so in the log.
+    When pynixd cannot write the directory, which happens when it serves
+    the system store as an unprivileged user, `add` answers `False` and
+    `DaemonProxy.add_temp_root` gives the root to the daemon instead.
     """
 
     def __init__(self, state: Path) -> None:
@@ -91,8 +92,11 @@ class TempRoots:
         self._disabled = False
         self._lock = anyio.Lock()
 
-    async def add(self, path: str | StorePath) -> None:
-        """Hold `path` against the collector until `close`.
+    async def add(self, path: str | StorePath) -> bool:
+        """Hold `path` against the collector until `close`, and say whether it is held.
+
+        `False` once this instance has disabled itself: the state directory
+        is not writable, and the caller must hold the root some other way.
 
         The common case does no waiting and takes no lock: the roots file and
         the GC lock are already open, and the shared lock is non-blocking, so
@@ -113,13 +117,14 @@ class TempRoots:
         # parsing it again costs a prefix strip per root, 7177 times a build.
         root = str(path) if isinstance(path, StorePath) else str(StorePath(str(path)))
         if self._disabled:
-            return
+            return False
         if self._add_inline(root):
-            return
+            return not self._disabled
         async with self._lock:
             if self._disabled:
-                return
+                return False
             await run_sync(self._add, root)
+        return not self._disabled
 
     async def close(self) -> None:
         """Release every root of this session."""

@@ -102,6 +102,11 @@ class FakeStore:
         self.calls.append(f"call:{type(request).__name__}")
         return "answered"
 
+    async def execute(self, request: Any) -> str:
+        """The road through `DaemonStore.collect_garbage`, which forgets what it deleted."""
+        self.calls.append(f"execute:{type(request).__name__}")
+        return "answered"
+
 
 class FakeProxy:
     def __init__(self, body: bytes) -> None:
@@ -157,7 +162,9 @@ async def _handle(handler: Any, request: Any, role: Role) -> FakeProxy:
 async def test_a_garbage_collection_retires_the_idle_connections_first():
     proxy = await _handle(CollectGarbageHandler(), _request(), Role.ADMIN)
 
-    assert proxy.local_store.calls == ["retire", "call:CollectGarbageRequest"]
+    # `execute`, so the cached info of each deleted path is forgotten.
+    # nixidae/nixidae#1007.
+    assert proxy.local_store.calls == ["retire", "execute:CollectGarbageRequest"]
 
 
 @pytest.mark.anyio
@@ -165,7 +172,7 @@ async def test_an_untrusted_client_collects_as_well():
     """Nix lets every allowed user collect garbage, `daemon.cc:735`. Issue #56."""
     proxy = await _handle(CollectGarbageHandler(), _request(), Role.USER)
 
-    assert proxy.local_store.calls == ["retire", "call:CollectGarbageRequest"]
+    assert proxy.local_store.calls == ["retire", "execute:CollectGarbageRequest"]
     assert not proxy.errors
 
 

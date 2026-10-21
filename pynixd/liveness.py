@@ -230,11 +230,9 @@ def _walk_temp_roots_grouped(state_dir: Path) -> tuple[dict[str, set[str]], int]
     grouped: dict[str, set[str]] = {}
     reaped = 0
     for entry in entries:
+        # Every file but a dotfile, as `findTempRoots` reads them (`gc.cc:166`):
+        # pynixd's own `pynixd-<pid>-<n>` hold its clients' roots.
         if entry.name.startswith(".") or not entry.is_file(follow_symlinks=False):
-            continue
-        try:
-            int(entry.name)
-        except ValueError:
             continue
         try:
             fd = os.open(entry.path, os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW)
