@@ -54,3 +54,27 @@ async def test_a_builtin_input_whose_output_is_missing_gets_a_goal():
 
     assert needed == {"out"}
 
+
+class FloatingStore(LocalStore):
+    def __init__(self) -> None:
+        self.asked: list[Any] = []
+
+    async def read_derivation(self, _path: str) -> Any:
+        return SimpleNamespace(builder="/bin/sh", output_paths=lambda: {"out": StorePath("")})
+
+    async def execute(self, request: Any, *_args: Any, **_kwargs: Any) -> Any:
+        self.asked.append(request)
+        return SimpleNamespace(valid=False)
+
+
+@pytest.mark.anyio
+async def test_a_floating_output_is_needed_without_asking_about_an_empty_path():
+    store = FloatingStore()
+    goal = SimpleNamespace(engine=SimpleNamespace(ctx=SimpleNamespace(local_store=store)))
+
+    needed = await EnsureDerivedPathGoal._input_outputs_requiring_goals(  # noqa: SLF001 -- the decision is the unit
+        cast("Any", goal), StorePath("/nix/store/00000000000000000000000000000003-ca.drv"), ["out"]
+    )
+
+    assert needed == {"out"}
+    assert store.asked == []

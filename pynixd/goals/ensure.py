@@ -1235,7 +1235,10 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         needed: set[str] = set()
         for output_name in output_names:
             output_path = paths.get(output_name)
-            if output_path is None:
+            # A floating content-addressed output names no path: `StorePath("")`.
+            # Nix parses the path of `IsValidPath` before `startWork`, so an
+            # empty one ends the session on the wire.
+            if not output_path:
                 needed.add(output_name)
                 continue
             response = await self.engine.ctx.local_store.execute(
