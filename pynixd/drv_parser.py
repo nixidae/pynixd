@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING, ClassVar, TypedDict
 
 import anyio
 
-from nix_daemon_protocol.basic_derivation import required_features_of
+from nix_daemon_protocol.basic_derivation import bool_attr, required_features_of
 
 from .serde import BasicDerivation, DerivationOutput, OutputKind
 from .store_path import DrvOutput, StorePath
@@ -172,6 +172,11 @@ class Derivation:
     @property
     def required_system_features(self) -> set[str]:
         return required_features_of(self.env)
+
+    @property
+    def allow_substitutes(self) -> bool:
+        """`allowSubstitutes`, true unless the derivation says otherwise."""
+        return bool_attr(self.env, "allowSubstitutes", default=True)
 
     def output_paths(self) -> dict[str, StorePath]:
         """Return {output_name: output_path} for all outputs."""

@@ -40,6 +40,16 @@ def _flag(env: Mapping[str, str], attrs: dict[str, Any] | None, name: str) -> bo
     return attrs.get(name) is True
 
 
+def bool_attr(env: Mapping[str, str], name: str, *, default: bool) -> bool:
+    """A Boolean attribute, as `getBoolAttr` at `derivation-options.cc:36` reads it."""
+    attrs = structured_attrs(env)
+    if attrs is None:
+        value = env.get(name)
+        return default if value is None else value == "1"
+    value = attrs.get(name)
+    return default if value is None else value is True
+
+
 def required_features_of(env: Mapping[str, str]) -> set[str]:
     """`requiredSystemFeatures`: words in the environment, a list of strings in `__json`."""
     attrs = structured_attrs(env)

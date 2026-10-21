@@ -47,8 +47,11 @@ class QueryMissingPlan:
     nar_size: int = 0
 
     def add_substitute(self, path: StorePath, availability: SubstitutionAvailability) -> None:
-        """Record that *path* can be substituted and accumulate its download size."""
-        self.will_substitute.add(StorePath(path=str(path)))
+        """Record that *path* can be substituted, and count its sizes once."""
+        key = StorePath(path=str(path))
+        if key in self.will_substitute:
+            return
+        self.will_substitute.add(key)
         self.download_size += availability.download_size or 0
         self.nar_size += availability.nar_size or 0
 
@@ -159,7 +162,7 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
             await self._classify_derivation(derived_path, walk)
             return
 
-        await self._classify_opaque_path(base_path, walk.plan)
+        await self._classify_opaque_path(base_path, walk)
 
     def _must_build(self, drv_path: StorePath, parsed: Derivation | None, walk: _Walk) -> None:
         """The derivation builds, and so does each input that it needs.
@@ -272,21 +275,45 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
             )
             return
 
+        substitutes_allowed = self._substitutes_allowed(parsed)
         unnamed = [name for name, path in output_paths.items() if not str(path)]
         realised = await self._realised_paths(parsed, unnamed, drv_path) if unnamed else {}
         if realised is None:
-            if await self._substituter_holds_a_realisation(derived_path, walk):
+            if substitutes_allowed and await self._substituter_holds_a_realisation(derived_path, walk):
                 return
             self._must_build(drv_path, parsed, walk)
             return
 
-        needs_build = False
+        invalid: list[StorePath] = []
         for output_name, output_path in output_paths.items():
             path = output_path if str(output_path) else realised[output_name]
-            if not await self._classify_output_path(path, walk.plan):
-                needs_build = True
-        if needs_build:
+            if not await self._is_valid(path):
+                invalid.append(path)
+        if not invalid:
+            return
+        # `misc.cc:271-292`: substitution must be allowed, and every invalid
+        # wanted output must be substitutable, or the derivation builds and
+        # no output of it counts as fetched. A substitutable output then goes
+        # on as an opaque path, which counts it and walks its closure.
+        if not substitutes_allowed:
             self._must_build(drv_path, parsed, walk)
+            return
+        for path in invalid:
+            if not (await self._can_substitute(path)).available:
+                self._must_build(drv_path, parsed, walk)
+                return
+        for path in invalid:
+            self._enqueue(walk, str(path))
+
+    def _substitutes_allowed(self, parsed: Derivation) -> bool:
+        """`useSubstitutes && substitutesAllowed()` (`misc.cc:240`, `derivation-options.cc:373`)."""
+        options = self.client.options if self.client is not None else None
+        if options is None:
+            return parsed.allow_substitutes
+        if not options.use_substitutes:
+            return False
+        always = options.overrides.get("always-allow-substitutes") == "true"
+        return always or parsed.allow_substitutes
 
     async def _substituter_holds_a_realisation(self, derived_path: DerivedPath, walk: _Walk) -> bool:
         """Ask the daemon behind pynixd whether a substituter can realise this.
@@ -372,23 +399,31 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
             return None
         return {key.rpartition("!")[2]: StorePath(str(realisation.out_path)) for key, realisation in found.items()}
 
-    async def _classify_opaque_path(self, path: StorePath, plan: QueryMissingPlan) -> None:
-        if not await self._classify_output_path(path, plan):
-            plan.unknown.add(StorePath(path=str(path)))
+    async def _classify_opaque_path(self, path: StorePath, walk: _Walk) -> None:
+        """`misc.cc:303-325`: a valid path plans nothing; a substitutable one counts with its closure."""
+        if await self._is_valid(path):
+            return
+        availability = await self._can_substitute(path)
+        if not availability.available:
+            walk.plan.unknown.add(StorePath(path=str(path)))
+            return
+        walk.plan.add_substitute(path, availability)
+        for reference in sorted(availability.references):
+            if reference != str(path):
+                self._enqueue(walk, reference)
 
-    async def _classify_output_path(self, path: StorePath, plan: QueryMissingPlan) -> bool:
+    async def _is_valid(self, path: StorePath) -> bool:
         response = await self.engine.ctx.local_store.execute(
             IsValidPathRequest(path=StorePath(path=str(path))), mark=False
         )
-        if response.valid:
-            return True
-        availability = await self._can_substitute(path)
-        if availability.available:
-            plan.add_substitute(path, availability)
-            return True
-        return False
+        return bool(response.valid)
 
     async def _can_substitute(self, path: StorePath) -> SubstitutionAvailability:
+        # `querySubstitutablePathInfos` answers nothing with `useSubstitutes`
+        # off (`misc.cc:92`).
+        options = self.client.options if self.client is not None else None
+        if options is not None and not options.use_substitutes:
+            return SubstitutionAvailability.unavailable()
         scheduler = self.engine.ctx.scheduler
         if scheduler is not None:
             availability = await scheduler.substitution_queue.can_substitute(path)
@@ -429,4 +464,5 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
             available=True,
             download_size=info.download_size,
             nar_size=info.nar_size,
+            references=frozenset(str(reference) for reference in info.references),
         )

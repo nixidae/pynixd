@@ -45,6 +45,8 @@ class SubstitutionQueryResult:
     store_id: StoreId
     path_info: ValidPathInfo | None
     query_succeeded: bool
+    download_size: int = 0
+    """The narinfo's `FileSize`; 0 for a store that serves no narinfo, as `misc.cc:139` reads it."""
 
     @property
     def found(self) -> bool:
@@ -58,6 +60,8 @@ class SubstitutionAvailability:
     available: bool
     nar_size: int | None = None
     download_size: int | None = None
+    references: frozenset[str] = frozenset()
+    """What the path names, so a plan counts its closure (`misc.cc:318`)."""
 
     @classmethod
     def unavailable(cls) -> SubstitutionAvailability:
@@ -67,8 +71,13 @@ class SubstitutionAvailability:
     def from_query_result(cls, result: SubstitutionQueryResult) -> SubstitutionAvailability:
         if result.path_info is None:
             return cls.unavailable()
-        nar_size = result.path_info.info.nar_size
-        return cls(available=True, nar_size=nar_size, download_size=nar_size)
+        info = result.path_info.info
+        return cls(
+            available=True,
+            nar_size=info.nar_size,
+            download_size=result.download_size,
+            references=frozenset(str(reference) for reference in info.references),
+        )
 
 
 def _trusted_source(store: Store) -> bool:
@@ -447,7 +456,13 @@ class SubstitutionQueue:
         counted("hit")
 
         path_info = ValidPathInfo(path=StorePath(path=str(path)), info=response.info)
-        return SubstitutionQueryResult(store_id=store.store_id, path_info=path_info, query_succeeded=True)
+        download_size = 0
+        if is_http_binary_cache(store):
+            narinfo = await store.get_narinfo(StorePath(path=str(path)))
+            download_size = narinfo.file_size if narinfo is not None else 0
+        return SubstitutionQueryResult(
+            store_id=store.store_id, path_info=path_info, query_succeeded=True, download_size=download_size
+        )
 
     async def _query_stores_for_selection(self, path: StorePath, stores: list[Store]) -> None:
         healthy_stores = [store for store in stores if self.should_wait_for(store.store_id)]
