@@ -5,8 +5,11 @@ unlinks whatever it can lock (`gc.cc:193`). A fixture that writes a temp file
 and closes it stages a dead owner, and the mirror under test reaps it. This
 helper writes the file and parks a subprocess on its write lock -- the shape
 of `createTempRootsFile` (`gc.cc:62-65`) -- so the walk under test sees a
-living owner. Same-process locks never conflict, so a thread or an open file
-in the test process would not do.
+living owner.
+
+The lock is `flock`, as Nix's `lockFile` takes it (`unix/pathlocks.cc:51`).
+A POSIX `lockf` here hid that the mirror tested with `lockf`, which never
+sees a `flock`: it reaped every live worker's file. nixidae/nixidae#1003.
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 _HOLDER = (
-    "import fcntl, sys, time; fd = open(sys.argv[1], 'r+b'); fcntl.lockf(fd.fileno(), fcntl.LOCK_EX); time.sleep(60)"
+    "import fcntl, sys, time; fd = open(sys.argv[1], 'r+b'); fcntl.flock(fd.fileno(), fcntl.LOCK_EX); time.sleep(60)"
 )
 
 
@@ -36,12 +39,12 @@ def _wait_for_lock(path: Path) -> None:
         deadline = time.monotonic() + 10
         while True:
             try:
-                fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as exc:
                 if exc.errno in (errno.EACCES, errno.EAGAIN):
                     return
                 raise
-            fcntl.lockf(fd, fcntl.LOCK_UN)
+            fcntl.flock(fd, fcntl.LOCK_UN)
             if time.monotonic() > deadline:
                 raise TimeoutError(f"lock holder never took {path}")
             time.sleep(0.01)

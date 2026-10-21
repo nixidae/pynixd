@@ -278,7 +278,10 @@ def _seed_or_reap_temp_file(fd: int, path: str, roots: set[str]) -> bool:
     if not stat.S_ISREG(st.st_mode):
         return False
     try:
-        fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # `flock`, as Nix holds it (`lockFile` at `unix/pathlocks.cc:51`). A
+        # POSIX `lockf` never sees a `flock`, so it took every live worker's
+        # file for a dead one, unlinked it, and the collector lost those roots.
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as exc:
         if exc.errno not in (errno.EACCES, errno.EAGAIN):
             raise

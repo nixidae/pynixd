@@ -356,7 +356,7 @@ def test_swapped_name_is_neither_seeded_nor_unlinked(tmp_path: Path) -> None:
     try:
         # Same-process locks never conflict: acquiring here is exactly what
         # a dead owner looks like to the reaper.
-        fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         live = tmp_path / "fresh"
         live.write_bytes(b"/store/live\x00")  # noqa: ASYNC240 -- test setup
         os.replace(live, stale)
