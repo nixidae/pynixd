@@ -6,15 +6,21 @@ nixidae/nixidae#1001, and `preferLocalBuild` from nixidae/nixidae#947.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
+import anyio
 import pytest
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from pynixd.allocator import BuildAllocator, PreferLocal, RankedStore, TelemetryStoreRanker, pick_store
+from pynixd.build_queue import BuildQueue
 from pynixd.build_stats import ExpectedBytes, StoreLink, slot_wait_seconds, transfer_seconds
 from pynixd.config import StoreRankingSettings
-from pynixd.serde import BasicDerivation
+from pynixd.scheduler import Scheduler
+from pynixd.serde import BasicDerivation, BuildDerivationRequest, BuildMode, StorePath
+
+if TYPE_CHECKING:
+    from pynixd.build_queue import QueuedBuild
 
 REMOTE = StoreId("sg1-n1")
 OTHER = StoreId("sg1-n2")
@@ -146,3 +152,75 @@ class TestPreferLocalBuild:
 
     def test_waits_when_the_delegation_is_unmeasured(self):
         assert self._pick(wait=500.0, remote_seconds=None) is None
+
+
+class LocalStore(FakeStore):
+    """The local store, which the ranker dropped: its score fell under `min_schedule_score`."""
+
+
+class AssignScheduler:
+    """Enough of `Scheduler` for `_assign_to_stores`, with a ranker that
+    returns the remote alone, as it does when the local store is under
+    pressure."""
+
+    def __init__(self, queue: BuildQueue) -> None:
+        self.queue = queue
+        self.local_store = LocalStore(LOCAL_STORE_ID)
+        remote = RankedStore(REMOTE, 0.0, cast("Any", FakeStore(REMOTE)))
+        self.allocator = SimpleNamespace(rank_stores=lambda *_a, **_k: [remote])
+        self.ranker = SimpleNamespace(settings=StoreRankingSettings())
+        self.stores: dict[StoreId, object] = {}
+        self.assigned: list[StoreId] = []
+
+    def _has_compatible_store(self, *_args: Any) -> bool:
+        return True
+
+    async def _transfer_seconds(self, *_args: Any) -> dict[StoreId, float]:
+        return {}
+
+    def _local_slot_is_full(self, *_args: Any) -> bool:
+        return False
+
+    def _has_build_room(self, *_args: Any) -> bool:
+        return True
+
+    def _local_wait_seconds(self) -> float | None:
+        return None
+
+    def _spawn_worker(self, build: QueuedBuild, store: Any) -> None:
+        build.worker = anyio.CancelScope()
+        self.assigned.append(store.store_id)
+
+
+async def _assign(env: dict[str, str]) -> AssignScheduler:
+    queue = BuildQueue()
+    build_id, _ = await queue.enqueue(
+        BuildDerivationRequest(
+            drv_path=StorePath(path="/nix/store/00000000000000000000000000000001-trivial.drv"),
+            derivation=BasicDerivation(platform="x86_64-linux", builder="/bin/sh", env=env),
+            build_mode=BuildMode.NORMAL,
+        )
+    )
+    scheduler = AssignScheduler(queue)
+    await Scheduler._assign_to_stores(cast("Any", scheduler), [queue.by_id[build_id]], {}, {})  # noqa: SLF001 -- the assignment is the unit
+    return scheduler
+
+
+class TestALocalStoreUnderPressure:
+    """Measured on dynhetz, 2026-10-21: PSI cpu some at 71 % put the local
+    store under `min_schedule_score`. A `preferLocalBuild` derivation then
+    waited for a local slot that no running build would free, and the
+    deployed pynixd hung every `writeText`."""
+
+    @pytest.mark.anyio
+    async def test_still_takes_a_prefer_local_build(self):
+        """Nix ignores load for `preferLocalBuild`: a free slot is enough."""
+        scheduler = await _assign({"preferLocalBuild": "1"})
+
+        assert scheduler.assigned == [LOCAL_STORE_ID]
+
+    @pytest.mark.anyio
+    async def test_leaves_other_builds_to_the_ranking(self):
+        scheduler = await _assign({})
+
+        assert scheduler.assigned == [REMOTE]

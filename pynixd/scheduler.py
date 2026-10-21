@@ -24,7 +24,7 @@ import structlog
 from nix_daemon_protocol.ids import LOCAL_STORE_ID
 
 from . import metrics, state
-from .allocator import BuildAllocator, PreferLocal, RankedStore, TelemetryStoreRanker, pick_store
+from .allocator import BuildAllocator, PreferLocal, RankedStore, RankedStores, TelemetryStoreRanker, pick_store
 from .build_queue import BuildQueue, QueuedBuild
 from .build_stats import BuildObservation, StoreLink, identity_of, slot_wait_seconds, transfer_seconds
 from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
@@ -451,6 +451,13 @@ class Scheduler:
                 and not build.is_blacklisted(local_store.store_id)
                 and local_store.supports_derivation(build.request.derivation.platform, build_features)
             )
+            prefer_local = build.request.derivation.build_local and local_can_build
+            # Nix weighs no load for a `preferLocalBuild` derivation, so the
+            # local store stays a candidate under `min_schedule_score`.
+            # Dropped, the build waits for a slot no running build frees:
+            # PSI at 71 % on dynhetz hangs every `writeText` that way.
+            if prefer_local and not any(c.store_id == local_store.store_id for c in ranked):
+                ranked = RankedStores([*ranked, RankedStore(local_store.store_id, 0.0, local_store)])
             local_is_fallback = not ranked and local_can_build
 
             if not ranked and not local_is_fallback and not self._has_compatible_store(build, build_features):
@@ -473,7 +480,7 @@ class Scheduler:
                         transfer_seconds=transfer,
                         weight=self.ranker.settings.prefer_local_weight,
                     )
-                    if build.request.derivation.build_local and local_can_build
+                    if prefer_local
                     else None,
                 )
                 if rs is None:
