@@ -101,7 +101,9 @@ class FakeEngine:
         self,
         request: BuildPathsWithResultsRequest,
         client: ClientConn | None = None,
+        hold: Any = None,
     ) -> BuildPathsWithResultsResponse:
+        del hold
         return await BuildPathsWithResultsGoal(cast("GoalEngine", self), request, client).result()
 
 

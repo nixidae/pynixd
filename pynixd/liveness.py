@@ -45,6 +45,7 @@ import structlog
 
 from pynixd.db_migrations import LIVENESS_ROOT_TABLE, LIVENESS_STREAK_TABLE, LIVENESS_TABLE
 from pynixd.metrics import GC_TEMPROOTS_REAPED
+from pynixd.temp_roots import PYNIXD_TEMP_ROOTS_PREFIX
 
 log = structlog.get_logger(__name__)
 
@@ -230,9 +231,13 @@ def _walk_temp_roots_grouped(state_dir: Path) -> tuple[dict[str, set[str]], int]
     grouped: dict[str, set[str]] = {}
     reaped = 0
     for entry in entries:
-        # Every file but a dotfile, as `findTempRoots` reads them (`gc.cc:166`):
-        # pynixd's own `pynixd-<pid>-<n>` hold its clients' roots.
+        # A process's file is named by its pid, and pynixd's own by
+        # `pynixd-<pid>-<n>`, which holds its clients' roots. `findTempRoots`
+        # reads every name but a dotfile (`gc.cc:166`); a foreign name is
+        # not this reaper's to unlink, so it stays out.
         if entry.name.startswith(".") or not entry.is_file(follow_symlinks=False):
+            continue
+        if not (entry.name.isdigit() or entry.name.startswith(PYNIXD_TEMP_ROOTS_PREFIX)):
             continue
         try:
             fd = os.open(entry.path, os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW)

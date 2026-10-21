@@ -102,7 +102,7 @@ class FakeStore:
         self.calls.append(f"call:{type(request).__name__}")
         return "answered"
 
-    async def execute(self, request: Any) -> str:
+    async def execute(self, request: Any, client: Any = None) -> str:
         """The road through `DaemonStore.collect_garbage`, which forgets what it deleted."""
         self.calls.append(f"execute:{type(request).__name__}")
         return "answered"

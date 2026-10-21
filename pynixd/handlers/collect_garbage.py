@@ -31,4 +31,4 @@ class CollectGarbageHandler(Handler):
         # `execute`, not `call`: `DaemonStore.collect_garbage` forgets the
         # cached info of each deleted path, as `invalidatePath` does
         # (`local-store.cc:1016`). nixidae/nixidae#1007.
-        return await ctx.proxy.local_store.execute(req)
+        return await ctx.proxy.local_store.execute(req, client=ctx.proxy.client)

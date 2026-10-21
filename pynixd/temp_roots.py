@@ -57,6 +57,9 @@ COLLECTOR_ACK = b"1"
 # the answer and a daemon that never answers is worse than an error. The cost
 # is an error where Nix would still be waiting; reverse it if a collector is
 # measured to stay in that state longer than 10 s.
+PYNIXD_TEMP_ROOTS_PREFIX = "pynixd-"
+"""The name of pynixd's own temporary-roots files starts with this."""
+
 RETRY_DELAY = 0.1
 RETRY_LIMIT = 100
 
@@ -85,7 +88,7 @@ class TempRoots:
         """Prepare a roots file under `state`, and open nothing yet."""
         self.state = state
         self.dir = state / TEMP_ROOTS_DIR
-        self.path = self.dir / f"pynixd-{os.getpid()}-{next(_names)}"
+        self.path = self.dir / f"{PYNIXD_TEMP_ROOTS_PREFIX}{os.getpid()}-{next(_names)}"
         self._fd: int | None = None
         self._gc_lock_fd: int | None = None
         self._socket: socket.socket | None = None
