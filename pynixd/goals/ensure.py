@@ -1473,10 +1473,17 @@ def _only_wanted_outputs(result: BuildResult, wanted: set[str]) -> BuildResult:
     `derivation-goal.cc:291` of Nix removes each other output from the answer.
     This makes the same removal, so `drv^out` answers with `out` alone.
     """
+    update: dict[str, object] = {}
     built = result.built_outputs
-    if not built:
-        return result
-    kept = {key: item for key, item in built.items() if _realisation_output_name(key, item) in wanted}
-    if len(kept) == len(built):
-        return result
-    return result.model_copy(update={"built_outputs": kept})
+    if built:
+        kept = {key: item for key, item in built.items() if _realisation_output_name(key, item) in wanted}
+        if len(kept) != len(built):
+            update["built_outputs"] = kept
+    # The shape a client with `realisation-with-path-not-hash` reads, keyed
+    # by output name. nixidae/nixidae#1006.
+    by_name = result.built_outputs_by_name
+    if by_name:
+        kept_by_name = {name: item for name, item in by_name.items() if name in wanted}
+        if len(kept_by_name) != len(by_name):
+            update["built_outputs_by_name"] = kept_by_name
+    return result.model_copy(update=update) if update else result

@@ -21,8 +21,10 @@ from nix_daemon_protocol import (
     QueryReferrersRequest,
     QueryValidPathsRequest,
 )
+from nix_daemon_protocol.build_result import DUMMY_DRV_HASH
 from nix_daemon_protocol.protocol import ResultType
 from nix_daemon_protocol.store_dir import store_prefix
+from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
 from nix_daemon_protocol.wire_ops import WireRequest
 
 from .. import metrics, wire
@@ -42,6 +44,7 @@ from ..serde import (
     ContentAddress,
     DerivationOutput,
     DrvOutput,
+    QueryRealisationResponse,
     Realisation,
     StorePath,
 )
@@ -191,6 +194,38 @@ class ProbeState(IntEnum):
     NOT_PROBED = 0
     PROBING = 1
     PROBED = 2
+
+
+def answer_in_both_shapes(response: QueryRealisationResponse, request: Any) -> QueryRealisationResponse:
+    """Fill whichever shape of a QueryRealisation answer the store left empty."""
+    if response.realisations and response.realisation is None:
+        first = response.realisations[0]
+        return response.model_copy(
+            update={
+                "present": 1,
+                "realisation": UnkeyedRealisation(
+                    out_path=StorePath(str(first.out_path)).with_store_prefix(), signatures=set(first.signatures)
+                ),
+            },
+        )
+    if response.realisation is not None and not response.realisations:
+        drv_output = getattr(request, "drv_output", None)
+        keyed = getattr(request, "keyed_drv_output", None)
+        if not drv_output and keyed is not None:
+            drv_output = DrvOutput(drv_hash=DUMMY_DRV_HASH, output_name=keyed.output_name)
+        if drv_output:
+            return response.model_copy(
+                update={
+                    "realisations": [
+                        Realisation(
+                            id=DrvOutput(str(drv_output)),
+                            out_path=StorePath(str(response.realisation.out_path).removeprefix(store_prefix())),
+                            signatures=sorted(response.realisation.signatures),
+                        )
+                    ],
+                },
+            )
+    return response
 
 
 class DaemonStore(Store):
@@ -995,12 +1030,21 @@ class DaemonStore(Store):
         )
 
     async def query_realisation(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
-        """QueryRealisation (op 43) — carry the shape this store reads, then delegate."""
-        return await self.call(
+        """QueryRealisation (op 43) — carry the shape this store reads, then answer in both.
+
+        The answer goes to a client that may have agreed on the other shape,
+        and the codec writes only the one that client reads. A 2.34 store's
+        list read as "no realisation" to a client with the feature.
+        nixidae/nixidae#1006.
+        """
+        response = await self.call(
             await self._request_in_the_shape_this_store_reads(request),
             client=client,
             suppress_last=suppress_last,
         )
+        if not isinstance(response, QueryRealisationResponse):
+            return response
+        return answer_in_both_shapes(response, request)
 
     async def _request_in_the_shape_this_store_reads(self, request: Any) -> Any:
         """Fill the missing shape of op 42/43, or refuse.

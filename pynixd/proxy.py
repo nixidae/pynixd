@@ -331,6 +331,8 @@ class DaemonProxy:
         await self.w.drain()
 
         client_version = await self.r.read_uint64()
+        if client_version < wire.MINIMUM_CLIENT_PROTOCOL:
+            raise ValueError("the Nix client version is too old")
         self.version = min(server_version, client_version)
         log.info(
             "client_protocol_negotiated",

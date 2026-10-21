@@ -12,7 +12,6 @@ from nix_daemon_protocol import (
     BuildPathsWithResultsRequest,
     BuildResult,
     OptMicroseconds,
-    StorePath,
     UnsupportedProtocolVersion,
     is_supported_protocol,
     proto,
@@ -38,7 +37,7 @@ def test_protocol_support_has_explicit_floor_and_ceiling() -> None:
     ("wire_request", "first_supported_minor"),
     [
         (AddMultipleToStoreRequest(repair=0, dont_check_sigs=0), 32),
-        (AddBuildLogRequest(path=StorePath(path="/nix/store/example-log")), 32),
+        (AddBuildLogRequest(path="example-log"), 32),
         (BuildPathsWithResultsRequest(derived_paths=[], build_mode=0), 34),
         (AddPermRootRequest(store_path="/nix/store/example-root", gc_root="/tmp/root"), 36),
     ],

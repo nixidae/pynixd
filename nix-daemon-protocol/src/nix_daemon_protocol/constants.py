@@ -22,6 +22,8 @@ WORKER_MAGIC_1: Final[int] = 0x6E697863
 WORKER_MAGIC_2: Final[int] = 0x6478696F
 PROTOCOL_VERSION: Final[int] = proto(1, 38)
 MINIMUM_REMOTE_PROTOCOL: Final[int] = proto(1, 32)
+MINIMUM_CLIENT_PROTOCOL: Final[int] = proto(1, 18)
+"""`WorkerProto::minimum` (`worker-protocol.cc:35`): an older client is refused at the handshake."""
 SUPPORTED_PROTOCOL_VERSIONS: Final[tuple[int, ...]] = tuple(proto(1, minor) for minor in range(32, 39))
 
 

@@ -31,7 +31,7 @@ from nix_daemon_protocol.wire_ops import WireRequest
 def _values() -> tuple[WireModel, ...]:
     output = StorePath(path="/nix/store/0123456789abcdefghijklmnopqrstuv-output")
     return (
-        AddBuildLogRequest(path=output),
+        AddBuildLogRequest(path=output.name),
         BasicDerivation(
             outputs={"out": DerivationOutput(path=str(output))},
             input_srcs=set(),

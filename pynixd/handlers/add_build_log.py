@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar
 
+from nix_daemon_protocol.add_build_log import AddBuildLogResponse
+
 from ..serde import AddBuildLogRequest
 from ..serde.auth import Role
-from ..serde.context import ReadContext
+from ..serde.context import ReadContext, WriteContext
+from ..wire import forward_framed
 from ._base import Handler
 
 if TYPE_CHECKING:
@@ -28,4 +31,13 @@ class AddBuildLogHandler(Handler):
             await ctx.proxy.send_error("you are not privileged to add logs")
             return None
 
-        return await ctx.proxy.local_store.call(req)
+        # The log follows the header in frames (`daemon.cc:1019`). Forwarding
+        # the header alone left them in the client stream, where the next
+        # operation read them. nixidae/nixidae#1006.
+        options = ctx.proxy.client.options if ctx.proxy.client is not None else None
+        async with ctx.proxy.local_store.transfer_conn(options) as conn:
+            await conn.apply_options(options)
+            await req.to_writer(WriteContext.from_conn(conn))
+            await conn.w.drain()
+            await forward_framed(ctx.proxy.r, conn.w)
+            return await AddBuildLogResponse.from_reader(ReadContext.from_conn(conn))
