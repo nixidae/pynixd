@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 
 from .constants import FEATURE_REALISATION_WITH_PATH, proto
+from .drv_output import DrvOutput
 from .opt_microseconds import OptMicroseconds
 from .realisation import Realisation
 from .store_dir import store_prefix
@@ -19,6 +20,10 @@ from .wire_message import WireField, WireModel
 # index at or above that size. `BuildResult.wire_status` is what keeps this
 # project inside it.
 MAX_WIRE_STATUS = 14
+
+
+DUMMY_DRV_HASH = "sha256:" + "0" * 64
+"""`Hash::dummy` in base 16, the hash Nix writes into an old-shape `DrvOutput` key."""
 
 
 class BuildResultStatus(IntEnum):
@@ -259,12 +264,13 @@ class BuildResult(WireModel):
         writer. Give *features* the set of the peer this result is going to,
         and this fills the field that peer will read.
 
-        **The fill from the feature shape to the old one is lossy.** The old
-        key is a whole `DrvOutput`, which carries the hash of the derivation,
-        and the feature shape carries no hash anywhere. This keys by the
-        output name and leaves the id empty, so the output path survives and
-        the id does not. Building the real id means reading the derivation
-        and hashing it, which this model cannot do. Issue #14.
+        **The fill from the feature shape to the old one carries a dummy
+        hash.** The old key is a whole `DrvOutput`, and the feature shape
+        carries no hash. Nix writes `sha256:<64 zeros>!<output>` there,
+        because an old client reads only the output name and the path
+        (`worker-protocol.cc:313`). A key without the `!` makes Nix 2.35's
+        reader throw "Invalid derivation output id" (`worker-protocol.cc:272`).
+        Issue #14, nixidae/nixidae#1003.
         """
         update: dict[str, object] = {}
 
@@ -281,7 +287,11 @@ class BuildResult(WireModel):
                     if value.out_path is not None
                 }
             elif not wants_the_feature and self.built_outputs is None:
-                update["built_outputs"] = dict(self.realised_outputs())
+                update["built_outputs"] = {
+                    str(drv_output): value.model_copy(update={"id": drv_output})
+                    for name, value in self.realised_outputs().items()
+                    for drv_output in [DrvOutput(drv_hash=DUMMY_DRV_HASH, output_name=name)]
+                }
 
         if not update:
             return self

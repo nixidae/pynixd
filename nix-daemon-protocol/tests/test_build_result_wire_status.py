@@ -19,6 +19,8 @@ from __future__ import annotations
 import pytest
 
 from nix_daemon_protocol.build_result import MAX_WIRE_STATUS, BuildResult, BuildResultStatus
+from nix_daemon_protocol.store_path import StorePath
+from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
 
 
 def test_the_wire_table_size_matches_the_one_nix_reads() -> None:
@@ -85,3 +87,22 @@ def test_no_status_outside_the_table_ever_reaches_the_wire(status: int) -> None:
     that exist today.
     """
     assert 0 <= BuildResult(status=status).wire_status() <= MAX_WIRE_STATUS
+
+
+def test_an_old_client_gets_keys_with_the_dummy_hash() -> None:
+    """Nix 2.35's reader throws "Invalid derivation output id" on a key
+    with no `!` (`worker-protocol.cc:272`), and Nix writes the dummy hash
+    there (`worker-protocol.cc:313`). nixidae/nixidae#1003."""
+    path = StorePath("/nix/store/00000000000000000000000000000001-out")
+    result = BuildResult(
+        status=int(BuildResultStatus.BUILT),
+        built_outputs_by_name={"out": UnkeyedRealisation(out_path=path, signatures=set())},
+    )
+
+    old = result.for_the_wire(frozenset())
+
+    key = "sha256:" + "0" * 64 + "!out"
+    assert old.built_outputs is not None
+    assert list(old.built_outputs) == [key]
+    assert old.built_outputs[key].id == key
+    assert old.realised_outputs()["out"].out_path
