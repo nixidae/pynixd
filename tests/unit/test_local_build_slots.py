@@ -13,6 +13,7 @@ under `-j1`. Issue nixidae/nixidae#235.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import anyio
@@ -20,6 +21,7 @@ import pytest
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId, StoreId
 from pynixd.build_queue import BuildQueue
+from pynixd.config import StoreRankingSettings
 from pynixd.scheduler import Scheduler
 from pynixd.serde import (
     BasicDerivation,
@@ -275,6 +277,8 @@ class _AssignScheduler:
         self.executed: list[object] = []
 
     _assign_one = Scheduler._assign_one  # noqa: SLF001 -- the assignment is the unit
+    _client_forbids_local = Scheduler._client_forbids_local  # noqa: SLF001 -- part of the assignment
+    ranker = SimpleNamespace(settings=StoreRankingSettings())
 
     def _has_compatible_store(self, build: object, features: set[str]) -> bool:
         del build, features

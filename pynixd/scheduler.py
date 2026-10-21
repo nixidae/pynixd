@@ -27,6 +27,7 @@ from . import metrics, state
 from .allocator import BuildAllocator, PreferLocal, RankedStore, RankedStores, TelemetryStoreRanker, pick_store
 from .build_queue import BuildQueue, QueuedBuild
 from .build_stats import BuildObservation, StoreLink, identity_of, slot_wait_seconds, transfer_seconds
+from .config import NoLocalJobs
 from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from .exceptions import BackendError, InfrastructureError, error_text, leaves
 from .goals.results import result_succeeded
@@ -473,6 +474,15 @@ class Scheduler:
             and not build.is_blacklisted(local_store.store_id)
             and local_store.supports_derivation(build.request.derivation.platform, build_features)
         )
+        no_local_jobs = self.ranker.settings.no_local_jobs
+        if no_local_jobs is not NoLocalJobs.one_slot and self._client_forbids_local(build):
+            has_remote = self._has_compatible_store(build, build_features)
+            if not has_remote and no_local_jobs is NoLocalJobs.remote_only:
+                await self._fail_with_no_local_jobs(build)
+                return False
+            if has_remote:
+                local_can_build = False
+                ranked = RankedStores([c for c in ranked if c.store_id != local_store.store_id])
         prefer_local = build.request.derivation.build_local and local_can_build
         # Nix weighs no load for a `preferLocalBuild` derivation, so the
         # local store stays a candidate under `min_schedule_score`.
@@ -640,6 +650,26 @@ class Scheduler:
             max_build_jobs=slots,
         )
         return True
+
+    def _client_forbids_local(self, build: QueuedBuild) -> bool:
+        """Whether every client that wants *build* sent `--max-jobs 0`.
+
+        A build that several requests want may run locally when any of them
+        allows it, as `_local_slot_is_full` counts.
+        """
+        wanters = self.queue.live_wanters(build)
+        if wanters:
+            return all(self.queue.max_jobs_of(request_id) == 0 for request_id in wanters)
+        return build.options is not None and int(build.options.max_build_jobs) == 0
+
+    async def _fail_with_no_local_jobs(self, build: QueuedBuild) -> None:
+        """Nix's two answers at `worker.cc:351`: no builder at all, or none that fits."""
+        if any(store_id != self.local_store.store_id for store_id in self.stores):
+            reason = "remote machines may not have all required system features."
+        else:
+            reason = "either increase '--max-jobs' or enable remote builds."
+        error_msg = f"Unable to start any build; {reason}\n\nFor more information run 'man nix.conf' and search for '/machines'."
+        await self.queue.fail(build.build_id, error_msg)
 
     def request_has_a_local_slot(self, request_id: RequestId) -> bool:
         """Whether *request_id* runs fewer local builds than its `max-jobs`.

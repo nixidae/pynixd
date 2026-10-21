@@ -173,6 +173,7 @@ class AssignScheduler:
         self.assigned: list[StoreId] = []
 
     _assign_one = Scheduler._assign_one  # noqa: SLF001 -- the assignment is the unit
+    _client_forbids_local = Scheduler._client_forbids_local  # noqa: SLF001 -- part of the assignment
 
     def _has_compatible_store(self, *_args: Any) -> bool:
         return True

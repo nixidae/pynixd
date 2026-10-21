@@ -29,6 +29,23 @@ class ScheduleMode(StrEnum):
     scheduler = "scheduler"
 
 
+class NoLocalJobs(StrEnum):
+    """What a client's `--max-jobs 0` makes of a build pynixd could run locally.
+
+    `remote-only` is Nix: `Worker::waitForBuildSlot` at `worker.cc:262`
+    grants no local slot under 0, and `worker.cc:351` fails when no builder
+    can take the build. NIX-DEVIATION (#27): the other two build locally
+    where Nix fails or delegates. `remote-first` builds locally only when no
+    remote store could ever take the build; `one-slot` reads 0 as 1, which
+    `src/libstore/build/worker.cc` never does. Each is opt-in, chosen by
+    User, and the default stays Nix's. nixidae/nixidae#1003.
+    """
+
+    remote_only = "remote-only"
+    remote_first = "remote-first"
+    one_slot = "one-slot"
+
+
 if TYPE_CHECKING:
     from .store import (
         DaemonStore,
@@ -96,6 +113,9 @@ class StoreRankingSettings(BaseModel):
     """A `preferLocalBuild` derivation waits for a local slot until the wait
     passes this many times the best remote's delegation seconds. A guess, not
     a measurement: nixidae/nixidae#1001."""
+
+    no_local_jobs: NoLocalJobs = NoLocalJobs.remote_only
+    """What a client's `--max-jobs 0` means; `NoLocalJobs` has the three answers."""
 
     min_schedule_score: float = 0.0
     """Minimum score required for a store to be considered. If lower, builds stay queued."""
