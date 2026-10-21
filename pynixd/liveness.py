@@ -77,6 +77,23 @@ def _readlink(path: Path) -> Path | None:
         raise
 
 
+def _store_path_of(target: str, store_dir: str) -> str | None:
+    """The store path a root target lies in, as `toStorePath(target).first`.
+
+    Nix roots `/nix/store/h-bash` for a link or a running program at
+    `/nix/store/h-bash/bin/bash` (`gc.cc:220`, `local-gc.cc:155`). The
+    closure query matches whole store paths, so a target with its subpath
+    rooted nothing. nixidae/nixidae#1003.
+    """
+    prefix = store_dir + "/"
+    if not target.startswith(prefix):
+        return None
+    name = target[len(prefix) :].split("/", 1)[0]
+    if not _STORE_BASENAME.match(name):
+        return None
+    return prefix + name
+
+
 def _walk_link(link: Path, target: Path, found: dict[str, tuple[str, str]], kind: str, store_dir: str) -> None:
     """One symlink: a root when it names the store, else one indirection.
 
@@ -96,14 +113,15 @@ def _walk_link(link: Path, target: Path, found: dict[str, tuple[str, str]], kind
     to `(target, kind)`.
     """
     if target.is_absolute() and str(target).startswith(store_dir + "/"):
-        found[str(link)] = (str(target), kind)
+        if (store_path := _store_path_of(str(target), store_dir)) is not None:
+            found[str(link)] = (store_path, kind)
         return
     resolved = target if target.is_absolute() else link.parent / target
     if not resolved.is_symlink():
         return
     second = _readlink(resolved)
-    if second is not None and second.is_absolute() and str(second).startswith(store_dir + "/"):
-        found[str(resolved)] = (str(second), kind)
+    if second is not None and second.is_absolute() and (store_path := _store_path_of(str(second), store_dir)):
+        found[str(resolved)] = (store_path, kind)
 
 
 def _walk_tree(tree: Path, found: dict[str, tuple[str, str]], kind: str, store_dir: str) -> None:
@@ -338,8 +356,7 @@ def walk_volatile(state_dir: Path, store_dir: str, proc_dir: Path | None = None)
     targets: set[str] = set()
     _walk_runtime_roots(proc_dir if proc_dir is not None else Path("/proc"), targets, store_dir)
     _walk_temp_roots(state_dir, targets)
-    prefix = store_dir + "/"
-    return {target for target in targets if target.startswith(prefix)}
+    return {path for target in targets if (path := _store_path_of(target, store_dir)) is not None}
 
 
 def walk_labeled_roots(state_dir: Path, store_dir: str, proc_dir: Path | None = None) -> list[tuple[str, set[str]]]:
@@ -372,7 +389,7 @@ def walk_labeled_roots(state_dir: Path, store_dir: str, proc_dir: Path | None = 
             labeled.append((f"temproot:{name}", kept))
     targets: set[str] = set()
     _walk_runtime_roots(proc_dir if proc_dir is not None else Path("/proc"), targets, store_dir)
-    proc = {target for target in targets if target.startswith(prefix)}
+    proc = {path for target in targets if (path := _store_path_of(target, store_dir)) is not None}
     if proc:
         labeled.append(("proc", proc))
     return labeled

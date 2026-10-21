@@ -418,3 +418,21 @@ def test_walk_labeled_roots_labels_an_escaped_intermediate(tmp_path: Path) -> No
     labeled = walk_labeled_roots(state, str(store), tmp_path / "nproc")
 
     assert labeled == [(f"gcroot:{outside / 'tool'}", {str(target)})]
+
+
+def test_a_target_inside_a_store_path_roots_that_store_path(tmp_path: Path) -> None:
+    """`toStorePath(target).first`: a program at `<path>/bin/prog` roots `<path>`.
+
+    `local-gc.cc:155` reduces every runtime root this way, and `gc.cc:220`
+    every gcroot. The closure query matches whole store paths, so a target
+    with its subpath rooted nothing, and a running program's own package
+    was planned for deletion. nixidae/nixidae#1003.
+    """
+    state, proc, auto, paths = _layout(tmp_path)
+    store = str(tmp_path / "store")
+    (proc / "123" / "exe").unlink()
+    (proc / "123" / "exe").symlink_to(f"{paths['d']}/bin/prog")
+    (auto / "into").symlink_to(f"{paths['b']}/share/doc")
+
+    assert paths["d"] in walk_volatile(state, store, proc)
+    assert walk_stable(state, store)[str(auto / "into")][0] == paths["b"]
