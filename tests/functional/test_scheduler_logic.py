@@ -376,7 +376,8 @@ async def test_scheduler_fails_build_for_unknown_platform():
     build = scheduler.queue.by_id[build_id]
     assert build.is_done
     result = build.future.result()
-    assert result.result.status == BuildResultStatus.MISC_FAILURE
+    # Nix's `reject` answers InputRejected (`derivation-building-goal.cc:285`).
+    assert result.result.status == BuildResultStatus.INPUT_REJECTED
 
 
 async def test_scheduler_queues_build_for_dynamic_platform():
@@ -459,7 +460,8 @@ async def test_scheduler_fails_build_for_missing_dynamic_feature():
     build = scheduler.queue.by_id[build_id]
     assert build.is_done
     result = build.future.result()
-    assert result.result.status == BuildResultStatus.MISC_FAILURE
+    # Nix's `reject` answers InputRejected (`derivation-building-goal.cc:285`).
+    assert result.result.status == BuildResultStatus.INPUT_REJECTED
 
 
 async def test_add_store_dynamic_registers_feature_matrix():

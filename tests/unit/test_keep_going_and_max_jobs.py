@@ -360,30 +360,48 @@ async def test_the_answer_keeps_the_order_of_the_request() -> None:
 
 @pytest.mark.anyio
 async def test_a_root_that_waited_for_a_failed_root_reports_nothing() -> None:
-    """The request answers for the build that failed, and not for its waiter.
+    """Without keep-going, the request answers for the build that failed, and not for its waiter.
 
     `nix build fast-fail^out depends-on-fail^out` names two derivations, and
     the second has the first as an input. Nix answers with the failure of the
     first alone: `Worker::removeGoal` at `worker.cc:173` clears `topGoals`, so
     the goal of the waiter never reaches `amDone` and `entry-points.cc:93`
-    skips it.
+    skips it. `build.sh:265` runs it without `--keep-going`.
 
     pynixd runs its root goals together, so both answer. `failing_derivation`
     names the build that really failed, and a root that names another root of
-    the same request adds nothing. `build.sh:279` reads the difference: the
-    client wrote one `error:` block more than the control run.
+    the same request adds nothing.
+    """
+    paths = _PATHS[:2]
+    _started, answered = await _run(
+        failing=set(paths),
+        options=_options(max_build_jobs=2, keep_going=False),
+        has_a_backend=True,
+        paths=paths,
+        # x2 failed because x1 failed.
+        blamed={paths[1]: paths[0]},
+    )
+
+    assert answered == [paths[0]]
+
+
+@pytest.mark.anyio
+async def test_with_keep_going_the_waiter_reports_too() -> None:
+    """With keep-going every top goal reaches `amDone` (`entry-points.cc:92`).
+
+    The waiter answers DependencyFailed beside the failure it waited for, and
+    the client prints both. nixidae/nixidae#1012.
     """
     paths = _PATHS[:2]
     started, answered = await _run(
         failing=set(paths),
         options=_options(max_build_jobs=1, keep_going=True),
         paths=paths,
-        # x2 failed because x1 failed.
         blamed={paths[1]: paths[0]},
     )
 
     assert started == paths
-    assert answered == [paths[0]]
+    assert answered == paths
 
 
 @pytest.mark.anyio
