@@ -10,6 +10,7 @@ from nix_daemon_protocol.logs import WireLogs
 from nix_daemon_protocol.nar_from_path import NarFromPathRequest
 
 from .. import metrics, wire
+from ..exceptions import ClosingError
 from ..serde import QueryPathInfoRequest
 from ..serde.context import ReadContext, WriteContext
 from ._base import Handler
@@ -41,9 +42,14 @@ class NarFromPathHandler(Handler):
             store = mapped_store
             info_resp = await store.execute(QueryPathInfoRequest(path=req.path))
         if not info_resp.valid or info_resp.info is None:
+            # NIX-DEVIATION (#27): `narFromPath` at `daemon.cc:918` throws
+            # after `stopWork`, so Nix writes `STDERR_LAST`, then the error,
+            # and closes the session; the client reads the error as NAR bytes.
+            # pynixd sends the error alone and closes, so the client reads
+            # "path ... is not valid". An answer of nothing leaves the client
+            # waiting forever. Reverse it only to match Nix's bytes exactly.
             logger.warning("nar_not_found", path=req.path)
-            logger.debug("responded_op")
-            return
+            raise ClosingError(f"path '{req.path}' is not valid")
 
         nar_size = info_resp.info.nar_size
         logger.debug("nar_from_path_streaming", path=req.path, size=nar_size)

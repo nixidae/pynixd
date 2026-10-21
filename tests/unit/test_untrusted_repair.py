@@ -19,6 +19,7 @@ from nix_daemon_protocol.add_multiple_to_store import AddMultipleToStoreRequest
 from nix_daemon_protocol.add_to_store_nar import AddToStoreNarRequest
 from nix_daemon_protocol.constants import PROTOCOL_VERSION
 from nix_daemon_protocol.content_address import ContentAddress
+from nix_daemon_protocol.nar_from_path import NarFromPathRequest
 from nix_daemon_protocol.nar_hash import NARHash
 from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
 from nix_daemon_protocol.store_path import StorePath
@@ -28,6 +29,7 @@ from pynixd.exceptions import ClosingError
 from pynixd.handlers.add_multiple_to_store import AddMultipleToStoreHandler
 from pynixd.handlers.add_to_store import AddToStoreHandler
 from pynixd.handlers.add_to_store_nar import AddToStoreNarHandler
+from pynixd.handlers.nar_from_path import NarFromPathHandler
 from pynixd.serde import AddToStoreRequest
 from pynixd.serde.auth import Role
 from pynixd.serde.context import WriteContext
@@ -124,3 +126,8 @@ async def test_an_untrusted_repair_is_refused_before_the_daemon_sees_it(
 
     assert upstream.written == b""
 
+
+@pytest.mark.anyio
+async def test_a_nar_of_an_invalid_path_ends_the_session_with_nix_message() -> None:
+    with pytest.raises(ClosingError, match="is not valid"):
+        await _handle(NarFromPathHandler(), NarFromPathRequest(path=PATH), Role.ADMIN, Upstream())
