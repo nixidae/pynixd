@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from .serde import BasicDerivation
 
 SHAPE_HEX_DIGITS = 16
@@ -104,3 +106,49 @@ def identity_of(derivation: BasicDerivation) -> DerivationIdentity:
         keys=keys,
         features=features,
     )
+
+
+@dataclass(frozen=True)
+class StoreLink:
+    """How fast a store's recent transfers ran, and its dispatch round trip."""
+
+    send_bytes_per_s: float | None = None
+    receive_bytes_per_s: float | None = None
+    dispatch_ms: int | None = None
+
+
+@dataclass(frozen=True)
+class ExpectedBytes:
+    """The bytes a build of an identity sent to a store, and pulled back, before."""
+
+    inputs: int | None = None
+    pull: int | None = None
+
+
+def slot_wait_seconds(running: Iterable[tuple[int | None, float | None]], now: float) -> float | None:
+    """Seconds until the soonest of the running builds is expected to end.
+
+    Each build is `(expected ms, monotonic start)`. A build past its
+    estimate counts as ending now. `None` when no running build is estimated.
+    """
+    remaining = [
+        max(0.0, expected_ms / 1000 - (now - started))
+        for expected_ms, started in running
+        if expected_ms is not None and started is not None
+    ]
+    return min(remaining) if remaining else None
+
+
+def transfer_seconds(expected: ExpectedBytes, link: StoreLink) -> float | None:
+    """The seconds a delegation is expected to spend outside the build itself.
+
+    `None` when no part is known: an unmeasured store keeps today's ranking.
+    """
+    parts: list[float] = []
+    if expected.inputs is not None and link.send_bytes_per_s:
+        parts.append(expected.inputs / link.send_bytes_per_s)
+    if expected.pull is not None and link.receive_bytes_per_s:
+        parts.append(expected.pull / link.receive_bytes_per_s)
+    if link.dispatch_ms is not None:
+        parts.append(link.dispatch_ms / 1000)
+    return sum(parts) if parts else None

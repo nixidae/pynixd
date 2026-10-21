@@ -85,6 +85,18 @@ class StoreRankingSettings(BaseModel):
     thundering_herd_penalty: float = 100.0
     """Penalty per build assigned in current scheduling pass: -(assigned * penalty)."""
 
+    transfer_penalty_per_second: float = 10.0
+    """Penalty per expected second of delegation, measured per store: -(seconds * penalty).
+
+    The local store pays none. 10 makes a 10 s transfer weigh one fully busy
+    CPU (`cpu_idle_weight`). A guess, not a measurement: nixidae/nixidae#1001.
+    """
+
+    prefer_local_weight: float = 10.0
+    """A `preferLocalBuild` derivation waits for a local slot until the wait
+    passes this many times the best remote's delegation seconds. A guess, not
+    a measurement: nixidae/nixidae#1001."""
+
     min_schedule_score: float = 0.0
     """Minimum score required for a store to be considered. If lower, builds stay queued."""
 

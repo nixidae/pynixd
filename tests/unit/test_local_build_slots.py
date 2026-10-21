@@ -278,6 +278,10 @@ class _AssignScheduler:
         del build, features
         return True
 
+    async def _transfer_seconds(self, build: object) -> dict[StoreId, float]:
+        del build
+        return {}
+
     def _local_slot_is_full(self, build: object, running: object, assigned: object) -> bool:
         del build, running, assigned
         return False

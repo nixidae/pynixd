@@ -240,7 +240,9 @@ async def test_scheduler_cpu_utilization():
     - Build is enqueued.
     - Scheduler assigns build to 'cold' store, bypassing 'hot'.
     """
-    local_store = MockStore("local", feature_matrix={"x86_64-linux": set()})
+    # Busy, because the local store ranks with the others, and an idle one
+    # outranks 'cold'. nixidae/nixidae#1001.
+    local_store = MockStore("local", feature_matrix={"x86_64-linux": set()}, cpu_utilization=100.0)
     remote_hot = MockStore(
         "hot",
         feature_matrix={"x86_64-linux": set()},

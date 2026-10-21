@@ -255,6 +255,14 @@ MIGRATIONS: tuple[Migration, ...] = (
         creates=(DERIVATION_SHAPE_TABLE, BUILD_OBSERVATION_TABLE),
         drops=(DERIVATION_STATS_TABLE,),
     ),
+    Migration(
+        version=8,
+        name="build-observations-by-store",
+        statements=(
+            # A store's link rates read its newest rows across every identity.
+            f"CREATE INDEX IF NOT EXISTS idx_pynixd_build_observation_store ON {BUILD_OBSERVATION_TABLE}(storeId, id)",
+        ),
+    ),
 )
 
 TARGET_VERSION = MIGRATIONS[-1].version if MIGRATIONS else 0

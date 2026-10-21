@@ -42,6 +42,7 @@ import aiosqlite
 import anyio
 import structlog
 
+from .build_stats import ExpectedBytes, StoreLink
 from .db_migrations import (
     BUILD_OBSERVATION_TABLE,
     DERIVATION_SHAPE_TABLE,
@@ -246,7 +247,35 @@ WHERE name = ? AND system = ? AND status = 0 AND buildMs IS NOT NULL
 ORDER BY id DESC LIMIT ?
 """
 
+LINK_ROWS = 50
+"""A store's newest rows that its link rates read: recent enough to follow a
+change of network, many enough that one stalled transfer does not decide."""
+
+QUERY_STORE_LINK = f"""
+SELECT status, inputsBytes, inputsMs, pullBytes, pullMs, buildMs FROM {BUILD_OBSERVATION_TABLE}
+WHERE storeId = ?
+ORDER BY id DESC LIMIT ?
+"""
+
+QUERY_INPUTS_BYTES = f"""
+SELECT inputsBytes FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = ? AND system = ? AND shape = ? AND storeId = ? AND inputsBytes IS NOT NULL
+ORDER BY id DESC LIMIT ?
+"""
+
+QUERY_PULL_BYTES = f"""
+SELECT pullBytes FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = ? AND system = ? AND shape = ? AND pullBytes IS NOT NULL
+ORDER BY id DESC LIMIT ?
+"""
+
 _DEFAULT_REFERENCE_FLUSH_INTERVAL = 5.0
+
+
+def _bytes_per_s(transfers: list[tuple[int, int]]) -> float | None:
+    """Total bytes over total time, for `(bytes, ms)` pairs."""
+    total_ms = sum(ms for _, ms in transfers)
+    return sum(size for size, _ in transfers) * 1000 / total_ms if total_ms else None
 
 
 class SyncReader:
@@ -876,6 +905,48 @@ class LocalStoreDB:
         except aiosqlite.Error:
             log.debug("expected_build_ms_failed", name=identity.name, exc_info=True)
         return None
+
+    async def store_link(self, store_id: str) -> StoreLink:
+        """The store's send and receive rates and dispatch round trip, from its newest rows.
+
+        A rate is total bytes over total time, so a large transfer weighs
+        what it moved. The round trip is the median build time of the
+        successes that built nothing: their whole time is delegation.
+        """
+        if not self.active or not self.schema.usable:
+            return StoreLink()
+        try:
+            async with self.execute(QUERY_STORE_LINK, (store_id, LINK_ROWS)) as cursor:
+                rows = await cursor.fetchall()
+        except aiosqlite.Error:
+            log.debug("store_link_failed", store_id=store_id, exc_info=True)
+            return StoreLink()
+        sent = [(int(r[1]), int(r[2])) for r in rows if r[1] and r[2]]
+        pulled = [(int(r[3]), int(r[4])) for r in rows if r[3] and r[4]]
+        round_trips = [int(r[5]) for r in rows if r[0] != 0 and r[5] is not None]
+        return StoreLink(
+            send_bytes_per_s=_bytes_per_s(sent),
+            receive_bytes_per_s=_bytes_per_s(pulled),
+            dispatch_ms=int(statistics.median(round_trips)) if round_trips else None,
+        )
+
+    async def expected_bytes(self, identity: DerivationIdentity, store_id: str) -> ExpectedBytes:
+        """The median bytes the identity sent to this store, and pulled from any store."""
+        if not self.active or not self.schema.usable:
+            return ExpectedBytes()
+        shape = (identity.name, identity.system, identity.shape)
+        try:
+            async with self.execute(QUERY_INPUTS_BYTES, (*shape, store_id, OBSERVATIONS_KEPT)) as cursor:
+                inputs = [int(r[0]) for r in await cursor.fetchall()]
+            async with self.execute(QUERY_PULL_BYTES, (*shape, OBSERVATIONS_KEPT)) as cursor:
+                pulls = [int(r[0]) for r in await cursor.fetchall()]
+        except aiosqlite.Error:
+            log.debug("expected_bytes_failed", name=identity.name, exc_info=True)
+            return ExpectedBytes()
+        return ExpectedBytes(
+            inputs=int(statistics.median(inputs)) if inputs else None,
+            pull=int(statistics.median(pulls)) if pulls else None,
+        )
 
     async def flush_references(self) -> None:
         """Expand the pending seeds over their closures and touch the union.

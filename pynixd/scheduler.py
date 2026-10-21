@@ -24,9 +24,9 @@ import structlog
 from nix_daemon_protocol.ids import LOCAL_STORE_ID
 
 from . import metrics, state
-from .allocator import BuildAllocator, RankedStore, TelemetryStoreRanker
+from .allocator import BuildAllocator, PreferLocal, RankedStore, TelemetryStoreRanker, pick_store
 from .build_queue import BuildQueue, QueuedBuild
-from .build_stats import BuildObservation, identity_of
+from .build_stats import BuildObservation, StoreLink, identity_of, slot_wait_seconds, transfer_seconds
 from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from .exceptions import BackendError, InfrastructureError, error_text, leaves
 from .goals.results import result_succeeded
@@ -57,6 +57,10 @@ if TYPE_CHECKING:
     )
 
 log = structlog.get_logger(__name__)
+
+
+_LINK_REREAD_SECONDS = 60.0
+"""How long a store's measured link stands before the next read."""
 
 
 def _ms_since(started: float) -> int:
@@ -111,6 +115,8 @@ class Scheduler:
         self.held_by_pressure: set[BuildId] = set()
         """Builds the last pass left pending because each candidate store
         was at its build limit."""
+        self._links: dict[StoreId, tuple[float, StoreLink]] = {}
+        """Each store's measured link, and when it was read."""
         for store in [*self.stores.values(), self.local_store]:
             store.on_capacity = self.trigger
 
@@ -430,21 +436,22 @@ class Scheduler:
                 await self.queue.cancel_unwanted(build.build_id)
                 continue
 
-            # Standard remote backend assignment
+            transfer = await self._transfer_seconds(build)
             ranked = self.allocator.rank_stores(
                 build,
                 assigned_this_pass,
                 override_in_flight=override_in_flight,
+                transfer_seconds=transfer,
             )
 
             local_store = self.local_store
-            local_is_fallback = (
-                not ranked
-                and local_store.is_healthy
+            local_can_build = (
+                local_store.is_healthy
                 and not local_store.draining
                 and not build.is_blacklisted(local_store.store_id)
                 and local_store.supports_derivation(build.request.derivation.platform, build_features)
             )
+            local_is_fallback = not ranked and local_can_build
 
             if not ranked and not local_is_fallback and not self._has_compatible_store(build, build_features):
                 await self._fail_no_compatible_store(build, build_features)
@@ -452,19 +459,24 @@ class Scheduler:
 
             if ranked or local_is_fallback:
                 candidates = list(ranked) if ranked else [RankedStore(local_store.store_id, 0.0, local_store)]
-                roomy = next(
-                    (c for c in candidates if self._has_build_room(c.store, running_builds, assigned_this_pass)), None
-                )
-                if roomy is None:
+                roomy = [c for c in candidates if self._has_build_room(c.store, running_builds, assigned_this_pass)]
+                if not roomy:
                     self.held_by_pressure.add(build.build_id)
                     waiting_slot.append(build)
                     continue
-                rs = roomy
-                if rs.store_id == local_store.store_id and self._local_slot_is_full(
-                    build,
-                    running_builds,
-                    assigned_this_pass,
-                ):
+                rs = pick_store(
+                    roomy,
+                    local_store.store_id,
+                    local_slot_full=self._local_slot_is_full(build, running_builds, assigned_this_pass),
+                    prefer_local=PreferLocal(
+                        wait_seconds=self._local_wait_seconds(),
+                        transfer_seconds=transfer,
+                        weight=self.ranker.settings.prefer_local_weight,
+                    )
+                    if build.request.derivation.build_local and local_can_build
+                    else None,
+                )
+                if rs is None:
                     waiting_slot.append(build)
                     continue
                 log.debug(
@@ -492,6 +504,40 @@ class Scheduler:
                 waiting_slot.append(build)
 
         return waiting_slot
+
+    async def _transfer_seconds(self, build: QueuedBuild) -> dict[StoreId, float]:
+        """Each remote store's expected delegation seconds for this build, where measured.
+
+        Read once per build and store, and kept on the build: a pass ranks
+        every pending build again.
+        """
+        if not isinstance(self.local_store, LocalDBStore):
+            return {}
+        identity = identity_of(build.request.derivation)
+        for store_id in self.stores:
+            if store_id == self.local_store.store_id or store_id in build.transfer_seconds:
+                continue
+            expected = await self.local_store.db.expected_bytes(identity, str(store_id))
+            build.transfer_seconds[store_id] = transfer_seconds(expected, await self._link(store_id))
+        return {store_id: seconds for store_id, seconds in build.transfer_seconds.items() if seconds is not None}
+
+    def _local_wait_seconds(self) -> float | None:
+        running = [
+            (build.expected_duration, build.started_at)
+            for build in self.queue.by_id.values()
+            if build.is_building and build.assigned_store_id == self.local_store.store_id
+        ]
+        return slot_wait_seconds(running, time.monotonic())
+
+    async def _link(self, store_id: StoreId) -> StoreLink:
+        if not isinstance(self.local_store, LocalDBStore):
+            return StoreLink()
+        cached = self._links.get(store_id)
+        if cached is not None and time.monotonic() - cached[0] < _LINK_REREAD_SECONDS:
+            return cached[1]
+        link = await self.local_store.db.store_link(str(store_id))
+        self._links[store_id] = (time.monotonic(), link)
+        return link
 
     @staticmethod
     def _has_build_room(

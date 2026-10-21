@@ -1,0 +1,148 @@
+"""Where a build goes: the local store ranks with the others, and delegation has a measured cost.
+
+nixidae/nixidae#1001, and `preferLocalBuild` from nixidae/nixidae#947.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from typing import Any, cast
+
+import pytest
+
+from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
+from pynixd.allocator import BuildAllocator, PreferLocal, RankedStore, TelemetryStoreRanker, pick_store
+from pynixd.build_stats import ExpectedBytes, StoreLink, slot_wait_seconds, transfer_seconds
+from pynixd.config import StoreRankingSettings
+from pynixd.serde import BasicDerivation
+
+REMOTE = StoreId("sg1-n1")
+OTHER = StoreId("sg1-n2")
+MB = 1_000_000
+
+
+class FakeStore:
+    def __init__(self, store_id: StoreId) -> None:
+        self.store_id = store_id
+        self.cpu_util = None
+        self.monitor = None
+        self.in_flight = 0
+        self.score_penalty = 0
+        self.priority = 1.0
+        self.is_healthy = True
+        self.draining = False
+        self.no_schedule = False
+
+    def supports_derivation(self, platform: str, features: set[str]) -> bool:
+        del platform, features
+        return True
+
+
+class FakeBuild:
+    request = SimpleNamespace(derivation=BasicDerivation(platform="x86_64-linux", builder="/bin/sh"))
+
+    @staticmethod
+    def is_blacklisted(store_id: StoreId) -> bool:
+        del store_id
+        return False
+
+
+def _ranked(*store_ids: StoreId) -> list[RankedStore]:
+    return [RankedStore(store_id, 0.0, cast("Any", FakeStore(store_id))) for store_id in store_ids]
+
+
+def _rank(transfer: dict[StoreId, float] | None = None) -> list[StoreId]:
+    local = FakeStore(LOCAL_STORE_ID)
+    stores = {LOCAL_STORE_ID: local, REMOTE: FakeStore(REMOTE)}
+    ranker = TelemetryStoreRanker(cast("Any", SimpleNamespace(ranking=StoreRankingSettings())))
+    allocator = BuildAllocator(cast("Any", stores), cast("Any", local), ranker)
+    ranked = allocator.rank_stores(cast("Any", FakeBuild()), {}, transfer_seconds=transfer)
+    return [candidate.store_id for candidate in ranked]
+
+
+class TestTheTransferCost:
+    def test_adds_both_directions_and_the_round_trip(self):
+        link = StoreLink(send_bytes_per_s=10 * MB, receive_bytes_per_s=20 * MB, dispatch_ms=500)
+
+        assert transfer_seconds(ExpectedBytes(inputs=100 * MB, pull=40 * MB), link) == pytest.approx(12.5)
+
+    def test_an_unmeasured_store_has_no_cost(self):
+        assert transfer_seconds(ExpectedBytes(inputs=100 * MB), StoreLink()) is None
+
+    def test_a_known_round_trip_alone_is_a_cost(self):
+        """A tiny build whose bytes were never measured still pays the dispatch."""
+        assert transfer_seconds(ExpectedBytes(), StoreLink(dispatch_ms=300)) == pytest.approx(0.3)
+
+
+class TestTheLocalSlotWait:
+    def test_is_the_soonest_end(self):
+        assert slot_wait_seconds([(10_000, 100.0), (60_000, 100.0)], now=104.0) == pytest.approx(6.0)
+
+    def test_a_build_past_its_estimate_ends_now(self):
+        assert slot_wait_seconds([(1_000, 100.0)], now=200.0) == 0.0
+
+    def test_no_estimate_is_no_answer(self):
+        assert slot_wait_seconds([(None, 100.0)], now=101.0) is None
+
+
+class TestTheRanking:
+    def test_the_local_store_is_a_candidate(self):
+        assert LOCAL_STORE_ID in _rank()
+
+    def test_a_remote_wins_a_tie(self):
+        """The local store was only a fallback, and an unmeasured world ranks as it did."""
+        assert _rank() == [REMOTE, LOCAL_STORE_ID]
+
+    def test_a_measured_transfer_puts_the_local_store_first(self):
+        assert _rank({REMOTE: 5.0}) == [LOCAL_STORE_ID, REMOTE]
+
+
+class TestThePick:
+    def test_takes_the_best_ranked(self):
+        picked = pick_store(_ranked(REMOTE, LOCAL_STORE_ID), LOCAL_STORE_ID, local_slot_full=False)
+
+        assert picked is not None
+        assert picked.store_id == REMOTE
+
+    def test_a_full_local_slot_passes_to_the_next_store(self):
+        picked = pick_store(_ranked(LOCAL_STORE_ID, REMOTE), LOCAL_STORE_ID, local_slot_full=True)
+
+        assert picked is not None
+        assert picked.store_id == REMOTE
+
+
+class TestPreferLocalBuild:
+    @staticmethod
+    def _pick(*, wait: float | None, remote_seconds: float | None) -> StoreId | None:
+        transfer = {} if remote_seconds is None else {REMOTE: remote_seconds}
+        picked = pick_store(
+            _ranked(REMOTE, OTHER),
+            LOCAL_STORE_ID,
+            local_slot_full=True,
+            prefer_local=PreferLocal(wait_seconds=wait, transfer_seconds=transfer, weight=10.0),
+        )
+        return None if picked is None else picked.store_id
+
+    def test_a_free_local_slot_wins_over_a_better_ranked_remote(self):
+        picked = pick_store(
+            _ranked(REMOTE, LOCAL_STORE_ID),
+            LOCAL_STORE_ID,
+            local_slot_full=False,
+            prefer_local=PreferLocal(wait_seconds=None, transfer_seconds={}, weight=10.0),
+        )
+
+        assert picked is not None
+        assert picked.store_id == LOCAL_STORE_ID
+
+    def test_waits_while_the_wait_is_cheaper_than_the_weighted_delegation(self):
+        assert self._pick(wait=19.0, remote_seconds=2.0) is None
+
+    def test_delegates_once_the_wait_passes_the_weighted_delegation(self):
+        assert self._pick(wait=21.0, remote_seconds=2.0) == REMOTE
+
+    def test_waits_when_the_wait_is_unknown(self):
+        """Nix waits for a local slot however long; with no estimate, so does pynixd."""
+        assert self._pick(wait=None, remote_seconds=2.0) is None
+
+    def test_waits_when_the_delegation_is_unmeasured(self):
+        assert self._pick(wait=500.0, remote_seconds=None) is None

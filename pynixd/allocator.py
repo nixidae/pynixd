@@ -54,6 +54,50 @@ class RankedStores:
         return RankedStores(sorted(self._stores, key=lambda s: s.score, reverse=True))
 
 
+def pick_store(
+    ranked: list[RankedStore],
+    local_id: StoreId,
+    *,
+    local_slot_full: bool,
+    prefer_local: PreferLocal | None = None,
+) -> RankedStore | None:
+    """The store a build goes to, from the ranked stores with room; `None` waits.
+
+    NIX-DEVIATION (#27): `DerivationBuildingGoal` at
+    `derivation-building-goal.cc:606` builds a `preferLocalBuild` derivation
+    locally whenever the machine can, and `acquireResources` waits for a
+    local slot however long that takes. pynixd waits too, unless the expected
+    wait passes `PreferLocal.weight` times the best remote's measured
+    delegation seconds; then it delegates. A busy machine keeps its trivial
+    builds moving, and a local copy of 550 MB still stays local (#947). With
+    either number unknown it waits, as Nix does. To reverse it, measure
+    `preferLocalBuild` builds that went remote and cost more than the wait.
+    """
+    usable = [candidate for candidate in ranked if candidate.store_id != local_id or not local_slot_full]
+    if prefer_local is None:
+        return usable[0] if usable else None
+    local = next((candidate for candidate in usable if candidate.store_id == local_id), None)
+    if local is not None:
+        return local
+    remote = next((candidate for candidate in usable if candidate.store_id != local_id), None)
+    if remote is None:
+        return None
+    remote_seconds = prefer_local.transfer_seconds.get(remote.store_id)
+    if remote_seconds is None or prefer_local.wait_seconds is None:
+        return None
+    return remote if prefer_local.wait_seconds > remote_seconds * prefer_local.weight else None
+
+
+@dataclass(frozen=True)
+class PreferLocal:
+    """What `pick_store` weighs for a `preferLocalBuild` derivation the local store can build."""
+
+    wait_seconds: float | None
+    """Until the soonest running local build is expected to free its slot."""
+    transfer_seconds: Mapping[StoreId, float]
+    weight: float
+
+
 class StoreRanker(ABC):
     """Abstract base for store ranking strategies."""
 
@@ -64,6 +108,7 @@ class StoreRanker(ABC):
         stores: list[DaemonStore],
         assigned_this_pass: Mapping[StoreId, int],
         override_in_flight: Mapping[StoreId, int] | None = None,
+        transfer_seconds: Mapping[StoreId, float] | None = None,
     ) -> RankedStores:
         """Score and sort available stores for the given build."""
         ...
@@ -81,8 +126,9 @@ class TelemetryStoreRanker(StoreRanker):
         stores: list[DaemonStore],
         assigned_this_pass: Mapping[StoreId, int],
         override_in_flight: Mapping[StoreId, int] | None = None,
+        transfer_seconds: Mapping[StoreId, float] | None = None,
     ) -> RankedStores:
-        """Score stores by CPU, pressure, concurrency, and herd penalties."""
+        """Score stores by CPU, pressure, concurrency, herd and transfer penalties."""
         ranked = []
         for store in stores:
             score = 0.0
@@ -116,6 +162,11 @@ class TelemetryStoreRanker(StoreRanker):
             # 5. Thundering Herd Penalty (- points)
             assigned = assigned_this_pass.get(store.store_id, 0)
             score -= assigned * self.settings.thundering_herd_penalty
+
+            # 6. Delegation Penalty (- points): the measured seconds of
+            # moving inputs and outputs and of the dispatch round trip.
+            if transfer_seconds:
+                score -= transfer_seconds.get(store.store_id, 0.0) * self.settings.transfer_penalty_per_second
 
             score -= store.score_penalty
             if score >= self.settings.min_schedule_score or not has_resource_signal:
@@ -164,19 +215,22 @@ class BuildAllocator:
         build: QueuedBuild,
         assigned_this_pass: Mapping[StoreId, int],
         override_in_flight: Mapping[StoreId, int] | None = None,
+        transfer_seconds: Mapping[StoreId, float] | None = None,
     ) -> RankedStores:
         """Rank stores for a build using the injected ranker."""
         build_features = effective_required_features(build.request.derivation)
         candidates = []
 
-        for store_id, store in self.stores.items():
-            if store_id == self.local_store.store_id:
-                continue
+        # The local store is a candidate like the others, and the last one:
+        # the sort is stable, so a remote wins a tie, as when the local store
+        # was only a fallback. nixidae/nixidae#1001.
+        remotes = [store for store_id, store in self.stores.items() if store_id != self.local_store.store_id]
+        for store in [*remotes, self.local_store]:
             if not store.is_healthy or store.draining or store.no_schedule:
                 continue
             if not store.supports_derivation(build.request.derivation.platform, build_features):
                 continue
-            if build.is_blacklisted(store_id):
+            if build.is_blacklisted(store.store_id):
                 continue
 
             candidates.append(store)
@@ -186,6 +240,7 @@ class BuildAllocator:
             candidates,
             assigned_this_pass,
             override_in_flight,
+            transfer_seconds,
         )
 
     def incompatibility_reasons(
