@@ -3,7 +3,7 @@
 Before `pynixd.db_migrations`, the answer to every schema question was `DROP
 TABLE IF EXISTS DerivationStats`, on each start. It is a migration that always
 works and always loses the data, and the data was the point: the scheduler
-asks `get_build_stats_hint` how long a derivation took last time, so a
+asks `expected_build_ms` how long a derivation took before, so a
 statistics table that empties on each start answers "no record" forever.
 
 These tests state what the framework must do before a second table is worth
@@ -20,8 +20,9 @@ import aiosqlite
 import pytest
 
 from pynixd import db_migrations
+from pynixd.build_stats import BuildObservation, DerivationIdentity
 from pynixd.db_migrations import (
-    DERIVATION_STATS_TABLE,
+    BUILD_OBSERVATION_TABLE,
     SCHEMA_TABLE,
     TABLE_PREFIX,
     TARGET_VERSION,
@@ -34,6 +35,8 @@ from pynixd.store_layout import StoreLayout
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+HELLO = DerivationIdentity(name="hello", system="aarch64-linux", shape="0" * 16, keys=("name",), features=())
 
 
 def _nix_database(tmp_path: Path) -> Path:
@@ -85,7 +88,7 @@ class TestTheShapeOfTheMigrationList:
 
     def test_expected_tables_folds_the_creates_and_the_drops(self) -> None:
         assert expected_tables(0) == frozenset({SCHEMA_TABLE})
-        assert DERIVATION_STATS_TABLE in expected_tables(TARGET_VERSION)
+        assert BUILD_OBSERVATION_TABLE in expected_tables(TARGET_VERSION)
 
 
 @pytest.mark.anyio
@@ -126,14 +129,14 @@ class TestMigratingAStoreDatabase:
         db_path = _nix_database(tmp_path)
         await apply_migrations(db_path, read_only=False)
         async with aiosqlite.connect(db_path) as conn:
-            await conn.execute(f"DROP TABLE {DERIVATION_STATS_TABLE}")
+            await conn.execute(f"DROP TABLE {BUILD_OBSERVATION_TABLE}")
             await conn.commit()
 
         state = await apply_migrations(db_path, read_only=False)
 
         assert state.usable
         assert state.applied != (), "the repair must run the migrations again"
-        assert DERIVATION_STATS_TABLE in await _tables(db_path)
+        assert BUILD_OBSERVATION_TABLE in await _tables(db_path)
 
     async def test_the_unprefixed_table_of_the_first_version_is_removed(self, tmp_path: Path) -> None:
         db_path = _nix_database(tmp_path)
@@ -250,21 +253,14 @@ class TestBuildStatisticsSurviveARestart:
 
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             assert db.schema.usable, db.schema.reason
-            await db.record_build_stats(
-                pname="hello",
-                platform="aarch64-linux",
-                derivation_json="{}",
-                cpu_user_us=None,
-                cpu_system_us=None,
-                duration_ms=1234,
-            )
+            await db.record_build_observation(HELLO, BuildObservation(store_id="local", status=0, build_ms=1234))
 
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as reopened:
-            assert await reopened.get_build_stats_hint("hello", "aarch64-linux") == 1234
+            assert await reopened.expected_build_ms(HELLO) == 1234
 
     async def test_the_statistics_are_off_when_the_schema_is_not_usable(self, tmp_path: Path) -> None:
         """A store whose tables pynixd cannot bring up must not query them."""
         _nix_database(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             db.schema = db_migrations.SchemaState(version=0, usable=False, reason="test")
-            assert await db.get_build_stats_hint("hello", "aarch64-linux") is None
+            assert await db.expected_build_ms(HELLO) is None

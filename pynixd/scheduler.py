@@ -26,10 +26,11 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID
 from . import metrics, state
 from .allocator import BuildAllocator, RankedStore, TelemetryStoreRanker
 from .build_queue import BuildQueue, QueuedBuild
+from .build_stats import BuildObservation, identity_of
 from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from .exceptions import BackendError, InfrastructureError, error_text, leaves
 from .goals.results import result_succeeded
-from .serde import AddTempRootRequest, AddTempRootsRequest, BuildResultStatus, LogNext, QueryValidPathsRequest
+from .serde import AddTempRootRequest, AddTempRootsRequest, LogNext, QueryValidPathsRequest
 from .store import DaemonStore, LocalDBStore
 from .store.transfer import stream_paths_store_to_store
 from .store_path import StorePath
@@ -56,6 +57,10 @@ if TYPE_CHECKING:
     )
 
 log = structlog.get_logger(__name__)
+
+
+def _ms_since(started: float) -> int:
+    return int((time.monotonic() - started) * 1000)
 
 
 class _OutputClock:
@@ -217,12 +222,7 @@ class Scheduler:
         t0 = time.monotonic()
         hint = None
         if isinstance(self.local_store, LocalDBStore):
-            pname = request.derivation.env.get("pname", None)
-            if pname:
-                hint = await self.local_store.db.get_build_stats_hint(
-                    pname,
-                    request.derivation.platform,
-                )
+            hint = await self.local_store.db.expected_build_ms(identity_of(request.derivation))
         t_hint = time.monotonic()
 
         res = await self.queue.enqueue(
@@ -692,9 +692,18 @@ class Scheduler:
         completed = False
         try:
             async with store.build_conn(build.options) as conn:
-                await self._prepare_build(build, store, conn)
+                observation = build.observation = BuildObservation(
+                    store_id=str(store.store_id),
+                    status=-1,
+                    queued_ms=_ms_since(build.enqueued_at),
+                )
+                inputs_started = time.monotonic()
+                observation.inputs_bytes = await self._prepare_build(build, store, conn)
+                observation.inputs_ms = _ms_since(inputs_started)
                 await self._say_where_it_builds(build, store)
                 build_resp = await self._execute(build, store, conn)
+                if build.started_at is not None:
+                    observation.build_ms = _ms_since(build.started_at)
                 # Every success, not `BUILT` alone. A builder that already
                 # holds the outputs answers `ALREADY_VALID`, and the local
                 # store still lacks them. A dynamic derivation's produced
@@ -746,8 +755,8 @@ class Scheduler:
         build: QueuedBuild,
         store: DaemonStore,
         conn: Connection,  # build connection (opaque to this method)
-    ) -> None:
-        """Register CA realisations, resolve deferred derivations, stream inputs.
+    ) -> int:
+        """Register CA realisations, resolve deferred derivations, stream inputs; answer the NAR bytes sent.
 
         All operations that must happen before the build request is sent
         to the backend daemon.
@@ -774,20 +783,21 @@ class Scheduler:
             missing_paths = {StorePath(str(p)) for p in input_srcs if str(p) not in known}
         else:
             missing_paths = set()
-        if missing_paths:
-            log.debug(
-                "build_sending_inputs",
-                build_id=build.build_id,
-                store_id=store.store_id,
-                count=len(missing_paths),
-            )
-            await stream_paths_store_to_store(
-                self.local_store,
-                store,
-                missing_paths,
-                peer_store_id=store.store_id,
-                direction="out",
-            )
+        if not missing_paths:
+            return 0
+        log.debug(
+            "build_sending_inputs",
+            build_id=build.build_id,
+            store_id=store.store_id,
+            count=len(missing_paths),
+        )
+        return await stream_paths_store_to_store(
+            self.local_store,
+            store,
+            missing_paths,
+            peer_store_id=store.store_id,
+            direction="out",
+        )
 
     async def _hold_inputs_on(self, conn: Connection, inputs: set[StorePath]) -> None:
         """Root the closure of *inputs* on the builder, for the build connection's life.
@@ -889,64 +899,49 @@ class Scheduler:
             count=len(all_output_paths),
         )
 
-        # An answer that built nothing measures nothing.
-        if resp.result.status == BuildResultStatus.BUILT:
-            await self._record_build_stats(build, resp)
-        await self._pull_outputs(store, all_output_paths)
+        # The record after the pull, so it holds the pull's cost, and in
+        # `finally`, so a failed pull keeps the rest. Issue #12.
+        pull_started = time.monotonic()
+        try:
+            pulled = await self._pull_outputs(store, all_output_paths)
+            if build.observation is not None:
+                build.observation.pull_ms = _ms_since(pull_started)
+                build.observation.pull_bytes = pulled
+        finally:
+            await self._record_observation(build, resp)
 
-    async def _record_build_stats(
-        self,
-        build: QueuedBuild,
-        resp: BuildDerivationResponse,
-    ) -> None:
-        """Write what this build cost, for the next build of the same package.
+    async def _record_observation(self, build: QueuedBuild, resp: BuildDerivationResponse) -> None:
+        """Write what this build cost, for the next build of the same identity.
 
-        This runs before `_pull_outputs`, and both reasons are about what the
-        number means.
-
-        The scheduler reads it back through `get_build_stats_hint` to predict
-        how long a derivation takes, so the number has to measure the build
-        alone. Taken after the pull, it also held the time to copy the closure
-        from the backend to the local store, which depends on the size of the
-        outputs and on the network, and not on the builder.
-
-        A pull that fails also raises, and the statistics of a build that
-        already succeeded would go with it if this ran after the pull. Issue
-        #12, whose larger half -- the client told the build succeeded before
-        the pull ran -- is fixed in `execute_build`.
+        Every success, `ALREADY_VALID` included: a build that built nothing
+        measures what delegating it cost. The estimator reads `BUILT` alone.
+        nixidae/nixidae#1001.
         """
-        if not isinstance(self.local_store, LocalDBStore):
+        observation = build.observation
+        if not isinstance(self.local_store, LocalDBStore) or observation is None:
             return
-        pname = build.request.derivation.env.get("pname")
-        started_at = build.started_at
-        if not pname or started_at is None:
-            return
-
-        duration = int((time.monotonic() - started_at) * 1000)
-        await self.local_store.db.record_build_stats(
-            pname=pname,
-            platform=build.request.derivation.platform,
-            derivation_json=build.request.derivation.to_stats_json(),
-            cpu_user_us=resp.result.cpu_user.value if resp.result.cpu_user else None,
-            cpu_system_us=resp.result.cpu_system.value if resp.result.cpu_system else None,
-            duration_ms=duration,
-        )
-        expected = build.expected_duration
+        observation.status = int(resp.result.status)
+        observation.cpu_user_us = resp.result.cpu_user.value if resp.result.cpu_user else None
+        observation.cpu_system_us = resp.result.cpu_system.value if resp.result.cpu_system else None
+        identity = identity_of(build.request.derivation)
+        await self.local_store.db.record_build_observation(identity, observation)
         log.info(
-            "build_stats_recorded",
-            pname=pname,
-            platform=build.request.derivation.platform,
-            expected_ms=expected,
-            actual_ms=duration,
-            error_pct=f"{(duration - expected) / expected * 100:.1f}" if expected else None,
+            "build_observed",
+            name=identity.name,
+            store_id=observation.store_id,
+            status=observation.status,
+            expected_ms=build.expected_duration,
+            build_ms=observation.build_ms,
+            inputs_ms=observation.inputs_ms,
+            pull_ms=observation.pull_ms,
         )
 
     async def _pull_outputs(
         self,
         store: DaemonStore,
         paths: StorePathSet,
-    ) -> None:
-        """Bring the outputs of a backend build into the local store.
+    ) -> int:
+        """Bring the outputs of a backend build into the local store, answering the NAR bytes moved.
 
         The local store has to hold the paths, and a record of where they came
         from is not enough. A client on a Unix socket never asks pynixd for a
@@ -982,13 +977,13 @@ class Scheduler:
         the destination daemon, which hashes it and registers it itself.
         """
         if not paths:
-            return
+            return 0
         log.debug(
             "pull_outputs_streaming",
             store_id=store.store_id,
             count=len(paths),
         )
-        await stream_paths_store_to_store(
+        return await stream_paths_store_to_store(
             store,
             self.local_store,
             paths,

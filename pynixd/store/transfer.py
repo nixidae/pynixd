@@ -89,7 +89,7 @@ async def stream_paths_store_to_store(
     *,
     peer_store_id: str | None = None,
     direction: Literal["in", "out"] | None = None,
-) -> None:
+) -> int:
     """Copy paths from src store to dst via streaming, querying closure first.
 
     Bypasses the normal handle() path, so we update dst knowledge manually.
@@ -102,10 +102,12 @@ async def stream_paths_store_to_store(
     tell which side is local on its own. The count sums the NAR sizes
     of the infos already walked, after the already-valid filter, so
     only moved bytes count and no byte loop is touched.
+
+    Answers the NAR bytes it moved.
     """
     paths_set = set(paths)
     if not paths_set:
-        return
+        return 0
     if (peer_store_id is None) != (direction is None):
         raise RuntimeError("peer_store_id and direction come together or not at all")
     log.debug("stream_paths_start", src=src.store_id, dst=dst.store_id, count=len(paths_set))
@@ -118,7 +120,7 @@ async def stream_paths_store_to_store(
             dst=dst.store_id,
             count=len(paths_set),
         )
-        return
+        return 0
 
     # 1. Get closure from source
     closure_resp = await src.execute(
@@ -132,7 +134,7 @@ async def stream_paths_store_to_store(
         infos=len(closure_resp.infos),
     )
     if not closure_resp.infos:
-        return
+        return 0
 
     # 2. Filter out paths already in destination
     from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest
@@ -151,7 +153,7 @@ async def stream_paths_store_to_store(
             to_transfer=len(to_transfer),
         )
         try:
-            await _stream_checked(src, dst, to_transfer, cancel_event, peer_store_id, direction)
+            moved = await _stream_checked(src, dst, to_transfer, cancel_event, peer_store_id, direction)
         except Exception as e:
             refused = _refused_as_invalid(e)
             healed = [info for info in closure if str(info.path) == refused and info.path in check_paths_set]
@@ -167,7 +169,7 @@ async def stream_paths_store_to_store(
             check_paths_set.discard(healed[0].path)
             to_transfer = [info for info in closure if info.path not in check_paths_set]
         else:
-            return
+            return moved
     raise BackendError(
         f"{dst.store_id} kept refusing paths it reported valid, after {_SELF_HEAL_ROUNDS} rounds",
     )
@@ -180,10 +182,10 @@ async def _stream_checked(
     cancel_event: anyio.Event | None,
     peer_store_id: str | None,
     direction: Literal["in", "out"] | None,
-) -> None:
-    """Steps 3 and 4 of `stream_paths_store_to_store` for one selection."""
+) -> int:
+    """Steps 3 and 4 of `stream_paths_store_to_store` for one selection, answering the NAR bytes moved."""
     if not to_transfer:
-        return
+        return 0
 
     # **A NAR size of zero means unknown, and not empty.** Nix leaves
     # `ValidPathInfo::narSize` at 0 where it has no answer, and the shortest
@@ -210,16 +212,13 @@ async def _stream_checked(
             log.debug("stream_paths_acquired_dst", src=src.store_id, dst=dst.store_id, conn_id=dst_conn.id)
             await _stream_paths_over_conns(src_conn, dst_conn, to_transfer, cancel_event)
 
+    moved = sum(info.info.nar_size for info in to_transfer)
     if peer_store_id is not None and direction is not None:
-        metrics.record_store_transfer(
-            peer_store_id,
-            direction,
-            sum(info.info.nar_size for info in to_transfer),
-            len(to_transfer),
-        )
+        metrics.record_store_transfer(peer_store_id, direction, moved, len(to_transfer))
 
     # 4. Update destination store's knowledge.
     dst.add_path_infos(to_transfer)
+    return moved
 
 
 async def _stream_paths_over_conns(

@@ -59,6 +59,8 @@ class FakeBuild:
     build_id = "b1"
     assigned_store_id: StoreId | None = None
     options = None
+    enqueued_at = 0.0
+    started_at: float | None = None
     request = FakeRequest()
     ca_realisations: list[Any] = []
 
@@ -117,11 +119,12 @@ class FakeScheduler:
         self.steps.append("collect")
         await Scheduler._collect_outputs(cast("Any", self), *args)  # noqa: SLF001 -- the method under test
 
-    async def _record_build_stats(self, *_args: Any) -> None:
-        self.steps.append("stats")
+    async def _record_observation(self, _build: Any, resp: FakeResponse) -> None:
+        self.steps.append(f"observed {resp.result.status.name}")
 
-    async def _pull_outputs(self, _store: Any, paths: set[StorePath]) -> None:
+    async def _pull_outputs(self, _store: Any, paths: set[StorePath]) -> int:
         self.pulled |= paths
+        return 0
 
 
 async def _run(status: BuildResultStatus) -> FakeScheduler:
@@ -147,20 +150,21 @@ class TestABuilderThatBuiltNothing:
 
     @pytest.mark.anyio
     @pytest.mark.parametrize("status", SUCCESSES_THAT_BUILT_NOTHING)
-    async def test_records_no_build_time(self, status: BuildResultStatus):
-        """A 0.2 s answer is not what the build costs."""
+    async def test_records_the_answer_under_its_own_status(self, status: BuildResultStatus):
+        """A 0.2 s answer measures delegation, not the build. The estimator
+        reads `BUILT` rows alone, so the row keeps its status."""
         scheduler = await _run(status)
 
-        assert scheduler.steps == ["collect", "complete"]
+        assert scheduler.steps == ["collect", f"observed {status.name}", "complete"]
 
 
 class TestABuilderThatBuilt:
     @pytest.mark.anyio
-    async def test_pulls_and_records_the_build_time(self):
+    async def test_pulls_and_records_the_build(self):
         scheduler = await _run(BuildResultStatus.BUILT)
 
         assert scheduler.pulled == {StorePath(PRODUCED_DRV)}
-        assert scheduler.steps == ["collect", "stats", "complete"]
+        assert scheduler.steps == ["collect", "observed BUILT", "complete"]
 
 
 class TestAFailedBuild:

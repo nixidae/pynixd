@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
     from nix_daemon_protocol.logs import LogMessage
 
+    from .build_stats import BuildObservation
     from .connection import ClientConn
     from .derived_path import DerivedPath
     from .serde import BuildDerivationRequest, Realisation, SetOptionsRequest
@@ -139,6 +140,8 @@ class QueuedBuild:
         self.expected_duration = expected_duration
         self.enqueued_at = time.monotonic()
         self.started_at: float | None = None
+        self.observation: BuildObservation | None = None
+        """What this build cost, by phase, filled while `execute_build` runs."""
         self.last_output_at: float | None = None
         """When the upstream daemon last sent this build anything. A holder
         that is not the owner reads it for its own `max-silent-time`."""

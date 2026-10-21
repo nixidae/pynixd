@@ -17,6 +17,7 @@ import structlog
 from nix_daemon_protocol.ids import BuildId, StoreId
 from pynixd import Server
 from pynixd.build_queue import QueuedBuild
+from pynixd.build_stats import BuildObservation, identity_of
 from pynixd.local_store_db import LocalStoreDB
 from pynixd.psi import CpuUtil
 from pynixd.serde import (
@@ -212,7 +213,7 @@ async def test_build_stats_recording(tmp_path: Path) -> None:
         # **The future resolves before the row exists, and that is deliberate.**
         # `Scheduler.execute_build` calls `queue.complete` as soon as the
         # backend answers, and `_collect_outputs` runs after that and holds
-        # `_record_build_stats`. Issue #12 states the same order from the
+        # `_record_observation`. Issue #12 states the same order from the
         # other side: the client is told the build succeeded before the pull
         # runs. So the row lands a moment after `await future` returns, and a
         # read at that instant found nothing and read as "the recording is
@@ -222,7 +223,7 @@ async def test_build_stats_recording(tmp_path: Path) -> None:
         with anyio.fail_after(10):
             while row is None:
                 async with pynixd_local.db.execute(
-                    "SELECT pname, duration_ms FROM PynixdDerivationStats WHERE pname = 'fast-pkg'",
+                    "SELECT name, buildMs FROM PynixdBuildObservation WHERE name = 'fast-pkg'",
                 ) as cursor:
                     row = await cursor.fetchone()
                 if row is None:
@@ -261,13 +262,9 @@ async def test_scheduler_local_fasttrack(tmp_path: Path) -> None:
     ) as server:
         assert pynixd_local.db is not None
         # Pre-seed the DB with "tiny" stats
-        await pynixd_local.db.record_build_stats(
-            pname="tiny-pkg",
-            platform="x86_64-linux",
-            derivation_json='{"builder":"bash","outputs":["out"]}',
-            cpu_user_us=None,
-            cpu_system_us=None,
-            duration_ms=100,  # 100ms
+        await pynixd_local.db.record_build_observation(
+            identity_of(BasicDerivation(platform="x86_64-linux", builder="", env={"pname": "tiny-pkg"})),
+            BuildObservation(store_id="remote", status=0, build_ms=100),
         )
         scheduler = server.scheduler
         assert scheduler is not None
@@ -318,8 +315,11 @@ async def test_scheduler_local_fasttrack(tmp_path: Path) -> None:
         assert tiny_build.is_building
 
 
-async def test_build_stats_hint_by_pname(tmp_path: Path) -> None:
-    """Verify that build stats hints match by pname + platform."""
+async def test_expected_build_ms_is_the_median_of_the_identity(tmp_path: Path) -> None:
+    """The estimate is the median of the identity's `BUILT` builds, then of its name.
+
+    nixidae/nixidae#1001.
+    """
     pynixd_local_path = STORE_PREFIX / "stats-hint-test"
     rmtree_robust(pynixd_local_path)
     (pynixd_local_path / "nix/var/nix/db").mkdir(parents=True)
@@ -336,38 +336,27 @@ async def test_build_stats_hint_by_pname(tmp_path: Path) -> None:
 
         assert db.active
 
-        # Record stats for two versions of the same package on same platform
-        await db.record_build_stats(
-            pname="testpkg",
-            platform="x86_64-linux",
-            derivation_json='{"builder":"bash","outputs":["out"]}',
-            cpu_user_us=None,
-            cpu_system_us=None,
-            duration_ms=500,
+        testpkg = identity_of(BasicDerivation(platform="x86_64-linux", builder="", env={"pname": "testpkg"}))
+        for store_id, build_ms in (("a", 500), ("b", 300), ("a", 400)):
+            await db.record_build_observation(testpkg, BuildObservation(store_id=store_id, status=0, build_ms=build_ms))
+        # A builder that already held the output built nothing: no estimate.
+        await db.record_build_observation(
+            testpkg, BuildObservation(store_id="a", status=BuildResultStatus.ALREADY_VALID, build_ms=5)
         )
 
-        await db.record_build_stats(
-            pname="testpkg",
-            platform="x86_64-linux",
-            derivation_json='{"builder":"bash","outputs":["out","bin"]}',
-            cpu_user_us=None,
-            cpu_system_us=None,
-            duration_ms=300,  # latest replaces via INSERT OR REPLACE
+        assert await db.expected_build_ms(testpkg) == 400
+
+        # A new attribute is a new shape; the name still answers.
+        reshaped = identity_of(
+            BasicDerivation(platform="x86_64-linux", builder="", env={"pname": "testpkg", "doCheck": "1"})
         )
+        assert reshaped.shape != testpkg.shape
+        assert await db.expected_build_ms(reshaped) == 400
 
-        # Same pname + platform should return the latest (300)
-        hint = await db.get_build_stats_hint("testpkg", "x86_64-linux")
-        assert hint == 300
-
-        # Different platform: falls back to cross-platform average (300)
-        hint = await db.get_build_stats_hint("testpkg", "aarch64-linux")
-        assert hint == 300
-
-        # Different pname: no entry at all
-        hint = await db.get_build_stats_hint("otherpkg", "x86_64-linux")
-        assert hint is None
-
-        log.info("build_stats_hint_by_pname_verified")
+        other_system = identity_of(BasicDerivation(platform="aarch64-linux", builder="", env={"pname": "testpkg"}))
+        assert await db.expected_build_ms(other_system) is None
+        other_name = identity_of(BasicDerivation(platform="x86_64-linux", builder="", env={"pname": "otherpkg"}))
+        assert await db.expected_build_ms(other_name) is None
 
 
 class CpuUtilTestStore(StatsTestStore):

@@ -19,8 +19,8 @@ Before this module, `LocalStoreDB.open` ran `DROP TABLE IF EXISTS
 DerivationStats` and created the table again, on every start. That is a
 migration that answers every version question with "delete the data". It also
 made the build statistics useless for the thing that reads them: the
-scheduler asks `get_build_stats_hint` how long a derivation took last time,
-and the answer was always "no record" after a restart.
+scheduler asks `expected_build_ms` how long a derivation took before, and
+the answer was always "no record" after a restart.
 """
 
 from __future__ import annotations
@@ -79,6 +79,14 @@ class Migration:
 
 
 DERIVATION_STATS_TABLE = f"{TABLE_PREFIX}DerivationStats"
+DERIVATION_SHAPE_TABLE = f"{TABLE_PREFIX}DerivationShape"
+"""The attribute names and features behind each shape hash, once per hash."""
+BUILD_OBSERVATION_TABLE = f"{TABLE_PREFIX}BuildObservation"
+"""What each build cost, by phase, the last few per identity and store.
+
+Raw rows, not a running average: an estimator can change, and an outlier can
+go, without losing the history. nixidae/nixidae#1001.
+"""
 
 PATH_ACCESS_TABLE = f"{TABLE_PREFIX}PathAccess"
 BUILD_ACCESS_TABLE = f"{TABLE_PREFIX}BuildAccess"
@@ -103,8 +111,6 @@ and nothing would report it. The text of a store path names one thing for
 ever.
 
 A new column of pynixd follows the camelCase of the database it lives in.
-The columns of `PynixdDerivationStats` predate that rule, and a migration to
-rename them would write over a user's table to change nothing.
 """
 
 MIGRATIONS: tuple[Migration, ...] = (
@@ -213,6 +219,41 @@ MIGRATIONS: tuple[Migration, ...] = (
         ),
         creates=(),
         drops=(BUILD_ACCESS_TABLE,),
+    ),
+    Migration(
+        version=7,
+        name="build-observations",
+        statements=(
+            f"CREATE TABLE IF NOT EXISTS {DERIVATION_SHAPE_TABLE} ("
+            "shape TEXT PRIMARY KEY, "
+            "keys TEXT NOT NULL, "
+            "features TEXT NOT NULL"
+            ")",
+            f"CREATE TABLE IF NOT EXISTS {BUILD_OBSERVATION_TABLE} ("
+            "id INTEGER PRIMARY KEY, "
+            "name TEXT NOT NULL, "
+            "system TEXT NOT NULL, "
+            "shape TEXT NOT NULL, "
+            "storeId TEXT NOT NULL, "
+            "status INTEGER NOT NULL, "
+            "queuedMs INTEGER, "
+            "inputsMs INTEGER, "
+            "inputsBytes INTEGER, "
+            "buildMs INTEGER, "
+            "cpuUserUs INTEGER, "
+            "cpuSystemUs INTEGER, "
+            "pullMs INTEGER, "
+            "pullBytes INTEGER, "
+            "finishedAt INTEGER NOT NULL"
+            ")",
+            f"CREATE INDEX IF NOT EXISTS idx_pynixd_build_observation_identity ON {BUILD_OBSERVATION_TABLE}"
+            "(name, system, shape, storeId, finishedAt)",
+            # One row per pname and platform, overwritten by each build, and
+            # read by no decision. The observations replace it.
+            f"DROP TABLE IF EXISTS {DERIVATION_STATS_TABLE}",
+        ),
+        creates=(DERIVATION_SHAPE_TABLE, BUILD_OBSERVATION_TABLE),
+        drops=(DERIVATION_STATS_TABLE,),
     ),
 )
 

@@ -30,6 +30,7 @@ import asyncio
 import json
 import os
 import sqlite3
+import statistics
 import time
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
@@ -42,7 +43,8 @@ import anyio
 import structlog
 
 from .db_migrations import (
-    DERIVATION_STATS_TABLE,
+    BUILD_OBSERVATION_TABLE,
+    DERIVATION_SHAPE_TABLE,
     PATH_ACCESS_TABLE,
     SchemaState,
     apply_migrations,
@@ -55,6 +57,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable
 
     from nix_daemon_protocol.aliases import StorePathSet
+
+    from .build_stats import BuildObservation, DerivationIdentity
 
 log = structlog.get_logger(__name__)
 
@@ -206,22 +210,40 @@ class RootAttribution:
     exclusive_bytes: int
 
 
-INSERT_BUILD_STATS = f"""
-INSERT OR REPLACE INTO {DERIVATION_STATS_TABLE}
-(pname, platform, derivation_json, cpu_user_us, cpu_system_us, duration_ms, last_built_at)
-VALUES (?, ?, ?, ?, ?, ?, unixepoch())
+OBSERVATIONS_KEPT = 20
+"""Rows kept per identity and store. Enough for a median that one outlier
+cannot move, and few enough that a store's history stays a few MB."""
+
+INSERT_DERIVATION_SHAPE = f"""
+INSERT OR IGNORE INTO {DERIVATION_SHAPE_TABLE} (shape, keys, features) VALUES (?, ?, ?)
 """
 
-QUERY_BUILD_STATS_HINT = f"""
-SELECT duration_ms FROM {DERIVATION_STATS_TABLE}
-WHERE pname = ? AND platform = ?
-ORDER BY last_built_at DESC
-LIMIT 1
+INSERT_BUILD_OBSERVATION = f"""
+INSERT INTO {BUILD_OBSERVATION_TABLE}
+(name, system, shape, storeId, status, queuedMs, inputsMs, inputsBytes, buildMs,
+ cpuUserUs, cpuSystemUs, pullMs, pullBytes, finishedAt)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
 """
 
-QUERY_BUILD_STATS_CROSS_PLATFORM = f"""
-SELECT AVG(duration_ms) FROM {DERIVATION_STATS_TABLE}
-WHERE pname = ?
+PRUNE_BUILD_OBSERVATIONS = f"""
+DELETE FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = ? AND system = ? AND shape = ? AND storeId = ? AND id NOT IN (
+    SELECT id FROM {BUILD_OBSERVATION_TABLE}
+    WHERE name = ? AND system = ? AND shape = ? AND storeId = ?
+    ORDER BY id DESC LIMIT ?
+)
+"""
+
+QUERY_BUILD_MS_OF_SHAPE = f"""
+SELECT buildMs FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = ? AND system = ? AND shape = ? AND status = 0 AND buildMs IS NOT NULL
+ORDER BY id DESC LIMIT ?
+"""
+
+QUERY_BUILD_MS_OF_NAME = f"""
+SELECT buildMs FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = ? AND system = ? AND status = 0 AND buildMs IS NOT NULL
+ORDER BY id DESC LIMIT ?
 """
 
 _DEFAULT_REFERENCE_FLUSH_INTERVAL = 5.0
@@ -803,67 +825,56 @@ class LocalStoreDB:
             queue = self.pending_build_references if kind == "build" else self.pending_references
             queue.update(str(path) for path in paths)
 
-    async def record_build_stats(
-        self,
-        pname: str,
-        platform: str,
-        derivation_json: str,
-        cpu_user_us: int | None,
-        cpu_system_us: int | None,
-        duration_ms: int,
-    ) -> None:
-        """Record build statistics for a derivation."""
+    async def record_build_observation(self, identity: DerivationIdentity, observation: BuildObservation) -> None:
+        """Store one build's cost, and keep the newest `OBSERVATIONS_KEPT` of its identity and store."""
         if not self.active or self.read_only or not self.schema.usable:
             return
+        key = (identity.name, identity.system, identity.shape, observation.store_id)
         try:
             async with self.acquire_conn() as db:
                 await db.execute(
-                    INSERT_BUILD_STATS,
+                    INSERT_DERIVATION_SHAPE,
+                    (identity.shape, json.dumps(identity.keys), json.dumps(identity.features)),
+                )
+                await db.execute(
+                    INSERT_BUILD_OBSERVATION,
                     (
-                        pname,
-                        platform,
-                        derivation_json,
-                        cpu_user_us,
-                        cpu_system_us,
-                        duration_ms,
+                        *key,
+                        observation.status,
+                        observation.queued_ms,
+                        observation.inputs_ms,
+                        observation.inputs_bytes,
+                        observation.build_ms,
+                        observation.cpu_user_us,
+                        observation.cpu_system_us,
+                        observation.pull_ms,
+                        observation.pull_bytes,
                     ),
                 )
+                await db.execute(PRUNE_BUILD_OBSERVATIONS, (*key, *key, OBSERVATIONS_KEPT))
                 await db.commit()
         except aiosqlite.Error:
-            log.warning("record_build_stats_failed", pname=pname, exc_info=True)
+            log.warning("record_build_observation_failed", name=identity.name, exc_info=True)
 
-    async def get_build_stats_hint(
-        self,
-        pname: str,
-        platform: str,
-    ) -> int | None:
-        """Get an expected duration hint for a derivation (in ms).
+    async def expected_build_ms(self, identity: DerivationIdentity) -> int | None:
+        """The median time of the identity's recent `BUILT` builds, on any store.
 
-        Matches on pname + platform, returning the most recent duration.
-        Falls back to cross-platform average if no same-platform entry exists.
+        Falls back to the name and system under any shape: a derivation that
+        gained an attribute is still mostly the same build.
         """
         if not self.active or not self.schema.usable:
             return None
         try:
-            # 1. Most recent same-platform duration
-            async with self.execute(
-                QUERY_BUILD_STATS_HINT,
-                (pname, platform),
-            ) as cursor:
-                row = await cursor.fetchone()
-                if row:
-                    return int(row[0])
-
-            # 2. Fallback to platform-agnostic average for this pname
-            async with self.execute(
-                QUERY_BUILD_STATS_CROSS_PLATFORM,
-                (pname,),
-            ) as cursor:
-                row = await cursor.fetchone()
-                if row and row[0] is not None:
-                    return int(row[0])
-        except (aiosqlite.Error, ValueError):
-            log.debug("get_build_stats_hint_failed", pname=pname, exc_info=True)
+            for query, params in (
+                (QUERY_BUILD_MS_OF_SHAPE, (identity.name, identity.system, identity.shape, OBSERVATIONS_KEPT)),
+                (QUERY_BUILD_MS_OF_NAME, (identity.name, identity.system, OBSERVATIONS_KEPT)),
+            ):
+                async with self.execute(query, params) as cursor:
+                    rows = await cursor.fetchall()
+                if rows:
+                    return int(statistics.median(int(row[0]) for row in rows))
+        except aiosqlite.Error:
+            log.debug("expected_build_ms_failed", name=identity.name, exc_info=True)
         return None
 
     async def flush_references(self) -> None:

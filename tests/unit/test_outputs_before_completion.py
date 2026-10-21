@@ -57,6 +57,8 @@ class FakeBuild:
     build_id = "b1"
     assigned_store_id: StoreId | None = None
     options = None
+    enqueued_at = 0.0
+    started_at: float | None = None
 
     def __init__(self) -> None:
         self.messages: list[str] = []

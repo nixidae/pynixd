@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 from .derivation_output import DerivationOutput
 from .store_path import StorePath
 from .wire_message import WireField, WireModel
@@ -30,16 +28,6 @@ class BasicDerivation(WireModel):
         if not raw:
             return set()
         return set(raw.split())
-
-    def to_stats_json(self) -> str:
-        return json.dumps(
-            {
-                "builder": self.builder,
-                "outputs": list(self.outputs.keys()),
-                "system": self.env.get("system", self.platform),
-            },
-            sort_keys=True,
-        )
 
     @property
     def has_dynamic_outputs(self) -> bool:

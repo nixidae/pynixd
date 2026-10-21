@@ -6,8 +6,6 @@ All tests are pure — no I/O, no wire protocol.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from pynixd.serde import BasicDerivation, DerivationOutput, OutputKind
@@ -126,19 +124,6 @@ class TestBasicDerivation:
             "out": StorePath("/nix/store/abc-foo"),
             "lib": StorePath("/nix/store/abc-lib"),
         }
-
-    def test_to_stats_json(self):
-        drv = BasicDerivation(
-            outputs={"out": DerivationOutput(path="/nix/store/abc-foo")},
-            platform="x86_64-linux",
-            builder="/bin/sh",
-            args=["-c", "echo hi"],
-            env={"foo": "bar", "PATH": "/bin", "NIX_STUFF": "x"},
-        )
-        result = json.loads(drv.to_stats_json())
-        assert result["builder"] == "/bin/sh"
-        assert result["outputs"] == ["out"]
-        assert result["system"] == "x86_64-linux"
 
     def test_has_dynamic_outputs_true(self):
         drv = BasicDerivation(
