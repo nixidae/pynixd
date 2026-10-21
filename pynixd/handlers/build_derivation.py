@@ -59,7 +59,10 @@ class BuildDerivationHandler(Handler):
         if ctx.proxy.scheduler is None:
             raise RuntimeError("BuildDerivation requires a configured scheduler")
 
-        build_id, future = await ctx.proxy.scheduler.build_derivation(self_req)
+        # The client's options reach the builder, as the build hook's SetOptions
+        # does (`remote-store.cc:129`): `max-silent-time` and `timeout` apply.
+        options = ctx.proxy.client.options if ctx.proxy.client is not None else None
+        build_id, future = await ctx.proxy.scheduler.build_derivation(self_req, options=options)
         subscribed = False
         if ctx.proxy.client is not None:
             subscribed = await ctx.proxy.scheduler.queue.subscribe(

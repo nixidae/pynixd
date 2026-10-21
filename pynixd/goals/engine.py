@@ -74,10 +74,12 @@ def _build_failure_message(failed: list[Any]) -> str:
     `Store::buildPaths` of Nix collects the message of each failed goal, so
     this collects the `error_msg` of each failed result.
     """
-    parts = [str(item.result.error_msg) for item in failed if str(item.result.error_msg)]
-    if not parts:
-        return f"{len(failed)} of the requested paths failed to build"
-    return "; ".join(parts)
+    if len(failed) == 1 and str(failed[0].result.error_msg):
+        return str(failed[0].result.error_msg)
+    # `drvReq->to_string` or the substituted path: the derived path without
+    # its last output list, `^` between the levels.
+    names = sorted({"^".join(str(item.path).split("!")[:-1]) or str(item.path) for item in failed})
+    return "build of " + ", ".join(f"'{name}'" for name in names) + " failed"
 
 
 def _derivation_fingerprint(request: BuildDerivationRequest) -> str:

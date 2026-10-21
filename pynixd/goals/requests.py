@@ -13,6 +13,7 @@ from ..derived_path import DerivedPath
 from ..serde import (
     BuildPathsWithResultsRequest,
     BuildPathsWithResultsResponse,
+    BuildResultStatus,
     DerivedPath as SerdeDerivedPath,
     KeyedBuildResult,
 )
@@ -234,7 +235,8 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
                     )
                     await goals[index].unsubscribe(self.client)
                     continue
-                if self._another_root_carries_this_failure(result, index, goals):
+                # With keep-going every top goal answers (`entry-points.cc:92`).
+                if not keep_going and self._another_root_carries_this_failure(result, index, goals):
                     log.debug(
                         "root_goal_answered_by_another_root",
                         index=index,
@@ -243,7 +245,11 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
                     )
                     continue
                 results[index] = result
-                if not keep_going and not result_succeeded(result.result):
+                if (
+                    not keep_going
+                    and not result_succeeded(result.result)
+                    and result.result.status != BuildResultStatus.NO_SUBSTITUTERS
+                ):
                     stop.set()
 
         slots = self._build_slots()

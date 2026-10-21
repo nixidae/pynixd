@@ -138,16 +138,17 @@ class TestRemoteOnly:
 
     @pytest.mark.anyio
     async def test_fails_with_nix_message_when_no_builder_exists(self):
+        """Nix 2.35 answers InputRejected with this (`derivation-building-goal.cc:300`)."""
         scheduler, error = await _assign(NoLocalJobs.remote_only, remote=False, configured=False)
 
         assert scheduler.assigned == []
-        assert "either increase '--max-jobs' or enable remote builds" in error
+        assert "Reason: local builds are disabled (max-jobs = 0)" in error
 
     @pytest.mark.anyio
     async def test_fails_with_nix_message_when_no_builder_fits(self):
         _, error = await _assign(NoLocalJobs.remote_only, remote=False, configured=True)
 
-        assert "remote machines may not have all required system features" in error
+        assert "Reason: local builds are disabled (max-jobs = 0)" in error
 
     def test_is_the_default(self):
         assert StoreRankingSettings().no_local_jobs is NoLocalJobs.remote_only

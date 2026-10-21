@@ -192,6 +192,13 @@ class QueuedBuild:
         # ends the build when the last one lets go. A request holds once,
         # whatever number of its goals reach the derivation. Issue #91.
         self.holders: set[RequestId] = set()
+        self.standalone = 0
+        """Requests outside the goal system that want this build: op 36, or pynixd itself.
+
+        No goal request lets go for them, so a build one of them wants is
+        never cancelled for want of holders. In Nix two daemons never kill
+        each other's build (`derivation-building-goal.cc:421`).
+        nixidae/nixidae#1012."""
 
         # Guards add_subscriber replay vs post_log_bytes fanout so that a
         # joining client never misses bytes that arrive during catch-up.
@@ -496,6 +503,8 @@ class BuildQueue:
         # brings a limit of its own. `Scheduler._local_slot_is_full` reads
         # this. Issue #89.
         self._max_jobs: dict[RequestId, int | None] = {}
+        self._keeps_going: dict[RequestId, bool] = {}
+        """`keep-going` of each live goal request; a request with no options keeps going."""
         # The builds each goal request holds, so one release finds them all.
         self._held: dict[RequestId, set[BuildId]] = {}
         self.lock: anyio.Lock = anyio.Lock()
@@ -597,6 +606,7 @@ class BuildQueue:
         async with self.lock:
             if goal_request_id is not None:
                 self._max_jobs[goal_request_id] = None if options is None else int(options.max_build_jobs)
+                self._keeps_going[goal_request_id] = options is None or bool(options.keep_going)
             # Check for duplicate — dedup with queued or in-progress builds
             existing = self._by_path.get(drv_path)
             if existing is not None and not existing.is_done:
@@ -607,6 +617,8 @@ class BuildQueue:
                 # the two calls, by another request that let go in that moment.
                 if from_goal_path and goal_request_id is not None:
                     self._hold_locked(existing, goal_request_id)
+                if goal_request_id is None:
+                    existing.standalone += 1
                 if scheduler_request_id is not None:
                     existing.scheduler_request_ids.add(scheduler_request_id)
                     if derived_paths_for_request:
@@ -636,6 +648,8 @@ class BuildQueue:
             build.from_goal_path = from_goal_path
             if from_goal_path and goal_request_id is not None:
                 self._hold_locked(build, goal_request_id)
+            if goal_request_id is None:
+                build.standalone += 1
             self.next_id += 1
             self._queue.append(build)
             self._by_path[drv_path] = build
@@ -718,10 +732,11 @@ class BuildQueue:
                     continue
                 build.holders.discard(request_id)
                 build.scheduler_request_ids.discard(request_id)
-                if not build.holders and not build.is_done:
+                if not build.holders and not build.standalone and not build.is_done:
                     self._cancel_locked(build, "pynixd: build cancelled because no goal waits for it")
             self._given_up.discard(request_id)
             self._max_jobs.pop(request_id, None)
+            self._keeps_going.pop(request_id, None)
         await self.prune()
 
     async def get_pending(self) -> list[QueuedBuild]:
@@ -787,7 +802,9 @@ class BuildQueue:
         if build is not None:
             await build.stop_waiting_activities()
 
-    async def fail(self, build_id: BuildId, error_msg: str) -> None:
+    async def fail(
+        self, build_id: BuildId, error_msg: str, status: BuildResultStatus = BuildResultStatus.MISC_FAILURE
+    ) -> None:
         """Mark build as failed, resolve future with an error response."""
         await self._stop_waiting(build_id)
         async with self.lock:
@@ -798,7 +815,7 @@ class BuildQueue:
                     b.finished_at = time.monotonic()
                     response = BuildDerivationResponse(
                         result=BuildResult(
-                            status=BuildResultStatus.MISC_FAILURE,
+                            status=status,
                             error_msg=error_msg,
                             times_built=0,
                             is_non_deterministic=0,
@@ -837,10 +854,10 @@ class BuildQueue:
         """
         if BuildResultStatus(status).is_success:
             return
-        options = build.options
-        if options is None or options.keep_going:
-            return
-        self._given_up |= build.holders
+        # Each holder by its own option: `keepGoing` belongs to one worker
+        # (`worker.cc:173`). The build's own options are the first asker's.
+        # nixidae/nixidae#1012.
+        self._given_up |= {holder for holder in build.holders if not self._keeps_going.get(holder, True)}
 
     def nobody_wants(self, build: QueuedBuild) -> bool:
         """Has every goal system that wanted *build* already given up?
@@ -859,7 +876,7 @@ class BuildQueue:
         empty and every set contains the empty set. Such a build belongs to
         `build_derived_paths` or to pynixd itself, and no request ends it.
         """
-        return bool(build.holders) and build.holders <= self._given_up
+        return bool(build.holders) and build.holders <= self._given_up and not build.standalone
 
     async def cancel_unwanted(self, build_id: BuildId) -> None:
         """End a build that no live request wants, and answer everyone waiting.

@@ -358,7 +358,10 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         substitute = await self._try_substitute_path(store_path)
         if substitute is not None:
             return substitute
-        return goal_failure(f"pynixd: opaque path is not valid locally: {self.derived_path}", BuildResultStatus.UNKNOWN)
+        return goal_failure(
+            f"path '{store_path}' is required, but there is no substituter that can build it",
+            BuildResultStatus.NO_SUBSTITUTERS,
+        )
 
     @staticmethod
     def _opaque_success(store_path: StorePath) -> GoalResult:

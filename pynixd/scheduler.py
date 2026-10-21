@@ -31,7 +31,7 @@ from .config import NoLocalJobs
 from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from .exceptions import BackendError, InfrastructureError, error_text, leaves
 from .goals.results import result_succeeded
-from .serde import AddTempRootRequest, AddTempRootsRequest, LogNext, QueryValidPathsRequest
+from .serde import AddTempRootRequest, AddTempRootsRequest, BuildResultStatus, LogNext, QueryValidPathsRequest
 from .store import DaemonStore, LocalDBStore
 from .store.transfer import stream_paths_store_to_store
 from .store_path import StorePath
@@ -665,13 +665,14 @@ class Scheduler:
         return build.options is not None and int(build.options.max_build_jobs) == 0
 
     async def _fail_with_no_local_jobs(self, build: QueuedBuild) -> None:
-        """Nix's two answers at `worker.cc:351`: no builder at all, or none that fits."""
-        if any(store_id != self.local_store.store_id for store_id in self.stores):
-            reason = "remote machines may not have all required system features."
-        else:
-            reason = "either increase '--max-jobs' or enable remote builds."
-        error_msg = f"Unable to start any build; {reason}\n\nFor more information run 'man nix.conf' and search for '/machines'."
-        await self.queue.fail(build.build_id, error_msg)
+        """Nix 2.35's refusal of a `-j0` build that no builder takes (`derivation-building-goal.cc:300`)."""
+        error_msg = (
+            f"Cannot build '{build.request.drv_path}'.\n"
+            "Reason: local builds are disabled (max-jobs = 0)\n"
+            "Hint: set 'max-jobs' to a non-zero value to enable local builds, "
+            "or configure remote builders via 'builders'"
+        )
+        await self.queue.fail(build.build_id, error_msg, BuildResultStatus.INPUT_REJECTED)
 
     def request_has_a_local_slot(self, request_id: RequestId) -> bool:
         """Whether *request_id* runs fewer local builds than its `max-jobs`.
@@ -712,11 +713,29 @@ class Scheduler:
         build: QueuedBuild,
         build_features: set[str] | None,
     ) -> None:
-        """Permanently fail a build with no compatible store."""
-        error_msg = f"No compatible store for {build.request.derivation.platform}" + (
-            f" (requires {', '.join(sorted(build_features))})" if build_features else ""
-        )
-        await self.queue.fail(build.build_id, error_msg)
+        """Permanently fail a build with no compatible store, in Nix 2.35's words.
+
+        `reject` at `derivation-building-goal.cc:285` answers InputRejected
+        with "platform mismatch" or "missing system features". pynixd's
+        "current system" is every store it has, so it names what they offer.
+        """
+        platform = build.request.derivation.platform
+        offered: dict[str, set[str]] = {}
+        for store in self.stores.values():
+            for system, features in (getattr(store, "_feature_matrix", None) or {}).items():
+                offered.setdefault(system, set()).update(features)
+        error_msg = f"Cannot build '{build.request.drv_path}'."
+        if platform not in offered:
+            error_msg += (
+                f"\nReason: platform mismatch\nRequired system: '{platform}'"
+                f"\nCurrent system: '{', '.join(sorted(offered)) or 'none'}'"
+            )
+        else:
+            error_msg += (
+                f"\nReason: missing system features\nRequired features: {{{', '.join(sorted(build_features or ()))}}}"
+                f"\nAvailable features: {{{', '.join(sorted(offered[platform]))}}}"
+            )
+        await self.queue.fail(build.build_id, error_msg, BuildResultStatus.INPUT_REJECTED)
         for line in error_msg.split("\n"):
             await build.post_log_and_fanout(LogNext(text=f"pynixd: {line}\n"))
 
