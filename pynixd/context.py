@@ -4,6 +4,7 @@ Shared application context for pynixd dependencies.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -21,6 +22,25 @@ if TYPE_CHECKING:
     from .scheduler import Scheduler
     from .store.base import Store
     from .store.local_daemon import LocalStore
+
+
+OUTPUT_LOCATIONS_KEPT = 100_000
+"""How many backend locations pynixd remembers: about 20 MB at 200 bytes an entry."""
+
+
+class OutputLocations(OrderedDict[str, StoreId]):
+    """Where each pulled output lives, the newest `OUTPUT_LOCATIONS_KEPT` of them.
+
+    Every output pynixd ever pulled stayed here, so the map grew for the life
+    of the daemon. The local store holds a pulled path anyway; the entry only
+    serves a path the local collector removed since. nixidae/nixidae#1003.
+    """
+
+    def __setitem__(self, key: str, value: StoreId) -> None:
+        super().__setitem__(key, value)
+        self.move_to_end(key)
+        while len(self) > OUTPUT_LOCATIONS_KEPT:
+            self.popitem(last=False)
 
 
 @dataclass
@@ -47,7 +67,7 @@ class PynixdContext:
     exit; `Server.close` answers and closes them after closing the
     listeners. Issue #64.
     """
-    output_locations: dict[str, StoreId] = field(default_factory=dict)
+    output_locations: dict[str, StoreId] = field(default_factory=OutputLocations)
     """Where each output a backend built now lives.
 
     A fleet build leaves its outputs on the backend that ran it, and pynixd
