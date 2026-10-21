@@ -61,6 +61,7 @@ log = structlog.get_logger(__name__)
 
 _LINK_REREAD_SECONDS = 60.0
 """How long a store's measured link stands before the next read."""
+_PULL_ATTEMPTS = 3
 
 
 def _ms_since(started: float) -> int:
@@ -962,8 +963,6 @@ class Scheduler:
         outputs = build.request.derivation.output_paths()
         static_paths = {p for p in outputs.values() if p != StorePath("")}
         all_output_paths = static_paths | ca_output_paths
-        for path in all_output_paths:
-            self.ctx.output_locations[str(path)] = store.store_id
         log.info(
             "pulling_paths",
             store_id=store.store_id,
@@ -974,12 +973,40 @@ class Scheduler:
         # `finally`, so a failed pull keeps the rest. Issue #12.
         pull_started = time.monotonic()
         try:
-            pulled = await self._pull_outputs(store, all_output_paths)
+            pulled = await self._pull_with_retries(build, store, all_output_paths)
             if build.observation is not None:
                 build.observation.pull_ms = _ms_since(pull_started)
                 build.observation.pull_bytes = pulled
         finally:
             await self._record_observation(build, resp)
+        # After the pull, and not before it: `_ensure_opaque` answers success
+        # for a path named here, and a failed pull left nothing local to serve.
+        for path in all_output_paths:
+            self.ctx.output_locations[str(path)] = store.store_id
+
+    async def _pull_with_retries(self, build: QueuedBuild, store: DaemonStore, paths: StorePathSet) -> int:
+        """The pull, tried again when it fails: the build succeeded, and one dropped stream is no reason to fail it.
+
+        A 1.6 GB output once failed with "0 bytes read", and the same pull
+        worked minutes later. nixidae/nixidae#942. A pull again skips what
+        already arrived: it asks the local store which paths it holds.
+        """
+        attempt = 1
+        while True:
+            try:
+                return await self._pull_outputs(store, paths)
+            except Exception as e:
+                if attempt >= _PULL_ATTEMPTS:
+                    raise
+                log.warning(
+                    "output_pull_retrying",
+                    build_id=build.build_id,
+                    store_id=store.store_id,
+                    attempt=attempt,
+                    error=error_text(e),
+                )
+                await anyio.sleep(attempt)
+                attempt += 1
 
     async def _record_observation(self, build: QueuedBuild, resp: BuildDerivationResponse) -> None:
         """Write what this build cost, for the next build of the same identity.

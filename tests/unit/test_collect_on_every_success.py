@@ -119,6 +119,8 @@ class FakeScheduler:
         self.steps.append("collect")
         await Scheduler._collect_outputs(cast("Any", self), *args)  # noqa: SLF001 -- the method under test
 
+    _pull_with_retries = Scheduler._pull_with_retries  # noqa: SLF001 -- part of the collection
+
     async def _record_observation(self, _build: Any, resp: FakeResponse) -> None:
         self.steps.append(f"observed {resp.result.status.name}")
 
