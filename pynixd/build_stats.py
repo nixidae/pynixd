@@ -16,6 +16,8 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from nix_daemon_protocol.basic_derivation import structured_attrs
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
@@ -23,8 +25,6 @@ if TYPE_CHECKING:
 
 SHAPE_HEX_DIGITS = 16
 """64 bits of the SHA-256: no two shapes of one store meet by chance."""
-
-STRUCTURED_ATTRS = "__json"
 
 
 @dataclass(frozen=True)
@@ -75,21 +75,8 @@ def _attributes(derivation: BasicDerivation) -> dict[str, Any]:
     its environment names nothing else and every such derivation would share
     one shape.
     """
-    raw = derivation.env.get(STRUCTURED_ATTRS)
-    if raw is not None:
-        try:
-            parsed = json.loads(raw)
-        except ValueError:
-            return dict(derivation.env)
-        if isinstance(parsed, dict):
-            return parsed
-    return dict(derivation.env)
-
-
-def _features(attributes: dict[str, Any]) -> tuple[str, ...]:
-    raw = attributes.get("requiredSystemFeatures", ())
-    words = raw.split() if isinstance(raw, str) else [str(word) for word in raw]
-    return tuple(sorted(set(words)))
+    attrs = structured_attrs(derivation.env)
+    return dict(derivation.env) if attrs is None else attrs
 
 
 def identity_of(derivation: BasicDerivation) -> DerivationIdentity:
@@ -97,7 +84,7 @@ def identity_of(derivation: BasicDerivation) -> DerivationIdentity:
     pname = attributes.get("pname")
     name = str(pname) if pname else name_without_version(str(attributes.get("name", "")))
     keys = tuple(sorted(attributes))
-    features = _features(attributes)
+    features = tuple(sorted(derivation.required_system_features))
     digest = hashlib.sha256(json.dumps({"features": features, "keys": keys}).encode()).hexdigest()
     return DerivationIdentity(
         name=name,

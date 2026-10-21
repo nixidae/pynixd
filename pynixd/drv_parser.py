@@ -40,6 +40,8 @@ from typing import TYPE_CHECKING, ClassVar, TypedDict
 
 import anyio
 
+from nix_daemon_protocol.basic_derivation import required_features_of
+
 from .serde import BasicDerivation, DerivationOutput, OutputKind
 from .store_path import DrvOutput, StorePath
 from .utils import compress_hash, nix32_encode
@@ -169,15 +171,7 @@ class Derivation:
 
     @property
     def required_system_features(self) -> set[str]:
-        """Parse requiredSystemFeatures from the env dict.
-
-        Nix encodes this as a space-separated string in the derivation
-        environment, e.g. ``"recursive-nix uid-range"``.
-        """
-        raw = self.env.get("requiredSystemFeatures", "")
-        if not raw:
-            return set()
-        return set(raw.split())
+        return required_features_of(self.env)
 
     def output_paths(self) -> dict[str, StorePath]:
         """Return {output_name: output_path} for all outputs."""

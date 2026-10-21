@@ -291,7 +291,7 @@ class BuildAllocator:
 
     @staticmethod
     def strip_handled_features(build: QueuedBuild) -> None:
-        """Remove pynixd-handled features from requiredSystemFeatures in env.
+        """Remove pynixd-handled features from requiredSystemFeatures.
 
         Only strips features that pynixd has actually resolved. If the
         derivation still has CA or dynamic outputs, those features are
@@ -301,10 +301,7 @@ class BuildAllocator:
         whose builders don't support the corresponding protocol operations.
         """
 
-        raw = build.request.derivation.env.get("requiredSystemFeatures", "")
-        if not raw:
-            return
-        features = set(raw.split())
+        features = build.request.derivation.required_system_features
         stripped = features & PYNIXD_HANDLED_FEATURES
         if not stripped:
             return
@@ -321,8 +318,7 @@ class BuildAllocator:
         if not stripped:
             return
         remaining = features - stripped
-        new_val = " ".join(sorted(remaining))
-        build.request.derivation.env["requiredSystemFeatures"] = new_val
+        build.request.derivation.set_required_system_features(remaining)
         log.debug(
             "stripped_handled_features",
             build_id=build.build_id,
