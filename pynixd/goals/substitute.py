@@ -20,6 +20,9 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+UNSIGNED_REFUSAL = "lacks a signature by a trusted key"
+"""The words of `LocalStore::addToStore` when no trusted key signed a path (`local-store.cc:1049`)."""
+
 
 @dataclass(frozen=True)
 class SubstituteAttempt:
@@ -88,8 +91,11 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
         reference_results = await self.run_children(reference_goals)
         for reference_result in reference_results:
             if not reference_result.found:
+                # No substituter has the reference, so none can provide this
+                # path: Nix's `ecNoSubstituters`, after which the derivation
+                # builds (`derivation-goal.cc:124`).
                 return SubstituteAttempt(
-                    found=True,
+                    found=False,
                     result=goal_failure(
                         f"pynixd: cannot substitute {self.path}; missing reference",
                         BuildResultStatus.UNKNOWN,
@@ -101,11 +107,15 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
         log.info("substitute_path_import_start", path=str(self.path), store_id=candidate.store.store_id)
         import_result = await scheduler.substitution_queue.substitute(self.path)
         if not import_result.substituted:
+            # A substitute the daemon refused for its signature is one Nix
+            # never takes (`substitution-goal.cc:116`): no substituter, not a
+            # failed copy.
+            unsigned = UNSIGNED_REFUSAL in (import_result.error or "")
             return SubstituteAttempt(
-                found=True,
+                found=not unsigned,
                 result=goal_failure(
                     f"pynixd: failed to substitute {self.path}: {import_result.error}",
-                    BuildResultStatus.MISC_FAILURE,
+                    BuildResultStatus.TRANSIENT_FAILURE,
                 ),
             )
 

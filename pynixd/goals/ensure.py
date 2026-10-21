@@ -1294,7 +1294,16 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             if substituted is None:
                 return None
             if not result_succeeded(substituted.result):
-                return substituted
+                # `derivation-goal.cc:124`: a failed copy builds the derivation
+                # with `--fallback`, and fails it with this text without.
+                client = next((c for c in self._watchers if c.options is not None), None)
+                if client is not None and client.options is not None and client.options.try_fallback:
+                    return None
+                return goal_failure(
+                    f"some substitutes for the outputs of derivation '{self.derived_path.drv_path}' failed"
+                    " (usually happens due to networking issues); try '--fallback' to build derivation from source ",
+                    BuildResultStatus.TRANSIENT_FAILURE,
+                )
             results[output_name] = substituted.with_single_output(output_name, path)
 
         merged = goal_success()
