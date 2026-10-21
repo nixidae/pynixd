@@ -677,7 +677,12 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
                 IsValidPathRequest(path=StorePath(path=str(path))), mark=False
             )
             if not valid.valid:
-                return None
+                # A realisation outlives a collection of its path. Nix then
+                # substitutes the realised path (`derivation-goal.cc:113-122`)
+                # before it builds. nixidae/nixidae#1004.
+                substituted = await self._try_substitute_path(path)
+                if substituted is None or not result_succeeded(substituted.result):
+                    return None
             resolved_outputs[key.rpartition("!")[2]] = path
 
         answer = goal_success()
@@ -724,12 +729,21 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         """
         if not wanted or str(build_drv_path) == str(drv_path):
             return None
-        client = next((c for c in self._watchers if c.options is not None), None)
-        if not client_names_a_substituter(client):
-            return None
-
         resolved = await self.engine.ctx.local_store.read_derivation(str(build_drv_path))
         if resolved is None or resolved.is_impure:
+            return None
+
+        # **The local store first, for every client.** Nix 2.35 records a
+        # realisation under the resolved derivation (`derivation-goal.cc:240`),
+        # so a derivation the stock daemon built answers here. Measured: pynixd
+        # rebuilt such a derivation on a builder while `nix-daemon` answered at
+        # once. nixidae/nixidae#1004.
+        local = await self._valid_realisations(resolved, wanted, build_drv_path)
+        if local is not None:
+            return local
+
+        client = next((c for c in self._watchers if c.options is not None), None)
+        if not client_names_a_substituter(client):
             return None
 
         # **Build the derived path, and do not spell it.** `^` is the syntax a
@@ -759,8 +773,15 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             log.debug("resolved_realise_miss", drv_path=str(build_drv_path), reason=str(ex))
             return None
 
+        answer = await self._valid_realisations(resolved, wanted, build_drv_path)
+        log.debug("resolved_realise_answered", drv_path=str(build_drv_path), realised=answer is not None)
+        return answer
+
+    async def _valid_realisations(
+        self, resolved: Derivation, wanted: set[str], build_drv_path: StorePath
+    ) -> GoalResult | None:
+        """The realisations of *resolved* in the local store, when every path they name is valid."""
         built = await realisations_of(resolved, wanted, self.engine.ctx.local_store, StorePath(str(build_drv_path)))
-        log.debug("resolved_realise_answered", drv_path=str(build_drv_path), realised=built is not None)
         if built is None:
             return None
 
