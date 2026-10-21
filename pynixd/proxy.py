@@ -23,6 +23,7 @@ from . import metrics, wire
 from ._lazy import ssh_connection_lost
 from .config import ScheduleMode
 from .connection import ClientConn
+from .derived_path import DerivedPath
 from .exceptions import ClosingError, OpNotImplementedError, error_text
 from .goals import GoalEngine
 from .handlers._base import HANDLER_REGISTRY
@@ -483,6 +484,15 @@ class DaemonProxy:
         ):
             # `daemon.cc:554,572`, before `startWork`, so Nix closes the connection.
             raise ClosingError("repairing is not allowed because you are not in 'trusted-users'")
+        if isinstance(request, BuildPathsRequest | BuildPathsWithResultsRequest | QueryMissingRequest):
+            # Nix parses each derived path while it reads the request, before
+            # `startWork` (`derived-path.cc:117`, `path.cc:12`), so a bad
+            # output name closes the session. nixidae/nixidae#1005.
+            for wire_path in request.derived_paths:
+                try:
+                    DerivedPath(wire_path.value)
+                except ValueError as exc:
+                    raise ClosingError(str(exc)) from exc
         if isinstance(request, BuildPathsWithResultsRequest):
             return await self.goal_engine.build_paths_with_results(request, client=self.client, hold=self.add_temp_root)
         if isinstance(request, BuildPathsRequest):

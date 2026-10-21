@@ -26,6 +26,8 @@ from pynixd.serde import (
     BuildPathsWithResultsRequest,
     BuildPathsWithResultsResponse,
     DerivedPath as SerdeDerivedPath,
+    IsValidPathRequest,
+    IsValidPathResponse,
 )
 
 if TYPE_CHECKING:
@@ -52,6 +54,10 @@ class RecordingStore:
     async def execute(self, request: Any, **kwargs: Any) -> Any:
         del kwargs
         self.executed.append(request)
+        # A missing `.drv` is first substituted (nixidae/nixidae#1005), and
+        # that asks whether the path is valid. Nothing else may reach here.
+        if isinstance(request, IsValidPathRequest):
+            return IsValidPathResponse(valid=False)
         raise AssertionError("the goal system ran, and a check must not reach it")
 
     async def read_derivation(self, drv_store_path: Any) -> None:
@@ -104,7 +110,7 @@ async def test_a_normal_build_still_runs_the_goal_system() -> None:
 
     # The fake store holds no derivation, so the goal fails. The name that
     # it asked for is the proof that the goal system ran at all.
-    with pytest.raises(BackendError, match="derivation not found"):
+    with pytest.raises(BackendError, match="failed to obtain derivation of"):
         await _engine(store).build_paths(request)
 
     assert store.derivations_read == [DRV]

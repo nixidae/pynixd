@@ -361,8 +361,13 @@ async def test_nested_goals_record_the_complete_output_chain(chain: tuple[str, .
 
 
 @pytest.mark.anyio
-async def test_a_chain_past_a_plain_output_records_that_output() -> None:
-    """`deepWrapper` asks for `!out` past `target`, which is not a derivation."""
+async def test_a_chain_past_a_plain_output_fails_as_nix_fails() -> None:
+    """`deepWrapper` asks for `!out` past `target`, which is not a derivation.
+
+    Measured with the stock nix-daemon 2.35.3: "error parsing derivation
+    '...-target': store path '...-target' is not a valid derivation path".
+    nixidae/nixidae#1005.
+    """
     requested: list[DerivedPath] = []
 
     class Child(FakeChildGoal):
@@ -387,7 +392,8 @@ async def test_a_chain_past_a_plain_output_records_that_output() -> None:
     result = await goal.result()
 
     assert requested == [dp.outer]
-    assert result.dynamic_paths[(StorePath(ROOT_DRV), "out", "out")] == StorePath(ROOT_OUT)
+    assert "is not a valid derivation path" in str(result.result.error_msg)
+    assert not result.dynamic_paths
 
 
 def test_dynamic_branches_with_the_same_output_name_resolve_separately() -> None:

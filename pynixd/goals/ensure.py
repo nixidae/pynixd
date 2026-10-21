@@ -10,7 +10,7 @@ import structlog
 
 from nix_daemon_protocol.exceptions import DaemonProtocolError
 
-from ..derived_path import DerivedPath, OutputsNames
+from ..derived_path import DerivedPath, OutputsAll, OutputsNames
 from ..drv_hash import output_hashes
 from ..drv_parser import ChildMapNode, to_basic_derivation
 from ..exceptions import BackendError
@@ -402,12 +402,13 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
                 BuildResultStatus.UNKNOWN,
             )
         if not inner_drv.is_derivation():
-            collapsed = outer_result.copy()
-            for output_name in self.derived_path.output_names:
-                collapsed.dynamic_paths[
-                    (self.derived_path.base_store_path(), *self.derived_path.chain, output_name)
-                ] = inner_drv
-            return collapsed
+            # `derivation-trampoline-goal.cc:117` reads the produced path as a
+            # derivation, and `requireDerivation` (`path.cc:76`) refuses one
+            # that is not. nixidae/nixidae#1005.
+            return goal_failure(
+                f"error parsing derivation '{inner_drv}': store path '{inner_drv.base()}' is not a valid derivation path",
+                BuildResultStatus.MISC_FAILURE,
+            )
 
         wrapped = self.derived_path.wrap(inner_drv)
         remainder_goal = await self.engine.get_ensure_derived_path_goal(wrapped, self.build_mode, self.substituter_ids)
@@ -427,20 +428,30 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         drv_path = StorePath(path=self.derived_path.drv_path)
         parsed = await self.engine.ctx.local_store.read_derivation(str(drv_path))
         if parsed is None:
-            return goal_failure(f"pynixd: derivation not found: {drv_path}", BuildResultStatus.UNKNOWN)
+            # `derivation-trampoline-goal.cc:78-112`: substitute the `.drv`
+            # first, and fail only when that fails. nixidae/nixidae#1005.
+            obtained = await self._try_substitute_path(drv_path)
+            if obtained is not None and result_succeeded(obtained.result):
+                parsed = await self.engine.ctx.local_store.read_derivation(str(drv_path))
+        if parsed is None:
+            return goal_failure(
+                f"failed to obtain derivation of '{drv_path}'",
+                BuildResultStatus.DEPENDENCY_FAILED,
+            )
 
-        requested_outputs = self.derived_path.output_names
-        if requested_outputs == {"*"}:
+        # `*` means every output only as the outputs spec. Inside a chain it
+        # is a literal name, which no derivation has (`derivation-goal.cc:376`).
+        if isinstance(self.derived_path.outputs, OutputsAll):
             selected_outputs = {output.name for output in parsed.outputs}
         else:
-            selected_outputs = requested_outputs
+            selected_outputs = self.derived_path.output_names
 
         known_outputs = {output.name for output in parsed.outputs}
         missing_outputs = selected_outputs - known_outputs
         if missing_outputs:
             return goal_failure(
-                f"pynixd: derivation {drv_path} does not define outputs: {', '.join(sorted(missing_outputs))}",
-                BuildResultStatus.UNKNOWN,
+                f"derivation '{drv_path}' does not have wanted outputs '{min(missing_outputs)}'",
+                BuildResultStatus.MISC_FAILURE,
             )
 
         early_outputs = {name: path for name, path in parsed.output_paths().items() if name in selected_outputs}
