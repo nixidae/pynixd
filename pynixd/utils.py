@@ -30,6 +30,22 @@ def nix32_encode(data: bytes) -> str:
     return "".join(result)
 
 
+def nix32_decode(text: str) -> bytes:
+    """The bytes `nix32_encode` wrote: `Hash::parse` of the Nix32 form."""
+    size = len(text) * 5 // 8
+    out = bytearray(size)
+    for n, char in enumerate(reversed(text)):
+        digit = NIX32_CHARS.index(char)
+        i, j = divmod(n * 5, 8)
+        out[i] |= (digit << j) & 0xFF
+        carry = digit >> (8 - j)
+        if i + 1 < size:
+            out[i + 1] |= carry
+        elif carry:
+            raise ValueError(f"invalid nix32 hash {text!r}")
+    return bytes(out)
+
+
 def compress_hash(data: bytes, new_size: int) -> bytes:
     """XOR-fold a hash digest into *new_size* bytes.
 

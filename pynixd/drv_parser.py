@@ -687,16 +687,8 @@ class _Parser:
         while self._pos < len(self._text) and self._text[self._pos] in " \t\n\r":
             self._pos += 1
 
-    _ESCAPE: ClassVar[dict[str, str]] = {
-        '"': '"',
-        "\\": "\\",
-        "/": "/",
-        "b": "\b",
-        "f": "\f",
-        "n": "\n",
-        "r": "\r",
-        "t": "\t",
-    }
+    _ESCAPE: ClassVar[dict[str, str]] = {"n": "\n", "r": "\r", "t": "\t"}
+    """`parseString` at `derivations.cc:188-205` maps these three, and any other `\\x` to `x`."""
 
     def parse_string(self) -> str:
         """Parse a quoted ATerm string with escape handling.
@@ -723,7 +715,6 @@ class _Parser:
                 parts.append(ch)
             else:
                 # Unknown escape — pass through
-                parts.append("\\")
                 parts.append(esc)
 
     def parse_string_list[T](self, tp: Callable[[str], T] = str) -> list[T]:

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, ClassVar
 import anyio
 import structlog
 
-from ..goals.resolution import _nix_drv_name, unparse_basic_derivation
+from ..goals.resolution import _nix_drv_name, canonical_derivation, unparse_basic_derivation
 from ..serde import BuildDerivationRequest, BuildDerivationResponse
 from ..serde.auth import Role
 from ..serde.context import ReadContext
@@ -40,6 +40,13 @@ class BuildDerivationHandler(Handler):
                 return None
             # `daemon.cc:642-653`: the client's path is not evidence, so Nix
             # writes the derivation and builds the path that it gets.
+            try:
+                canonical = canonical_derivation(self_req.derivation, _nix_drv_name(self_req.drv_path))
+            except ValueError as exc:
+                # `drv.type()` runs after `startWork`, so the session goes on.
+                await ctx.proxy.send_error(str(exc))
+                return None
+            self_req = self_req.model_copy(update={"derivation": canonical})
             name = f"{_nix_drv_name(self_req.drv_path)}.drv"
             text = unparse_basic_derivation(self_req.derivation)
             references = {str(path) for path in self_req.derivation.input_srcs}
