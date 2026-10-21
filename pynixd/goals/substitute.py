@@ -112,7 +112,7 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
             # failed copy.
             unsigned = UNSIGNED_REFUSAL in (import_result.error or "")
             return SubstituteAttempt(
-                found=not unsigned,
+                found=not (unsigned or import_result.gone),
                 result=goal_failure(
                     f"pynixd: failed to substitute {self.path}: {import_result.error}",
                     BuildResultStatus.TRANSIENT_FAILURE,

@@ -60,7 +60,7 @@ class ValidPathInfo(WireModel):
                         ref_path = ref if ref.startswith(store_prefix()) else f"{store_prefix()}{ref}"
                         data["references"].add(StorePath(path=ref_path))
             elif key == "Deriver":
-                if val:
+                if val and val != "unknown-deriver":
                     deriver = val if val.startswith(store_prefix()) else f"{store_prefix()}{val}"
                     data["deriver"] = StorePath(path=deriver)
                 else:

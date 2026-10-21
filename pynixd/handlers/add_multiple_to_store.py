@@ -19,6 +19,7 @@ from .. import metrics
 from ..exceptions import ClosingError
 from ..serde.auth import Role
 from ..serde.context import ReadContext, WriteContext
+from ..store.transfer import as_copied
 from ..wire import FramedReader, FramedWriter, NixReader, NixWriter, forward_raw
 from ._base import Handler
 
@@ -88,7 +89,7 @@ class AddMultipleToStoreHandler(Handler):
             resp = responses[0]
 
             # Update path info cache
-            ctx.proxy.local_store.add_path_infos(infos)
+            ctx.proxy.local_store.add_path_infos([as_copied(info) for info in infos])
             # The session holds each path, as Nix's worker does for its
             # client. nixidae/nixidae#1007.
             for info in infos:

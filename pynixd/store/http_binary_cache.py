@@ -20,7 +20,7 @@ from nix_daemon_protocol.store_dir import store_dir
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
 from .. import metrics
-from ..exceptions import OpNotImplementedError
+from ..exceptions import NarGone, OpNotImplementedError
 from ..serde import (
     IsValidPathRequest,
     IsValidPathResponse,
@@ -252,16 +252,26 @@ class HTTPBinaryCacheStore(Store):
             return None
         return raw, info
 
+    def nar_url(self, narinfo: HTTPNarInfo) -> str:
+        """The cache URL, a slash, and the narinfo's URL, as Nix's `getFile` builds it.
+
+        `urljoin` followed an absolute or `//host` URL out of the cache.
+        nixidae/nixidae#1008.
+        """
+        return f"{self.url.rstrip('/')}/{narinfo.url.lstrip('/')}"
+
     async def stream_nar(self, narinfo: HTTPNarInfo) -> AsyncIterator[bytes]:
         """Stream a decompressed NAR from the cache as an async byte iterator."""
 
         session = self._require_session()
-        nar_url = urljoin(self.url, narinfo.url)
+        nar_url = self.nar_url(narinfo)
         async with session.get(
             nar_url,
             raise_for_status=False,
             timeout=aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=60),
         ) as response:
+            if response.status in (403, 404):
+                raise NarGone(f"HTTP cache returned {response.status} for {nar_url}")
             if response.status != 200:
                 raise RuntimeError(f"HTTP cache returned {response.status} for {nar_url}")
             decompressor = _decompressor(narinfo.compression)
@@ -432,6 +442,13 @@ def _parse_narinfo(text: str, expected_path: StorePath | None) -> HTTPNarInfo | 
     url = fields.get("URL")
     if not path_raw or not url:
         return None
+    # Nix calls such a narinfo corrupt (`nar-info.cc:97-107`); it names no
+    # NAR that could be checked.
+    if not fields.get("NarHash") or _parse_int(fields.get("NarSize")) == 0:
+        log.warning(
+            "narinfo_corrupt", store_path=path_raw, nar_hash=fields.get("NarHash"), nar_size=fields.get("NarSize")
+        )
+        return None
 
     path = StorePath(path_raw)
     if expected_path is not None and path != expected_path:
@@ -444,7 +461,8 @@ def _parse_narinfo(text: str, expected_path: StorePath | None) -> HTTPNarInfo | 
     return HTTPNarInfo(
         path=path,
         url=url,
-        compression=fields.get("Compression", "none"),
+        # Absent or empty means bzip2 (`nar-info.cc:58`, `:122`), not none.
+        compression=fields.get("Compression") or "bzip2",
         file_hash=fields.get("FileHash", ""),
         file_size=_parse_int(fields.get("FileSize")),
         valid_path_info=valid_path_info,

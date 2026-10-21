@@ -53,6 +53,10 @@ class PynixdError(Exception):
     """Base for all pynixd errors."""
 
 
+class NarGone(PynixdError):
+    """A narinfo names a NAR the cache no longer serves: Nix's `SubstituteGone`."""
+
+
 class InfrastructureError(PynixdError):
     """Transport/connection failure (SSH down, EOF, timeout)."""
 

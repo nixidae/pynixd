@@ -216,9 +216,17 @@ async def _stream_checked(
     if peer_store_id is not None and direction is not None:
         metrics.record_store_transfer(peer_store_id, direction, moved, len(to_transfer))
 
-    # 4. Update destination store's knowledge.
-    dst.add_path_infos(to_transfer)
+    # 4. Update destination store's knowledge, as the destination registered
+    # it: a copy is never `ultimate` (`daemon.cc:516`). nixidae/nixidae#1008.
+    dst.add_path_infos([as_copied(info) for info in to_transfer])
     return moved
+
+
+def as_copied(info: ValidPathInfo) -> ValidPathInfo:
+    """*info* as a destination registers a copy: `ultimate` cleared (`daemon.cc:516`)."""
+    if not info.info.ultimate:
+        return info
+    return info.model_copy(update={"info": info.info.model_copy(update={"ultimate": False})})
 
 
 async def _stream_paths_over_conns(

@@ -10,7 +10,7 @@ from nix_daemon_protocol.logs import WireLogs
 from nix_daemon_protocol.nar_from_path import NarFromPathRequest
 
 from .. import metrics, wire
-from ..exceptions import ClosingError
+from ..exceptions import ClosingError, error_text
 from ..serde import QueryPathInfoRequest
 from ..serde.context import ReadContext, WriteContext
 from ._base import Handler
@@ -74,14 +74,21 @@ class NarFromPathHandler(Handler):
                 WriteContext(writer=ctx.proxy.w, version=ctx.version, features=ctx.proxy.standard_features)
             )
 
-            # 6. Stream unframed NAR bytes from daemon to client
-            if nar_size > 0:
-                await wire.forward_raw(conn.r, ctx.proxy.w, nar_size, on_bytes=meter.on_bytes)
-            else:
-                # No nar_size to count against, and the parse reports no
-                # lengths, so these bytes stay off the byte counter. The
-                # path and the duration still count in `finish` below.
-                await wire.stream_parse_nar(conn.r, ctx.proxy.w)
+            # 6. Stream unframed NAR bytes from daemon to client. A failure
+            # here comes after `STDERR_LAST`, so the client reads the NAR and
+            # nothing else: the session ends, as Nix's does when
+            # `narFromPath` throws after `stopWork` (`daemon.cc:918`).
+            # nixidae/nixidae#1008.
+            try:
+                if nar_size > 0:
+                    await wire.forward_raw(conn.r, ctx.proxy.w, nar_size, on_bytes=meter.on_bytes)
+                else:
+                    # No nar_size to count against, and the parse reports no
+                    # lengths, so these bytes stay off the byte counter. The
+                    # path and the duration still count in `finish` below.
+                    await wire.stream_parse_nar(conn.r, ctx.proxy.w)
+            except Exception as exc:
+                raise ClosingError(f"pynixd: the NAR of '{req.path}' broke off: {error_text(exc)}") from exc
 
         await ctx.proxy.w.drain()
         meter.finish()

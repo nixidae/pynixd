@@ -18,7 +18,7 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
 from . import metrics
-from .exceptions import OpNotImplementedError
+from .exceptions import NarGone, OpNotImplementedError, leaves
 from .serde import AddToStoreNarRequest, NarFromPathRequest, QueryPathInfoRequest, StorePath
 from .serde.context import ReadContext, WriteContext
 from .store import DaemonStore, is_http_binary_cache
@@ -110,6 +110,8 @@ class SubstitutionImportResult:
     path: StorePath
     candidate: SubstitutionCandidate | None = None
     error: str = ""
+    gone: bool = False
+    """The substituter no longer has the NAR; Nix treats that as no substitute (`substitution-goal.cc:270`)."""
 
 
 @dataclass(frozen=True)
@@ -491,7 +493,10 @@ class SubstitutionQueue:
         except Exception as exc:
             metrics.SUBSTITUTIONS.labels(result="error").inc()
             log.warning("substitution_import_failed", store_id=candidate.store.store_id, path=str(path), exc_info=True)
-            return SubstitutionImportResult(substituted=False, path=path, candidate=candidate, error=str(exc))
+            gone = any(isinstance(leaf, NarGone) for leaf in leaves(exc))
+            return SubstitutionImportResult(
+                substituted=False, path=path, candidate=candidate, error=str(exc), gone=gone
+            )
         else:
             metrics.SUBSTITUTIONS.labels(result="ok").inc()
             metrics.SUBSTITUTED_BYTES.inc(candidate.path_info.info.nar_size)
