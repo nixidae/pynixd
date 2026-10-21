@@ -765,7 +765,9 @@ class BuildQueue:
                     self._note_a_request_that_gave_up(b, response.result.status)
                     log.info("build_completed", build_id=build_id)
 
-                    status = "success" if response.result.status == BuildResultStatus.BUILT else "failure"
+                    # Every success: a builder that held the outputs answers
+                    # `ALREADY_VALID`, and nixidae/nixidae#998 counted it a failure.
+                    status = "success" if BuildResultStatus(response.result.status).is_success else "failure"
                     metrics.BUILDS_COMPLETED.labels(status=status).inc()
                     if b.build_time is not None:
                         metrics.BUILD_DURATION.observe(b.build_time)

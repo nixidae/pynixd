@@ -15,10 +15,19 @@ import contextlib
 from typing import Any, cast
 
 import pytest
+from prometheus_client import REGISTRY
 
 from nix_daemon_protocol.ids import StoreId
+from pynixd.build_queue import BuildQueue
 from pynixd.scheduler import Scheduler
-from pynixd.serde import BuildResultStatus
+from pynixd.serde import (
+    BasicDerivation,
+    BuildDerivationRequest,
+    BuildDerivationResponse,
+    BuildMode,
+    BuildResult,
+    BuildResultStatus,
+)
 from pynixd.store_path import StorePath
 
 PRODUCED_DRV = "/nix/store/d72wk730icpqmcjzfrxfpn22g2riadjd-kubecove.drv"
@@ -176,3 +185,22 @@ class TestAFailedBuild:
 
         assert scheduler.pulled == set()
         assert scheduler.steps == ["complete"]
+
+
+class TestTheCompletionMetric:
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("status", SUCCESSES_THAT_BUILT_NOTHING)
+    async def test_counts_every_success_as_one(self, status: BuildResultStatus):
+        queue = BuildQueue()
+        build_id, _ = await queue.enqueue(
+            BuildDerivationRequest(
+                drv_path=StorePath(path="/nix/store/00000000000000000000000000000001-trivial.drv"),
+                derivation=BasicDerivation(platform="x86_64-linux", builder="/bin/sh"),
+                build_mode=BuildMode.NORMAL,
+            )
+        )
+        before = REGISTRY.get_sample_value("pynixd_builds_completed_total", {"status": "success"}) or 0.0
+
+        await queue.complete(build_id, BuildDerivationResponse(result=BuildResult(status=status)))
+
+        assert REGISTRY.get_sample_value("pynixd_builds_completed_total", {"status": "success"}) == before + 1
