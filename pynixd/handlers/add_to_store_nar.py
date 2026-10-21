@@ -12,6 +12,7 @@ from nix_daemon_protocol.add_to_store_nar import (
 )
 
 from .. import metrics
+from ..exceptions import ClosingError
 from ..serde.auth import Role
 from ..serde.context import ReadContext, WriteContext
 from ..wire import forward_framed
@@ -47,6 +48,9 @@ class AddToStoreNarHandler(Handler):
             req = await AddToStoreNarRequest.from_reader(
                 ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
             )
+            # `daemon.cc:936`, before `startWork`: repair is not atomic.
+            if req.repair and ctx.role < Role.ADMIN:
+                raise ClosingError("you are not privileged to repair store paths")
             # `daemon.cc:909-912`. The connection is root's, so this is pynixd's to do.
             if ctx.role < Role.ADMIN:
                 req = req.model_copy(

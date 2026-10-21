@@ -10,7 +10,9 @@ from nix_daemon_protocol.add_to_store import AddToStoreResponse
 
 from .. import metrics
 from ..daemon_extensions.sign_path_info import SignPathInfoRequest
+from ..exceptions import ClosingError
 from ..serde import AddToStoreRequest
+from ..serde.auth import Role
 from ..serde.context import ReadContext, WriteContext
 from ..wire import forward_framed
 from ._base import Handler
@@ -45,6 +47,10 @@ class AddToStoreHandler(Handler):
             req = await AddToStoreRequest.from_reader(
                 ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
             )
+            # `daemon.cc:414`, before `startWork`: repair is not atomic, and
+            # the upstream connection is root's, so the daemon would allow it.
+            if req.repair and ctx.role < Role.ADMIN:
+                raise ClosingError("you are not privileged to repair paths")
 
             # 2. Write request header to daemon
             await req.to_writer(WriteContext.from_conn(conn))
