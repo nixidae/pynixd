@@ -28,7 +28,8 @@ from .allocator import BuildAllocator, RankedStore, TelemetryStoreRanker
 from .build_queue import BuildQueue, QueuedBuild
 from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from .exceptions import BackendError, InfrastructureError, error_text, leaves
-from .serde import AddTempRootRequest, AddTempRootsRequest, LogNext, QueryValidPathsRequest
+from .goals.results import result_succeeded
+from .serde import AddTempRootRequest, AddTempRootsRequest, BuildResultStatus, LogNext, QueryValidPathsRequest
 from .store import DaemonStore, LocalDBStore
 from .store.transfer import stream_paths_store_to_store
 from .store_path import StorePath
@@ -694,7 +695,12 @@ class Scheduler:
                 await self._prepare_build(build, store, conn)
                 await self._say_where_it_builds(build, store)
                 build_resp = await self._execute(build, store, conn)
-                if build_resp.result.status == 0:
+                # Every success, not `BUILT` alone. A builder that already
+                # holds the outputs answers `ALREADY_VALID`, and the local
+                # store still lacks them. A dynamic derivation's produced
+                # `.drv` then failed with "derivation not found" on each run
+                # until the builder collected it. nixidae/nixidae#998.
+                if result_succeeded(build_resp.result):
                     # The outputs first, and the completion after. It ran the
                     # other way round and logged a collection failure on the
                     # server, so a client held a successful BuildResult and
@@ -855,7 +861,7 @@ class Scheduler:
 
         Runs after a successful build execution.
         """
-        if resp.result.status != 0:
+        if not result_succeeded(resp.result):
             return
 
         # Pull outputs from remote store to local store
@@ -883,7 +889,9 @@ class Scheduler:
             count=len(all_output_paths),
         )
 
-        await self._record_build_stats(build, resp)
+        # An answer that built nothing measures nothing.
+        if resp.result.status == BuildResultStatus.BUILT:
+            await self._record_build_stats(build, resp)
         await self._pull_outputs(store, all_output_paths)
 
     async def _record_build_stats(
