@@ -73,6 +73,7 @@ class HTTPBinaryCacheStore(Store):
         """Configure HTTP binary cache from spec, normalising the base URL."""
         super().__init__(spec)
         self.url = _normalise_base_url(spec.url)
+        self.trusted = spec.trusted
         self.max_concurrent = spec.max_concurrent
         self.max_fail_ratio = spec.max_fail_ratio
         self.health_window = spec.health_window

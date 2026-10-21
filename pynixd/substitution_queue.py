@@ -71,6 +71,19 @@ class SubstitutionAvailability:
         return cls(available=True, nar_size=nar_size, download_size=nar_size)
 
 
+def _trusted_source(store: Store) -> bool:
+    """Whether a substitute from *store* skips the signature check.
+
+    NIX-DEVIATION (#27): `substitution-goal.cc:116` skips an unsigned
+    substitute before the download; pynixd learns it from the daemon's
+    refusal after the download. The cost is that download; reverse it once
+    pynixd reads `trusted-public-keys` itself. A builder or peer store is
+    trusted, by User's decision: its outputs carry no signature.
+    nixidae/nixidae#1008.
+    """
+    return not is_http_binary_cache(store) or store.trusted
+
+
 @dataclass(frozen=True)
 class SubstitutionCandidate:
     """Selected substituter source for one path."""
@@ -480,7 +493,7 @@ class SubstitutionQueue:
             request = AddToStoreNarRequest(
                 info=candidate.path_info,
                 repair=0,
-                dont_check_sigs=1,
+                dont_check_sigs=int(_trusted_source(candidate.store)),
             )
             await request.to_writer(WriteContext.from_conn(conn))
             await conn.w.drain()

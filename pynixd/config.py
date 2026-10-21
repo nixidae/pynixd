@@ -618,6 +618,13 @@ class HTTPBinaryCacheSpec(StoreSpecBase):
 
     type: Literal["http-binary-cache"] = "http-binary-cache"
     url: str
+    trusted: bool = False
+    """Import its paths without checking signatures, as Nix's `?trusted=1`.
+
+    `False` lets the local daemon check each path against its own
+    `trusted-public-keys`, as Nix does for a substituter (`substitution-goal.cc:236`).
+    A builder or peer store is always trusted: its outputs are unsigned.
+    nixidae/nixidae#1008."""
     max_concurrent: int | None = None
     max_fail_ratio: float = 0.5
     health_window: int = 10
