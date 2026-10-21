@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 import anyio
 import pytest
 
-from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
+from nix_daemon_protocol.ids import LOCAL_STORE_ID, BuildId, StoreId
 from pynixd.allocator import BuildAllocator, PreferLocal, RankedStore, TelemetryStoreRanker, pick_store
 from pynixd.build_queue import BuildQueue
 from pynixd.build_stats import ExpectedBytes, StoreLink, slot_wait_seconds, transfer_seconds
@@ -172,6 +172,8 @@ class AssignScheduler:
         self.stores: dict[StoreId, object] = {}
         self.assigned: list[StoreId] = []
 
+    _assign_one = Scheduler._assign_one  # noqa: SLF001 -- the assignment is the unit
+
     def _has_compatible_store(self, *_args: Any) -> bool:
         return True
 
@@ -192,15 +194,17 @@ class AssignScheduler:
         self.assigned.append(store.store_id)
 
 
+def _request(number: int, env: dict[str, str] | None = None) -> BuildDerivationRequest:
+    return BuildDerivationRequest(
+        drv_path=StorePath(path=f"/nix/store/{number:032d}-trivial.drv"),
+        derivation=BasicDerivation(platform="x86_64-linux", builder="/bin/sh", env=env or {}),
+        build_mode=BuildMode.NORMAL,
+    )
+
+
 async def _assign(env: dict[str, str]) -> AssignScheduler:
     queue = BuildQueue()
-    build_id, _ = await queue.enqueue(
-        BuildDerivationRequest(
-            drv_path=StorePath(path="/nix/store/00000000000000000000000000000001-trivial.drv"),
-            derivation=BasicDerivation(platform="x86_64-linux", builder="/bin/sh", env=env),
-            build_mode=BuildMode.NORMAL,
-        )
-    )
+    build_id, _ = await queue.enqueue(_request(1, env))
     scheduler = AssignScheduler(queue)
     await Scheduler._assign_to_stores(cast("Any", scheduler), [queue.by_id[build_id]], {}, {})  # noqa: SLF001 -- the assignment is the unit
     return scheduler
@@ -224,3 +228,38 @@ class TestALocalStoreUnderPressure:
         scheduler = await _assign({})
 
         assert scheduler.assigned == [REMOTE]
+
+
+class BrokenScheduler(AssignScheduler):
+    """`_transfer_seconds` raises for one build, as a database or a bad derivation can."""
+
+    def __init__(self, queue: BuildQueue, broken: BuildId) -> None:
+        super().__init__(queue)
+        self.broken = broken
+
+    async def _transfer_seconds(self, *args: Any) -> dict[StoreId, float]:
+        build: QueuedBuild = args[0]
+        if build.build_id == self.broken:
+            raise RuntimeError("an estimate that raises")
+        return {}
+
+
+class TestOneBrokenBuild:
+    """`Scheduler.start` caught a failure of the whole pass, and the next
+    pass met the same build first. So one such build held every other
+    build pending for good. nixidae/nixidae#1003."""
+
+    @pytest.mark.anyio
+    async def test_fails_alone_and_the_pass_goes_on(self):
+        queue = BuildQueue()
+        broken, broken_future = await queue.enqueue(_request(1))
+        healthy, _ = await queue.enqueue(_request(2))
+        scheduler = BrokenScheduler(queue, broken)
+
+        await Scheduler._assign_to_stores(  # noqa: SLF001 -- the assignment is the unit
+            cast("Any", scheduler), [queue.by_id[broken], queue.by_id[healthy]], {}, {}
+        )
+
+        assert scheduler.assigned == [REMOTE]
+        assert queue.by_id[healthy].is_building
+        assert "an estimate that raises" in str(broken_future.result().result.error_msg)

@@ -408,109 +408,127 @@ class Scheduler:
         self.held_by_pressure = set()
 
         for build in schedulable:
-            build_features = effective_required_features(build.request.derivation)
-
-            # Check if another pass already assigned this build
-            if build.is_building:
-                continue
-
-            # **A build that no live request wants does not take a slot.**
-            # This pass runs from the completion of the build that just
-            # failed, so without it the freed slot of `-j1` goes to the next
-            # build of a request that has already stopped. `main:build`
-            # measured 48 us between the goal system deciding and that build
-            # reaching the daemon, which is a race and not a margin.
-            #
-            # `BuildQueue.complete` writes the fact under its own lock and
-            # `Scheduler.execute_build` triggers this pass afterwards, so the
-            # answer is already there to read.
-            #
-            # **It ends the build rather than leaving it pending.** A goal of
-            # the same request can still be waiting for it -- an input of a
-            # root that has not answered -- and that root is what runs
-            # `release_request`, so a build left pending waits for a release that waits
-            # for the build. `cancel_unwanted` holds the measurement.
-            # Issue nixidae/nixidae#325.
-            if self.queue.nobody_wants(build):
-                log.debug("build_wanted_by_nobody", build_id=build.build_id)
-                await self.queue.cancel_unwanted(build.build_id)
-                continue
-
-            transfer = await self._transfer_seconds(build)
-            ranked = self.allocator.rank_stores(
-                build,
-                assigned_this_pass,
-                override_in_flight=override_in_flight,
-                transfer_seconds=transfer,
-            )
-
-            local_store = self.local_store
-            local_can_build = (
-                local_store.is_healthy
-                and not local_store.draining
-                and not build.is_blacklisted(local_store.store_id)
-                and local_store.supports_derivation(build.request.derivation.platform, build_features)
-            )
-            prefer_local = build.request.derivation.build_local and local_can_build
-            # Nix weighs no load for a `preferLocalBuild` derivation, so the
-            # local store stays a candidate under `min_schedule_score`.
-            # Dropped, the build waits for a slot no running build frees:
-            # PSI at 71 % on dynhetz hangs every `writeText` that way.
-            if prefer_local and not any(c.store_id == local_store.store_id for c in ranked):
-                ranked = RankedStores([*ranked, RankedStore(local_store.store_id, 0.0, local_store)])
-            local_is_fallback = not ranked and local_can_build
-
-            if not ranked and not local_is_fallback and not self._has_compatible_store(build, build_features):
-                await self._fail_no_compatible_store(build, build_features)
-                continue
-
-            if ranked or local_is_fallback:
-                candidates = list(ranked) if ranked else [RankedStore(local_store.store_id, 0.0, local_store)]
-                roomy = [c for c in candidates if self._has_build_room(c.store, running_builds, assigned_this_pass)]
-                if not roomy:
-                    self.held_by_pressure.add(build.build_id)
+            # One build that raises fails alone. The pass ran on, and the next
+            # pass met the same build first, so no build anywhere started.
+            try:
+                if await self._assign_one(build, override_in_flight, running_builds, assigned_this_pass):
                     waiting_slot.append(build)
-                    continue
-                rs = pick_store(
-                    roomy,
-                    local_store.store_id,
-                    local_slot_full=self._local_slot_is_full(build, running_builds, assigned_this_pass),
-                    prefer_local=PreferLocal(
-                        wait_seconds=self._local_wait_seconds(),
-                        transfer_seconds=transfer,
-                        weight=self.ranker.settings.prefer_local_weight,
-                    )
-                    if prefer_local
-                    else None,
-                )
-                if rs is None:
-                    waiting_slot.append(build)
-                    continue
-                log.debug(
-                    "build_assigned_to_store",
-                    build_id=build.build_id,
-                    store_id=rs.store_id,
-                    score=rs.score,
-                )
-                # Named here, and not in `execute_build` alone. The count of
-                # running builds reads this field, and a task that has not
-                # started yet would otherwise carry no store and go uncounted.
-                build.assigned_store_id = rs.store_id
-                self._spawn_worker(build, rs.store)
-                assigned_this_pass[rs.store_id] = assigned_this_pass.get(rs.store_id, 0) + 1
-            else:
-                # All compatible stores are busy, or this build can't be placed
-                all_compatible = [
-                    s
-                    for s in self.stores.values()
-                    if s.supports_derivation(build.request.derivation.platform, build_features)
-                ]
-                if all_compatible and all(build.is_blacklisted(s.store_id) for s in all_compatible):
-                    await self._fail_all_compatible_blacklisted(build, build_features, all_compatible)
-                    continue
-                waiting_slot.append(build)
+            except Exception as e:
+                log.exception("build_assignment_crashed", build_id=build.build_id)
+                reason = error_text(e)
+                await build.post_log_and_fanout(LogNext(text=f"pynixd: internal error, failing build: {reason}\n"))
+                await self.queue.fail(build.build_id, f"pynixd internal error: {reason}")
 
         return waiting_slot
+
+    async def _assign_one(
+        self,
+        build: QueuedBuild,
+        override_in_flight: dict[StoreId, int],
+        running_builds: dict[StoreId, int],
+        assigned_this_pass: dict[StoreId, int],
+    ) -> bool:
+        """Start *build* on a store, or fail it; answer whether it waits for a slot."""
+        build_features = effective_required_features(build.request.derivation)
+
+        # Check if another pass already assigned this build
+        if build.is_building:
+            return False
+
+        # **A build that no live request wants does not take a slot.**
+        # This pass runs from the completion of the build that just
+        # failed, so without it the freed slot of `-j1` goes to the next
+        # build of a request that has already stopped. `main:build`
+        # measured 48 us between the goal system deciding and that build
+        # reaching the daemon, which is a race and not a margin.
+        #
+        # `BuildQueue.complete` writes the fact under its own lock and
+        # `Scheduler.execute_build` triggers this pass afterwards, so the
+        # answer is already there to read.
+        #
+        # **It ends the build rather than leaving it pending.** A goal of
+        # the same request can still be waiting for it -- an input of a
+        # root that has not answered -- and that root is what runs
+        # `release_request`, so a build left pending waits for a release that waits
+        # for the build. `cancel_unwanted` holds the measurement.
+        # Issue nixidae/nixidae#325.
+        if self.queue.nobody_wants(build):
+            log.debug("build_wanted_by_nobody", build_id=build.build_id)
+            await self.queue.cancel_unwanted(build.build_id)
+            return False
+
+        transfer = await self._transfer_seconds(build)
+        ranked = self.allocator.rank_stores(
+            build,
+            assigned_this_pass,
+            override_in_flight=override_in_flight,
+            transfer_seconds=transfer,
+        )
+
+        local_store = self.local_store
+        local_can_build = (
+            local_store.is_healthy
+            and not local_store.draining
+            and not build.is_blacklisted(local_store.store_id)
+            and local_store.supports_derivation(build.request.derivation.platform, build_features)
+        )
+        prefer_local = build.request.derivation.build_local and local_can_build
+        # Nix weighs no load for a `preferLocalBuild` derivation, so the
+        # local store stays a candidate under `min_schedule_score`.
+        # Dropped, the build waits for a slot no running build frees:
+        # PSI at 71 % on dynhetz hangs every `writeText` that way.
+        if prefer_local and not any(c.store_id == local_store.store_id for c in ranked):
+            ranked = RankedStores([*ranked, RankedStore(local_store.store_id, 0.0, local_store)])
+        local_is_fallback = not ranked and local_can_build
+
+        if not ranked and not local_is_fallback and not self._has_compatible_store(build, build_features):
+            await self._fail_no_compatible_store(build, build_features)
+            return False
+
+        if ranked or local_is_fallback:
+            candidates = list(ranked) if ranked else [RankedStore(local_store.store_id, 0.0, local_store)]
+            roomy = [c for c in candidates if self._has_build_room(c.store, running_builds, assigned_this_pass)]
+            if not roomy:
+                self.held_by_pressure.add(build.build_id)
+                return True
+            rs = pick_store(
+                roomy,
+                local_store.store_id,
+                local_slot_full=self._local_slot_is_full(build, running_builds, assigned_this_pass),
+                prefer_local=PreferLocal(
+                    wait_seconds=self._local_wait_seconds(),
+                    transfer_seconds=transfer,
+                    weight=self.ranker.settings.prefer_local_weight,
+                )
+                if prefer_local
+                else None,
+            )
+            if rs is None:
+                return True
+            log.debug(
+                "build_assigned_to_store",
+                build_id=build.build_id,
+                store_id=rs.store_id,
+                score=rs.score,
+            )
+            # Named here, and not in `execute_build` alone. The count of
+            # running builds reads this field, and a task that has not
+            # started yet would otherwise carry no store and go uncounted.
+            build.assigned_store_id = rs.store_id
+            self._spawn_worker(build, rs.store)
+            assigned_this_pass[rs.store_id] = assigned_this_pass.get(rs.store_id, 0) + 1
+        else:
+            # All compatible stores are busy, or this build can't be placed
+            all_compatible = [
+                s
+                for s in self.stores.values()
+                if s.supports_derivation(build.request.derivation.platform, build_features)
+            ]
+            if all_compatible and all(build.is_blacklisted(s.store_id) for s in all_compatible):
+                await self._fail_all_compatible_blacklisted(build, build_features, all_compatible)
+                return False
+            return True
+        return False
 
     async def _transfer_seconds(self, build: QueuedBuild) -> dict[StoreId, float]:
         """Each remote store's expected delegation seconds for this build, where measured.

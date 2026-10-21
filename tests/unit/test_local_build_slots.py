@@ -274,6 +274,8 @@ class _AssignScheduler:
         self.stores: dict[StoreId, object] = {}
         self.executed: list[object] = []
 
+    _assign_one = Scheduler._assign_one  # noqa: SLF001 -- the assignment is the unit
+
     def _has_compatible_store(self, build: object, features: set[str]) -> bool:
         del build, features
         return True
