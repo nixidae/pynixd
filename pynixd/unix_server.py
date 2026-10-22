@@ -93,6 +93,7 @@ async def start_unix_server(
                 schedule_mode=schedule_mode or ScheduleMode.auto,
                 transport="unix",
                 hangup=lambda: wait_for_socket_hangup(fd),
+                pid=peer.pid,
             )
             await proxy.run()
         except Exception:

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, cast
 import anyio
 import structlog
 
-from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
+from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId, StoreId
 from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.wire_ops import WIRE_REGISTRY, WireResponse
 
@@ -97,8 +97,14 @@ class DaemonProxy:
         schedule_mode: ScheduleMode = ScheduleMode.auto,
         transport: str = "unknown",
         hangup: Callable[[], Awaitable[None]] | None = None,
+        pid: int | None = None,
     ) -> None:
         self.r = client_r
+        self.pid = pid
+        """The client's process, where the transport knows it (Unix only)."""
+        self.request_id: RequestId | None = None
+        """The goal request this session runs now: the key of `BuildRow.requests`
+        in `pynixd state`. nixidae/nixidae#767."""
         self._hangup = hangup
         """Returns when the client hangs up. `None` watches nothing."""
         self.connected_at = time.monotonic()
@@ -501,12 +507,17 @@ class DaemonProxy:
                     DerivedPath(wire_path.value)
                 except ValueError as exc:
                     raise ClosingError(str(exc)) from exc
-        if isinstance(request, BuildPathsWithResultsRequest):
-            return await self.goal_engine.build_paths_with_results(request, client=self.client, hold=self.add_temp_root)
-        if isinstance(request, BuildPathsRequest):
-            return await self.goal_engine.build_paths(request, client=self.client, hold=self.add_temp_root)
-        if isinstance(request, QueryMissingRequest):
-            return await self.goal_engine.query_missing(request, client=self.client)
+        if isinstance(request, BuildPathsWithResultsRequest | BuildPathsRequest | QueryMissingRequest):
+            engine = self.goal_engine
+            self.request_id = engine.request_id
+            try:
+                if isinstance(request, BuildPathsWithResultsRequest):
+                    return await engine.build_paths_with_results(request, client=self.client, hold=self.add_temp_root)
+                if isinstance(request, BuildPathsRequest):
+                    return await engine.build_paths(request, client=self.client, hold=self.add_temp_root)
+                return await engine.query_missing(request, client=self.client)
+            finally:
+                self.request_id = None
 
         if isinstance(request, QueryValidPathsRequest):
             self._force_substitute_on_destination(request)

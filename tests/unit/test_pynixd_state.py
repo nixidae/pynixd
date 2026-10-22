@@ -267,6 +267,8 @@ class _FakeSession:
     username: str
     connected_at: float
     current_op: tuple[str, float] | None
+    pid: int | None = None
+    request_id: int | None = None
 
 
 def test_clients_name_the_operation_each_session_runs() -> None:

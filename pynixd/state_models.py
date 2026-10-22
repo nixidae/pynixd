@@ -49,6 +49,8 @@ class BuildRow(_Model):
     """Goal requests that hold the build, given-up ones included."""
     subscribers: int = 0
     retries: int = 0
+    store_failures: dict[str, int] = {}
+    """Failures per store; a store at the retry limit takes this build no more."""
     building_s: float | None = None
     waits_for: str | None = None
     """A `WaitReason` for a pending build. A plain string, because a daemon
@@ -60,6 +62,9 @@ class ClientRow(_Model):
 
     transport: str
     user: str
+    pid: int | None = None
+    request: int | None = None
+    """The goal request it runs now: a key of `BuildRow.requests`."""
     connected_s: float
     op: str | None = None
     op_s: float | None = None

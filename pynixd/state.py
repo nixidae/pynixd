@@ -109,6 +109,7 @@ def _builds_section(ctx: PynixdContext) -> list[BuildRow]:
                 goal_holders=len(build.holders),
                 subscribers=len(build.subscribers),
                 retries=build.retries,
+                store_failures={str(store_id): count for store_id, count in build.store_failures.items()},
                 building_s=None if build.started_at is None else round(now - build.started_at, 1),
                 waits_for=None if build.is_building else pending_reason(scheduler, build, wanters),
             )
@@ -142,6 +143,8 @@ def _clients_section(ctx: PynixdContext) -> list[ClientRow]:
         ClientRow(
             transport=proxy.transport,
             user=proxy.username,
+            pid=proxy.pid,
+            request=None if proxy.request_id is None else int(proxy.request_id),
             connected_s=round(now - proxy.connected_at, 1),
             op=None if proxy.current_op is None else proxy.current_op[0],
             op_s=None if proxy.current_op is None else round(now - proxy.current_op[1], 1),
