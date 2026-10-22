@@ -66,10 +66,7 @@ async def _collect(scheduler: PullScheduler, store: Any = None) -> None:
 
 @pytest.fixture(autouse=True)
 def _no_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def instantly(_seconds: float) -> None:
-        return
-
-    monkeypatch.setattr("pynixd.scheduler.anyio.sleep", instantly)
+    monkeypatch.setattr("pynixd.scheduler._PULL_BACKOFF_SECONDS", 0.0)
 
 
 class TestAPullThatFails:

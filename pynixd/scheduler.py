@@ -65,6 +65,9 @@ log = structlog.get_logger(__name__)
 _LINK_REREAD_SECONDS = 60.0
 """How long a store's measured link stands before the next read."""
 _PULL_ATTEMPTS = 3
+_PULL_BACKOFF_SECONDS = 2.0
+"""The first wait before a pull again; it doubles. A test sets 0, not a
+patched `anyio.sleep`: nixidae/nixidae#1019."""
 
 
 _MACHINE_FAULTS = (
@@ -1166,7 +1169,7 @@ class Scheduler:
                     attempt=attempt,
                     error=error_text(e),
                 )
-                await anyio.sleep(2**attempt)
+                await anyio.sleep(_PULL_BACKOFF_SECONDS * 2 ** (attempt - 1))
                 attempt += 1
                 current = self.ctx.stores.get(store.store_id)
                 if isinstance(current, DaemonStore):

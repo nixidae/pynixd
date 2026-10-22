@@ -29,7 +29,6 @@ from contextlib import asynccontextmanager, closing
 from typing import TYPE_CHECKING
 
 import aiosqlite
-import anyio
 import pytest
 from pydantic import BaseModel, ConfigDict
 
@@ -394,7 +393,7 @@ class TestFlushingUnderContention:
                     yield conn
 
             monkeypatch.setattr(LocalStoreDB, "acquire_conn", flaky)
-            monkeypatch.setattr(anyio, "sleep", self._no_sleep)
+            db.flush_retry_seconds = 0.0
             db.mark_path(HELLO)
             await db.flush_references()
 
@@ -418,7 +417,7 @@ class TestFlushingUnderContention:
                 yield
 
             monkeypatch.setattr(LocalStoreDB, "acquire_conn", always_locked)
-            monkeypatch.setattr(anyio, "sleep", self._no_sleep)
+            db.flush_retry_seconds = 0.0
             db.mark_path(HELLO)
             await db.flush_references()
 
@@ -429,11 +428,6 @@ class TestFlushingUnderContention:
             # was written in three attempts.
             with closing(sqlite3.connect(db_path)) as conn:
                 assert conn.execute(f"SELECT * FROM {PATH_ACCESS_TABLE}").fetchall() == []
-
-    @staticmethod
-    async def _no_sleep(delay: float) -> None:
-        """Backoff without the wait: the attempts are what this tests."""
-        return None
 
 
 @pytest.mark.anyio

@@ -410,6 +410,12 @@ class LocalStoreDB:
         self.store_path = store_path
         self.read_only: bool = read_only
         self.reference_flush_interval = reference_flush_interval
+        self.flush_retry_seconds = 1.0
+        """The first backoff of a flush the database refused; it doubles.
+
+        A test sets 0. Patching `anyio.sleep` instead hung CI: the loop is
+        shared, and a leaked `flush_loop` spun on the patched sleep without
+        yielding. nixidae/nixidae#1019."""
 
         self.pending_references: set[str] = set()
         """Seeds for runtime-closure expansion: full store paths named in
@@ -1021,7 +1027,7 @@ class LocalStoreDB:
                 if attempt >= 2:
                     log.exception("db_flush_failed")
                     break
-                await anyio.sleep(1 << attempt)
+                await anyio.sleep(self.flush_retry_seconds * (1 << attempt))
 
     async def _expand_closure(self, db: aiosqlite.Connection, query: str, seeds: set[str]) -> set[str]:
         """The closure of `seeds` under `query`, as path strings."""
