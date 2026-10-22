@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from .serde import (
         BuildDerivationRequest,
         BuildDerivationResponse,
+        BuildResult,
         SetOptionsRequest,
     )
 
@@ -63,6 +64,37 @@ log = structlog.get_logger(__name__)
 _LINK_REREAD_SECONDS = 60.0
 """How long a store's measured link stands before the next read."""
 _PULL_ATTEMPTS = 3
+
+
+_MACHINE_FAULTS = (
+    "No space left on device",
+    "Disk quota exceeded",
+    "Cannot allocate memory",
+    "Too many open files",
+    "Read-only file system",
+    "Input/output error",
+    "getting status of",
+    "is not valid",
+    "Killed",
+)
+"""Words in a failed build's message that blame the builder's machine, not the derivation."""
+
+
+def machine_fault(result: BuildResult) -> str | None:
+    """Why a failed result is the machine's fault, or `None` for the derivation's own failure.
+
+    Nix marks a build that failed with a full disk, or any unsandboxed build,
+    `TransientFailure` (`derivation-builder.cc:242-250`), and an error outside
+    the builder `MiscFailure` (`derivation-building-goal.cc:805`). The text
+    catches a disk that filled and emptied again before Nix looked.
+    """
+    if result_succeeded(result):
+        return None
+    status = BuildResultStatus(result.status)
+    if status in (BuildResultStatus.TRANSIENT_FAILURE, BuildResultStatus.MISC_FAILURE):
+        return status.name.lower()
+    message = str(result.error_msg)
+    return next((words for words in _MACHINE_FAULTS if words in message), None)
 
 
 def _ms_since(started: float) -> int:
@@ -492,6 +524,14 @@ class Scheduler:
         # PSI at 71 % on dynhetz hangs every `writeText` that way.
         if prefer_local and not any(c.store_id == local_store.store_id for c in ranked):
             ranked = RankedStores([*ranked, RankedStore(local_store.store_id, 0.0, local_store)])
+        # A store this build failed on goes after every store it has not
+        # tried, so a retry does not land on the same broken machine.
+        # nixidae/nixidae#1015.
+        if build.store_failures:
+            ranked = RankedStores(
+                [c for c in ranked if c.store_id not in build.store_failures]
+                + [c for c in ranked if c.store_id in build.store_failures]
+            )
         local_is_fallback = not ranked and local_can_build
 
         if not ranked and not local_is_fallback and not self._has_compatible_store(build, build_features):
@@ -852,6 +892,20 @@ class Scheduler:
                     await self.queue.complete(build.build_id, build_resp)
                     completed = True
                     self.trigger()
+                elif (fault := self._retryable_elsewhere(build, store, build_resp)) is not None:
+                    # The builder's machine failed, not the derivation: try
+                    # another store, the local one included, as a crashed
+                    # connection already does.
+                    # nixidae/nixidae#1015.
+                    log.warning(
+                        "build_failed_on_the_machine", build_id=build.build_id, store_id=store.store_id, fault=fault
+                    )
+                    await build.post_log_and_fanout(
+                        LogNext(text=f"pynixd: build failed on {store.store_id} ({fault}), retrying elsewhere\n")
+                    )
+                    build.reset_for_retry(store.store_id, str(build_resp.result.error_msg) or fault)
+                    build_resp = None
+                    self.trigger()
 
         except Exception as e:
             # Decided by the leaves: a task group on the way wraps a
@@ -872,6 +926,29 @@ class Scheduler:
         if build_resp is not None and not completed:
             await self.queue.complete(build.build_id, build_resp)
             self.trigger()
+
+    def _retryable_elsewhere(self, build: QueuedBuild, store: DaemonStore, resp: BuildDerivationResponse) -> str | None:
+        """The machine fault behind a failed result, when another store has not tried yet.
+
+        The local store is a store like the others here: a remote's fault
+        may fall back to it, and its own fault may move to a remote. It stays
+        out when the client forbids local builds (`--max-jobs 0`).
+        """
+        fault = machine_fault(resp.result)
+        if fault is None:
+            return None
+        platform = build.request.derivation.platform
+        features = effective_required_features(build.request.derivation)
+        local_forbidden = self._client_forbids_local(build)
+        untried = [
+            other
+            for other in self.stores.values()
+            if other.store_id != store.store_id
+            and other.store_id not in build.store_failures
+            and not (other.store_id == self.local_store.store_id and local_forbidden)
+            and other.supports_derivation(platform, features)
+        ]
+        return fault if untried else None
 
     async def _prepare_build(
         self,

@@ -115,6 +115,10 @@ class FakeScheduler:
     def trigger(self) -> None:
         return
 
+    def _retryable_elsewhere(self, *_args: Any) -> str | None:
+        """No other store: a failed result completes. nixidae/nixidae#1015."""
+        return None
+
     async def _prepare_build(self, *_args: Any) -> None:
         return
 

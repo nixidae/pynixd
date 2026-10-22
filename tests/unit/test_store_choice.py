@@ -264,3 +264,28 @@ class TestOneBrokenBuild:
         assert scheduler.assigned == [REMOTE]
         assert queue.by_id[healthy].is_building
         assert "an estimate that raises" in str(broken_future.result().result.error_msg)
+
+
+class TwoRemotesScheduler(AssignScheduler):
+    """The ranker puts REMOTE first and OTHER second."""
+
+    def __init__(self, queue: BuildQueue) -> None:
+        super().__init__(queue)
+        ranked = [
+            RankedStore(REMOTE, 0.0, cast("Any", FakeStore(REMOTE))),
+            RankedStore(OTHER, 0.0, cast("Any", FakeStore(OTHER))),
+        ]
+        self.allocator = SimpleNamespace(rank_stores=lambda *_a, **_k: list(ranked))
+
+
+@pytest.mark.anyio
+async def test_a_retry_goes_to_a_store_the_build_has_not_failed_on():
+    """sg1-n1 failed one missing input three times running. nixidae/nixidae#1015."""
+    queue = BuildQueue()
+    build_id, _ = await queue.enqueue(_request(1))
+    queue.by_id[build_id].reset_for_retry(REMOTE, "getting status of ...: No such file or directory")
+    scheduler = TwoRemotesScheduler(queue)
+
+    await Scheduler._assign_to_stores(cast("Any", scheduler), [queue.by_id[build_id]], {}, {})  # noqa: SLF001 -- the assignment is the unit
+
+    assert scheduler.assigned == [OTHER]
