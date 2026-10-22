@@ -32,6 +32,7 @@ from .._lazy import ssh_errors
 from ..config import PressureSettings
 from ..constants import FEATURE_REALISATION_WITH_PATH
 from ..drv_hash import output_hashes
+from ..drv_parser import drv_bytes, drv_text
 from ..exceptions import BackendError
 from ..monitor import ResourceMonitor
 from ..pressure import BuildLimit
@@ -474,7 +475,7 @@ class DaemonStore(Store):
         )
         await self.probe()
         async with self.transfer_conn() as conn:
-            response = await conn.call_with_payload(request, text.encode())
+            response = await conn.call_with_payload(request, drv_bytes(text))
         info = response.info
         self.add_path_info(info)
         return str(info.path)
@@ -1374,7 +1375,7 @@ class DaemonStore(Store):
             log.warning("drv_not_found", drv_path=str(drv_store_path), reason="not_regular_file")
             return None
 
-        return parse_drv(node.contents.decode())
+        return parse_drv(drv_text(node.contents))
 
 
 for _op, _method_name in {

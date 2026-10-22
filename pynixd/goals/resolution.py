@@ -30,7 +30,7 @@ import structlog
 
 from nix_daemon_protocol.store_dir import store_dir as current_store_dir
 
-from ..drv_parser import ChildMapNode, _aterm_escape
+from ..drv_parser import ChildMapNode, _aterm_escape, drv_bytes
 from ..serde import BasicDerivation, DerivationOutput, OutputKind
 from ..store_path import StorePath
 from ..utils import nix32_decode, nix32_encode
@@ -303,7 +303,7 @@ def _hash_derivation_modulo(
 ) -> dict[str, bytes]:
     """Compute the hashDerivationModulo for a BasicDerivation (one hash per output)."""
     aterm = _unparse_basic_derivation(drv, mask_outputs=mask_outputs)
-    h = hashlib.sha256(aterm.encode()).digest()
+    h = hashlib.sha256(drv_bytes(aterm)).digest()
     return dict.fromkeys(drv.outputs, h)
 
 

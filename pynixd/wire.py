@@ -115,7 +115,8 @@ class NixReader:
         return data
 
     async def read_string[T = str](self, tp: Callable[[str], T] = str) -> T:
-        return tp((await self.read_bytes()).decode("utf-8"))
+        # Bytes to Nix: each one round-trips through `str`. nixidae/nixidae#1010.
+        return tp((await self.read_bytes()).decode("utf-8", "surrogateescape"))
 
     async def read_string_list[T = str](self, tp: Callable[[str], T] = str) -> list[T]:
         count: int = await self.read_uint64()
@@ -396,7 +397,7 @@ class NixWriter:
             self.write(b"\0" * pad)
 
     def write_string(self, s: StrCoercible) -> None:
-        self.write_bytes(str(s).encode("utf-8"))
+        self.write_bytes(str(s).encode("utf-8", "surrogateescape"))
 
     def write_string_list(self, items: Iterable[StrCoercible]) -> None:
         items_list = list(items)

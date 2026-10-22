@@ -53,6 +53,22 @@ if TYPE_CHECKING:
 
     from .store_layout import StoreLayout
 
+DRV_TEXT_ERRORS = "surrogateescape"
+"""A derivation is bytes to Nix (`derivations.cc:224-275`, `:533-561`).
+
+An env value with byte 0xff builds under nix-daemon; a strict decode
+failed it in pynixd. Each byte round-trips through `str`. nixidae/nixidae#1010."""
+
+
+def drv_text(raw: bytes) -> str:
+    """Derivation bytes as text, losslessly."""
+    return raw.decode("utf-8", DRV_TEXT_ERRORS)
+
+
+def drv_bytes(text: str) -> bytes:
+    """Derivation text back to the bytes it came from."""
+    return text.encode("utf-8", DRV_TEXT_ERRORS)
+
 
 # Recursive type for input drv nodes in unparse.
 # (output_names, child_map, is_dynamic) where:
@@ -395,7 +411,7 @@ class Derivation:
             storePath = compress(digest, 20).toBase32 + "-" + name
         """
         store_dir = Path(store_dir)
-        raw = self.unparse(maskOutputs=False).encode()
+        raw = drv_bytes(self.unparse(maskOutputs=False))
         content_hash = hashlib.sha256(raw).hexdigest()
 
         drv_name = self.env.get("name", "unknown")
@@ -653,7 +669,7 @@ class Derivation:
             actual = {h: (outs, {}, False) for h, outs in input_drv_hashes.items()}
 
         aterm = self.unparse(maskOutputs=mask_outputs, actualInputs=actual)
-        h = hashlib.sha256(aterm.encode()).hexdigest()
+        h = hashlib.sha256(drv_bytes(aterm)).hexdigest()
         return {o.name: h for o in self.outputs}
 
 
@@ -1101,5 +1117,4 @@ async def read_drv_file(drv_store_path: StorePath | str, layout: StoreLayout) ->
     path = anyio.Path(layout.real_store_dir / name[len(prefix) :])
     if not await path.exists():
         return None
-    content = await path.read_text()
-    return parse_drv(content)
+    return parse_drv(drv_text(await path.read_bytes()))
