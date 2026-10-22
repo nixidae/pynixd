@@ -129,6 +129,12 @@ in
       # that uses one.
       before = lib.mkIf replace [ "multi-user.target" ];
       restartTriggers = [ configFile ];
+      # One restart job, not stop then start: a stop takes `pynixd.socket`
+      # down with the service, and the machine's daemon socket refused
+      # clients for 4 s of a switch (8 of 14 queries, `tests.handover`).
+      # nixpkgs sets the same on nix-daemon, for the same reason; pynixd has
+      # no `ExecStop` either.
+      stopIfChanged = false;
       # pynixd reads `trusted-users` and `allowed-users` with `nix config
       # show`, from the same Nix as nix-daemon.
       path = [ config.nix.package ];
