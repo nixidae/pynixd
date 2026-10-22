@@ -13,6 +13,7 @@ import anyio
 from pynixd.agent import AGENT_HELLO, AgentMonitor, agent_args, agent_for, local_monitor, read_agent_frame
 from pynixd.config import PressureSettings
 from pynixd.monitor import SAMPLED_FILES, GenericResourcePoller, ResourceMonitor, health_from_files
+from pynixd.psi import DiskSpace
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -34,6 +35,7 @@ def _frame(memory_full: float = 0.0, reason: str = "tick") -> bytes:
         + _file("/proc/pressure/io", PSI.format(full=0.0))
         + _file("/proc/meminfo", "MemTotal: 1000 kB\nMemAvailable: 900 kB\n")
         + _file("/proc/loadavg", "1.0 1.0 1.0 1/1 1\n")
+        + b"D 5 9\n"
         + f"E {reason} 1\n".encode()
     )
 
@@ -59,9 +61,10 @@ class Stream:
 
 
 async def test_a_frame_parses_every_file_and_the_reason() -> None:
-    files, reason = await read_agent_frame(Stream(_frame(memory_full=3.5, reason="memory"), hang=False))
-    assert reason == "memory"
-    assert set(files) == {
+    frame = await read_agent_frame(Stream(_frame(memory_full=3.5, reason="memory"), hang=False))
+    assert frame.reason == "memory"
+    assert frame.disk == DiskSpace(free_bytes=5, total_bytes=9)
+    assert set(frame.files) == {
         "/proc/pressure/cpu",
         "/proc/pressure/memory",
         "/proc/pressure/io",
@@ -71,8 +74,8 @@ async def test_a_frame_parses_every_file_and_the_reason() -> None:
 
 
 def test_the_args_arm_a_trigger_at_each_falling_mark() -> None:
-    args = agent_args(PressureSettings(interval=2.0, memory_full_high=2.0, io_full_high=25.0))
-    assert args == ["2000", "memory:full:40000:2000000", "io:full:500000:2000000"]
+    args = agent_args(PressureSettings(interval=2.0, memory_full_high=2.0, io_full_high=25.0), "/nix/store")
+    assert args == ["2000", "memory:full:40000:2000000", "io:full:500000:2000000", "/nix/store"]
 
 
 def test_the_agent_matches_a_system_of_the_builder() -> None:
@@ -100,6 +103,7 @@ async def test_samples_reach_the_handler_and_a_silent_agent_restarts() -> None:
     await _run(monitor, 0.5)
 
     assert seen and seen[0].psi is not None and seen[0].psi.memory.full_avg10 == 3.5
+    assert seen[0].disk == DiskSpace(free_bytes=5, total_bytes=9)
     assert seen[0].cores == 8.0
     assert len(launches) >= 2, "a silent channel must count as dead"
 
@@ -130,24 +134,25 @@ async def test_the_real_agent_speaks_what_the_parser_reads() -> None:
     proc = await asyncio.create_subprocess_exec(
         binary,
         # A long interval, so the frame after the first is the asked one.
-        *agent_args(PressureSettings(interval=10.0)),
+        *agent_args(PressureSettings(interval=10.0), "/"),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
     )
     assert proc.stdin is not None and proc.stdout is not None
     with anyio.fail_after(5):
         hello = (await proc.stdout.readline()).decode()
-        files, reason = await read_agent_frame(proc.stdout)
+        first = await read_agent_frame(proc.stdout)
         proc.stdin.write(b"\n")
-        _, asked = await read_agent_frame(proc.stdout)
+        asked = (await read_agent_frame(proc.stdout)).reason
         proc.stdin.close()
         rc = await proc.wait()
 
     assert hello.startswith(AGENT_HELLO)
-    assert reason == "tick"
+    assert first.reason == "tick"
     assert asked == "ask"
-    assert set(files) <= set(SAMPLED_FILES)
-    health, _ = health_from_files(files, None, float(hello.split()[2]))
+    assert set(first.files) <= set(SAMPLED_FILES)
+    assert first.disk is not None and 0 < first.disk.free_bytes <= first.disk.total_bytes
+    health, _ = health_from_files(first.files, None, float(hello.split()[2]))
     assert health.meminfo is not None and health.meminfo.mem_total > 0
     assert health.load1 is not None
     assert rc == 0

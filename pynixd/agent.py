@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -20,6 +21,7 @@ import anyio
 import structlog
 
 from .monitor import ResourceMonitor, create_monitor, health_from_files
+from .psi import DiskSpace
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Iterable
@@ -59,18 +61,30 @@ def agent_for(systems: Iterable[str], agents: dict[str, Path] | None) -> Path | 
     return next((agents[system] for system in systems if system in agents), None)
 
 
-def agent_args(settings: PressureSettings) -> list[str]:
-    """The interval, and a trigger at each high mark that lowers the limit."""
+def agent_args(settings: PressureSettings, disk_path: str | None = None) -> list[str]:
+    """The interval, a trigger at each high mark that lowers the limit, and the store to `statvfs`."""
     args = [str(int(settings.interval * 1000))]
     for resource, high in (("memory", settings.memory_full_high), ("io", settings.io_full_high)):
         stall = max(1, int(high / 100 * TRIGGER_WINDOW_US))
         args.append(f"{resource}:full:{stall}:{TRIGGER_WINDOW_US}")
+    if disk_path is not None:
+        args.append(disk_path)
     return args
 
 
-async def read_agent_frame(stream: AgentStream) -> tuple[dict[str, str | None], str]:
-    """One frame: the text of each file the agent read, and why it woke."""
+@dataclass(frozen=True)
+class AgentFrame:
+    files: dict[str, str | None]
+    """The text of each file the agent read."""
+    reason: str
+    """Why the agent woke: `tick`, `ask`, or the resource whose trigger fired."""
+    disk: DiskSpace | None = None
+
+
+async def read_agent_frame(stream: AgentStream) -> AgentFrame:
+    """One frame of the agent's output."""
     files: dict[str, str | None] = {}
+    disk: DiskSpace | None = None
     while True:
         line = await stream.readline()
         if not line:
@@ -79,8 +93,11 @@ async def read_agent_frame(stream: AgentStream) -> tuple[dict[str, str | None], 
         if tag == "F":
             path, _, size = rest.rpartition(" ")
             files[path] = (await stream.readexactly(int(size))).decode()
+        elif tag == "D":
+            free, _, total = rest.partition(" ")
+            disk = DiskSpace(free_bytes=int(free), total_bytes=int(total))
         elif tag == "E":
-            return files, rest.partition(" ")[0]
+            return AgentFrame(files, rest.partition(" ")[0], disk)
         else:
             raise ValueError(f"pynixd-agent sent {line[:80]!r}")
 
@@ -124,7 +141,8 @@ class AgentMonitor(ResourceMonitor):
     leaving the context ends the agent. A frame that does not come within
     three intervals counts as a dead channel, and the agent starts again.
     *fallback* runs when the agent never answered: a host that cannot run it
-    is polled another way.
+    is polled another way. *disk_path* is the store the agent reports the
+    filesystem of.
     """
 
     def __init__(
@@ -133,17 +151,19 @@ class AgentMonitor(ResourceMonitor):
         on_sample: Callable[[SystemHealth], None],
         launch: Callable[[list[str]], AbstractAsyncContextManager[AgentStream]],
         fallback: Callable[[], None],
+        disk_path: str | None = None,
     ) -> None:
         super().__init__(settings, on_sample)
         self.launch = launch
         self.fallback = fallback
+        self.disk_path = disk_path
 
     async def run(self) -> None:
         answered = False
         backoff = self.interval
         while self.running:
             try:
-                async with self.launch(agent_args(self.settings)) as stream:
+                async with self.launch(agent_args(self.settings, self.disk_path)) as stream:
                     with anyio.fail_after(self.interval * 3 + 10):
                         hello = (await stream.readline()).decode()
                     if not hello.startswith(AGENT_HELLO):
@@ -155,8 +175,9 @@ class AgentMonitor(ResourceMonitor):
                     stat: CgroupCpuStat | None = None
                     while self.running:
                         with anyio.fail_after(self.interval * 3):
-                            files, _ = await read_agent_frame(stream)
-                        health, stat = health_from_files(files, stat, cores)
+                            frame = await read_agent_frame(stream)
+                        health, stat = health_from_files(frame.files, stat, cores)
+                        health.disk = frame.disk
                         await self._publish_sample(health)
             except anyio.get_cancelled_exc_class():
                 raise

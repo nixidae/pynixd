@@ -172,8 +172,8 @@ class SSHStore(DaemonStore):
                 self.on_pressure_sample,
                 functools.partial(self._run_agent, conn),
                 fall_back,
+                disk_path=str(self.layout.store_dir),
             )
-            self.monitor.disk_fn = self._sftp_disk(conn)
             self.monitor.start()
         else:
             fall_back()

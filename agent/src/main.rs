@@ -1,6 +1,6 @@
 //! pynixd-agent: host samples for pynixd, over one SSH exec channel. Issue #98.
 //!
-//! usage: pynixd-agent INTERVAL_MS [RESOURCE:KIND:STALL_US:WINDOW_US]...
+//! usage: pynixd-agent INTERVAL_MS [RESOURCE:KIND:STALL_US:WINDOW_US | /PATH]...
 //!
 //! Writes one frame per wake to stdout and exits at EOF on stdin, so the
 //! channel's end is the agent's end. It wakes every INTERVAL_MS, at once when
@@ -9,6 +9,7 @@
 //!
 //! Output: `pynixd-agent 1 <cpus>\n`, then frames:
 //!   F <path> <length>\n<bytes>    once per readable file
+//!   D <free> <total>\n            bytes of the filesystem of /PATH, when given
 //!   E <reason> <uptime_ms>\n      reason: tick, ask, or the resource that fired
 //!
 //! The agent parses nothing. pynixd parses the files with the code that also
@@ -18,6 +19,7 @@
 //! `psi_trigger_poll`); only POLLPRI says it fired. Waiting for POLLIN on one
 //! wakes on every iteration.
 
+use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
@@ -47,16 +49,48 @@ struct PollFd {
     revents: i16,
 }
 
-extern "C" {
-    fn poll(fds: *mut PollFd, nfds: std::ffi::c_ulong, timeout: i32) -> i32;
+/// `struct statvfs` on 64-bit Linux, glibc and musl alike: 112 bytes.
+#[repr(C)]
+#[derive(Default)]
+#[allow(dead_code)]
+struct StatVfs {
+    bsize: u64,
+    frsize: u64,
+    blocks: u64,
+    bfree: u64,
+    bavail: u64,
+    files: u64,
+    ffree: u64,
+    favail: u64,
+    fsid: u64,
+    flag: u64,
+    namemax: u64,
+    spare: [i32; 6],
 }
 
-fn frame(reason: &str, start: Instant) -> Vec<u8> {
+extern "C" {
+    fn poll(fds: *mut PollFd, nfds: std::ffi::c_ulong, timeout: i32) -> i32;
+    fn statvfs(path: *const std::ffi::c_char, buf: *mut StatVfs) -> i32;
+}
+
+fn disk(path: &CString) -> Option<(u64, u64)> {
+    let mut st = StatVfs::default();
+    // SAFETY: `path` is NUL-terminated and `st` is a whole `struct statvfs`.
+    if unsafe { statvfs(path.as_ptr(), &mut st) } != 0 {
+        return None;
+    }
+    Some((st.bavail * st.frsize, st.blocks * st.frsize))
+}
+
+fn frame(reason: &str, start: Instant, store: Option<&CString>) -> Vec<u8> {
     let mut out = Vec::new();
     for path in FILES {
         let Ok(text) = std::fs::read(path) else { continue };
         out.extend_from_slice(format!("F {path} {}\n", text.len()).as_bytes());
         out.extend_from_slice(&text);
+    }
+    if let Some((free, total)) = store.and_then(disk) {
+        out.extend_from_slice(format!("D {free} {total}\n").as_bytes());
     }
     out.extend_from_slice(format!("E {reason} {}\n", start.elapsed().as_millis()).as_bytes());
     out
@@ -80,13 +114,15 @@ fn arm(spec: &str) -> std::io::Result<(String, File)> {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let Some(interval) = args.get(1).and_then(|a| a.parse::<u64>().ok()) else {
-        eprintln!("usage: pynixd-agent INTERVAL_MS [RESOURCE:KIND:STALL_US:WINDOW_US]...");
+        eprintln!("usage: pynixd-agent INTERVAL_MS [RESOURCE:KIND:STALL_US:WINDOW_US | /PATH]...");
         exit(2);
     };
     let interval = Duration::from_millis(interval.max(100));
 
+    let store = args[2..].iter().find(|a| a.starts_with('/')).and_then(|a| CString::new(a.as_str()).ok());
     let triggers: Vec<(String, File)> = args[2..]
         .iter()
+        .filter(|a| !a.starts_with('/'))
         .take(MAX_TRIGGERS)
         .filter_map(|spec| arm(spec).map_err(|e| eprintln!("pynixd-agent: trigger {spec}: {e}")).ok())
         .collect();
@@ -100,7 +136,7 @@ fn main() {
         }
     };
     emit(format!("pynixd-agent 1 {cpus}\n").as_bytes());
-    emit(&frame("tick", start));
+    emit(&frame("tick", start, store.as_ref()));
 
     let mut fds: Vec<PollFd> = std::iter::once(PollFd { fd: 0, events: POLLIN, revents: 0 })
         .chain(triggers.iter().map(|(_, f)| PollFd { fd: f.as_raw_fd(), events: POLLPRI, revents: 0 }))
@@ -134,7 +170,7 @@ fn main() {
         if reason.is_none() && Instant::now() < next {
             continue;
         }
-        emit(&frame(reason.unwrap_or("tick"), start));
+        emit(&frame(reason.unwrap_or("tick"), start, store.as_ref()));
         next = Instant::now() + interval;
     }
 }
