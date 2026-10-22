@@ -237,23 +237,27 @@ class BuildAllocator:
     ) -> RankedStores:
         """Rank stores for a build using the injected ranker."""
         build_features = effective_required_features(build.request.derivation)
-        candidates = []
 
         # The local store is a candidate like the others, and the last one:
         # the sort is stable, so a remote wins a tie, as when the local store
         # was only a fallback. nixidae/nixidae#1001.
         remotes = [store for store_id, store in self.stores.items() if store_id != self.local_store.store_id]
-        for store in [*remotes, self.local_store]:
-            if not store.is_healthy or store.draining or store.no_schedule:
-                continue
-            if not store.supports_derivation(build.request.derivation.platform, build_features):
-                continue
-            if build.is_blacklisted(store.store_id):
-                continue
-            if short_of_disk(store, getattr(self.ranker, "settings", StoreRankingSettings()), time.monotonic()):
-                continue
-
-            candidates.append(store)
+        capable = [
+            store
+            for store in [*remotes, self.local_store]
+            if store.is_healthy
+            and not store.draining
+            and not store.no_schedule
+            and store.supports_derivation(build.request.derivation.platform, build_features)
+            and not build.is_blacklisted(store.store_id)
+        ]
+        # A last-resort store is a candidate only when no other store can
+        # build this at all; load and disk do not count. nixidae/nixidae#1018.
+        if any(not getattr(store, "last_resort", False) for store in capable):
+            capable = [store for store in capable if not getattr(store, "last_resort", False)]
+        settings = getattr(self.ranker, "settings", StoreRankingSettings())
+        now = time.monotonic()
+        candidates = [store for store in capable if not short_of_disk(store, settings, now)]
 
         return self.ranker.rank_stores(
             build,

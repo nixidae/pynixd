@@ -224,6 +224,15 @@ class StoreSpecBase(BaseModel):
     scheduleable: bool = True
     priority: float = 1.0
     score_penalty: int = 0
+    last_resort: bool = False
+    """Build here only what no other store can: capability, never offload.
+
+    A derivation goes to a last-resort store only when no other healthy,
+    scheduleable store supports its system and features, or each that does
+    already failed it. Load, disk and the ranking do not count: a busy
+    regular store means wait, not move. For borrowed machines, such as the
+    nix-community builders. nixidae/nixidae#1018.
+    """
     gc_enabled: bool = True
     gc_max_age: int | None = None
     """Seconds since last reference after which a dead path may be collected.

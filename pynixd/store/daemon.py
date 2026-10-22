@@ -273,6 +273,7 @@ class DaemonStore(Store):
         self.scheduleable = spec.scheduleable
         self.priority = spec.priority
         self.score_penalty = spec.score_penalty
+        self.last_resort = spec.last_resort
         self.gc_enabled = spec.gc_enabled
         self.gc_max_age = spec.gc_max_age
         self.gc_target_usage = spec.gc_target_usage
