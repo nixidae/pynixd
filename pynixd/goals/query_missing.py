@@ -233,9 +233,6 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         if parsed is None:
             walk.plan.unknown.add(StorePath(path=str(drv_path)))
             return
-        if parsed.is_dynamic:
-            self._must_build(drv_path, parsed, walk)
-            return
 
         # **NIX-DEFECT (#23): `queryMissing` decides `knownOutputPaths` from
         # every output of the derivation, and it ignores the outputs that the

@@ -139,3 +139,37 @@ async def test_a_derivation_that_forbids_substitutes_builds():
 
     assert {str(path) for path in response.will_build} == {DRV}
     assert not response.will_substitute
+
+
+class ValidStore(Store):
+    def __init__(self, derivations: dict[str, Derivation], valid: set[str]) -> None:
+        super().__init__(derivations)
+        self.valid = valid
+
+    async def execute(self, request: Any, **_kwargs: Any) -> Any:
+        return IsValidPathResponse(valid=str(request.path) in self.valid)
+
+
+def _dynamic_format() -> Derivation:
+    """A `DrvWithVersion("xp-dyn-drv", ...)` derivation with a known output path."""
+    return Derivation(outputs=[DrvOutput(output_name="out", path=OUT, hash_algo="", hash_value="")], is_dynamic=True)
+
+
+@pytest.mark.anyio
+async def test_a_dynamic_format_derivation_whose_output_is_valid_plans_nothing():
+    """`misc.cc:203-225` reads the outputs of every derivation, the format aside."""
+    store = ValidStore({DRV: _dynamic_format()}, valid={OUT})
+
+    response = await _plan(f"{DRV}!out", {}, store)
+
+    assert not response.will_build
+
+
+@pytest.mark.anyio
+async def test_a_dynamic_format_derivation_whose_output_is_substitutable_is_fetched():
+    store = ValidStore({DRV: _dynamic_format()}, valid=set())
+
+    response = await _plan(f"{DRV}!out", {OUT: _available(10)}, store)
+
+    assert not response.will_build
+    assert {str(path) for path in response.will_substitute} == {OUT}

@@ -239,6 +239,7 @@ async def test_query_missing_reports_will_build_for_missing_derivation_output() 
 
 @pytest.mark.anyio
 async def test_query_missing_reports_will_build_for_dynamic_derivation() -> None:
+    """Its output is invalid and no substituter has it, so it builds, as any other would."""
     drv_path = "/nix/store/11111111111111111111111111111111-example.drv"
     out_path = "/nix/store/22222222222222222222222222222222-example"
     substitution_queue = FakeSubstitutionQueue({})
@@ -257,7 +258,6 @@ async def test_query_missing_reports_will_build_for_dynamic_derivation() -> None
     response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
 
     assert {str(path) for path in response.will_build} == {drv_path}
-    assert not substitution_queue.queries
 
 
 def _content_addressed(output_name: str = "out") -> Derivation:
