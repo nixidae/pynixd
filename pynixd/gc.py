@@ -722,7 +722,15 @@ class Collector:
                         deleted.update(got)
                         freed += response.bytes_freed
                         spared.update(set(group) - got)
-                        log.info("gc_chunk_deleted", requested=len(group), deleted=len(got), total=len(deleted))
+                        # The paths, so a later "path ... is not valid" can be
+                        # matched against what a pass took. nixidae/nixidae#16.
+                        log.info(
+                            "gc_chunk_deleted",
+                            requested=len(group),
+                            deleted=len(got),
+                            total=len(deleted),
+                            paths=sorted(got),
+                        )
                         await say(f"deleted {len(got)} paths, {len(deleted)} total")
             pending = [path for path in retry if path not in deleted]
 
