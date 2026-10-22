@@ -167,14 +167,20 @@ class TelemetryStoreRanker(StoreRanker):
             assigned = assigned_this_pass.get(store.store_id, 0)
             score -= assigned * self.settings.thundering_herd_penalty
 
+            score -= store.score_penalty
+
             # 6. Delegation Penalty (- points): the measured seconds of
             # moving inputs and outputs and of the dispatch round trip.
+            # It orders the stores and never drops one: it is the cost of
+            # this build, not the load of the store. Under the threshold, a
+            # 366 MB input put every idle builder below 0, and the build
+            # waited 20 minutes for a cost that never falls.
+            transfer_penalty = 0.0
             if transfer_seconds:
-                score -= transfer_seconds.get(store.store_id, 0.0) * self.settings.transfer_penalty_per_second
+                transfer_penalty = transfer_seconds.get(store.store_id, 0.0) * self.settings.transfer_penalty_per_second
 
-            score -= store.score_penalty
             if score >= self.settings.min_schedule_score or not has_resource_signal:
-                ranked.append(RankedStore(store.store_id, score * store.priority, store))
+                ranked.append(RankedStore(store.store_id, (score - transfer_penalty) * store.priority, store))
             else:
                 log.debug(
                     "store_ranking_below_threshold",

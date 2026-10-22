@@ -104,6 +104,35 @@ class TestTheRanking:
         assert _rank({REMOTE: 5.0}) == [LOCAL_STORE_ID, REMOTE]
 
 
+class TestTheMinimumScore:
+    """Load decides who is full, and a transfer cost only orders the stores.
+
+    dynhetz, 2026-10-22: a runCommand over a 366 MB source waited 20 minutes
+    in "scheduling". Its transfer cost put every idle sg1 builder below 0,
+    and load put the local store there."""
+
+    @staticmethod
+    def _rank(*, utilization: float, busy: int = 0, transfer: dict[StoreId, float] | None = None) -> list[StoreId]:
+        local = FakeStore(LOCAL_STORE_ID)
+        local.no_schedule = True
+        remote = FakeStore(REMOTE)
+        remote.cpu_util = SimpleNamespace(utilization=utilization)
+        remote.in_flight = busy
+        stores = {LOCAL_STORE_ID: local, REMOTE: remote}
+        ranker = TelemetryStoreRanker(cast("Any", SimpleNamespace(ranking=StoreRankingSettings())))
+        ranked = BuildAllocator(cast("Any", stores), cast("Any", local), ranker).rank_stores(
+            cast("Any", FakeBuild()), {}, transfer_seconds=transfer
+        )
+        return [candidate.store_id for candidate in ranked]
+
+    def test_a_large_transfer_keeps_an_idle_store(self):
+        assert self._rank(utilization=0.0, transfer={REMOTE: 50.0}) == [REMOTE]
+
+    def test_load_still_drops_a_store(self):
+        """Busy at 100 %: no CPU points, and a connection costs 50. Full is full."""
+        assert self._rank(utilization=100.0, busy=1) == []
+
+
 class TestAStoreNobodyCanMonitor:
     """A builder that refuses SFTP and exec still builds, after every store
     pynixd can see. nixidae/nixidae#1016."""
