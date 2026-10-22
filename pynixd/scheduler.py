@@ -1146,6 +1146,11 @@ class Scheduler:
         A 1.6 GB output once failed with "0 bytes read", and the same pull
         worked minutes later. nixidae/nixidae#942. A pull again skips what
         already arrived: it asks the local store which paths it holds.
+
+        Each attempt asks for the store by id. That "0 bytes read" was sg1-n1's
+        pynixd restarting: a reverse builder comes back as a new store object
+        under the same id, 3.25 s later, and the old object has no connection
+        left. The backoff (2 s, then 4 s) outlasts that.
         """
         attempt = 1
         while True:
@@ -1161,8 +1166,11 @@ class Scheduler:
                     attempt=attempt,
                     error=error_text(e),
                 )
-                await anyio.sleep(attempt)
+                await anyio.sleep(2**attempt)
                 attempt += 1
+                current = self.ctx.stores.get(store.store_id)
+                if isinstance(current, DaemonStore):
+                    store = current
 
     async def _record_observation(self, build: QueuedBuild, resp: BuildDerivationResponse) -> None:
         """Write what this build cost, for the next build of the same identity.
