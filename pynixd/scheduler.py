@@ -532,15 +532,15 @@ class Scheduler:
                 [c for c in ranked if c.store_id not in build.store_failures]
                 + [c for c in ranked if c.store_id in build.store_failures]
             )
-        local_is_fallback = not ranked and local_can_build
-
-        if not ranked and not local_is_fallback and not self._has_compatible_store(build, build_features):
+        # The local store is ranked like the others (nixidae/nixidae#1001). An
+        # empty ranking with a local store that can build means the ranking
+        # dropped it, for pressure or for disk, and it waits: full is full.
+        if not ranked and not local_can_build and not self._has_compatible_store(build, build_features):
             await self._fail_no_compatible_store(build, build_features)
             return False
 
-        if ranked or local_is_fallback:
-            candidates = list(ranked) if ranked else [RankedStore(local_store.store_id, 0.0, local_store)]
-            roomy = [c for c in candidates if self._has_build_room(c.store, running_builds, assigned_this_pass)]
+        if ranked:
+            roomy = [c for c in ranked if self._has_build_room(c.store, running_builds, assigned_this_pass)]
             if not roomy:
                 self.held_by_pressure.add(build.build_id)
                 return True

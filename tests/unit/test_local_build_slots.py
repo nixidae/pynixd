@@ -20,6 +20,7 @@ import anyio
 import pytest
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId, StoreId
+from pynixd.allocator import RankedStore
 from pynixd.build_queue import BuildQueue
 from pynixd.config import StoreRankingSettings
 from pynixd.scheduler import Scheduler
@@ -272,7 +273,9 @@ class _AssignScheduler:
     def __init__(self, queue: BuildQueue) -> None:
         self.queue = queue
         self.local_store = _LocalStore()
-        self.allocator = type("A", (), {"rank_stores": lambda *a, **k: []})()
+        # The local store is ranked like the others (nixidae/nixidae#1001).
+        local = RankedStore(self.local_store.store_id, 0.0, cast("Any", self.local_store))
+        self.allocator = type("A", (), {"rank_stores": lambda *a, **k: [local]})()
         self.stores: dict[StoreId, object] = {}
         self.executed: list[object] = []
 
