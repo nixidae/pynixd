@@ -119,7 +119,9 @@ async def _input_hashes(
     `pathDerivationModulo` runs for every entry of the map, and the derivation
     that it names has to be there.
     """
-    inputs: dict[str, list[str]] = {}
+    # A set, sorted: Nix's `StringSet` (`derivations.cc:951`). Two fixed-output
+    # inputs with one hash are one entry with one "out".
+    inputs: dict[str, set[str]] = {}
     wanted: list[tuple[str, list[str]]] = [(str(path), names) for path, names in parsed.input_drvs.items()]
     wanted += [(str(path), node.outputs) for path, node in parsed.dynamic_input_drvs.items()]
     for input_drv, output_names in wanted:
@@ -131,5 +133,5 @@ async def _input_hashes(
             if digest is None:
                 log.debug("drv_hash_output_missing", drv_path=input_drv, output=output_name)
                 return None
-            inputs.setdefault(digest, []).append(output_name)
-    return inputs
+            inputs.setdefault(digest, set()).add(output_name)
+    return {digest: sorted(names) for digest, names in inputs.items()}

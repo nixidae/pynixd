@@ -120,3 +120,43 @@ async def test_the_cache_answers_for_an_input_read_once() -> None:
 
     assert first == second
     assert reads == [BASE_PATH], "the second walk read nothing"
+
+
+TWO_FOD_A = "/nix/store/w3psnzp7b66mjjnc04q976pmmdasqa4m-same-fod.drv"
+TWO_FOD_B = "/nix/store/a07yqpa0yfw4m098mcdmjdcjwakhs1l3-same-fod.drv"
+_SAME_FOD = (
+    'Derive([("out","/nix/store/ydywmswmq70apbfjdh22c368p9kiy9nf-same-fod","sha256",'
+    '"8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4")],[],[],"x86_64-linux","/bin/sh",'
+    '["-c","echo {tag} >/dev/null; printf hi > $out"],[("builder","/bin/sh"),("name","same-fod"),'
+    '("out","/nix/store/ydywmswmq70apbfjdh22c368p9kiy9nf-same-fod"),'
+    '("outputHash","8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4"),'
+    '("outputHashAlgo","sha256"),("outputHashMode","flat"),("system","x86_64-linux")])'
+)
+TWO_FOD_TOP = (
+    'Derive([("out","/nix/store/4x12x70rdzaandydn28ms5z2m5a7mrgm-two-fod-top","","")],'
+    '[("/nix/store/a07yqpa0yfw4m098mcdmjdcjwakhs1l3-same-fod.drv",["out"]),'
+    '("/nix/store/w3psnzp7b66mjjnc04q976pmmdasqa4m-same-fod.drv",["out"])],[],"x86_64-linux","/bin/sh",'
+    '["-c","cat /nix/store/ydywmswmq70apbfjdh22c368p9kiy9nf-same-fod /nix/store/ydywmswmq70apbfjdh22c368p9kiy9nf-same-fod > $out"],'
+    '[("builder","/bin/sh"),("name","two-fod-top"),("out","/nix/store/4x12x70rdzaandydn28ms5z2m5a7mrgm-two-fod-top"),'
+    '("system","x86_64-linux")])'
+)
+
+
+@pytest.mark.anyio
+async def test_two_inputs_with_one_fixed_output_name_it_once() -> None:
+    """Two fixed-output inputs with one hash are one entry, `["out"]`.
+
+    `hashDerivationModulo` at `derivations.cc:951` collects the names in a
+    `StringSet`. A list wrote `["out","out"]`, and the hash named another
+    path. `nix-instantiate` wrote all three texts. nixidae/nixidae#1004.
+    """
+    texts = {TWO_FOD_A: _SAME_FOD.format(tag="a"), TWO_FOD_B: _SAME_FOD.format(tag="b")}
+
+    async def read(drv_path: str):
+        text = texts.get(drv_path)
+        return None if text is None else parse_drv(text)
+
+    hashes = await output_hashes(parse_drv(TWO_FOD_TOP), read, cache={})
+
+    assert hashes is not None
+    assert _rebuild("out", hashes["out"], "two-fod-top") == "/nix/store/4x12x70rdzaandydn28ms5z2m5a7mrgm-two-fod-top"
