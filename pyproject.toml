@@ -83,6 +83,11 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 anyio_mode = "auto"
+# Every thread's stack, when one test runs past this. The async timeout
+# (`hooks.py`) is a `fail_after` and cannot fire while the loop is blocked
+# or in a fixture: CI hung three times to its 45-minute limit with no trace
+# (nixidae/nixidae#1019).
+faulthandler_timeout = 300
 markers = [
     "nixbuild: tests that require eu.nixbuild.net access",
     "nixbuildnet: tests that require nixbuild.net access",
