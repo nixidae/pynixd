@@ -414,6 +414,12 @@ package
       nixVersions = supportedNix;
     };
 
+    # What an upgrade does to builds in flight; docs/design/upgrade-handover.md.
+    handover = pkgs.callPackage ./tests/derivations/handover {
+      inherit package;
+      inherit (sources) vivarium;
+    };
+
     daemonByNix = byNix daemon;
     switchByNix = byNix switch;
   };

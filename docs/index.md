@@ -22,3 +22,12 @@ notes/reentrancy
 notes/stores
 notes/trusted-users
 ```
+
+Designs: options weighed against measurements, and the one recommended.
+
+```{toctree}
+:maxdepth: 1
+:caption: Design
+
+design/upgrade-handover
+```
