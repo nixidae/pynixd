@@ -16,6 +16,7 @@ from pynixd.allocator import BuildAllocator, PreferLocal, RankedStore, Telemetry
 from pynixd.build_queue import BuildQueue
 from pynixd.build_stats import ExpectedBytes, StoreLink, slot_wait_seconds, transfer_seconds
 from pynixd.config import StoreRankingSettings
+from pynixd.psi import SystemHealth
 from pynixd.scheduler import Scheduler
 from pynixd.serde import BasicDerivation, BuildDerivationRequest, BuildMode, StorePath
 
@@ -321,6 +322,51 @@ async def test_a_build_whose_builders_are_full_does_not_hold_back_the_next():
     assert scheduler.assigned == [REMOTE]
     assert queue.by_id[other].is_building
     assert [build.build_id for build in waiting] == [blocked]
+
+
+class WakingScheduler(OnePressuredPoolScheduler):
+    """Enough of `Scheduler` for `schedule` and `on_sample`."""
+
+    def __init__(self, queue: BuildQueue, blocked: BuildId) -> None:
+        super().__init__(queue, blocked)
+        self.builds_waiting = False
+        self.triggered = 0
+
+    def _filter_schedulable(
+        self, pending: list[QueuedBuild]
+    ) -> tuple[list[QueuedBuild], dict[Any, int], dict[Any, int]]:
+        return pending, {}, {}
+
+    def _update_store_metrics(self) -> None:
+        return
+
+    def trigger(self) -> None:
+        self.triggered += 1
+
+    _assign_to_stores = Scheduler._assign_to_stores  # noqa: SLF001 -- part of the pass
+
+
+@pytest.mark.anyio
+async def test_a_sample_wakes_a_build_that_waits_for_a_store():
+    """A store that comes back by its figures alone triggered no pass, so
+    the build waited for an unrelated event. Found by the handover test,
+    2026-10-22. nixidae/nixidae#1016."""
+    queue = BuildQueue()
+    blocked, _ = await queue.enqueue(_request(1))
+    scheduler = WakingScheduler(queue, blocked)
+
+    await Scheduler.schedule(cast("Any", scheduler))
+    Scheduler.on_sample(cast("Any", scheduler), SystemHealth())
+
+    assert scheduler.builds_waiting
+    assert scheduler.triggered == 1
+
+    await queue.fail(blocked, "gone")
+    await Scheduler.schedule(cast("Any", scheduler))
+    Scheduler.on_sample(cast("Any", scheduler), SystemHealth())
+
+    assert not scheduler.builds_waiting
+    assert scheduler.triggered == 1, "with nothing waiting a sample costs no pass"
 
 
 class TwoRemotesScheduler(AssignScheduler):

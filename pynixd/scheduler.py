@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from .connection import ClientConn, Connection
     from .context import PynixdContext
     from .derived_path import DerivedPath
+    from .psi import SystemHealth
     from .serde import (
         BuildDerivationRequest,
         BuildDerivationResponse,
@@ -149,10 +150,14 @@ class Scheduler:
         self.held_by_pressure: set[BuildId] = set()
         """Builds the last pass left pending because each candidate store
         was at its build limit."""
+        self.builds_waiting = False
+        """Whether the last pass left a build waiting for a store."""
         self._links: dict[StoreId, tuple[float, StoreLink]] = {}
         """Each store's measured link, and when it was read."""
         for store in [*self.stores.values(), self.local_store]:
             store.on_capacity = self.trigger
+            if isinstance(store, DaemonStore):
+                store.sample_listeners.add(self.on_sample)
 
     @property
     def stores(self) -> dict[StoreId, DaemonStore]:
@@ -200,6 +205,7 @@ class Scheduler:
         if isinstance(store, DaemonStore) and not store.no_schedule:
             self.allocator.add_store(store)
             store.on_capacity = self.trigger
+            store.sample_listeners.add(self.on_sample)
         if dynamic and store.feature_matrix:
             self.add_dynamic_features(store.feature_matrix)
         self.trigger()
@@ -341,6 +347,18 @@ class Scheduler:
                     log.exception("scheduler_pass_failed")
                     await anyio.sleep(1.0)
 
+    def on_sample(self, health: SystemHealth) -> None:
+        """Run a pass on a store's sample while a build waits.
+
+        A store the ranking dropped, under `min_schedule_score` or short of
+        disk, comes back by its figures alone, and nothing else would wake
+        the loop: the build waited until an unrelated event. `on_capacity`
+        covers only a rising build limit. nixidae/nixidae#1016.
+        """
+        del health
+        if self.builds_waiting:
+            self.trigger()
+
     async def stop(self) -> None:
         """Stop the scheduler loop, which cancels every build."""
         self.running = False
@@ -361,12 +379,14 @@ class Scheduler:
         """
         pending = await self.queue.get_pending()
         if not pending:
+            self.builds_waiting = False
             self._update_store_metrics()
             return
 
         schedulable, override_in_flight, running_builds = self._filter_schedulable(pending)
 
         waiting_slot = await self._assign_to_stores(schedulable, override_in_flight, running_builds)
+        self.builds_waiting = bool(waiting_slot)
 
         self._update_store_metrics()
 
