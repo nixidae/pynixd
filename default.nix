@@ -2,7 +2,10 @@
   # Where every dependency lives, as directories. nix/sources.nix says how
   # this repository finds the umbrella that owns them.
   sources ? import ./nix/sources.nix,
+  # Another system's derivations build on a builder of it.
+  system ? builtins.currentSystem,
   pkgs ? import sources.nixpkgs {
+    inherit system;
     config.allowUnfree = true;
   },
 }:
