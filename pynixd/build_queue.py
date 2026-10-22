@@ -482,13 +482,26 @@ def _the_order_nix_takes(build: QueuedBuild) -> tuple[str, str, int]:
     return (name, path, int(build.build_id))
 
 
+def _dedup_key(request: BuildDerivationRequest) -> tuple[str, int]:
+    """The derivation and the build mode: a CHECK or REPAIR never joins a NORMAL build.
+
+    A NORMAL build's answer says nothing about determinism, and it repairs
+    nothing. Nix shares a goal only inside one worker (`worker.cc:116` keys
+    `derivationBuildingGoals` by path), and each client connection has its
+    own worker, so one client's check never rides another's build.
+    nixidae/nixidae#1012.
+    """
+    return (str(request.drv_path), int(request.build_mode))
+
+
 class BuildQueue:
     """Global queue for build operations with deduplication."""
 
     def __init__(self) -> None:
         """Initialize an empty build queue with deduplication indices."""
         self._queue: list[QueuedBuild] = []
-        self._by_path: dict[str, QueuedBuild] = {}  # drv_path -> build for dedup
+        self._by_path: dict[tuple[str, int], QueuedBuild] = {}
+        """Dedup: `_dedup_key` -> the build of that derivation and mode."""
         self._by_id: dict[BuildId, QueuedBuild] = {}  # For DAG lookups
         self._requests: dict[RequestId, SchedulerBuildRequest] = {}
         self.next_id = 1
@@ -546,8 +559,8 @@ class BuildQueue:
         return self._by_id
 
     @property
-    def by_path(self) -> Mapping[str, QueuedBuild]:
-        """Read-only mapping of drv_path to QueuedBuild."""
+    def by_path(self) -> Mapping[tuple[str, int], QueuedBuild]:
+        """Read-only mapping of (drv_path, build mode) to QueuedBuild."""
         return self._by_path
 
     @property
@@ -596,10 +609,9 @@ class BuildQueue:
         SchedulerBuildRequest. derived_paths_for_request maps this build to
         the original DerivedPaths it satisfies.
 
-        Deduplication uses drv_path as the identity — a .drv file is immutable,
-        so the same drv_path always means the same build.
+        Deduplication uses drv_path and the build mode as the identity — a .drv
+        file is immutable, so the same pair always means the same build.
         """
-        drv_path = str(request.drv_path)
         if from_goal_path and goal_request_id is None:
             raise RuntimeError("a goal build needs the goal request that holds it")
 
@@ -608,7 +620,7 @@ class BuildQueue:
                 self._max_jobs[goal_request_id] = None if options is None else int(options.max_build_jobs)
                 self._keeps_going[goal_request_id] = options is None or bool(options.keep_going)
             # Check for duplicate — dedup with queued or in-progress builds
-            existing = self._by_path.get(drv_path)
+            existing = self._by_path.get(_dedup_key(request))
             if existing is not None and not existing.is_done:
                 log.debug("build_deduped", id=existing.build_id)
                 existing.from_goal_path = existing.from_goal_path or from_goal_path
@@ -652,7 +664,7 @@ class BuildQueue:
                 build.standalone += 1
             self.next_id += 1
             self._queue.append(build)
-            self._by_path[drv_path] = build
+            self._by_path[_dedup_key(request)] = build
             self._by_id[build.build_id] = build
 
             if scheduler_request_id is not None and derived_paths_for_request:
@@ -964,8 +976,8 @@ class BuildQueue:
             for build_id, build in list(self._by_id.items()):
                 if id(build) in doomed:
                     del self._by_id[build_id]
-                    if self._by_path.get(str(build.request.drv_path)) is build:
-                        del self._by_path[str(build.request.drv_path)]
+                    if self._by_path.get(_dedup_key(build.request)) is build:
+                        del self._by_path[_dedup_key(build.request)]
         log.debug("builds_pruned", count=len(doomed))
 
     async def prune_request(self, request_id: RequestId) -> None:

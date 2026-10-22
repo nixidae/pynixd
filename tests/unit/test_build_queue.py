@@ -20,11 +20,13 @@ from pynixd.serde import (
 from pynixd.store_path import StorePath
 
 
-def _build_request(drv_path: StorePath, *, builder: str = "") -> BuildDerivationRequest:
+def _build_request(
+    drv_path: StorePath, *, builder: str = "", mode: BuildMode = BuildMode.NORMAL
+) -> BuildDerivationRequest:
     return BuildDerivationRequest(
         drv_path=StorePath(path=str(drv_path)),
         derivation=BasicDerivation(platform="x86_64-linux", builder=builder),
-        build_mode=BuildMode.NORMAL,
+        build_mode=mode,
     )
 
 
@@ -39,7 +41,22 @@ async def test_build_queue_deduplicates_active_builds_by_drv_path() -> None:
     assert second_id == first_id
     assert second_future is first_future
     assert len(queue.queue) == 1
-    assert queue.by_path[str(drv_path)].build_id == first_id
+    assert queue.by_path[(str(drv_path), int(BuildMode.NORMAL))].build_id == first_id
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("mode", [BuildMode.CHECK, BuildMode.REPAIR])
+async def test_a_check_or_repair_never_joins_a_normal_build(mode: BuildMode) -> None:
+    """A NORMAL answer proves no determinism and repairs nothing. nixidae/nixidae#1012."""
+    queue = BuildQueue()
+    drv_path = StorePath("/nix/store/00000000000000000000000000000001-test.drv")
+
+    normal_id, _ = await queue.enqueue(_build_request(drv_path))
+    other_id, _ = await queue.enqueue(_build_request(drv_path, mode=mode))
+    again_id, _ = await queue.enqueue(_build_request(drv_path, mode=mode))
+
+    assert other_id != normal_id
+    assert again_id == other_id
 
 
 @pytest.mark.anyio
