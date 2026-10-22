@@ -24,9 +24,17 @@ import structlog
 from nix_daemon_protocol.ids import LOCAL_STORE_ID
 
 from . import metrics, state
+from ._lazy import ssh_errors
 from .allocator import BuildAllocator, PreferLocal, RankedStore, RankedStores, TelemetryStoreRanker, pick_store
 from .build_queue import BuildQueue, QueuedBuild
-from .build_stats import BuildObservation, StoreLink, identity_of, slot_wait_seconds, transfer_seconds
+from .build_stats import (
+    BuildObservation,
+    ExpectedBytes,
+    StoreLink,
+    identity_of,
+    slot_wait_seconds,
+    transfer_seconds,
+)
 from .config import NoLocalJobs
 from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from .exceptions import BackendError, InfrastructureError, error_text, leaves
@@ -65,6 +73,8 @@ log = structlog.get_logger(__name__)
 _LINK_REREAD_SECONDS = 60.0
 """How long a store's measured link stands before the next read."""
 _PULL_ATTEMPTS = 3
+_MISSING_BYTES_TIMEOUT = 5.0
+"""Seconds a store has to say which inputs it holds, before its cost counts as unknown."""
 _PULL_BACKOFF_SECONDS = 2.0
 """The first wait before a pull again; it doubles. A test sets 0, not a
 patched `anyio.sleep`: nixidae/nixidae#1019."""
@@ -573,7 +583,11 @@ class Scheduler:
                 local_slot_full=self._local_slot_is_full(build, running_builds, assigned_this_pass),
                 prefer_local=PreferLocal(
                     wait_seconds=self._local_wait_seconds(),
-                    transfer_seconds=transfer,
+                    # Only a store whose input cost is known: a round trip
+                    # alone is no price for a delegation (`_missing_input_bytes`).
+                    transfer_seconds={
+                        store_id: seconds for store_id, seconds in transfer.items() if store_id in build.inputs_measured
+                    },
                     weight=self.ranker.settings.prefer_local_weight,
                 )
                 if prefer_local
@@ -610,17 +624,74 @@ class Scheduler:
         """Each remote store's expected delegation seconds for this build, where measured.
 
         Read once per build and store, and kept on the build: a pass ranks
-        every pending build again.
+        every pending build again. The input bytes are what the store lacks
+        now (`_missing_input_bytes`); the pull bytes are the identity's
+        history, since no output exists before the build.
         """
         if not isinstance(self.local_store, LocalDBStore):
             return {}
+        db = self.local_store.db
         identity = identity_of(build.request.derivation)
-        for store_id in self.stores:
-            if store_id == self.local_store.store_id or store_id in build.transfer_seconds:
-                continue
-            expected = await self.local_store.db.expected_bytes(identity, str(store_id))
-            build.transfer_seconds[store_id] = transfer_seconds(expected, await self._link(store_id))
+        platform = build.request.derivation.platform
+        features = effective_required_features(build.request.derivation)
+        todo = [
+            store
+            for store_id, store in self.stores.items()
+            if store_id != self.local_store.store_id
+            and store_id not in build.transfer_seconds
+            and store.is_healthy
+            and store.supports_derivation(platform, features)
+        ]
+        if not todo:
+            return self._known_transfer_seconds(build)
+        sizes = await self._input_closure_sizes(build)
+
+        async def measure(store: DaemonStore) -> None:
+            expected = await db.expected_bytes(identity, str(store.store_id))
+            link = await self._link(store.store_id)
+            missing = await self._missing_input_bytes(store, sizes)
+            build.transfer_seconds[store.store_id] = transfer_seconds(
+                ExpectedBytes(inputs=missing, pull=expected.pull), link
+            )
+            if missing is not None and (missing == 0 or link.send_bytes_per_s):
+                build.inputs_measured.add(store.store_id)
+
+        async with anyio.create_task_group() as tg:
+            for store in todo:
+                tg.start_soon(measure, store)
+        return self._known_transfer_seconds(build)
+
+    @staticmethod
+    def _known_transfer_seconds(build: QueuedBuild) -> dict[StoreId, float]:
         return {store_id: seconds for store_id, seconds in build.transfer_seconds.items() if seconds is not None}
+
+    async def _input_closure_sizes(self, build: QueuedBuild) -> dict[StorePath, int]:
+        """The NAR size of each path in the closure of the build's inputs."""
+        inputs = {StorePath(path=str(path)) for path in build.request.derivation.input_srcs}
+        if not inputs:
+            return {}
+        closure = await self.local_store.execute(QueryClosureWithInfoRequest(paths=inputs), client=None)
+        return {info.path: info.info.nar_size for info in closure.infos}
+
+    async def _missing_input_bytes(self, store: DaemonStore, sizes: Mapping[StorePath, int]) -> int | None:
+        """The NAR bytes of the input closure that *store* lacks: what delegating there sends.
+
+        The same `QueryValidPaths` the transfer itself asks
+        (`stream_paths_store_to_store`). History was a guess: home-manager's
+        `man-paths` had never run on sg1-n3, a round trip alone priced it
+        under a second, and it sent 9.3 GB in 648 s for a 0.3 s build.
+        `None` when the store does not answer in time; the cost is then unknown.
+        """
+        if not sizes:
+            return 0
+        try:
+            with anyio.fail_after(_MISSING_BYTES_TIMEOUT):
+                valid = await store.execute(QueryValidPathsRequest(paths=set(sizes), substitute=0))
+        except (TimeoutError, BackendError, InfrastructureError, OSError, EOFError, *ssh_errors()):
+            log.debug("missing_input_bytes_unknown", store_id=store.store_id, exc_info=True)
+            return None
+        held = set(valid.paths)
+        return sum(size for path, size in sizes.items() if path not in held)
 
     def _local_wait_seconds(self) -> float | None:
         running = [

@@ -421,3 +421,87 @@ async def test_a_retry_goes_to_a_store_the_build_has_not_failed_on():
     await Scheduler._assign_to_stores(cast("Any", scheduler), [queue.by_id[build_id]], {}, {})  # noqa: SLF001 -- the assignment is the unit
 
     assert scheduler.assigned == [OTHER]
+
+
+class BusyLocalScheduler(AssignScheduler):
+    """The local slot is full for 100 s, and a delegation's round trip is 0.3 s."""
+
+    def __init__(self, queue: BuildQueue, *, measured: bool) -> None:
+        super().__init__(queue)
+        self.measured = measured
+
+    async def _transfer_seconds(self, *args: Any) -> dict[StoreId, float]:
+        build: QueuedBuild = args[0]
+        if self.measured:
+            build.inputs_measured.add(REMOTE)
+        return {REMOTE: 0.3}
+
+    def _local_slot_is_full(self, *_args: Any) -> bool:
+        return True
+
+    def _local_wait_seconds(self) -> float | None:
+        return 100.0
+
+
+async def _assign_prefer_local(*, measured: bool) -> BusyLocalScheduler:
+    queue = BuildQueue()
+    build_id, _ = await queue.enqueue(_request(1, {"preferLocalBuild": "1"}))
+    scheduler = BusyLocalScheduler(queue, measured=measured)
+    await Scheduler._assign_to_stores(cast("Any", scheduler), [queue.by_id[build_id]], {}, {})  # noqa: SLF001 -- the assignment is the unit
+    return scheduler
+
+
+class TestAPreferLocalBuildNeverSentToTheStore:
+    """dynhetz, 2026-10-22: home-manager's `man-paths` had built locally 11
+    times and never on sg1-n3. Its input bytes there were unknown, and a
+    round trip alone priced the delegation under a second. It went, and
+    sent 9.3 GB in 648 s for a 0.3 s build."""
+
+    @pytest.mark.anyio
+    async def test_waits_while_its_inputs_there_are_unmeasured(self):
+        scheduler = await _assign_prefer_local(measured=False)
+
+        assert scheduler.assigned == []
+
+    @pytest.mark.anyio
+    async def test_goes_once_they_are_measured_and_the_wait_is_dearer(self):
+        scheduler = await _assign_prefer_local(measured=True)
+
+        assert scheduler.assigned == [REMOTE]
+
+
+class ValidityStore:
+    """A remote that holds *held*, or that does not answer."""
+
+    def __init__(self, held: set[str], *, broken: bool = False) -> None:
+        self.store_id = REMOTE
+        self.held = held
+        self.broken = broken
+
+    async def execute(self, request: Any, **_kwargs: Any) -> Any:
+        if self.broken:
+            raise ConnectionResetError("builder went away")
+        return SimpleNamespace(paths={path for path in request.paths if str(path) in self.held})
+
+
+SIZES = {StorePath("/nix/store/00000000000000000000000000000001-a"): 10 * MB}
+SIZES[StorePath("/nix/store/00000000000000000000000000000002-b")] = 30 * MB
+
+
+class TestTheMissingInputBytes:
+    """The bytes a delegation sends are the input closure the remote lacks,
+    as `QueryValidPaths` answers it."""
+
+    @pytest.mark.anyio
+    async def test_are_what_the_store_lacks(self):
+        store = ValidityStore({"/nix/store/00000000000000000000000000000001-a"})
+
+        missing = await Scheduler._missing_input_bytes(cast("Any", None), cast("Any", store), SIZES)  # noqa: SLF001 -- the estimate is the unit
+
+        assert missing == 30 * MB
+
+    @pytest.mark.anyio
+    async def test_are_unknown_when_the_store_does_not_answer(self):
+        store = ValidityStore(set(), broken=True)
+
+        assert await Scheduler._missing_input_bytes(cast("Any", None), cast("Any", store), SIZES) is None  # noqa: SLF001 -- the estimate is the unit

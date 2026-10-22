@@ -144,6 +144,8 @@ class QueuedBuild:
         """What this build cost, by phase, filled while `execute_build` runs."""
         self.transfer_seconds: dict[StoreId, float | None] = {}
         """Each remote store's expected delegation seconds, `None` where unmeasured."""
+        self.inputs_measured: set[StoreId] = set()
+        """The remote stores this build's identity has sent inputs to before."""
         self.last_output_at: float | None = None
         """When the upstream daemon last sent this build anything. A holder
         that is not the owner reads it for its own `max-silent-time`."""
