@@ -294,6 +294,35 @@ class TestOneBrokenBuild:
         assert "an estimate that raises" in str(broken_future.result().result.error_msg)
 
 
+class OnePressuredPoolScheduler(AssignScheduler):
+    """The first build's builders are all under `min_schedule_score`; the second's are not."""
+
+    def __init__(self, queue: BuildQueue, blocked: BuildId) -> None:
+        super().__init__(queue)
+        remote = RankedStore(REMOTE, 0.0, cast("Any", FakeStore(REMOTE)))
+        self.allocator = SimpleNamespace(
+            rank_stores=lambda build, *_a, **_k: [] if build.build_id == blocked else [remote]
+        )
+
+
+@pytest.mark.anyio
+async def test_a_build_whose_builders_are_full_does_not_hold_back_the_next():
+    """Full is full: the first build waits, and the queue is not FIFO behind it.
+    User's design, 2026-10-22."""
+    queue = BuildQueue()
+    blocked, _ = await queue.enqueue(_request(1))
+    other, _ = await queue.enqueue(_request(2))
+    scheduler = OnePressuredPoolScheduler(queue, blocked)
+
+    waiting = await Scheduler._assign_to_stores(  # noqa: SLF001 -- the assignment is the unit
+        cast("Any", scheduler), [queue.by_id[blocked], queue.by_id[other]], {}, {}
+    )
+
+    assert scheduler.assigned == [REMOTE]
+    assert queue.by_id[other].is_building
+    assert [build.build_id for build in waiting] == [blocked]
+
+
 class TwoRemotesScheduler(AssignScheduler):
     """The ranker puts REMOTE first and OTHER second."""
 
