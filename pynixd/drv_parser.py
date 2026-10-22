@@ -292,16 +292,16 @@ class Derivation:
             return False
         return any(not output.path for output in self.outputs)
 
-    @property
-    def should_resolve(self) -> bool:
+    def should_resolve(self, *, ca_derivations: bool) -> bool:
         """True when Nix writes a resolved derivation for this one, and builds that.
 
         `Derivation::shouldResolve` at `derivations.cc:1129`. A derivation with
         no input derivation has nothing to resolve. After that the type of the
         derivation decides: an input-addressed one resolves only when its
-        output is deferred, a content-addressed one always resolves, and an
-        impure one always resolves. An input that is the output of a dynamic
-        derivation also makes it resolve.
+        output is deferred, a floating content-addressed one and an impure one
+        always resolve, and a fixed-output one resolves only while the daemon
+        has `ca-derivations` on (`derivations.cc:1134`). An input that is the
+        output of a dynamic derivation also makes it resolve.
 
         **An input-addressed output belongs to the hash of the derivation that
         names it.** The resolved derivation is a different derivation, so the
@@ -323,7 +323,11 @@ class Derivation:
             return False
         if self.dynamic_input_drvs:
             return True
-        return any(kind is not OutputKind.INPUT_ADDRESSED for kind in self.output_kinds())
+        if all(kind is OutputKind.INPUT_ADDRESSED for kind in self.output_kinds()):
+            return False
+        if self.is_fixed_output:
+            return ca_derivations
+        return True
 
     def to_json(self, drv_path: StorePath | str) -> dict[str, NixDerivationShow]:
         """Serialize to the same JSON format as `nix derivation show`.

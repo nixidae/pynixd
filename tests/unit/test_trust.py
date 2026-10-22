@@ -164,10 +164,11 @@ def test_policy_from_nix_config_show():
         "build-users-group": {"value": "nixbld"},
         "substituters": {"value": ["https://cache.nixos.org/"]},
         "trusted-substituters": {"value": []},
+        "experimental-features": {"value": ["ca-derivations", "nix-command"]},
     }
-    assert TrustPolicy.from_nix_config(config) == TrustPolicy(("root", "@wheel"), ("*",), "nixbld"), (
-        "the default substituters are Nix's, so this equality also checks the two list fields"
-    )
+    assert TrustPolicy.from_nix_config(config) == TrustPolicy(
+        ("root", "@wheel"), ("*",), "nixbld", experimental_features=("ca-derivations", "nix-command")
+    ), "the default substituters are Nix's, so this equality also checks the two list fields"
 
 
 def test_peer_of_reads_this_process():

@@ -41,6 +41,7 @@ from pynixd.goals.substitute import SubstituteAttempt
 from pynixd.serde import BuildMode, IsValidPathResponse, QueryRealisationRequest, QueryRealisationResponse
 from pynixd.store_layout import StoreLayout
 from pynixd.store_path import DrvOutput, StorePath
+from pynixd.trust import TrustPolicy
 
 if TYPE_CHECKING:
     from pynixd.goals.engine import GoalEngine
@@ -188,6 +189,8 @@ class FakeSubstituteGoal:
 class FakeContext:
     def __init__(self) -> None:
         self.local_store = FakeLocalStore()
+        # The daemons these tests stand for resolve a fixed-output derivation.
+        self.trust = TrustPolicy(experimental_features=("ca-derivations",))
 
 
 class FakeEngine:

@@ -45,6 +45,8 @@ class TrustPolicy:
     build_users_group: str = ""
     substituters: tuple[str, ...] = ("https://cache.nixos.org/",)
     trusted_substituters: tuple[str, ...] = ()
+    experimental_features: tuple[str, ...] = ()
+    """The daemon's own: it ignores a client's (`_PASSED_TO_EVERYONE`)."""
 
     @classmethod
     def from_nix_config(cls, config: Mapping[str, Any]) -> TrustPolicy:
@@ -59,6 +61,7 @@ class TrustPolicy:
             build_users_group=value("build-users-group") or "",
             substituters=tuple(value("substituters")),
             trusted_substituters=tuple(value("trusted-substituters")),
+            experimental_features=tuple(value("experimental-features")) if "experimental-features" in config else (),
         )
 
 

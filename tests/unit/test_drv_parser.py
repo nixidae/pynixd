@@ -470,9 +470,17 @@ class TestOutputClassification:
         deferred = DrvOutput(output_name="out", path="", hash_algo="", hash_value="")
         inputs = {StorePath("/nix/store/b-dep.drv"): ["out"]}
 
-        assert not Derivation(outputs=[plain], input_drvs=inputs).should_resolve
-        assert not Derivation(outputs=[plain]).should_resolve
-        assert Derivation(outputs=[deferred], input_drvs=inputs).should_resolve
+        assert not Derivation(outputs=[plain], input_drvs=inputs).should_resolve(ca_derivations=True)
+        assert not Derivation(outputs=[plain]).should_resolve(ca_derivations=True)
+        assert Derivation(outputs=[deferred], input_drvs=inputs).should_resolve(ca_derivations=False)
+
+    def test_a_fixed_output_derivation_resolves_only_with_ca_derivations(self):
+        """`derivations.cc:1134`: resolving one is optional, and the feature decides. nixidae/nixidae#1010."""
+        fixed = DrvOutput(output_name="out", path="/nix/store/a-src", hash_algo="sha256", hash_value="00" * 32)
+        drv = Derivation(outputs=[fixed], input_drvs={StorePath("/nix/store/b-curl.drv"): ["out"]})
+
+        assert drv.should_resolve(ca_derivations=True)
+        assert not drv.should_resolve(ca_derivations=False)
 
 
 class TestParseDrvEdgeCases:

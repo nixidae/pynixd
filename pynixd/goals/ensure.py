@@ -527,7 +527,12 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             substituted = await self._say_what_it_produced(substituted, parsed, selected_outputs)
             return substituted.with_dynamic_outputs(self.derived_path.base_store_path())
 
-        build_drv_path = await self._path_of_what_it_builds(basic, drv_path) if parsed.should_resolve else drv_path
+        ca_derivations = parsed.is_fixed_output and "ca-derivations" in self.engine.ctx.trust.experimental_features
+        build_drv_path = (
+            await self._path_of_what_it_builds(basic, drv_path)
+            if parsed.should_resolve(ca_derivations=ca_derivations)
+            else drv_path
+        )
 
         cut_off = await self._try_realise_the_resolved_one(build_drv_path, drv_path, selected_outputs)
         if cut_off is not None:
