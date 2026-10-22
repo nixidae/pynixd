@@ -14,16 +14,20 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+import os
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import anyio
 import structlog
 
+from .daemon_extensions.pynixd_host_health import PynixdHostHealthRequest
 from .psi import (
     CgroupCpuStat,
+    DiskSpace,
     SystemHealth,
     compute_cpu_util,
     count_cpus_from_proc_stat,
@@ -35,7 +39,7 @@ from .psi import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Mapping
+    from collections.abc import Awaitable, Callable, Coroutine, Mapping
 
     from .config import PressureSettings
 
@@ -51,6 +55,12 @@ class ResourceMonitor(ABC):
         self.running = False
         self.task: asyncio.Task[None] | None = None
         self.health = SystemHealth()
+        self.disk_fn: Callable[[], Awaitable[DiskSpace | None]] | None = None
+        """Samples the store's filesystem, whatever reads the other files.
+
+        The store sets it: `os.statvfs` locally, SFTP's `statvfs` on an SSH
+        builder. A pynixd peer answers its own disk in `PynixdHostHealth`.
+        nixidae/nixidae#1013."""
 
     @property
     def interval(self) -> float:
@@ -74,6 +84,15 @@ class ResourceMonitor(ABC):
             self.task.cancel()
             with contextlib.suppress(Exception, anyio.get_cancelled_exc_class()):
                 await self.task
+
+    async def _publish_sample(self, health: SystemHealth) -> None:
+        """Add the store's disk to *health*, then publish it."""
+        if self.disk_fn is not None and health.disk is None:
+            try:
+                health.disk = await self.disk_fn()
+            except Exception:
+                log.warning("disk_sample_failed", exc_info=True)
+        self._publish(health)
 
     def _publish(self, health: SystemHealth) -> None:
         self.health = health
@@ -109,12 +128,7 @@ class GenericResourcePoller(ResourceMonitor):
         self.cpu_cores: float | None = None
 
     async def _cores(self) -> float | None:
-        text = await self.read_fn("/sys/fs/cgroup/cpu.max")
-        cores = parse_cpu_max(text) if text else None
-        if cores is None:
-            text = await self.read_fn("/proc/stat")
-            cores = float(count_cpus_from_proc_stat(text)) if text else None
-        return cores
+        return await cores_from(self.read_fn)
 
     async def sample(self) -> SystemHealth:
         """Read one sample."""
@@ -129,11 +143,55 @@ class GenericResourcePoller(ResourceMonitor):
         log.info("resource_poller_started", interval=self.interval)
         while self.running:
             try:
-                self._publish(await self.sample())
+                await self._publish_sample(await self.sample())
             except anyio.get_cancelled_exc_class():
                 raise
             except Exception:
                 log.exception("resource_poller_tick_failed")
+            await anyio.sleep(self.interval)
+
+
+async def cores_from(read_fn: Callable[[str], Coroutine[None, None, str | None]]) -> float | None:
+    """The cores a host's cgroup grants, else the CPUs `/proc/stat` lists."""
+    text = await read_fn("/sys/fs/cgroup/cpu.max")
+    cores = parse_cpu_max(text) if text else None
+    if cores is None:
+        text = await read_fn("/proc/stat")
+        cores = float(count_cpus_from_proc_stat(text)) if text else None
+    return cores
+
+
+class PeerHealthMonitor(ResourceMonitor):
+    """Samples a pynixd peer through `PynixdHostHealth`, when the peer announces it.
+
+    A reverse builder runs pynixd and accepts nothing but daemon sessions, so
+    SFTP and `pynixd-agent` cannot reach it; its own pynixd reads the same
+    files and its store's disk, and answers them over the daemon protocol.
+    A peer without the operation gives empty samples, as monitoring off does.
+    nixidae/nixidae#1013.
+    """
+
+    def __init__(self, settings: PressureSettings, on_sample: Callable[[SystemHealth], None], store: Any) -> None:
+        super().__init__(settings, on_sample)
+        self.store = store
+
+    async def run(self) -> None:
+        stat: CgroupCpuStat | None = None
+        while self.running:
+            try:
+                if PynixdHostHealthRequest.name in self.store.features:
+                    response = await self.store.execute(PynixdHostHealthRequest())
+                    data = json.loads(response.payload)
+                    health, stat = health_from_files(data.get("files", {}), stat, data.get("cores"))
+                    if data.get("disk"):
+                        health.disk = DiskSpace(**data["disk"])
+                    self._publish(health)
+                else:
+                    self._publish(SystemHealth())
+            except anyio.get_cancelled_exc_class():
+                raise
+            except Exception:
+                log.warning("peer_health_sample_failed", store_id=getattr(self.store, "store_id", None), exc_info=True)
             await anyio.sleep(self.interval)
 
 
@@ -176,13 +234,25 @@ def health_from_files(
     return health, stat
 
 
-async def _local_read(path: str) -> str | None:
+async def local_read(path: str) -> str | None:
     try:
         return Path(path).read_text()  # noqa: ASYNC240 — /proc and /sys reads do not block
     except OSError:
         return None
 
 
+def local_disk(path: Path) -> Callable[[], Awaitable[DiskSpace | None]]:
+    """A disk sampler of *path* on this machine."""
+
+    async def sample() -> DiskSpace | None:
+        try:
+            return DiskSpace.from_statvfs(os.statvfs(path))
+        except OSError:
+            return None
+
+    return sample
+
+
 def create_monitor(settings: PressureSettings, on_sample: Callable[[SystemHealth], None]) -> ResourceMonitor:
     """A poller of this machine's own files."""
-    return GenericResourcePoller(settings, on_sample, _local_read)
+    return GenericResourcePoller(settings, on_sample, local_read)

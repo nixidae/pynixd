@@ -121,9 +121,21 @@ class CpuUtil:
     throttled_pct: float
 
 
+@dataclass(frozen=True)
+class DiskSpace:
+    """The filesystem that holds a store: what an unprivileged writer may still use, and its size."""
+
+    free_bytes: int
+    total_bytes: int
+
+    @classmethod
+    def from_statvfs(cls, stat: os.statvfs_result) -> DiskSpace:
+        return cls(free_bytes=stat.f_bavail * stat.f_frsize, total_bytes=stat.f_blocks * stat.f_frsize)
+
+
 @dataclass
 class SystemHealth:
-    """One sample of a host: pressure, memory, CPU and load."""
+    """One sample of a host: pressure, memory, CPU, load, and the store's free disk."""
 
     psi: PsiSnapshot | None = None
     meminfo: MemInfo | None = None
@@ -131,6 +143,8 @@ class SystemHealth:
     cores: float | None = None
     load1: float | None = None
     """The 1-minute load average."""
+    disk: DiskSpace | None = None
+    """The store's filesystem, when the monitor can see it. nixidae/nixidae#1013."""
     timestamp: float = field(default_factory=time.monotonic)
 
     @property

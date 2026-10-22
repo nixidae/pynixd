@@ -68,6 +68,9 @@ class FakeScheduler:
     def trigger(self) -> None:
         return
 
+    def _note_disk_full(self, *_args: Any) -> None:
+        return
+
     async def _prepare_build(self, *_args: Any) -> None:
         raise self.raised
 

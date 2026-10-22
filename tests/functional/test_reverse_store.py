@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from typing import TYPE_CHECKING
 
@@ -16,6 +17,7 @@ from pynixd.config import (
     PynixdSettings,
     ReverseAcceptorSettings,
     ReverseInitiatorSettings,
+    StoreRankingSettings,
 )
 from pynixd.store import DaemonStore, LocalSocketStore
 from tests.conftest import CLIENT_BIN, STORE_PREFIX, make_test_spec, rmtree_robust, run_subproc
@@ -47,6 +49,10 @@ def _controller_settings(tmp_path: Path, builder_pub: Path) -> PynixdSettings:
             host_key_path=_keypair(tmp_path, "controller")[0],
             authorized_builder_keys=[builder_pub],
         ),
+        # The builder reports the guest's PSI, which is the host's: a busy host
+        # put its score at -569 and the build waited for ever. These tests
+        # prove routing, not the threshold. nixidae/nixidae#1013.
+        ranking=StoreRankingSettings(min_schedule_score=-math.inf),
     )
 
 

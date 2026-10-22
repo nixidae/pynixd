@@ -98,6 +98,9 @@ class LimitRow(_Model):
     """PSI `avg10`, in percent."""
     available_mb: int | None = None
     load1: float | None = None
+    disk_free_mb: int | None = None
+    """Free space of the store's filesystem. nixidae/nixidae#1013."""
+    disk_total_mb: int | None = None
 
 
 class StoreRow(_Model):

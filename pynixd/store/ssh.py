@@ -27,11 +27,12 @@ from ..config import (
 from ..connection import Connection
 from ..constants import SSH_ENCRYPTION_ALGS
 from ..monitor import DummyResourceMonitor, GenericResourcePoller, ResourceMonitor
+from ..psi import DiskSpace
 from ..wire import SSHNixReader, SSHNixWriter
 from .daemon import SSHD_DEFAULT_MAX_SESSIONS, DaemonStore
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from nix_daemon_protocol.ids import StoreId
 
@@ -155,6 +156,7 @@ class SSHStore(DaemonStore):
 
         def fall_back() -> None:
             self.monitor = self._sftp_poller(conn)
+            self.monitor.disk_fn = self._sftp_disk(conn)
             self.monitor.start()
 
         if self.pressure_settings.agent:
@@ -164,9 +166,26 @@ class SSHStore(DaemonStore):
                 functools.partial(self._run_agent, conn),
                 fall_back,
             )
+            self.monitor.disk_fn = self._sftp_disk(conn)
             self.monitor.start()
         else:
             fall_back()
+
+    def _sftp_disk(self, conn: asyncssh.SSHClientConnection) -> Callable[[], Awaitable[DiskSpace | None]]:
+        """The builder's store filesystem over SFTP `statvfs`. nixidae/nixidae#1013."""
+        sftp: asyncssh.SFTPClient | None = None
+
+        async def sample() -> DiskSpace | None:
+            nonlocal sftp
+            if sftp is None:
+                sftp = await conn.start_sftp_client()
+            try:
+                stat = await sftp.statvfs(str(self.layout.store_dir))
+            except asyncssh.SFTPError:
+                return None
+            return DiskSpace(free_bytes=stat.bavail * stat.frsize, total_bytes=stat.blocks * stat.frsize)
+
+        return sample
 
     def _sftp_poller(self, conn: asyncssh.SSHClientConnection) -> GenericResourcePoller:
         sftp: asyncssh.SFTPClient | None = None

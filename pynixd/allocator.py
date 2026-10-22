@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import structlog
 
+from .config import StoreRankingSettings
 from .system_features import PYNIXD_HANDLED_FEATURES, effective_required_features
 
 if TYPE_CHECKING:
@@ -182,6 +184,20 @@ class TelemetryStoreRanker(StoreRanker):
         return RankedStores(ranked).sort()
 
 
+def short_of_disk(store: DaemonStore, settings: StoreRankingSettings, now: float) -> bool:
+    """Whether *store* has too little disk for a build. nixidae/nixidae#1013.
+
+    A measured figure decides when the store's monitor has one. A store that
+    reports none is held back for a while after a build failed there with
+    "No space left on device".
+    """
+    monitor = getattr(store, "monitor", None)
+    disk = monitor.health.disk if monitor is not None else None
+    if disk is not None:
+        return disk.free_bytes < settings.min_free_bytes
+    return now < getattr(store, "disk_full_until", 0.0)
+
+
 class BuildAllocator:
     """Orchestrates ranking and selection of stores for builds."""
 
@@ -231,6 +247,8 @@ class BuildAllocator:
             if not store.supports_derivation(build.request.derivation.platform, build_features):
                 continue
             if build.is_blacklisted(store.store_id):
+                continue
+            if short_of_disk(store, getattr(self.ranker, "settings", StoreRankingSettings()), time.monotonic()):
                 continue
 
             candidates.append(store)

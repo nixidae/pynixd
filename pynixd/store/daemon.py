@@ -318,6 +318,8 @@ class DaemonStore(Store):
         self.monitor: ResourceMonitor | None = None
         self.consecutive_failures: int = 0
         self.cooldown_until: float = 0.0
+        self.disk_full_until: float = 0.0
+        """Until when a build failed here for want of disk; read when no disk sample is known."""
         self._features: set[str] = set()
         self.probe_state: ProbeState = ProbeState.NOT_PROBED
         self._probe_event: anyio.Event = anyio.Event()
@@ -572,6 +574,10 @@ class DaemonStore(Store):
 
     async def close(self) -> None:
         await self._stop_reconnect_loop()
+        if self.monitor is not None:
+            # A monitor that outlives its store asks a closed store for ever.
+            await self.monitor.stop()
+            self.monitor = None
         for pool in self.pools:
             await pool.close()
 

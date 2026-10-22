@@ -157,7 +157,7 @@ class AgentMonitor(ResourceMonitor):
                         with anyio.fail_after(self.interval * 3):
                             files, _ = await read_agent_frame(stream)
                         health, stat = health_from_files(files, stat, cores)
-                        self._publish(health)
+                        await self._publish_sample(health)
             except anyio.get_cancelled_exc_class():
                 raise
             except Exception as e:

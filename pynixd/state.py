@@ -222,6 +222,8 @@ def _limit_of(store: object, now: float) -> LimitRow | None:
         io_full=psi.io.full_avg10 if psi else None,
         available_mb=mem.available_mb if mem else None,
         load1=health.load1 if health else None,
+        disk_free_mb=health.disk.free_bytes // 2**20 if health and health.disk else None,
+        disk_total_mb=health.disk.total_bytes // 2**20 if health and health.disk else None,
     )
 
 

@@ -25,7 +25,7 @@ from nix_daemon_protocol.store_dir import on_disk
 from ..agent import local_monitor
 from ..config import LocalSocketStoreSpec, PynixdSettings
 from ..connection import Connection
-from ..monitor import DummyResourceMonitor
+from ..monitor import DummyResourceMonitor, local_disk
 from ..store_path import StorePath
 from ..trust import TrustPolicy
 from ..unix_socket import _SUN_PATH_MAX, open_unix_connection
@@ -209,8 +209,10 @@ class LocalStore(DaemonStore):
             if self.monitor_enabled
             else DummyResourceMonitor(self.pressure_settings, self.on_pressure_sample)
         )
+        self.monitor.disk_fn = local_disk(self.layout.real_store_dir)
 
     def _replace_monitor(self, monitor: ResourceMonitor) -> None:
+        monitor.disk_fn = local_disk(self.layout.real_store_dir)
         self.monitor = monitor
         monitor.start()
 

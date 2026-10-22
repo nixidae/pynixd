@@ -114,6 +114,12 @@ class StoreRankingSettings(BaseModel):
     passes this many times the best remote's delegation seconds. A guess, not
     a measurement: nixidae/nixidae#1001."""
 
+    min_free_bytes: int = 2 * 1024**3
+    """A store whose last sample shows less free disk than this gets no build. nixidae/nixidae#1013."""
+
+    disk_full_hold_seconds: float = 600.0
+    """How long a store that reports no disk figure is held back after "No space left on device"."""
+
     no_local_jobs: NoLocalJobs = NoLocalJobs.remote_only
     """What a client's `--max-jobs 0` means; `NoLocalJobs` has the three answers."""
 

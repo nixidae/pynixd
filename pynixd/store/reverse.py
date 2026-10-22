@@ -16,6 +16,7 @@ import structlog
 
 from .. import wire
 from ..connection import Connection
+from ..monitor import PeerHealthMonitor
 from ..wire import SSHNixReader, SSHNixWriter
 from .daemon import PROBE_SYSTEM_SCRIPT, ProbeState
 from .ssh import SSHStore
@@ -52,6 +53,10 @@ class ReverseStore(SSHStore):
         has none. tests/functional/test_reverse_store.py registers one.
         """
         await super(SSHStore, self).start(sync_paths=sync_paths)
+        # The builder's own pynixd answers its host's health, disk included;
+        # SFTP and `pynixd-agent` cannot reach it. nixidae/nixidae#1013.
+        self.monitor = PeerHealthMonitor(self.pressure_settings, self.on_pressure_sample, self)
+        self.monitor.start()
 
     async def create_conn(self) -> Connection:
         """Spawn nix-daemon --stdio on the builder over the reverse SSH connection."""

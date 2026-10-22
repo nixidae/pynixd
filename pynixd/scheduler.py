@@ -900,6 +900,7 @@ class Scheduler:
                     log.warning(
                         "build_failed_on_the_machine", build_id=build.build_id, store_id=store.store_id, fault=fault
                     )
+                    self._note_disk_full(store, str(build_resp.result.error_msg))
                     await build.post_log_and_fanout(
                         LogNext(text=f"pynixd: build failed on {store.store_id} ({fault}), retrying elsewhere\n")
                     )
@@ -913,6 +914,7 @@ class Scheduler:
             reason = error_text(e)
             if all(isinstance(leaf, BackendError | InfrastructureError) for leaf in leaves(e)):
                 log.warning("build_failed_retryable", build_id=build.build_id, error=reason)
+                self._note_disk_full(store, reason)
                 await build.post_log_and_fanout(
                     LogNext(text=f"pynixd: build failed on {store.store_id}, retrying: {reason}\n")
                 )
@@ -926,6 +928,12 @@ class Scheduler:
         if build_resp is not None and not completed:
             await self.queue.complete(build.build_id, build_resp)
             self.trigger()
+
+    def _note_disk_full(self, store: DaemonStore, message: str) -> None:
+        """Hold *store* back from builds when it ran out of disk. nixidae/nixidae#1013."""
+        if "No space left on device" in message:
+            store.disk_full_until = time.monotonic() + self.ranker.settings.disk_full_hold_seconds
+            log.warning("store_held_back_for_disk", store_id=store.store_id)
 
     def _retryable_elsewhere(self, build: QueuedBuild, store: DaemonStore, resp: BuildDerivationResponse) -> str | None:
         """The machine fault behind a failed result, when another store has not tried yet.
