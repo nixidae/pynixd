@@ -249,6 +249,15 @@ async def test_delegated_build_runs_on_the_builder(tmp_path: Path) -> None:
             # build was possible: the builder is the only store that could
             # have answered, and it says so on the client log.
             assert f"building on {builder_store_id}" in stderr
+
+            # The builder's own pynixd streams its host's samples, disk
+            # included, with nothing else deployed. nixidae/nixidae#1016.
+            reverse = controller.stores[StoreId(builder_store_id)]
+            assert isinstance(reverse, DaemonStore)
+            with anyio.fail_after(10):
+                while reverse.monitor is None or reverse.monitor.health.disk is None:
+                    await anyio.sleep(0.1)
+            assert reverse.monitor.health.meminfo is not None
         finally:
             await builder.close()
             rmtree_robust(STORE_PREFIX / builder_store_id)

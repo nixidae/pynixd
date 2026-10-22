@@ -320,6 +320,8 @@ class DaemonStore(Store):
         self.cooldown_until: float = 0.0
         self.disk_full_until: float = 0.0
         """Until when a build failed here for want of disk; read when no disk sample is known."""
+        self.sample_listeners: set[Callable[[SystemHealth], None]] = set()
+        """Each hears every sample of this store's host: a `PynixdHostHealthStream` session. nixidae/nixidae#1016."""
         self._features: set[str] = set()
         self.probe_state: ProbeState = ProbeState.NOT_PROBED
         self._probe_event: anyio.Event = anyio.Event()
@@ -400,10 +402,12 @@ class DaemonStore(Store):
     # ── Resource metrics ────────────────────────────────────────────
 
     def on_pressure_sample(self, health: SystemHealth) -> None:
-        """Move the build limit for one sample of this store's host."""
+        """Move the build limit for one sample of this store's host, and pass the sample on."""
         if self.build_limit.observe(health, self.build_pool.active_connections, time.monotonic()):
             if self.on_capacity is not None:
                 self.on_capacity()
+        for listener in tuple(self.sample_listeners):
+            listener(health)
 
     @property
     def pressure(self) -> float | None:

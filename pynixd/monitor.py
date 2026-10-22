@@ -24,7 +24,12 @@ from typing import TYPE_CHECKING, Any
 import anyio
 import structlog
 
-from .daemon_extensions.pynixd_host_health import PynixdHostHealthRequest
+from .daemon_extensions.pynixd_host_health import (
+    HEALTH_JSON,
+    PynixdHostHealthRequest,
+    PynixdHostHealthStreamRequest,
+)
+from .exceptions import BackendError
 from .psi import (
     CgroupCpuStat,
     DiskSpace,
@@ -37,6 +42,8 @@ from .psi import (
     parse_meminfo,
     parse_psi_output,
 )
+from .serde import LogError, LogNext
+from .serde.context import WriteContext
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine, Mapping
@@ -171,37 +178,85 @@ async def cores_from(read_fn: Callable[[str], Coroutine[None, None, str | None]]
 
 
 class PeerHealthMonitor(ResourceMonitor):
-    """Samples a pynixd peer through `PynixdHostHealth`, when the peer announces it.
+    """Samples a pynixd peer over the daemon protocol, by what the peer announces.
 
     A reverse builder runs pynixd and accepts nothing but daemon sessions, so
-    SFTP and `pynixd-agent` cannot reach it; its own pynixd reads the same
-    files and its store's disk, and answers them over the daemon protocol.
-    A peer without the operation gives empty samples, as monitoring off does.
-    nixidae/nixidae#1013.
+    SFTP and `pynixd-agent` cannot reach it; its own pynixd samples its host
+    and its store's disk. `PynixdHostHealthStream` holds one session outside
+    the pools and gets each sample as the peer takes it, PSI triggers
+    included (nixidae/nixidae#1016). An older peer is polled with
+    `PynixdHostHealth` every interval (nixidae/nixidae#1013). A peer with
+    neither gives empty samples, as monitoring off does, and ranks last.
     """
 
     def __init__(self, settings: PressureSettings, on_sample: Callable[[SystemHealth], None], store: Any) -> None:
         super().__init__(settings, on_sample)
         self.store = store
+        self.stat: CgroupCpuStat | None = None
 
     async def run(self) -> None:
-        stat: CgroupCpuStat | None = None
+        backoff = self.interval
         while self.running:
+            features = self.store.features
             try:
-                if PynixdHostHealthRequest.name in self.store.features:
-                    response = await self.store.execute(PynixdHostHealthRequest())
-                    data = json.loads(response.payload)
-                    health, stat = health_from_files(data.get("files", {}), stat, data.get("cores"))
-                    if data.get("disk"):
-                        health.disk = DiskSpace(**data["disk"])
-                    self._publish(health)
+                if PynixdHostHealthStreamRequest.name in features:
+                    await self._stream()
+                elif PynixdHostHealthRequest.name in features:
+                    await self._poll()
                 else:
                     self._publish(SystemHealth())
+                backoff = self.interval
             except anyio.get_cancelled_exc_class():
                 raise
-            except Exception:
-                log.warning("peer_health_sample_failed", store_id=getattr(self.store, "store_id", None), exc_info=True)
-            await anyio.sleep(self.interval)
+            except Exception as e:
+                self._publish(SystemHealth())
+                backoff = min(backoff * 2, 60.0)
+                log.warning(
+                    "peer_health_sample_failed",
+                    store_id=getattr(self.store, "store_id", None),
+                    error=str(e) or type(e).__name__,
+                    retry_in=backoff,
+                )
+            await anyio.sleep(backoff)
+
+    async def _poll(self) -> None:
+        response = await self.store.execute(PynixdHostHealthRequest())
+        data = json.loads(response.payload)
+        health, self.stat = health_from_files(data.get("files", {}), self.stat, data.get("cores"))
+        if data.get("disk"):
+            health.disk = DiskSpace(**data["disk"])
+        self._publish(health)
+
+    async def _stream(self) -> None:
+        """Publish the peer's samples until its session ends or falls silent."""
+        # The peer sends its last sample at once, so the first one needs no grace.
+        silence = self.interval * 3
+        conn = await self.store.create_conn()
+        try:
+            with anyio.CancelScope(deadline=anyio.current_time() + silence) as scope:
+                # Read here, not through `Connection.call(client=...)`: a
+                # response reads its logs nested, and `_nested_context` drops
+                # the sink, so `call` hands nothing over until the end.
+                request = PynixdHostHealthStreamRequest(interval_ms=int(self.interval * 1000))
+                await request.to_writer(WriteContext.from_conn(conn))
+                await conn.w.drain()
+                async for msg in conn.r.read_stderr():
+                    if isinstance(msg, LogError):
+                        raise BackendError(msg.msg)
+                    if not isinstance(msg, LogNext):
+                        continue
+                    health = HEALTH_JSON.validate_json(msg.text)
+                    # The peer's monotonic clock means nothing here; staleness is measured on arrival.
+                    health.timestamp = time.monotonic()
+                    scope.deadline = anyio.current_time() + silence
+                    self._publish(health)
+            if scope.cancelled_caught:
+                log.warning("peer_health_stream_silent", store_id=getattr(self.store, "store_id", None))
+                # The ranker does not age a sample; an empty one ranks the peer as unmonitored.
+                self._publish(SystemHealth())
+        finally:
+            with anyio.CancelScope(shield=True):
+                await conn.close()
 
 
 SAMPLED_FILES: tuple[str, ...] = (

@@ -4,7 +4,7 @@ Private op allocation (Nix owns 1-50 and 1000+; keep out of both):
 101 collect_garbage, 103 query_path_infos, 104 query_closure,
 105 query_closure_with_info, 106 query_derivation_output_map_batch,
 107 sign_path_info, 108 probe_systems, 109 probe_features, 110 roots_report,
-111 state, 112 host_health. Next free: 100, 102, 113+.
+111 state, 112 host_health, 113 host_health stream. Next free: 100, 102, 114+.
 """
 
 from . import (
