@@ -113,7 +113,8 @@ class GenericResourcePoller(ResourceMonitor):
     """Polls PSI, memory, CPU and load through *read_fn*.
 
     *read_fn* answers a file's text, or `None` when the host has no such file
-    or refuses it.
+    or refuses it. *fallback* runs when the first sample raises: a host that
+    refuses the channel (SFTP off) is not asked again every interval.
     """
 
     def __init__(
@@ -121,9 +122,11 @@ class GenericResourcePoller(ResourceMonitor):
         settings: PressureSettings,
         on_sample: Callable[[SystemHealth], None],
         read_fn: Callable[[str], Coroutine[None, None, str | None]],
+        fallback: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(settings, on_sample)
         self.read_fn = read_fn
+        self.fallback = fallback
         self.cpu_stat_prev: CgroupCpuStat | None = None
         self.cpu_cores: float | None = None
 
@@ -141,12 +144,18 @@ class GenericResourcePoller(ResourceMonitor):
     async def run(self) -> None:
         """Sample every `interval` until stopped."""
         log.info("resource_poller_started", interval=self.interval)
+        answered = False
         while self.running:
             try:
                 await self._publish_sample(await self.sample())
+                answered = True
             except anyio.get_cancelled_exc_class():
                 raise
-            except Exception:
+            except Exception as e:
+                if not answered and self.fallback is not None:
+                    log.warning("resource_poller_unavailable", error=str(e) or type(e).__name__)
+                    self.fallback()
+                    return
                 log.exception("resource_poller_tick_failed")
             await anyio.sleep(self.interval)
 

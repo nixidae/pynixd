@@ -154,8 +154,15 @@ class SSHStore(DaemonStore):
             return
         self.stop_psi_polling()
 
+        def blind() -> None:
+            # The builder refuses exec and SFTP. It still builds, ranked last
+            # (`unmonitored_penalty`). nixidae/nixidae#1016.
+            log.warning("ssh_store_unmonitored", store_id=self.store_id)
+            self.monitor = DummyResourceMonitor(self.pressure_settings, self.on_pressure_sample)
+            self.monitor.start()
+
         def fall_back() -> None:
-            self.monitor = self._sftp_poller(conn)
+            self.monitor = self._sftp_poller(conn, blind)
             self.monitor.disk_fn = self._sftp_disk(conn)
             self.monitor.start()
 
@@ -187,7 +194,7 @@ class SSHStore(DaemonStore):
 
         return sample
 
-    def _sftp_poller(self, conn: asyncssh.SSHClientConnection) -> GenericResourcePoller:
+    def _sftp_poller(self, conn: asyncssh.SSHClientConnection, fallback: Callable[[], None]) -> GenericResourcePoller:
         sftp: asyncssh.SFTPClient | None = None
 
         async def sftp_read(path: str) -> str | None:
@@ -204,7 +211,7 @@ class SSHStore(DaemonStore):
             except asyncssh.SFTPError:
                 return None
 
-        return GenericResourcePoller(self.pressure_settings, self.on_pressure_sample, sftp_read)
+        return GenericResourcePoller(self.pressure_settings, self.on_pressure_sample, sftp_read, fallback)
 
     @contextlib.asynccontextmanager
     async def _run_agent(self, conn: asyncssh.SSHClientConnection, args: list[str]) -> AsyncIterator[AgentStream]:
@@ -223,13 +230,24 @@ class SSHStore(DaemonStore):
         if agent is None:
             raise AgentUnavailableError(f"no pynixd-agent for {systems}")
         remote = f"{AGENT_DIR}/{agent.parent.parent.name}"
-        async with conn.start_sftp_client() as sftp:
-            if not await sftp.exists(remote):
-                partial = f"{remote}.{os.getpid()}.part"
-                await sftp.makedirs(AGENT_DIR, exist_ok=True)
-                await sftp.put(str(agent), partial)
-                await sftp.chmod(partial, 0o755)
-                await sftp.posix_rename(partial, remote)
+        partial = f"{remote}.{os.getpid()}.part"
+        try:
+            async with conn.start_sftp_client() as sftp:
+                if not await sftp.exists(remote):
+                    await sftp.makedirs(AGENT_DIR, exist_ok=True)
+                    await sftp.put(str(agent), partial)
+                    await sftp.chmod(partial, 0o755)
+                    await sftp.posix_rename(partial, remote)
+        except asyncssh.Error as e:
+            # A builder may refuse the SFTP subsystem and still allow exec.
+            # nixidae/nixidae#1016.
+            log.info("agent_upload_over_exec", store_id=self.store_id, sftp_error=str(e))
+            if (await conn.run(f"test -x {shlex.quote(remote)}", check=False)).exit_status != 0:
+                script = (
+                    f"mkdir -p {shlex.quote(AGENT_DIR)} && cat > {shlex.quote(partial)}"
+                    f" && chmod 755 {shlex.quote(partial)} && mv {shlex.quote(partial)} {shlex.quote(remote)}"
+                )
+                await conn.run(script, input=await anyio.Path(agent).read_bytes(), encoding=None, check=True)
         process = await conn.create_process(shlex.join([f"./{remote}", *args]), encoding=None)
         try:
             yield process.stdout

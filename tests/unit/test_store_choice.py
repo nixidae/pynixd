@@ -30,7 +30,7 @@ MB = 1_000_000
 class FakeStore:
     def __init__(self, store_id: StoreId) -> None:
         self.store_id = store_id
-        self.cpu_util = None
+        self.cpu_util: object | None = None
         self.monitor = None
         self.in_flight = 0
         self.score_penalty = 0
@@ -101,6 +101,34 @@ class TestTheRanking:
 
     def test_a_measured_transfer_puts_the_local_store_first(self):
         assert _rank({REMOTE: 5.0}) == [LOCAL_STORE_ID, REMOTE]
+
+
+class TestAStoreNobodyCanMonitor:
+    """A builder that refuses SFTP and exec still builds, after every store
+    pynixd can see. nixidae/nixidae#1016."""
+
+    @staticmethod
+    def _rank(*, busy: int, min_score: float = -10_000.0) -> list[StoreId]:
+        local = FakeStore(LOCAL_STORE_ID)
+        local.no_schedule = True
+        seen = FakeStore(OTHER)
+        seen.cpu_util = SimpleNamespace(utilization=100.0)
+        seen.in_flight = busy
+        stores = {LOCAL_STORE_ID: local, REMOTE: FakeStore(REMOTE), OTHER: seen}
+        ranker = TelemetryStoreRanker(
+            cast("Any", SimpleNamespace(ranking=StoreRankingSettings(min_schedule_score=min_score)))
+        )
+        ranked = BuildAllocator(cast("Any", stores), cast("Any", local), ranker).rank_stores(
+            cast("Any", FakeBuild()), {}
+        )
+        return [candidate.store_id for candidate in ranked]
+
+    def test_ranks_under_a_fully_busy_monitored_store(self):
+        assert self._rank(busy=3) == [OTHER, REMOTE]
+
+    def test_still_gets_builds_under_the_minimum_score(self):
+        """The monitored store falls under the minimum; the blind one stays."""
+        assert self._rank(busy=3, min_score=-100.0) == [REMOTE]
 
 
 class TestThePick:

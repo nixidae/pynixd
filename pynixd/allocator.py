@@ -151,6 +151,8 @@ class TelemetryStoreRanker(StoreRanker):
             has_resource_signal = store.cpu_util is not None or (
                 store.monitor is not None and store.monitor.health.psi is not None
             )
+            if not has_resource_signal:
+                score -= self.settings.unmonitored_penalty
 
             # 3. Concurrency Penalty (- points)
             in_flight = store.in_flight

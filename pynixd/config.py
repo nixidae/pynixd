@@ -114,6 +114,16 @@ class StoreRankingSettings(BaseModel):
     passes this many times the best remote's delegation seconds. A guess, not
     a measurement: nixidae/nixidae#1001."""
 
+    unmonitored_penalty: float = 1000.0
+    """Penalty for a store with no CPU or pressure figure: -(unmonitored_penalty).
+
+    Such a store still gets builds, and `min_schedule_score` does not apply
+    to it, but it ranks under every store pynixd can see. That holds for a
+    builder that refuses SFTP and exec, and for one with `monitor = false`.
+    10 times `cpu_idle_weight`: a monitored store wins until its own
+    penalties pass this. A guess, not a measurement: nixidae/nixidae#1016.
+    """
+
     min_free_bytes: int = 2 * 1024**3
     """A store whose last sample shows less free disk than this gets no build. nixidae/nixidae#1013."""
 
