@@ -106,6 +106,10 @@ def _as_an_error(message: str) -> str:
     return _ERROR_PREFIX + "\n       ".join(message.split("\n"))
 
 
+type InputNode = tuple[str, tuple[str, ...]]
+"""An input derivation and the chain to it: what Nix makes one goal for."""
+
+
 @dataclass
 class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
     """Coordinate the production of a derived path via substitution or build."""
@@ -475,8 +479,11 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         if refusal is not None:
             return refusal
 
-        child_results = await self._realise_input_derivations(parsed)
-        failed_inputs = await self._refuse_a_failed_input(child_results, drv_path, parsed)
+        inputs = await self._realise_input_derivations(parsed)
+        child_results = [result for _, result in inputs]
+        failed_inputs = await self._refuse_a_failed_input(
+            child_results, drv_path, parsed, nodes=[node for node, _ in inputs]
+        )
         if failed_inputs is not None:
             return failed_inputs
 
@@ -1146,6 +1153,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         child_results: list[GoalResult],
         drv_path: StorePath,
         parsed: Derivation,
+        nodes: list[InputNode] | None = None,
     ) -> GoalResult | None:
         """Answer a failure when an input derivation did not build.
 
@@ -1183,8 +1191,15 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         not cancel that build either -- it only removes the edge -- so no
         client sees a different set of builds, and a slow second input costs
         pynixd the wait that Nix saves.
+
+        **Nix counts input nodes, not outputs.** `addWaiteeDerivedPath` at
+        `derivation-resolution-goal.cc:36` makes one goal per input with all
+        its wanted outputs, so a failed `in.drv^out,dev` is one dependency.
+        pynixd has a goal per output; *nodes* names each one's input.
+        nixidae/nixidae#1005.
         """
-        failed = [result for result in child_results if not result_succeeded(result.result)]
+        failed_at = [index for index, result in enumerate(child_results) if not result_succeeded(result.result)]
+        failed = [child_results[index] for index in failed_at]
         if not failed:
             return None
         client = next((c for c in self._watchers if c.options is not None), None)
@@ -1193,7 +1208,8 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         # for `BuildPaths`. The child that failed has written its own reason
         # already, through `_tell_the_client_it_failed`, so this names the
         # count and does not repeat the text.
-        count = len(failed) if keep_going else 1
+        failed_nodes = len(failed) if nodes is None else len({nodes[index] for index in failed_at})
+        count = failed_nodes if keep_going else 1
         log.debug(
             "input_derivation_failed",
             drv_path=str(drv_path),
@@ -1217,28 +1233,26 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         refusal.failing_derivation = failed[0].failing_derivation
         return refusal
 
-    async def _realise_input_derivations(self, parsed) -> list[GoalResult]:
+    async def _realise_input_derivations(self, parsed) -> list[tuple[InputNode, GoalResult]]:
+        """Each input goal's result, beside the input node it builds an output of."""
         child_goals: list[EnsureDerivedPathGoal] = []
+        nodes: list[InputNode] = []
         for input_drv_path, output_names in parsed.input_drvs.items():
             needed_outputs = await self._input_outputs_requiring_goals(
                 StorePath(input_drv_path),
                 output_names,
             )
-            child_goals.extend(
-                [
-                    await self._child_goal(StorePath(input_drv_path), output_name)
-                    for output_name in output_names
-                    if output_name in needed_outputs
-                ]
-            )
+            for output_name in output_names:
+                if output_name in needed_outputs:
+                    child_goals.append(await self._child_goal(StorePath(input_drv_path), output_name))
+                    nodes.append((str(input_drv_path), ()))
 
-        child_goals.extend(
-            [
-                await self.engine.get_ensure_derived_path_goal(child_dp, self.build_mode, self.substituter_ids)
-                for input_drv_path, node in parsed.dynamic_input_drvs.items()
-                for child_dp in _child_map_to_derived_paths(StorePath(input_drv_path), node)
-            ]
-        )
+        for input_drv_path, node in parsed.dynamic_input_drvs.items():
+            for child_dp in _child_map_to_derived_paths(StorePath(input_drv_path), node):
+                child_goals.append(
+                    await self.engine.get_ensure_derived_path_goal(child_dp, self.build_mode, self.substituter_ids)
+                )
+                nodes.append((child_dp.drv_path, child_dp.chain))
 
         if not child_goals:
             return []
@@ -1256,7 +1270,8 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             goal.note_a_parent()
             await goal.subscribe_many(subscribers)
 
-        return await self.run_child(DependencyGroupGoal(self.engine, child_goals))
+        results = await self.run_child(DependencyGroupGoal(self.engine, child_goals))
+        return list(zip(nodes, results, strict=True))
 
     async def _input_outputs_requiring_goals(
         self,

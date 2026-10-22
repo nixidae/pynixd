@@ -16,7 +16,8 @@ Refs nixidae/nixidae#214.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -37,6 +38,8 @@ if TYPE_CHECKING:
 TOP_DRV = "/nix/store/00000000000000000000000000000001-top.drv"
 OUT = "/nix/store/11111111111111111111111111111111-top"
 DEV = "/nix/store/22222222222222222222222222222222-top-dev"
+IN_DRV = "/nix/store/33333333333333333333333333333333-in.drv"
+OTHER_DRV = "/nix/store/44444444444444444444444444444444-other.drv"
 
 MAGENTA = "\x1b[35;1m"
 RED = "\x1b[31;1m"
@@ -134,3 +137,32 @@ async def test_an_input_that_succeeded_gives_no_refusal() -> None:
     )
 
     assert answer is None
+
+
+async def _count_under_keep_going(nodes: list[tuple[str, tuple[str, ...]]]) -> str:
+    goal = _goal()
+    goal._watchers.append(cast("Any", SimpleNamespace(options=SimpleNamespace(keep_going=1))))  # noqa: SLF001 -- the client of the goal
+    answer = await goal._refuse_a_failed_input(  # noqa: SLF001 -- the message is the unit under test
+        [goal_failure("the input failed", BuildResultStatus.PERMANENT_FAILURE) for _ in nodes],
+        StorePath(TOP_DRV),
+        _derivation(_output("out", OUT)),
+        nodes=nodes,
+    )
+    if answer is None:
+        raise AssertionError("a failed input gives a refusal")
+    return str(answer.result.error_msg)
+
+
+@pytest.mark.anyio
+async def test_two_outputs_of_one_input_are_one_dependency() -> None:
+    """`addWaiteeDerivedPath` makes one goal for `in.drv^out,dev`. nixidae/nixidae#1005."""
+    message = await _count_under_keep_going([(IN_DRV, ()), (IN_DRV, ())])
+
+    assert f"{RED}1 dependency failed{NORMAL}" in message
+
+
+@pytest.mark.anyio
+async def test_two_inputs_are_two_dependencies() -> None:
+    message = await _count_under_keep_going([(IN_DRV, ()), (OTHER_DRV, ())])
+
+    assert f"{RED}2 dependencies failed{NORMAL}" in message
