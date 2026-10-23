@@ -17,7 +17,7 @@ import asyncssh
 import structlog
 
 from . import wire
-from .config import ReverseInitiatorSettings, ScheduleMode
+from .config import ReverseInitiatorSettings
 from .hangup import ssh_hangup
 from .proxy import DaemonProxy
 from .serde.auth import Role
@@ -180,7 +180,7 @@ class ReverseInitiator:
                 # controller blacklists the builder after the first refusal).
                 role=Role.ADMIN,
                 username="reverse-initiator",
-                schedule_mode=ScheduleMode.proxy,
+                schedule_mode=self._settings.schedule_mode,
                 hangup=ssh_hangup(process),
             )
             await proxy.run()

@@ -500,6 +500,17 @@ class ReverseInitiatorSettings(BaseModel):
     reconnect_min_delay: float = 1.0
     reconnect_max_delay: float = 60.0
     shutdown_on_connect_failure_seconds: float | None = None
+    schedule_mode: ScheduleMode = ScheduleMode.proxy
+    """How a session the controller opens over this link is served.
+
+    `proxy` sends every build to this machine's local store. `scheduler`
+    runs it through this instance's own scheduler, so a builder can offer a
+    system only one of its stores builds: a macOS host offering
+    `aarch64-linux` through a Linux VM store. `systems` must then name what
+    those stores cover. A build that comes back to the instance that
+    delegated it fails there at once (`DelegationLoopError`), and that
+    instance tries another store.
+    """
 
 
 class SSHSubprocessStoreSpec(StoreSpecBase):
