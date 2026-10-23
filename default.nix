@@ -11,6 +11,7 @@
 }:
 let
   inherit (pkgs) lib;
+  inherit (import sources.nixvenv { inherit pkgs; }) nixvenv;
 
   daemon-protocol = pkgs.python3Packages.callPackage ./nix/nix-daemon-protocol.nix {
     pythonBuilder = pkgs.python3Packages.buildPythonPackage;
@@ -36,11 +37,15 @@ let
     pkgs.writeShellApplication {
       inherit name;
       runtimeInputs = [
-        (pkgs.python3.withPackages (ps: [
-          library
-          ps.pytest
-          ps.pyinstrument
-        ]))
+        (nixvenv {
+          python = pkgs.python3;
+          packages = ps: [
+            library
+            ps.pytest
+            ps.pyinstrument
+          ];
+          executables = [ "pytest" ];
+        })
       ];
       text = ''
         export NIX_BIN=${lib.getExe pkgs.nix}
@@ -120,11 +125,10 @@ let
     vivarium-runner = [ ];
   };
 
-  pyinstance = pkgs.python3.withPackages (
-    ps:
-    [ library ]
-    ++ library.dependencies
-    ++ [
+  pyinstance = nixvenv {
+    python = pkgs.python3;
+    packages = ps: [
+      library
       ps.pytest
       # The phase scripts in `tests/guest/` import it, and the type gate
       # reads them.
@@ -132,8 +136,8 @@ let
       # the two environments resolve by different machinery: this one is
       # nixpkgs, and that one is pyproject.nix.
       vivarium-runner
-    ]
-  );
+    ];
+  };
 
   # **The type gate does not see nanopynix, on purpose.** It reads `tests/`,
   # and `tests/differential` imports the oracle, so the two imports there
@@ -276,7 +280,13 @@ let
     in
     pkgs.runCommand "${name}.yml"
       {
-        nativeBuildInputs = [ (pkgs.python3.withPackages (ps: [ ps.pyyaml ])) ];
+        nativeBuildInputs = [
+          (nixvenv {
+            python = pkgs.python3;
+            packages = ps: [ ps.pyyaml ];
+            executables = [ "python3" ];
+          })
+        ];
         value = builtins.toJSON wf.value;
         passAsFile = [ "value" ];
       }
@@ -356,7 +366,10 @@ package
     pkgs
     ;
 
-  pynixd-docs = pkgs.python3Packages.callPackage ./nix/docs.nix { pynixd = library; };
+  pynixd-docs = pkgs.python3Packages.callPackage ./nix/docs.nix {
+    pynixd = library;
+    inherit nixvenv;
+  };
 
   shell = pkgs.callPackage ./nix/shell.nix {
     inherit devEnv agent;

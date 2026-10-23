@@ -6,16 +6,19 @@
   sphinx,
   myst-parser,
   furo,
+  nixvenv,
 }:
 let
-  pythonEnv = python.withPackages (
-    _: pynixd.dependencies ++ [
+  pythonEnv = nixvenv {
+    inherit python;
+    packages = _: [
       pynixd
       sphinx
       myst-parser
       furo
-    ]
-  );
+    ];
+    executables = [ "sphinx-build" ];
+  };
 in
 stdenvNoCC.mkDerivation {
   pname = "pynixd-docs";
