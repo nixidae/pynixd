@@ -86,21 +86,51 @@ let
     shipped proxy is pure Python and links no C++; `nanopynix-testing`
     carries the bindings, built against one version of Nix.  This set builds
     the shell, and `nix/pynixd.nix` still builds the package.
+
+    `own` builds this repository's two projects: built for a guest, which
+    has no checkout of the host, and editable for the shell.
   */
-  devPythonSet = nanopynix.pythonSetWith {
-    projectRoots = [
-      ./.
-      ./nix-daemon-protocol
-      (sources.vivarium + "/pkgs/vivarium-runner")
-    ];
-    overlay = pySelf: _pyPrev: {
-      pynixd = pySelf.callPackage (mkProject "pynixd" ./.) { };
-      nix-daemon-protocol = pySelf.callPackage (mkProject "nix-daemon-protocol" ./nix-daemon-protocol) { };
-      vivarium-runner = pySelf.callPackage (mkProject "vivarium-runner" (
-        sources.vivarium + "/pkgs/vivarium-runner"
-      )) { };
+  devPythonSetWith =
+    own:
+    nanopynix.pythonSetWith {
+      projectRoots = [
+        ./.
+        ./nix-daemon-protocol
+        (sources.vivarium + "/pkgs/vivarium-runner")
+      ];
+      overlay = pySelf: _pyPrev: {
+        pynixd = pySelf.callPackage (own "pynixd" ./.) { };
+        nix-daemon-protocol = pySelf.callPackage (own "nix-daemon-protocol" ./nix-daemon-protocol) { };
+        vivarium-runner = pySelf.callPackage (mkProject "vivarium-runner" (
+          sources.vivarium + "/pkgs/vivarium-runner"
+        )) { };
+      };
     };
-  };
+
+  # `root` is the checkout, through `toString`. `projectRoot` is the build's
+  # `src`, so it holds only the metadata: the whole tree there rebuilds the
+  # shell on every edit, `__pycache__` included. Each wheel package keeps its
+  # `__init__.py`, because hatchling writes no path for a missing directory.
+  mkEditableProject =
+    _name: dir:
+    nanopynix.ps.mkEditableProject {
+      projectRoot = lib.fileset.toSource {
+        root = dir;
+        fileset = lib.fileset.unions (
+          map (f: lib.fileset.maybeMissing (dir + "/${f}")) (
+            [
+              "pyproject.toml"
+              "README.md"
+              "LICENSE"
+            ]
+            ++ map (p: "${p}/__init__.py")
+              (lib.importTOML (dir + "/pyproject.toml")).tool.hatch.build.targets.wheel.packages
+          )
+        );
+      };
+      root = toString dir;
+      inherit (nanopynix.pythonSet) python;
+    };
 
   mkProject =
     name: projectRoot:
@@ -116,14 +146,18 @@ let
     What `nix develop` puts on the path.  The two extras come from
     `pyproject.toml`, so the shell and the distribution read one list.
   */
-  devEnv = devPythonSet.mkVirtualEnv "pynixd-dev-env" {
-    pynixd = [
-      "test"
-      "docs"
-    ];
-    nanopynix-testing = [ ];
-    vivarium-runner = [ ];
-  };
+  devEnvFrom =
+    set:
+    set.mkVirtualEnv "pynixd-dev-env" {
+      pynixd = [
+        "test"
+        "docs"
+      ];
+      nanopynix-testing = [ ];
+      vivarium-runner = [ ];
+    };
+  devEnv = devEnvFrom (devPythonSetWith mkProject);
+  shellEnv = devEnvFrom (devPythonSetWith mkEditableProject);
 
   pyinstance = nixvenv {
     python = pkgs.python3;
@@ -372,7 +406,8 @@ package
   };
 
   shell = pkgs.callPackage ./nix/shell.nix {
-    inherit devEnv agent;
+    inherit agent;
+    devEnv = shellEnv;
     nixpkgsPath = pkgs.path;
   };
   nixosModule = import ./nix/nixos/default.nix;

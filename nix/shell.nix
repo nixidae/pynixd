@@ -8,7 +8,8 @@
   # The interpreter, resolved by pyproject.nix. `default.nix` says why it is
   # one environment and not several: the oracle of `tests/differential`
   # reaches the nanopynix bindings, and a closure that deep does not survive
-  # being assembled on `PYTHONPATH`.
+  # being assembled on `PYTHONPATH`. It installs pynixd and
+  # nix-daemon-protocol editable, so an edit reaches the next command.
   devEnv,
   # `pkgs.path`, for `NIX_PATH`. See the shell hook.
   nixpkgsPath,
@@ -36,10 +37,7 @@ mkShell {
     sqlite
   ];
   shellHook = ''
-    # The two working copies in front of the environment, and nothing else.
-    # `devEnv` installs `pynixd` and `nix_daemon_protocol` as built packages,
-    # and an edit must reach the next command without a rebuild.
-    export PYTHONPATH="$PWD:$PWD/nix-daemon-protocol/src:$PYTHONPATH"
+    unset PYTHONPATH
     export NIX_BIN=${lib.getExe nix}
 
     # **The nixpkgs of this repository, and not the one the host happens to
