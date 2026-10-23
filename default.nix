@@ -423,6 +423,7 @@ package
     };
     pytest = pkgs.callPackage ./tests/derivations/pytest {
       pynixd-lib = library;
+      inherit nixvenv;
       src = lib.cleanSource ./.;
     };
 

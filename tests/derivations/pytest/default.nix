@@ -1,16 +1,20 @@
 { pkgs
 , pynixd-lib
 , src
+, nixvenv
 , system ? builtins.currentSystem
 }:
 
 let
-  pytestEnv = pkgs.python3.withPackages (ps: [
-    pynixd-lib
-    ps.pytest
-    ps.pytest-timeout
-    ps.pyinstrument
-  ]);
+  pytestEnv = nixvenv {
+    python = pkgs.python3;
+    packages = ps: [
+      pynixd-lib
+      ps.pytest
+      ps.pytest-timeout
+      ps.pyinstrument
+    ];
+  };
 in
 pkgs.runCommand "pynixd-pytest"
   {
@@ -49,11 +53,9 @@ pkgs.runCommand "pynixd-pytest"
     chmod -R +w $HOME/src
     cd $HOME/src
 
-    # Ensure 'import tests.*' resolves from the project root
-    export PYTHONPATH=$HOME/src
-
+    # `python -m pytest`, so 'import tests.*' resolves from the project root.
     # Run unit tests and functional tests that work inside a derivation.
-    pytest -p no:cacheprovider --timeout=120 --tb=short \
+    python -m pytest -p no:cacheprovider --timeout=120 --tb=short \
       --ignore=tests/unit/test_drv_parser.py \
       tests/unit/ \
       tests/functional/test_add_to_store_nar.py \
@@ -68,7 +70,7 @@ pkgs.runCommand "pynixd-pytest"
     #
     # It imports `nix_daemon_protocol` from the environment above, which is
     # the built package, so this asserts what ships and not the tree.
-    pytest -p no:cacheprovider --timeout=120 --tb=short nix-daemon-protocol/tests
+    python -m pytest -p no:cacheprovider --timeout=120 --tb=short nix-daemon-protocol/tests
 
     echo "All tests passed" > $out
   ''
