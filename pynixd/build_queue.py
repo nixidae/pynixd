@@ -12,11 +12,12 @@ from typing import TYPE_CHECKING
 import anyio
 import structlog
 
-from nix_daemon_protocol.ids import BuildId, RequestId, StoreId
+from nix_daemon_protocol.ids import LOCAL_STORE_ID, BuildId, RequestId, StoreId
 from nix_daemon_protocol.logs import LogStartActivity, LogStopActivity
 from nix_daemon_protocol.protocol import ActivityType, Verbosity
 
 from . import metrics, wire
+from .exceptions import DelegationLoopError
 from .serde import BuildDerivationResponse, BuildMode, BuildResult, BuildResultStatus
 from .serde.context import WriteContext
 from .state_models import QueueCounts
@@ -601,6 +602,7 @@ class BuildQueue:
         from_goal_path: bool = False,
         goal_request_id: RequestId | None = None,
         options: SetOptionsRequest | None = None,
+        delegated: bool = False,
     ) -> tuple[BuildId, asyncio.Future[BuildDerivationResponse]]:
         """Add a build to the queue (deduplicates if already present).
 
@@ -613,16 +615,28 @@ class BuildQueue:
 
         Deduplication uses drv_path and the build mode as the identity — a .drv
         file is immutable, so the same pair always means the same build.
+
+        Raises:
+            DelegationLoopError: *delegated* is set, and this instance runs the
+                same build on a remote store. That store, or one behind it,
+                asked for it, and a join would wait on itself.
         """
         if from_goal_path and goal_request_id is None:
             raise RuntimeError("a goal build needs the goal request that holds it")
 
         async with self.lock:
+            existing = self._by_path.get(_dedup_key(request))
+            if (
+                delegated
+                and existing is not None
+                and existing.is_building
+                and existing.assigned_store_id not in (None, LOCAL_STORE_ID)
+            ):
+                raise DelegationLoopError(str(request.drv_path), str(existing.assigned_store_id))
             if goal_request_id is not None:
                 self._max_jobs[goal_request_id] = None if options is None else int(options.max_build_jobs)
                 self._keeps_going[goal_request_id] = options is None or bool(options.keep_going)
             # Check for duplicate — dedup with queued or in-progress builds
-            existing = self._by_path.get(_dedup_key(request))
             if existing is not None and not existing.is_done:
                 log.debug("build_deduped", id=existing.build_id)
                 existing.from_goal_path = existing.from_goal_path or from_goal_path

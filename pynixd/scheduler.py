@@ -278,6 +278,7 @@ class Scheduler:
         from_goal_path: bool = False,
         goal_request_id: RequestId | None = None,
         options: SetOptionsRequest | None = None,
+        delegated: bool = False,
     ) -> tuple[BuildId, asyncio.Future[BuildDerivationResponse]]:
         """Add a build to the queue and trigger the scheduler."""
         t0 = time.monotonic()
@@ -294,6 +295,7 @@ class Scheduler:
             from_goal_path=from_goal_path,
             goal_request_id=goal_request_id,
             options=options,
+            delegated=delegated,
         )
         t_enqueue = time.monotonic()
         self.trigger()

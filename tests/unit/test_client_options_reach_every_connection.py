@@ -216,8 +216,9 @@ class FakeScheduler:
         from_goal_path: bool = False,
         goal_request_id: RequestId | None = None,
         options: SetOptionsRequest | None = None,
+        delegated: bool = False,
     ) -> tuple[BuildId, asyncio.Future[BuildDerivationResponse]]:
-        del request, from_goal_path, goal_request_id
+        del request, from_goal_path, goal_request_id, delegated
         self.options = options
         self.future = asyncio.get_running_loop().create_future()
         self.started.set()

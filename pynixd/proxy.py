@@ -27,7 +27,7 @@ from .derived_path import DerivedPath
 from .exceptions import ClosingError, OpNotImplementedError, error_text
 from .goals import GoalEngine
 from .handlers._base import HANDLER_REGISTRY
-from .protocol import get_extension_features
+from .protocol import DELEGATION_FEATURE, get_extension_features
 from .serde import (
     AddTempRootRequest,
     BuildMode,
@@ -360,6 +360,7 @@ class DaemonProxy:
             # `ClientConn.send` writes a log message straight to the client,
             # so it needs the set of that client and not of a backend.
             self.client.standard_features = self.standard_features
+            self.client.delegated = DELEGATION_FEATURE in client_features
             log.debug(
                 "client_features",
                 client_features=client_features,

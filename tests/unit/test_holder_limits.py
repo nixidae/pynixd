@@ -104,9 +104,14 @@ class _QueueScheduler:
         from_goal_path: bool,
         goal_request_id: RequestId,
         options: SetOptionsRequest | None,
+        delegated: bool = False,
     ) -> object:
         return await self.queue.enqueue(
-            request, from_goal_path=from_goal_path, goal_request_id=goal_request_id, options=options
+            request,
+            from_goal_path=from_goal_path,
+            goal_request_id=goal_request_id,
+            options=options,
+            delegated=delegated,
         )
 
 

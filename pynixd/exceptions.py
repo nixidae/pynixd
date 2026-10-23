@@ -77,6 +77,19 @@ class ClosingError(PynixdError):
     """
 
 
+class DelegationLoopError(PynixdError):
+    """A delegated build that this instance already delegated to another store.
+
+    The build came back around. Joining the queued build would wait on itself,
+    so the request fails at once, and the delegating instance tries another
+    store.
+    """
+
+    def __init__(self, drv_path: str, store_id: str) -> None:
+        """Name the derivation and the store it is delegated to."""
+        super().__init__(f"delegation loop: {drv_path} is already delegated from here to {store_id}")
+
+
 class OpNotImplementedError(PynixdError):
     """Raised when an operation is not implemented for a specific executor (e.g. DB)."""
 

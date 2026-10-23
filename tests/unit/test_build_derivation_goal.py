@@ -49,8 +49,9 @@ class FakeScheduler:
         from_goal_path: bool = False,
         goal_request_id: RequestId | None = None,
         options: SetOptionsRequest | None = None,
+        delegated: bool = False,
     ) -> tuple[BuildId, asyncio.Future[BuildDerivationResponse]]:
-        del request, options
+        del request, options, delegated
         self.goal_request_id = goal_request_id
         if not from_goal_path:
             raise RuntimeError("BuildDerivationGoal must mark scheduler builds as goal-owned")

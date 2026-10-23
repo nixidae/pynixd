@@ -24,7 +24,7 @@ import structlog
 
 from . import wire
 from .exceptions import InfrastructureError
-from .protocol import get_extension_features
+from .protocol import DELEGATION_FEATURE, get_extension_features
 from .serde.context import ReadContext, WriteContext
 
 if TYPE_CHECKING:
@@ -87,6 +87,11 @@ class ClientConn:
 
         `Connection.call` reads this and applies the set to the connection it
         holds, when that connection carries another set.
+        """
+        self.delegated = False
+        """Whether the client is a pynixd that delegates its builds here.
+
+        `DaemonProxy.handshake` sets it from `DELEGATION_FEATURE`.
         """
         self.sync_reader: SyncReader | None = None
         """The read-only connection this session reads the store DB over.
@@ -371,7 +376,9 @@ class Connection:
 
         # Feature negotiation (1.38+) — before CPU/reserveSpace
         if self.version >= wire.FEATURE_EXCHANGE_PROTOCOL:
-            self.w.write_string_set(get_extension_features() | set(wire.SUPPORTED_STANDARD_FEATURES))
+            self.w.write_string_set(
+                get_extension_features() | set(wire.SUPPORTED_STANDARD_FEATURES) | {DELEGATION_FEATURE}
+            )
             await w.drain()
             self.features = await self.r.read_string_set()
             # `self.features` holds what the daemon named, because the

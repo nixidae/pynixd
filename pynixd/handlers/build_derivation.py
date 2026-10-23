@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, ClassVar
 import anyio
 import structlog
 
+from ..exceptions import DelegationLoopError
 from ..goals.resolution import _nix_drv_name, canonical_derivation, unparse_basic_derivation
 from ..serde import BuildDerivationRequest, BuildDerivationResponse
 from ..serde.auth import Role
@@ -69,7 +70,15 @@ class BuildDerivationHandler(Handler):
         # The client's options reach the builder, as the build hook's SetOptions
         # does (`remote-store.cc:129`): `max-silent-time` and `timeout` apply.
         options = ctx.proxy.client.options if ctx.proxy.client is not None else None
-        build_id, future = await ctx.proxy.scheduler.build_derivation(self_req, options=options)
+        delegated = ctx.proxy.client is not None and ctx.proxy.client.delegated
+        try:
+            build_id, future = await ctx.proxy.scheduler.build_derivation(
+                self_req, options=options, delegated=delegated
+            )
+        except DelegationLoopError as exc:
+            # A `BackendError` on the delegating side, which retries elsewhere.
+            await ctx.proxy.send_error(str(exc))
+            return None
         subscribed = False
         if ctx.proxy.client is not None:
             subscribed = await ctx.proxy.scheduler.queue.subscribe(

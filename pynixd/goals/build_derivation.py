@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, ClassVar
 import anyio
 import structlog
 
+from ..exceptions import DelegationLoopError
 from ..serde import (
     BuildDerivationRequest,
     BuildDerivationResponse,
@@ -202,12 +203,16 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
         # A build runs after the request of the client returned, so the
         # connection that runs it must get the set from the queue. Issue nixidae/nixidae#231.
         options = next((c.options for c in self._subscribers if c.options is not None), None)
-        build_id, future = await self.engine.ctx.scheduler.build_derivation(
-            self.request,
-            from_goal_path=True,
-            goal_request_id=self.engine.request_id,
-            options=options,
-        )
+        try:
+            build_id, future = await self.engine.ctx.scheduler.build_derivation(
+                self.request,
+                from_goal_path=True,
+                goal_request_id=self.engine.request_id,
+                options=options,
+                delegated=any(c.delegated for c in self._subscribers),
+            )
+        except DelegationLoopError as exc:
+            return goal_failure(str(exc))
         # The build is on the queue now, so the next root goal of the request
         # may enqueue behind it and the order of the queue decides. Issue nixidae/nixidae#246.
         self._reached_the_queue.set()
