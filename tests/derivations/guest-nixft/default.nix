@@ -17,11 +17,13 @@
   pynixd-lib,
   src,
   vivarium,
+  # Passed to vivarium's lib.nix, so it takes nixvenv from the same nixidae.
+  sources,
   nixft,
 }:
 
 let
-  vivariumLib = import (vivarium + "/lib.nix") { inherit pkgs lib; };
+  vivariumLib = import (vivarium + "/lib.nix") { inherit pkgs lib sources; };
 in
 vivariumLib.mkTest (
   { config, ... }:

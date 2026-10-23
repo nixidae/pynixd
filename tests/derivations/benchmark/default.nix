@@ -14,11 +14,13 @@
   package,
   src,
   vivarium,
+  # Passed to vivarium's lib.nix, so it takes nixvenv from the same nixidae.
+  sources,
   devEnv,
 }:
 
 let
-  vivariumLib = import (vivarium + "/lib.nix") { inherit pkgs lib; };
+  vivariumLib = import (vivarium + "/lib.nix") { inherit pkgs lib sources; };
 in
 vivariumLib.mkTest {
   name = "pynixd-benchmark";

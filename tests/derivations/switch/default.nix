@@ -11,13 +11,15 @@
   lib ? pkgs.lib,
   package,
   vivarium,
+  # Passed to vivarium's lib.nix, so it takes nixvenv from the same nixidae.
+  sources,
   # Every supported Nix, by attribute name. Replace mode moves through each
   # and back: a new Nix changes nix-daemon's unit under a running pynixd.
   nixVersions,
 }:
 
 let
-  vivariumLib = import (vivarium + "/lib.nix") { inherit pkgs lib; };
+  vivariumLib = import (vivarium + "/lib.nix") { inherit pkgs lib sources; };
 
   pynixd = mode: {
     imports = [ ../../../nix/nixos/default.nix ];

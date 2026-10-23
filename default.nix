@@ -57,7 +57,7 @@ let
     name = "pynixd-specifictest";
     testArgs = "";
   };
-  vivarium-runner = (import (sources.vivarium + "/lib.nix") { inherit pkgs; }).runner;
+  vivarium-runner = (import (sources.vivarium + "/lib.nix") { inherit pkgs sources; }).runner;
 
   nanopynix = import sources.nanopynix { inherit sources; };
 
@@ -427,6 +427,7 @@ package
     benchmark = pkgs.callPackage ./tests/derivations/benchmark {
       inherit package;
       src = lib.cleanSource ./.;
+      inherit sources;
       inherit (sources) vivarium;
       inherit devEnv;
     };
@@ -436,6 +437,7 @@ package
     guest = pkgs.callPackage ./tests/derivations/guest {
       pynixd-lib = library;
       src = lib.cleanSource ./.;
+      inherit sources;
       inherit (sources) vivarium;
       inherit devEnv agent;
     };
@@ -446,6 +448,7 @@ package
     guest-nixft = pkgs.callPackage ./tests/derivations/guest-nixft {
       pynixd-lib = library;
       src = lib.cleanSource ./.;
+      inherit sources;
       inherit (sources) vivarium;
       nixft = nixFunctionalTests.nix_2_34;
     };
@@ -455,12 +458,14 @@ package
     # `--builders`.
     daemon = pkgs.callPackage ./tests/derivations/daemon {
       inherit package;
+      inherit sources;
       inherit (sources) vivarium;
     };
 
     # A running machine switched to pynixd and back, in each mode.
     switch = pkgs.callPackage ./tests/derivations/switch {
       inherit package;
+      inherit sources;
       inherit (sources) vivarium;
       nixVersions = supportedNix;
     };
@@ -468,6 +473,7 @@ package
     # What an upgrade does to builds in flight; docs/design/upgrade-handover.md.
     handover = pkgs.callPackage ./tests/derivations/handover {
       inherit package;
+      inherit sources;
       inherit (sources) vivarium;
     };
 

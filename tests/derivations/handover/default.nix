@@ -12,10 +12,12 @@
   lib ? pkgs.lib,
   package,
   vivarium,
+  # Passed to vivarium's lib.nix, so it takes nixvenv from the same nixidae.
+  sources,
 }:
 
 let
-  vivariumLib = import (vivarium + "/lib.nix") { inherit pkgs lib; };
+  vivariumLib = import (vivarium + "/lib.nix") { inherit pkgs lib sources; };
 
   # The same program under another store path: what an upgrade changes.
   pynixdB = pkgs.symlinkJoin {
