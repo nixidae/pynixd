@@ -87,11 +87,15 @@ let
     carries the bindings, built against one version of Nix.  This set builds
     the shell, and `nix/pynixd.nix` still builds the package.
 
-    `own` builds this repository's two projects: built for a guest, which
-    has no checkout of the host, and editable for the shell.
+    This repository's two projects are editable, from `root`: the checkout
+    for the shell, and `/work` for a guest, which holds a copy of the tree
+    there.
   */
-  devPythonSetWith =
-    own:
+  devPythonSetAt =
+    root:
+    let
+      own = _name: mkEditableProject root;
+    in
     nanopynix.pythonSetWith {
       projectRoots = [
         ./.
@@ -107,12 +111,13 @@ let
       };
     };
 
-  # `root` is the checkout, through `toString`. `projectRoot` is the build's
-  # `src`, so it holds only the metadata: the whole tree there rebuilds the
-  # shell on every edit, `__pycache__` included. Each wheel package keeps its
-  # `__init__.py`, because hatchling writes no path for a missing directory.
+  # The install points at `dir` under `root`, a string, so no store copy.
+  # `projectRoot` is the build's `src`, so it holds only the metadata: the
+  # whole tree there rebuilds the env on every edit, `__pycache__` included.
+  # Each wheel package keeps its `__init__.py`, because hatchling writes no
+  # path for a missing directory.
   mkEditableProject =
-    _name: dir:
+    root: dir:
     nanopynix.ps.mkEditableProject {
       projectRoot = lib.fileset.toSource {
         root = dir;
@@ -128,7 +133,7 @@ let
           )
         );
       };
-      root = toString dir;
+      root = root + lib.removePrefix (toString ./.) (toString dir);
       inherit (nanopynix.pythonSet) python;
     };
 
@@ -156,8 +161,8 @@ let
       nanopynix-testing = [ ];
       vivarium-runner = [ ];
     };
-  devEnv = devEnvFrom (devPythonSetWith mkProject);
-  shellEnv = devEnvFrom (devPythonSetWith mkEditableProject);
+  shellEnv = devEnvFrom (devPythonSetAt (toString ./.));
+  guestEnv = devEnvFrom (devPythonSetAt "/work");
 
   pyinstance = nixvenv {
     python = pkgs.python3;
@@ -429,7 +434,7 @@ package
       src = lib.cleanSource ./.;
       inherit sources;
       inherit (sources) vivarium;
-      inherit devEnv;
+      devEnv = guestEnv;
     };
 
     # The same suites in a guest, where cleanup is a poweroff rather than
@@ -439,7 +444,8 @@ package
       src = lib.cleanSource ./.;
       inherit sources;
       inherit (sources) vivarium;
-      inherit devEnv agent;
+      inherit agent;
+      devEnv = guestEnv;
     };
 
     # The Nix functional suite in a UML guest, where cleanup is a poweroff

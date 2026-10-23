@@ -72,9 +72,9 @@ async def test(vms: Machines) -> None:
 async def _decode(vms: Machines) -> None:
     """Decode the activity stream a build makes, without a build.
 
-    `PYTHONPATH` puts the tree first, so it imports the edited
-    `nix_daemon_protocol` and not the copy built into the environment;
-    `stream_decode.py` prints the module it imported.
+    The environment installs `nix_daemon_protocol` editable from /work, so
+    it imports the edited tree; `stream_decode.py` prints the module it
+    imported.
     """
     [vm] = vms.values()
     await vm.succeed("chmod 0777 /artifacts")
@@ -83,7 +83,7 @@ async def _decode(vms: Machines) -> None:
     await vm.succeed(f"rm -rf /work && cp -r {src} /work && chmod -R u+w /work")
 
     command = (
-        "cd /work && PYTHONPATH=/work:/work/nix-daemon-protocol/src "
+        "cd /work && "
         f"python tests/benchmark/stream_decode.py {ACTIVITIES} {ROUNDS} "
         "> /artifacts/decode.log 2>&1"
     )
@@ -107,7 +107,7 @@ async def _raw(vms: Machines) -> None:
     await vm.succeed(f"rm -rf /work && cp -r {src} /work && chmod -R u+w /work")
 
     command = (
-        "cd /work && PYTHONPATH=/work:/work/nix-daemon-protocol/src "
+        "cd /work && "
         f"python tests/benchmark/raw_ops.py {OPERATIONS} "
         f"{vms.settings['upstream']} {vms.settings['socket']} "
         "> /artifacts/raw.log 2>&1"
@@ -194,7 +194,6 @@ async def _profile(vms: Machines) -> None:
         "systemd-run --unit=profiled-pynixd --collect --no-block "
         "--working-directory=/work "
         "--setenv=PATH=/run/current-system/sw/bin "
-        "--setenv=PYTHONPATH=/work:/work/nix-daemon-protocol/src "
         "--setenv=PYNIXD_CONFIG=/etc/pynixd/pynixd.json "
         f"python {wrapper}"
     )
@@ -209,7 +208,7 @@ async def _profile(vms: Machines) -> None:
             timeout=60,
         )
         pump = (
-            "cd /work && PYTHONPATH=/work:/work/nix-daemon-protocol/src "
+            "cd /work && "
             f"python tests/benchmark/raw_ops.py {OPERATIONS // 4} "
             f"{vms.settings['upstream']} {vms.settings['socket']} second "
             "> /artifacts/profile_pump.log 2>&1"
@@ -460,7 +459,7 @@ async def _growth(vms: Machines) -> None:
             timeout=60,
         )
         command = (
-            "cd /work && PYTHONPATH=/work:/work/nix-daemon-protocol/src "
+            "cd /work && "
             f"python tests/benchmark/growth_probe.py {vms.settings['socket']} {vms.settings['nixpkgs']} "
             f"{vms.settings['src']}/tests/benchmark/growth.nix "
             "> /artifacts/growth.log 2>&1"
