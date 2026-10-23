@@ -17,7 +17,9 @@ let
     pythonBuilder = pkgs.python3Packages.buildPythonPackage;
   };
 
-  agent = pkgs.pkgsCross.musl64.callPackage ./nix/agent.nix { };
+  # Not pkgsCross.musl64: that is x86_64 on every host, and the agent is
+  # filed under the host's own system below (#1056).
+  agent = pkgs.pkgsStatic.callPackage ./nix/agent.nix { };
 
   package = pkgs.python3Packages.callPackage ./nix/pynixd.nix {
     pythonBuilder = pkgs.python3Packages.buildPythonApplication;

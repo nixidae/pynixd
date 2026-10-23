@@ -2,11 +2,12 @@
   `pynixd-agent`, the host sampler pynixd runs on a builder and on its own
   host. Issue #98.
 
-  Call it from `pkgsCross.musl64` (or the musl cross set of another system):
-  Rust links musl statically by default, so the binary has no store
-  references and runs on a builder of any distribution from a plain upload.
-  The compiler is the ordinary cached rustc; only its musl standard library
-  and linker wrapper come from the cross set. Static glibc is the other way
+  Call it from `pkgsStatic`, the host system's static musl set: Rust links
+  musl statically, so the binary has no store references and runs on a
+  builder of any distribution from a plain upload. The binary cache has
+  that set's rustc and linker wrapper for x86_64-linux and aarch64-linux
+  (measured 2026-10-23); `pkgsCross.musl64` has them only on an x86_64
+  host, and builds an x86_64 agent everywhere. Static glibc is the other way
   to the same result: 1.18 MB against musl's 424 KB.
 */
 {
