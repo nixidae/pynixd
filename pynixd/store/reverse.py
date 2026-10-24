@@ -55,8 +55,11 @@ class ReverseStore(SSHStore):
         await super(SSHStore, self).start(sync_paths=sync_paths)
         # The builder's own pynixd answers its host's health, disk included;
         # SFTP and `pynixd-agent` cannot reach it. nixidae/nixidae#1013.
-        self.monitor = PeerHealthMonitor(self.pressure_settings, self.on_pressure_sample, self)
-        self.monitor.start()
+        # Registration starts the store before its probe and `add_store`
+        # starts it again; a second monitor would outlive `close()`.
+        if self.monitor is None:
+            self.monitor = PeerHealthMonitor(self.pressure_settings, self.on_pressure_sample, self)
+            self.monitor.start()
 
     async def create_conn(self) -> Connection:
         """Spawn nix-daemon --stdio on the builder over the reverse SSH connection."""
