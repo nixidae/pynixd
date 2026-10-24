@@ -79,14 +79,13 @@ print(json.dumps({{
 def _probe() -> dict[str, object]:
     """Import ``pynixd.instance`` in a clean interpreter and report what it loaded.
 
-    ``PYTHONPATH`` and ``NANOPYNIX_BEARTYPING`` are removed rather than
+    ``PYTHONPATH`` and ``BEARTYPING`` are removed rather than
     inherited. ``nanopynix_testing.beartype_hook`` puts a startup directory on
     the first so that a spawned interpreter starts beartype and coverage, and
-    the second makes every ``if TYPE_CHECKING or BEARTYPING:`` block a real
-    import. Either one would make the count depend on how the suite ran, which
-    is the one thing a budget must not do.
+    sets the second for it. Either one would make the count depend on how the
+    suite ran, which is the one thing a budget must not do.
     """
-    env = {k: v for k, v in os.environ.items() if k not in {"PYTHONPATH", "NANOPYNIX_BEARTYPING"}}
+    env = {k: v for k, v in os.environ.items() if k not in {"PYTHONPATH", "BEARTYPING"}}
     completed = subprocess.run(  # noqa: S603 -- sys.executable and a literal script, no shell
         [sys.executable, "-c", _PROBE],
         capture_output=True,
@@ -204,7 +203,7 @@ import pynixd.store as store
 answer = store.is_http_binary_cache(object())
 print(json.dumps({"answer": answer, "loaded": "pynixd.store.http_binary_cache" in sys.modules}))
 """
-    env = {k: v for k, v in os.environ.items() if k not in {"PYTHONPATH", "NANOPYNIX_BEARTYPING"}}
+    env = {k: v for k, v in os.environ.items() if k not in {"PYTHONPATH", "BEARTYPING"}}
     completed = subprocess.run(  # noqa: S603 -- sys.executable and a literal script, no shell
         [sys.executable, "-c", probe],
         capture_output=True,
