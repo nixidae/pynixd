@@ -18,7 +18,8 @@ import pytest
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId, StoreId
 from pynixd.allocator import RankedStore
 from pynixd.build_queue import BuildQueue
-from pynixd.config import NoLocalJobs, StoreRankingSettings
+from pynixd.config import NoLocalJobs, PlacementTraceSettings, StoreRankingSettings
+from pynixd.placement_trace import PlacementTrace
 from pynixd.scheduler import Scheduler
 from pynixd.serde import (
     BasicDerivation,
@@ -52,6 +53,9 @@ class NoLocalJobsScheduler:
     local store first, so only the rule under test keeps a build off it."""
 
     _assign_one = Scheduler._assign_one  # noqa: SLF001 -- the assignment is the unit
+    _place = Scheduler._place  # noqa: SLF001 -- the assignment is the unit
+    _trace_decision = Scheduler._trace_decision  # noqa: SLF001 -- a trace with no database returns at once
+    trace = PlacementTrace(None, PlacementTraceSettings())
     _client_forbids_local = Scheduler._client_forbids_local  # noqa: SLF001 -- the rule under test
     _fail_with_no_local_jobs = Scheduler._fail_with_no_local_jobs  # noqa: SLF001 -- Nix's message
 

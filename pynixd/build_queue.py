@@ -28,9 +28,10 @@ if TYPE_CHECKING:
 
     from nix_daemon_protocol.logs import LogMessage
 
-    from .build_stats import BuildObservation
+    from .build_stats import BuildObservation, StoreEstimate
     from .connection import ClientConn
     from .derived_path import DerivedPath
+    from .placement_trace import PlacementDecision
     from .serde import BuildDerivationRequest, Realisation, SetOptionsRequest
 log = structlog.get_logger(__name__)
 
@@ -147,6 +148,12 @@ class QueuedBuild:
         """Each remote store's expected delegation seconds, `None` where unmeasured."""
         self.inputs_measured: set[StoreId] = set()
         """The remote stores this build's identity has sent inputs to before."""
+        self.estimates: dict[StoreId, StoreEstimate] = {}
+        """What this build is expected to cost on each store, by phase."""
+        self.placement: PlacementDecision | None = None
+        """The decision that started the running attempt, for the trace."""
+        self.last_traced: tuple[tuple[object, ...], float] | None = None
+        """The key of the last decision traced for this build, and when."""
         self.last_output_at: float | None = None
         """When the upstream daemon last sent this build anything. A holder
         that is not the owner reads it for its own `max-silent-time`."""

@@ -137,6 +137,41 @@ class StoreRankingSettings(BaseModel):
     """Minimum score required for a store to be considered. If lower, builds stay queued."""
 
 
+class PlacementTraceSettings(BaseModel):
+    """The record of each placement decision in the store database. nixidae/nixidae#1070."""
+
+    enabled: bool = False
+    """Off unless asked for. A decision costs one row, and one more per store."""
+
+    max_age: float = 7 * 24 * 3600.0
+    """Seconds a decision stays. Older rows go in the next sweep."""
+
+    sweep_interval: float = 600.0
+    """Seconds between two sweeps of old rows."""
+
+    sweep_chunk: int = 500
+    """Decisions one sweep transaction deletes, with their stores.
+
+    A sweep deletes the oldest rows in chunks of this size, one transaction
+    each, so the write lock of the store database stays short and the freed
+    pages are contiguous.
+    """
+
+    flush_interval: float = 5.0
+    """Seconds between two writes of the buffered decisions, one transaction each."""
+
+    repeat_interval: float = 30.0
+    """A waiting build writes the same decision again after this many seconds.
+
+    A pass ranks every pending build again, so each pass would otherwise
+    write one decision for each waiting build. A changed outcome or reason
+    writes at once.
+    """
+
+    buffer_limit: int = 10_000
+    """Decisions held for the next flush. Past it, new decisions are dropped and counted."""
+
+
 class PressureSettings(BaseModel):
     """How the pressure of a builder moves its build limit. Issue #98.
 
@@ -916,6 +951,7 @@ class PynixdSettings(BaseSettings):
     # Scheduling & Telemetry
     schedule_mode: ScheduleMode = ScheduleMode.auto
     ranking: StoreRankingSettings = Field(default_factory=StoreRankingSettings)
+    placement_trace: PlacementTraceSettings = Field(default_factory=PlacementTraceSettings)
 
     # Substitution scheduling
     substitution_cache_maxsize: int = 100_000

@@ -88,6 +88,11 @@ Raw rows, not a running average: an estimator can change, and an outlier can
 go, without losing the history. nixidae/nixidae#1001.
 """
 
+PLACEMENT_DECISION_TABLE = f"{TABLE_PREFIX}PlacementDecision"
+"""One row per placement decision of the scheduler. nixidae/nixidae#1070."""
+PLACEMENT_CANDIDATE_TABLE = f"{TABLE_PREFIX}PlacementCandidate"
+"""One row per store a decision weighed or left out, keyed by the decision."""
+
 PATH_ACCESS_TABLE = f"{TABLE_PREFIX}PathAccess"
 BUILD_ACCESS_TABLE = f"{TABLE_PREFIX}BuildAccess"
 """When each store path was last named as a build input.
@@ -262,6 +267,76 @@ MIGRATIONS: tuple[Migration, ...] = (
             # A store's link rates read its newest rows across every identity.
             f"CREATE INDEX IF NOT EXISTS idx_pynixd_build_observation_store ON {BUILD_OBSERVATION_TABLE}(storeId, id)",
         ),
+    ),
+    Migration(
+        version=9,
+        name="placement-trace",
+        statements=(
+            f"CREATE TABLE IF NOT EXISTS {PLACEMENT_DECISION_TABLE} ("
+            "id INTEGER PRIMARY KEY, "
+            "decidedAtMs INTEGER NOT NULL, "
+            "passId INTEGER NOT NULL, "
+            "buildId TEXT NOT NULL, "
+            "attempt INTEGER NOT NULL, "
+            "drvPath TEXT NOT NULL, "
+            "name TEXT NOT NULL, "
+            "system TEXT NOT NULL, "
+            "shape TEXT NOT NULL, "
+            "outcome TEXT NOT NULL, "
+            "reason TEXT, "
+            "chosenStoreId TEXT, "
+            "queuedMs INTEGER NOT NULL, "
+            "expectedBuildMs INTEGER, "
+            "preferLocal INTEGER NOT NULL, "
+            "localCanBuild INTEGER NOT NULL, "
+            "localSlotFull INTEGER, "
+            "localWaitMs INTEGER, "
+            "weights TEXT NOT NULL, "
+            "observationId INTEGER"
+            ")",
+            f"CREATE INDEX IF NOT EXISTS idx_pynixd_placement_decision_build ON {PLACEMENT_DECISION_TABLE}(buildId)",
+            f"CREATE TABLE IF NOT EXISTS {PLACEMENT_CANDIDATE_TABLE} ("
+            "decisionId INTEGER NOT NULL, "
+            "storeId TEXT NOT NULL, "
+            "rank INTEGER, "
+            "reason TEXT, "
+            "chosen INTEGER NOT NULL, "
+            "roomy INTEGER, "
+            "failedHere INTEGER NOT NULL, "
+            "cpuUtilization REAL, "
+            "cpuIdlePoints REAL, "
+            "cpuPsi REAL, "
+            "cpuPsiPoints REAL, "
+            "ioPsi REAL, "
+            "ioPsiPoints REAL, "
+            "unmonitoredPoints REAL, "
+            "inFlight INTEGER, "
+            "concurrencyPoints REAL, "
+            "assignedThisPass INTEGER, "
+            "herdPoints REAL, "
+            "scorePenalty REAL, "
+            "loadScore REAL, "
+            "threshold REAL, "
+            "passed INTEGER, "
+            "transferSeconds REAL, "
+            "transferPoints REAL, "
+            "priority REAL, "
+            "finalScore REAL, "
+            "inputsBytes INTEGER, "
+            "pullBytes INTEGER, "
+            "sendBytesPerS REAL, "
+            "receiveBytesPerS REAL, "
+            "dispatchMs INTEGER, "
+            "buildMs INTEGER, "
+            "buildSource TEXT, "
+            "shipMs INTEGER, "
+            "pullMs INTEGER, "
+            "slotWaitMs INTEGER, "
+            "totalMs INTEGER, "
+            "PRIMARY KEY (decisionId, storeId)"
+            ") WITHOUT ROWID",
+        ),
+        creates=(PLACEMENT_DECISION_TABLE, PLACEMENT_CANDIDATE_TABLE),
     ),
 )
 

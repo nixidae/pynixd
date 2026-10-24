@@ -15,7 +15,8 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID, BuildId, StoreId
 from pynixd.allocator import BuildAllocator, PreferLocal, RankedStore, TelemetryStoreRanker, pick_store
 from pynixd.build_queue import BuildQueue
 from pynixd.build_stats import ExpectedBytes, StoreLink, slot_wait_seconds, transfer_seconds
-from pynixd.config import StoreRankingSettings
+from pynixd.config import PlacementTraceSettings, StoreRankingSettings
+from pynixd.placement_trace import PlacementTrace
 from pynixd.psi import SystemHealth
 from pynixd.scheduler import Scheduler
 from pynixd.serde import BasicDerivation, BuildDerivationRequest, BuildMode, StorePath
@@ -231,6 +232,9 @@ class AssignScheduler:
         self.assigned: list[StoreId] = []
 
     _assign_one = Scheduler._assign_one  # noqa: SLF001 -- the assignment is the unit
+    _place = Scheduler._place  # noqa: SLF001 -- the assignment is the unit
+    _trace_decision = Scheduler._trace_decision  # noqa: SLF001 -- a trace with no database returns at once
+    trace = PlacementTrace(None, PlacementTraceSettings())
     _client_forbids_local = Scheduler._client_forbids_local  # noqa: SLF001 -- part of the assignment
 
     def _has_compatible_store(self, *_args: Any) -> bool:
@@ -360,6 +364,7 @@ class WakingScheduler(OnePressuredPoolScheduler):
         super().__init__(queue, blocked)
         self.builds_waiting = False
         self.triggered = 0
+        self.pass_id = 0
 
     def _filter_schedulable(
         self, pending: list[QueuedBuild]

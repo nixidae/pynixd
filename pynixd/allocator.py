@@ -27,6 +27,88 @@ log = structlog.get_logger(__name__)
 TINY_BUILD_THRESHOLD_MS = 2500
 
 
+@dataclass(frozen=True)
+class ScoreBreakdown:
+    """Each term of one store's score for one build. Penalties are negative points."""
+
+    cpu_utilization: float | None
+    cpu_idle_points: float
+    cpu_psi: float | None
+    cpu_psi_points: float
+    io_psi: float | None
+    io_psi_points: float
+    unmonitored_points: float
+    in_flight: int
+    concurrency_points: float
+    assigned_this_pass: int
+    herd_points: float
+    score_penalty: float
+    load_score: float
+    """The sum of the terms above: what `min_schedule_score` reads."""
+    threshold: float
+    passed: bool
+    transfer_seconds: float | None
+    transfer_points: float
+    priority: float
+    final_score: float
+
+
+def score_store(
+    store: DaemonStore,
+    settings: StoreRankingSettings,
+    in_flight: int,
+    assigned_this_pass: int,
+    transfer_seconds: float | None,
+) -> ScoreBreakdown:
+    """Score *store* for one build, term by term."""
+    cpu = store.cpu_util.utilization if store.cpu_util else None
+    cpu_idle_points = (1.0 - cpu / 100.0) * settings.cpu_idle_weight if cpu is not None else 0.0
+    psi = store.monitor.health.psi if store.monitor else None
+    cpu_psi = psi.cpu.some_avg10 if psi else None
+    io_psi = psi.io.some_avg10 if psi else None
+    cpu_psi_points = -cpu_psi * settings.cpu_pressure_penalty if cpu_psi is not None else 0.0
+    io_psi_points = -io_psi * settings.io_pressure_penalty if io_psi is not None else 0.0
+    monitored = cpu is not None or psi is not None
+    unmonitored_points = 0.0 if monitored else -settings.unmonitored_penalty
+    concurrency_points = -in_flight * settings.concurrency_penalty
+    herd_points = -assigned_this_pass * settings.thundering_herd_penalty
+    load_score = (
+        cpu_idle_points
+        + cpu_psi_points
+        + io_psi_points
+        + unmonitored_points
+        + concurrency_points
+        + herd_points
+        - store.score_penalty
+    )
+    # The transfer orders the stores and never drops one: it is the cost of
+    # this build, not the load of the store. Under the threshold, a 366 MB
+    # input put every idle builder below 0, and the build waited 20 minutes
+    # for a cost that never falls.
+    transfer_points = -(transfer_seconds or 0.0) * settings.transfer_penalty_per_second
+    return ScoreBreakdown(
+        cpu_utilization=cpu,
+        cpu_idle_points=cpu_idle_points,
+        cpu_psi=cpu_psi,
+        cpu_psi_points=cpu_psi_points,
+        io_psi=io_psi,
+        io_psi_points=io_psi_points,
+        unmonitored_points=unmonitored_points,
+        in_flight=in_flight,
+        concurrency_points=concurrency_points,
+        assigned_this_pass=assigned_this_pass,
+        herd_points=herd_points,
+        score_penalty=store.score_penalty,
+        load_score=load_score,
+        threshold=settings.min_schedule_score,
+        passed=load_score >= settings.min_schedule_score or not monitored,
+        transfer_seconds=transfer_seconds,
+        transfer_points=transfer_points,
+        priority=store.priority,
+        final_score=(load_score + transfer_points) * store.priority,
+    )
+
+
 @dataclass
 class RankedStore:
     """A store with its allocation score."""
@@ -34,13 +116,24 @@ class RankedStore:
     store_id: StoreId
     score: float
     store: DaemonStore
+    breakdown: ScoreBreakdown | None = None
+
+
+@dataclass(frozen=True)
+class ExcludedStore:
+    """A store that is no candidate for a build, and why."""
+
+    store_id: StoreId
+    reason: str
+    breakdown: ScoreBreakdown | None = None
 
 
 class RankedStores:
-    """Ordered collection of ranked stores."""
+    """Ordered collection of ranked stores, and the stores the ranking left out."""
 
-    def __init__(self, stores: list[RankedStore]) -> None:
+    def __init__(self, stores: list[RankedStore], excluded: list[ExcludedStore] | None = None) -> None:
         self._stores = stores
+        self.excluded = excluded or []
 
     def __iter__(self) -> Iterator[RankedStore]:
         return iter(self._stores)
@@ -53,7 +146,7 @@ class RankedStores:
 
     def sort(self) -> RankedStores:
         """Return a new instance sorted by score descending."""
-        return RankedStores(sorted(self._stores, key=lambda s: s.score, reverse=True))
+        return RankedStores(sorted(self._stores, key=lambda s: s.score, reverse=True), self.excluded)
 
 
 def pick_store(
@@ -131,65 +224,25 @@ class TelemetryStoreRanker(StoreRanker):
         transfer_seconds: Mapping[StoreId, float] | None = None,
     ) -> RankedStores:
         """Score stores by CPU, pressure, concurrency, herd and transfer penalties."""
-        ranked = []
+        ranked: list[RankedStore] = []
+        excluded: list[ExcludedStore] = []
         for store in stores:
-            score = 0.0
-
-            # 1. CPU Availability (+ points)
-            if store.cpu_util:
-                idle_ratio = 1.0 - (store.cpu_util.utilization / 100.0)
-                score += idle_ratio * self.settings.cpu_idle_weight
-            # else: no monitor data → neutral (no bonus, no penalty)
-
-            # 2. System Pressure (- points)
-            if store.monitor and store.monitor.health.psi:
-                psi = store.monitor.health.psi
-                score -= psi.cpu.some_avg10 * self.settings.cpu_pressure_penalty
-                score -= psi.io.some_avg10 * self.settings.io_pressure_penalty
-            # else: no monitor data → neutral (no penalty)
-
-            has_resource_signal = store.cpu_util is not None or (
-                store.monitor is not None and store.monitor.health.psi is not None
-            )
-            if not has_resource_signal:
-                score -= self.settings.unmonitored_penalty
-
-            # 3. Concurrency Penalty (- points)
             in_flight = store.in_flight
             if override_in_flight and store.store_id in override_in_flight:
                 in_flight = override_in_flight[store.store_id]
-            score -= in_flight * self.settings.concurrency_penalty
-
-            # 4. Predicted Load Penalty (- points)
-            # (Requires build duration estimation, placeholder for now)
-
-            # 5. Thundering Herd Penalty (- points)
-            assigned = assigned_this_pass.get(store.store_id, 0)
-            score -= assigned * self.settings.thundering_herd_penalty
-
-            score -= store.score_penalty
-
-            # 6. Delegation Penalty (- points): the measured seconds of
-            # moving inputs and outputs and of the dispatch round trip.
-            # It orders the stores and never drops one: it is the cost of
-            # this build, not the load of the store. Under the threshold, a
-            # 366 MB input put every idle builder below 0, and the build
-            # waited 20 minutes for a cost that never falls.
-            transfer_penalty = 0.0
-            if transfer_seconds:
-                transfer_penalty = transfer_seconds.get(store.store_id, 0.0) * self.settings.transfer_penalty_per_second
-
-            if score >= self.settings.min_schedule_score or not has_resource_signal:
-                ranked.append(RankedStore(store.store_id, (score - transfer_penalty) * store.priority, store))
+            terms = score_store(
+                store,
+                self.settings,
+                in_flight,
+                assigned_this_pass.get(store.store_id, 0),
+                transfer_seconds.get(store.store_id) if transfer_seconds else None,
+            )
+            if terms.passed:
+                ranked.append(RankedStore(store.store_id, terms.final_score, store, terms))
             else:
-                log.debug(
-                    "store_ranking_below_threshold",
-                    store_id=store.store_id,
-                    score=score,
-                    threshold=self.settings.min_schedule_score,
-                )
+                excluded.append(ExcludedStore(store.store_id, "score under min_schedule_score", terms))
 
-        return RankedStores(ranked).sort()
+        return RankedStores(ranked, excluded).sort()
 
 
 def short_of_disk(store: DaemonStore, settings: StoreRankingSettings, now: float) -> bool:
@@ -204,6 +257,21 @@ def short_of_disk(store: DaemonStore, settings: StoreRankingSettings, now: float
     if disk is not None:
         return disk.free_bytes < settings.min_free_bytes
     return now < getattr(store, "disk_full_until", 0.0)
+
+
+def incapable_reason(store: DaemonStore, build: QueuedBuild, features: set[str]) -> str | None:
+    """Why *store* cannot take *build* at all, or `None` when it can."""
+    if not store.is_healthy:
+        return "unhealthy"
+    if store.draining:
+        return "draining"
+    if store.no_schedule:
+        return "no_schedule"
+    if not store.supports_derivation(build.request.derivation.platform, features):
+        return "lacks the system or a required feature"
+    if build.is_blacklisted(store.store_id):
+        return "failed this build too often"
+    return None
 
 
 class BuildAllocator:
@@ -248,30 +316,40 @@ class BuildAllocator:
         # the sort is stable, so a remote wins a tie, as when the local store
         # was only a fallback. nixidae/nixidae#1001.
         remotes = [store for store_id, store in self.stores.items() if store_id != self.local_store.store_id]
-        capable = [
-            store
-            for store in [*remotes, self.local_store]
-            if store.is_healthy
-            and not store.draining
-            and not store.no_schedule
-            and store.supports_derivation(build.request.derivation.platform, build_features)
-            and not build.is_blacklisted(store.store_id)
-        ]
+        excluded: list[ExcludedStore] = []
+        capable: list[DaemonStore] = []
+        for store in [*remotes, self.local_store]:
+            reason = incapable_reason(store, build, build_features)
+            if reason is None:
+                capable.append(store)
+            else:
+                excluded.append(ExcludedStore(store.store_id, reason))
         # A last-resort store is a candidate only when no other store can
         # build this at all; load and disk do not count. nixidae/nixidae#1018.
         if any(not getattr(store, "last_resort", False) for store in capable):
+            excluded += [
+                ExcludedStore(store.store_id, "last resort, and another store can build it")
+                for store in capable
+                if getattr(store, "last_resort", False)
+            ]
             capable = [store for store in capable if not getattr(store, "last_resort", False)]
         settings = getattr(self.ranker, "settings", StoreRankingSettings())
         now = time.monotonic()
-        candidates = [store for store in capable if not short_of_disk(store, settings, now)]
+        candidates: list[DaemonStore] = []
+        for store in capable:
+            if short_of_disk(store, settings, now):
+                excluded.append(ExcludedStore(store.store_id, "short of disk"))
+            else:
+                candidates.append(store)
 
-        return self.ranker.rank_stores(
+        ranked = self.ranker.rank_stores(
             build,
             candidates,
             assigned_this_pass,
             override_in_flight,
             transfer_seconds,
         )
+        return RankedStores(list(ranked), [*excluded, *ranked.excluded])
 
     def incompatibility_reasons(
         self,

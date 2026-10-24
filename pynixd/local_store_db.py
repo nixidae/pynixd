@@ -42,7 +42,7 @@ import aiosqlite
 import anyio
 import structlog
 
-from .build_stats import ExpectedBytes, StoreLink
+from .build_stats import BuildEstimateSource, ExpectedBytes, StoreLink
 from .db_migrations import (
     BUILD_OBSERVATION_TABLE,
     DERIVATION_SHAPE_TABLE,
@@ -238,6 +238,12 @@ WHERE name = ? AND system = ? AND shape = ? AND storeId = ? AND id NOT IN (
 QUERY_BUILD_MS_OF_SHAPE = f"""
 SELECT buildMs FROM {BUILD_OBSERVATION_TABLE}
 WHERE name = ? AND system = ? AND shape = ? AND status = 0 AND buildMs IS NOT NULL
+ORDER BY id DESC LIMIT ?
+"""
+
+QUERY_BUILD_MS_OF_SHAPE_ON_STORE = f"""
+SELECT buildMs FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = ? AND system = ? AND shape = ? AND storeId = ? AND status = 0 AND buildMs IS NOT NULL
 ORDER BY id DESC LIMIT ?
 """
 
@@ -860,10 +866,13 @@ class LocalStoreDB:
             queue = self.pending_build_references if kind == "build" else self.pending_references
             queue.update(str(path) for path in paths)
 
-    async def record_build_observation(self, identity: DerivationIdentity, observation: BuildObservation) -> None:
-        """Store one build's cost, and keep the newest `OBSERVATIONS_KEPT` of its identity and store."""
+    async def record_build_observation(self, identity: DerivationIdentity, observation: BuildObservation) -> int | None:
+        """Store one build's cost, and keep the newest `OBSERVATIONS_KEPT` of its identity and store.
+
+        Answers the row id, or `None` when nothing was written.
+        """
         if not self.active or self.read_only or not self.schema.usable:
-            return
+            return None
         key = (identity.name, identity.system, identity.shape, observation.store_id)
         try:
             async with self.acquire_conn() as db:
@@ -871,7 +880,7 @@ class LocalStoreDB:
                     INSERT_DERIVATION_SHAPE,
                     (identity.shape, json.dumps(identity.keys), json.dumps(identity.features)),
                 )
-                await db.execute(
+                cursor = await db.execute(
                     INSERT_BUILD_OBSERVATION,
                     (
                         *key,
@@ -886,10 +895,13 @@ class LocalStoreDB:
                         observation.pull_bytes,
                     ),
                 )
+                row_id = cursor.lastrowid
                 await db.execute(PRUNE_BUILD_OBSERVATIONS, (*key, *key, OBSERVATIONS_KEPT))
                 await db.commit()
         except aiosqlite.Error:
             log.warning("record_build_observation_failed", name=identity.name, exc_info=True)
+            return None
+        return row_id
 
     async def expected_build_ms(self, identity: DerivationIdentity) -> int | None:
         """The median time of the identity's recent `BUILT` builds, on any store.
@@ -911,6 +923,30 @@ class LocalStoreDB:
         except aiosqlite.Error:
             log.debug("expected_build_ms_failed", name=identity.name, exc_info=True)
         return None
+
+    async def expected_build_ms_on(
+        self, identity: DerivationIdentity, store_id: str
+    ) -> tuple[int | None, BuildEstimateSource | None]:
+        """The median time of the identity's recent `BUILT` builds on *store_id*, and which history answered.
+
+        Falls back to the shape on any store, then to the name and system.
+        """
+        if not self.active or not self.schema.usable:
+            return None, None
+        shape = (identity.name, identity.system, identity.shape)
+        try:
+            for source, query, params in (
+                (BuildEstimateSource.SHAPE_ON_STORE, QUERY_BUILD_MS_OF_SHAPE_ON_STORE, (*shape, store_id)),
+                (BuildEstimateSource.SHAPE, QUERY_BUILD_MS_OF_SHAPE, shape),
+                (BuildEstimateSource.NAME, QUERY_BUILD_MS_OF_NAME, (identity.name, identity.system)),
+            ):
+                async with self.execute(query, (*params, OBSERVATIONS_KEPT)) as cursor:
+                    rows = await cursor.fetchall()
+                if rows:
+                    return int(statistics.median(int(row[0]) for row in rows)), source
+        except aiosqlite.Error:
+            log.debug("expected_build_ms_on_failed", name=identity.name, exc_info=True)
+        return None, None
 
     async def store_link(self, store_id: str) -> StoreLink:
         """The store's send and receive rates and dispatch round trip, from its newest rows.

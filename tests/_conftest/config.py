@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -67,6 +68,9 @@ def pytest_configure(config):
     if asyncio_plugin is not None:
         config.pluginmanager.unregister(asyncio_plugin)
     install_session_keys()
+    # Off by default, so on here: every build of every suite then runs the
+    # trace's path through the scheduler. nixidae/nixidae#1070.
+    os.environ.setdefault("PYNIXD_PLACEMENT_TRACE", '{"enabled": true}')
 
 
 # ── URI helpers ───────────────────────────────────────────────────

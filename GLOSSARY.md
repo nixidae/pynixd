@@ -109,6 +109,9 @@ A per-store multiplier (`priority`, default `1.0`) applied to the telemetry scor
 }
 ```
 
+### Placement Trace
+The record of each scheduler decision, in `PynixdPlacementDecision` and `PynixdPlacementCandidate` of the store database (`pynixd/placement_trace.py`). A decision row holds the build, the outcome (`assigned`, `waiting`, `failed`, `cancelled`), the reason and the chosen store. One candidate row per store holds each score term, the reason a store was left out, and the expected bytes and seconds of each phase there (ship, dispatch, build, pull, slot wait). `observationId` joins the decision to what the build cost in `PynixdBuildObservation`. Settings: `placement_trace` (off by default, rows kept for `max_age`, old rows deleted in chunks every `sweep_interval`).
+
 ### Goal System
 A request-scoped dependency walker for daemon operations that need to traverse derivations and store paths. `BuildPaths` and `BuildPathsWithResults` use mutating goals that may substitute or build; `QueryMissing` uses a read-only planning goal that may inspect local validity and substitution availability but must not import or build paths.
 

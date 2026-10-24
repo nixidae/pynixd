@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
 import anyio
@@ -25,11 +26,21 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID
 
 from . import metrics, state
 from ._lazy import ssh_errors
-from .allocator import BuildAllocator, PreferLocal, RankedStore, RankedStores, TelemetryStoreRanker, pick_store
+from .allocator import (
+    BuildAllocator,
+    ExcludedStore,
+    PreferLocal,
+    RankedStore,
+    RankedStores,
+    TelemetryStoreRanker,
+    pick_store,
+)
 from .build_queue import BuildQueue, QueuedBuild
 from .build_stats import (
+    BuildEstimateSource,
     BuildObservation,
     ExpectedBytes,
+    StoreEstimate,
     StoreLink,
     identity_of,
     slot_wait_seconds,
@@ -39,6 +50,7 @@ from .config import NoLocalJobs
 from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from .exceptions import BackendError, InfrastructureError, error_text, leaves
 from .goals.results import result_succeeded
+from .placement_trace import CandidateTrace, Outcome, PlacementDecision, PlacementTrace
 from .serde import AddTempRootRequest, AddTempRootsRequest, BuildResultStatus, LogNext, QueryValidPathsRequest
 from .store import DaemonStore, LocalDBStore
 from .store.transfer import stream_paths_store_to_store
@@ -159,6 +171,26 @@ def build_decision_seeds(drv_path: str, input_srcs: Iterable[str]) -> set[str]:
     return {drv_path, *input_srcs}
 
 
+@dataclass
+class _Notes:
+    """What one decision of `_assign_one` saw, for the trace."""
+
+    outcome: Outcome | None = None
+    reason: str | None = None
+    ranked: list[RankedStore] = field(default_factory=list)
+    excluded: list[ExcludedStore] = field(default_factory=list)
+    roomy: set[StoreId] | None = None
+    chosen: StoreId | None = None
+    prefer_local: bool = False
+    kept_local: bool = False
+    local_can_build: bool = False
+    local_slot_full: bool | None = None
+
+    def end(self, outcome: Outcome, reason: str | None = None) -> None:
+        self.outcome = outcome
+        self.reason = reason
+
+
 class Scheduler:
     """Schedules builds across stores based on locality and DAG deps."""
 
@@ -186,6 +218,10 @@ class Scheduler:
         """Whether the last pass left a build waiting for a store."""
         self._links: dict[StoreId, tuple[float, StoreLink]] = {}
         """Each store's measured link, and when it was read."""
+        self.trace = PlacementTrace(None, ctx.settings.placement_trace)
+        """Writes nothing until `start` hands it the database, which the local store opens after this."""
+        self.pass_id = 0
+        self._weights = self.ranker.settings.model_dump_json()
         for store in [*self.stores.values(), self.local_store]:
             store.on_capacity = self.trigger
             if isinstance(store, DaemonStore):
@@ -370,7 +406,10 @@ class Scheduler:
         """Run the scheduler loop. Its end cancels every build."""
         self.running = True
         log.info("scheduler_started")
+        self.trace.db = getattr(self.local_store, "db", None)
         async with self.workers():
+            if self._workers is not None and self.trace.db is not None:
+                self._workers.start_soon(self.trace.run)
             while self.running:
                 try:
                     await self.trigger_event.wait()
@@ -411,6 +450,7 @@ class Scheduler:
         3. Assign schedulable builds to stores.
         4. Update store metrics.
         """
+        self.pass_id += 1
         pending = await self.queue.get_pending()
         if not pending:
             self.builds_waiting = False
@@ -519,11 +559,24 @@ class Scheduler:
         assigned_this_pass: dict[StoreId, int],
     ) -> bool:
         """Start *build* on a store, or fail it; answer whether it waits for a slot."""
-        build_features = effective_required_features(build.request.derivation)
-
-        # Check if another pass already assigned this build
         if build.is_building:
             return False
+        notes = _Notes()
+        try:
+            return await self._place(build, override_in_flight, running_builds, assigned_this_pass, notes)
+        finally:
+            if notes.outcome is not None:
+                self._trace_decision(build, notes, running_builds, assigned_this_pass)
+
+    async def _place(
+        self,
+        build: QueuedBuild,
+        override_in_flight: dict[StoreId, int],
+        running_builds: dict[StoreId, int],
+        assigned_this_pass: dict[StoreId, int],
+        notes: _Notes,
+    ) -> bool:
+        build_features = effective_required_features(build.request.derivation)
 
         # **A build that no live request wants does not take a slot.**
         # This pass runs from the completion of the build that just
@@ -544,6 +597,7 @@ class Scheduler:
         # Issue nixidae/nixidae#325.
         if self.queue.nobody_wants(build):
             log.debug("build_wanted_by_nobody", build_id=build.build_id)
+            notes.end(Outcome.CANCELLED, "no live request wants it")
             await self.queue.cancel_unwanted(build.build_id)
             return False
 
@@ -554,6 +608,7 @@ class Scheduler:
             override_in_flight=override_in_flight,
             transfer_seconds=transfer,
         )
+        notes.excluded = list(ranked.excluded) if isinstance(ranked, RankedStores) else []
 
         local_store = self.local_store
         local_can_build = (
@@ -566,18 +621,23 @@ class Scheduler:
         if no_local_jobs is not NoLocalJobs.one_slot and self._client_forbids_local(build):
             has_remote = self._has_compatible_store(build, build_features)
             if not has_remote and no_local_jobs is NoLocalJobs.remote_only:
+                notes.end(Outcome.FAILED, "the client forbids local builds, and no remote store can build it")
                 await self._fail_with_no_local_jobs(build)
                 return False
             if has_remote:
                 local_can_build = False
                 ranked = RankedStores([c for c in ranked if c.store_id != local_store.store_id])
+                notes.excluded.append(ExcludedStore(local_store.store_id, "the client forbids local builds"))
         prefer_local = build.request.derivation.build_local and local_can_build
+        notes.prefer_local = prefer_local
+        notes.local_can_build = local_can_build
         # Nix weighs no load for a `preferLocalBuild` derivation, so the
         # local store stays a candidate under `min_schedule_score`.
         # Dropped, the build waits for a slot no running build frees:
         # PSI at 71 % on dynhetz hangs every `writeText` that way.
         if prefer_local and not any(c.store_id == local_store.store_id for c in ranked):
             ranked = RankedStores([*ranked, RankedStore(local_store.store_id, 0.0, local_store)])
+            notes.kept_local = True
         # A store this build failed on goes after every store it has not
         # tried, so a retry does not land on the same broken machine.
         # nixidae/nixidae#1015.
@@ -589,19 +649,24 @@ class Scheduler:
         # The local store is ranked like the others (nixidae/nixidae#1001). An
         # empty ranking with a local store that can build means the ranking
         # dropped it, for pressure or for disk, and it waits: full is full.
+        notes.ranked = list(ranked)
         if not ranked and not local_can_build and not self._has_compatible_store(build, build_features):
+            notes.end(Outcome.FAILED, "no store can build it")
             await self._fail_no_compatible_store(build, build_features)
             return False
 
         if ranked:
             roomy = [c for c in ranked if self._has_build_room(c.store, running_builds, assigned_this_pass)]
+            notes.roomy = {c.store_id for c in roomy}
             if not roomy:
+                notes.end(Outcome.WAITING, "every candidate is at its build limit")
                 self.held_by_pressure.add(build.build_id)
                 return True
+            notes.local_slot_full = self._local_slot_is_full(build, running_builds, assigned_this_pass)
             rs = pick_store(
                 roomy,
                 local_store.store_id,
-                local_slot_full=self._local_slot_is_full(build, running_builds, assigned_this_pass),
+                local_slot_full=notes.local_slot_full,
                 prefer_local=PreferLocal(
                     wait_seconds=self._local_wait_seconds(),
                     # Only a store whose input cost is known: a round trip
@@ -615,7 +680,15 @@ class Scheduler:
                 else None,
             )
             if rs is None:
+                notes.end(
+                    Outcome.WAITING,
+                    "preferLocalBuild: the local slot is expected sooner than a delegation pays"
+                    if prefer_local
+                    else "the local slot is full, and no other candidate has room",
+                )
                 return True
+            notes.chosen = rs.store_id
+            notes.end(Outcome.ASSIGNED)
             log.debug(
                 "build_assigned_to_store",
                 build_id=build.build_id,
@@ -636,10 +709,84 @@ class Scheduler:
                 if s.supports_derivation(build.request.derivation.platform, build_features)
             ]
             if all_compatible and all(build.is_blacklisted(s.store_id) for s in all_compatible):
+                notes.end(Outcome.FAILED, "every capable store failed it too often")
                 await self._fail_all_compatible_blacklisted(build, build_features, all_compatible)
                 return False
+            notes.end(Outcome.WAITING, "no store is a candidate now")
             return True
         return False
+
+    def _trace_decision(
+        self,
+        build: QueuedBuild,
+        notes: _Notes,
+        running_builds: Mapping[StoreId, int],
+        assigned_this_pass: Mapping[StoreId, int],
+    ) -> None:
+        """Hand the decision to the trace, with each store it weighed or left out."""
+        if not self.trace.enabled or notes.outcome is None:
+            return
+        identity = identity_of(build.request.derivation)
+        local_id = self.local_store.store_id
+        decision = PlacementDecision(
+            pass_id=self.pass_id,
+            build_id=str(build.build_id),
+            attempt=build.retries,
+            drv_path=str(build.request.drv_path),
+            name=identity.name,
+            system=identity.system,
+            shape=identity.shape,
+            queued_ms=_ms_since(build.enqueued_at),
+            expected_build_ms=build.expected_duration,
+            prefer_local=notes.prefer_local,
+            local_can_build=notes.local_can_build,
+            local_slot_full=notes.local_slot_full,
+            local_wait_seconds=self._slot_wait_seconds(local_id),
+            weights=self._weights,
+            outcome=notes.outcome,
+            reason=notes.reason,
+            chosen_store_id=str(notes.chosen) if notes.chosen is not None else None,
+        )
+        if not self.trace.due(build.last_traced, decision):
+            return
+        candidates: dict[StoreId, CandidateTrace] = {}
+        for rank, candidate in enumerate(notes.ranked):
+            roomy = candidate.store_id in notes.roomy if notes.roomy is not None else None
+            # Read before the assignment counted: the chosen store had room.
+            has_room = (
+                roomy
+                if roomy is not None
+                else self._has_build_room(candidate.store, running_builds, assigned_this_pass)
+            )
+            candidates[candidate.store_id] = CandidateTrace(
+                store_id=str(candidate.store_id),
+                rank=rank,
+                reason="preferLocalBuild keeps the local store a candidate"
+                if notes.kept_local and candidate.store_id == local_id
+                else None,
+                chosen=candidate.store_id == notes.chosen,
+                roomy=roomy,
+                failed_here=build.store_failures.get(candidate.store_id, 0),
+                breakdown=candidate.breakdown,
+                estimate=build.estimates.get(candidate.store_id),
+                slot_wait_seconds=0.0 if has_room else self._slot_wait_seconds(candidate.store_id),
+            )
+        for excluded in notes.excluded:
+            candidates.setdefault(
+                excluded.store_id,
+                CandidateTrace(
+                    store_id=str(excluded.store_id),
+                    reason=excluded.reason,
+                    failed_here=build.store_failures.get(excluded.store_id, 0),
+                    breakdown=excluded.breakdown,
+                    estimate=build.estimates.get(excluded.store_id),
+                ),
+            )
+        decision.candidates = list(candidates.values())
+        build.last_traced = (decision.key, time.monotonic())
+        if decision.outcome is Outcome.ASSIGNED:
+            build.placement = decision
+        self.trace.record(decision)
 
     async def _transfer_seconds(self, build: QueuedBuild) -> dict[StoreId, float]:
         """Each remote store's expected delegation seconds for this build, where measured.
@@ -655,17 +802,25 @@ class Scheduler:
         identity = identity_of(build.request.derivation)
         platform = build.request.derivation.platform
         features = effective_required_features(build.request.derivation)
+        local_id = self.local_store.store_id
         todo = [
             store
             for store_id, store in self.stores.items()
-            if store_id != self.local_store.store_id
+            if store_id != local_id
             and store_id not in build.transfer_seconds
             and store.is_healthy
             and store.supports_derivation(platform, features)
         ]
-        if not todo:
+        estimate_local = self.trace.enabled and local_id not in build.estimates
+        if not todo and not estimate_local:
             return self._known_transfer_seconds(build)
-        sizes = await self._input_closure_sizes(build)
+        sizes = await self._input_closure_sizes(build) if todo else {}
+
+        async def build_ms(store_id: StoreId) -> tuple[int | None, BuildEstimateSource | None]:
+            # Only the trace reads a build estimate per store; a pass pays no query for it otherwise.
+            if not self.trace.enabled:
+                return None, None
+            return await db.expected_build_ms_on(identity, str(store_id))
 
         async def measure(store: DaemonStore) -> None:
             expected = await db.expected_bytes(identity, str(store.store_id))
@@ -676,10 +831,20 @@ class Scheduler:
             )
             if missing is not None and (missing == 0 or link.send_bytes_per_s):
                 build.inputs_measured.add(store.store_id)
+            ms, source = await build_ms(store.store_id)
+            build.estimates[store.store_id] = StoreEstimate(
+                inputs_bytes=missing, pull_bytes=expected.pull, link=link, build_ms=ms, build_source=source
+            )
+
+        async def measure_local() -> None:
+            ms, source = await build_ms(local_id)
+            build.estimates[local_id] = StoreEstimate(inputs_bytes=0, pull_bytes=0, build_ms=ms, build_source=source)
 
         async with anyio.create_task_group() as tg:
             for store in todo:
                 tg.start_soon(measure, store)
+            if estimate_local:
+                tg.start_soon(measure_local)
         return self._known_transfer_seconds(build)
 
     @staticmethod
@@ -715,10 +880,13 @@ class Scheduler:
         return sum(size for path, size in sizes.items() if path not in held)
 
     def _local_wait_seconds(self) -> float | None:
+        return self._slot_wait_seconds(self.local_store.store_id)
+
+    def _slot_wait_seconds(self, store_id: StoreId) -> float | None:
         running = [
             (build.expected_duration, build.started_at)
             for build in self.queue.by_id.values()
-            if build.is_building and build.assigned_store_id == self.local_store.store_id
+            if build.is_building and build.assigned_store_id == store_id
         ]
         return slot_wait_seconds(running, time.monotonic())
 
@@ -1304,7 +1472,9 @@ class Scheduler:
         observation.cpu_user_us = resp.result.cpu_user.value if resp.result.cpu_user else None
         observation.cpu_system_us = resp.result.cpu_system.value if resp.result.cpu_system else None
         identity = identity_of(build.request.derivation)
-        await self.local_store.db.record_build_observation(identity, observation)
+        observation_id = await self.local_store.db.record_build_observation(identity, observation)
+        if build.placement is not None and observation_id is not None:
+            self.trace.observed(build.placement, observation_id)
         log.info(
             "build_observed",
             name=identity.name,

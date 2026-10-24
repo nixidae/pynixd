@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from nix_daemon_protocol.basic_derivation import structured_attrs
@@ -110,6 +111,64 @@ class ExpectedBytes:
 
     inputs: int | None = None
     pull: int | None = None
+
+
+class BuildEstimateSource(StrEnum):
+    """Which history answered a build estimate: the closest one that had rows."""
+
+    SHAPE_ON_STORE = "shape-on-store"
+    SHAPE = "shape"
+    NAME = "name"
+
+
+@dataclass(frozen=True)
+class StoreEstimate:
+    """What one build is expected to cost on one store, by phase.
+
+    A field is `None` where nothing measured it. A rate of `None` leaves the
+    phase it prices unknown, and the total sums the known phases only.
+    """
+
+    inputs_bytes: int | None = None
+    """The NAR bytes of the input closure the store lacks now."""
+    pull_bytes: int | None = None
+    """The bytes the identity's outputs took to pull before."""
+    link: StoreLink = StoreLink()
+    build_ms: int | None = None
+    build_source: BuildEstimateSource | None = None
+
+    @property
+    def ship_seconds(self) -> float | None:
+        if self.inputs_bytes == 0:
+            return 0.0
+        if self.inputs_bytes is None or not self.link.send_bytes_per_s:
+            return None
+        return self.inputs_bytes / self.link.send_bytes_per_s
+
+    @property
+    def pull_seconds(self) -> float | None:
+        if self.pull_bytes == 0:
+            return 0.0
+        if self.pull_bytes is None or not self.link.receive_bytes_per_s:
+            return None
+        return self.pull_bytes / self.link.receive_bytes_per_s
+
+    @property
+    def dispatch_seconds(self) -> float | None:
+        return self.link.dispatch_ms / 1000 if self.link.dispatch_ms is not None else None
+
+    @property
+    def build_seconds(self) -> float | None:
+        return self.build_ms / 1000 if self.build_ms is not None else None
+
+    def total_seconds(self, wait_seconds: float | None = None) -> float | None:
+        """The known phases summed, a slot wait included: when the outputs are expected local."""
+        parts = [
+            part
+            for part in (wait_seconds, self.ship_seconds, self.dispatch_seconds, self.build_seconds, self.pull_seconds)
+            if part is not None
+        ]
+        return sum(parts) if parts else None
 
 
 def slot_wait_seconds(running: Iterable[tuple[int | None, float | None]], now: float) -> float | None:
