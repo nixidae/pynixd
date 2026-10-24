@@ -80,6 +80,7 @@ class StatsTestStore(LocalDBStore):
                     suppress_last=False,
                     raise_on_error=False,
                     options=None,
+                    keep_logs=None,
                 ):
 
                     if isinstance(request, BuildDerivationRequest):
