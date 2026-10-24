@@ -79,7 +79,44 @@ _BOUNDED_READS = (
 )
 """Reads of the store database that take no lock, so `read_timeout` bounds
 them. A GC, a build and anything behind the GC lock stay unbounded: the
-daemon can be silent for a long time and still be right (#93)."""
+daemon can be silent for a long time and still be right (#93).
+
+The bound covers the whole read, except for a `QueryValidPaths` with
+`substitute` set. That one downloads before it answers (`substitutePaths`
+at `daemon.cc:347`), for as long as the closure takes, and the daemon
+reports progress all the way. So the bound covers its silence instead.
+nixidae/nixidae#1074."""
+
+
+def _downloads(request: object) -> bool:
+    return isinstance(request, QueryValidPathsRequest) and bool(request.substitute)
+
+
+async def _until_silent[T](conn: Connection, call: Callable[[], Awaitable[T]], limit: float) -> T:
+    """Answer *call*, or raise TimeoutError once *conn* has read nothing for *limit* seconds."""
+    started = time.monotonic()
+    try:
+        async with anyio.create_task_group() as tg:
+
+            async def watch() -> None:
+                # Silence is the absence of reads, so nothing can be awaited for it.
+                while (left := max(started, conn.r.last_read_at) + limit - time.monotonic()) > 0:
+                    await anyio.sleep(left)
+                tg.cancel_scope.cancel()
+
+            tg.start_soon(watch)
+            try:
+                return await call()
+            finally:
+                tg.cancel_scope.cancel()
+    except BaseExceptionGroup as group:
+        # The watcher never raises: the one error is the call's, and a caller
+        # matches it by its class.
+        if len(group.exceptions) == 1:
+            raise group.exceptions[0] from None
+        raise
+    raise TimeoutError
+
 
 _CB_THRESHOLD: int = 3
 _CB_MAX_COOLDOWN: float = 300.0
@@ -600,16 +637,21 @@ class DaemonStore(Store):
         bound = self.read_timeout if isinstance(request, _BOUNDED_READS) else math.inf
 
         try:
-            with anyio.fail_after(bound):
+            with anyio.fail_after(bound) as whole_read:
                 async with pool(options) as conn:
-                    return await conn.call(
-                        request, client=client, suppress_last=suppress_last, raise_on_error=raise_on_error
+                    call = functools.partial(
+                        conn.call, request, client=client, suppress_last=suppress_last, raise_on_error=raise_on_error
                     )
+                    if not _downloads(request):
+                        return await call()
+                    whole_read.deadline = math.inf
+                    return await _until_silent(conn, call, bound)
         except TimeoutError:
             # The connection left through an exception, so the pool drops it.
             metrics.UPSTREAM_READ_TIMEOUTS.labels(store_id=self.store_id).inc()
+            of_silence = " of silence" if _downloads(request) else ""
             raise BackendError(
-                f"pynixd: store {self.store_id} did not answer {type(request).__name__} within {bound:g} s"
+                f"pynixd: store {self.store_id} did not answer {type(request).__name__} within {bound:g} s{of_silence}"
             ) from None
         except _TRANSPORT_ERRORS + ssh_errors():
             self.record_failure()
