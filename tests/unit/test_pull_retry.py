@@ -59,7 +59,6 @@ async def _collect(scheduler: PullScheduler, store: Any = None) -> None:
         cast("Any", scheduler),
         cast("Any", build),
         cast("Any", store or SimpleNamespace(store_id=BUILDER)),
-        cast("Any", None),
         response,
     )
 

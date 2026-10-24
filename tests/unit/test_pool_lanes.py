@@ -10,6 +10,7 @@ from one task as re-entrant and gives it a connection past every limit.
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING
 
 import anyio
@@ -143,6 +144,24 @@ async def test_a_transfer_inside_a_build_connection_skips_a_full_pool() -> None:
     async with anyio.create_task_group() as tg:
         await _hold(tg, store.transfer_conn, store.transfer_pool.max_connections, release)
         async with store.build_conn():
+            got_one = await _got_one_within(store.transfer_conn, 1)
+        release.set()
+
+    assert got_one
+
+
+async def test_a_connection_taken_inside_a_build_one_keeps_the_skip_after_it() -> None:
+    """The pull runs after the build connection went back, under the
+    connection that roots the outputs. It must still skip a full pool, or a
+    pull and a push deadlock. nixidae/nixidae#1075."""
+    store = MockStore("lanes-held", feature_matrix={"x86_64-linux": set()})
+    release = anyio.Event()
+    got_one = False
+    async with anyio.create_task_group() as tg:
+        await _hold(tg, store.transfer_conn, store.transfer_pool.max_connections, release)
+        async with contextlib.AsyncExitStack() as held:
+            async with store.build_conn():
+                await held.enter_async_context(store.transfer_conn())
             got_one = await _got_one_within(store.transfer_conn, 1)
         release.set()
 

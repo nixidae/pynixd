@@ -128,6 +128,25 @@ class _OutputClock:
         self._build.last_output_at = time.monotonic()
 
 
+def output_paths(build: QueuedBuild, resp: BuildDerivationResponse) -> StorePathSet:
+    """The output paths of a successful build: the static ones and the realised ones."""
+    realised = resp.result.realised_outputs() or {}
+    ca_paths = {StorePath(str(r.out_path)).with_store_prefix() for r in realised.values() if r.out_path}
+    static_paths = {p for p in build.request.derivation.output_paths().values() if p != StorePath("")}
+    return static_paths | ca_paths
+
+
+async def add_temp_roots(conn: Connection, paths: StorePathSet) -> None:
+    """Root *paths* on *conn*'s daemon for the connection's life."""
+    if not paths:
+        return
+    if FEATURE_ADD_TEMP_ROOTS in conn.standard_features:
+        await conn.call(AddTempRootsRequest(paths=paths), raise_on_error=True)
+        return
+    for path in sorted(paths, key=str):
+        await conn.call(AddTempRootRequest(path=path), raise_on_error=True)
+
+
 def build_decision_seeds(drv_path: str, input_srcs: Iterable[str]) -> set[str]:
     """The seed set a build decision records, as build-kind.
 
@@ -950,25 +969,47 @@ class Scheduler:
         build_resp: BuildDerivationResponse | None = None
         completed = False
         try:
-            async with store.build_conn(build.options) as conn:
-                observation = build.observation = BuildObservation(
-                    store_id=str(store.store_id),
-                    status=-1,
-                    queued_ms=_ms_since(build.enqueued_at),
-                )
-                inputs_started = time.monotonic()
-                observation.inputs_bytes = await self._prepare_build(build, store, conn)
-                observation.inputs_ms = _ms_since(inputs_started)
-                await self._say_where_it_builds(build, store)
-                build_resp = await self._execute(build, store, conn)
-                if build.started_at is not None:
-                    observation.build_ms = _ms_since(build.started_at)
-                # Every success, not `BUILT` alone. A builder that already
-                # holds the outputs answers `ALREADY_VALID`, and the local
-                # store still lacks them. A dynamic derivation's produced
-                # `.drv` then failed with "derivation not found" on each run
-                # until the builder collected it. nixidae/nixidae#998.
-                if result_succeeded(build_resp.result):
+            async with contextlib.AsyncExitStack() as held:
+                async with store.build_conn(build.options) as conn:
+                    observation = build.observation = BuildObservation(
+                        store_id=str(store.store_id),
+                        status=-1,
+                        queued_ms=_ms_since(build.enqueued_at),
+                    )
+                    inputs_started = time.monotonic()
+                    observation.inputs_bytes = await self._prepare_build(build, store, conn)
+                    observation.inputs_ms = _ms_since(inputs_started)
+                    await self._say_where_it_builds(build, store)
+                    build_resp = await self._execute(build, store, conn)
+                    if build.started_at is not None:
+                        observation.build_ms = _ms_since(build.started_at)
+                    # Every success, not `BUILT` alone. A builder that already
+                    # holds the outputs answers `ALREADY_VALID`, and the local
+                    # store still lacks them. A dynamic derivation's produced
+                    # `.drv` then failed with "derivation not found" on each run
+                    # until the builder collected it. nixidae/nixidae#998.
+                    if result_succeeded(build_resp.result):
+                        await self._hold_outputs(held, build, store, build_resp)
+                    elif (fault := self._retryable_elsewhere(build, store, build_resp)) is not None:
+                        # The builder's machine failed, not the derivation: try
+                        # another store, the local one included, as a crashed
+                        # connection already does.
+                        # nixidae/nixidae#1015.
+                        log.warning(
+                            "build_failed_on_the_machine", build_id=build.build_id, store_id=store.store_id, fault=fault
+                        )
+                        self._note_disk_full(store, str(build_resp.result.error_msg))
+                        await build.post_log_and_fanout(
+                            LogNext(text=f"pynixd: build failed on {store.store_id} ({fault}), retrying elsewhere\n")
+                        )
+                        build.reset_for_retry(store.store_id, str(build_resp.result.error_msg) or fault)
+                        build_resp = None
+                        self.trigger()
+                # The build connection goes back before the pull, so the slot
+                # takes the next build while this one pulls. A pull took 92 s
+                # against a build of 40 s for t3code, with the slot idle for
+                # all of it. nixidae/nixidae#1075.
+                if build_resp is not None and result_succeeded(build_resp.result):
                     # The outputs first, and the completion after. It ran the
                     # other way round and logged a collection failure on the
                     # server, so a client held a successful BuildResult and
@@ -976,7 +1017,7 @@ class Scheduler:
                     # The error it got named the missing path, never the copy
                     # that failed. Issue #12.
                     try:
-                        await self._collect_outputs(build, store, conn, build_resp)
+                        await self._collect_outputs(build, store, build_resp)
                     except Exception as e:
                         log.exception("output_pull_failed", build_id=build.build_id, store_id=store.store_id)
                         reason = f"built on {store.store_id}, but pynixd could not collect the outputs: {e}"
@@ -987,21 +1028,6 @@ class Scheduler:
 
                     await self.queue.complete(build.build_id, build_resp)
                     completed = True
-                    self.trigger()
-                elif (fault := self._retryable_elsewhere(build, store, build_resp)) is not None:
-                    # The builder's machine failed, not the derivation: try
-                    # another store, the local one included, as a crashed
-                    # connection already does.
-                    # nixidae/nixidae#1015.
-                    log.warning(
-                        "build_failed_on_the_machine", build_id=build.build_id, store_id=store.store_id, fault=fault
-                    )
-                    self._note_disk_full(store, str(build_resp.result.error_msg))
-                    await build.post_log_and_fanout(
-                        LogNext(text=f"pynixd: build failed on {store.store_id} ({fault}), retrying elsewhere\n")
-                    )
-                    build.reset_for_retry(store.store_id, str(build_resp.result.error_msg) or fault)
-                    build_resp = None
                     self.trigger()
 
         except Exception as e:
@@ -1127,12 +1153,7 @@ class Scheduler:
         builder lacks protects none of its references there. Issue #887.
         """
         closure = await self.local_store.execute(QueryClosureWithInfoRequest(paths=inputs), client=None)
-        held = inputs | {info.path for info in closure.infos}
-        if FEATURE_ADD_TEMP_ROOTS in conn.standard_features:
-            await conn.call(AddTempRootsRequest(paths=held), raise_on_error=True)
-            return
-        for path in sorted(held, key=str):
-            await conn.call(AddTempRootRequest(path=path), raise_on_error=True)
+        await add_temp_roots(conn, inputs | {info.path for info in closure.infos})
 
     async def _execute(
         self,
@@ -1177,11 +1198,25 @@ class Scheduler:
         )
         return resp
 
+    async def _hold_outputs(
+        self, held: contextlib.AsyncExitStack, build: QueuedBuild, store: DaemonStore, resp: BuildDerivationResponse
+    ) -> None:
+        """Root the outputs on the builder for the pull, past the build connection.
+
+        The daemon worker of the build connection holds a root on each output,
+        and it ends with that connection. A transfer connection taken here, in
+        *held*, holds the roots instead. It is taken inside the build
+        connection, so it is re-entrant, and every acquire of the pull under
+        it skips the pool limit as before: a pull holds the builder and waits
+        for local, a push the reverse, and full pools would deadlock the two.
+        """
+        conn = await held.enter_async_context(store.transfer_conn())
+        await add_temp_roots(conn, output_paths(build, resp))
+
     async def _collect_outputs(
         self,
         build: QueuedBuild,
         store: DaemonStore,
-        conn: Connection,  # build connection
         resp: BuildDerivationResponse,
     ) -> None:
         """Pull outputs back to local store, register realisations, record stats.
@@ -1191,23 +1226,12 @@ class Scheduler:
         if not result_succeeded(resp.result):
             return
 
-        # Pull outputs from remote store to local store
-        ca_output_paths: StorePathSet = set()
         # `realised_outputs` reads whichever of the two wire shapes the answer
         # carried. Issue #14.
         realised = resp.result.realised_outputs()
         if realised:
-            for realisation in realised.values():
-                out_path = StorePath(str(realisation.out_path)) if realisation.out_path else StorePath("")
-                if out_path:
-                    ca_output_paths.add(
-                        out_path.with_store_prefix(),
-                    )
             build.ca_realisations = list(realised.values())
-
-        outputs = build.request.derivation.output_paths()
-        static_paths = {p for p in outputs.values() if p != StorePath("")}
-        all_output_paths = static_paths | ca_output_paths
+        all_output_paths = output_paths(build, resp)
         log.info(
             "pulling_paths",
             store_id=store.store_id,
