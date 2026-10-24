@@ -115,3 +115,35 @@ def test_a_spec_sizes_the_pools() -> None:
     assert store._pool_sizes(StoreSpecBase()) == (48, 16)  # noqa: SLF001 -- the sizing is the unit
     assert store._pool_sizes(StoreSpecBase(max_connections=400)) == (300, 100)  # noqa: SLF001
     assert store._pool_sizes(StoreSpecBase(max_connections=400, transfer_connections=20)) == (380, 20)  # noqa: SLF001
+
+
+async def test_a_transfer_inside_a_build_connection_reuses_an_idle_connection() -> None:
+    """A build pushes inputs and pulls outputs while it holds its build
+    connection. A new connection for each one cost a handshake each: 1117 in
+    one apply. nixidae/nixidae#1075."""
+    store = MockStore("lanes-nested", feature_matrix={"x86_64-linux": set()})
+
+    async with store.build_conn():
+        async with store.transfer_conn() as first:
+            pass
+        async with store.transfer_conn() as second:
+            pass
+
+    assert first is second
+    assert [conn for conn, _ in store.transfer_pool.idle_conns] == [first]
+
+
+async def test_a_transfer_inside_a_build_connection_skips_a_full_pool() -> None:
+    """A push holds a local connection and waits for the builder; a pull holds
+    the builder and waits for local. Without the skip, full pools on both
+    deadlock the two against each other."""
+    store = MockStore("lanes-skip", feature_matrix={"x86_64-linux": set()})
+    release = anyio.Event()
+    got_one = False
+    async with anyio.create_task_group() as tg:
+        await _hold(tg, store.transfer_conn, store.transfer_pool.max_connections, release)
+        async with store.build_conn():
+            got_one = await _got_one_within(store.transfer_conn, 1)
+        release.set()
+
+    assert got_one

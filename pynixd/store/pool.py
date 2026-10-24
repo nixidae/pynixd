@@ -306,8 +306,8 @@ class ConnectionPool:
 
         Wait for memory pressure to subside before allocating a new connection.
         If the same task that is already holding a connection tries to
-        acquire again (re-entry), a new connection is allocated immediately
-        to avoid deadlock.
+        acquire again (re-entry), it skips the limit to avoid deadlock: an
+        idle connection when there is one, else a new one.
         """
         # Use a copy to avoid mutating a shared default or parent context dict
         counts = _nested_conns.get({}).copy()
@@ -315,15 +315,16 @@ class ConnectionPool:
         re_entrant = in_use > 0
 
         if re_entrant:
-            log.warning(
+            # Every push and pull of a build runs here, inside its build
+            # connection. A new connection for each one cost a handshake each:
+            # 1117 in one apply. nixidae/nixidae#1075.
+            log.debug(
                 "store_reentrant_acquire",
                 store_id=self.store_id,
                 kind=kind,
                 nesting_level=in_use,
             )
-            conn = await self.factory()
-            conn.on_close = self._note_conn_closed
-            self.all_conns.append(conn)
+            conn = await self.get_or_create_conn(options)
 
             # Increment nesting count in a NEW dict to ensure task isolation
             counts[self.store_id] = in_use + 1
@@ -337,12 +338,7 @@ class ConnectionPool:
                 counts = _nested_conns.get({}).copy()
                 counts[self.store_id] = counts.get(self.store_id, 0) - 1
                 _nested_conns.set(counts)
-
-                # Discard re-entrant connections immediately to avoid pool bloat
-                if conn in self.all_conns:
-                    self.all_conns.remove(conn)
-                with suppress(Exception):
-                    await conn.close()
+                await self._give_back(conn)
             return
 
         await self._take_slot()
@@ -367,35 +363,39 @@ class ConnectionPool:
                     _nested_conns.set(counts)
 
                     if conn is not None:
-                        now = time.monotonic()
-                        retired = self._too_old(conn, now)
-                        if conn.dirty or retired or not self.reuse:
-                            if conn.dirty:
-                                log.warning(
-                                    "store_discarding_dirty_connection",
-                                    store_id=self.store_id,
-                                    conn_id=conn.id,
-                                    op_log=" -> ".join(conn.op_log[-10:]) or "(empty)",
-                                )
-                            else:
-                                log.debug(
-                                    "pool_retiring_old_connection" if retired else "pool_closing_used_connection",
-                                    store_id=self.store_id,
-                                    conn_id=conn.id,
-                                    lane=self.lane,
-                                    age=f"{now - conn.opened_at:.1f}s",
-                                )
-                            if conn in self.all_conns:
-                                self.all_conns.remove(conn)
-                            with suppress(Exception):
-                                await conn.close()
-                        else:
-                            self.idle_conns.append((conn, time.monotonic()))
-                            self.start_sweep()
+                        await self._give_back(conn)
             finally:
                 self.active_connections -= 1
         finally:
             self._slots.release()
+
+    async def _give_back(self, conn: Connection) -> None:
+        """Keep *conn* idle for the next caller, or close it when it may not serve again."""
+        now = time.monotonic()
+        retired = self._too_old(conn, now)
+        if conn.dirty or retired or not self.reuse:
+            if conn.dirty:
+                log.warning(
+                    "store_discarding_dirty_connection",
+                    store_id=self.store_id,
+                    conn_id=conn.id,
+                    op_log=" -> ".join(conn.op_log[-10:]) or "(empty)",
+                )
+            else:
+                log.debug(
+                    "pool_retiring_old_connection" if retired else "pool_closing_used_connection",
+                    store_id=self.store_id,
+                    conn_id=conn.id,
+                    lane=self.lane,
+                    age=f"{now - conn.opened_at:.1f}s",
+                )
+            if conn in self.all_conns:
+                self.all_conns.remove(conn)
+            with suppress(Exception):
+                await conn.close()
+        else:
+            self.idle_conns.append((conn, time.monotonic()))
+            self.start_sweep()
 
     async def _take_slot(self) -> None:
         since = time.monotonic()
