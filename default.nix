@@ -66,9 +66,9 @@ let
   /*
     The interpreter of the development shell, resolved by pyproject.nix.
 
-    **One set, and not a path of several.**  `nanopynix-testing` is the
-    oracle of `tests/differential`, and nanopynix imports the compiled
-    `huggorm_bindings`, so a PYTHONPATH assembled from store paths imports
+    **One set, and not a path of several.**  `huggorm` is the oracle of
+    `tests/differential`, and it imports the compiled `huggorm_bindings`, so
+    a PYTHONPATH assembled from store paths imports
     the packages and then fails on the first attribute.  Only a set that
     resolves the whole closure works, and mixing a package built in one set
     into another set's environment does not resolve either.
@@ -85,8 +85,8 @@ let
     the phase scripts in `tests/guest/` import.
 
     **pynixd itself does not depend on any of this, and must not.**  The
-    shipped proxy is pure Python and links no C++; `nanopynix-testing`
-    carries the bindings, built against one version of Nix.  This set builds
+    shipped proxy is pure Python and links no C++; `huggorm` carries the
+    bindings, built against one version of Nix.  This set builds
     the shell, and `nix/pynixd.nix` still builds the package.
 
     This repository's two projects are editable, from `root`: the checkout
@@ -160,7 +160,7 @@ let
         "test"
         "docs"
       ];
-      nanopynix-testing = [ ];
+      huggorm = [ ];
       vivarium-runner = [ ];
     };
   shellEnv = devEnvFrom (devPythonSetAt (toString ./.));
@@ -180,10 +180,10 @@ let
     ];
   };
 
-  # **The type gate does not see nanopynix, on purpose.** It reads `tests/`,
-  # and `tests/differential` imports the oracle, so the two imports there
-  # carry `pyright: ignore[reportMissingImports]`. Putting `nanopynix-testing`
-  # in this environment would tie a gate that must run everywhere to a C++
+  # **The type gate does not see huggorm, on purpose.** It reads `tests/`,
+  # and `tests/differential` imports the oracle, so the imports there carry
+  # `pyright: ignore[reportMissingImports]`. Putting `huggorm` in this
+  # environment would tie a gate that must run everywhere to a C++
   # closure built against one version of Nix.
 
   /*

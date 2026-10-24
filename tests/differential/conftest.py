@@ -7,7 +7,7 @@ each one is a skip rather than a failure:
    `building using a diverted store is not supported on this platform`. The
    whole design of this suite rests on two separated stores, so on darwin
    there is nothing to run. Use `vzrun` there.
-2. nanopynix is installed. It is the oracle, and it is a dependency of this
+2. huggorm is installed. It is the oracle, and it is a dependency of this
    suite alone. `pynixd` itself does not depend on it and must not: the
    shipped proxy is pure Python and links no C++.
 3. The case's experimental features are enabled in the linked Nix.
@@ -48,7 +48,7 @@ DIFFERENTIAL_PREFIX = STORE_PREFIX.parent / "pynixd-diff"
 _DAEMON_SOCKET_SUFFIX = "nix/var/nix/daemon-socket/pynixd-nix"
 _SUN_PATH_LIMIT = 104
 
-_NANOPYNIX_PRESENT = importlib.util.find_spec("nanopynix") is not None
+_HUGGORM_PRESENT = importlib.util.find_spec("huggorm") is not None
 
 
 def _mixed_trees() -> str | None:
@@ -93,9 +93,9 @@ def _unmet_requirement() -> str | None:
             "(`building using a diverted store is not supported on this platform`); "
             "run this suite under vzrun"
         )
-    if not _NANOPYNIX_PRESENT:
+    if not _HUGGORM_PRESENT:
         return (
-            "nanopynix is the oracle of this suite and is not installed; "
+            "huggorm is the oracle of this suite and is not installed; "
             "it is a test dependency only, and pynixd itself does not depend on it"
         )
     if shutil.which("nix-instantiate") is None:

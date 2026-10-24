@@ -1,7 +1,7 @@
 """Build each corpus case twice, and compare the two stores.
 
 One run goes through `pynixd.goals`. The other goes through the goal system of
-Nix, which nanopynix calls in process. The two runs use two separated chroot
+Nix, which huggorm calls in process. The two runs use two separated chroot
 stores, and the test compares what each build added to its own store.
 
 Three rules shape the design.
@@ -17,7 +17,7 @@ difference between the arms.
 store in its own way, and neither way says anything about a goal system.
 Comparing what the build *added* removes that from the question.
 
-**Run the arms one at a time.** nanopynix reads both stores directly, and arm
+**Run the arms one at a time.** huggorm reads both stores directly, and arm
 A's store belongs to a running `nix-daemon` while the server is up. Every
 direct read of that store happens before the server starts or after it stops.
 """
@@ -46,22 +46,16 @@ from tests.differential.conftest import DifferentialRoots
 from tests.differential.corpus import CA_CORPUS, CORPUS, Case
 from tests.differential.snapshot import StoreSnapshot, compare, delta, take_snapshot
 
-# nanopynix is a sibling repository, and the runner of this suite puts it on
-# the path. A checkout of pynixd alone does not have it.
+# huggorm is a sibling source, and the runner of this suite puts it on the
+# path. A checkout of pynixd alone does not have it.
 #
 # `importorskip`, and not a plain import. The conftest of this directory skips
-# every test here when nanopynix is absent, and it never got the chance: pytest
+# every test here when huggorm is absent, and it never got the chance: pytest
 # imports a module to collect it, so the absent package ended the run with a
-# collection error before any gate spoke. The name here is `nanopynix_testing`,
-# which is the module this file needs. The conftest looks for `nanopynix`, and
-# the two can be installed apart.
+# collection error before any gate spoke.
 #
 # Last among the imports, so that one `noqa` covers the rule rather than six.
-pytest.importorskip("nanopynix_testing", reason="nanopynix is the oracle of this suite and is not installed")
-
-from nanopynix_testing.nix_environment import (  # noqa: E402  # pyright: ignore[reportMissingImports]
-    NixTestEnvironment,
-)
+huggorm = pytest.importorskip("huggorm", reason="huggorm is the oracle of this suite and is not installed")
 
 if TYPE_CHECKING:
     from collections.abc import Collection
@@ -81,29 +75,6 @@ _BASE_NIX_CONFIG = {
     "substituters": "",
     "require-sigs": "false",
 }
-
-
-def _case_params() -> list[Any]:
-    """One pytest parameter per corpus case, with the known oracle gaps marked.
-
-    The oracle cannot carry bytes it refuses to decode yet: its log pump
-    strict-decodes record fields, so a binary log crashes the Nix arm while
-    the pynixd arm succeeds. `strict`, so the mark goes away with the
-    correction and does not hide it. Issue nixidae/nixidae#664.
-    """
-    params: list[Any] = []
-    for case in (*CORPUS, *CA_CORPUS):
-        if case.name == "binary-log":
-            params.append(
-                pytest.param(
-                    case,
-                    marks=pytest.mark.xfail(strict=True, reason="issue nixidae/nixidae#664"),
-                    id=case.name,
-                )
-            )
-        else:
-            params.append(case)
-    return params
 
 
 def _nix_config_env(case: Case) -> dict[str, str]:
@@ -135,16 +106,25 @@ async def _instantiate(root: Path, case: Case) -> str:
     return process.stdout.decode().strip().splitlines()[-1].split("!")[0]
 
 
-def _nix_environment(root: Path) -> NixTestEnvironment:
-    """A nanopynix handle on the chroot store at *root*."""
-    return NixTestEnvironment(backend="local", root=root, store_uri=f"local://?root={root}")
+def _apply_oracle_settings(case: Case | None) -> None:
+    """Give the in-process Nix the settings `_nix_config_env` gives a `nix` process.
+
+    The settings are process-wide, so they are set before each store opens: a
+    store reads its configuration when it opens. `nix.conf` comes first, as it
+    does for the `nix-daemon` of the other arm.
+    """
+    huggorm.load_config()
+    for name, value in _BASE_NIX_CONFIG.items():
+        huggorm.set_setting(name, value)
+    for feature in case.experimental_features if case is not None else ():
+        huggorm.enable_experimental_feature(feature)
 
 
 async def _read_store(root: Path) -> StoreSnapshot:
-    """Snapshot the chroot store at *root*, through nanopynix."""
-    environment = _nix_environment(root)
-    async with environment.inproc_session() as session, session.store() as store:
-        return await take_snapshot(store)
+    """Snapshot the chroot store at *root*, through huggorm."""
+    _apply_oracle_settings(None)
+    async with huggorm.AsyncSession(f"local://?root={root}") as session:
+        return await take_snapshot(session.store())
 
 
 async def _build_with_pynixd(root: Path, drv_path: str, case: Case) -> Any:
@@ -227,11 +207,13 @@ async def _build_with_pynixd_fleet(
         return await engine.build_paths_with_results(request)
 
 
-async def _build_with_nix(root: Path, drv_path: str) -> Any:
+async def _build_with_nix(root: Path, drv_path: str, case: Case) -> Any:
     """Realise every output of *drv_path* through the goal system of Nix."""
-    environment = _nix_environment(root)
-    async with environment.inproc_session() as session, session.store() as store:
-        return await store.build_paths_with_results([f"{drv_path}^*"])
+    _apply_oracle_settings(case)
+    async with huggorm.AsyncSession(f"local://?root={root}") as session:
+        store = session.store()
+        derived = await store.parse_derived_path(f"{drv_path}^*")
+        return await store.build_paths_with_results([derived])
 
 
 async def _instantiate_both(root_a: Path, root_b: Path, case: Case) -> str:
@@ -256,7 +238,7 @@ def _assert_outcomes_agree(case: Case, response_a: Any, results_b: Any) -> None:
     path when a build fails, and it gains no path when no build runs either.
     """
     pynixd_succeeded = all(result_succeeded(item.result) for item in response_a.results)
-    nix_succeeded = all(result.success for result in results_b)
+    nix_succeeded = all(result.success() for result in results_b)
     assert pynixd_succeeded == case.expect_success, (
         f"{case.name}: pynixd reported success={pynixd_succeeded}, and the case "
         f"declares success={case.expect_success}.\n  {response_a.results}"
@@ -291,7 +273,7 @@ def _assert_stores_agree(
     )
 
 
-@pytest.mark.parametrize("case", _case_params(), ids=lambda case: case.name)
+@pytest.mark.parametrize("case", (*CORPUS, *CA_CORPUS), ids=lambda case: case.name)
 async def test_both_engines_leave_the_same_store(case: Case, differential_roots: DifferentialRoots) -> None:
     """pynixd's goal engine and Nix's goal system agree on what they built.
 
@@ -307,14 +289,14 @@ async def test_both_engines_leave_the_same_store(case: Case, differential_roots:
     after_a = await _read_store(roots.pynixd)
 
     before_b = await _read_store(roots.nix)
-    results_b = await _build_with_nix(roots.nix, drv)
+    results_b = await _build_with_nix(roots.nix, drv, case)
     after_b = await _read_store(roots.nix)
 
     _assert_outcomes_agree(case, response_a, results_b)
     _assert_stores_agree(case, delta(before_a, after_a), delta(before_b, after_b))
 
 
-@pytest.mark.parametrize("case", _case_params(), ids=lambda case: case.name)
+@pytest.mark.parametrize("case", (*CORPUS, *CA_CORPUS), ids=lambda case: case.name)
 async def test_a_distributed_build_reassembles_the_same_store(
     case: Case,
     differential_roots: DifferentialRoots,
@@ -344,7 +326,7 @@ async def test_a_distributed_build_reassembles_the_same_store(
     after_builder = await _read_store(roots.builder)
 
     before_b = await _read_store(roots.nix)
-    results_b = await _build_with_nix(roots.nix, drv)
+    results_b = await _build_with_nix(roots.nix, drv, case)
     after_b = await _read_store(roots.nix)
 
     _assert_outcomes_agree(case, response_a, results_b)
@@ -485,7 +467,7 @@ async def test_a_client_fetches_a_backend_built_output_through_pynixd(
     # for. Asking for exactly those is a sharper question than asking pynixd
     # what it has.
     before_b = await _read_store(roots.nix)
-    results_b = await _build_with_nix(roots.nix, drv)
+    results_b = await _build_with_nix(roots.nix, drv, case)
     added_b = delta(before_b, await _read_store(roots.nix))
     wanted = sorted(added_b.paths)
 

@@ -40,9 +40,8 @@ log = structlog.get_logger(__name__)
 # the whole suite failed at collection with `EnvNotSetError`. The `nix` on
 # PATH is the one that a person in this shell means, so it is the default.
 #
-# This project moves to nanopynix, which loads the Nix libraries in process.
-# The number of tests that need a Nix binary goes down from there, so a
-# stricter answer than "the one on PATH" buys nothing.
+# huggorm loads the Nix libraries in process, so few tests need a Nix
+# binary, and a stricter answer than "the one on PATH" buys nothing.
 NIX_BIN = env.path("NIX_BIN", None) or Path(shutil.which("nix") or "nix")
 
 # One binary, for the client, for the local store and for the builder. No

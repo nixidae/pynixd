@@ -11,7 +11,7 @@ not be, a reference that is absent, an output addressed against the wrong
 hash. A snapshot holds what the store says about every path in it, so the
 comparison can see all three.
 
-nanopynix reads both stores. It is the oracle for one arm only, but it is the
+huggorm reads both stores. It is the oracle for one arm only, but it is the
 instrument for both, and that is safe. A defect in the reader moves both
 snapshots the same way, so it cancels in the difference.
 """
@@ -19,14 +19,14 @@ snapshots the same way, so it cancels in the difference.
 from __future__ import annotations
 
 import dataclasses
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterable, Mapping
 
-    # nanopynix is a sibling repository, and the runner of this suite puts
-    # it on the path. A checkout of pynixd alone does not have it.
-    from nanopynix.protocols import AsyncStore  # pyright: ignore[reportMissingImports]
+    # huggorm is a sibling source, and the runner of this suite puts it on
+    # the path. A checkout of pynixd alone does not have it.
+    from huggorm import AsyncStore  # pyright: ignore[reportMissingImports]
 
 # The two fields of `query_path_info` that a snapshot drops, and the reason for
 # each. Everything else states what the path *is*, and two engines that agree
@@ -52,22 +52,25 @@ class PathFacts:
     ultimate: bool
 
     @classmethod
-    def from_path_info(cls, info: Mapping[str, Any]) -> PathFacts:
-        """Read the facts out of one `query_path_info` mapping."""
+    async def read(cls, store: AsyncStore, path: str) -> PathFacts:
+        """Read the facts of *path* out of *store*."""
+        info = await store.query_path_info(await store.parse_store_path(path))
+        deriver = info.deriver()
+        ca = info.ca()
         return cls(
-            nar_hash=str(info["nar_hash"]),
-            nar_size=int(info["nar_size"]),
+            nar_hash=info.nar_hash().sri(),
+            nar_size=info.nar_size(),
             # Sorted, because the order Nix reports references in is the order
             # of a SQLite query and is not a fact about the path.
-            references=tuple(sorted(str(ref) for ref in info.get("references") or ())),
-            deriver=_optional_str(info.get("deriver")),
-            ca=_optional_str(info.get("ca")),
+            references=tuple(sorted([await store.print_store_path(ref) for ref in info.references()])),
+            deriver=None if deriver is None else await store.print_store_path(deriver),
+            ca=None if ca is None else ca.render(),
             # `ultimate` is true for a path this store built itself, and false
             # for one it substituted. It is kept, and not dropped as noise,
             # because "one engine built it and the other fetched it" is a real
             # difference between the two. The corpus turns substituters off so
             # that the field means one thing.
-            ultimate=bool(info.get("ultimate", False)),
+            ultimate=info.ultimate(),
         )
 
 
@@ -132,12 +135,12 @@ async def take_snapshot(store: AsyncStore, *, only: Iterable[str] | None = None)
     already knows. Passing it saves one `query_all_valid_paths` over a store
     that may hold a large seed closure.
     """
-    wanted = list(only) if only is not None else [str(path) for path in await store.query_all_valid_paths()]
-    facts: dict[str, PathFacts] = {}
-    for path in wanted:
-        info = await store.query_path_info(path)
-        facts[str(path)] = PathFacts.from_path_info(_as_mapping(info))
-    return StoreSnapshot(paths=facts)
+    wanted = (
+        list(only)
+        if only is not None
+        else [await store.print_store_path(path) for path in await store.query_all_valid_paths()]
+    )
+    return StoreSnapshot(paths={path: await PathFacts.read(store, path) for path in wanted})
 
 
 def delta(before: StoreSnapshot, after: StoreSnapshot) -> StoreSnapshot:
@@ -188,23 +191,3 @@ def compare(
         only_in_right=tuple(sorted(right_paths - left_paths)),
         disagreements=tuple(disagreements),
     )
-
-
-def _optional_str(value: object) -> str | None:
-    if value is None or value == "":
-        return None
-    return str(value)
-
-
-def _as_mapping(info: object) -> Mapping[str, Any]:
-    """Accept either a mapping or an object with the same attribute names.
-
-    `AsyncStore.query_path_info` is typed as returning a `PathInfo`, and the
-    raw binding returns a dict. Both reach this module, so it reads whichever
-    it is given rather than forcing one at the call site.
-    """
-    if isinstance(info, dict):
-        return info
-    return {
-        name: getattr(info, name, None) for name in ("nar_hash", "nar_size", "references", "deriver", "ca", "ultimate")
-    }
