@@ -1007,8 +1007,11 @@ class Scheduler:
         except Exception as e:
             # Decided by the leaves: a task group on the way wraps a
             # BackendError in a group, which no `except BackendError` matches.
+            # A dropped connection is the builder's fault as well: a keepalive
+            # that closes a silent peer raises here. nixidae/nixidae#1063.
             reason = error_text(e)
-            if all(isinstance(leaf, BackendError | InfrastructureError) for leaf in leaves(e)):
+            retryable = (BackendError, InfrastructureError, EOFError, OSError, *ssh_errors())
+            if all(isinstance(leaf, retryable) for leaf in leaves(e)):
                 log.warning("build_failed_retryable", build_id=build.build_id, error=reason)
                 self._note_disk_full(store, reason)
                 await build.post_log_and_fanout(

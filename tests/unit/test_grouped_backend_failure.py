@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 from typing import Any, cast
 
+import asyncssh
 import pytest
 
 from nix_daemon_protocol.ids import StoreId
@@ -97,6 +98,26 @@ async def test_a_bare_backend_error_still_retries() -> None:
 
     assert scheduler.queue.failed == []
     assert build.retried == [(StoreId("builder1"), NOT_VALID)]
+
+
+@pytest.mark.parametrize(
+    "dropped",
+    [
+        EOFError("SSH connection closed"),
+        ConnectionResetError("reset by peer"),
+        asyncssh.ConnectionLost("keepalive timeout"),
+    ],
+    ids=["eof", "reset", "keepalive"],
+)
+@pytest.mark.anyio
+async def test_a_dropped_connection_retries_elsewhere(dropped: Exception) -> None:
+    """A builder that went silent and lost its connection is the builder's
+    fault, not pynixd's. nixidae/nixidae#1063 saw 12 builds fail with
+    `EOFError: SSH connection closed`."""
+    scheduler, build = await _run(ExceptionGroup("g", [dropped]))
+
+    assert scheduler.queue.failed == []
+    assert [store for store, _ in build.retried] == [StoreId("builder1")]
 
 
 @pytest.mark.anyio
