@@ -11,7 +11,7 @@
 }:
 let
   inherit (pkgs) lib;
-  inherit (import sources.nixvenv { inherit pkgs; }) nixvenv;
+  inherit (import sources.nixvenv { inherit pkgs sources; }) nixvenv ps;
 
   daemon-protocol = pkgs.python3Packages.callPackage ./nix/nix-daemon-protocol.nix {
     pythonBuilder = pkgs.python3Packages.buildPythonPackage;
@@ -120,7 +120,7 @@ let
   # path for a missing directory.
   mkEditableProject =
     root: dir:
-    nanopynix.ps.mkEditableProject {
+    ps.mkEditableProject {
       projectRoot = lib.fileset.toSource {
         root = dir;
         fileset = lib.fileset.unions (
@@ -141,8 +141,8 @@ let
 
   mkProject =
     name: projectRoot:
-    nanopynix.ps.mkProject {
-      projectRoot = nanopynix.ps.projectSource {
+    ps.mkProject {
+      projectRoot = ps.projectSource {
         src = projectRoot;
         name = "${name}-source";
       };
