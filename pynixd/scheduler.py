@@ -1071,16 +1071,11 @@ class Scheduler:
         # Strip pynixd-handled features from requiredSystemFeatures
         self.allocator.strip_handled_features(build)
 
-        # NIX-DEVIATION (#27): `build-remote.cc:287` lets a builder substitute
-        # the inputs only with `builders-use-substitutes`, off by default, and
-        # pushes the whole missing closure otherwise. pynixd always asks the
-        # builder to substitute first and pushes only what no substituter of
-        # the builder holds. A builder next to a cache then pulls from the
-        # cache instead of over the link from this host, and a substitution
-        # failure is only a warning there (`store-api.cc:758`), so the push
-        # still covers it. Reverse it when `inputs_ms` of the build
-        # observations grows for builders whose substituters are slower than
-        # the link from this host. nixidae/nixidae#1074.
+        # The builder substitutes first, and pynixd pushes only what no
+        # substituter of the builder holds: a builder next to a cache pulls
+        # from it, not over the link from this host. A failed substitution is
+        # only a warning on the builder (`store-api.cc:758`), and the push
+        # covers it. nixidae/nixidae#1074.
         input_srcs = build.request.derivation.input_srcs
         substitute = True
         if input_srcs:

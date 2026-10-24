@@ -1,8 +1,6 @@
 """A builder substitutes what its substituters hold, and pynixd pushes the rest.
 
-`build-remote.cc:287` substitutes on the builder only with
-`builders-use-substitutes`. No assertion of the functional suite covers it:
-the suite runs with the setting off. nixidae/nixidae#1074.
+nixidae/nixidae#1074.
 """
 
 from __future__ import annotations
