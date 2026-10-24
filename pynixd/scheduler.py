@@ -1071,8 +1071,18 @@ class Scheduler:
         # Strip pynixd-handled features from requiredSystemFeatures
         self.allocator.strip_handled_features(build)
 
-        # 1. Filter inputs already present on the builder store
+        # NIX-DEVIATION (#27): `build-remote.cc:287` lets a builder substitute
+        # the inputs only with `builders-use-substitutes`, off by default, and
+        # pushes the whole missing closure otherwise. pynixd always asks the
+        # builder to substitute first and pushes only what no substituter of
+        # the builder holds. A builder next to a cache then pulls from the
+        # cache instead of over the link from this host, and a substitution
+        # failure is only a warning there (`store-api.cc:758`), so the push
+        # still covers it. Reverse it when `inputs_ms` of the build
+        # observations grows for builders whose substituters are slower than
+        # the link from this host. nixidae/nixidae#1074.
         input_srcs = build.request.derivation.input_srcs
+        substitute = True
         if input_srcs:
             paths_to_check = {StorePath(path=str(p)) for p in input_srcs}
             await self._hold_inputs_on(conn, paths_to_check)
@@ -1080,13 +1090,17 @@ class Scheduler:
                 check = await store.execute(
                     QueryValidPathsRequest(
                         paths=paths_to_check,
-                        substitute=0,
+                        substitute=1,
                     )
                 )
                 valid_paths = [str(cp) for cp in check.paths]
                 known = [str(p) for p in input_srcs if str(p) in valid_paths]
-            except (BackendError, OSError, ConnectionError):
+            except (BackendError, OSError, ConnectionError) as e:
+                # A builder that fell silent while it substituted is asked
+                # again by the push, without the download.
+                log.warning("builder_substitution_failed", store_id=store.store_id, error=error_text(e))
                 known = []
+                substitute = False
             missing_paths = {StorePath(str(p)) for p in input_srcs if str(p) not in known}
         else:
             missing_paths = set()
@@ -1104,6 +1118,7 @@ class Scheduler:
             missing_paths,
             peer_store_id=store.store_id,
             direction="out",
+            substitute=substitute,
         )
 
     async def _hold_inputs_on(self, conn: Connection, inputs: set[StorePath]) -> None:

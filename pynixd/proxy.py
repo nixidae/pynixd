@@ -608,8 +608,9 @@ class DaemonProxy:
         The request is the decoded per-connection object, so rewriting it
         reaches every store the operation then touches, in the serialized
         form each one reads. Internal callers never pass through here: the
-        scheduler and the transfer helper call `store.execute` directly with
-        `substitute=0`, and that stays. `None` is an old client whose
+        scheduler and the transfer helper call `store.execute` directly, and
+        set the flag themselves. A builder always substitutes the inputs of
+        a build (nixidae/nixidae#1074). `None` is an old client whose
         protocol predates the flag, and forcing covers it too: the upstream
         reads the field exactly when its version carries it.
         """

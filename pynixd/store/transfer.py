@@ -89,11 +89,14 @@ async def stream_paths_store_to_store(
     *,
     peer_store_id: str | None = None,
     direction: Literal["in", "out"] | None = None,
+    substitute: bool = False,
 ) -> int:
     """Copy paths from src store to dst via streaming, querying closure first.
 
     Bypasses the normal handle() path, so we update dst knowledge manually.
-    Only transfers paths that dst doesn't already have.
+    Only transfers paths that dst doesn't already have. With `substitute`,
+    dst first fetches what its own substituters hold, and only the rest
+    crosses this link.
 
     `peer_store_id` names the non-local side of this transfer and
     `direction` says which way it flows relative to the local store
@@ -141,7 +144,7 @@ async def stream_paths_store_to_store(
 
     closure = _referenced_first(closure_resp.infos)
     closure_paths = {info.path for info in closure}
-    check = await dst.execute(QueryValidPathsRequest(paths=closure_paths, substitute=0))
+    check = await dst.execute(QueryValidPathsRequest(paths=closure_paths, substitute=int(substitute)))
     check_paths_set = set(check.paths)
     to_transfer: list[ValidPathInfo] = [info for info in closure if info.path not in check_paths_set]
     for _ in range(_SELF_HEAL_ROUNDS):
