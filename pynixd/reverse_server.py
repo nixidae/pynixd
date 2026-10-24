@@ -20,7 +20,7 @@ import structlog
 from nix_daemon_protocol.ids import StoreId
 
 from .config import ReverseAcceptorSettings, ReverseStoreSpec
-from .constants import SSH_ENCRYPTION_ALGS
+from .constants import SSH_ENCRYPTION_ALGS, SSH_KEEPALIVE_COUNT_MAX, SSH_KEEPALIVE_INTERVAL
 from .ssh_auth import load_pinned_keys
 from .store.reverse import ReverseStore
 
@@ -212,6 +212,8 @@ async def start_reverse_acceptor(
         known_hosts=_known_hosts_matcher(pins) if pins else None,
         encoding=None,
         encryption_algs=SSH_ENCRYPTION_ALGS,
+        keepalive_interval=SSH_KEEPALIVE_INTERVAL,
+        keepalive_count_max=SSH_KEEPALIVE_COUNT_MAX,
     )
     bound_port = acceptor.get_port()
     log.info("reverse_server_listening", host=settings.host, port=bound_port)

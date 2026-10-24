@@ -86,6 +86,13 @@ STALL_TRACEBACK_MAX_BYTES: Final[int] = 8 * 1024 * 1024
 # the default was protecting.
 SSH_ENCRYPTION_ALGS: Final[str] = "^aes256-gcm@openssh.com,aes128-gcm@openssh.com"
 
+# A peer that stops answering sends no FIN, so without keepalives a connection
+# to it never closes and the builds on it wait forever: 18 builds sat 2 h on a
+# wedged VM store. Four missed 15 s probes close it in about a minute, and the
+# build then retries elsewhere. nixidae/nixidae#1063.
+SSH_KEEPALIVE_INTERVAL: Final[float] = 15.0
+SSH_KEEPALIVE_COUNT_MAX: Final[int] = 4
+
 
 # ── Stderr message types ──────────────────────────────────────────
 

@@ -25,7 +25,7 @@ from ..config import (
     SSHSubprocessStoreSpec,
 )
 from ..connection import Connection
-from ..constants import SSH_ENCRYPTION_ALGS
+from ..constants import SSH_ENCRYPTION_ALGS, SSH_KEEPALIVE_COUNT_MAX, SSH_KEEPALIVE_INTERVAL
 from ..monitor import DummyResourceMonitor, GenericResourcePoller, ResourceMonitor
 from ..psi import DiskSpace
 from ..wire import SSHNixReader, SSHNixWriter
@@ -317,6 +317,8 @@ class SSHStore(DaemonStore):
                     "port": self.port,
                     "known_hosts": self.known_hosts,
                     "encryption_algs": SSH_ENCRYPTION_ALGS,
+                    "keepalive_interval": SSH_KEEPALIVE_INTERVAL,
+                    "keepalive_count_max": SSH_KEEPALIVE_COUNT_MAX,
                 }
                 if self.username is not None:
                     connect_kwargs["username"] = self.username

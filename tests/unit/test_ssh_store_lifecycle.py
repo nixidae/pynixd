@@ -32,6 +32,7 @@ import pytest
 
 from nix_daemon_protocol.ids import StoreId
 from pynixd.config import SSHSubprocessStoreSpec
+from pynixd.constants import SSH_KEEPALIVE_COUNT_MAX, SSH_KEEPALIVE_INTERVAL
 from pynixd.store.pool import ConnectionPool
 from pynixd.store.ssh import SSHStore, SSHSubprocessStore
 
@@ -254,3 +255,24 @@ async def test_accepting_any_host_key_is_written_and_not_implied(monkeypatch: py
 
     assert "known_hosts" in seen
     assert seen["known_hosts"] is None
+
+
+@pytest.mark.anyio
+async def test_a_silent_builder_is_probed_with_keepalives(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A wedged peer sends no FIN, so only a keepalive closes the connection
+    and frees the builds on it. nixidae/nixidae#1063."""
+    seen: dict[str, object] = {}
+
+    async def _capture(**kwargs: object) -> object:
+        seen.update(kwargs)
+        raise OSError("the probe stops here")
+
+    monkeypatch.setattr(asyncssh, "connect", _capture)
+    store = SSHSubprocessStore(
+        SSHSubprocessStoreSpec(store_id=StoreId("builder"), host="builder", monitor=False, known_hosts=None)
+    )
+    with contextlib.suppress(Exception):
+        await store.ensure_ssh()
+
+    assert seen["keepalive_interval"] == SSH_KEEPALIVE_INTERVAL
+    assert seen["keepalive_count_max"] == SSH_KEEPALIVE_COUNT_MAX

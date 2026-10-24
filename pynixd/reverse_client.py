@@ -18,6 +18,7 @@ import structlog
 
 from . import wire
 from .config import ReverseInitiatorSettings
+from .constants import SSH_KEEPALIVE_COUNT_MAX, SSH_KEEPALIVE_INTERVAL
 from .hangup import ssh_hangup
 from .proxy import DaemonProxy
 from .serde.auth import Role
@@ -125,6 +126,8 @@ class ReverseInitiator:
             authorized_client_keys=None,
             process_factory=self._handle_request,
             encoding=None,
+            keepalive_interval=SSH_KEEPALIVE_INTERVAL,
+            keepalive_count_max=SSH_KEEPALIVE_COUNT_MAX,
         )
 
         log.info("reverse_initiator_connected")

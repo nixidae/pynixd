@@ -16,7 +16,7 @@ import structlog
 
 from . import wire
 from .config import ScheduleMode
-from .constants import SSH_ENCRYPTION_ALGS
+from .constants import SSH_ENCRYPTION_ALGS, SSH_KEEPALIVE_COUNT_MAX, SSH_KEEPALIVE_INTERVAL
 from .hangup import ssh_hangup
 from .proxy import DaemonProxy
 from .serde.auth import Role
@@ -203,6 +203,8 @@ async def start_ssh_server(
         sftp_factory=PSIMonitorSFTPServer,
         encoding=None,
         encryption_algs=SSH_ENCRYPTION_ALGS,
+        keepalive_interval=SSH_KEEPALIVE_INTERVAL,
+        keepalive_count_max=SSH_KEEPALIVE_COUNT_MAX,
     )
     bound_port = server.get_port()
     log.info("ssh_server_listening", host=host, port=bound_port)
