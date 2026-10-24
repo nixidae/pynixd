@@ -41,44 +41,43 @@ class WirePlan(NamedTuple):
 def _nested_context(ctx: ReadContext) -> ReadContext:
     """The context a nested `WireModel` reads under.
 
-    **`error_factory` and `logger` cross over. The three log settings do
-    not.** `WireResponse.logs` is a `WireLogs`, so every response of the
-    protocol reads its stderr stream through here, and `WireLogs.from_reader`
-    is the one reader that acts on all five settings. A nested read built a
-    bare context, so none of the five reached it, and a daemon error came
-    back as `DaemonProtocolError` although the caller asked for its own
-    class.
+    **`error_factory`, `logger` and `log_sink` cross over.**
+    `WireResponse.logs` is a `WireLogs`, so every response of the protocol
+    reads its stderr stream through here, and `WireLogs.from_reader` is the
+    one reader that acts on the log settings. A nested read built a bare
+    context, so none of them reached it, and a daemon error came back as
+    `DaemonProtocolError` although the caller asked for its own class.
 
-    The three that stay behind, each measured:
+    `log_sink` crosses so that the stream reaches the client while it is
+    read. A response kept every message until the answer instead, and a
+    substituting `QueryValidPaths` kept one per chunk of the closure: 10.4
+    GB, and garbage collections that stalled the loop until the liveness
+    probe killed pynixd. Issue #507. A streamed message is not kept unless
+    the caller asks, so `proxy.py` writing the response back sends it once.
 
-    `log_sink` would deliver every message twice. `proxy.py` writes the whole
-    response back to the client, buffered messages included, so the client
-    would read the log of an operation once live and once inside the answer.
+    `buffer_logs` crosses, except with nothing streaming: an unbuffered
+    stream with no sink is a lost one.
 
-    `buffer_logs` follows `log_sink`: with nothing streaming, an unbuffered
-    stream is a lost one.
-
-    `raise_on_error` would turn a daemon error into a silent success.
-    `DaemonStore.call` declares `raise_on_error=False` as its default, and
-    every operation of pynixd goes through it. Honouring that flag here made
-    `_try_substitute_upstream` read a failed `EnsurePath` as a hit, and
-    `nix build` then waited 112 s for a substitution that never came.
-
-    Issue #46 holds all three.
+    `raise_on_error` does not cross: it would turn a daemon error into a
+    silent success. `DaemonStore.call` declares `raise_on_error=False` as
+    its default, and every operation of pynixd goes through it. Honouring
+    that flag here made `_try_substitute_upstream` read a failed
+    `EnsurePath` as a hit, and `nix build` then waited 112 s for a
+    substitution that never came. Issue #46.
     """
-    if ctx.log_sink is None and ctx.buffer_logs and ctx.raise_on_error:
-        # Already stripped by an enclosing nested read. Every response nests
+    if ctx.raise_on_error and (ctx.buffer_logs or ctx.log_sink is not None):
+        # Already settled by an enclosing nested read. Every response nests
         # its `WireLogs` one level down, and everything below that reads under
-        # the same three settings, so this returns the context unchanged for
-        # all but the first nesting. `dataclasses.replace` ran 4,177,587 times
-        # in one system build, 8.0 s of its 137 s; this keeps all but the
-        # topmost off that path. The rebuild below is the first nesting only.
+        # the same settings, so this returns the context unchanged for all
+        # but the first nesting. `dataclasses.replace` ran 4,177,587 times in
+        # one system build, 8.0 s of its 137 s; this keeps all but the topmost
+        # off that path. The rebuild below is the first nesting only.
         return ctx
     return ReadContext(
         reader=ctx.reader,
         version=ctx.version,
-        log_sink=None,
-        buffer_logs=True,
+        log_sink=ctx.log_sink,
+        buffer_logs=ctx.buffer_logs or ctx.log_sink is None,
         raise_on_error=True,
         error_factory=ctx.error_factory,
         logger=ctx.logger,

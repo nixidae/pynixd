@@ -16,7 +16,7 @@ from __future__ import annotations
 import pytest
 
 from nix_daemon_protocol import PROTOCOL_VERSION
-from nix_daemon_protocol.constants import STDERR_ERROR, STDERR_LAST
+from nix_daemon_protocol.constants import STDERR_ERROR, STDERR_LAST, STDERR_NEXT
 from nix_daemon_protocol.context import ReadContext
 from nix_daemon_protocol.exceptions import DaemonProtocolError
 from nix_daemon_protocol.io import BytesReader, BytesWriter
@@ -76,14 +76,43 @@ async def test_raise_on_error_does_not_reach_the_nested_log_stream() -> None:
         await _Response.from_reader(_context(error_factory=_OwnError, raise_on_error=False))
 
 
-async def test_a_nested_read_does_not_send_to_the_log_sink() -> None:
-    """`proxy.py` writes the buffered stream back, so a live copy would double it."""
-    sent: list[object] = []
+class _Sink:
+    def __init__(self) -> None:
+        self.sent: list[object] = []
 
-    class _Sink:
-        async def send(self, message: object, /) -> None:
-            sent.append(message)
+    async def send(self, message: object, /) -> None:
+        self.sent.append(message)
 
+
+def _next_then_last() -> bytes:
+    writer = BytesWriter()
+    writer.write_uint64(STDERR_NEXT)
+    writer.write_string("copying path")
+    writer.write_uint64(STDERR_LAST)
+    return writer.get_bytes()
+
+
+async def test_a_nested_read_streams_to_the_log_sink_and_keeps_nothing() -> None:
+    """The client reads the stream live, and `proxy.py` writes the response back without it.
+
+    A response kept every message until the answer, so a substituting
+    `QueryValidPaths` held one per chunk of the closure. Issue #507.
+    """
+    sink = _Sink()
+    ctx = ReadContext(
+        reader=BytesReader(_next_then_last(), identifier="nested"),
+        version=PROTOCOL_VERSION,
+        log_sink=sink,
+        buffer_logs=False,
+    )
+    response = await _Response.from_reader(ctx)
+    assert [getattr(m, "text", None) for m in sink.sent] == ["copying path"]
+    assert response.logs.messages == []
+
+
+async def test_a_nested_read_does_not_stream_the_error() -> None:
+    """The caller reports the error, so a streamed copy would reach the client twice."""
+    sink = _Sink()
     with pytest.raises(DaemonProtocolError):
-        await _Response.from_reader(_context(log_sink=_Sink()))
-    assert sent == []
+        await _Response.from_reader(_context(log_sink=sink))
+    assert sink.sent == []

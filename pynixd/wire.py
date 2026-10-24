@@ -342,6 +342,11 @@ class NixWriter:
         if len(self._pending) >= self._FLUSH_BYTES:
             self.flush()
 
+    @property
+    def pending(self) -> int:
+        """Bytes written and not yet handed to the transport."""
+        return len(self._pending)
+
     def flush(self) -> None:
         """Hand everything buffered to the transport, as one write."""
         if self._pending:

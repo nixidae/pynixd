@@ -1173,7 +1173,12 @@ class Scheduler:
         if build.wait_time is not None:
             metrics.QUEUE_WAIT_DURATION.observe(build.wait_time)
 
-        resp = await conn.call(build.request, client=cast("ClientConn", _OutputClock(build)), options=build.options)
+        resp = await conn.call(
+            build.request,
+            client=cast("ClientConn", _OutputClock(build)),
+            options=build.options,
+            keep_logs=True,
+        )
         if resp.logs.messages:
             # The count, so a run can tell one fan-out of many messages from
             # many fan-outs of one message.

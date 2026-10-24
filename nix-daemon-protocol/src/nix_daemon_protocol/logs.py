@@ -23,6 +23,7 @@ round-trips them. Issue nixidae/nixidae#662.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, cast
 
 from .constants import (
@@ -137,9 +138,18 @@ _LOG_PARSERS: dict[int, type[WireModel]] = {
 }
 
 
+_YIELD_EVERY = 256
+"""Messages read between two turns of the event loop.
+
+A read served from buffered bytes never suspends, and a daemon that
+substitutes a closure keeps the buffer full: one `resProgress` per chunk it
+copies. Without the turn the loop stalls for the whole stream. Issue #507."""
+
+
 async def read_stream(ctx: ReadContext) -> AsyncIterator[LogMessage]:
     """Yield stderr/log messages until STDERR_LAST."""
     unknown_streak = 0
+    count = 0
     while True:
         msg_type = await ctx.reader.read_uint64()
 
@@ -158,6 +168,9 @@ async def read_stream(ctx: ReadContext) -> AsyncIterator[LogMessage]:
         unknown_streak = 0
         msg = cast("LogMessage", await parser.from_reader(ctx))
         yield msg
+        count += 1
+        if count % _YIELD_EVERY == 0:
+            await asyncio.sleep(0)
         if isinstance(msg, LogError):
             return
 
@@ -209,16 +222,19 @@ class WireLogs(WireModel):
 
             msgs: list[LogMessage] = []
             async for msg in read_stream(ctx):
+                # STDERR_ERROR is a valid daemon response, not a decode failure.
+                # It is kept and never streamed: the caller reports it, as the
+                # raised error or inside the response, so a streamed copy
+                # reaches the client twice.
+                if isinstance(msg, LogError):
+                    msgs.append(msg)
+                    if ctx.raise_on_error:
+                        backend_error = ctx.error_factory(msg.msg)
+                    break
                 if ctx.log_sink:
                     await ctx.log_sink.send(msg)
                 if ctx.buffer_logs:
                     msgs.append(msg)
-
-                # STDERR_ERROR is a valid daemon response, not a decode failure.
-                if isinstance(msg, LogError):
-                    if ctx.raise_on_error:
-                        backend_error = ctx.error_factory(msg.msg)
-                    break
 
             object.__setattr__(obj, "messages", msgs)
 

@@ -37,7 +37,7 @@ Pynixd will adversise 1.38 support even if local_store is 1.35 and translate whe
 
 ## 3. Stderr & Logging
 - **`StderrBuffer`**: All buffered responses MUST include a `StderrBuffer` in their `stderr` field.
-- **Real-time Forwarding**: If a `ClientConn` is provided to `execute()`, logs MUST be forwarded to `client.queue` in real-time while also being buffered in the response.
+- **Real-time Forwarding**: If a `ClientConn` is provided to `execute()`, logs MUST be streamed to it as they are read and NOT buffered in the response. A substituting `QueryValidPaths` sends one message per chunk it copies; buffering them grew pynixd to 10.4 GB and stalled the loop (#507). Keep messages only when the caller needs them (`keep_logs=True`), and only the kinds it needs. The terminating `LogError` is never streamed: the caller reports it.
 - **`suppress_last`**: When executing sub-operations (e.g., builds within a `BuildPaths` request), intermediate `STDERR_LAST` messages MUST be suppressed to avoid confusing the client.
 - **Transparency**: No-op or cached operations MUST inject a `StderrNext` message (e.g., `"pynixd: IsValidPath (SQLite hit)"`) into the buffer for transparency.
 

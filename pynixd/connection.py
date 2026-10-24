@@ -15,6 +15,7 @@ Lifecycle:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import time
 from typing import TYPE_CHECKING, Any
@@ -44,6 +45,8 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+_LINGER_SECONDS = 0.05
+"""How long a streamed message may wait in the writer for more to join it."""
 
 # ── Shared types ────────────────────────────────────────────────────
 
@@ -62,6 +65,7 @@ class ClientConn:
         """Wrap a writer for thread-safe stderr output to a client."""
         self.w = w
         self._write_lock = anyio.Lock()
+        self._linger_handle: asyncio.TimerHandle | None = None
         self._dirty = False
         """Whether a stderr message or raw bytes went out since the last flush."""
         self.standard_features: frozenset[str] = frozenset()
@@ -104,7 +108,17 @@ class ClientConn:
         """
 
     async def send(self, msg: WireModel) -> None:
-        """Send a stderr message to the client. Safe to call from multiple tasks."""
+        """Send a stderr message to the client. Safe to call from multiple tasks.
+
+        **Messages coalesce in the buffer of the writer, and only a full chunk
+        waits for the transport.** A substituting operation streams one
+        `resProgress` per chunk it copies. A drain per message made each one
+        an SSH packet of its own: asyncssh queued them, and the window adjust
+        that released them encrypted every one in a single callback. Measured
+        on sg1: the loop stalled for 2.8 s to 10.4 s with the CPU at its
+        limit. Issue #507. What stays below a chunk goes out after
+        `_LINGER_SECONDS`, so one build log line still arrives at once.
+        """
         buf = wire.BytesWriter("client")
         await msg.to_writer(WriteContext(writer=buf, version=wire.PROTOCOL_VERSION, features=self.standard_features))
         data = buf.get_bytes()
@@ -112,7 +126,21 @@ class ClientConn:
             self._dirty = True
             async with self._write_lock:
                 self.w.write(data)
-                await self.w.drain()
+                if self.w.pending:
+                    self._linger()
+                else:
+                    await self.w.drain()
+
+    def _linger(self) -> None:
+        if self._linger_handle is None:
+            self._linger_handle = asyncio.get_running_loop().call_later(_LINGER_SECONDS, self._flush_lingering)
+
+    def _flush_lingering(self) -> None:
+        self._linger_handle = None
+        # A closed transport raises here, and again on the next drain, where
+        # the session that owns it hears of it.
+        with contextlib.suppress(Exception):
+            self.w.flush()
 
     async def send_raw(self, data: bytes) -> None:
         """Send raw bytes to the client. Safe to call from multiple tasks."""
@@ -132,8 +160,8 @@ class ClientConn:
         lock and drained for nothing. Measured with pyinstrument on one raw
         pump session, `flush` was 0.65 s of 2.9 s of `dispatch`. A message that
         did go out sets `_dirty`, and the next flush then takes the lock as
-        before; a send that races this check drains itself, because `send`
-        holds the lock for its own drain.
+        before. A message that lingers sits in the writer the response goes
+        through, so it reaches the client before the response in any case.
         """
         if not self._dirty:
             return
@@ -274,6 +302,7 @@ class Connection:
         suppress_last: bool = False,
         raise_on_error: bool = False,
         options: SetOptionsRequest | None = None,
+        keep_logs: bool | None = None,
     ) -> Any:
         """Send an operation on the established connection.
 
@@ -286,6 +315,9 @@ class Connection:
             options: The option set to apply first. Defaults to the set of
                 *client*. A build reads it from the queue instead, because the
                 build runs after the request of the client returned.
+            keep_logs: Keep the stream in the response as well. Defaults to
+                keeping it only when no *client* receives it: a substituting
+                operation sends one message per chunk it copies. Issue #507.
         """
         if not self.connected:
             raise RuntimeError(f"Connection {self.id!r} not connected")
@@ -302,7 +334,7 @@ class Connection:
                 ReadContext.from_conn(
                     self,
                     client=client,
-                    buffer_logs=not suppress_last,
+                    buffer_logs=keep_logs,
                     raise_on_error=raise_on_error,
                 ),
             )
@@ -337,7 +369,7 @@ class Connection:
             await framed.finalize()
             resp_cls = type(request).response_type
             return await resp_cls.from_reader(
-                ReadContext.from_conn(self, client=client, buffer_logs=not suppress_last),
+                ReadContext.from_conn(self, client=client),
             )
         finally:
             self.current_op = None

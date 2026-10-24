@@ -234,9 +234,8 @@ class PeerHealthMonitor(ResourceMonitor):
         conn = await self.store.create_conn()
         try:
             with anyio.CancelScope(deadline=anyio.current_time() + silence) as scope:
-                # Read here, not through `Connection.call(client=...)`: a
-                # response reads its logs nested, and `_nested_context` drops
-                # the sink, so `call` hands nothing over until the end.
+                # Read here, not through `Connection.call`: the stream never
+                # ends, and `call` waits for a response after it.
                 request = PynixdHostHealthStreamRequest(interval_ms=int(self.interval * 1000))
                 await request.to_writer(WriteContext.from_conn(conn))
                 await conn.w.drain()
