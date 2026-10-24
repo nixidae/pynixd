@@ -20,6 +20,7 @@ the useful form of this number is a graph that rises before anything restarts.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import threading
 import time
@@ -35,8 +36,9 @@ from . import metrics
 from .constants import STALL_TRACEBACK_MAX_BYTES
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Iterator, Mapping
     from pathlib import Path
+    from types import FrameType
     from typing import TextIO
 
 log = structlog.get_logger(__name__)
@@ -113,6 +115,7 @@ class StallWatchdog:
         self.sink_errors = 0
         self.sink_skipped = 0
         self._reported_full = False
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def beat(self) -> None:
         """Record that the loop is still running callbacks."""
@@ -147,10 +150,35 @@ class StallWatchdog:
         for ident, frame in sys._current_frames().items():  # noqa: SLF001
             lines.append(f"Thread {names.get(ident, '<unknown>')} ({ident}):")
             lines.extend(line.rstrip("\n") for line in traceback.format_stack(frame))
+        lines.extend(self._running_task_stack())
         text = "\n".join(lines)
         print(text, file=stream, flush=True)
         self._write_sink(text)
         self.dumps += 1
+
+    def _running_task_stack(self) -> list[str]:
+        """The await chain of the task the loop is running, outermost first.
+
+        The thread stack above stops at the innermost coroutine frame: the loop
+        resumes a task from C, so that frame has no Python caller. A stall in a
+        helper every op uses then names the helper and not the op. The chain of
+        `cr_await` from the task's coroutine down names both.
+
+        Read from another thread without the loop's cooperation. The loop is
+        not running callbacks, which is the premise of a dump, so the chain
+        does not move while it is read.
+        """
+        if self._loop is None:
+            return []
+        task = asyncio.current_task(self._loop)
+        if task is None:
+            return ["Running task: none (the loop is stalled outside a task)"]
+        lines = [f"Running task {task.get_name()}, await chain outermost first:"]
+        lines.extend(
+            f'  File "{frame.f_code.co_filename}", line {frame.f_lineno}, in {frame.f_code.co_qualname}'
+            for frame in _await_chain(task.get_coro())
+        )
+        return lines
 
     def _write_sink(self, text: str) -> None:
         """Also write the dump somewhere a container restart cannot take.
@@ -203,13 +231,33 @@ class StallWatchdog:
             if self._check(time.monotonic()):
                 self.dump()
 
-    def start(self) -> threading.Thread:
+    def start(self, loop: asyncio.AbstractEventLoop | None = None) -> threading.Thread:
+        self._loop = loop
         thread = threading.Thread(target=self.run, name="pynixd-stall-watchdog", daemon=True)
         thread.start()
         return thread
 
     def stop(self) -> None:
         self._stop.set()
+
+
+def _await_chain(awaitable: object) -> Iterator[FrameType]:
+    """Each frame of a coroutine and of what it awaits, down to the innermost."""
+    seen: set[int] = set()
+    while awaitable is not None and id(awaitable) not in seen:
+        seen.add(id(awaitable))
+        frame = (
+            getattr(awaitable, "cr_frame", None)
+            or getattr(awaitable, "gi_frame", None)
+            or getattr(awaitable, "ag_frame", None)
+        )
+        if frame is not None:
+            yield frame
+        awaitable = (
+            getattr(awaitable, "cr_await", None)
+            or getattr(awaitable, "gi_yieldfrom", None)
+            or getattr(awaitable, "ag_await", None)
+        )
 
 
 class LoopLagMonitor:

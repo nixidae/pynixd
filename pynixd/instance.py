@@ -667,7 +667,7 @@ class Server:
         # Before the listeners, so a stall during their startup is recorded.
         if self.stall_watchdog is not None:
             self.stall_watchdog.beat()
-            self.stall_watchdog.start()
+            self.stall_watchdog.start(asyncio.get_running_loop())
         self.background_tasks.append(asyncio.create_task(self.loop_lag.run()))
         self.background_tasks.append(asyncio.create_task(self._warn_silent_upstreams()))
 
