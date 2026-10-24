@@ -82,11 +82,7 @@ async def _decode(vms: Machines) -> None:
     src = vms.settings["src"]
     await vm.succeed(f"rm -rf /work && cp -r {src} /work && chmod -R u+w /work")
 
-    command = (
-        "cd /work && "
-        f"python tests/benchmark/stream_decode.py {ACTIVITIES} {ROUNDS} "
-        "> /artifacts/decode.log 2>&1"
-    )
+    command = f"cd /work && python tests/benchmark/stream_decode.py {ACTIVITIES} {ROUNDS} > /artifacts/decode.log 2>&1"
     rc, _ = await vm.execute(command, timeout=TIMEOUT, label="decode benchmark")
     print(f"[benchmark] decode exit {rc}\n{(await vm.succeed('cat /artifacts/decode.log')).strip()}")
     if rc != 0:
