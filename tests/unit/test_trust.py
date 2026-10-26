@@ -165,9 +165,14 @@ def test_policy_from_nix_config_show():
         "substituters": {"value": ["https://cache.nixos.org/"]},
         "trusted-substituters": {"value": []},
         "experimental-features": {"value": ["ca-derivations", "nix-command"]},
+        "max-substitution-jobs": {"value": 4},
     }
     assert TrustPolicy.from_nix_config(config) == TrustPolicy(
-        ("root", "@wheel"), ("*",), "nixbld", experimental_features=("ca-derivations", "nix-command")
+        ("root", "@wheel"),
+        ("*",),
+        "nixbld",
+        experimental_features=("ca-derivations", "nix-command"),
+        max_substitution_jobs=4,
     ), "the default substituters are Nix's, so this equality also checks the two list fields"
 
 

@@ -181,6 +181,9 @@ class SubstitutionQueue:
         self.health: dict[StoreId, SubstitutionHealthLog] = {}
         self._probe_tasks: set[asyncio.Task[None]] = set()
         self._active_imports: dict[StorePath, asyncio.Task[SubstitutionImportResult]] = {}
+        # Created on first use: a limiter needs the running loop.
+        self._import_limit: anyio.CapacityLimiter | None = None
+        self._import_slots = 16
         self._http_races: dict[str, _UpstreamNarinfoRace] = {}
         self._http_hash_paths = cast(
             "TTLCache[str, StorePath, float]",
@@ -480,6 +483,19 @@ class SubstitutionQueue:
         for store in background_stores:
             self._track_probe_task(asyncio.create_task(query_and_record(store)))
 
+    @property
+    def import_limit(self) -> anyio.CapacityLimiter:
+        """The NAR imports that may stream at once, `max-substitution-jobs` of them."""
+        if self._import_limit is None:
+            self._import_limit = anyio.CapacityLimiter(self._import_slots)
+        return self._import_limit
+
+    def set_import_slots(self, jobs: int) -> None:
+        """`max-substitution-jobs`; Nix runs one substitution even at 0 (`substitution-goal.cc:200`)."""
+        self._import_slots = max(1, jobs)
+        if self._import_limit is not None:
+            self._import_limit.total_tokens = self._import_slots
+
     async def _substitute_uncached(self, path: StorePath) -> SubstitutionImportResult:
         started = time.monotonic()
         candidate = await self.get_substituter(path)
@@ -489,7 +505,10 @@ class SubstitutionQueue:
             return SubstitutionImportResult(substituted=False, path=path, error=f"no substituter has path: {path}")
 
         try:
-            await self._import_nar(path, candidate)
+            # Every import at once took a 512 MB cache guest's harmonia out
+            # with an OOM kill: ten megabytes per stream, and no limit.
+            async with self.import_limit:
+                await self._import_nar(path, candidate)
         except Exception as exc:
             metrics.SUBSTITUTIONS.labels(result="error").inc()
             log.warning("substitution_import_failed", store_id=candidate.store.store_id, path=str(path), exc_info=True)

@@ -47,6 +47,8 @@ class TrustPolicy:
     trusted_substituters: tuple[str, ...] = ()
     experimental_features: tuple[str, ...] = ()
     """The daemon's own: it ignores a client's (`_PASSED_TO_EVERYONE`)."""
+    max_substitution_jobs: int = 16
+    """How many NARs pynixd imports at once, as `substitution-goal.cc:200` caps Nix's."""
 
     @classmethod
     def from_nix_config(cls, config: Mapping[str, Any]) -> TrustPolicy:
@@ -62,6 +64,7 @@ class TrustPolicy:
             substituters=tuple(value("substituters")),
             trusted_substituters=tuple(value("trusted-substituters")),
             experimental_features=tuple(value("experimental-features")) if "experimental-features" in config else (),
+            max_substitution_jobs=int(value("max-substitution-jobs")) if "max-substitution-jobs" in config else 16,
         )
 
 

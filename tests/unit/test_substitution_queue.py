@@ -202,3 +202,39 @@ async def test_substitute_deduplicates_active_imports(monkeypatch: pytest.Monkey
     assert second.substituted
     assert imports == 1
     assert store.queries == 1
+
+
+@pytest.mark.anyio
+async def test_imports_stream_max_substitution_jobs_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`substitution-goal.cc:200`: no more imports than `max-substitution-jobs`, and one at 0."""
+    store = FakeSubstituter("cache", valid=True)
+    ctx = cast(
+        "PynixdContext",
+        SimpleNamespace(
+            settings=PynixdSettings(),
+            stores={
+                StoreId("local"): SimpleNamespace(no_schedule=False),
+                store.store_id: store,
+            },
+        ),
+    )
+    queue = SubstitutionQueue(ctx)
+    queue.set_import_slots(2)
+    running = peak = 0
+
+    async def fake_import(path_arg: StorePath, candidate) -> None:
+        nonlocal running, peak
+        del path_arg, candidate
+        running += 1
+        peak = max(peak, running)
+        await anyio.sleep(0.01)
+        running -= 1
+
+    monkeypatch.setattr(queue, "_import_nar", fake_import)
+    paths = [StorePath(f"/nix/store/{i:032d}-example") for i in range(6)]
+    results = await asyncio.gather(*(queue.substitute(path) for path in paths))
+
+    assert all(result.substituted for result in results)
+    assert peak == 2
+    queue.set_import_slots(0)
+    assert queue.import_limit.total_tokens == 1

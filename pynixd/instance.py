@@ -635,6 +635,8 @@ class Server:
         if _configured_substituters(local_store) is None:
             added = _add_substituter_stores(self.ctx._stores, self.ctx.trust.substituters)
             log.info("substituters_from_nix_conf", stores=[str(store.store_id) for store in added])
+        if self.ctx.scheduler:
+            self.ctx.scheduler.substitution_queue.set_import_slots(self.ctx.trust.max_substitution_jobs)
 
         if isinstance(local_store, LocalDBStore):
             self.ctx.db = local_store.db
