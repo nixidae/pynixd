@@ -97,9 +97,17 @@ def _adopt_store_dir(local_store: Store) -> None:
 
 
 def _default_http_substituter_urls(local_store: Store) -> list[str]:
+    """The HTTP substituters nix.conf names, or Nix's default when it names none.
+
+    A `substituters` set to nothing means no substituter, as it does to Nix.
+    Adding cache.nixos.org to a list that leaves it out costs a node without
+    a network a DNS timeout on every miss.
+    """
     nix_config = getattr(local_store, "nix_config", None)
-    urls = [url for url in getattr(nix_config, "substituters", None) or [] if url.startswith(("http://", "https://"))]
-    urls.append("https://cache.nixos.org/")
+    configured = getattr(nix_config, "substituters", None)
+    if configured is None:
+        configured = ["https://cache.nixos.org/"]
+    urls = [url for url in configured if url.startswith(("http://", "https://"))]
 
     seen: set[str] = set()
     result: list[str] = []
