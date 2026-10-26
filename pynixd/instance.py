@@ -32,7 +32,7 @@ from .store_layout import DEFAULT_STORE_DIR
 from .unix_server import start_unix_server
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     import asyncssh
     from aiohttp import web
@@ -96,17 +96,26 @@ def _adopt_store_dir(local_store: Store) -> None:
         set_store_dir(layout.store_dir)
 
 
-def _default_http_substituter_urls(local_store: Store) -> list[str]:
-    """The HTTP substituters nix.conf names, or Nix's default when it names none.
+def _configured_substituters(local_store: Store) -> Sequence[str] | None:
+    """The substituters the local store's `nix_config` names, or `None` without one.
+
+    `None` defers to what the daemon's own nix.conf says, which `Server.start`
+    reads. In a given `nix_config`, an unset `substituters` is Nix's default.
+    """
+    nix_config = getattr(local_store, "nix_config", None)
+    if nix_config is None:
+        return None
+    configured = getattr(nix_config, "substituters", None)
+    return ["https://cache.nixos.org/"] if configured is None else configured
+
+
+def _default_http_substituter_urls(configured: Sequence[str]) -> list[str]:
+    """The HTTP substituters of `configured`, each once.
 
     A `substituters` set to nothing means no substituter, as it does to Nix.
     Adding cache.nixos.org to a list that leaves it out costs a node without
     a network a DNS timeout on every miss.
     """
-    nix_config = getattr(local_store, "nix_config", None)
-    configured = getattr(nix_config, "substituters", None)
-    if configured is None:
-        configured = ["https://cache.nixos.org/"]
     urls = [url for url in configured if url.startswith(("http://", "https://"))]
 
     seen: set[str] = set()
@@ -120,10 +129,9 @@ def _default_http_substituter_urls(local_store: Store) -> list[str]:
     return result
 
 
-def _default_unix_substituters(local_store: Store) -> list[tuple[Path, Path]]:
+def _default_unix_substituters(configured: Sequence[str]) -> list[tuple[Path, Path]]:
     urls: list[tuple[Path, Path]] = []
-    nix_config = getattr(local_store, "nix_config", None)
-    for url in getattr(nix_config, "substituters", None) or []:
+    for url in configured:
         split = urlsplit(url)
         if split.scheme != "unix":
             continue
@@ -152,6 +160,40 @@ def _unix_store_id(socket_path: Path, store_path: Path) -> str:
     payload = f"{socket_path}:{store_path}"
     safe = payload.strip("/").replace("/", "-").replace(":", "-")
     return f"unix-{safe}"[:120]
+
+
+def _add_substituter_stores(stores: dict[StoreId, Store], configured: Sequence[str]) -> list[Store]:
+    """A store in `stores` for each HTTP and unix substituter of `configured` it lacks; returns the new ones."""
+    added: list[Store] = []
+    existing_http_urls = {store.url.rstrip("/") for store in stores.values() if is_http_binary_cache(store)}
+    for url in _default_http_substituter_urls(configured):
+        if url.rstrip("/") in existing_http_urls:
+            continue
+        store_id = StoreId(_http_store_id(url))
+        cache_spec = HTTPBinaryCacheSpec(
+            store_id=store_id,
+            url=url,
+        )
+        stores[store_id] = cache_spec.to_store(str(store_id))
+        added.append(stores[store_id])
+        existing_http_urls.add(url.rstrip("/"))
+
+    existing_unix = {
+        (store.socket_path, store.store_path) for store in stores.values() if isinstance(store, ExternalUnixStore)
+    }
+    for socket_path, store_path in _default_unix_substituters(configured):
+        if (socket_path, store_path) in existing_unix:
+            continue
+        store_id = StoreId(_unix_store_id(socket_path, store_path))
+        unix_spec = ExternalUnixStoreSpec(
+            store_id=store_id,
+            socket_path=socket_path,
+            store_path=store_path,
+        )
+        stores[store_id] = unix_spec.to_store(str(store_id))
+        added.append(stores[store_id])
+        existing_unix.add((socket_path, store_path))
+    return added
 
 
 class Server:
@@ -187,32 +229,9 @@ class Server:
         local_store = stores[LOCAL_STORE_ID]
         _adopt_store_dir(local_store)
 
-        existing_http_urls = {store.url.rstrip("/") for store in stores.values() if is_http_binary_cache(store)}
-        for url in _default_http_substituter_urls(local_store):
-            if url.rstrip("/") in existing_http_urls:
-                continue
-            store_id = StoreId(_http_store_id(url))
-            cache_spec = HTTPBinaryCacheSpec(
-                store_id=store_id,
-                url=url,
-            )
-            stores[store_id] = cache_spec.to_store(str(store_id))
-            existing_http_urls.add(url.rstrip("/"))
-
-        existing_unix = {
-            (store.socket_path, store.store_path) for store in stores.values() if isinstance(store, ExternalUnixStore)
-        }
-        for socket_path, store_path in _default_unix_substituters(local_store):
-            if (socket_path, store_path) in existing_unix:
-                continue
-            store_id = StoreId(_unix_store_id(socket_path, store_path))
-            unix_spec = ExternalUnixStoreSpec(
-                store_id=store_id,
-                socket_path=socket_path,
-                store_path=store_path,
-            )
-            stores[store_id] = unix_spec.to_store(str(store_id))
-            existing_unix.add((socket_path, store_path))
+        configured = _configured_substituters(local_store)
+        if configured is not None:
+            _add_substituter_stores(stores, configured)
 
         self.ctx = PynixdContext(
             settings=settings,
@@ -610,6 +629,12 @@ class Server:
             allowed_users=self.ctx.trust.allowed_users,
             build_users_group=self.ctx.trust.build_users_group,
         )
+        # Without a `nix_config`, the substituters are the ones the daemon
+        # reads from its nix.conf. Nix's default here would put
+        # cache.nixos.org in place of the caches the node is configured for.
+        if _configured_substituters(local_store) is None:
+            added = _add_substituter_stores(self.ctx._stores, self.ctx.trust.substituters)
+            log.info("substituters_from_nix_conf", stores=[str(store.store_id) for store in added])
 
         if isinstance(local_store, LocalDBStore):
             self.ctx.db = local_store.db
