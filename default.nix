@@ -183,7 +183,7 @@ let
 
   # **The type gate does not see huggorm, on purpose.** It reads `tests/`,
   # and `tests/differential` imports the oracle, so the imports there carry
-  # `pyright: ignore[reportMissingImports]`. Putting `huggorm` in this
+  # `type: ignore[import-not-found]`. Putting `huggorm` in this
   # environment would tie a gate that must run everywhere to a C++
   # closure built against one version of Nix.
 
@@ -352,10 +352,13 @@ let
   checks = {
     format = mkCheck "format" [ pkgs.ruff ] "ruff format --check .";
     lint = mkCheck "lint" [ pkgs.ruff ] "ruff check .";
-    types = mkCheck "types" [
-      pkgs.pyright
-      pyinstance
-    ] "pyright --pythonpath ${pyinstance}/bin/python .";
+    # One zuban run for each `mypy.ini`: nix-daemon-protocol is its own
+    # distribution, with its own `src/` and `tests/`.
+    types = mkCheck "types" [ pkgs.zuban ] ''
+      for project in . nix-daemon-protocol; do
+        (cd "$project" && env -u PYTHONPATH zuban mypy --python-executable ${pyinstance}/lib/venv/bin/python)
+      done
+    '';
 
     # Does each committed workflow still say what its ci/workflows/*.nix says?
     #

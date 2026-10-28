@@ -1,7 +1,7 @@
 {
   lib,
   mkShell,
-  pyright,
+  zuban,
   ruff,
   sqlite,
   nix,
@@ -32,7 +32,7 @@ mkShell {
     # `NIX_PATH` note below.
     nix
     agent
-    pyright
+    zuban
     ruff
     sqlite
   ];

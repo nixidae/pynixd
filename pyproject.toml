@@ -101,9 +101,3 @@ markers = [
     "legacy_nix_commands: tests using nix-store, nix-instantiate, etc.",
     "differential: builds one derivation through both goal systems and compares the stores",
 ]
-
-[tool.pyright]
-# tests/daemon/helpers is the daemon guest session's `pythonPath`.
-extraPaths = ["nix-daemon-protocol/src", "tests/daemon/helpers"]
-pythonVersion = "3.13"
-exclude = ["**/result*"]
