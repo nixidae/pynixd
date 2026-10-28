@@ -18,6 +18,8 @@ after, because a claim with no codec drops the connection. Issue #14.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from nix_daemon_protocol import (
@@ -35,12 +37,13 @@ from nix_daemon_protocol import (
 )
 from nix_daemon_protocol.context import ReadContext, WriteContext
 from nix_daemon_protocol.io import BytesReader, BytesWriter
+from nix_daemon_protocol.wire_message import WireModel
 
 OUT_PATH = "/nix/store/00000000000000000000000000000000-x"
 DRV_PATH = "/nix/store/11111111111111111111111111111111-x.drv"
 
 
-def _a_result(**maps) -> BuildResult:
+def _a_result(**maps: Any) -> BuildResult:
     """A `BuildResult` with every version-gated field filled in.
 
     The 1.29 and 1.37 fields default to `None`, and `PROTOCOL_VERSION` puts
@@ -60,7 +63,7 @@ def _a_result(**maps) -> BuildResult:
     )
 
 
-async def _round_trip(value, model):
+async def _round_trip[T: WireModel](value: WireModel, model: type[T]) -> tuple[bytes, T]:
     """Write *value* and read it back as *model*, and answer both."""
     writer = BytesWriter("test")
     await value.to_writer(WriteContext(writer=writer, version=PROTOCOL_VERSION))

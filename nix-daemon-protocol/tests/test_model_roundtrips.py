@@ -12,7 +12,7 @@ import inspect
 import pkgutil
 import types
 from enum import Enum
-from typing import Any, cast, get_args, get_origin
+from typing import Any, get_args, get_origin
 
 import pytest
 
@@ -106,7 +106,7 @@ async def test_every_wire_model_roundtrips(model_type: type[WireModel]) -> None:
     reader = BytesReader(encoded.bytes())
     read_context = ReadContext(reader=reader, version=PROTOCOL_VERSION)
     if issubclass(model_type, WireRequest):
-        request_type = cast("type[WireRequest]", model_type)
+        request_type = model_type
         assert await reader.read_uint64() == request_type.op
     elif "code" in model_type.model_fields and model_type.__name__ != "WireLogs":
         await reader.read_uint64()
@@ -165,7 +165,7 @@ async def test_an_absent_optional_scalar_reads_back_as_none(model_type: type[Wir
     reader = BytesReader(encoded.bytes())
     read_context = ReadContext(reader=reader, version=PROTOCOL_VERSION)
     if issubclass(model_type, WireRequest):
-        request_type = cast("type[WireRequest]", model_type)
+        request_type = model_type
         assert await reader.read_uint64() == request_type.op
     elif "code" in model_type.model_fields and model_type.__name__ != "WireLogs":
         await reader.read_uint64()

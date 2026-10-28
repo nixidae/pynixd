@@ -60,7 +60,7 @@ class WireRequest(WireModel):
         await self._write_body(ctx)
 
     @classmethod
-    async def from_reader(cls, ctx: ReadContext):
+    async def from_reader(cls, ctx: ReadContext) -> Self:
         """Read body only — op was consumed by dispatch."""
         return await super().from_reader(ctx)
 

@@ -21,7 +21,7 @@ class WireUInt64(int):
     ) -> core_schema.CoreSchema:
         """Validate and serialize as a bounded JSON integer."""
         return core_schema.no_info_after_validator_function(
-            cls,
+            cls,  # type: ignore[arg-type]  # zuban-bug: zuban reads type[Self] as not Callable[[Any], Any]; mypy accepts the class as a callable
             core_schema.int_schema(ge=0, le=(1 << 64) - 1),
             serialization=core_schema.plain_serializer_function_ser_schema(
                 int,

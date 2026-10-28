@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import types
-from collections.abc import Callable, Iterable  # noqa: TC003
+from collections.abc import Awaitable, Callable, Iterable  # noqa: TC003
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, ClassVar, NamedTuple, Self, get_args, get_origin, get_type_hints
@@ -27,12 +27,26 @@ from .wire_integer import WireUInt64
 from .wire_scalar import is_wire_scalar
 
 
+class ReadStep(NamedTuple):
+    name: str
+    reader: Callable[[ReadContext], Awaitable[Any]]
+    wire_depends_on: Callable[[Any], bool] | None
+    deserialize: bool
+
+
+class WriteStep(NamedTuple):
+    name: str
+    writer: Callable[[Any, WriteContext], Awaitable[None]]
+    wire_depends_on: Callable[[Any], bool] | None
+    serialize: bool
+
+
 class WirePlan(NamedTuple):
     """One resolved codec per (model, version, features)."""
 
-    read_steps: tuple
-    write_steps: tuple
-    defaults: tuple
+    read_steps: tuple[ReadStep, ...]
+    write_steps: tuple[WriteStep, ...]
+    defaults: tuple[tuple[str, bool, Any], ...]
 
 
 # ── Helpers ──
@@ -105,15 +119,15 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
         return lambda ctx: ctx.reader.read_uint64()
     if isinstance(ann, type) and issubclass(ann, WireUInt64):
 
-        async def _read_uint64_model(ctx):
+        async def _read_uint64_model(ctx: ReadContext) -> Any:
             return ann(await ctx.reader.read_uint64())
 
         return _read_uint64_model
     # IntEnum — read uint64, convert to enum member
     if isinstance(ann, type) and issubclass(ann, IntEnum):
 
-        async def _read_enum(ctx):
-            return ann(await ctx.reader.read_uint64())
+        async def _read_enum(ctx: ReadContext) -> IntEnum:
+            return ann(await ctx.reader.read_uint64())  # type: ignore[misc, no-any-return]  # zuban-bug: a call on a variable of type[IntEnum] is read as the functional Enum API; mypy accepts it
 
         return _read_enum
     if ann is str:
@@ -154,7 +168,7 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
     if origin is list:
         elem = _find_reader(args[0], version, features)
 
-        async def _read_list(ctx):
+        async def _read_list(ctx: ReadContext) -> list[Any]:
             n = await ctx.reader.read_uint64()
             return [await elem(ctx) for _ in range(n)]
 
@@ -164,7 +178,7 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
     if origin is set:
         elem = _find_reader(args[0], version, features)
 
-        async def _read_set(ctx):
+        async def _read_set(ctx: ReadContext) -> set[Any]:
             n = await ctx.reader.read_uint64()
             return {await elem(ctx) for _ in range(n)}
 
@@ -175,9 +189,9 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
         k_reader = _find_reader(args[0], version, features)
         v_reader = _find_reader(args[1], version, features)
 
-        async def _read_dict(ctx):
+        async def _read_dict(ctx: ReadContext) -> dict[Any, Any]:
             n = await ctx.reader.read_uint64()
-            d = {}
+            d: dict[Any, Any] = {}
             for _ in range(n):
                 key = await k_reader(ctx)
                 val = await v_reader(ctx)
@@ -192,7 +206,7 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
         if n_fields == 1:
             _field_name: str = next(iter(ann.model_fields.keys()))
 
-            async def _read_string(ctx):
+            async def _read_string(ctx: ReadContext) -> Any:
                 raw = await ctx.reader.read_string(str)
                 obj = ann.__new__(ann)
                 object.__setattr__(obj, "__pydantic_extra__", None)
@@ -202,7 +216,7 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
                 return obj
         else:
 
-            async def _read_string(ctx):
+            async def _read_string(ctx: ReadContext) -> Any:
                 raw = await ctx.reader.read_string(str)
                 data = ann.from_str(raw)
                 if not isinstance(data, dict):
@@ -222,7 +236,7 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
     # base class, so a scalar that stops being a `str` still reads here.
     if is_wire_scalar(ann):
 
-        async def _read_scalar(ctx):
+        async def _read_scalar(ctx: ReadContext) -> Any:
             return ann.from_wire(await ctx.reader.read_string(str))
 
         return _read_scalar
@@ -230,7 +244,7 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
     # WireModel subclass
     if isinstance(ann, type) and issubclass(ann, WireModel):
 
-        async def _read_nested(ctx):
+        async def _read_nested(ctx: ReadContext) -> Any:
             return await ann.from_reader(_nested_context(ctx))
 
         return _read_nested
@@ -388,7 +402,7 @@ class VersionMeta:
     max_version: int | None = None
     serialize: bool | None = None
     deserialize: bool | None = None
-    wire_depends_on: Callable | None = None
+    wire_depends_on: Callable[[Any], bool] | None = None
     needs_features: frozenset[str] | None = None
     unless_features: frozenset[str] | None = None
     text_errors: str = "strict"
@@ -402,7 +416,7 @@ def WireField(  # noqa: N802
     max_version: int | None = None,
     serialize: bool | None = None,
     deserialize: bool | None = None,
-    wire_depends_on: Callable | None = None,
+    wire_depends_on: Callable[[Any], bool] | None = None,
     needs_features: Iterable[str] | None = None,
     unless_features: Iterable[str] | None = None,
     text_errors: str = "strict",
@@ -475,7 +489,7 @@ def _wire_fields(
     cls: type[BaseModel],
     version: int = 0,
     features: frozenset[str] = frozenset(),
-) -> list[tuple[str, type, Callable | None, bool, bool, str]]:
+) -> list[tuple[str, type, Callable[[Any], bool] | None, bool, bool, str]]:
     """Return (name, raw_annotation, wire_depends_on, serialize, deserialize, text_errors) tuples.
 
     ClassVar fields default to serialize=False, deserialize=False unless
@@ -557,7 +571,7 @@ def _lossless_reader(errors: str) -> Any:
     cannot fail: `errors` round-trips each byte through the `str` and back.
     """
 
-    async def _read_lossless(ctx: Any) -> str:
+    async def _read_lossless(ctx: ReadContext) -> str:
         return (await ctx.reader.read_bytes()).decode("utf-8", errors=errors)
 
     return _read_lossless
@@ -570,7 +584,7 @@ def _lossless_optional_reader(errors: str) -> Any:
     a codec that never raises on the bytes. Issue nixidae/nixidae#233.
     """
 
-    async def _read_lossless_optional(ctx: Any) -> Any:
+    async def _read_lossless_optional(ctx: ReadContext) -> str | None:
         return (await ctx.reader.read_bytes()).decode("utf-8", errors=errors) or None
 
     return _read_lossless_optional
@@ -579,7 +593,7 @@ def _lossless_optional_reader(errors: str) -> Any:
 def _lossless_writer(errors: str) -> Any:
     """Write one `str` back to the bytes it decoded from."""
 
-    async def _write_lossless(val: Any, ctx: Any) -> None:
+    async def _write_lossless(val: str, ctx: WriteContext) -> None:
         ctx.writer.write_bytes(val.encode("utf-8", errors=errors))
 
     return _write_lossless
@@ -592,7 +606,7 @@ def _lossless_optional_writer(errors: str) -> Any:
     the empty string, which encodes under every handler.
     """
 
-    async def _write_lossless_optional(val: Any, ctx: Any) -> None:
+    async def _write_lossless_optional(val: str | None, ctx: WriteContext) -> None:
         if val is None:
             ctx.writer.write_string("")
         else:
@@ -638,21 +652,21 @@ def _wire_plan(
     """
     read_steps = []
     write_steps = []
-    for name, ann, wire_depends_on, serialize, deserialize, text_errors in _wire_fields(cls, version, features):
+    for name, ann, wire_depends_on, serialize, deserialize, text_errors in _wire_fields(cls, version, features):  # type: ignore[arg-type]  # zuban-bug: zuban checks type[BaseModel] against Hashable through BaseModel's __eq__-derived __hash__ = None; mypy accepts the class object
         shape = _lossless_shape(ann) if text_errors != "strict" else None
         if text_errors != "strict" and shape is None:
             raise TypeError(f"{cls.__name__}.{name}: text_errors={text_errors!r} needs a `str` field")
         if shape == "plain":
-            read_steps.append((name, _lossless_reader(text_errors), wire_depends_on, deserialize))
-            write_steps.append((name, _lossless_writer(text_errors), wire_depends_on, serialize))
+            read_steps.append(ReadStep(name, _lossless_reader(text_errors), wire_depends_on, deserialize))
+            write_steps.append(WriteStep(name, _lossless_writer(text_errors), wire_depends_on, serialize))
         elif shape == "optional":
-            read_steps.append((name, _lossless_optional_reader(text_errors), wire_depends_on, deserialize))
-            write_steps.append((name, _lossless_optional_writer(text_errors), wire_depends_on, serialize))
+            read_steps.append(ReadStep(name, _lossless_optional_reader(text_errors), wire_depends_on, deserialize))
+            write_steps.append(WriteStep(name, _lossless_optional_writer(text_errors), wire_depends_on, serialize))
         else:
-            read_steps.append((name, _find_reader(ann, version, features), wire_depends_on, deserialize))
-            write_steps.append((name, _find_writer(ann, version, features), wire_depends_on, serialize))
+            read_steps.append(ReadStep(name, _find_reader(ann, version, features), wire_depends_on, deserialize))
+            write_steps.append(WriteStep(name, _find_writer(ann, version, features), wire_depends_on, serialize))
 
-    defaults = []
+    defaults: list[tuple[str, bool, Any]] = []
     for name, field in cls.model_fields.items():
         if field.default is not PydanticUndefined:
             defaults.append((name, False, field.default))
@@ -697,20 +711,21 @@ class WireModel(BaseModel):
     async def _write_body(self, ctx: WriteContext) -> None:
         """Write the body fields through the resolved plan, no prelude."""
         plan = _wire_plan(type(self), version=ctx.version, features=ctx.features)
-        for name, writer, wire_depends_on, serialize in plan.write_steps:
-            if not serialize:
+        for step in plan.write_steps:
+            if not step.serialize:
                 continue
-            if wire_depends_on is not None and not wire_depends_on(self):
+            if step.wire_depends_on is not None and not step.wire_depends_on(self):
                 continue
 
-            await writer(getattr(self, name), ctx)
+            await step.writer(getattr(self, step.name), ctx)
 
     @classmethod
-    async def from_reader(cls, ctx: ReadContext):
+    async def from_reader(cls, ctx: ReadContext) -> Self:
         """Read all non-ClassVar fields in declaration order."""
         codec = _compiled_or_none(cls, version=ctx.version, features=ctx.features)
         if codec is not None:
-            return await codec.read(ctx)
+            compiled: Self = await codec.read(ctx)
+            return compiled
         with deserialization_scope(ctx, cls):
             plan = _wire_plan(cls, version=ctx.version, features=ctx.features)
             obj = cls.__new__(cls)
@@ -720,20 +735,20 @@ class WireModel(BaseModel):
             object.__setattr__(obj, "__pydantic_private__", None)
             # Set defaults for version-gated and conditional fields
             for name, is_factory, value in plan.defaults:
-                object.__setattr__(obj, name, value() if is_factory else value)  # pyright: ignore[reportCallIssue]
+                object.__setattr__(obj, name, value() if is_factory else value)
 
-            for name, reader, wire_depends_on, deserialize in plan.read_steps:
-                if not deserialize:
+            for step in plan.read_steps:
+                if not step.deserialize:
                     continue
-                if wire_depends_on is not None and not wire_depends_on(obj):
+                if step.wire_depends_on is not None and not step.wire_depends_on(obj):
                     continue
 
-                object.__setattr__(obj, name, await reader(ctx))
-                obj.__pydantic_fields_set__.add(name)
+                object.__setattr__(obj, step.name, await step.reader(ctx))
+                obj.__pydantic_fields_set__.add(step.name)
 
             return obj
 
-    def to_json(self, **kwargs) -> str:
+    def to_json(self, **kwargs: Any) -> str:
         """Serialize to JSON string.
 
         Uses Pydantic's ``model_dump_json``.
@@ -741,7 +756,7 @@ class WireModel(BaseModel):
         return self.model_dump_json(**kwargs)
 
     @classmethod
-    def from_json(cls, json_data: str | bytes, **kwargs) -> Self:
+    def from_json(cls, json_data: str | bytes, **kwargs: Any) -> Self:
         """Deserialize from JSON string.
 
         Uses Pydantic's ``model_validate_json``.

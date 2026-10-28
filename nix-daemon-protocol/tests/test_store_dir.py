@@ -12,6 +12,8 @@ Issue nixidae/nixidae#212.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from nix_daemon_protocol.store_dir import (
@@ -25,9 +27,12 @@ from nix_daemon_protocol.store_dir import (
     store_prefix,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 
 @pytest.fixture(autouse=True)
-def clean_store_dir():
+def clean_store_dir() -> Iterator[None]:
     reset_store_dir()
     yield
     reset_store_dir()
@@ -38,13 +43,13 @@ def test_the_default_is_the_store_of_nix() -> None:
     assert store_prefix() == "/nix/store/"
 
 
-def test_the_environment_gives_the_store_dir(monkeypatch) -> None:
+def test_the_environment_gives_the_store_dir(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NIX_STORE_DIR", "/relocated/nix/store")
     reset_store_dir()
     assert store_dir() == "/relocated/nix/store"
 
 
-def test_a_separator_at_the_end_goes_away(monkeypatch) -> None:
+def test_a_separator_at_the_end_goes_away(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NIX_STORE_DIR", "/relocated/nix/store/")
     reset_store_dir()
     assert store_dir() == "/relocated/nix/store"

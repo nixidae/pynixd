@@ -44,6 +44,9 @@ class StorePath:
 
     __slots__ = ("_path", "extrainfo")
 
+    _path: str
+    extrainfo: Any
+
     def __init__(self, path: str | StorePath = "", extrainfo: Any = None) -> None:
         if isinstance(path, StorePath):
             self._path = path._path

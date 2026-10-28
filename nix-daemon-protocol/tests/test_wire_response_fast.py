@@ -8,6 +8,8 @@ fresh per response (callers append to them), and defaulted fields are filled.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from nix_daemon_protocol import proto
 from nix_daemon_protocol.add_temp_root import AddTempRootResponse
 from nix_daemon_protocol.context import WriteContext
@@ -16,8 +18,11 @@ from nix_daemon_protocol.is_valid_path import IsValidPathResponse
 from nix_daemon_protocol.logs import LogNext
 from nix_daemon_protocol.query_path_info import QueryPathInfoResponse
 
+if TYPE_CHECKING:
+    from nix_daemon_protocol.wire_ops import WireResponse
 
-async def _encode(response) -> bytes:  # type: ignore[no-untyped-def]
+
+async def _encode(response: WireResponse) -> bytes:
     writer = BytesWriter()
     await response.to_writer(WriteContext(writer=writer, version=proto(1, 38)))
     return writer.bytes()

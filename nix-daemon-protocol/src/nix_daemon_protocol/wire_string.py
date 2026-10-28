@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 from pydantic import ConfigDict, model_serializer, model_validator
 
@@ -48,10 +48,11 @@ class WireString(WireModel):
         return NotImplemented
 
     @classmethod
-    async def from_reader(cls, ctx: ReadContext):
+    async def from_reader(cls, ctx: ReadContext) -> Self:
         with deserialization_scope(ctx, cls):
             reader = _find_reader(cls, version=ctx.version)
-            return await reader(ctx)
+            value: Self = await reader(ctx)
+            return value
 
     @model_serializer
     def to_str(self) -> str:
@@ -69,7 +70,7 @@ class WireString(WireModel):
 
     @model_validator(mode="before")
     @classmethod
-    def transform(cls, data: object) -> object:
+    def transform(cls, data: object) -> object:  # type: ignore[operator]  # zuban-bug: zuban calls the PydanticDescriptorProxy from @model_validator over @classmethod; pydantic documents this order, and mypy accepts it
         if isinstance(data, str):
             return cls.from_str(data)
         return data

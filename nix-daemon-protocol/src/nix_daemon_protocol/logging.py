@@ -8,14 +8,19 @@ from __future__ import annotations
 
 import logging as stdlib_logging
 from contextvars import ContextVar, Token
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+_STRUCTLOG_GET_LOGGER: Callable[[str], ProtocolLogger] | None
 try:
-    import structlog
+    from structlog import get_logger as _structlog_get_logger
 except ImportError:  # structlog is intentionally an optional dependency.
-    structlog = None
+    _STRUCTLOG_GET_LOGGER = None
+else:
+    _STRUCTLOG_GET_LOGGER = _structlog_get_logger
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from .context import ReadContext
 
 
@@ -40,8 +45,8 @@ class _StdlibLogger:
 
 def get_logger(name: str) -> ProtocolLogger:
     """Return the host's structured logger without configuring it."""
-    if structlog is not None:
-        return structlog.get_logger(name)
+    if _STRUCTLOG_GET_LOGGER is not None:
+        return _STRUCTLOG_GET_LOGGER(name)
     return _StdlibLogger(name)
 
 
@@ -82,7 +87,7 @@ class _NoopScope:
     def __enter__(self) -> _NoopScope:
         return self
 
-    def __exit__(self, *_exc: object) -> bool:
+    def __exit__(self, *_exc: object) -> Literal[False]:
         return False
 
 
@@ -108,7 +113,7 @@ class _DeserializationScope:
         exc_type: type[BaseException] | None,
         exc: BaseException | None,
         _tb: object,
-    ) -> bool:
+    ) -> Literal[False]:
         if self._token is not None:
             _DECODE_DEPTH.reset(self._token)
         # A cancel or an interrupt stops a read that may be fine, so only an

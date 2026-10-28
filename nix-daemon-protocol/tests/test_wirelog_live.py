@@ -19,10 +19,14 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from nix_daemon_protocol.wirelog import compare, decode
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 pytestmark = pytest.mark.skipif(shutil.which("nix") is None, reason="this test needs a nix daemon to record")
 
@@ -85,14 +89,14 @@ def record_run(root: Path, out: Path) -> None:
 
 
 @pytest.fixture
-def workspace():
+def workspace() -> Iterator[Path]:
     path = Path(tempfile.mkdtemp(prefix=f"{TEMP_ROOT}/nixwire-live-"))
     yield path
     shutil.rmtree(path, ignore_errors=True)
 
 
 @pytest.mark.anyio
-async def test_two_runs_against_the_same_daemon_agree(workspace) -> None:
+async def test_two_runs_against_the_same_daemon_agree(workspace: Path) -> None:
     """The floor of the comparison. Two equal runs must report nothing.
 
     A false difference here would report every test of the functional suite as
@@ -115,7 +119,7 @@ async def test_two_runs_against_the_same_daemon_agree(workspace) -> None:
 
 
 @pytest.mark.anyio
-async def test_the_real_operations_decode(workspace) -> None:
+async def test_the_real_operations_decode(workspace: Path) -> None:
     """The decoder reads what a real client really sends.
 
     `AddToStoreNar` carries a framed source, so this states that the decoder
@@ -136,7 +140,7 @@ async def test_the_real_operations_decode(workspace) -> None:
 
 
 @pytest.mark.anyio
-async def test_a_run_that_did_less_is_a_difference(workspace) -> None:
+async def test_a_run_that_did_less_is_a_difference(workspace: Path) -> None:
     """The comparison must find a real change, and not only agree."""
     record_run(workspace / "run1", workspace / "rec1")
 

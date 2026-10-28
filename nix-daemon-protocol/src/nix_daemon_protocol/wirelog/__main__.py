@@ -77,7 +77,7 @@ async def _run_record(args: argparse.Namespace) -> int:
             return 1
 
         recorder = Recorder(listen=listen, connect=connect, out_dir=out, store_dir=store_dir())
-        group.start_soon(recorder.serve)
+        group.start_soon(recorder.serve)  # type: ignore[call-arg]  # zuban-bug: serve's only parameter has a default; mypy accepts the call
         await recorder.wait_started()
         print(f"wirelog: recording {listen} -> {connect} into {out}", file=sys.stderr, flush=True)
 

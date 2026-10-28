@@ -11,12 +11,17 @@ import ast
 import shutil
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import anyio
+import anyio.abc
 import pytest
 
 from nix_daemon_protocol.wirelog import Direction, Recorder, one_direction, read_chunks
 from nix_daemon_protocol.wirelog.framing import HEADER, encode_chunk, encode_header
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 STORE_DIR = "/nix/store"
 """What the recorder writes into the header of each recording here. The
@@ -27,7 +32,7 @@ RECORDER_SOURCE = Path(Recorder.__module__.replace(".", "/")).name
 
 
 @pytest.fixture
-def short_path():
+def short_path() -> Iterator[Path]:
     """A directory whose name fits in `sun_path`, which is 104 bytes here."""
     path = Path(tempfile.mkdtemp(prefix="/tmp/nixwire-"))
     yield path
@@ -39,7 +44,7 @@ async def upper_server(path: Path, ready: anyio.Event) -> None:
     listener = await anyio.create_unix_listener(path)
     ready.set()
 
-    async def handle(stream) -> None:
+    async def handle(stream: anyio.abc.ByteStream) -> None:
         async with stream:
             while True:
                 try:
@@ -63,7 +68,7 @@ async def record_exchange(root: Path, sends: list[bytes]) -> list[Path]:
     async with anyio.create_task_group() as group:
         group.start_soon(upper_server, upstream, ready)
         await ready.wait()
-        group.start_soon(recorder.serve)
+        group.start_soon(recorder.serve)  # type: ignore[call-arg]  # zuban-bug: serve's only parameter has a default; mypy accepts the call
         await recorder.wait_started()
 
         async with await anyio.connect_unix(front) as client:
@@ -83,7 +88,7 @@ async def record_exchange(root: Path, sends: list[bytes]) -> list[Path]:
 
 
 @pytest.mark.anyio
-async def test_the_recording_holds_both_directions(short_path) -> None:
+async def test_the_recording_holds_both_directions(short_path: Path) -> None:
     files = await record_exchange(short_path, [b"hello", b"world"])
     assert len(files) == 1
     chunks = read_chunks(files[0])
@@ -92,7 +97,7 @@ async def test_the_recording_holds_both_directions(short_path) -> None:
 
 
 @pytest.mark.anyio
-async def test_the_recording_keeps_the_order_between_the_directions(short_path) -> None:
+async def test_the_recording_keeps_the_order_between_the_directions(short_path: Path) -> None:
     files = await record_exchange(short_path, [b"one", b"two"])
     chunks = read_chunks(files[0])
     assert [(chunk.direction, chunk.data) for chunk in chunks] == [
@@ -104,7 +109,7 @@ async def test_the_recording_keeps_the_order_between_the_directions(short_path) 
 
 
 @pytest.mark.anyio
-async def test_bytes_that_no_protocol_explains_go_through(short_path) -> None:
+async def test_bytes_that_no_protocol_explains_go_through(short_path: Path) -> None:
     """The recorder must not need to understand the stream.
 
     An operation this package does not know, a NAR, a truncated message: each
@@ -117,7 +122,7 @@ async def test_bytes_that_no_protocol_explains_go_through(short_path) -> None:
 
 
 @pytest.mark.anyio
-async def test_each_connection_gets_its_own_file(short_path) -> None:
+async def test_each_connection_gets_its_own_file(short_path: Path) -> None:
     upstream = short_path / "up.sock"
     front = short_path / "front.sock"
     out = short_path / "rec"
@@ -127,7 +132,7 @@ async def test_each_connection_gets_its_own_file(short_path) -> None:
     async with anyio.create_task_group() as group:
         group.start_soon(upper_server, upstream, ready)
         await ready.wait()
-        group.start_soon(recorder.serve)
+        group.start_soon(recorder.serve)  # type: ignore[call-arg]  # zuban-bug: serve's only parameter has a default; mypy accepts the call
         await recorder.wait_started()
 
         for word in (b"first", b"second", b"third"):
@@ -149,7 +154,7 @@ async def test_each_connection_gets_its_own_file(short_path) -> None:
     ]
 
 
-def test_a_recording_that_a_killed_run_cut_short_still_reads(short_path) -> None:
+def test_a_recording_that_a_killed_run_cut_short_still_reads(short_path: Path) -> None:
     """The watchdog of the harness kills a run, and the file then ends anywhere."""
     whole = (
         encode_header(STORE_DIR)
@@ -163,7 +168,7 @@ def test_a_recording_that_a_killed_run_cut_short_still_reads(short_path) -> None
     assert [(chunk.direction, chunk.data) for chunk in chunks] == [(Direction.CLIENT, b"kept")]
 
 
-def test_a_file_that_is_not_a_recording_is_refused(short_path) -> None:
+def test_a_file_that_is_not_a_recording_is_refused(short_path: Path) -> None:
     path = short_path / "other.bin"
     path.write_bytes(b"not a recording")
     with pytest.raises(ValueError, match="not a recording"):

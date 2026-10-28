@@ -62,6 +62,3 @@ quote-annotations = true
 # writes to the terminal. `structlog` is the rule everywhere else in this
 # package, because everywhere else the reader is a log.
 "src/nix_daemon_protocol/**/__main__.py" = ["T201"]
-
-[tool.pyright]
-pythonVersion = "3.13"

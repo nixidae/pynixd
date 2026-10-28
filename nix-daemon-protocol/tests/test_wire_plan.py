@@ -15,14 +15,14 @@ from nix_daemon_protocol.wire_message import _wire_plan
 
 def test_the_same_session_shape_shares_one_plan() -> None:
     """The same key returns the identical plan, not an equal one."""
-    first = _wire_plan(BuildResult, proto(1, 38), frozenset())
-    assert _wire_plan(BuildResult, proto(1, 38), frozenset()) is first
+    first = _wire_plan(BuildResult, proto(1, 38), frozenset())  # type: ignore[arg-type]  # zuban-bug: zuban checks the model class against Hashable; mypy accepts it as an lru_cache key
+    assert _wire_plan(BuildResult, proto(1, 38), frozenset()) is first  # type: ignore[arg-type]  # zuban-bug: zuban checks the model class against Hashable; mypy accepts it as an lru_cache key
 
 
 def test_a_version_boundary_resolves_a_different_plan() -> None:
     """`BuildResult` grows CPU fields at 1.37; the plan follows the version."""
-    old = _wire_plan(BuildResult, proto(1, 36), frozenset())
-    new = _wire_plan(BuildResult, proto(1, 37), frozenset())
+    old = _wire_plan(BuildResult, proto(1, 36), frozenset())  # type: ignore[arg-type]  # zuban-bug: zuban checks the model class against Hashable; mypy accepts it as an lru_cache key
+    new = _wire_plan(BuildResult, proto(1, 37), frozenset())  # type: ignore[arg-type]  # zuban-bug: zuban checks the model class against Hashable; mypy accepts it as an lru_cache key
 
     assert old is not new
     old_names = [name for name, _reader, _depends, _deserialize in old[0]]

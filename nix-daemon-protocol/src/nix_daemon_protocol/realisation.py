@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .drv_output import DrvOutput
 from .logging import deserialization_scope
@@ -35,7 +35,7 @@ class Realisation(WireModel):
     dependent_realisations: dict[str, str] = WireField(default_factory=dict, alias="dependentRealisations")
 
     @classmethod
-    async def from_reader(cls, ctx: ReadContext):
+    async def from_reader(cls, ctx: ReadContext) -> Realisation:
         with deserialization_scope(ctx, cls):
             raw = await ctx.reader.read_bytes()
             return cls.from_json(raw)
@@ -43,6 +43,6 @@ class Realisation(WireModel):
     async def to_writer(self, ctx: WriteContext) -> None:
         ctx.writer.write_bytes(self.__pydantic_serializer__.to_json(self, by_alias=True))
 
-    def to_json(self, **kwargs) -> str:
+    def to_json(self, **kwargs: Any) -> str:
         kwargs.setdefault("by_alias", True)
         return self.model_dump_json(**kwargs)

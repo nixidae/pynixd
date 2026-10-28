@@ -436,11 +436,20 @@ def _can_compile(model: type[WireModel]) -> bool:
     override of either method is refused: compiling it would silently run the
     generic shape instead of the override.
     """
-    base_pair = model.to_writer is WireModel.to_writer and model.from_reader.__func__ is WireModel.from_reader.__func__
-    request_pair = (
-        model.to_writer is WireRequest.to_writer and model.from_reader.__func__ is WireRequest.from_reader.__func__
+    base_pair = model.to_writer is WireModel.to_writer and _bound_func(model.from_reader) is _bound_func(
+        WireModel.from_reader
+    )
+    request_pair = model.to_writer is WireRequest.to_writer and _bound_func(model.from_reader) is _bound_func(
+        WireRequest.from_reader
     )
     return base_pair or request_pair
+
+
+def _bound_func(method: object) -> object:
+    """The function under a bound classmethod, for identity comparison."""
+    if isinstance(method, types.MethodType):
+        return method.__func__
+    return method
 
 
 async def _write_request_prelude(value: WireRequest, ctx: WriteContext) -> None:
@@ -583,7 +592,7 @@ def _reader_for(annotation: type, version: int, features: frozenset[str]) -> Rea
     if isinstance(annotation, type) and issubclass(annotation, IntEnum):
 
         async def read_enum(ctx: ReadContext) -> IntEnum:
-            return annotation(await ctx.reader.read_uint64())
+            return annotation(await ctx.reader.read_uint64())  # type: ignore[misc, no-any-return]  # zuban-bug: a call on a variable of type[IntEnum] is read as the functional Enum API; mypy accepts it
 
         return read_enum
 

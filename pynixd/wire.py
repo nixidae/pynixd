@@ -14,7 +14,7 @@ import asyncio
 import os
 import struct
 import time
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, overload
 
 from anyio.lowlevel import checkpoint
 
@@ -114,15 +114,28 @@ class NixReader:
             await self.readexactly(pad)
         return data
 
-    async def read_string[T = str](self, tp: Callable[[str], T] = str) -> T:
+    @overload
+    async def read_string(self) -> str: ...
+    @overload
+    async def read_string[T](self, tp: Callable[[str], T]) -> T: ...
+    async def read_string(self, tp: Callable[[str], object] = str) -> object:
         # Bytes to Nix: each one round-trips through `str`. nixidae/nixidae#1010.
         return tp((await self.read_bytes()).decode("utf-8", "surrogateescape"))
 
-    async def read_string_list[T = str](self, tp: Callable[[str], T] = str) -> list[T]:
+    @overload
+    async def read_string_list(self) -> list[str]: ...
+    @overload
+    async def read_string_list[T](self, tp: Callable[[str], T]) -> list[T]: ...
+    # The overloads carry the types; a list is invariant, so the body cannot.
+    async def read_string_list(self, tp: Callable[[str], Any] = str) -> list[Any]:
         count: int = await self.read_uint64()
         return [await self.read_string(tp) for _ in range(count)]
 
-    async def read_string_set[T = str](self, tp: Callable[[str], T] = str) -> set[T]:
+    @overload
+    async def read_string_set(self) -> set[str]: ...
+    @overload
+    async def read_string_set[T](self, tp: Callable[[str], T]) -> set[T]: ...
+    async def read_string_set(self, tp: Callable[[str], Any] = str) -> set[Any]:
         count: int = await self.read_uint64()
         return {await self.read_string(tp) for _ in range(count)}
 

@@ -204,9 +204,9 @@ class WireLogs(WireModel):
     by ``STDERR_LAST``.
     """
 
-    messages: list[LogMessage] = WireField(default_factory=list)  # type: ignore[valid-type]
+    messages: list[LogMessage] = WireField(default_factory=list)
 
-    def add(self, msg: LogMessage) -> None:  # type: ignore[valid-type]
+    def add(self, msg: LogMessage) -> None:
         """Append a log message to the stream."""
         self.messages.append(msg)
 

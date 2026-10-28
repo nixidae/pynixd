@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import builtins
 import struct
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, overload
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -24,7 +25,10 @@ class NixReader(Protocol):
 
     async def read_bytes(self) -> bytes: ...
 
-    async def read_string[T = str](self, tp: Callable[[str], T] = str) -> T: ...
+    @overload
+    async def read_string(self) -> str: ...
+    @overload
+    async def read_string[T](self, tp: Callable[[str], T]) -> T: ...
 
 
 class NixWriter(Protocol):
@@ -60,11 +64,11 @@ class BytesWriter:
     def write_string(self, value: object) -> None:
         self.write_bytes(str(value).encode("utf-8", "surrogateescape"))
 
-    def bytes(self) -> bytes:
+    def bytes(self) -> builtins.bytes:
         """Return the written protocol bytes."""
-        return bytes(self._buffer)
+        return builtins.bytes(self._buffer)
 
-    def get_bytes(self) -> bytes:
+    def get_bytes(self) -> builtins.bytes:
         """Return the written protocol bytes (pynixd compatibility spelling)."""
         return self.bytes()
 
@@ -112,7 +116,8 @@ class BytesReader:
                 f"(total {len(self._data)}, at offset {position})",
             )
         self._position = end
-        return _UNPACK_UINT64_FROM(self._data, position)[0]
+        value: int = _UNPACK_UINT64_FROM(self._data, position)[0]
+        return value
 
     async def read_bool(self) -> bool:
         """Read a Nix boolean."""
@@ -134,7 +139,11 @@ class BytesReader:
         self._position = padded_end
         return self._data[position:end]
 
-    async def read_string[T = str](self, tp: Callable[[str], T] = str) -> T:
+    @overload
+    async def read_string(self) -> str: ...
+    @overload
+    async def read_string[T](self, tp: Callable[[str], T]) -> T: ...
+    async def read_string(self, tp: Callable[[str], object] = str) -> object:
         """Read a Nix string, bytes to Nix, losslessly, and convert it with *tp*. nixidae/nixidae#1010."""
         return tp((await self.read_bytes()).decode("utf-8", "surrogateescape"))
 

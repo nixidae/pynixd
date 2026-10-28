@@ -15,6 +15,7 @@ both operations to the two blocks of `daemon.cc`.
 from __future__ import annotations
 
 import struct
+from typing import TYPE_CHECKING
 
 from nix_daemon_protocol import (
     PROTOCOL_VERSION,
@@ -30,6 +31,9 @@ from nix_daemon_protocol import (
 )
 from nix_daemon_protocol.context import ReadContext, WriteContext
 from nix_daemon_protocol.io import BytesReader, BytesWriter
+
+if TYPE_CHECKING:
+    from nix_daemon_protocol.wire_message import WireModel
 
 PATH = "/nix/store/00000000000000000000000000000000-example"
 DERIVER = "/nix/store/11111111111111111111111111111111-example.drv"
@@ -68,7 +72,7 @@ async def to_bytes(message: object) -> bytes:
     return writer.get_bytes()
 
 
-async def from_bytes(model: type, raw: bytes) -> object:
+async def from_bytes(model: type[WireModel], raw: bytes) -> object:
     reader = BytesReader(raw)
     return await model.from_reader(ReadContext(reader=reader, version=PROTOCOL_VERSION))
 

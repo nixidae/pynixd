@@ -39,7 +39,7 @@ def test_stdlib_logger_is_used_without_structlog(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """The optional structured dependency is not required for diagnostics."""
-    monkeypatch.setattr(protocol_logging, "structlog", None)
+    monkeypatch.setattr(protocol_logging, "_STRUCTLOG_GET_LOGGER", None)
     logger = protocol_logging.get_logger("nix_daemon_protocol.test")
 
     with caplog.at_level("ERROR"):

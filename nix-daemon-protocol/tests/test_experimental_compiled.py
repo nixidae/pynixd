@@ -88,7 +88,7 @@ async def test_compiled_codec_matches_generic_codec(value: WireModel, version: i
 
 def test_compiled_codec_exposes_inspectable_source() -> None:
     """The experiment remains reviewable rather than opaque generated magic."""
-    codec = compile_codec(BuildResult, SUPPORTED_PROTOCOL_VERSIONS[-1])
+    codec = compile_codec(BuildResult, SUPPORTED_PROTOCOL_VERSIONS[-1])  # type: ignore[arg-type]  # zuban-bug: zuban checks the model class against Hashable; mypy accepts it as an lru_cache key
     assert codec.schema.model is BuildResult
     assert codec.schema.version == SUPPORTED_PROTOCOL_VERSIONS[-1]
     assert "value.status" in codec.write_source
@@ -113,7 +113,7 @@ async def test_compiled_optional_scalar_roundtrips_absence() -> None:
     generic_writer = BytesWriter()
     await _MaybePath(path=None).to_writer(WriteContext(writer=generic_writer, version=version))
     compiled_writer = BytesWriter()
-    await compile_codec(_MaybePath, version).write(
+    await compile_codec(_MaybePath, version).write(  # type: ignore[arg-type]  # zuban-bug: zuban checks the model class against Hashable; mypy accepts it as an lru_cache key
         _MaybePath(path=None), WriteContext(writer=compiled_writer, version=version)
     )
     assert compiled_writer.bytes() == generic_writer.bytes()
@@ -121,7 +121,7 @@ async def test_compiled_optional_scalar_roundtrips_absence() -> None:
     generic_decoded = await _MaybePath.from_reader(
         ReadContext(reader=BytesReader(generic_writer.bytes()), version=version)
     )
-    compiled_decoded = await compile_codec(_MaybePath, version).read(
+    compiled_decoded = await compile_codec(_MaybePath, version).read(  # type: ignore[arg-type]  # zuban-bug: zuban checks the model class against Hashable; mypy accepts it as an lru_cache key
         ReadContext(reader=BytesReader(generic_writer.bytes()), version=version),
     )
     assert generic_decoded.path is None
@@ -173,13 +173,13 @@ async def test_compiled_codec_follows_features() -> None:
         generic_writer = BytesWriter()
         await value.to_writer(WriteContext(writer=generic_writer, version=version, features=features))
         compiled_writer = BytesWriter()
-        await compile_codec(BuildResult, version, features).write(
+        await compile_codec(BuildResult, version, features).write(  # type: ignore[arg-type]  # zuban-bug: zuban checks the model class against Hashable; mypy accepts it as an lru_cache key
             value, WriteContext(writer=compiled_writer, version=version, features=features)
         )
         assert compiled_writer.bytes() == generic_writer.bytes()
         encoded[features] = generic_writer.bytes()
 
-        compiled_decoded = await compile_codec(BuildResult, version, features).read(
+        compiled_decoded = await compile_codec(BuildResult, version, features).read(  # type: ignore[arg-type]  # zuban-bug: zuban checks the model class against Hashable; mypy accepts it as an lru_cache key
             ReadContext(reader=BytesReader(generic_writer.bytes()), version=version, features=features),
         )
         generic_decoded = await BuildResult.from_reader(

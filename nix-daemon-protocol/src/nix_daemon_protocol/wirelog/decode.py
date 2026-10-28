@@ -52,7 +52,6 @@ from ..wire_ops import WIRE_REGISTRY, WireResponse
 from .framing import Chunk, Direction, read_recording
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from pathlib import Path
 
 # The operations whose request carries a framed source: a length and that many
@@ -144,11 +143,8 @@ class _Quiet:
     report of a run holds one traceback for every NAR that passed.
     """
 
-    def __getattr__(self, name: str) -> Callable[..., None]:
-        def nothing(*_args: object, **_kwargs: object) -> None:
-            return None
-
-        return nothing
+    def exception(self, event: str, /, **fields: object) -> None:
+        return None
 
 
 _QUIET = _Quiet()
@@ -185,7 +181,7 @@ async def _decode_request(op: int, body: bytes, version: int) -> dict[str, str] 
     reader = BytesReader(body, identifier="wirelog:request")
     try:
         model = await request_cls.from_reader(
-            ReadContext(reader=reader, version=version, logger=_QUIET),  # type: ignore[arg-type]  # see _Quiet
+            ReadContext(reader=reader, version=version, logger=_QUIET),
         )
     except (EOFError, ConnectionError, ValueError, TypeError, KeyError):
         return None
@@ -215,7 +211,7 @@ async def _decode_body(op: int, payload: bytes, version: int) -> dict[str, str] 
     reader = BytesReader(head.get_bytes() + payload, identifier="wirelog:body")
     try:
         model = await response_cls.from_reader(
-            ReadContext(reader=reader, version=version, logger=_QUIET),  # type: ignore[arg-type]  # see _Quiet
+            ReadContext(reader=reader, version=version, logger=_QUIET),
         )
     except (EOFError, ConnectionError, ValueError, TypeError, KeyError):
         return None
