@@ -33,7 +33,7 @@ the test scripts of that Nix, pynixd, and every tool the scripts need. Nothing
 comes off the PATH of the machine.
 
 ```sh
-nix build --file . nixFunctionalTests.nix_2_34 --out-link result
+nix build --file . internal.nixFunctionalTests.nix_2_34 --out-link result
 ./result/bin/nanopynix-nixft-nix_2_34 all
 ```
 
@@ -182,7 +182,7 @@ SRC=$(nix eval --raw --impure --expr \
 
 # In the machine.
 vzrun \
-    nix build --file "$SRC" nixFunctionalTests.nix_2_34 --no-link --print-out-paths
+    nix build --file "$SRC" internal.nixFunctionalTests.nix_2_34 --no-link --print-out-paths
 
 # `/scratch` of the machine is on a disk. `/` is a tmpfs, and the stores of the
 # tests do not fit in it.

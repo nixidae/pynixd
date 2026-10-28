@@ -3,9 +3,9 @@
 ## Running the suites in a guest
 
 ```sh
-nix build --file . tests.guest                        # QEMU, needs /dev/kvm
-nix run --file . tests.guest.driver -- --out ./o         # the same, by hand
-nix run --file . tests.guest.driver -- --out ./o --only unit --break-on-failure
+nix build --file . internal.tests.guest                        # QEMU, needs /dev/kvm
+nix run --file . internal.tests.guest.driver -- --out ./o         # the same, by hand
+nix run --file . internal.tests.guest.driver -- --out ./o --only unit --break-on-failure
 ```
 
 One NixOS guest, one phase per suite, poweroff. The phases are
@@ -26,7 +26,7 @@ vivarium reads it back. Read them there rather than running it
 again:
 
 ```sh
-a=$(nix eval --raw --file . tests.guest.attempt)
+a=$(nix eval --raw --file . internal.tests.guest.attempt)
 jq -r '.phases[] | "\(.name)\t\(.state)"' $a/phases.json
 jq -c 'select(.kind == "case" and .data.outcome == "failed") | .text' $a/events.jsonl
 ```

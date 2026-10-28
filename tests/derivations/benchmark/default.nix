@@ -7,7 +7,7 @@
 # work, one daemon against the other.
 #
 # Not a gate: a benchmark prints numbers and passes unless the run fails.
-# `nix run --file . tests.benchmark.driver -- --out <abs>`.
+# `nix run --file . internal.tests.benchmark.driver -- --out <abs>`.
 {
   pkgs,
   lib ? pkgs.lib,

@@ -1,6 +1,6 @@
 # pynixd as the Nix daemon of a machine, used the way people use one.
 #
-# `nix build --file . tests.daemon` boots three guests on one segment:
+# `nix build --file . internal.tests.daemon` boots three guests on one segment:
 #
 #   daemon   pynixd in `replace` mode, so it holds
 #            /nix/var/nix/daemon-socket/socket and nix-daemon sits behind it

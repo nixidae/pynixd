@@ -3,7 +3,7 @@
 # **Every tool it needs comes from this closure, and every path it needs is
 # written in at build time.** A person runs three commands and gets a result:
 #
-#     nix build --file . nixFunctionalTests.nix_2_34 --out-link result
+#     nix build --file . internal.nixFunctionalTests.nix_2_34 --out-link result
 #     ./result/bin/nanopynix-nixft-nix_2_34 all
 #
 # The name of the program holds the version, so two versions can be on one

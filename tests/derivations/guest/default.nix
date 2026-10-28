@@ -1,6 +1,6 @@
 # The suites, in a guest.
 #
-# `nix build --file . tests.guest` boots one NixOS guest per suite, runs
+# `nix build --file . internal.tests.guest` boots one NixOS guest per suite, runs
 # the suites at once as phases of their own, counts each guest's
 # processes before and after, and powers them off. Nothing of it survives
 # -- see tests/guest/leaks.py for why that is the point.

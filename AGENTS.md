@@ -45,7 +45,7 @@ Pynixd will adversise 1.38 support even if local_store is 1.35 and translate whe
 - **Validation**: before committing, the gates and the guest session:
 
       nix build --file . checks.format checks.lint checks.types --no-link
-      nix run --file . tests.guest.driver -- --out ./out
+      nix run --file . internal.tests.guest.driver -- --out ./out
 
   `tests.guest` runs the five suites (unit, protocol, parity, functional,
   differential) at once, each in a vivarium container guest: 115 s for the
@@ -54,7 +54,7 @@ Pynixd will adversise 1.38 support even if local_store is 1.35 and translate whe
   `-- --out ./out --only prepare --only unit`. Evidence is in `./out`:
   `junit.xml`, `events.jsonl`, and each suite's log under
   `artifacts/<suite>/`. Agents start it through the vivarium MCP (`start`
-  with `attr = "tests.guest"`) and watch the `monitor` command.
+  with `attr = "internal.tests.guest"`) and watch the `monitor` command.
 
   **Do not run the suites with host pytest** (`nix develop ... pytest`).
   It reads the host's config: measured on dynhetz, `use-cgroups` killed
@@ -62,7 +62,7 @@ Pynixd will adversise 1.38 support even if local_store is 1.35 and translate whe
   the wirelog tests waited out 30 s timeouts.
 
   The `checks.*` derivations are gates: non-mutating, and each fails the
-  build. `nix run --file . fix` is the rewriter — never a gate.
+  build. `nix run --file . internal.fix` is the rewriter — never a gate.
   - **Subagent validation**: the `checks.*` line only. Not the suites; that is
     overkill per file change.
 - **Type Safety**:

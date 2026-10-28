@@ -1,7 +1,7 @@
 # What an upgrade of pynixd does to work in flight, measured.
 #
 # docs/design/upgrade-handover.md cites the `[measure]` lines of this
-# session. `nix run --file . tests.handover.driver -- --out <abs>`.
+# session. `nix run --file . internal.tests.handover.driver -- --out <abs>`.
 #
 # The guest runs pynixd in `replace` mode beside small toy units
 # (`../../handover/toy.py`) that each prove one thing systemd or nix-daemon

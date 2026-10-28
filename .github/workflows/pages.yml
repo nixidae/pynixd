@@ -1,5 +1,5 @@
 # GENERATED FILE -- do not edit by hand.
-# Edit ci/workflows/pages.nix, then run: nix run --file . ci-workflow-update
+# Edit ci/workflows/pages.nix, then run: nix run --file . internal.ci-workflow-update
 
 jobs:
   docs-build:
@@ -30,7 +30,7 @@ jobs:
         name: lillecarl
         useDaemon: false
     - name: Build documentation
-      run: nix build --file . pynixd-docs --out-link result --print-build-logs --print-out-paths
+      run: nix build --file . docs.default --out-link result --print-build-logs --print-out-paths
     - name: Verify docs closure
       run: nix store verify --recursive --no-trust "$(readlink -f result)"
     - name: Prepare Pages artifact

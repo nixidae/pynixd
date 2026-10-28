@@ -316,7 +316,7 @@ let
     let
       header = ''
         # GENERATED FILE -- do not edit by hand.
-        # Edit ci/workflows/${name}.nix, then run: nix run --file . ci-workflow-update
+        # Edit ci/workflows/${name}.nix, then run: nix run --file . internal.ci-workflow-update
       '';
     in
     pkgs.runCommand "${name}.yml"
@@ -383,7 +383,7 @@ let
               if ! diff --unified committed.json rendered.json; then
                 echo >&2
                 echo ".github/workflows/${name}.yml and ci/workflows/${name}.nix disagree." >&2
-                echo "Run: nix run --file . ci-workflow-update" >&2
+                echo "Run: nix run --file . internal.ci-workflow-update" >&2
                 exit 1
               fi
             '') ciWorkflows
@@ -407,7 +407,7 @@ let
     };
 
     # The performance benchmarks, in a guest. Not a gate: they print numbers
-    # and pass unless the run fails. `nix run --file . tests.benchmark.driver
+    # and pass unless the run fails. `nix run --file . internal.tests.benchmark.driver
     # -- --out <abs>`.
     benchmark = pkgs.callPackage ./tests/derivations/benchmark {
       inherit package;
@@ -429,7 +429,7 @@ let
     };
 
     # The Nix functional suite in a UML guest, where cleanup is a poweroff
-    # rather than a promise. `nix run --file . tests.guest-nixft.driver
+    # rather than a promise. `nix run --file . internal.tests.guest-nixft.driver
     # -- --out <abs>`. Issue #45.
     guest-nixft = pkgs.callPackage ./tests/derivations/guest-nixft {
       pynixd-lib = library;
@@ -474,31 +474,7 @@ let
   };
 in
 
-# The shape before nixidae/nixidae#1103. croshome, solid-kubernetes, the CI
-# workflows and nix/members.nix read these names.
-package
-// {
-  inherit
-    package
-    library
-    agent
-    daemon-protocol
-    specifictest
-    fix
-    checks
-    nixFunctionalTests
-    ciWorkflows
-    ciTestWorkflows
-    ciWorkflowFiles
-    ci-workflow-update
-    pkgs
-    pynixd-docs
-    shell
-    tests
-    ;
-  nixosModule = import ./nix/nixos/default.nix;
-}
-// {
+{
   packages = {
     default = package;
     pynixd = package;

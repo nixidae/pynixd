@@ -9,7 +9,7 @@ nix-daemon does. None of them is pynixd.
 Run it:
 
 ```sh
-nix build --file . tests.handover.driver   # then run its bin/ with --out <abs dir>
+nix build --file . internal.tests.handover.driver   # then run its bin/ with --out <abs dir>
 ```
 
 Each fact below is marked **measured** (a `[measure]` line of that session)

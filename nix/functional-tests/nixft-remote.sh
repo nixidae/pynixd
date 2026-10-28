@@ -171,7 +171,7 @@ seed_the_fetch_cache
 # next step needs.
 say "building the runner for $NIX_VERSION from $SRC"
 if ! runner=$(
-    nix build --file "$SRC" "nixFunctionalTests.$NIX_VERSION" \
+    nix build --file "$SRC" "internal.nixFunctionalTests.$NIX_VERSION" \
     --no-link --print-out-paths 2>&1 | tail -1); then
     say "the runner did not build"
     echo "NIXFT-DONE 3"

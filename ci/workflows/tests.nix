@@ -82,7 +82,7 @@ ghalib.evalWorkflow {
       steps = [
         {
           name = "Build the suite for nix 2.34";
-          run = "nix build --file . nixFunctionalTests.nix_2_34 --out-link nixft --print-build-logs";
+          run = "nix build --file . internal.nixFunctionalTests.nix_2_34 --out-link nixft --print-build-logs";
         }
         {
           name = "Both arms, and the comparison";

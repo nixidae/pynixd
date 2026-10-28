@@ -1,6 +1,6 @@
 # A running NixOS machine moves to pynixd and back, by `switch-to-configuration`.
 #
-# `nix build --file . tests.switch` boots one guest with nix-daemon alone and
+# `nix build --file . internal.tests.switch` boots one guest with nix-daemon alone and
 # switches it through the configurations below, the way an operator does
 # with `nixos-rebuild switch`. After each switch the same checks run: the
 # switch exited 0, no unit failed, the right process holds each socket, and

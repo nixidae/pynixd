@@ -2,7 +2,7 @@
 #
 # `.github/workflows/pages.yml` is rendered from this file. Edit this one;
 # `checks.ciWorkflow` compares the render against what is committed and fails
-# when they differ. `nix run --file . ci-workflow-update` writes the new
+# when they differ. `nix run --file . internal.ci-workflow-update` writes the new
 # render.
 #
 # It is the one workflow of pynixd's own repository, which josh exports from
@@ -40,7 +40,7 @@ ghalib.evalWorkflow {
       steps = [
         {
           name = "Build documentation";
-          run = "nix build --file . pynixd-docs --out-link result --print-build-logs --print-out-paths";
+          run = "nix build --file . docs.default --out-link result --print-build-logs --print-out-paths";
         }
         {
           name = "Verify docs closure";
