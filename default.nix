@@ -98,7 +98,7 @@ let
     let
       own = _name: mkEditableProject root;
     in
-    nanopynix.pythonSetWith {
+    nanopynix.lib.pythonSetWith {
       projectRoots = [
         ./.
         ./nix-daemon-protocol
@@ -137,7 +137,7 @@ let
         );
       };
       root = root + lib.removePrefix (toString ./.) (toString dir);
-      inherit (nanopynix.pythonSet) python;
+      inherit (nanopynix.lib.pythonSet) python;
     };
 
   mkProject =
@@ -147,7 +147,7 @@ let
         src = projectRoot;
         name = "${name}-source";
       };
-      inherit (nanopynix.pythonSet) python;
+      inherit (nanopynix.lib.pythonSet) python;
     };
 
   /*
