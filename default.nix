@@ -508,6 +508,7 @@ package
   };
   lib = { };
   nixosModules.default = ./nix/nixos;
+  easykubenixModules = { };
   inherit checks;
   docs.default = pynixd-docs;
   inherit shell ciTestWorkflows;
