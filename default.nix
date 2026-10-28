@@ -11,7 +11,7 @@
 }:
 let
   inherit (pkgs) lib;
-  inherit (import sources.nixvenv { inherit pkgs sources; }) nixvenv ps;
+  inherit ((import sources.nixvenv { inherit pkgs sources; }).lib) nixvenv ps;
 
   daemon-protocol = pkgs.python3Packages.callPackage ./nix/nix-daemon-protocol.nix {
     pythonBuilder = pkgs.python3Packages.buildPythonPackage;
