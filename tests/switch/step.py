@@ -10,13 +10,26 @@ check asks the machine who holds what.
 from __future__ import annotations
 
 import shlex
+from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
 
 from daemon_helpers import as_tester, instantiate, store_path
 from vivarium_runner import Machine, Machines
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
 DEFAULT = "/nix/var/nix/daemon-socket/socket"
 UPSTREAM = "/nix/var/nix/daemon-socket/upstream"
 BESIDE = "/run/pynixd/pynixd.sock"
+
+
+class Step(TypedDict):
+    """One entry of the spec's `steps`: the switch target, or `False` for the booted system."""
+
+    name: str
+    mode: str
+    to: str | Literal[False]
+    nix: NotRequired[str]
 
 
 async def holder(vm: Machine, socket: str) -> str:
@@ -27,7 +40,7 @@ def is_pynixd(line: str) -> bool:
     return "pynixd" in line or "python" in line
 
 
-async def build(vm: Machine, settings: dict, job: str, store: str | None = None) -> str:
+async def build(vm: Machine, settings: Mapping[str, str], job: str, store: str | None = None) -> str:
     drv = await instantiate(vm, settings, job)
     where = f" --store {shlex.quote(store)}" if store else ""
     return store_path(await as_tester(vm, f"nix-store{where} --realise {drv}"))
@@ -37,7 +50,8 @@ async def test(vms: Machines) -> None:
     vm = vms.machine
     settings = vms.settings
     name = vms.phase or ""
-    step = next(each for each in settings["steps"] if each["name"] == name)
+    steps: list[Step] = settings["steps"]
+    step = next(each for each in steps if each["name"] == name)
     mode = step["mode"]
     problems: list[str] = []
 
@@ -68,12 +82,12 @@ async def test(vms: Machines) -> None:
         if upstream:
             problems.append(f"something still listens on {UPSTREAM}: {upstream!r}")
 
-    if step.get("nix"):
+    if nix := step.get("nix"):
         # The daemon that answered the build above, not the one configured.
         pid = (await vm.succeed("systemctl show -P MainPID nix-daemon-upstream.service")).strip()
         running = await vm.succeed(f"$(readlink /proc/{pid}/exe) --version")
-        if step["nix"] not in running:
-            problems.append(f"nix-daemon-upstream runs {running.strip()!r}, not {step['nix']}")
+        if nix not in running:
+            problems.append(f"nix-daemon-upstream runs {running.strip()!r}, not {nix}")
         else:
             print(f"[test] nix-daemon-upstream runs {running.strip()}")
 

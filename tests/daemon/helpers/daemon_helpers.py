@@ -10,13 +10,20 @@ from __future__ import annotations
 import json
 import re
 import shlex
+from typing import TYPE_CHECKING
 
 from vivarium_runner import Machine
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 SERVERS = ("daemon", "control")
 
 VOLATILE = ("registrationTime",)
 """Fields that differ between two correct builds: when each was registered."""
+
+type PathInfo = dict[str, object]
+"""One `nix path-info --json` entry. Its keys are Nix's, and they vary by version."""
 
 
 async def as_tester(vm: Machine, command: str, *, timeout: float = 300) -> str:
@@ -58,7 +65,7 @@ def store_path(output: str) -> str:
     return paths[-1]
 
 
-async def instantiate(vm: Machine, settings: dict, job: str) -> str:
+async def instantiate(vm: Machine, settings: Mapping[str, str], job: str) -> str:
     """The `.drv` of one piece of work, written into `vm`'s store by its daemon.
 
     `builtins.storePath` gives the builder its context, so busybox is an
@@ -75,19 +82,27 @@ async def instantiate(vm: Machine, settings: dict, job: str) -> str:
     return store_path(await as_tester(vm, f"nix-instantiate --expr {shlex.quote(expression)}"))
 
 
-async def path_info(vm: Machine, path: str, *, store: str | None = None) -> dict:
+async def path_info(vm: Machine, path: str, *, store: str | None = None) -> PathInfo:
     """`nix path-info --json` for one path, without the fields that differ by time.
 
     Nix has written this as an object keyed by path and as a list, so both
     are accepted.
     """
     where = f"--store {shlex.quote(store)} " if store else ""
-    raw = json.loads(await as_tester(vm, f"nix path-info --json {where}{shlex.quote(path)}"))
-    entry = next(iter(raw.values())) if isinstance(raw, dict) else raw[0]
+    raw: object = json.loads(await as_tester(vm, f"nix path-info --json {where}{shlex.quote(path)}"))
+    entry: object
+    if isinstance(raw, dict):
+        entry = next(iter(raw.values()))
+    elif isinstance(raw, list):
+        entry = raw[0]
+    else:
+        raise AssertionError(f"nix path-info --json for {path} is neither an object nor a list: {raw!r}")
+    if not isinstance(entry, dict):
+        raise AssertionError(f"nix path-info --json entry for {path} is not an object: {entry!r}")
     return {key: value for key, value in entry.items() if key not in VOLATILE}
 
 
-def differences(daemon: dict, control: dict) -> dict[str, tuple[object, object]]:
+def differences(daemon: PathInfo, control: PathInfo) -> dict[str, tuple[object, object]]:
     return {
         key: (daemon.get(key), control.get(key))
         for key in sorted(set(daemon) | set(control))

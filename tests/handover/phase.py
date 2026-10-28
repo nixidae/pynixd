@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import shlex
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import NamedTuple
 
 import anyio
@@ -24,7 +24,7 @@ def measure(*parts: object) -> None:
     print("[measure] " + " ".join(str(part) for part in parts), flush=True)
 
 
-async def long_drv(vm: Machine, settings: dict, job: str, seconds: int = BUILD_SECONDS) -> tuple[str, str]:
+async def long_drv(vm: Machine, settings: Mapping[str, str], job: str, seconds: int = BUILD_SECONDS) -> tuple[str, str]:
     """A derivation that ticks once a second for `seconds`: its `.drv` and its output."""
     script = (
         f"i=0; while [ $i -lt {seconds} ]; do echo tick {job} $i;"
@@ -110,7 +110,7 @@ async def main_pid(vm: Machine, unit: str) -> str:
     return (await vm.succeed(f"systemctl show -P MainPID {unit}")).strip()
 
 
-async def restart(vm: Machine, settings: dict) -> None:
+async def restart(vm: Machine, settings: Mapping[str, str]) -> None:
     """M0: `systemctl restart pynixd` with a user's build in flight."""
     drv, out = await long_drv(vm, settings, "restart")
     await vm.succeed("touch /run/pynixd/marker")
@@ -141,7 +141,7 @@ async def restart(vm: Machine, settings: dict) -> None:
     measure("restart: upstream journal:", " | ".join(journal.splitlines()[-5:]))
 
 
-async def hangup(vm: Machine, settings: dict) -> None:
+async def hangup(vm: Machine, settings: Mapping[str, str]) -> None:
     """M3: nix-daemon and a client that closes, or keeps, its connection mid-build."""
     drv, out = await long_drv(vm, settings, "close")
     await background(vm, "toy-close", f"{TOY} direct --drv {drv} --then close --out /var/lib/toy/close.result")
@@ -165,7 +165,7 @@ async def hangup(vm: Machine, settings: dict) -> None:
     await chatty(vm, settings)
 
 
-async def chatty(vm: Machine, settings: dict) -> None:
+async def chatty(vm: Machine, settings: Mapping[str, str]) -> None:
     """A build that logs fast while nobody reads its connection: stalled or killed?"""
     script = (
         "i=0; while [ $i -lt 200000 ]; do echo chatty-line-padding-padding-padding-padding $i;"
@@ -198,7 +198,7 @@ class Parked(NamedTuple):
     out: str
 
 
-async def park(vm: Machine, settings: dict, unit: str, job: str) -> Parked:
+async def park(vm: Machine, settings: Mapping[str, str], unit: str, job: str) -> Parked:
     """Start `unit`, a toy that parks a building connection in its fd store."""
     drv, out = await long_drv(vm, settings, job)
     # A unit left running by an earlier phase would make `start` a no-op.
@@ -220,7 +220,7 @@ async def parked_outcome(vm: Machine, parked: Parked, label: str) -> None:
     measure(f"{label} {parked.unit}: result: {result}; output valid:", await valid(vm, parked.out))
 
 
-async def fdstore(vm: Machine, settings: dict) -> None:
+async def fdstore(vm: Machine, settings: Mapping[str, str]) -> None:
     """M4: the fd store across `systemctl restart`, and across stop then start."""
     parked = await park(vm, settings, "toy-fdstore", "fdstore-restart")
     await vm.succeed("systemctl restart toy-fdstore.service")
@@ -271,7 +271,7 @@ async def pid_alive(vm: Machine, pid: str) -> bool:
     return rc == 0
 
 
-async def overlap_start(vm: Machine, settings: dict, unit: str, job: str) -> str:
+async def overlap_start(vm: Machine, settings: Mapping[str, str], unit: str, job: str) -> str:
     """Start the overlap toy and a client whose request is in flight in it. Answers the main pid."""
     drv, _ = await long_drv(vm, settings, job)
     await vm.succeed(f"systemctl stop {unit}.service; systemctl start {unit}.service")
@@ -285,7 +285,7 @@ async def overlap_start(vm: Machine, settings: dict, unit: str, job: str) -> str
     return pid
 
 
-async def overlap_outcome(vm: Machine, settings: dict, unit: str, before: str, label: str) -> None:
+async def overlap_outcome(vm: Machine, settings: Mapping[str, str], unit: str, before: str, label: str) -> None:
     after = await main_pid(vm, f"{unit}.service")
     state = await vm.unit_state(f"{unit}.service")
     measure(f"{label} {unit}: main pid {before} -> {after}; old alive: {await pid_alive(vm, before)}; unit {state}")
@@ -302,7 +302,7 @@ async def overlap_outcome(vm: Machine, settings: dict, unit: str, before: str, l
     measure(f"{label} {unit}: a new client is answered by: {await read(vm, f'/var/lib/toy/after-{unit}.result')}")
 
 
-async def switch(vm: Machine, settings: dict, to: str, label: str) -> None:
+async def switch(vm: Machine, settings: Mapping[str, str], to: str, label: str) -> None:
     """M2: a switch-to-configuration with every kind of work in flight."""
     drv, out = await long_drv(vm, settings, f"client-{label}")
     await client_build(vm, f"client-{label}", drv)
@@ -326,8 +326,8 @@ async def switch(vm: Machine, settings: dict, to: str, label: str) -> None:
             measure(f"{label}: s-t-c said: {line}")
     await anyio.sleep(1)
     await probe_stop(vm, label, since)
-    rc, tail = await client_outcome(vm, f"client-{label}", 10)
-    measure(f"{label}: pynixd client rc {rc}: {tail}")
+    client_rc, tail = await client_outcome(vm, f"client-{label}", 10)
+    measure(f"{label}: pynixd client rc {client_rc}: {tail}")
     measure(f"{label}: pynixd client's builder alive:", await builder_alive(vm, f"client-{label}"))
     for each in parked:
         await parked_outcome(vm, each, f"{label}:")
@@ -338,7 +338,7 @@ async def switch(vm: Machine, settings: dict, to: str, label: str) -> None:
     measure(f"{label}: pynixd client's output valid:", await valid(vm, out))
 
 
-async def overlap_restart(vm: Machine, settings: dict) -> None:
+async def overlap_restart(vm: Machine, settings: Mapping[str, str]) -> None:
     """The next restart while an old main process still drains."""
     unit = "toy-overlap"
     old = await overlap_start(vm, settings, unit, "overlap-restart")
@@ -355,7 +355,7 @@ async def overlap_restart(vm: Machine, settings: dict) -> None:
     await vm.execute(f"systemctl stop {unit}.service")
 
 
-async def overlap_crash(vm: Machine, settings: dict) -> None:
+async def overlap_crash(vm: Machine, settings: Mapping[str, str]) -> None:
     """A main handed over by MAINPID= dies uncommanded: does systemd notice?
 
     systemd logs "Supervising process ... which is not our child. We'll most

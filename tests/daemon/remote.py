@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 
-from daemon_helpers import SERVERS, as_tester, differences, instantiate, path_info, store_path
+from daemon_helpers import SERVERS, PathInfo, as_tester, differences, instantiate, path_info, store_path
 from vivarium_runner import Machines
 
 
@@ -24,7 +24,7 @@ async def test(vms: Machines) -> None:
     # derivation to the far store before building it there.
     store_drv = await instantiate(client, vms.settings, "store")
     builder_drv = await instantiate(client, vms.settings, "builder")
-    answers: dict[str, dict] = {"store": {}, "builder": {}}
+    answers: dict[str, dict[str, PathInfo]] = {"store": {}, "builder": {}}
 
     for name in SERVERS:
         out = store_path(

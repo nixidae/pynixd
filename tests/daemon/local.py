@@ -8,13 +8,21 @@ serves it through pynixd: `prepare` proved pynixd holds the socket, and
 from __future__ import annotations
 
 import json
+from typing import TypedDict
 
-from daemon_helpers import SERVERS, as_tester, differences, instantiate, path_info, store_path
+from daemon_helpers import SERVERS, PathInfo, as_tester, differences, instantiate, path_info, store_path
 from vivarium_runner import Machines
 
 
+class Answer(TypedDict):
+    drv: str
+    out: str
+    content: str
+    info: PathInfo
+
+
 async def test(vms: Machines) -> None:
-    answers = {}
+    answers: dict[str, Answer] = {}
     for name in SERVERS:
         vm = vms[name]
         drv = await instantiate(vm, vms.settings, "local")

@@ -14,8 +14,12 @@ exactly then.
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING
 
 from vivarium_runner import Machines
+
+if TYPE_CHECKING:
+    from vivarium_runner.agent import ProcessInfo
 
 ALLOWED_LEAKS = 0
 """The one leak this check has found belongs to `tests/parity`: a
@@ -33,11 +37,12 @@ before, 1 after` every time and none of it is a leak."""
 
 
 async def test(vms: Machines) -> None:
-    census = vms.shared.get("before")
+    # `shared` holds Any: the census is `prepare`'s, and `prepare` is the one that writes it.
+    census: dict[str, list[ProcessInfo]] | None = vms.shared.get("before")
     if census is None:
         raise RuntimeError("no census from `prepare`, so there is nothing to compare against")
 
-    leaked: list[dict] = []
+    leaked: list[ProcessInfo] = []
     for name, vm in vms.items():
         before = census[name]
         after = await vm.processes()
@@ -69,5 +74,5 @@ async def test(vms: Machines) -> None:
     )
 
 
-def _is_a_leak(process: dict) -> bool:
+def _is_a_leak(process: ProcessInfo) -> bool:
     return any(marker in process["cmdline"] or marker in process["name"] for marker in LEAK_MARKERS)

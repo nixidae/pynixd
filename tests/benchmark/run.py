@@ -12,8 +12,12 @@ from __future__ import annotations
 import shlex
 import statistics
 import time
+from typing import TYPE_CHECKING
 
 from vivarium_runner import Machine, Machines
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 TIMEOUT = 1800
 """Seconds for one phase."""
@@ -238,7 +242,7 @@ async def _profile(vms: Machines) -> None:
 
 async def _one_build(
     vm: Machine,
-    settings: dict,
+    settings: Mapping[str, str],
     expression: str,
     stamp: str,
     label: str,
@@ -342,7 +346,7 @@ async def _system(vms: Machines) -> None:
 
     cold_times: dict[str, float] = {}
     hot_times: dict[str, list[float]] = {label: [] for label in roles}
-    failed = []
+    failed: list[str] = []
     # One stamp for the whole phase. It is fresh to the store, so each daemon's
     # first build really builds, and it is the same for that daemon's later
     # builds, so those really are hot.
@@ -473,7 +477,7 @@ async def _growth(vms: Machines) -> None:
 
 async def _goal_path(
     vm: Machine,
-    settings: dict,
+    settings: Mapping[str, str],
     expression: str,
     stamp: str,
     label: str,
@@ -496,7 +500,7 @@ async def _goal_path(
 
 async def _one_storm(
     vm: Machine,
-    settings: dict,
+    settings: Mapping[str, str],
     expression: str,
     stamp: str,
     goal: str,
