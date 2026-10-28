@@ -442,9 +442,11 @@ class DaemonStore(Store):
 
     def on_pressure_sample(self, health: SystemHealth) -> None:
         """Move the build limit for one sample of this store's host, and pass the sample on."""
-        if self.build_limit.observe(health, self.build_pool.active_connections, time.monotonic()):
-            if self.on_capacity is not None:
-                self.on_capacity()
+        if (
+            self.build_limit.observe(health, self.build_pool.active_connections, time.monotonic())
+            and self.on_capacity is not None
+        ):
+            self.on_capacity()
         for listener in tuple(self.sample_listeners):
             listener(health)
 

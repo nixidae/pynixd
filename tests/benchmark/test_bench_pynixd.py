@@ -128,7 +128,7 @@ async def test_bench_local_socket_overhead():
 
     # 2. Native overhead
     start = time.perf_counter()
-    rc, _, _, _ = await run_subproc([str(CLIENT_BIN), "path-info", "--all"])
+    _rc, _, _, _ = await run_subproc([str(CLIENT_BIN), "path-info", "--all"])
     native_elapsed = time.perf_counter() - start
 
     log.info(

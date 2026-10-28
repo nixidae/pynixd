@@ -33,12 +33,12 @@ HTTP_AUTH_HEADER = "Basic " + base64.b64encode(f"{SESSION_HTTP_USER}:{SESSION_HT
 
 async def get_hello_path() -> StorePath:
     """Build hello from <nixpkgs> and return its store path."""
-    rc, stdout, stderr, _ = await run_subproc(
+    rc, stdout, _stderr, _ = await run_subproc(
         [str(CLIENT_BIN), "path-info", *HELLO],
     )
     if rc != 0:
         await run_subproc([str(CLIENT_BIN), "build", *HELLO])
-        rc, stdout, stderr, _ = await run_subproc(
+        rc, stdout, _stderr, _ = await run_subproc(
             [str(CLIENT_BIN), "path-info", *HELLO],
         )
     return StorePath(stdout.strip())
@@ -154,7 +154,7 @@ async def test_nix_copy_to_http(
         auth_url,
         str(path),
     ]
-    rc, stdout, stderr, _ = await run_subproc(cmd)
+    rc, _stdout, stderr, _ = await run_subproc(cmd)
     assert rc == 0, f"nix copy failed:\n{stderr}"
 
     # 4. Verify it now exists in the local store (HTTP uploads go to local_store)

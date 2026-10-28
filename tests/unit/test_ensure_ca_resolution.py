@@ -430,5 +430,5 @@ def test_a_missing_dynamic_output_refuses_resolution() -> None:
     consumer = _dependent()
     consumer.input_drvs = {}
     consumer.dynamic_input_drvs = {StorePath(ROOT_DRV): ChildMapNode(children={"out": ChildMapNode(outputs=["out"])})}
-    with pytest.raises(ValueError, match="No resolved path for .*!out!out"):
+    with pytest.raises(ValueError, match=r"No resolved path for .*!out!out"):
         resolve_dynamic_derivation(consumer, StorePath(DEP_DRV), {})

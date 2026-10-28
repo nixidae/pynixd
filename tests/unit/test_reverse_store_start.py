@@ -8,7 +8,7 @@ nixidae/nixidae#1065.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -20,7 +20,7 @@ from pynixd.store.reverse import ReverseStore
 
 
 class _CountedMonitor:
-    instances: list[_CountedMonitor] = []
+    instances: ClassVar[list[_CountedMonitor]] = []
 
     def __init__(self, *_args: Any) -> None:
         self.running = False

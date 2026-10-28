@@ -79,8 +79,16 @@ async def _closure(store_path: Path, path: str) -> set[str]:
 
 async def _push(lab: _Lab, paths: set[str]) -> None:
     await run_subproc(
-        [str(NIX_BIN), "copy", "--no-check-sigs", "--from", str(lab.store_path), "--to", f"file://{lab.cache_dir}"]
-        + sorted(paths),
+        [
+            str(NIX_BIN),
+            "copy",
+            "--no-check-sigs",
+            "--from",
+            str(lab.store_path),
+            "--to",
+            f"file://{lab.cache_dir}",
+            *sorted(paths),
+        ],
     )
 
 

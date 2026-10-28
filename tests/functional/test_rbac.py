@@ -30,7 +30,7 @@ async def test_rbac_ssh_admin_vs_user(pynixd_server: Server) -> None:
     """
     uri_user = ssh_user_uri(pynixd_server)
     cmd_user = [str(CLIENT_BIN), "store", "gc", "--store", uri_user]
-    rc_user, stdout_user, stderr_user, stdboth_user = await run_subproc(
+    rc_user, _stdout_user, _stderr_user, stdboth_user = await run_subproc(
         cmd_user,
         expected_retcode=None,
     )
@@ -39,7 +39,7 @@ async def test_rbac_ssh_admin_vs_user(pynixd_server: Server) -> None:
 
     uri_admin = ssh_admin_uri(pynixd_server)
     cmd_admin = [str(CLIENT_BIN), "store", "gc", "--store", uri_admin]
-    rc_admin, stdout_admin, stderr_admin, stdboth_admin = await run_subproc(cmd_admin)
+    rc_admin, _stdout_admin, _stderr_admin, _stdboth_admin = await run_subproc(cmd_admin)
     assert rc_admin == 0
 
 
@@ -51,5 +51,5 @@ async def test_rbac_unix_implicit_admin(pynixd_server: Server) -> None:
     """
     uri = unix_session_uri(pynixd_server)
     cmd = [str(CLIENT_BIN), "store", "gc", "--store", uri]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    rc, _stdout, _stderr, _stdboth = await run_subproc(cmd)
     assert rc == 0

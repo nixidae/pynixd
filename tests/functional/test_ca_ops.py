@@ -71,7 +71,7 @@ async def test_ca_simple_build_root_store(
             "--no-link",
             "--print-out-paths",
         ]
-        rc, stdout, stderr, stdboth = await run_subproc(cmd, nix_config=CA_NIX_CONFIG)
+        rc, stdout, _stderr, stdboth = await run_subproc(cmd, nix_config=CA_NIX_CONFIG)
         assert rc == 0, f"CA simple build failed:\n{stdboth}"
         out_path = stdout.strip()
         assert out_path.startswith("/nix/store/"), f"Unexpected output path: {out_path}"
@@ -107,7 +107,7 @@ async def test_ca_multi_output_build_root_store(
             "--no-link",
             "--print-out-paths",
         ]
-        rc, stdout, stderr, stdboth = await run_subproc(cmd, nix_config=CA_NIX_CONFIG)
+        rc, stdout, _stderr, stdboth = await run_subproc(cmd, nix_config=CA_NIX_CONFIG)
         assert rc == 0, f"CA multi-output build failed:\n{stdboth}"
         paths = stdout.strip().splitlines()
         assert len(paths) == 2, f"Expected 2 output paths, got {len(paths)}: {paths}"
@@ -145,7 +145,7 @@ async def test_ca_depends_on_ca_root_store(
             "--no-link",
             "--print-out-paths",
         ]
-        rc, stdout, stderr, stdboth = await run_subproc(cmd, nix_config=CA_NIX_CONFIG)
+        rc, stdout, _stderr, stdboth = await run_subproc(cmd, nix_config=CA_NIX_CONFIG)
         assert rc == 0, f"CA depends-on-CA build failed:\n{stdboth}"
         out_path = stdout.strip()
         assert out_path.startswith("/nix/store/"), f"Unexpected output path: {out_path}"
@@ -181,7 +181,7 @@ async def test_non_ca_depends_on_ca_root_store(
             "--no-link",
             "--print-out-paths",
         ]
-        rc, stdout, stderr, stdboth = await run_subproc(cmd, nix_config=CA_NIX_CONFIG)
+        rc, stdout, _stderr, stdboth = await run_subproc(cmd, nix_config=CA_NIX_CONFIG)
         assert rc == 0, f"Non-CA depends-on-CA build failed:\n{stdboth}"
         out_path = stdout.strip()
         assert out_path.startswith("/nix/store/"), f"Unexpected output path: {out_path}"
@@ -201,7 +201,7 @@ async def test_ca_simple_via_pynixd(profiler: pyinstrument.Profiler, ca_env) -> 
     - QueryMissing: Queries missing paths
     - QueryValidPaths: Queries valid paths
     """
-    server, uri = ca_env
+    _server, uri = ca_env
 
     cmd = [
         str(CLIENT_BIN),
@@ -240,7 +240,7 @@ async def test_ca_multi_output_via_pynixd(
     - QueryMissing: Queries missing paths
     - QueryValidPaths: Queries valid paths
     """
-    server, uri = ca_env
+    _server, uri = ca_env
 
     cmd = [
         str(CLIENT_BIN),
@@ -281,7 +281,7 @@ async def test_ca_depends_on_ca_via_pynixd(
     - QueryMissing: Queries missing paths
     - QueryValidPaths: Queries valid paths
     """
-    server, uri = ca_env
+    _server, uri = ca_env
 
     cmd = [
         str(CLIENT_BIN),
@@ -321,7 +321,7 @@ async def test_non_ca_depends_on_ca_via_pynixd(
     - QueryMissing: Queries missing paths
     - QueryValidPaths: Queries valid paths
     """
-    server, uri = ca_env
+    _server, uri = ca_env
 
     cmd = [
         str(CLIENT_BIN),
@@ -366,7 +366,7 @@ async def test_ca_query_derivation_output_map_via_pynixd(
     - QueryPathInfo: Queries path info
     - QueryValidPaths: Queries valid paths
     """
-    server, uri = ca_env
+    _server, uri = ca_env
 
     # Build the CA derivation first
     build_cmd = [
@@ -383,7 +383,7 @@ async def test_ca_query_derivation_output_map_via_pynixd(
         "--no-link",
         "--print-out-paths",
     ]
-    rc, stdout, stderr, stdboth = await run_subproc(
+    rc, _stdout, _stderr, stdboth = await run_subproc(
         build_cmd,
         nix_config=CA_NIX_CONFIG,
         expected_retcode=0,
@@ -510,7 +510,7 @@ async def test_dynamic_drv_trampoline(profiler: pyinstrument.Profiler, dyn_env) 
     - QueryMissing: Queries missing paths
     - QueryPathInfo: Queries path info
     """
-    server, uri = dyn_env
+    _server, uri = dyn_env
 
     # First, get producingDrv's .drv path
     eval_cmd = [
@@ -545,7 +545,7 @@ async def test_dynamic_drv_trampoline(profiler: pyinstrument.Profiler, dyn_env) 
         "--no-link",
         "--print-out-paths",
     ]
-    rc, stdout, stderr, stdboth = await run_subproc(
+    rc, stdout, _stderr, stdboth = await run_subproc(
         build_cmd,
         nix_config=DYN_NIX_CONFIG,
         expected_retcode=0,
@@ -594,7 +594,7 @@ async def test_dynamic_drv_producing_via_pynixd(
     - QueryMissing: Queries missing paths
     - QueryPathInfo: Queries path info
     """
-    server, uri = dyn_env
+    _server, uri = dyn_env
 
     # Build producingDrv + hello together (both needed for producingDrv's input_srcs)
     build_cmd = [
@@ -612,7 +612,7 @@ async def test_dynamic_drv_producing_via_pynixd(
         "--no-link",
         "--print-out-paths",
     ]
-    rc, stdout, stderr, stdboth = await run_subproc(
+    rc, stdout, _stderr, stdboth = await run_subproc(
         build_cmd,
         nix_config=DYN_NIX_CONFIG,
         expected_retcode=0,
@@ -691,7 +691,7 @@ async def test_text_hashed_ca_build_root_store(
             "--no-link",
             "--print-out-paths",
         ]
-        rc, stdout, stderr, stdboth = await run_subproc(cmd, nix_config=CA_NIX_CONFIG)
+        rc, stdout, _stderr, stdboth = await run_subproc(cmd, nix_config=CA_NIX_CONFIG)
         assert rc == 0, f"Text-hashed CA build failed:\n{stdboth}"
         out_path = stdout.strip()
         assert out_path.startswith("/nix/store/"), f"Unexpected output path: {out_path}"
@@ -723,7 +723,7 @@ async def test_text_hashed_ca_build_via_pynixd(
     - QueryMissing: Queries missing paths
     - QueryPathInfo: Queries path info
     """
-    server, uri = ca_env
+    _server, uri = ca_env
 
     build_cmd = [
         str(CLIENT_BIN),
@@ -740,7 +740,7 @@ async def test_text_hashed_ca_build_via_pynixd(
         "--no-link",
         "--print-out-paths",
     ]
-    rc, stdout, stderr, stdboth = await run_subproc(
+    rc, stdout, _stderr, stdboth = await run_subproc(
         build_cmd,
         nix_config=CA_NIX_CONFIG,
         expected_retcode=0,
@@ -801,7 +801,7 @@ async def test_dynamic_drv_wrapper_via_pynixd(
     - Derivation resolution for DownstreamPlaceholder replacement
     - AddToStore: Resolved wrapper .drv written to both stores
     """
-    server, uri = dyn_env
+    _server, uri = dyn_env
     build_cmd = [
         str(CLIENT_BIN),
         "build",
@@ -817,7 +817,7 @@ async def test_dynamic_drv_wrapper_via_pynixd(
         "--no-link",
         "--print-out-paths",
     ]
-    rc, stdout, stderr, stdboth = await run_subproc(
+    rc, stdout, _stderr, stdboth = await run_subproc(
         build_cmd,
         nix_config=DYN_NIX_CONFIG,
         expected_retcode=0,
@@ -875,7 +875,7 @@ async def test_deep_dynamic_drv_chain_via_pynixd(
     so a passing build proves recursive resolution, unparsing and rebuilding
     at depth. Issue #10.
     """
-    server, uri = dyn_env
+    _server, uri = dyn_env
     build_cmd = [
         str(CLIENT_BIN),
         "build",

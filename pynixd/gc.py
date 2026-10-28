@@ -369,7 +369,7 @@ class Collector:
             # must not move what it measures. `mark` is a LocalDBStore
             # capability, not a Store one, so the attribute reads through
             # `getattr` like the other local-only answers here.
-            execute = getattr(local, "execute")
+            execute = getattr(local, "execute")  # noqa: B009 -- `mark` is LocalDBStore's, not Store's
             resp = await execute(QueryPathInfosRequest(paths=paths), mark=False)
         except Exception:
             log.warning("gc_weigh_infos_failed", exc_info=True)
@@ -470,7 +470,7 @@ class Collector:
         unheld = all_paths - held
         # Unmarked, like the weighing: these are candidates under judgment,
         # and naming them must not freshen them.
-        execute = getattr(local, "execute")
+        execute = getattr(local, "execute")  # noqa: B009 -- `mark` is LocalDBStore's, not Store's
         keep: set[StorePath] = (await execute(QueryClosureRequest(paths=unheld), mark=False)).paths
         if not unheld <= keep:
             # `DaemonStore.query_closure` answers an empty set for a store that
@@ -593,7 +593,7 @@ class Collector:
         if not batch:
             return []
         try:
-            execute = getattr(local, "execute")
+            execute = getattr(local, "execute")  # noqa: B009 -- `mark` is LocalDBStore's, not Store's
             response = await execute(QueryPathInfosRequest(paths={StorePath(path) for path in batch}), mark=False)
         except Exception:
             log.warning("gc_delete_order_failed", exc_info=True)
@@ -678,7 +678,7 @@ class Collector:
                 break
             if lap == 2:
                 log.info("gc_delete_retry", paths=len(pending))
-            queue = deque(list(group) for group in batched(pending, _DELETE_BATCH_SIZE))
+            queue = deque(list(group) for group in batched(pending, _DELETE_BATCH_SIZE, strict=False))
             retry: list[str] = []
             while queue:
                 async with local.transfer_conn() as conn:
@@ -734,7 +734,7 @@ class Collector:
                         await say(f"deleted {len(got)} paths, {len(deleted)} total")
             pending = [path for path in retry if path not in deleted]
 
-        for group in batched(sorted(uncertain), _DELETE_BATCH_SIZE):
+        for group in batched(sorted(uncertain), _DELETE_BATCH_SIZE, strict=False):
             async with local.transfer_conn() as conn:
                 try:
                     await recheck(conn, group)

@@ -125,7 +125,7 @@ async def test_cache_as_substituter(pynixd_server: Server) -> None:
         str(target_path),
     ]
 
-    rc, stdout, stderr, _ = await run_subproc(cmd)
+    rc, _stdout, stderr, _ = await run_subproc(cmd)
     assert rc == 0, f"Copy via cache failed:\n{stderr}"
 
     # Verify it exists in the new store
@@ -137,7 +137,7 @@ async def test_cache_as_substituter(pynixd_server: Server) -> None:
         f"file://{subst_store_path!s}",
         str(target_path),
     ]
-    rc, stdout, stderr, _ = await run_subproc(cmd)
+    rc, _stdout, stderr, _ = await run_subproc(cmd)
     assert rc == 0, f"path check failed:\n{stderr}"
 
 

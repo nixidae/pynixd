@@ -1,5 +1,4 @@
-target-version = "py313"
-line-length = 120
+extend = "nix/shared/ruff.toml"
 
 # The gate. `checks.lint` and `checks.format` in default.nix read this file,
 # and ruff finds it by proximity, so do not add a `[tool.ruff]` to
@@ -16,18 +15,9 @@ line-length = 120
 # on 2026-09-16. It extends this file, so a change here reaches it.
 
 [lint]
-select = [
-    "E", "W",  # pycodestyle
-    "F",       # pyflakes (real bugs)
-    "I",       # isort
-    "TID",     # flake8-tidy-imports, for the banned-api table below
-    "UP",      # pyupgrade, which used to be a separate `just upgrade` run
-]
-
-ignore = [
-    "E501",  # line length handled by line-length setting
-    "TID252",  # relative imports, which this project uses by design
-]
+# TID251 alone reports the banned-api table below. TID252 would ban the
+# relative imports this project uses by design.
+extend-select = ["TID251"]
 
 # `I` is selected, and without this section isort sorts this tree's own
 # absolute imports as third-party packages. Each name needs saying:
@@ -40,7 +30,6 @@ ignore = [
 #   into the third-party block while it put `pynixd.serde` in the first-party
 #   one. One project cannot be in two groups.
 [lint.isort]
-combine-as-imports = true
 known-first-party = [
     "nix_daemon_protocol",
     "pynixd",
@@ -52,8 +41,9 @@ known-first-party = [
 # `__main__.py`, so an anyio primitive works anywhere in it. Issue #131 ported
 # the remaining 48 uses.
 #
-# This table lives here only. `ruff-strict.toml` has no banned-api table, so
-# there is nothing to keep it equal to.
+# Not nix/shared/ruff-anyio.toml: that table also bans asyncio.create_task,
+# gather, wait_for and the subprocess calls, which pynixd still uses (88 sites
+# on 2026-10-28). `ruff-strict.toml` has no banned-api table.
 #
 [lint.flake8-tidy-imports.banned-api]
 "asyncio.get_event_loop".msg = "Use asyncio.get_running_loop() inside async code; time.monotonic() for timestamps."

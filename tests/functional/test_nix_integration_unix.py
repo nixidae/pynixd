@@ -69,7 +69,7 @@ async def test_nix_build_via_unix(pynixd_server):
             "--impure",
         ]
 
-        rc, stdout, stderr, stdboth = await run_subproc(cmd)
+        rc, stdout, _stderr, _stdboth = await run_subproc(cmd)
         assert rc == 0
         assert "/nix/store/" in stdout
         out_path = stdout.strip()
@@ -90,7 +90,7 @@ async def test_nix_copy_via_unix(pynixd_server, tmp_path: Path):
     dummy_file.write_text("pynixd-copy-test")
 
     # Setup: add to system store
-    rc, stdout, stderr, stdboth = await run_subproc(
+    rc, stdout, _stderr, _stdboth = await run_subproc(
         [str(CLIENT_BIN.parent / "nix-store"), "--add", str(dummy_file)],
     )
     assert rc == 0
@@ -98,7 +98,7 @@ async def test_nix_copy_via_unix(pynixd_server, tmp_path: Path):
 
     cmd = [str(CLIENT_BIN), "copy", "--to", uri, system_path]
 
-    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    rc, stdout, _stderr, _stdboth = await run_subproc(cmd)
     assert rc == 0
 
     # Verify it exists in pynixd's local store

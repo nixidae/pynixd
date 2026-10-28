@@ -25,7 +25,7 @@ log = structlog.get_logger(__name__)
 
 async def get_hello_path() -> StorePath:
     """Build hello from <nixpkgs> and return its store path."""
-    rc, stdout, stderr, _ = await run_subproc(
+    _rc, stdout, _stderr, _ = await run_subproc(
         [str(CLIENT_BIN), "build", *HELLO, "--no-link", "--print-out-paths"],
     )
     return StorePath(stdout.strip())
@@ -66,7 +66,7 @@ async def test_stream_nar() -> None:
         # plumbing records a real transfer; the scheduler pins the
         # in/out semantics in the unit suite.
         before = metrics.store_transfers(["test-stream-nar"])["test-stream-nar"]
-        src_read_before, src_written_before = src_store.transfer_pool.traffic_totals()
+        _src_read_before, src_written_before = src_store.transfer_pool.traffic_totals()
         dst_read_before, _ = dst_store.transfer_pool.traffic_totals()
         await stream_paths_store_to_store(
             src_store,

@@ -12,7 +12,7 @@ nixidae/nixidae#998.
 from __future__ import annotations
 
 import contextlib
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import pytest
 from prometheus_client import REGISTRY
@@ -71,7 +71,7 @@ class FakeBuild:
     enqueued_at = 0.0
     started_at: float | None = None
     request = FakeRequest()
-    ca_realisations: list[Any] = []
+    ca_realisations: ClassVar[list[Any]] = []
 
     async def post_log_and_fanout(self, _msg: Any) -> None:
         return

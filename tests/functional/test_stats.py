@@ -204,7 +204,7 @@ async def test_build_stats_recording(tmp_path: Path) -> None:
         scheduler = server.scheduler
         assert scheduler is not None
 
-        build_id, future = await scheduler.build_derivation(
+        _build_id, future = await scheduler.build_derivation(
             req,
         )
         await future
@@ -299,7 +299,7 @@ async def test_scheduler_local_fasttrack(tmp_path: Path) -> None:
             derivation=tiny_drv,
             build_mode=BuildMode.NORMAL,
         )
-        id_tiny, fut_tiny = await scheduler.build_derivation(
+        id_tiny, _fut_tiny = await scheduler.build_derivation(
             tiny_req,
         )
 

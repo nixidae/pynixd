@@ -42,7 +42,7 @@ async def test_query_derivation_output_map(pynixd_server: Server) -> None:
         "--no-link",
         "--print-out-paths",
     ]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    rc, stdout, _stderr, stdboth = await run_subproc(cmd)
     assert rc == 0, f"build failed:\n{stdboth}"
 
     out_path = stdout.strip()
@@ -57,7 +57,7 @@ async def test_query_derivation_output_map(pynixd_server: Server) -> None:
         "--json",
         out_path,
     ]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    rc, stdout, _stderr, stdboth = await run_subproc(cmd)
     assert rc == 0, f"path-info failed:\n{stdboth}"
     info = json.loads(stdout)
     assert out_path in info, f"Expected {out_path} in path-info output"

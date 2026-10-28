@@ -117,29 +117,28 @@ def pytest_runtest_makereport(item: pytest.Item, call):
     outcome = yield
     report = outcome.get_result()
 
-    if report.when == "call":
-        if report.failed:
-            log_dir = item.config.stash.get(_log_dir_key, None)
-            if log_dir:
-                test_file = item.path.stem
-                test_name = item.name.replace("/", "_").replace("[", "_").replace("]", "_")
-                folder = log_dir / test_file / test_name
-                folder.mkdir(parents=True, exist_ok=True)
+    if report.when == "call" and report.failed:
+        log_dir = item.config.stash.get(_log_dir_key, None)
+        if log_dir:
+            test_file = item.path.stem
+            test_name = item.name.replace("/", "_").replace("[", "_").replace("]", "_")
+            folder = log_dir / test_file / test_name
+            folder.mkdir(parents=True, exist_ok=True)
 
-                # Write exception to JSONL for machine consumption
-                exc_info = call.excinfo
-                if exc_info:
-                    import traceback as tb
+            # Write exception to JSONL for machine consumption
+            exc_info = call.excinfo
+            if exc_info:
+                import traceback as tb
 
-                    entry = {
-                        "timestamp": f"{time.monotonic():.3f}",
-                        "type": exc_info.type.__name__,
-                        "message": str(exc_info.value),
-                        "traceback": "".join(tb.format_exception(exc_info.type, exc_info.value, exc_info.tb)),
-                    }
-                    with (folder / "exceptions.jsonl").open("a") as f:
-                        f.write(json.dumps(entry, default=str) + "\n")
+                entry = {
+                    "timestamp": f"{time.monotonic():.3f}",
+                    "type": exc_info.type.__name__,
+                    "message": str(exc_info.value),
+                    "traceback": "".join(tb.format_exception(exc_info.type, exc_info.value, exc_info.tb)),
+                }
+                with (folder / "exceptions.jsonl").open("a") as f:
+                    f.write(json.dumps(entry, default=str) + "\n")
 
-                # Suppress traceback from CLI output; it's in exceptions.jsonl
-                report.longrepr = f"logs: {folder}"
-                report.sections = []
+            # Suppress traceback from CLI output; it's in exceptions.jsonl
+            report.longrepr = f"logs: {folder}"
+            report.sections = []

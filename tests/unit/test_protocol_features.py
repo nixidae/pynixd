@@ -75,8 +75,8 @@ new shape, and a codec that cannot read that shape drops the connection.
 
 def test_the_number_is_the_one_that_nix_froze() -> None:
     """Nix 2.34 and the master branch both report 1.38."""
-    assert wire.PROTOCOL_VERSION == wire.proto(1, 38)
-    assert wire.FEATURE_EXCHANGE_PROTOCOL == wire.proto(1, 38)
+    assert wire.proto(1, 38) == wire.PROTOCOL_VERSION
+    assert wire.proto(1, 38) == wire.FEATURE_EXCHANGE_PROTOCOL
 
 
 def test_the_names_of_nix_are_the_names_of_this_package() -> None:
@@ -108,7 +108,7 @@ def test_pynixd_claims_the_build_trace_and_batch_roots_features() -> None:
     `addTempRoots` covers op 49, which the proxy serves itself the way it
     serves op 11. Issue #66.
     """
-    assert ndp.SUPPORTED_STANDARD_FEATURES == frozenset({ndp.FEATURE_REALISATION_WITH_PATH, ndp.FEATURE_ADD_TEMP_ROOTS})
+    assert frozenset({ndp.FEATURE_REALISATION_WITH_PATH, ndp.FEATURE_ADD_TEMP_ROOTS}) == ndp.SUPPORTED_STANDARD_FEATURES
 
 
 def test_the_negotiation_is_the_intersection() -> None:

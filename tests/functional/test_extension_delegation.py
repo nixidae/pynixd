@@ -58,7 +58,7 @@ async def test_extension_delegation(tmp_path: Path) -> None:
         str(store_b_path),
         "README.md",
     ]
-    rc, stdout, stderr, _ = await run_subproc(cmd)
+    rc, stdout, _stderr, _ = await run_subproc(cmd)
     assert rc == 0
     path = StorePath(stdout.strip())
 

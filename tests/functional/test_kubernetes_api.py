@@ -61,7 +61,7 @@ async def test_dynamic_store_management():
         # Block the build
         remote1.block_build(drv_path)
 
-        build_id, future = await scheduler.build_derivation(
+        build_id, _future = await scheduler.build_derivation(
             request,
         )
 

@@ -16,6 +16,7 @@ running it proves that.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import threading
 import time
@@ -215,10 +216,8 @@ async def test_it_fires_against_a_real_cpu_bound_stall() -> None:
         monitor.stop()
         dog.stop()
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
         thread.join(timeout=5)
 
     assert dog.dumps >= 1, "a one second CPU-bound stall produced no dump"

@@ -75,7 +75,7 @@ class TestAuthorise:
 
     def test_a_user_outside_allowed_users_is_refused_with_nixs_message(self):
         policy = TrustPolicy(allowed_users=("alice",))
-        with pytest.raises(PeerRefusedError, match="^user 'bob' is not allowed to connect to the Nix daemon$"):
+        with pytest.raises(PeerRefusedError, match=r"^user 'bob' is not allowed to connect to the Nix daemon$"):
             authorise(Peer(1, 1001, 100), policy)
 
     def test_trusted_users_need_not_be_in_allowed_users(self):

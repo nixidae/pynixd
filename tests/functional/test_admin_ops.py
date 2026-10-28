@@ -40,7 +40,7 @@ async def test_optimise_store_admin(pynixd_server: Server) -> None:
     """
     uri = unix_session_uri(pynixd_server)
     cmd = [str(CLIENT_BIN), "store", "optimise", "--store", uri]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    rc, _stdout, _stderr, stdboth = await run_subproc(cmd)
     assert rc == 0, f"OptimiseStore failed:\n{stdboth}"
 
 
@@ -49,7 +49,7 @@ async def test_optimise_store_non_admin(pynixd_server: Server) -> None:
     """OptimiseStore as non-admin should be rejected."""
     uri = ssh_user_uri(pynixd_server)
     cmd = [str(CLIENT_BIN), "store", "optimise", "--store", uri]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd, expected_retcode=None)
+    rc, _stdout, _stderr, stdboth = await run_subproc(cmd, expected_retcode=None)
     assert rc != 0, "OptimiseStore should fail for non-admin"
     assert "requires administrative privileges" in stdboth
 
@@ -59,7 +59,7 @@ async def test_verify_store_admin(pynixd_server: Server) -> None:
     """VerifyStore as admin should succeed."""
     uri = unix_session_uri(pynixd_server)
     cmd = [str(CLIENT_BIN.parent / "nix-store"), "--verify", "--store", uri]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    rc, _stdout, _stderr, stdboth = await run_subproc(cmd)
     assert rc == 0, f"VerifyStore failed:\n{stdboth}"
 
 
@@ -69,7 +69,7 @@ async def test_verify_store_non_admin(pynixd_server: Server) -> None:
     """VerifyStore as non-admin should be rejected."""
     uri = ssh_user_uri(pynixd_server)
     cmd = [str(CLIENT_BIN.parent / "nix-store"), "--verify", "--store", uri]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd, expected_retcode=None)
+    rc, _stdout, _stderr, stdboth = await run_subproc(cmd, expected_retcode=None)
     assert rc != 0, "VerifyStore should fail for non-admin"
     assert "requires administrative privileges" in stdboth
 
@@ -95,7 +95,7 @@ async def test_add_build_log_non_admin(pynixd_server: Server) -> None:
         "minimal.leaf",
         "--no-link",
     ]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    rc, _stdout, _stderr, stdboth = await run_subproc(cmd)
     assert rc == 0, f"Build (and possibly AddBuildLog) failed:\n{stdboth}"
 
 
@@ -124,7 +124,7 @@ async def test_add_signatures_via_store(
         "--no-link",
         "--print-out-paths",
     ]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    rc, stdout, _stderr, stdboth = await run_subproc(cmd)
     assert rc == 0, f"build failed:\n{stdboth}"
 
     out_path = stdout.strip()

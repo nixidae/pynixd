@@ -1030,7 +1030,7 @@ class LocalStoreDB:
                             touched.update(await self._expand_closure(db, _RUNTIME_CLOSURE_OF_SEEDS, runtime_seeds))
                         if build_seeds:
                             touched.update(await self._expand_closure(db, _BUILD_CLOSURE_OF_SEEDS, build_seeds))
-                        for chunk in batched(sorted(touched), 1000):
+                        for chunk in batched(sorted(touched), 1000, strict=False):
                             try:
                                 await db.execute(TOUCH_PATH_ACCESS, (json.dumps(chunk),))
                                 await db.commit()

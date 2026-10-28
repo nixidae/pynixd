@@ -120,9 +120,13 @@ class BuildLimit:
             return LimitReason.low_memory, False
         if psi is not None and psi.cpu.some_avg10 >= s.cpu_some_high:
             return LimitReason.cpu_pressure, False
-        if psi is None and health.load1 is not None and health.cores:
-            if health.load1 / health.cores >= s.load_per_core_high:
-                return LimitReason.load, False
+        if (
+            psi is None
+            and health.load1 is not None
+            and health.cores
+            and health.load1 / health.cores >= s.load_per_core_high
+        ):
+            return LimitReason.load, False
         return LimitReason.steady, False
 
     def _set(self, limit: int, reason: LimitReason) -> None:

@@ -133,7 +133,7 @@ def _one_build(socket: str, nixpkgs: str, expression: str, iteration: int) -> tu
             timeout=WALL_CAP,
         )
     except subprocess.TimeoutExpired:
-        raise AssertionError(f"build {iteration} exceeded cap {WALL_CAP:.0f}s")
+        raise AssertionError(f"build {iteration} exceeded cap {WALL_CAP:.0f}s") from None
     if proc.returncode != 0:
         raise AssertionError(f"build {iteration} failed rc={proc.returncode}:\n{proc.stderr[-2000:]}")
     lines = sum(1 for line in proc.stderr.splitlines() if "growth log line " in line)

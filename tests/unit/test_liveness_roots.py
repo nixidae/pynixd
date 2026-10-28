@@ -246,7 +246,7 @@ def test_closure_query_matches_the_oracle(tmp_path: Path) -> None:
 
 
 def test_refresh_roots_reports_dirtiness(tmp_path: Path) -> None:
-    state, _proc, auto, paths = _layout(tmp_path)
+    state, _proc, auto, _paths = _layout(tmp_path)
     db = tmp_path / "db.sqlite"
     _tiny_db(db)
 

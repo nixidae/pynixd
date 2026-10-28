@@ -42,7 +42,7 @@ async def query_env(pynixd_server: Server):
         "minimal.leaf",
         "--no-link",
     ]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    rc, stdout, _stderr, stdboth = await run_subproc(cmd)
     assert rc == 0, f"Initial build failed:\n{stdboth}"
 
     cmd = [
@@ -52,7 +52,7 @@ async def query_env(pynixd_server: Server):
         "-A",
         "minimal.leaf",
     ]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    rc, stdout, _stderr, stdboth = await run_subproc(cmd)
     assert rc == 0
     drv_path = stdout.strip()
 
@@ -62,7 +62,7 @@ async def query_env(pynixd_server: Server):
         "--outputs",
         drv_path,
     ]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    rc, stdout, _stderr, stdboth = await run_subproc(cmd)
     assert rc == 0
     out_path = stdout.strip()
     assert out_path.startswith("/nix/store/"), f"Unexpected path: {out_path}"
@@ -77,7 +77,7 @@ async def test_query_referrers(profiler: pyinstrument.Profiler, query_env) -> No
     Store operations triggered:
     - QueryReferrers: Queries referrers
     """
-    server, uri, out_path = query_env
+    _server, uri, out_path = query_env
     test_nix = TEST_NIX
 
     # Build another thing that depends on 'out_path'
@@ -94,7 +94,7 @@ async def test_query_referrers(profiler: pyinstrument.Profiler, query_env) -> No
         "minimal.dependent",
         "--no-link",
     ]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    rc, stdout, _stderr, _stdboth = await run_subproc(cmd)
     assert rc == 0
 
     # Get dep_path locally
@@ -105,7 +105,7 @@ async def test_query_referrers(profiler: pyinstrument.Profiler, query_env) -> No
         "-A",
         "minimal.dependent",
     ]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    rc, stdout, _stderr, _stdboth = await run_subproc(cmd)
     assert rc == 0
     dep_drv = stdout.strip()
 
@@ -115,7 +115,7 @@ async def test_query_referrers(profiler: pyinstrument.Profiler, query_env) -> No
         "--outputs",
         dep_drv,
     ]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    rc, stdout, _stderr, _stdboth = await run_subproc(cmd)
     assert rc == 0
     dep_path = stdout.strip()
 
@@ -128,7 +128,7 @@ async def test_query_referrers(profiler: pyinstrument.Profiler, query_env) -> No
         "--referrers",
         out_path,
     ]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    rc, stdout, _stderr, _stdboth = await run_subproc(cmd)
     assert rc == 0
     referrers = [line.strip() for line in stdout.splitlines()]
     assert dep_path in referrers
@@ -143,7 +143,7 @@ async def test_query_path_from_hash_part(
     Store operations triggered:
     - QueryPathFromHashPart: Queries path from hash part
     """
-    server, uri, out_path = query_env
+    _server, uri, out_path = query_env
 
     # out_path is like /nix/store/hash-name
     m = re.match(r"/nix/store/([a-z0-9]+)-", out_path)
@@ -158,7 +158,7 @@ async def test_query_path_from_hash_part(
         uri,
         hash_part,
     ]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    rc, stdout, _stderr, _stdboth = await run_subproc(cmd)
     assert rc == 0
     assert stdout.strip() == out_path
 
@@ -170,7 +170,7 @@ async def test_query_valid_derivers(profiler: pyinstrument.Profiler, query_env) 
     Store operations triggered:
     - QueryValidDerivers: Queries valid derivers
     """
-    server, uri, out_path = query_env
+    _server, uri, out_path = query_env
 
     # Could use `nix path-info --derivation <store-path>` as a nix3 equivalent,
     # but `nix-store -q --deriver` is kept for consistency with other query tests.
@@ -182,7 +182,7 @@ async def test_query_valid_derivers(profiler: pyinstrument.Profiler, query_env) 
         "--deriver",
         out_path,
     ]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    rc, stdout, _stderr, _stdboth = await run_subproc(cmd)
     assert rc == 0
     deriver = stdout.strip()
     assert deriver.endswith(".drv")
@@ -195,7 +195,7 @@ async def test_query_missing(profiler: pyinstrument.Profiler, query_env) -> None
     Store operations triggered:
     - QueryMissing: Queries missing paths
     """
-    server, uri, out_path = query_env
+    _server, uri, _out_path = query_env
 
     test_nix = TEST_NIX
     cmd = [
@@ -211,7 +211,7 @@ async def test_query_missing(profiler: pyinstrument.Profiler, query_env) -> None
         "minimal.leaf",
         "--dry-run",
     ]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    rc, _stdout, _stderr, _stdboth = await run_subproc(cmd)
     assert rc == 0
 
 
@@ -222,7 +222,7 @@ async def test_find_roots(profiler: pyinstrument.Profiler, query_env) -> None:
     Store operations triggered:
     - None: This test only checks roots without triggering Store operations
     """
-    server, uri, out_path = query_env
+    _server, uri, _out_path = query_env
 
     # No nix3 equivalent exists for --print-roots (`nix store gc` has no such f…
     cmd = [
@@ -232,7 +232,7 @@ async def test_find_roots(profiler: pyinstrument.Profiler, query_env) -> None:
         "--gc",
         "--print-roots",
     ]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    rc, _stdout, _stderr, stdboth = await run_subproc(cmd)
     # If it fails with host resolution error, it's a nix-store limitation with URI ports.
     if rc != 0 and "Could not resolve hostname" in stdboth:
         pytest.skip("nix-store does not support ports in URIs for this command")

@@ -34,7 +34,7 @@ def test_the_darwin_limit_is_the_smaller_of_the_two() -> None:
     """The default has to be safe on both, so it is the stricter one."""
     assert _SUN_PATH_LIMIT["darwin"] == 104
     assert _SUN_PATH_LIMIT["linux"] == 108
-    assert _SUN_PATH_LIMIT_DEFAULT == min(_SUN_PATH_LIMIT.values())
+    assert min(_SUN_PATH_LIMIT.values()) == _SUN_PATH_LIMIT_DEFAULT
 
 
 def test_a_path_over_the_limit_is_refused_by_name() -> None:

@@ -106,7 +106,7 @@ async def test_throughput_daemon() -> None:
 
         for _ in range(50):
             try:
-                r, w = await asyncio.open_unix_connection(str(socket_path))
+                _r, w = await asyncio.open_unix_connection(str(socket_path))
                 w.close()
                 await w.wait_closed()
                 break

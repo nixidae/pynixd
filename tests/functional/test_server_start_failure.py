@@ -45,9 +45,8 @@ async def test_start_failure_tears_down_started_state(tmp_path: Path) -> None:
     async def boom() -> None:
         raise RuntimeError("repro61: trust_policy failed")
 
-    with mock.patch.object(local_store, "trust_policy", boom):
-        with pytest.raises(RuntimeError, match="repro61"):
-            await server.start()
+    with mock.patch.object(local_store, "trust_policy", boom), pytest.raises(RuntimeError, match="repro61"):
+        await server.start()
 
     assert not server._started
 

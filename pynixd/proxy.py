@@ -219,7 +219,7 @@ class DaemonProxy:
                         watcher.cancel()
                         with contextlib.suppress(Exception, asyncio.CancelledError):
                             await watcher
-        except (EOFError, BrokenPipeError, ConnectionError, OSError) + ssh_connection_lost():
+        except (EOFError, BrokenPipeError, ConnectionError, OSError, *ssh_connection_lost()):
             log.debug("client_disconnected")
         except Exception:
             log.exception("session_error")
@@ -427,7 +427,7 @@ class DaemonProxy:
         while True:
             try:
                 op_num = await self.r.read_uint64()
-            except (EOFError,) + ssh_connection_lost():
+            except (EOFError, *ssh_connection_lost()):
                 break
 
             req_cls = WIRE_REGISTRY.get(op_num)

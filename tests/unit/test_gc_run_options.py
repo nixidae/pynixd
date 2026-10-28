@@ -234,7 +234,7 @@ async def test_a_fresh_temproot_vetoes_its_path(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_an_unanswerable_closure_falls_back_to_the_seeds(tmp_path: Path) -> None:
     """No closure feature still spares the roots themselves, never nothing."""
-    collector, local, state_dir = _collector(tmp_path, answers_closure=False)
+    collector, _local, state_dir = _collector(tmp_path, answers_closure=False)
     # Held by a living owner, as above: the veto must see the root alive.
     with live_temp_root(state_dir, "99", f"{A}\x00".encode()):
         resp = await collector.run(PynixdGCAction.DRY_RUN)

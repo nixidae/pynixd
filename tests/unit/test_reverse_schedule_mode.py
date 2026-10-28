@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import pytest
 
@@ -34,7 +34,7 @@ class _Process:
 
 class _Ctx:
     class local_store:  # noqa: N801 - stands in for an attribute
-        systems: list[str] = ["aarch64-darwin"]
+        systems: ClassVar[list[str]] = ["aarch64-darwin"]
 
 
 def _capture(seen: dict[str, Any]) -> Callable[..., Any]:

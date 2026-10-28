@@ -196,7 +196,7 @@ async def test_no_layout_falls_back_to_the_nix_trace(tmp_path: Path) -> None:
                 return _Live({StorePath(a)})
             raise AssertionError(f"unexpected call {request.action}")
 
-    state, _store, _a, _b = _lab(tmp_path)
+    _state, _store, _a, _b = _lab(tmp_path)
     local = TracingLocal(layout=None, db=FakeDB(stale={b}))
     collector = Collector(FakeContext(local=local))  # type: ignore[arg-type] -- fakes
 

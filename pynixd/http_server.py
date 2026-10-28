@@ -508,11 +508,11 @@ class PynixdHttpServer:
 
             def decompress_gen(path: Path):
                 if path.name.endswith(".xz"):
-                    ctx = lzma.open(path, "rb")
+                    ctx = lzma.open(path, "rb")  # noqa: SIM115 -- the `with ctx` below closes it
                 elif path.name.endswith(".bz2"):
-                    ctx = bz2.open(path, "rb")
+                    ctx = bz2.open(path, "rb")  # noqa: SIM115 -- the `with ctx` below closes it
                 elif path.name.endswith(".gz"):
-                    ctx = gzip.open(path, "rb")
+                    ctx = gzip.open(path, "rb")  # noqa: SIM115 -- the `with ctx` below closes it
                 elif path.name.endswith(".zst"):
                     dctx = zstd.ZstdDecompressor()
                     ctx = dctx.stream_reader(path.open("rb"))

@@ -46,7 +46,7 @@ async def test_collect_garbage_non_admin(pynixd_server: Server) -> None:
     """GC as an untrusted user succeeds: Nix allows it, `daemon.cc:735`. Issue #56."""
     uri = ssh_user_uri(pynixd_server)
     cmd = [str(CLIENT_BIN), "store", "gc", "--store", uri, "--max", "0"]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    rc, _stdout, _stderr, stdboth = await run_subproc(cmd)
     assert rc == 0, f"GC as an untrusted user failed:\n{stdboth}"
 
 
@@ -54,5 +54,5 @@ async def test_collect_garbage_unix_admin(pynixd_server: Server) -> None:
     """GC over Unix socket (implicit admin) should succeed."""
     uri = unix_session_uri(pynixd_server)
     cmd = [str(CLIENT_BIN), "store", "gc", "--store", uri, "--max", "0"]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    rc, _stdout, _stderr, stdboth = await run_subproc(cmd)
     assert rc == 0, f"GC over Unix socket failed:\n{stdboth}"

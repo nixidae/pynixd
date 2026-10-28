@@ -63,7 +63,7 @@ async def test_builders(
         "--max-jobs",
         "0",
     ]
-    rc, stdout, stderr, stdboth = await run_subproc(
+    rc, stdout, _stderr, stdboth = await run_subproc(
         cmd,
         env={"NIX_STATE_DIR": str(client_store_path / "var/nix")},
     )
@@ -120,7 +120,7 @@ async def test_store(
             "--no-link",
             "--print-out-paths",
         ]
-        rc, stdout, stderr, stdboth = await run_subproc(cmd)
+        rc, stdout, _stderr, stdboth = await run_subproc(cmd)
         assert rc == 0, f"build failed:\n{stdboth}"
         out_path = stdout.strip()
         assert out_path.startswith("/nix/store/"), f"Expected store path, got: {out_path}"

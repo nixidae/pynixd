@@ -75,7 +75,7 @@ async def _fetch_nix_log(client_store_path: Path, out_path: str) -> str:
         str(client_store_path),
         out_path,
     ]
-    rc, stdout, stderr, combined = await run_subproc(cmd, expected_retcode=None)
+    _rc, _stdout, _stderr, combined = await run_subproc(cmd, expected_retcode=None)
     return combined
 
 
@@ -106,8 +106,8 @@ async def test_build_log_pubsub_real_nix(
         _run_client2_delayed(store2, uri, str(TEST_NIX), "log_test"),
     )
 
-    rc1, stdout1, stderr1, combined1 = result1
-    rc2, stdout2, stderr2, combined2 = result2
+    rc1, stdout1, _stderr1, combined1 = result1
+    rc2, stdout2, _stderr2, combined2 = result2
 
     log.info("client1_done", rc=rc1, out=stdout1.strip())
     log.info("client2_done", rc=rc2, out=stdout2.strip())

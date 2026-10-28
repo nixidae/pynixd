@@ -282,7 +282,7 @@ async def main() -> None:
     print("Step 7: QueryDerivationOutputMap for producingDrv and wrapper")
     print("=" * 70)
 
-    rc2, stdout2, stderr2, _ = await run_subproc(
+    rc2, stdout2, _stderr2, _ = await run_subproc(
         [
             NIX_BIN,
             "eval",

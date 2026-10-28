@@ -60,7 +60,7 @@ async def test_builders(pynixd_server: Server, tmp_path: Path) -> None:
         "0",
     ]
 
-    rc, stdout, stderr, stdboth = await run_subproc(cmd)
+    rc, _stdout, _stderr, stdboth = await run_subproc(cmd)
     assert rc == 0, f"build failed:\n{stdboth}"
 
 

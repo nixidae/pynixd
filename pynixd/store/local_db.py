@@ -43,9 +43,7 @@ def _may_hold_paths(annotation: Any) -> bool:
             return True
         # Certain non-carriers: scalars, enums, nested models, anything else
         # the runtime `isinstance` cannot match.
-        if issubclass(annotation, _SCALAR_ANNOTATIONS + (Enum, BaseModel, dict)):
-            return False
-        return True
+        return not issubclass(annotation, (*_SCALAR_ANNOTATIONS, Enum, BaseModel, dict))
     origin = get_origin(annotation)
     if origin in (list, set, frozenset, tuple):
         return True
