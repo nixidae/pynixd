@@ -122,7 +122,7 @@ async def test_log_error_msg_carries_raw_bytes() -> None:
 @pytest.mark.anyio
 async def test_compiled_codec_answers_lossless_fields() -> None:
     """The experiment compiles the flag too, byte-identical to the reference."""
-    codec = compile_codec(LogNext, PROTOCOL_VERSION)
+    codec = compile_codec(LogNext, PROTOCOL_VERSION)  # type: ignore[arg-type]  # zuban-bug: a class is hashable, but zuban reads the pydantic model's __hash__ as None
 
     body = BytesWriter("test")
     body.write_bytes(POISON)

@@ -19,7 +19,11 @@ import dataclasses
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from test_drv_hash import BASE_PATH, BASE_TEXT, TOP_TEXT
+from test_drv_hash import (  # type: ignore[import-not-found]  # pytest puts tests/unit on sys.path; not a package
+    BASE_PATH,
+    BASE_TEXT,
+    TOP_TEXT,
+)
 
 from pynixd.derived_path import DerivedPath
 from pynixd.drv_hash import output_hashes
@@ -111,7 +115,7 @@ def _flattened_hash() -> str:
     resolved = dataclasses.replace(
         parse_drv(TOP_TEXT),
         input_drvs={},
-        input_srcs={BASE_OUT},  # pyright: ignore[reportArgumentType] -- StorePath is a str
+        input_srcs={BASE_OUT},  # type: ignore[arg-type]  # the hash reads the raw path text, not a StorePath
     )
     return resolved.hash_derivation_modulo(mask_outputs=True)["out"]
 

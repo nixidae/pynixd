@@ -27,6 +27,7 @@ from pynixd.serde import (
 
 if TYPE_CHECKING:
     from pynixd.goals.engine import GoalEngine
+    from pynixd.goals.results import GoalResult
 
 
 def _options(*, keep_going: bool) -> SetOptionsRequest:
@@ -126,10 +127,10 @@ async def test_an_opaque_path_no_substituter_has_is_no_substituters() -> None:
         substituter_ids=(),
     )
 
-    async def nothing(_path: Any) -> None:
+    async def nothing(_path: StorePath) -> GoalResult | None:
         return None
 
-    goal._try_substitute_path = nothing  # type: ignore[method-assign]  # noqa: SLF001 -- no substituter
+    goal._try_substitute_path = nothing  # type: ignore[method-assign, assignment]  # noqa: SLF001 -- no substituter
 
     result = await goal._ensure_opaque()  # noqa: SLF001
 

@@ -7,14 +7,14 @@ import random
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import anyio.to_thread
 import pytest
 import structlog
 
-from pynixd.store.local_daemon import _SUN_PATH_MAX
 from pynixd.testing import clear_test_stash
+from pynixd.unix_socket import _SUN_PATH_MAX
 from tests._conftest.constants import (
     HAS_PYINSTRUMENT,
     SESSION_STORE_PREFIX,
@@ -27,7 +27,7 @@ from tests._conftest.constants import (
 from tests._conftest.helpers import rmtree_robust, rmtree_robust_glob
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import AsyncGenerator, Generator
 
     from pynixd import Server
 
@@ -37,7 +37,7 @@ log = structlog.get_logger(__name__)
 # ── Profiling helpers ─────────────────────────────────────────────
 
 
-def _prune_client_processor(frame, options):
+def _prune_client_processor(frame: Any, options: object) -> Any:
     """Custom pyinstrument processor to remove client-side subprocess frames."""
     if frame is None:
         return None
@@ -53,14 +53,14 @@ def _prune_client_processor(frame, options):
 
 
 @pytest.fixture(autouse=True)
-def clear_instrumentation():
+def clear_instrumentation() -> None:
     """Clear internal test stash before each test."""
     clear_test_stash()
     return
 
 
 @pytest.fixture(autouse=True)
-def _fixed_test_ts():
+def _fixed_test_ts() -> Generator[None]:
     """Pin PYNIXD_TEST_TS for each test so build+eval get consistent .drv paths."""
     ts = str(int(time.time()))
     original = os.environ.get("PYNIXD_TEST_TS")
@@ -73,7 +73,7 @@ def _fixed_test_ts():
 
 
 @pytest.fixture(autouse=True)
-def profiler(request: pytest.FixtureRequest, test_logging: Path):
+def profiler(request: pytest.FixtureRequest, test_logging: Path) -> Generator[Profiler | None]:
     """Profile every test and save to a .pyinstrument file."""
     if not HAS_PYINSTRUMENT:
         yield None
@@ -121,7 +121,7 @@ def profiler(request: pytest.FixtureRequest, test_logging: Path):
 
 
 @pytest.fixture(autouse=True)
-def cleanup_stores():
+def cleanup_stores() -> Generator[None]:
     """Remove any leftover test stores before and after each test."""
     yield
     rmtree_robust_glob(f"{STORE_PREFIX}/*")
@@ -175,7 +175,7 @@ def tmp_path(request: pytest.FixtureRequest) -> Generator[Path]:
 
 
 @pytest.fixture
-async def cleanup_extra_stores(pynixd_server: Server | tuple | None):
+async def cleanup_extra_stores(pynixd_server: Server | tuple[Server, str] | None) -> AsyncGenerator[None]:
     """Remove non-default stores added by tests between each test.
 
     Not autouse — sync tests cannot consume async fixtures without

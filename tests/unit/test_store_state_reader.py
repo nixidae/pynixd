@@ -22,13 +22,20 @@ import sqlite3
 import sys
 from contextlib import closing
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
+if TYPE_CHECKING:
+    from types import ModuleType
+    from typing import Any
+
 _SOURCE = Path(__file__).parent.parent.parent / "nix" / "functional-tests" / "store-state.py"
 
+type Snapshot = dict[str, Any]
 
-def _load():
+
+def _load() -> ModuleType:
     spec = importlib.util.spec_from_file_location("nixft_store_state", _SOURCE)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load {_SOURCE}")
@@ -133,15 +140,16 @@ def _make_store(root: Path, *, realisations: bool = True, pynixd_tables: bool = 
 
 
 @pytest.fixture
-def snapshot(tmp_path: Path) -> dict:
+def snapshot(tmp_path: Path) -> Snapshot:
     _make_store(tmp_path)
     out = tmp_path / "snapshot.json"
     assert store_state._snapshot(tmp_path, out) == 0
-    return json.loads(out.read_text())
+    loaded: Snapshot = json.loads(out.read_text())
+    return loaded
 
 
 class TestReader:
-    def test_the_key_is_the_suite_and_the_test(self, snapshot) -> None:
+    def test_the_key_is_the_suite_and_the_test(self, snapshot: Snapshot) -> None:
         """The recording shim keys on `$TEST_SUITE_NAME/$TEST_NAME` too.
 
         A difference in the store and a difference on the wire must name the
@@ -150,7 +158,7 @@ class TestReader:
         """
         assert list(snapshot) == ["ca/build"]
 
-    def test_a_path_keeps_the_facts_that_state_what_it_is(self, snapshot) -> None:
+    def test_a_path_keeps_the_facts_that_state_what_it_is(self, snapshot: Snapshot) -> None:
         facts = snapshot["ca/build"]["paths"]["ccc-out"]
         assert facts == {
             "nar_hash": "sha256:ccc",
@@ -161,11 +169,11 @@ class TestReader:
             "references": ["aaa-builder.sh"],
         }
 
-    def test_the_store_directory_is_not_in_a_path(self, snapshot) -> None:
+    def test_the_store_directory_is_not_in_a_path(self, snapshot: Snapshot) -> None:
         """Every path holds the work directory, and two runs may not share one."""
         assert all("/" not in name for name in snapshot["ca/build"]["paths"])
 
-    def test_the_volatile_fields_are_absent(self, snapshot) -> None:
+    def test_the_volatile_fields_are_absent(self, snapshot: Snapshot) -> None:
         """`registrationTime` is a wall clock, and `sigs` names the signing key.
 
         `tests/differential/snapshot.py` states the same two reasons.
@@ -174,13 +182,13 @@ class TestReader:
         assert "registration_time" not in facts
         assert "sigs" not in facts
 
-    def test_null_ultimate_reads_as_false(self, snapshot) -> None:
+    def test_null_ultimate_reads_as_false(self, snapshot: Snapshot) -> None:
         """The column takes null for false, and two engines must not disagree
         because one wrote 0 and the other wrote nothing."""
         assert snapshot["ca/build"]["paths"]["aaa-builder.sh"]["ultimate"] is True
         assert snapshot["ca/build"]["paths"]["ccc-out"]["ultimate"] is False
 
-    def test_a_repeated_realisation_stays_repeated(self, snapshot) -> None:
+    def test_a_repeated_realisation_stays_repeated(self, snapshot: Snapshot) -> None:
         """A store that registers one realisation twice differs from a store
         that registers it once. `ca/duplicate-realisation-in-closure` is a test
         of this suite."""
@@ -188,13 +196,13 @@ class TestReader:
         assert len(realisations["sha256:ddd!out"]) == 2
         assert len(realisations["sha256:eee!out"]) == 1
 
-    def test_a_realisation_keeps_its_references(self, snapshot) -> None:
+    def test_a_realisation_keeps_its_references(self, snapshot: Snapshot) -> None:
         assert snapshot["ca/build"]["realisations"]["sha256:eee!out"][0]["references"] == ["sha256:ddd!out"]
 
-    def test_the_output_map_is_read(self, snapshot) -> None:
+    def test_the_output_map_is_read(self, snapshot: Snapshot) -> None:
         assert snapshot["ca/build"]["derivation_outputs"] == {"aaa-builder.sh": {"out": "ccc-out"}}
 
-    def test_a_store_without_ca_derivations_reads_as_empty(self, tmp_path) -> None:
+    def test_a_store_without_ca_derivations_reads_as_empty(self, tmp_path: Path) -> None:
         """`Realisations` exists only when `ca-derivations` is on, and a store
         without it is a store and not an error."""
         _make_store(tmp_path, realisations=False)
@@ -202,7 +210,7 @@ class TestReader:
         assert store_state._snapshot(tmp_path, out) == 0
         assert json.loads(out.read_text())["ca/build"]["realisations"] == {}
 
-    def test_the_tables_of_pynixd_are_not_read(self, tmp_path) -> None:
+    def test_the_tables_of_pynixd_are_not_read(self, tmp_path: Path) -> None:
         """pynixd writes its own tables into the store database. They are the
         work of the proxy, so an arm that has them must not differ for that."""
         _make_store(tmp_path, pynixd_tables=True)
@@ -224,13 +232,14 @@ class TestComparison:
     """
 
     @pytest.fixture
-    def store(self, snapshot) -> dict:
-        return snapshot["ca/build"]
+    def store(self, snapshot: Snapshot) -> dict[str, Any]:
+        store: dict[str, Any] = snapshot["ca/build"]
+        return store
 
-    def test_a_store_agrees_with_itself(self, store) -> None:
+    def test_a_store_agrees_with_itself(self, store: dict[str, Any]) -> None:
         assert store_state._compare_one(store, store) == []
 
-    def test_a_field_that_moved_is_reported(self, store) -> None:
+    def test_a_field_that_moved_is_reported(self, store: dict[str, Any]) -> None:
         other = copy.deepcopy(store)
         other["paths"]["ccc-out"]["nar_size"] = 999
         lines = store_state._compare_one(store, other)
@@ -239,39 +248,39 @@ class TestComparison:
         assert "400" in lines[0]
         assert "999" in lines[0]
 
-    def test_a_path_that_one_side_lacks_is_reported(self, store) -> None:
+    def test_a_path_that_one_side_lacks_is_reported(self, store: dict[str, Any]) -> None:
         other = copy.deepcopy(store)
         del other["paths"]["ccc-out"]
         lines = store_state._compare_one(store, other)
         assert any("ccc-out" in line and "pynixd does not" in line for line in lines)
 
-    def test_a_path_that_only_pynixd_has_is_reported(self, store) -> None:
+    def test_a_path_that_only_pynixd_has_is_reported(self, store: dict[str, Any]) -> None:
         other = copy.deepcopy(store)
         other["paths"]["zzz-extra"] = dict(other["paths"]["ccc-out"])
         lines = store_state._compare_one(store, other)
         assert any("zzz-extra" in line and "the daemon does not" in line for line in lines)
 
-    def test_an_output_map_that_disagrees_is_reported(self, store) -> None:
+    def test_an_output_map_that_disagrees_is_reported(self, store: dict[str, Any]) -> None:
         """The difference the first CA run found: `QueryDerivationOutputMap`."""
         other = copy.deepcopy(store)
         other["derivation_outputs"]["aaa-builder.sh"]["out"] = "zzz-wrong"
         lines = store_state._compare_one(store, other)
         assert any("derivation_outputs" in line and "zzz-wrong" in line for line in lines)
 
-    def test_a_realisation_registered_once_instead_of_twice_is_reported(self, store) -> None:
+    def test_a_realisation_registered_once_instead_of_twice_is_reported(self, store: dict[str, Any]) -> None:
         other = copy.deepcopy(store)
         other["realisations"]["sha256:ddd!out"] = other["realisations"]["sha256:ddd!out"][:1]
         lines = store_state._compare_one(store, other)
         assert any("realisations" in line and "sha256:ddd!out" in line for line in lines)
 
-    def test_a_store_that_could_not_be_read_is_not_agreement(self, store) -> None:
+    def test_a_store_that_could_not_be_read_is_not_agreement(self, store: dict[str, Any]) -> None:
         """An unreadable store holds no table, so every comparison finds
         nothing. "The two agree" is the one answer it must not give."""
         broken = {"unreadable": "database disk image is malformed"}
         assert store_state._compare_one(store, broken) != []
         assert store_state._compare_one(broken, store) != []
 
-    def test_a_reference_that_went_missing_is_reported(self, store) -> None:
+    def test_a_reference_that_went_missing_is_reported(self, store: dict[str, Any]) -> None:
         """The failure a `BuildResult` hides: the build succeeded, and the path
         it registered points at nothing."""
         other = copy.deepcopy(store)
@@ -289,7 +298,7 @@ class TestNoise:
     """
 
     @pytest.fixture
-    def pair(self, tmp_path: Path, snapshot: dict) -> tuple[Path, Path]:
+    def pair(self, tmp_path: Path, snapshot: Snapshot) -> tuple[Path, Path]:
         """Two snapshots that disagree, under a name `NOISE` covers."""
         noisy = store_state.NOISE[0].test
         control = {noisy: snapshot["ca/build"]}
@@ -302,7 +311,9 @@ class TestNoise:
         right.write_text(json.dumps(candidate))
         return left, right
 
-    def test_a_noisy_test_is_not_counted_as_a_difference(self, pair, capsys) -> None:
+    def test_a_noisy_test_is_not_counted_as_a_difference(
+        self, pair: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+    ) -> None:
         left, right = pair
         code = store_state._compare(left, right)
         out = capsys.readouterr().out
@@ -314,7 +325,7 @@ class TestNoise:
         # Not a failure either: the run says nothing about this test.
         assert code == 0
 
-    def test_a_noisy_test_still_reaches_the_report(self, pair) -> None:
+    def test_a_noisy_test_still_reaches_the_report(self, pair: tuple[Path, Path]) -> None:
         """Counted out of the answer, and not hidden from the reader.
 
         A difference that nobody can see is how a real one goes unnoticed once
@@ -328,7 +339,7 @@ class TestNoise:
         assert store_state.NOISE[0].reason in report
         assert "nar_size" in report
 
-    def test_a_test_outside_the_list_is_still_a_difference(self, tmp_path, snapshot) -> None:
+    def test_a_test_outside_the_list_is_still_a_difference(self, tmp_path: Path, snapshot: Snapshot) -> None:
         """The list names five tests, and covers no other."""
         control = {"ca/not-noisy": snapshot["ca/build"]}
         candidate = copy.deepcopy(control)
@@ -355,14 +366,16 @@ class TestMissingAndExtra:
     that missed nothing.
     """
 
-    def _write(self, tmp_path: Path, control: dict, candidate: dict) -> tuple[Path, Path]:
+    def _write(self, tmp_path: Path, control: Snapshot, candidate: Snapshot) -> tuple[Path, Path]:
         left = tmp_path / "control.json"
         right = tmp_path / "candidate.json"
         left.write_text(json.dumps(control))
         right.write_text(json.dumps(candidate))
         return left, right
 
-    def test_a_store_only_the_daemon_left_is_missing(self, tmp_path, snapshot, capsys) -> None:
+    def test_a_store_only_the_daemon_left_is_missing(
+        self, tmp_path: Path, snapshot: Snapshot, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         left, right = self._write(tmp_path, snapshot, {})
         code = store_state._compare(left, right)
         out = capsys.readouterr().out
@@ -372,7 +385,9 @@ class TestMissingAndExtra:
         assert "extra:     0" in out
         assert code == 1
 
-    def test_a_store_only_pynixd_left_is_extra(self, tmp_path, snapshot, capsys) -> None:
+    def test_a_store_only_pynixd_left_is_extra(
+        self, tmp_path: Path, snapshot: Snapshot, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         left, right = self._write(tmp_path, {}, snapshot)
         code = store_state._compare(left, right)
         out = capsys.readouterr().out
@@ -382,12 +397,14 @@ class TestMissingAndExtra:
         assert "missing:   0" in out
         assert code == 1
 
-    def test_an_extra_store_says_how_many_paths_it_holds(self, tmp_path, snapshot, capsys) -> None:
+    def test_an_extra_store_says_how_many_paths_it_holds(
+        self, tmp_path: Path, snapshot: Snapshot, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         """Zero paths is the shape of #42, and any other number is not.
 
         A line that named the test alone could not tell the two apart.
         """
-        empty = {"main/nars": {"paths": {}, "derivation_outputs": {}, "realisations": {}}}
+        empty: Snapshot = {"main/nars": {"paths": {}, "derivation_outputs": {}, "realisations": {}}}
         left, right = self._write(tmp_path, {}, {**snapshot, **empty})
         store_state._compare(left, right)
         out = capsys.readouterr().out

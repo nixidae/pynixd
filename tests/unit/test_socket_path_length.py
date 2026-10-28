@@ -71,7 +71,7 @@ class TestTheGuard:
     def test_a_long_directory_with_a_short_name_passes_on_linux(self) -> None:
         _refuse_a_socket_path_python_cannot_reach(_a_long_dir_with_a_short_name())
 
-    def test_a_long_directory_with_a_short_name_is_refused_off_linux(self, monkeypatch) -> None:
+    def test_a_long_directory_with_a_short_name_is_refused_off_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sys, "platform", "darwin")
         with pytest.raises(RuntimeError, match="Unix socket takes"):
             _refuse_a_socket_path_python_cannot_reach(_a_long_dir_with_a_short_name())
@@ -124,7 +124,7 @@ def _serve_one_ping(listener: socket.socket) -> bytes:
 
 
 class TestTheReroute:
-    async def test_reaches_a_socket_bound_the_way_nix_binds(self, tmp_path) -> None:
+    async def test_reaches_a_socket_bound_the_way_nix_binds(self, tmp_path: Path) -> None:
         """The capability of issue #44: the socket file exists at a path no
         absolute `connect` can name, and the reroute carries the bytes."""
         sock_path = _a_long_socket_under(tmp_path)
@@ -150,7 +150,7 @@ class TestTheReroute:
             listener.close()
         assert served == [b"ping"]
 
-    async def test_an_ordinary_path_connects_directly(self, tmp_path) -> None:
+    async def test_an_ordinary_path_connects_directly(self, tmp_path: Path) -> None:
         """The negative control: the reroute changes nothing that fits."""
         sock_path = tmp_path / "sock"
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -176,7 +176,7 @@ class TestTheReroute:
 
 
 class TestTheTestStoresFit:
-    def test_the_longest_test_name_still_leaves_room(self, tmp_path) -> None:
+    def test_the_longest_test_name_still_leaves_room(self, tmp_path: Path) -> None:
         """`tests/_conftest/fixtures.py` truncates a test's name so that the
         daemon socket of its store fits. This is that budget, measured
         against the real fixture rather than against its arithmetic."""
@@ -192,7 +192,7 @@ class TestTheLimitIsReal:
     and they are what makes `_SUN_PATH_MAX` a fact rather than a belief.
     """
 
-    def test_the_kernel_refuses_one_byte_more(self, tmp_path) -> None:
+    def test_the_kernel_refuses_one_byte_more(self, tmp_path: Path) -> None:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             with pytest.raises(OSError, match="too long"):
@@ -200,7 +200,7 @@ class TestTheLimitIsReal:
         finally:
             sock.close()
 
-    def test_the_kernel_takes_the_limit_itself(self, tmp_path) -> None:
+    def test_the_kernel_takes_the_limit_itself(self, tmp_path: Path) -> None:
         # Inside tmp_path, so the bind leaves nothing behind. The name is
         # padded to reach the limit exactly.
         room = _SUN_PATH_MAX - len(os.fsencode(str(tmp_path))) - 1

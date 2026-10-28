@@ -10,7 +10,6 @@ Implements the Nix derivation resolution algorithm in Python:
 
 Validates against known Nix output paths.
 """
-# pyright: reportArgumentType=false
 
 from __future__ import annotations
 
@@ -246,8 +245,7 @@ def resolve_derivation(
 
     # Compute the placeholder for each input drv output
     rewrites: dict[str, str] = {}
-    new_input_srcs = {StorePath(path=str(path)) for path in drv.input_srcs}  # pyright: ignore[reportUnhashable]
-
+    new_input_srcs = {StorePath(path=str(path)) for path in drv.input_srcs}
     for input_drv_path, output_names in drv.input_drvs.items():
         input_drv_str = str(input_drv_path)
         input_basename = input_drv_str.rsplit("/", 1)[-1]
@@ -464,8 +462,8 @@ async def main() -> None:
     for p in sorted(str(p) for p in resolved.input_srcs):
         print(f"    {p}")
     print("  outputs:")
-    for name, o in resolved.outputs.items():
-        print(f"    {name}: path={o.path!r} method={o.method!r} hash={o.hash_digest!r}")
+    for name, output in resolved.outputs.items():
+        print(f"    {name}: path={output.path!r} method={output.method!r} hash={output.hash_digest!r}")
     print(f"  env['out'] = {resolved.env.get('out', '!MISSING')!r}")
 
     # ── Step 4: Compare with Nix's result ──

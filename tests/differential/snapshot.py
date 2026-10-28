@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
     # huggorm is a sibling source, and the runner of this suite puts it on
     # the path. A checkout of pynixd alone does not have it.
-    from huggorm import AsyncStore  # pyright: ignore[reportMissingImports]
+    from huggorm import AsyncStore  # type: ignore[import-not-found]  # the type gate has no huggorm; see default.nix
 
 # The two fields of `query_path_info` that a snapshot drops, and the reason for
 # each. Everything else states what the path *is*, and two engines that agree

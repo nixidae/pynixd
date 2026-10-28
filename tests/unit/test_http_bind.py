@@ -34,7 +34,8 @@ def _free_port() -> int:
     """
     with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as probe:
         probe.bind(("::", 0))
-        return probe.getsockname()[1]
+        port: int = probe.getsockname()[1]
+        return port
 
 
 async def _answers(host: str, port: int) -> bool:

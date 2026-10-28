@@ -58,10 +58,10 @@ class MockConnection:
         self.id = f"mock-{store.store_id}"
         self.version = 0x125  # Simulates a modern Nix protocol version (e.g. 1.37)
         self.nix_version = store.nix_version
-        self.features = set()
+        self.features: set[str] = set()
         self.connected = True
         self.dirty = False
-        self.op_log = []
+        self.op_log: list[str] = []
         # `ConnectionPool._too_old` reads this on every `acquire`, so a stand-in
         # for `Connection` has to carry it. `Connection.__init__` sets it from
         # `time.monotonic()`, and this does the same rather than picking a
@@ -87,28 +87,28 @@ class MockConnection:
             def peer_closed(self) -> bool:
                 return False
 
-            def framed(self):
+            def framed(self) -> DummyRW:
                 return self
 
-            def write(self, *args, **kwargs):
+            def write(self, *args: object, **kwargs: object) -> None:
                 pass
 
-            def write_uint64(self, *args, **kwargs):
+            def write_uint64(self, *args: object, **kwargs: object) -> None:
                 pass
 
-            def write_string(self, *args, **kwargs):
+            def write_string(self, *args: object, **kwargs: object) -> None:
                 pass
 
-            def write_string_set(self, *args, **kwargs):
+            def write_string_set(self, *args: object, **kwargs: object) -> None:
                 pass
 
-            async def is_dirty(self):
+            async def is_dirty(self) -> bool:
                 return False
 
-            async def drain(self):
+            async def drain(self) -> None:
                 pass
 
-            async def finalize(self):
+            async def finalize(self) -> None:
                 pass
 
         self.r = cast("NixReader", DummyRW(f"{self.id}-r"))
@@ -131,7 +131,7 @@ class MockConnection:
         """Forward all calls to the parent MockStore's execute_mock method."""
         return await self.store.execute_mock(request)
 
-    def close(self):
+    def close(self) -> None:
         self.connected = False
 
 

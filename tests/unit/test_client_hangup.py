@@ -128,7 +128,7 @@ async def test_a_cancelled_request_lets_go_of_its_builds(monkeypatch: pytest.Mon
     async with anyio.create_task_group() as tg:
         tg.start_soon(
             engine.build_paths_with_results,
-            BuildPathsWithResultsRequest(derived_paths=[], build_mode=BuildMode.NORMAL),
+            BuildPathsWithResultsRequest(derived_paths=[], build_mode=BuildMode.NORMAL),  # type: ignore[arg-type]  # zuban-bug: start_soon with a function that has defaulted parameters
         )
         await held.wait()
         tg.cancel_scope.cancel()

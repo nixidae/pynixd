@@ -172,7 +172,7 @@ async def test_throughput_pynixd(profiler: pyinstrument.Profiler) -> None:
         ssh_port=0,
     ) as server:
         log.info("server_up_resetting_profiler")
-        profiler.reset()
+        profiler.reset()  # type: ignore[no-untyped-call]  # pyinstrument ships no type hints
 
         try:
             system = get_current_system()

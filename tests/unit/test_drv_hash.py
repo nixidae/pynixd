@@ -14,12 +14,16 @@ hash. See `pynixd/drv_hash.py` for the two rules that the walk follows.
 from __future__ import annotations
 
 import binascii
+from typing import TYPE_CHECKING
 
 import pytest
 
 from pynixd.drv_hash import output_hashes
 from pynixd.drv_parser import parse_drv
 from pynixd.goals.resolution import _make_output_path
+
+if TYPE_CHECKING:
+    from pynixd.drv_parser import Derivation
 
 BASE_PATH = "/nix/store/434i66dyibz4zshbfhsl8vvwykravahs-drv-hash-base.drv"
 BASE_TEXT = (
@@ -41,11 +45,11 @@ TOP_TEXT = (
 )
 
 
-async def _read(drv_path: str):
+async def _read(drv_path: str) -> Derivation | None:
     return parse_drv(BASE_TEXT) if drv_path == BASE_PATH else None
 
 
-async def _read_nothing(drv_path: str):
+async def _read_nothing(drv_path: str) -> None:
     del drv_path
     return None
 
@@ -109,7 +113,7 @@ async def test_the_cache_answers_for_an_input_read_once() -> None:
     """
     reads: list[str] = []
 
-    async def counting(drv_path: str):
+    async def counting(drv_path: str) -> Derivation | None:
         reads.append(drv_path)
         return await _read(drv_path)
 
@@ -152,7 +156,7 @@ async def test_two_inputs_with_one_fixed_output_name_it_once() -> None:
     """
     texts = {TWO_FOD_A: _SAME_FOD.format(tag="a"), TWO_FOD_B: _SAME_FOD.format(tag="b")}
 
-    async def read(drv_path: str):
+    async def read(drv_path: str) -> Derivation | None:
         text = texts.get(drv_path)
         return None if text is None else parse_drv(text)
 

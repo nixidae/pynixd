@@ -161,7 +161,7 @@ class TestTheFieldFilter:
     """The per-class filter skips fields, never paths."""
 
     def test_only_path_shaped_fields_are_scanned(self) -> None:
-        assert set(_path_field_names(_Shapes)) == {"path", "maybe", "many"}
+        assert set(_path_field_names(_Shapes)) == {"path", "maybe", "many"}  # type: ignore[arg-type]  # zuban-bug: a class is hashable, but zuban reads the pydantic model's __hash__ as None
 
     def test_the_filter_matches_the_full_scan(self) -> None:
         full = _Shapes(
@@ -185,7 +185,7 @@ class TestTheFieldFilter:
         with it.
         """
         only_a_map = _Shapes(path=StorePath(path=""), paths_by_name={"hello": StorePath(path=HELLO)})
-        assert _path_field_names(_Shapes) == ("path", "maybe", "many")
+        assert _path_field_names(_Shapes) == ("path", "maybe", "many")  # type: ignore[arg-type]  # zuban-bug: a class is hashable, but zuban reads the pydantic model's __hash__ as None
         assert referenced_paths(only_a_map) == _full_scan(only_a_map) == set()
 
     def test_the_filter_matches_the_full_scan_when_empty(self) -> None:

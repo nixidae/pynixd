@@ -173,7 +173,7 @@ class TestSignPathInfo:
 
         key = SecretKey._parse(f"test:{_SEED_32_B64}")
         path = StorePath(path="/nix/store/abc123-foo")
-        references = {StorePath(path="/nix/store/ref1-dep")}  # pyright: ignore[reportUnhashable]
+        references = {StorePath(path="/nix/store/ref1-dep")}
         info = ValidPathInfo(
             path=path,
             info=UnkeyedValidPathInfo(
@@ -198,12 +198,12 @@ class TestSignPathInfo:
 
 
 class TestGetDefaultSigningKey:
-    def test_no_env_var(self, monkeypatch) -> None:
+    def test_no_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("PYNIXD_SIGNING_KEY", raising=False)
 
         assert get_default_signing_key() is None
 
-    def test_with_env_var(self, monkeypatch) -> None:
+    def test_with_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
         key_str = f"mykey:{_SEED_32_B64}"
         monkeypatch.setenv("PYNIXD_SIGNING_KEY", key_str)
 

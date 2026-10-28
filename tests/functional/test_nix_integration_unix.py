@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -10,6 +11,9 @@ from pynixd import Server
 from pynixd.serde import IsValidPathRequest, StorePath
 from pynixd.store import LocalSocketStore
 from tests.conftest import CLIENT_BIN, make_test_spec, run_subproc
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 """
 End-to-End Nix Integration Tests via Unix Socket
@@ -21,7 +25,7 @@ daemon protocol proxying logic without SSH complexity.
 
 
 @pytest.fixture
-async def pynixd_server(tmp_path: Path):
+async def pynixd_server(tmp_path: Path) -> AsyncIterator[tuple[Server, Path, Path]]:
     """Start a pynixd server listening on a Unix socket."""
     store_path = tmp_path / "store"
     store_path.mkdir()
@@ -40,7 +44,7 @@ async def pynixd_server(tmp_path: Path):
         yield server, socket_path, store_path
 
 
-async def test_nix_build_via_unix(pynixd_server) -> None:
+async def test_nix_build_via_unix(pynixd_server: tuple[Server, Path, Path]) -> None:
     """Verify that 'nix build' works when using pynixd via Unix socket."""
     server, socket_path, store_path = pynixd_server
 
@@ -81,7 +85,7 @@ async def test_nix_build_via_unix(pynixd_server) -> None:
 
 
 @pytest.mark.legacy_nix_commands
-async def test_nix_copy_via_unix(pynixd_server, tmp_path: Path) -> None:
+async def test_nix_copy_via_unix(pynixd_server: tuple[Server, Path, Path], tmp_path: Path) -> None:
     """Verify 'nix copy' works against pynixd via Unix socket."""
     server, socket_path, store_path = pynixd_server
     uri = f"unix://{socket_path}?root={store_path}"

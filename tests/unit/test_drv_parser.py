@@ -30,6 +30,8 @@ if TYPE_CHECKING:
 
 _PROBES_NIX = Path(__file__).parent.parent.parent / "tests" / "nix" / "drv-probes.nix"
 
+type Probes = dict[str, tuple[str, str, dict[str, Any]]]
+
 
 # ── Session-scoped fixture: evaluate drv-probes.nix once ───────────────────
 
@@ -55,7 +57,7 @@ def drv_probes_path() -> Path:
 
 
 @pytest.fixture(scope="session")
-def probes(drv_probes_path: Path) -> dict[str, tuple[str, str, dict[str, Any]]]:
+def probes(drv_probes_path: Path) -> Probes:
     """Evaluate all entries in drv-probes.nix.
 
     Returns {name: (drv_path, drv_content, canonical_derivation_show)}.
@@ -78,7 +80,7 @@ def probes(drv_probes_path: Path) -> dict[str, tuple[str, str, dict[str, Any]]]:
     if shutil.which(str(NIX_BIN)) is None:
         pytest.skip(f"{NIX_BIN} is not on PATH, so no probe can be evaluated")
 
-    async def _eval_all():
+    async def _eval_all() -> Probes:
         # List attribute names using --apply
         proc = await asyncio.create_subprocess_exec(
             NIX_BIN,
@@ -97,7 +99,7 @@ def probes(drv_probes_path: Path) -> dict[str, tuple[str, str, dict[str, Any]]]:
             raise RuntimeError(f"Failed to list probes: {stderr.decode()}")
         names = json.loads(stdout.decode())
 
-        result = {}
+        result: Probes = {}
         for name in names:
             proc = await asyncio.create_subprocess_exec(
                 NIX_BIN,
@@ -150,12 +152,14 @@ def _canonical_entry(canonical: dict[str, Any]) -> dict[str, Any]:
     Handles both ``{"derivations": {...}, "version": 4}`` and the flat format.
     """
     d = canonical.get("derivations", canonical)
-    return next(iter(d.values()))
+    entry: dict[str, Any] = next(iter(d.values()))
+    return entry
 
 
 def _canonical_drv_key(canonical: dict[str, Any]) -> str:
     d = canonical.get("derivations", canonical)
-    return next(iter(d))
+    key: str = next(iter(d))
+    return key
 
 
 # ── Live probes tests ──────────────────────────────────────────────────────
@@ -168,77 +172,77 @@ class TestLiveProbes:
     ``nix derivation show`` canonical JSON.
     """
 
-    def test_simple_env(self, probes) -> None:
+    def test_simple_env(self, probes: Probes) -> None:
         _, drv_content, canonical = probes["simple"]
         parsed = parse_drv(drv_content)
         result = parsed.to_json(_canonical_drv_key(canonical))
         entry = result[_canonical_drv_key(canonical)]
         assert entry["env"] == _canonical_entry(canonical)["env"]
 
-    def test_simple_metadata(self, probes) -> None:
+    def test_simple_metadata(self, probes: Probes) -> None:
         _, drv_content, canonical = probes["simple"]
         parsed = parse_drv(drv_content)
         entry = _canonical_entry(canonical)
         assert parsed.platform == entry["system"]
         assert parsed.builder == entry["builder"]
 
-    def test_simple_output_kind(self, probes) -> None:
+    def test_simple_output_kind(self, probes: Probes) -> None:
         _, drv_content, _ = probes["simple"]
         parsed = parse_drv(drv_content)
         assert parsed.output_kinds() == [OutputKind.INPUT_ADDRESSED]
 
-    def test_ca_floating_env(self, probes) -> None:
+    def test_ca_floating_env(self, probes: Probes) -> None:
         _, drv_content, canonical = probes["ca-floating"]
         parsed = parse_drv(drv_content)
         result = parsed.to_json(_canonical_drv_key(canonical))
         assert result[_canonical_drv_key(canonical)]["env"] == _canonical_entry(canonical)["env"]
 
-    def test_ca_floating_output_kind(self, probes) -> None:
+    def test_ca_floating_output_kind(self, probes: Probes) -> None:
         _, drv_content, _ = probes["ca-floating"]
         parsed = parse_drv(drv_content)
         assert parsed.output_kinds() == [OutputKind.CA_FLOATING]
 
-    def test_ca_floating_no_output_path(self, probes) -> None:
+    def test_ca_floating_no_output_path(self, probes: Probes) -> None:
         _, drv_content, _ = probes["ca-floating"]
         parsed = parse_drv(drv_content)
         assert parsed.outputs[0].path == ""
 
-    def test_ca_fixed_env(self, probes) -> None:
+    def test_ca_fixed_env(self, probes: Probes) -> None:
         _, drv_content, canonical = probes["ca-fixed"]
         parsed = parse_drv(drv_content)
         result = parsed.to_json(_canonical_drv_key(canonical))
         assert result[_canonical_drv_key(canonical)]["env"] == _canonical_entry(canonical)["env"]
 
-    def test_ca_fixed_output_kind(self, probes) -> None:
+    def test_ca_fixed_output_kind(self, probes: Probes) -> None:
         _, drv_content, _ = probes["ca-fixed"]
         parsed = parse_drv(drv_content)
         # Fixed CA: path + hash_algo + hash_value all set
         assert parsed.output_kinds() == [OutputKind.CA_FIXED]
 
-    def test_text_hashed_env(self, probes) -> None:
+    def test_text_hashed_env(self, probes: Probes) -> None:
         _, drv_content, canonical = probes["text-hashed"]
         parsed = parse_drv(drv_content)
         result = parsed.to_json(_canonical_drv_key(canonical))
         assert result[_canonical_drv_key(canonical)]["env"] == _canonical_entry(canonical)["env"]
 
-    def test_dynamic_env(self, probes) -> None:
+    def test_dynamic_env(self, probes: Probes) -> None:
         _, drv_content, canonical = probes["dynamic"]
         parsed = parse_drv(drv_content)
         result = parsed.to_json(_canonical_drv_key(canonical))
         assert result[_canonical_drv_key(canonical)]["env"] == _canonical_entry(canonical)["env"]
 
-    def test_dynamic_has_dynamic_flag(self, probes) -> None:
+    def test_dynamic_has_dynamic_flag(self, probes: Probes) -> None:
         _, drv_content, _ = probes["dynamic"]
         parsed = parse_drv(drv_content)
         assert parsed.env["__dynamicDerivation"] == "1"
         assert parsed.required_system_features == {"recursive-nix"}
 
-    def test_with_features(self, probes) -> None:
+    def test_with_features(self, probes: Probes) -> None:
         _, drv_content, _ = probes["with-features"]
         parsed = parse_drv(drv_content)
         assert parsed.required_system_features == {"kvm", "big-parallel"}
 
-    def test_multiple_input_drvs(self, probes) -> None:
+    def test_multiple_input_drvs(self, probes: Probes) -> None:
         """Most probes have multiple input derivations (stdenv + bash)."""
         _, drv_content, _ = probes["simple"]
         parsed = parse_drv(drv_content)
@@ -246,13 +250,13 @@ class TestLiveProbes:
         # runCommand includes source-stdenv.sh as input srcs
         assert len(parsed.input_srcs) == 2
 
-    def test_ca_has_input_srcs(self, probes) -> None:
+    def test_ca_has_input_srcs(self, probes: Probes) -> None:
         """CA derivations include source-stdenv.sh as input sources."""
         _, drv_content, _ = probes["ca-floating"]
         parsed = parse_drv(drv_content)
         assert len(parsed.input_srcs) == 2  # source-stdenv.sh + default-builder.sh
 
-    def test_minimal(self, probes) -> None:
+    def test_minimal(self, probes: Probes) -> None:
         """stdenvNoCC.mkDerivation — minimal build environment."""
         _, drv_content, canonical = probes["minimal"]
         parsed = parse_drv(drv_content)
@@ -260,7 +264,7 @@ class TestLiveProbes:
         assert result[_canonical_drv_key(canonical)]["env"] == _canonical_entry(canonical)["env"]
         assert parsed.platform == "x86_64-linux"
 
-    def test_to_json_matches_canonical(self, probes) -> None:
+    def test_to_json_matches_canonical(self, probes: Probes) -> None:
         """For every probe, verify to_json() produces the same env as nix derivation show."""
         for name, (_, drv_content, canonical) in probes.items():
             parsed = parse_drv(drv_content)
@@ -368,7 +372,7 @@ class TestDerivationProperties:
             OutputKind.CA_FLOATING,
         ]
 
-    def test_name(self, probes) -> None:
+    def test_name(self, probes: Probes) -> None:
         """Name should be derived from the store path (hash-name.drv)."""
         for name, (drv_path, drv_content, _) in probes.items():
             parsed = parse_drv(drv_content)
@@ -504,7 +508,7 @@ class TestParseDrvEdgeCases:
 class TestToBasicDerivation:
     """to_basic_derivation with mocked output_cache avoids disk I/O."""
 
-    async def test_simple_conversion(self, probes) -> None:
+    async def test_simple_conversion(self, probes: Probes) -> None:
 
         _, drv_content, _ = probes["simple"]
         parsed = parse_drv(drv_content)
@@ -512,7 +516,7 @@ class TestToBasicDerivation:
         assert len(result.outputs) == 1
         assert result.platform == "x86_64-linux"
 
-    async def test_with_output_cache(self, probes) -> None:
+    async def test_with_output_cache(self, probes: Probes) -> None:
 
         _, drv_content, _ = probes["simple"]
         parsed = parse_drv(drv_content)
@@ -522,7 +526,7 @@ class TestToBasicDerivation:
         result = await to_basic_derivation(parsed, StoreLayout.chroot(Path("/tmp/fake-store")), output_cache=cache)
         assert StorePath(path=f"/nix/store/realized-{out_name}") in result.input_srcs
 
-    async def test_cache_missing_adds_drv(self, probes) -> None:
+    async def test_cache_missing_adds_drv(self, probes: Probes) -> None:
 
         _, drv_content, _ = probes["simple"]
         parsed = parse_drv(drv_content)
@@ -542,12 +546,12 @@ class TestDrvOutputFields:
 
 
 class TestToJson:
-    def test_serializable(self, probes) -> None:
+    def test_serializable(self, probes: Probes) -> None:
         _, drv_content, _ = probes["simple"]
         parsed = parse_drv(drv_content)
         json.dumps(parsed.to_json("/nix/store/test.drv"))
 
-    def test_ca_no_path(self, probes) -> None:
+    def test_ca_no_path(self, probes: Probes) -> None:
         _, drv_content, _ = probes["ca-floating"]
         parsed = parse_drv(drv_content)
         result = parsed.to_json("/nix/store/ca.drv")
@@ -607,7 +611,7 @@ class TestSerialize:
         assert reparsed.args == parsed.args
         assert reparsed.env == parsed.env
 
-    def test_live_probe_roundtrip(self, probes) -> None:
+    def test_live_probe_roundtrip(self, probes: Probes) -> None:
         """Every live probe must roundtrip idempotently."""
         for name, drv_content, _ in probes.values():
             parsed = parse_drv(drv_content)

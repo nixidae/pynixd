@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
     from pathlib import Path
+    from typing import TextIO
 
     import pytest
 
@@ -252,7 +253,7 @@ logging.getLogger("pynixd.store.pool").setLevel(logging.INFO)
 
 
 @contextmanager
-def set_log_levels(levels: dict[str, int]):
+def set_log_levels(levels: dict[str, int]) -> Generator[None]:
     """Temporarily set logger levels, restoring them on exit."""
     saved = {}
     for name, level in levels.items():
@@ -292,7 +293,7 @@ def _human_readable_renderer(logger: Any, method_name: str, event_dict: Any) -> 
 # ── Setup / teardown helpers ─────────────────────────────────────
 
 
-def _setup_test_logging(log_dir: Path) -> tuple[logging.FileHandler, logging.StreamHandler]:
+def _setup_test_logging(log_dir: Path) -> tuple[logging.FileHandler, logging.StreamHandler[TextIO]]:
     """Attach per-test log handlers and configure structlog.
 
     Creates two handlers:
@@ -363,7 +364,7 @@ def _setup_test_logging(log_dir: Path) -> tuple[logging.FileHandler, logging.Str
 
 def _teardown_test_logging(
     file_handler: logging.FileHandler,
-    stderr_handler: logging.StreamHandler,
+    stderr_handler: logging.StreamHandler[TextIO],
     events: list[dict[str, Any]],
     log_dir: Path,
 ) -> None:

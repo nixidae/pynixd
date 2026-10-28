@@ -31,7 +31,7 @@ async def test_handshake_feature_announcement(tmp_path: Path) -> None:
     key = str(SESSION_SSH_KEYS / "id_user")
 
     # Store B has a specific feature matrix
-    fm_b = {"x86_64-linux": {"kvm", "big-parallel"}, "aarch64-linux": set()}
+    fm_b: dict[str, set[str]] = {"x86_64-linux": {"kvm", "big-parallel"}, "aarch64-linux": set()}
 
     store_b_path = STORE_PREFIX / "handshake-features-b"
     rmtree_robust(store_b_path)

@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 from contextlib import asynccontextmanager, closing
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Self
 
 import anyio
 import pytest
@@ -40,7 +40,11 @@ from pynixd.store_path import StorePath
 from tests.conftest import STORE_PREFIX, make_test_spec, rmtree_robust, serde_path
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from pathlib import Path
+
+    from nix_daemon_protocol.wire_ops import WireRequest
+    from pynixd.connection import ClientConn
 
 log = structlog.get_logger(__name__)
 
@@ -48,12 +52,12 @@ log = structlog.get_logger(__name__)
 class StatsTestStore(LocalDBStore):
     """A store that simulates builds with specific durations."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.build_delays: dict[str, float] = {}
 
     @asynccontextmanager
-    async def build_conn(self, options: SetOptionsRequest | None = None):  # type: ignore[override]
+    async def build_conn(self, options: SetOptionsRequest | None = None) -> AsyncIterator[Any]:  # type: ignore[override]
         # **The `options` parameter is not decoration.** Issue nixidae/nixidae#231 gave a
         # build the option set of the client that asked for it, and
         # `Scheduler.execute_build` has passed it ever since. A stand-in
@@ -63,26 +67,25 @@ class StatsTestStore(LocalDBStore):
         async with self.build_pool.acquire("build", options):
 
             class MockConn:
-                def __init__(self, store):
+                def __init__(self, store: StatsTestStore) -> None:
                     self.store = store
                     self.op_log: list[str] = []
 
-                async def __aenter__(self):
+                async def __aenter__(self) -> Self:
                     return self
 
-                async def __aexit__(self, *args):
+                async def __aexit__(self, *args: object) -> None:
                     pass
 
                 async def call(
                     self,
-                    request,
-                    client=None,
-                    suppress_last=False,
-                    raise_on_error=False,
-                    options=None,
-                    keep_logs=None,
-                ):
-
+                    request: object,
+                    client: object = None,
+                    suppress_last: bool = False,
+                    raise_on_error: bool = False,
+                    options: object = None,
+                    keep_logs: object = None,
+                ) -> BuildDerivationResponse:
                     if isinstance(request, BuildDerivationRequest):
                         pname = request.derivation.env.get("pname", "unknown")
                         delay = self.store.build_delays.get(pname, 0.1)
@@ -94,17 +97,16 @@ class StatsTestStore(LocalDBStore):
                         f"MockConn doesn't support {type(request)}",
                     )
 
-            yield MockConn(self)  # type: ignore
+            yield MockConn(self)
 
     async def execute(
         self,
-        request,
-        client=None,
-        suppress_last=False,
-        skip_probe=False,
-        mark=True,
-    ):
-
+        request: WireRequest,
+        client: ClientConn | None = None,
+        suppress_last: bool = False,
+        skip_probe: bool = False,
+        mark: bool = True,
+    ) -> Any:
         if isinstance(request, QueryAllValidPathsRequest):
             return QueryAllValidPathsResponse(paths=set())
 
@@ -132,12 +134,12 @@ class StatsTestStore(LocalDBStore):
 
     async def call(
         self,
-        request,
-        client=None,
-        suppress_last=False,
-        raise_on_error=False,
-        skip_probe=False,
-    ):
+        request: WireRequest,
+        client: ClientConn | None = None,
+        suppress_last: bool = False,
+        raise_on_error: bool = False,
+        skip_probe: bool = False,
+    ) -> Any:
         return await super().call(
             request,
             client,
@@ -363,7 +365,7 @@ async def test_expected_build_ms_is_the_median_of_the_identity(tmp_path: Path) -
 class CpuUtilTestStore(StatsTestStore):
     """StatsTestStore with a settable cpu_util for scheduler testing."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._cpu_util: CpuUtil | None = None
 

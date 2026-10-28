@@ -39,7 +39,7 @@ CA_NIX_CONFIG = for_ca_derivations(
 
 
 @pytest.fixture
-async def ca_env(pynixd_server: Server):
+async def ca_env(pynixd_server: Server) -> tuple[Server, str]:
     """Set up a pynixd server with CA-derivations enabled."""
     return pynixd_server, server_uri(pynixd_server)
 
@@ -191,7 +191,7 @@ async def test_non_ca_depends_on_ca_root_store(
 
 
 @pytest.mark.ca_derivations
-async def test_ca_simple_via_pynixd(profiler: pyinstrument.Profiler, ca_env) -> None:
+async def test_ca_simple_via_pynixd(profiler: pyinstrument.Profiler, ca_env: tuple[Server, str]) -> None:
     """Build a CA floating derivation through pynixd.
 
     Store operations triggered:
@@ -229,7 +229,7 @@ async def test_ca_simple_via_pynixd(profiler: pyinstrument.Profiler, ca_env) -> 
 @pytest.mark.ca_derivations
 async def test_ca_multi_output_via_pynixd(
     profiler: pyinstrument.Profiler,
-    ca_env,
+    ca_env: tuple[Server, str],
 ) -> None:
     """Build a CA derivation with multiple outputs through pynixd.
 
@@ -270,7 +270,7 @@ async def test_ca_multi_output_via_pynixd(
 @pytest.mark.ca_derivations
 async def test_ca_depends_on_ca_via_pynixd(
     profiler: pyinstrument.Profiler,
-    ca_env,
+    ca_env: tuple[Server, str],
 ) -> None:
     """Build a CA derivation that depends on another CA derivation through pynixd.
 
@@ -310,7 +310,7 @@ async def test_ca_depends_on_ca_via_pynixd(
 @pytest.mark.ca_derivations
 async def test_non_ca_depends_on_ca_via_pynixd(
     profiler: pyinstrument.Profiler,
-    ca_env,
+    ca_env: tuple[Server, str],
 ) -> None:
     """Build a deferred (non-CA) derivation that depends on a CA derivation through pynixd.
 
@@ -350,7 +350,7 @@ async def test_non_ca_depends_on_ca_via_pynixd(
 @pytest.mark.ca_derivations
 async def test_ca_query_derivation_output_map_via_pynixd(
     profiler: pyinstrument.Profiler,
-    ca_env,
+    ca_env: tuple[Server, str],
 ) -> None:
     """Build CA derivation through pynixd then query its output map.
 
@@ -491,7 +491,7 @@ async def test_ca_query_derivation_output_map_root_store(
 
 
 @pytest.mark.ca_derivations
-async def test_dynamic_drv_trampoline(profiler: pyinstrument.Profiler, dyn_env) -> None:
+async def test_dynamic_drv_trampoline(profiler: pyinstrument.Profiler, dyn_env: tuple[Server, str]) -> None:
     """Build a nested dynamic derivation (producingDrv^out^out) through pynixd.
 
     This exercises the trampoline: producingDrv's output is hello.drv,
@@ -566,7 +566,7 @@ DYN_NIX_CONFIG = for_dynamic_derivations(
 
 
 @pytest.fixture
-async def dyn_env(pynixd_server: Server):
+async def dyn_env(pynixd_server: Server) -> tuple[Server, str]:
     """Set up a pynixd server with dynamic-derivations enabled."""
     return pynixd_server, server_uri(pynixd_server)
 
@@ -574,7 +574,7 @@ async def dyn_env(pynixd_server: Server):
 @pytest.mark.ca_derivations
 async def test_dynamic_drv_producing_via_pynixd(
     profiler: pyinstrument.Profiler,
-    dyn_env,
+    dyn_env: tuple[Server, str],
 ) -> None:
     """Build producingDrv (text-hashed CA whose output IS a .drv) through pynixd.
 
@@ -708,7 +708,7 @@ async def test_text_hashed_ca_build_root_store(
 @pytest.mark.ca_derivations
 async def test_text_hashed_ca_build_via_pynixd(
     profiler: pyinstrument.Profiler,
-    ca_env,
+    ca_env: tuple[Server, str],
 ) -> None:
     """Build a text-hashed CA derivation through pynixd proxy.
 
@@ -787,7 +787,7 @@ async def test_text_hashed_ca_build_via_pynixd(
 @pytest.mark.ca_derivations
 async def test_dynamic_drv_wrapper_via_pynixd(
     profiler: pyinstrument.Profiler,
-    dyn_env,
+    dyn_env: tuple[Server, str],
 ) -> None:
     """Build the wrapper derivation (depends on dynamic drv^out^out) through pynixd.
 
@@ -831,7 +831,7 @@ async def test_dynamic_drv_wrapper_via_pynixd(
 
 
 @pytest.mark.ca_derivations
-async def test_deferred_dynamic_producer_via_pynixd(dyn_env) -> None:
+async def test_deferred_dynamic_producer_via_pynixd(dyn_env: tuple[Server, str]) -> None:
     """Issue #9: build a deferred producer before resolving its consumer."""
     _, uri = dyn_env
     rc, stdout, _, stdboth = await run_subproc(
@@ -865,7 +865,7 @@ async def test_deferred_dynamic_producer_via_pynixd(dyn_env) -> None:
 @pytest.mark.ca_derivations
 async def test_deep_dynamic_drv_chain_via_pynixd(
     profiler: pyinstrument.Profiler,
-    dyn_env,
+    dyn_env: tuple[Server, str],
 ) -> None:
     """The 5-deep dynamic derivation chain (deepWrapper) fails through pynixd, as through Nix.
 

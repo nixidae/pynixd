@@ -5,7 +5,7 @@ from pynixd import Server
 from pynixd.config import LocalSocketStoreSpec, PynixdSettings
 
 
-async def test_start_stop(tmp_path) -> None:
+async def test_start_stop(tmp_path: Path) -> None:
     settings = PynixdSettings(config=Path("/etc/pynixd/pynixd.json"))
     settings.unix_path = None
     settings.stores["local"] = LocalSocketStoreSpec(

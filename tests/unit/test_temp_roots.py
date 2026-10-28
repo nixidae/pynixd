@@ -14,22 +14,26 @@ import socket
 import tempfile
 import threading
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from nix_daemon_protocol.store_path import StorePath
 from pynixd.temp_roots import TempRoots
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 PATH_A = "/nix/store/00000000000000000000000000000000-a"
 PATH_B = "/nix/store/11111111111111111111111111111111-b"
 
 
-def read_roots(path) -> list[str]:
+def read_roots(path: Path) -> list[str]:
     """The roots of a temporary roots file, as `findTempRoots` reads them."""
     return [part.decode() for part in path.read_bytes().split(b"\0") if part]
 
 
-def can_write_lock(path) -> bool:
+def can_write_lock(path: Path) -> bool:
     """True when the collector would call this file stale and delete it."""
     fd = os.open(path, os.O_RDWR)
     try:
@@ -42,7 +46,7 @@ def can_write_lock(path) -> bool:
 
 
 @pytest.mark.anyio
-async def test_a_root_reaches_the_file(tmp_path) -> None:
+async def test_a_root_reaches_the_file(tmp_path: Path) -> None:
     roots = TempRoots(tmp_path)
     await roots.add(PATH_A)
     try:
@@ -52,7 +56,7 @@ async def test_a_root_reaches_the_file(tmp_path) -> None:
 
 
 @pytest.mark.anyio
-async def test_a_store_path_writes_what_its_string_writes(tmp_path) -> None:
+async def test_a_store_path_writes_what_its_string_writes(tmp_path: Path) -> None:
     """The `StorePath` short-circuit skips the re-parse, not the write."""
     roots = TempRoots(tmp_path)
     await roots.add(StorePath(PATH_A))
@@ -63,7 +67,7 @@ async def test_a_store_path_writes_what_its_string_writes(tmp_path) -> None:
 
 
 @pytest.mark.anyio
-async def test_the_file_holds_every_root_of_the_session(tmp_path) -> None:
+async def test_the_file_holds_every_root_of_the_session(tmp_path: Path) -> None:
     roots = TempRoots(tmp_path)
     await roots.add(PATH_A)
     await roots.add(PATH_B)
@@ -74,7 +78,7 @@ async def test_the_file_holds_every_root_of_the_session(tmp_path) -> None:
 
 
 @pytest.mark.anyio
-async def test_the_collector_cannot_take_a_live_file(tmp_path) -> None:
+async def test_the_collector_cannot_take_a_live_file(tmp_path: Path) -> None:
     roots = TempRoots(tmp_path)
     await roots.add(PATH_A)
     try:
@@ -84,7 +88,7 @@ async def test_the_collector_cannot_take_a_live_file(tmp_path) -> None:
 
 
 @pytest.mark.anyio
-async def test_close_releases_every_root(tmp_path) -> None:
+async def test_close_releases_every_root(tmp_path: Path) -> None:
     roots = TempRoots(tmp_path)
     await roots.add(PATH_A)
     await roots.close()
@@ -92,7 +96,7 @@ async def test_close_releases_every_root(tmp_path) -> None:
 
 
 @pytest.mark.anyio
-async def test_the_gc_lock_is_opened_once_for_the_session(tmp_path, monkeypatch) -> None:
+async def test_the_gc_lock_is_opened_once_for_the_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A session opens `gc.lock` once, and not once for each root.
 
     A build adds a root for each derivation of its closure, so this is the hot
@@ -100,10 +104,10 @@ async def test_the_gc_lock_is_opened_once_for_the_session(tmp_path, monkeypatch)
     the process (`src/libstore/gc.cc`, `addTempRoot`), and the open is the part
     that a session can share.
     """
-    opens = []
+    opens: list[str | os.PathLike[str]] = []
     real_open = os.open
 
-    def counting_open(path, *args, **kwargs):
+    def counting_open(path: str | os.PathLike[str], *args: int, **kwargs: int) -> int:
         if str(path) == str(tmp_path / "gc.lock"):
             opens.append(path)
         return real_open(path, *args, **kwargs)
@@ -121,7 +125,7 @@ async def test_the_gc_lock_is_opened_once_for_the_session(tmp_path, monkeypatch)
 
 
 @pytest.mark.anyio
-async def test_two_sessions_write_two_files(tmp_path) -> None:
+async def test_two_sessions_write_two_files(tmp_path: Path) -> None:
     one = TempRoots(tmp_path)
     two = TempRoots(tmp_path)
     await one.add(PATH_A)
@@ -136,7 +140,7 @@ async def test_two_sessions_write_two_files(tmp_path) -> None:
 
 
 @pytest.mark.anyio
-async def test_one_session_ends_and_the_other_keeps_its_root(tmp_path) -> None:
+async def test_one_session_ends_and_the_other_keeps_its_root(tmp_path: Path) -> None:
     """The reason for this class. A pooled connection cannot do this."""
     one = TempRoots(tmp_path)
     two = TempRoots(tmp_path)
@@ -152,7 +156,7 @@ async def test_one_session_ends_and_the_other_keeps_its_root(tmp_path) -> None:
 
 
 @pytest.mark.anyio
-async def test_a_path_of_another_store_is_refused(tmp_path) -> None:
+async def test_a_path_of_another_store_is_refused(tmp_path: Path) -> None:
     roots = TempRoots(tmp_path)
     with pytest.raises(ValueError, match="not a path of the store"):
         await roots.add("/somewhere/else/00000000000000000000000000000000-a")
@@ -160,7 +164,7 @@ async def test_a_path_of_another_store_is_refused(tmp_path) -> None:
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root writes a directory whatever its mode says")
 @pytest.mark.anyio
-async def test_a_state_directory_pynixd_cannot_write_gives_no_root(tmp_path) -> None:
+async def test_a_state_directory_pynixd_cannot_write_gives_no_root(tmp_path: Path) -> None:
     """pynixd serves the system store as a plain user. It says so, and goes on."""
     unwritable = tmp_path / "state"
     unwritable.mkdir()
@@ -183,7 +187,7 @@ class Collector:
     pynixd must talk to when it cannot get the shared lock.
     """
 
-    def __init__(self, state) -> None:
+    def __init__(self, state: Path) -> None:
         self.state = state
         self.roots: list[str] = []
         self.lock_fd = os.open(state / "gc.lock", os.O_RDWR | os.O_CREAT, 0o600)
@@ -216,7 +220,7 @@ class Collector:
 
 
 @pytest.fixture
-def short_path():
+def short_path() -> Iterator[Path]:
     """A directory whose name fits in `sun_path`, which is 104 bytes here.
 
     The `tmp_path` of pytest holds the name of the test, and the name of this
@@ -228,7 +232,7 @@ def short_path():
 
 
 @pytest.mark.anyio
-async def test_a_root_added_while_the_collector_runs_goes_over_the_socket(short_path) -> None:
+async def test_a_root_added_while_the_collector_runs_goes_over_the_socket(short_path: Path) -> None:
     collector = Collector(short_path)
     roots = TempRoots(short_path)
     try:

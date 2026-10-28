@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from pynixd.nar import (
@@ -20,6 +22,9 @@ from pynixd.nar import (
     write_nar,
     write_nar_to_path,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 1. Roundtrip tests
@@ -263,7 +268,7 @@ class TestNarHelpers:
 class TestNarFileIO:
     """Roundtrip through the filesystem."""
 
-    async def test_write_and_read_path(self, tmp_path) -> None:
+    async def test_write_and_read_path(self, tmp_path: Path) -> None:
         path = tmp_path / "test.nar"
         node = NarDirectory(
             entries=[

@@ -94,7 +94,7 @@ async def test_sftp_read_allowed_file(pynixd_server: Server) -> None:
     """
     async with await _sftp_client(pynixd_server) as sftp:
         async with sftp.open("/proc/meminfo", encoding=None) as f:
-            data = await f.read(65536)
+            data: bytes = await f.read(65536)
         assert b"MemTotal" in data
 
 

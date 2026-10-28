@@ -9,7 +9,6 @@ Exercises the full dynamic derivation lifecycle against a root Nix store:
 6. Inspect .drv structure (DrvWithVersion, dynamic_input_drvs, etc.)
 7. Query derivation output map and realisations
 """
-# pyright: reportArgumentType=false
 
 from __future__ import annotations
 
@@ -332,7 +331,7 @@ async def main() -> None:
         drv_output_id = DrvOutput(f"sha256:{h}!out")
         print(f"Computed DrvOutput: {drv_output_id}")
         resp = await root_store.execute(
-            QueryRealisationRequest(drv_output=drv_output_id),
+            QueryRealisationRequest(drv_output=drv_output_id),  # type: ignore[arg-type]  # the request takes the wire DrvOutput; the package's pynixd DrvOutput is passed (report: package type mismatch)
         )
         print(f"producingDrv realisation: {resp}")
     except Exception as e:

@@ -7,8 +7,12 @@ and BuildResult wire format helpers. All tests are pure — no I/O.
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING
 
 from pynixd.serde import BuildMode, BuildResult, BuildResultStatus, BuiltOutput, StorePath
+
+if TYPE_CHECKING:
+    import pytest
 
 # This repository holds two classes named `StorePath`. `pynixd.store_path`
 # holds the domain one, which strips the `/nix/store/` prefix and keeps an
@@ -115,7 +119,7 @@ class TestBuildResult:
         result = BuildResult()
         assert result.status == BuildResultStatus.BUILT
 
-    def test_from_reader_minimal(self, monkeypatch) -> None:
+    def test_from_reader_minimal(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test BuildResult.from_reader with pre-protocol-1.29 version."""
         result = BuildResult()
         result.status = BuildResultStatus.ALREADY_VALID

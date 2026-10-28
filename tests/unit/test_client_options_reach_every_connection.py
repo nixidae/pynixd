@@ -339,7 +339,7 @@ async def test_the_pool_discards_a_connection_that_carries_another_set() -> None
     handed = await pool.get_or_create_conn(_options("/second.sh"))
 
     assert stale.closed
-    assert handed is not stale
+    assert handed is not stale  # type: ignore[comparison-overlap]  # the pool hands back the fake PooledConnection; zuban types it as Connection
     assert stale not in pool.all_conns
 
 
@@ -351,7 +351,7 @@ async def test_the_pool_reuses_a_connection_that_carries_the_same_set() -> None:
 
     handed = await pool.get_or_create_conn(_options("/hook.sh"))
 
-    assert handed is same
+    assert handed is same  # type: ignore[comparison-overlap]  # the pool hands back the fake PooledConnection; zuban types it as Connection
     assert not same.closed
 
 
@@ -364,7 +364,7 @@ async def test_the_pool_reuses_a_connection_that_carries_no_set() -> None:
 
     handed = await pool.get_or_create_conn(_options("/hook.sh"))
 
-    assert handed is fresh
+    assert handed is fresh  # type: ignore[comparison-overlap]  # the pool hands back the fake PooledConnection; zuban types it as Connection
 
 
 @pytest.mark.anyio

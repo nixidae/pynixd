@@ -67,7 +67,7 @@ async def main() -> None:
     total = await count(data)
     await count(data)  # warm
 
-    best = None
+    best: float | None = None
     for _ in range(rounds):
         start = time.perf_counter()
         await count(data)

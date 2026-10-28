@@ -136,9 +136,10 @@ class _NeverEndingEnsureGoal(EnsureDerivedPathGoal):
             task.cancel()
 
 
-def _ensure_goal[G: EnsureDerivedPathGoal = EnsureDerivedPathGoal](cls: type[G] = EnsureDerivedPathGoal) -> G:
+def _ensure_goal[G: EnsureDerivedPathGoal = EnsureDerivedPathGoal](cls: type[G] | None = None) -> G:
     """A root goal with no engine behind it, for the turn alone."""
-    return cls(
+    goal_cls: type[G] = cls if cls is not None else cast("type[G]", EnsureDerivedPathGoal)
+    return goal_cls(
         engine=cast("GoalEngine", cast("Any", object())),
         derived_path=DerivedPath("/nix/store/" + "0" * 32 + "-x1.drv!out"),
         build_mode=BuildMode.NORMAL,

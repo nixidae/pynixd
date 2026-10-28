@@ -24,7 +24,7 @@ See issue nixidae/nixidae#203.
 from __future__ import annotations
 
 import contextlib
-from typing import cast
+from typing import NoReturn, cast
 
 import anyio
 import asyncssh
@@ -52,7 +52,7 @@ class RecordingSSHStore(SSHStore):
         self.connects = 0
         self.disconnects = 0
 
-    async def ensure_ssh(self):  # type: ignore[override]  # the test replaces the transport
+    async def ensure_ssh(self) -> asyncssh.SSHClientConnection:
         self.connects += 1
         # Nothing here opens a channel, and the tests read the field for
         # `is None` alone. A bare object stands in for the transport.
@@ -63,7 +63,7 @@ class RecordingSSHStore(SSHStore):
         self.disconnects += 1
         self.conn = None
 
-    async def create_conn(self):  # type: ignore[override]  # nothing to dial here
+    async def create_conn(self) -> NoReturn:  # nothing to dial here
         raise AssertionError("this test opens no channel")
 
 
@@ -153,7 +153,7 @@ class TestPoolEmptyNotification:
         async def on_empty() -> None:
             calls.append(1)
 
-        async def factory():
+        async def factory() -> NoReturn:
             raise AssertionError("this test creates no connection")
 
         return ConnectionPool(
@@ -184,7 +184,7 @@ class TestPoolEmptyNotification:
         async def boom() -> None:
             raise RuntimeError("teardown failed")
 
-        async def factory():
+        async def factory() -> NoReturn:
             raise AssertionError("this test creates no connection")
 
         pool = ConnectionPool(

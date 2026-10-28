@@ -7,6 +7,8 @@ store got a wrong answer rather than a clear refusal. Issue nixidae/nixidae#212.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID
@@ -15,11 +17,14 @@ from pynixd.config import LocalSocketStoreSpec
 from pynixd.http_server import PynixdHttpServer
 from pynixd.store.local_daemon import LocalStore
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 OTHER = "/scratch/root/nix/store"
 
 
 @pytest.fixture
-def other_store():
+def other_store() -> Iterator[None]:
     set_store_dir(OTHER)
     yield
     reset_store_dir()
@@ -31,12 +36,12 @@ def _server() -> PynixdHttpServer:
 
 
 async def test_cache_info_states_the_default_store_dir() -> None:
-    response = await _server().handle_cache_info(None)  # pyright: ignore[reportArgumentType]
+    response = await _server().handle_cache_info(None)  # type: ignore[arg-type]  # the handler does not read the request
     assert response.text is not None
     assert "StoreDir: /nix/store" in response.text
 
 
-async def test_cache_info_states_the_store_dir_in_use(other_store) -> None:
-    response = await _server().handle_cache_info(None)  # pyright: ignore[reportArgumentType]
+async def test_cache_info_states_the_store_dir_in_use(other_store: None) -> None:
+    response = await _server().handle_cache_info(None)  # type: ignore[arg-type]  # the handler does not read the request
     assert response.text is not None
     assert f"StoreDir: {OTHER}" in response.text

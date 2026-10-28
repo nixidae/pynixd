@@ -33,11 +33,11 @@ def info(
         info=UnkeyedValidPathInfo(
             deriver=path(deriver) if deriver else None,
             nar_hash=NARHash(hash=nar_hash.removeprefix("sha256:")),
-            references={path(ref) for ref in references or set()},  # pyright: ignore[reportUnhashable]
+            references={path(ref) for ref in references or set()},
             registration_time=Time(ts=0),
             nar_size=nar_size,
             ultimate=False,
-            sigs={Signature(**Signature.from_str(sig)) for sig in sigs or set()},  # pyright: ignore[reportUnhashable]
+            sigs={Signature(**Signature.from_str(sig)) for sig in sigs or set()},
             ca=ContentAddress(value=ca),
         ),
     )

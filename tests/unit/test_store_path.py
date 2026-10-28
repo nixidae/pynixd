@@ -7,11 +7,15 @@ All tests are pure — no I/O, no mocking.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from nix_daemon_protocol.store_dir import reset_store_dir, set_store_dir, store_dir
 from pynixd.store_path import DrvOutput, StorePath
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 class TestStorePathConstruction:
@@ -78,7 +82,7 @@ class TestStorePathWithStorePrefix:
 
 
 @pytest.fixture
-def other_store():
+def other_store() -> Iterator[str]:
     """A store at a directory that is not `/nix/store`.
 
     Issue nixidae/nixidae#212: the store directory was a constant, so a path of another store
@@ -93,20 +97,20 @@ class TestStorePathStoreDir:
     def test_default_is_nix_store(self) -> None:
         assert store_dir() == "/nix/store"
 
-    def test_other_store_round_trips(self, other_store) -> None:
+    def test_other_store_round_trips(self, other_store: str) -> None:
         sp = StorePath(f"{other_store}/abc123-foo")
         assert sp.base() == "abc123-foo"
         assert str(sp) == f"{other_store}/abc123-foo"
 
-    def test_bare_name_takes_the_store_dir(self, other_store) -> None:
+    def test_bare_name_takes_the_store_dir(self, other_store: str) -> None:
         assert str(StorePath("abc123-foo")) == f"{other_store}/abc123-foo"
 
-    def test_path_of_another_store_is_refused(self, other_store) -> None:
+    def test_path_of_another_store_is_refused(self, other_store: str) -> None:
         # Silence made this a corrupt path. An error names the mistake.
         with pytest.raises(ValueError, match="not a path of the store"):
             StorePath("/nix/store/abc123-foo")
 
-    def test_relative_path_is_refused_nowhere(self, other_store) -> None:
+    def test_relative_path_is_refused_nowhere(self, other_store: str) -> None:
         # A bare name is how the database and the wire both spell a path.
         assert StorePath("abc123-foo").hash_part() == "abc123"
 

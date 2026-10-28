@@ -34,8 +34,9 @@ def _framed_payload(frames: int = _FRAMES, size: int = _FRAME) -> bytes:
     return out.get_bytes()
 
 
-def _value(counter) -> float:  # noqa: ANN001 - a prometheus_client Counter
-    return counter._value.get()  # type: ignore[attr-defined]
+def _value(counter: object) -> float:
+    value: float = counter._value.get()  # type: ignore[attr-defined]  # a prometheus_client Counter's private value
+    return value
 
 
 async def test_a_single_path_add_counts_its_bytes() -> None:

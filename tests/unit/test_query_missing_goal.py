@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 import anyio
 import pytest
 
-from pynixd.drv_parser import ChildMapNode, Derivation, DrvOutput
+from pynixd.drv_parser import ChildMapNode, Derivation
 from pynixd.goals.engine import GoalEngine
 from pynixd.goals.query_missing import QueryMissingPlanGoal
 from pynixd.serde import (
@@ -22,6 +22,7 @@ from pynixd.serde import (
     Realisation,
     StorePath,
 )
+from pynixd.store_path import DrvOutput
 from pynixd.substitution_queue import SubstitutionAvailability
 
 if TYPE_CHECKING:
@@ -505,7 +506,7 @@ async def test_query_missing_walks_the_input_derivations() -> None:
     def _with_input(output: str, input_drv: str | None) -> Derivation:
         return Derivation(
             outputs=[DrvOutput(output_name="out", path=output, hash_algo="", hash_value="")],
-            input_drvs={input_drv: ["out"]} if input_drv else {},  # pyright: ignore[reportArgumentType] -- a plain str
+            input_drvs={input_drv: ["out"]} if input_drv else {},  # type: ignore[dict-item]  # a plain str key: the test passes the path text
         )
 
     ctx = cast(
@@ -544,7 +545,7 @@ async def test_query_missing_reads_a_shared_input_once() -> None:
     def _with_input(output: str, input_drv: str | None) -> Derivation:
         return Derivation(
             outputs=[DrvOutput(output_name="out", path=output, hash_algo="", hash_value="")],
-            input_drvs={input_drv: ["out"]} if input_drv else {},  # pyright: ignore[reportArgumentType] -- a plain str
+            input_drvs={input_drv: ["out"]} if input_drv else {},  # type: ignore[dict-item]  # a plain str key: the test passes the path text
         )
 
     store = FakeLocalStore(
@@ -562,7 +563,7 @@ async def test_query_missing_reads_a_shared_input_once() -> None:
         reads.append(str(drv_store_path))
         return await original(drv_store_path)
 
-    store.read_derivation = _counting  # pyright: ignore[reportAttributeAccessIssue] -- a fake, for the count alone
+    store.read_derivation = _counting  # type: ignore[method-assign]  # a fake, for the count alone
 
     ctx = cast(
         "PynixdContext",
@@ -592,7 +593,7 @@ async def test_a_dynamic_input_gets_a_warning_and_no_bucket() -> None:
     producer = "/nix/store/22222222222222222222222222222222-producer.drv.drv"
     parsed = Derivation(
         outputs=[DrvOutput(output_name="out", path="", hash_algo="", hash_value="")],
-        dynamic_input_drvs={producer: ChildMapNode(children={"out": ChildMapNode(outputs=["out"])})},  # pyright: ignore[reportArgumentType] -- a plain str
+        dynamic_input_drvs={producer: ChildMapNode(children={"out": ChildMapNode(outputs=["out"])})},  # type: ignore[dict-item]  # a plain str key: the test passes the path text
     )
     store = FakeLocalStore(valid_paths=set(), derivations={top: parsed})
     ctx = cast(

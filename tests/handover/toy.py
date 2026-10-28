@@ -235,7 +235,7 @@ def send_fd(sock: socket.socket, text: str, fd: int) -> None:
 
 
 def recv_fd(sock: socket.socket) -> tuple[str, int]:
-    fds = array.array("i")
+    fds: array.array[int] = array.array("i")
     msg, ancdata, _flags, _addr = sock.recvmsg(4096, socket.CMSG_LEN(fds.itemsize))
     for level, kind, data in ancdata:
         if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:

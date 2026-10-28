@@ -207,5 +207,5 @@ class TestExhaustiveOutputKind:
             ("IMPURE", DerivationOutput(path="", method="sha256", hash_digest="impure"), OutputKind.IMPURE),
         ],
     )
-    def test_kind(self, name, out, expected) -> None:
+    def test_kind(self, name: str, out: DerivationOutput, expected: OutputKind) -> None:
         assert out.kind == expected, f"{name} failed"

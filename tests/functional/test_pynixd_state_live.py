@@ -45,7 +45,8 @@ async def _query(
     await client.start(sync_paths=False)
     try:
         resp = await client.execute(PynixdStateRequest(wants=wants, federated=federated))
-        return json.loads(resp.payload)
+        state: dict[str, Any] = json.loads(resp.payload)
+        return state
     finally:
         await client.close()
 

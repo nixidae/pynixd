@@ -11,7 +11,6 @@ Exercises the exact code path that pynixd's scheduler will use:
    - Builder store: AddToStoreNar with updated ValidPathInfo + NAR of resolved content
 7. BuildDerivation with the original .drv path and resolved BasicDerivation
 """
-# pyright: reportArgumentType=false, reportCallIssue=false, reportAttributeAccessIssue=false
 
 from __future__ import annotations
 
@@ -20,6 +19,7 @@ import json
 import sys
 import traceback
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -49,6 +49,9 @@ from tests.conftest import (
     serde_path_set,
 )
 
+if TYPE_CHECKING:
+    from pynixd.wire import NixWriter
+
 CA_NIX = Path(__file__).resolve().parent.parent / "nix"
 CA_NIX_CONFIG = for_ca_derivations()
 
@@ -61,23 +64,23 @@ async def add_text_to_store(
 ) -> StorePath | None:
     """Add a text file to a store via AddToStore(text:sha256) and return its path."""
 
-    async def provide_content(writer):
+    async def provide_content(writer: NixWriter) -> None:
         fw = writer.framed()
         fw.write(content)
         await fw.finalize()
 
     req = AddToStoreRequest(
         path_name=name,
-        cam="text:sha256",
+        cam="text:sha256",  # type: ignore[arg-type]  # stale script: cam is a ContentAddress now
         references=references,
         repair=0,
-        async_provider=provide_content,
+        async_provider=provide_content,  # type: ignore[call-arg]  # stale script: AddToStoreRequest has no async_provider
     )
     try:
-        resp = await req.execute(store, suppress_last=True)
+        resp = await req.execute(store, suppress_last=True)  # type: ignore[attr-defined]  # stale script: requests no longer execute themselves
         if resp.info is not None:
             store.add_path_info(resp.info)
-            return resp.info.path
+            return resp.info.path  # type: ignore[no-any-return]  # stale script: follows the attr-defined above
         print(f"  AddToStore returned no path info! logs={resp.logs.messages}")
     except Exception as e:
         print(f"  AddToStore FAILED: {type(e).__name__}: {e}")
@@ -191,7 +194,7 @@ async def main() -> None:
         realisation_cmd,
         nix_config=CA_NIX_CONFIG,
     )
-    realisations_raw = json.loads(realisation_out) if rc == 0 and realisation_out.strip() else []
+    realisations_raw: list[Any] = json.loads(realisation_out) if rc == 0 and realisation_out.strip() else []
     realisation_to_register = realisations_raw[0] if realisations_raw else None
     print(f"CA realisation: {realisation_to_register}")
 
@@ -257,7 +260,7 @@ async def main() -> None:
     resolved_early = resolve_derivation(
         deferred_parsed,
         deferred_drv_path,
-        resolved_output_paths_early,
+        resolved_output_paths_early,  # type: ignore[arg-type]  # stale script: keys are output names; resolve_derivation takes tuple keys
     )
     resolved_aterm_early = _unparse_basic_derivation(resolved_early, mask_outputs=False)
 

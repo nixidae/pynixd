@@ -9,6 +9,6 @@ import pytest
 
 
 @pytest.fixture(scope="session", autouse=False)
-def pynixd_server():
+def pynixd_server() -> None:
     """Override: unit tests don't need a real pynixd server."""
     return

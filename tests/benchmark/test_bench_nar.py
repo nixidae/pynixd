@@ -21,6 +21,7 @@ from tests.conftest import CLIENT_BIN, rmtree_robust, run_subproc, serde_path
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from nix_daemon_protocol.query_all_valid_paths import QueryAllValidPathsResponse
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
 from pynixd.store.transfer import stream_paths_store_to_store
@@ -77,7 +78,7 @@ def _store_label(s: DaemonStore) -> str:
 
 
 async def _pick_a_path(s: DaemonStore, need_no_refs: bool = False) -> StorePath:
-    resp = await s.execute(QueryAllValidPathsRequest())
+    resp: QueryAllValidPathsResponse = await s.execute(QueryAllValidPathsRequest())
     paths = list(resp.paths)
     # Prefer something sizeable but not insane
     for p in paths:
@@ -86,7 +87,7 @@ async def _pick_a_path(s: DaemonStore, need_no_refs: bool = False) -> StorePath:
         info_resp = await s.execute(QueryPathInfoRequest(path=p))
         info = info_resp.info
         if info and 100_000 < info.nar_size < 10_000_000:
-            if need_no_refs and info.references - {p}:  # pyright: ignore[reportOperatorIssue]
+            if need_no_refs and info.references - {p}:
                 continue
             return p
     return paths[0]

@@ -21,7 +21,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from test_drv_hash import BASE_PATH, BASE_TEXT
+from test_drv_hash import (  # type: ignore[import-not-found]  # pytest puts tests/unit on sys.path; not a package
+    BASE_PATH,
+    BASE_TEXT,
+)
 
 from pynixd.derived_path import DerivedPath
 from pynixd.drv_hash import output_hashes

@@ -36,7 +36,7 @@ def _get_system_drv_paths() -> list[str]:
     return asyncio.run(_inner())
 
 
-def pytest_generate_tests(metafunc):
+def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
     """Parameterize drv roundtrip tests with real store .drv paths."""
     if "drv_path_str" in metafunc.fixturenames:
         paths = _get_system_drv_paths()

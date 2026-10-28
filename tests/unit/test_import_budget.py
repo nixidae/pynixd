@@ -95,7 +95,8 @@ def _probe() -> dict[str, object]:
     )
     if completed.returncode != 0:
         pytest.fail(f"the import probe exited {completed.returncode}:\n{completed.stderr}")
-    return json.loads(completed.stdout)
+    loaded: dict[str, object] = json.loads(completed.stdout)
+    return loaded
 
 
 def test_the_daemon_loads_no_ssh_and_no_http_stack() -> None:
@@ -127,7 +128,7 @@ def test_the_daemon_stays_under_the_module_budget() -> None:
     )
 
 
-# ── The two tables, and the copy of each that pyright reads ──────────
+# ── The two tables, and the copy of each that the type checker reads ─
 
 
 def _type_checking_names(module_path: Path) -> set[str]:
@@ -146,13 +147,13 @@ def _type_checking_names(module_path: Path) -> set[str]:
     return names
 
 
-def test_the_store_table_and_the_pyright_copy_agree() -> None:
-    """`ORIGIN` runs, and the `if TYPE_CHECKING:` imports are what pyright reads.
+def test_the_store_table_and_the_type_checker_copy_agree() -> None:
+    """`ORIGIN` runs, and the `if TYPE_CHECKING:` imports are what the type checker reads.
 
     The two are written apart, so they drift. A name in one and not the other
-    means either a name nobody can import or a name pyright cannot see.
+    means either a name nobody can import or a name the type checker cannot see.
     """
-    path = Path(store.__file__)
+    path = Path(str(store.__file__))
     declared = _type_checking_names(path)
     # `Store` is the annotation of `is_http_binary_cache`, so it is in both.
     assert declared == set(store.ORIGIN)
@@ -173,8 +174,8 @@ def test_an_unknown_store_name_raises_attribute_error() -> None:
         store.NoSuchStore  # type: ignore[attr-defined]  # that is the assertion  # noqa: B018
 
 
-def test_the_optional_table_and_the_pyright_copy_agree() -> None:
-    path = Path(_optional.__file__)
+def test_the_optional_table_and_the_type_checker_copy_agree() -> None:
+    path = Path(str(_optional.__file__))
     assert _type_checking_names(path) - {"ModuleType"} == _optional.MODULES
 
 

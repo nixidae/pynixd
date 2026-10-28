@@ -29,7 +29,10 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from test_pool_lifetime import FakeConnection, make_pool
+from test_pool_lifetime import (  # type: ignore[import-not-found]  # pytest puts tests/unit on sys.path; not a package
+    FakeConnection,
+    make_pool,
+)
 
 from pynixd.daemon_extensions.protocol import PynixdGCAction
 from pynixd.daemon_extensions.pynixd_collect_garbage import PynixdCollectGarbageRequest
@@ -85,7 +88,7 @@ async def test_a_store_that_pools_nothing_answers_zero() -> None:
     class NoPool:
         retire_idle_connections = Store.retire_idle_connections
 
-    assert await NoPool().retire_idle_connections() == 0
+    assert await NoPool().retire_idle_connections() == 0  # type: ignore[misc]  # the fake borrows the real method on a class that is not a Store
 
 
 class FakeStore:
@@ -201,7 +204,7 @@ async def test_a_query_of_the_roots_retires_them_as_well() -> None:
 
     store = FakeDaemonStore()
 
-    assert await store.find_roots(object()) == "answered"
+    assert await store.find_roots(object()) == "answered"  # type: ignore[misc]  # the fake borrows the real method on a class that is not a DaemonStore
     assert store.calls == ["retire", "call"]
 
 

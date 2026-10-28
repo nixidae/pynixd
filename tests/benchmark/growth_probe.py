@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import time
+from typing import Any
 
 WARMUP = 1
 MEASURED = 5
@@ -94,7 +95,7 @@ def _rss_bytes(pid: int) -> int:
     raise RuntimeError(f"no VmRSS for pid {pid}")
 
 
-def _state(socket: str) -> dict:
+def _state(socket: str) -> dict[str, Any]:
     env = dict(os.environ, PYNIXD_UNIX_PATH=socket)
     out = subprocess.run(
         ["pynixd", "state", "--section", "benchmark", "--section", "transfers"],
@@ -103,10 +104,11 @@ def _state(socket: str) -> dict:
         env=env,
         check=True,
     )
-    return json.loads(out.stdout)
+    state: dict[str, Any] = json.loads(out.stdout)
+    return state
 
 
-def _wire_totals(state: dict) -> tuple[int, int]:
+def _wire_totals(state: dict[str, Any]) -> tuple[int, int]:
     wire_in = wire_out = 0
     for store in state["transfers"]["stores"].values():
         wire_in += store.get("wire_bytes_in", 0)

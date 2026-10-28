@@ -19,6 +19,7 @@ from tests.conftest import (
 )
 
 if TYPE_CHECKING:
+    from nix_daemon_protocol.query_all_valid_paths import QueryAllValidPathsResponse
     from pynixd import Server
     from pynixd.store import DaemonStore
 
@@ -27,7 +28,7 @@ log = structlog.get_logger(__name__)
 
 async def _pick_random_path(store: DaemonStore) -> StorePath:
     """Pick an arbitrary valid path from the store."""
-    resp = await store.execute(QueryAllValidPathsRequest())
+    resp: QueryAllValidPathsResponse = await store.execute(QueryAllValidPathsRequest())
     all_paths = list(resp.paths)
     assert all_paths, "Store has no paths?!"
 

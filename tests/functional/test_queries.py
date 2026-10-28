@@ -16,6 +16,8 @@ from tests.conftest import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import pyinstrument
 
     from pynixd import Server
@@ -24,12 +26,12 @@ log = structlog.get_logger(__name__)
 
 
 @pytest.fixture
-async def query_env(pynixd_server: Server):
+async def query_env(pynixd_server: Server) -> tuple[Server, str, str]:
     """Set up a pynixd server with some initial paths."""
     uri = server_uri(pynixd_server)
 
     test_nix = TEST_NIX
-    cmd = [
+    cmd: list[str | Path] = [
         CLIENT_BIN,
         "build",
         "--eval-store",
@@ -71,7 +73,7 @@ async def query_env(pynixd_server: Server):
 
 
 @pytest.mark.legacy_nix_commands
-async def test_query_referrers(profiler: pyinstrument.Profiler, query_env) -> None:
+async def test_query_referrers(profiler: pyinstrument.Profiler, query_env: tuple[Server, str, str]) -> None:
     """Verify QueryReferrers via 'nix-store -q --referrers'.
 
     Store operations triggered:
@@ -136,7 +138,7 @@ async def test_query_referrers(profiler: pyinstrument.Profiler, query_env) -> No
 
 async def test_query_path_from_hash_part(
     profiler: pyinstrument.Profiler,
-    query_env,
+    query_env: tuple[Server, str, str],
 ) -> None:
     """Verify QueryPathFromHashPart via 'nix store path-from-hash-part'.
 
@@ -164,7 +166,7 @@ async def test_query_path_from_hash_part(
 
 
 @pytest.mark.legacy_nix_commands
-async def test_query_valid_derivers(profiler: pyinstrument.Profiler, query_env) -> None:
+async def test_query_valid_derivers(profiler: pyinstrument.Profiler, query_env: tuple[Server, str, str]) -> None:
     """Verify QueryValidDerivers via 'nix-store -q --deriver'.
 
     Store operations triggered:
@@ -189,7 +191,7 @@ async def test_query_valid_derivers(profiler: pyinstrument.Profiler, query_env) 
     assert deriver.startswith("/nix/store/")
 
 
-async def test_query_missing(profiler: pyinstrument.Profiler, query_env) -> None:
+async def test_query_missing(profiler: pyinstrument.Profiler, query_env: tuple[Server, str, str]) -> None:
     """Verify QueryMissing via 'nix build --dry-run'.
 
     Store operations triggered:
@@ -216,7 +218,7 @@ async def test_query_missing(profiler: pyinstrument.Profiler, query_env) -> None
 
 
 @pytest.mark.legacy_nix_commands
-async def test_find_roots(profiler: pyinstrument.Profiler, query_env) -> None:
+async def test_find_roots(profiler: pyinstrument.Profiler, query_env: tuple[Server, str, str]) -> None:
     """Verify FindRoots via 'nix-store --gc --print-roots'.
 
     Store operations triggered:

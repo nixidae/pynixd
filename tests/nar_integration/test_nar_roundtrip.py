@@ -49,7 +49,7 @@ def _get_system_store_paths() -> list[str]:
     return asyncio.run(_inner())
 
 
-def pytest_generate_tests(metafunc):
+def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
     """Parameterize NAR roundtrip tests with real store paths."""
     if "store_path_str" in metafunc.fixturenames:
         paths = _get_system_store_paths()

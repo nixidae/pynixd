@@ -90,8 +90,8 @@ def _dependent() -> Derivation:
     return Derivation(
         outputs=[_floating("out")],
         input_drvs={
-            StorePath(ROOT_DRV): ["out"],  # pyright: ignore[reportArgumentType] -- StorePath is a str
-            StorePath(LEGACY_DRV): ["out"],  # pyright: ignore[reportArgumentType] -- StorePath is a str
+            StorePath(ROOT_DRV): ["out"],
+            StorePath(LEGACY_DRV): ["out"],
         },
         platform="x86_64-linux",
         builder="/bin/sh",
@@ -108,7 +108,7 @@ def _fixed() -> Derivation:
     """
     return Derivation(
         outputs=[DrvOutput(hash_algo="r:sha256", hash_value="00" * 32, output_name="out", path=FIXED_OUT)],
-        input_drvs={StorePath(ROOT_DRV): ["out"]},  # pyright: ignore[reportArgumentType] -- StorePath is a str
+        input_drvs={StorePath(ROOT_DRV): ["out"]},
         platform="x86_64-linux",
         builder="/bin/sh",
         args=["-e", "-c", FIXED_COMMAND],
@@ -358,7 +358,8 @@ async def test_nested_goals_record_the_complete_output_chain(chain: tuple[str, .
     result = await goal.result()
 
     assert requested == [dp.outer, dp.wrap(inner)]
-    assert result.dynamic_paths[(producer, *chain, "out")] == StorePath(ROOT_OUT)
+    key: tuple[StorePath | str, ...] = (producer, *chain, "out")  # type: ignore[assignment]  # zuban-bug: a tuple of StorePath and str is joined to object even with a declared type
+    assert result.dynamic_paths[key] == StorePath(ROOT_OUT)
     assert (producer, "out") not in result.dynamic_paths
     assert inner in result.produced_paths
 
@@ -415,7 +416,7 @@ def test_dynamic_branches_with_the_same_output_name_resolve_separately() -> None
         )
     }
     consumer.env = {**placeholders, "producer": downstream_placeholder(producer, "out")}
-    paths = {
+    paths: dict[tuple[StorePath | str, ...], StorePath] = {
         (producer, "out"): StorePath(ROOT_OUT),
         (producer, "a", "out"): StorePath(LEGACY_OUT),
         (producer, "b", "out"): StorePath(FIXED_OUT),

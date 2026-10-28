@@ -8,12 +8,18 @@ import json
 import os
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import anyio
 import pytest
 import structlog
 
 from tests._conftest.constants import TMP_PREFIX, _log_dir_key
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Generator
+
+    import pluggy
 
 log = structlog.get_logger(__name__)
 
@@ -74,7 +80,7 @@ def pytest_terminal_summary(
 # ── Collection / modification ─────────────────────────────────────
 
 
-def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]):
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Wrap each async test in a deadline."""
 
     for item in items:
@@ -84,15 +90,15 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             and not getattr(item.obj, "_pynixd_timeout_wrapped", False)
         ):
             item.obj = _wrap_with_timeout(item)
-            item.obj._pynixd_timeout_wrapped = True  # type: ignore[reportAttributeAccessIssue]
+            item.obj._pynixd_timeout_wrapped = True  # type: ignore[attr-defined]  # pytest types item.obj as a plain callable
 
 
-def _wrap_with_timeout(item: pytest.Function):
+def _wrap_with_timeout(item: pytest.Function) -> Callable[..., Awaitable[object]]:
     """Wrap an async test function in `anyio.fail_after`, so that it cannot hang."""
     original_func = item.obj
 
     @functools.wraps(original_func)
-    async def wrapped(*args, **kwargs):
+    async def wrapped(*args: object, **kwargs: object) -> object:
         timeout = item.config.getoption("async_test_timeout")
         try:
             with anyio.fail_after(timeout):
@@ -112,7 +118,10 @@ def _wrap_with_timeout(item: pytest.Function):
 
 
 @pytest.hookimpl(hookwrapper=True)
-def pytest_runtest_makereport(item: pytest.Item, call):
+def pytest_runtest_makereport(
+    item: pytest.Item,
+    call: pytest.CallInfo[None],
+) -> Generator[None, pluggy.Result[pytest.TestReport]]:
     """Write failure details to the log file."""
     outcome = yield
     report = outcome.get_result()

@@ -13,6 +13,8 @@ a scraper is the same as no metrics port.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from aiohttp.test_utils import TestClient, TestServer
 from prometheus_client import REGISTRY
 
@@ -22,10 +24,13 @@ from pynixd.config import LocalSocketStoreSpec
 from pynixd.http_server import PynixdHttpServer
 from pynixd.store.local_daemon import LocalStore
 
+if TYPE_CHECKING:
+    import pytest
 
-def _server(**kwargs) -> PynixdHttpServer:
+
+def _server(*, enable_metrics: bool = True, enable_cache: bool = True) -> PynixdHttpServer:
     spec = LocalSocketStoreSpec(store_id=LOCAL_STORE_ID, monitor=False, use_db=False)
-    return PynixdHttpServer(LocalStore(spec), **kwargs)
+    return PynixdHttpServer(LocalStore(spec), enable_cache=enable_cache, enable_metrics=enable_metrics)
 
 
 def _routes(server: PynixdHttpServer) -> set[str]:
@@ -58,7 +63,7 @@ class TestTheRoute:
 
 class TestTheBody:
     async def test_metrics_answers_a_prometheus_exposition(self) -> None:
-        response = await _server(enable_metrics=True).handle_metrics(None)  # pyright: ignore[reportArgumentType]
+        response = await _server(enable_metrics=True).handle_metrics(None)  # type: ignore[arg-type]  # the handler does not read the request
 
         assert response.status == 200
         assert response.content_type.startswith("text/plain")
@@ -67,7 +72,7 @@ class TestTheBody:
     async def test_the_body_names_pynixd_s_own_metrics(self) -> None:
         """A registry that answered only the process collectors would pass a
         check that reads the status alone."""
-        response = await _server(enable_metrics=True).handle_metrics(None)  # pyright: ignore[reportArgumentType]
+        response = await _server(enable_metrics=True).handle_metrics(None)  # type: ignore[arg-type]  # the handler does not read the request
         # `body` is typed as a `Payload` too, and this route always answers
         # bytes. Narrow it rather than cast: a Payload here would be a change
         # worth failing on.
@@ -153,7 +158,7 @@ class TestStoreSpace:
         assert total > 0
         assert 0 <= available <= total
 
-    def test_an_unreadable_store_directory_serves_no_series(self, monkeypatch) -> None:
+    def test_an_unreadable_store_directory_serves_no_series(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A store that is gone must not fail the scrape.
 
         Every other metric in the registry is still an answer, so the two

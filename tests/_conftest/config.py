@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import structlog
@@ -43,7 +43,7 @@ log = structlog.get_logger(__name__)
 #
 # huggorm loads the Nix libraries in process, so few tests need a Nix
 # binary, and a stricter answer than "the one on PATH" buys nothing.
-NIX_BIN = env.path("NIX_BIN", None) or Path(shutil.which("nix") or "nix")
+NIX_BIN: Path = env.path("NIX_BIN", None) or Path(shutil.which("nix") or "nix")
 
 # One binary, for the client, for the local store and for the builder. No
 # test runs Lix, though pynixd supports its protocol, 1.35.
@@ -53,7 +53,7 @@ CLIENT_BIN: Path = NIX_BIN
 # ── CLI options ───────────────────────────────────────────────────
 
 
-def pytest_addoption(parser):
+def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         "--async-test-timeout",
         type=float,
@@ -62,7 +62,7 @@ def pytest_addoption(parser):
     )
 
 
-def pytest_configure(config):
+def pytest_configure(config: pytest.Config) -> None:
     # Unregister pytest-asyncio — we use anyio for async test execution.
     asyncio_plugin = config.pluginmanager.get_plugin("asyncio")
     if asyncio_plugin is not None:
@@ -107,16 +107,19 @@ def make_test_spec(
     nix_config: NixConfig | None = None,
     no_probe: bool = False,
     monitor: bool = False,
-    **kwargs,
+    extra_args: list[str] | None = None,
+    extra_env: dict[str, str] | None = None,
+    **kwargs: Any,
 ) -> LocalSocketStoreSpec:
     """Create a LocalSocketStoreSpec with test defaults."""
     if nix_config is None:
         nix_config = for_test_store()
-    extra_args = nix_config.to_daemon_args()
-    if "extra_args" in kwargs:
-        extra_args.extend(kwargs.pop("extra_args"))
+    daemon_args = nix_config.to_daemon_args()
+    if extra_args is not None:
+        daemon_args.extend(extra_args)
 
-    extra_env = kwargs.pop("extra_env", {})
+    if extra_env is None:
+        extra_env = {}
     if "NIX_SSHOPTS" not in extra_env:
         from tests._conftest.constants import DEFAULT_SSH_OPTS
 
@@ -138,7 +141,7 @@ def make_test_spec(
         store_path=store_path,
         nix_bin=nix_bin,
         nix_config=nix_config,
-        extra_args=extra_args,
+        extra_args=daemon_args,
         extra_env=extra_env,
         monitor=monitor,
         **kwargs,
@@ -156,12 +159,12 @@ def nix_env() -> dict[str, str]:
 
 @pytest.fixture(scope="session", autouse=True)
 async def pynixd_server(
-    anyio_backend,
+    anyio_backend: tuple[str, dict[str, bool]],
     # **Named to order the two, not to use it.** Both are session-scoped and
     # autouse, and pytest then orders them by collection. This store spawns
     # daemons and runs the capability probe, and with the wrong order none of
     # that reaches a log file at all. Issue #47.
-    session_logging,  # noqa: ARG001
+    session_logging: Path,  # noqa: ARG001
     request: pytest.FixtureRequest,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> AsyncGenerator[Server]:

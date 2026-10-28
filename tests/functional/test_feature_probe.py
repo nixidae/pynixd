@@ -35,7 +35,7 @@ FEATURE_NIX_CONFIG = for_ca_derivations(
 async def test_feature_probe_in_memory() -> None:
     store_path = STORE_PREFIX / "feature-probe"
     rmtree_robust(store_path)
-    store: LocalSocketStore | SSHSubprocessStore = LocalSocketStore(
+    store = LocalSocketStore(
         make_test_spec(
             store_id="feature-probe",
             store_path=store_path,

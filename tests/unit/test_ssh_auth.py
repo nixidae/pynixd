@@ -74,24 +74,26 @@ async def listener(tmp_path: Path) -> AsyncIterator[tuple[SSHAcceptor, PynixdCon
         await server.wait_closed()
 
 
-async def test_a_key_nobody_listed_is_refused(listener) -> None:  # type: ignore[no-untyped-def]
+async def test_a_key_nobody_listed_is_refused(listener: tuple[SSHAcceptor, PynixdContext, SSHTestKeys]) -> None:
     server, ctx, _keys = listener
     with pytest.raises(asyncssh.PermissionDenied):
         await _role_of(server, ctx, key=asyncssh.generate_private_key("ssh-ed25519"))
 
 
-async def test_a_password_is_refused(listener) -> None:  # type: ignore[no-untyped-def]
+async def test_a_password_is_refused(listener: tuple[SSHAcceptor, PynixdContext, SSHTestKeys]) -> None:
     server, ctx, _keys = listener
     with pytest.raises(asyncssh.PermissionDenied):
         await _role_of(server, ctx, key=None, password="anything")
 
 
-async def test_a_listed_key_is_a_user_whatever_name_it_claims(listener) -> None:  # type: ignore[no-untyped-def]
+async def test_a_listed_key_is_a_user_whatever_name_it_claims(
+    listener: tuple[SSHAcceptor, PynixdContext, SSHTestKeys],
+) -> None:
     server, ctx, keys = listener
     assert await _role_of(server, ctx, key=str(keys.user)) == Role.USER
 
 
-async def test_an_admin_key_is_an_admin(listener) -> None:  # type: ignore[no-untyped-def]
+async def test_an_admin_key_is_an_admin(listener: tuple[SSHAcceptor, PynixdContext, SSHTestKeys]) -> None:
     server, ctx, keys = listener
     assert await _role_of(server, ctx, key=str(keys.admin)) == Role.ADMIN
 
@@ -112,7 +114,9 @@ async def test_deprecated_admin_users_raises_only_a_listed_key(tmp_path: Path) -
         await server.wait_closed()
 
 
-async def test_a_key_added_to_a_file_admits_the_next_connection(listener) -> None:  # type: ignore[no-untyped-def]
+async def test_a_key_added_to_a_file_admits_the_next_connection(
+    listener: tuple[SSHAcceptor, PynixdContext, SSHTestKeys],
+) -> None:
     """No watcher and no restart: the files are read at each authentication."""
     server, ctx, keys = listener
     newcomer = asyncssh.generate_private_key("ssh-ed25519")

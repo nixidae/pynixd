@@ -37,7 +37,7 @@ HELLO = "/nix/store/00000000000000000000000000000000-hello"
 GLIBC = "/nix/store/11111111111111111111111111111111-glibc"
 ONLY_HERE = "/nix/store/22222222222222222222222222222222-only-here"
 
-REFERENCES = {HELLO: {GLIBC}, GLIBC: set(), ONLY_HERE: set()}
+REFERENCES: dict[str, set[str]] = {HELLO: {GLIBC}, GLIBC: set(), ONLY_HERE: set()}
 
 
 def _names(paths: Any) -> set[str]:

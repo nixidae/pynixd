@@ -8,8 +8,6 @@ gates only the start of a build.
 
 from __future__ import annotations
 
-from typing import cast
-
 import anyio
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId
@@ -153,7 +151,7 @@ async def test_a_store_at_its_limit_holds_the_build_and_says_why() -> None:
 
     await scheduler.schedule()
 
-    builds = state_collector.collect(cast("PynixdContext", ctx), ["builds"]).builds
+    builds = state_collector.collect(ctx, ["builds"]).builds
     assert builds is not None
     assert [(row.state, row.waits_for) for row in builds] == [("pending", "pressure")]
 

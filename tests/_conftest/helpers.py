@@ -22,7 +22,7 @@ from tests._conftest.constants import DEFAULT_NIX_CONFIG, DEFAULT_SSH_OPTS
 from tests._conftest.nix_config import host_daemon_substituters
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Callable, Iterable, Sequence
 
     from pynixd.store import DaemonStore
 
@@ -37,7 +37,7 @@ def rmtree_robust(path: str | Path) -> None:
 
     if path.is_dir():
 
-        def handle_errors(func, path, _exc):
+        def handle_errors(func: Callable[..., object], path: str, _exc: BaseException) -> None:
             # `func` is whichever call failed, and `shutil` uses four of them:
             # `os.open`, `os.scandir`, `os.unlink` and `os.rmdir`. Only the
             # last two accept a path alone, so a blind retry of `func(path)`
@@ -78,7 +78,7 @@ def serde_path(path: object) -> StorePath:
 
 def serde_path_set(paths: Iterable[object]) -> set[StorePath]:
     """Convert a path iterable to the wire StorePath set used by request models."""
-    return {serde_path(path) for path in paths}  # pyright: ignore[reportUnhashable]
+    return {serde_path(path) for path in paths}
 
 
 async def read_nar_from_store(store: DaemonStore, path: object, nar_size: int) -> bytes:
@@ -91,11 +91,11 @@ async def read_nar_from_store(store: DaemonStore, path: object, nar_size: int) -
 
 
 async def run_subproc(
-    cmd: Sequence[str | Path],
+    cmd: Sequence[object],
     verbose: bool = True,
     expected_retcode: int | None = 0,
     nix_config: NixConfig | dict[str, str] | None = None,
-    **kwargs,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, str, str, str]:
     """Run a command, streaming stdout/stderr through structlog in real-time.
 
@@ -104,12 +104,12 @@ async def run_subproc(
         verbose: If True, stream output to structlog in real-time.
         expected_retcode: If not None, raise if return code doesn't match. Defaults to 0.
         nix_config: NixConfig object or dict for NIX_CONFIG env var.
-        **kwargs: Additional arguments passed to create_subprocess_exec.
+        env: Extra environment variables. Updated in place with NIX_SSHOPTS and NIX_CONFIG.
 
     Returns:
         tuple of (returncode, stdout, stderr, combined)
     """
-    run_env = kwargs.pop("env", {})
+    run_env = {} if env is None else env
     if "NIX_SSHOPTS" not in run_env:
         run_env["NIX_SSHOPTS"] = DEFAULT_SSH_OPTS
 
@@ -142,14 +142,13 @@ async def run_subproc(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
-        **kwargs,
     )
 
     stdout: list[str] = []
     stderr: list[str] = []
     stdboth: list[str] = []
 
-    async def stream(name: str, accumulator: list[str], pipe) -> None:
+    async def stream(name: str, accumulator: list[str], pipe: asyncio.StreamReader) -> None:
         while True:
             line = await pipe.readline()
             # Lossy on purpose: this streams display text to the log, and a
@@ -164,6 +163,8 @@ async def run_subproc(
             if verbose:
                 log.info(name, message=decoded_line.rstrip())
 
+    assert proc.stdout is not None
+    assert proc.stderr is not None
     try:
         await asyncio.gather(
             stream("stdout", stdout, proc.stdout),

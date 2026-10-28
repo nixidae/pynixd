@@ -57,7 +57,7 @@ def _impure() -> Derivation:
 def _consumer(name: str, drv_path: str, output: DrvOutput) -> Derivation:
     return Derivation(
         outputs=[output],
-        input_drvs={StorePath(IMPURE_DRV): ["out"]},  # pyright: ignore[reportArgumentType] -- StorePath is a str
+        input_drvs={StorePath(IMPURE_DRV): ["out"]},
         platform="x86_64-linux",
         builder="/bin/sh",
         args=["-e", "-c", f"cat {drv_path} > $out"],

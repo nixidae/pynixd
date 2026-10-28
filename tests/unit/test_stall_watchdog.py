@@ -20,8 +20,12 @@ import contextlib
 import io
 import threading
 import time
+from typing import TYPE_CHECKING
 
 from pynixd.health import LoopLagMonitor, StallWatchdog
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_a_beating_loop_is_never_dumped() -> None:
@@ -56,7 +60,7 @@ def test_zero_disables_it() -> None:
     assert dog._check(time.monotonic() + 3600.0) is False
 
 
-def test_the_dump_also_goes_to_a_file(tmp_path) -> None:
+def test_the_dump_also_goes_to_a_file(tmp_path: Path) -> None:
     """stderr alone is not a sink for this.
 
     The stall this catches usually ends in a liveness restart, which races the
@@ -84,7 +88,7 @@ def test_the_dump_also_goes_to_a_file(tmp_path) -> None:
     assert dog.sink_errors == 0
 
 
-def test_a_sink_it_cannot_write_never_raises(tmp_path) -> None:
+def test_a_sink_it_cannot_write_never_raises(tmp_path: Path) -> None:
     """A dump that cannot be filed must not take down what it reports on."""
     blocker = tmp_path / "not-a-dir"
     blocker.write_text("")
@@ -98,7 +102,7 @@ def test_a_sink_it_cannot_write_never_raises(tmp_path) -> None:
     assert "could not write the stall dump" in out.getvalue()
 
 
-def test_a_full_sink_stops_growing_and_says_so(tmp_path) -> None:
+def test_a_full_sink_stops_growing_and_says_so(tmp_path: Path) -> None:
     """A process that stalls for months must not fill the store's volume.
 
     And it must not go quiet about it. A dump that stopped landing looks
@@ -126,7 +130,7 @@ def test_a_full_sink_stops_growing_and_says_so(tmp_path) -> None:
     assert out.getvalue().count("further dumps go to stderr only") == 1, "the notice repeated"
 
 
-def test_the_cap_is_configurable(tmp_path) -> None:
+def test_the_cap_is_configurable(tmp_path: Path) -> None:
     """A constant can only be changed by a release.
 
     Whoever points the sink at a volume is the person who knows what that
@@ -147,7 +151,7 @@ def test_the_cap_is_configurable(tmp_path) -> None:
     assert "64 bytes" in out.getvalue()
 
 
-def test_zero_removes_the_cap(tmp_path) -> None:
+def test_zero_removes_the_cap(tmp_path: Path) -> None:
     sink = tmp_path / "stall.log"
     dog = StallWatchdog(threshold=0.01, stream=io.StringIO(), path=sink, max_bytes=0)
 
@@ -159,7 +163,7 @@ def test_zero_removes_the_cap(tmp_path) -> None:
     assert sink.read_text().count("has not run a callback") == 2
 
 
-def test_the_cap_keeps_the_first_dumps(tmp_path) -> None:
+def test_the_cap_keeps_the_first_dumps(tmp_path: Path) -> None:
     """Not the last. Rotation would throw away the one that explains the rest.
 
     The first stall after a deployment is usually the one worth having, so the

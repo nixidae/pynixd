@@ -94,5 +94,5 @@ async def test_wire_build_result_json_null_conditional() -> None:
     assert '"cpu_system":{"tag":0,"value":null}' in json_str
 
     wm = BuildResult.from_json(json_str)
-    assert wm.cpu_user.tag == 0  # pyright: ignore[reportAttributeAccessIssue]
-    assert wm.cpu_system.tag == 0  # pyright: ignore[reportAttributeAccessIssue]
+    assert wm.cpu_user.tag == 0
+    assert wm.cpu_system.tag == 0

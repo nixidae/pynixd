@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -14,6 +14,9 @@ from pynixd.wire import (
     FramedWriter,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
 # ═════════════════════════════════════════════════════════════════════════════
 # 1. Primitive wire protocol roundtrips
 # ═════════════════════════════════════════════════════════════════════════════
@@ -22,7 +25,11 @@ from pynixd.wire import (
 class TestWirePrimitives:
     """Roundtrip tests for NixReader/NixWriter primitive methods."""
 
-    async def _roundtrip(self, writer_fn, reader_fn) -> Any:
+    async def _roundtrip(
+        self,
+        writer_fn: Callable[[BytesWriter], object],
+        reader_fn: Callable[[BytesReader], Awaitable[Any]],
+    ) -> Any:
         w = BytesWriter()
         writer_fn(w)
         r = BytesReader(w.get_bytes())

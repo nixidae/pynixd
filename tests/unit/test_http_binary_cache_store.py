@@ -103,13 +103,13 @@ async def test_http_binary_cache_query_valid_paths() -> None:
             response = await store.execute(
                 QueryValidPathsRequest(
                     paths={
-                        StorePath(path=_PATH),  # pyright: ignore[reportUnhashable]
-                        StorePath(path=missing),  # pyright: ignore[reportUnhashable]
+                        StorePath(path=_PATH),
+                        StorePath(path=missing),
                     },
                     substitute=0,
                 )
             )
-            assert response.paths == {StorePath(path=_PATH)}  # pyright: ignore[reportUnhashable]
+            assert response.paths == {StorePath(path=_PATH)}
         finally:
             await store.close()
 

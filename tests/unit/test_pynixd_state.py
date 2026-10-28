@@ -249,7 +249,7 @@ async def test_builds_say_why_a_pending_build_waits() -> None:
     running.worker = anyio.CancelScope()
     await queue.enqueue(_slot_request("2"), from_goal_path=True, goal_request_id=RequestId(7), options=_slot_options(1))
 
-    builds = state_collector.collect(cast("PynixdContext", ctx), ["builds"]).builds
+    builds = state_collector.collect(ctx, ["builds"]).builds
     assert builds is not None
     rows = {row.state: row for row in builds}
 

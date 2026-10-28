@@ -168,7 +168,7 @@ async def test_get_substituter_selects_highest_priority_positive_store() -> None
     candidate = await queue.get_substituter(path)
 
     assert candidate is not None
-    assert candidate.store is high_priority
+    assert candidate.store is high_priority  # type: ignore[comparison-overlap]  # the fake substituter stands in for a Store; the test checks identity only
 
 
 @pytest.mark.anyio
@@ -188,7 +188,7 @@ async def test_substitute_deduplicates_active_imports(monkeypatch: pytest.Monkey
     queue = SubstitutionQueue(ctx)
     imports = 0
 
-    async def fake_import(path_arg: StorePath, candidate) -> None:
+    async def fake_import(path_arg: StorePath, candidate: object) -> None:
         nonlocal imports
         del path_arg, candidate
         imports += 1
@@ -222,7 +222,7 @@ async def test_imports_stream_max_substitution_jobs_at_once(monkeypatch: pytest.
     queue.set_import_slots(2)
     running = peak = 0
 
-    async def fake_import(path_arg: StorePath, candidate) -> None:
+    async def fake_import(path_arg: StorePath, candidate: object) -> None:
         nonlocal running, peak
         del path_arg, candidate
         running += 1

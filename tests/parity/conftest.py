@@ -13,6 +13,6 @@ import pytest
 
 
 @pytest.fixture(scope="session", autouse=False)
-def pynixd_server():
+def pynixd_server() -> None:
     """Override: a parity test starts its own daemon."""
     return

@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
-from pynixd.drv_parser import Derivation, DrvOutput
+from pynixd.drv_parser import Derivation
 from pynixd.goals.engine import GoalEngine
 from pynixd.goals.query_missing import QueryMissingPlanGoal
 from pynixd.serde import (
@@ -27,6 +27,7 @@ from pynixd.serde import (
     TimeSpan,
     Verbosity,
 )
+from pynixd.store_path import DrvOutput
 from pynixd.substitution_queue import SubstitutionAvailability
 
 if TYPE_CHECKING:
@@ -89,7 +90,7 @@ async def _plan(
         "PynixdContext",
         SimpleNamespace(local_store=store or Store(), scheduler=SimpleNamespace(substitution_queue=Queue(known))),
     )
-    request = QueryMissingRequest(derived_paths=cast("set[SerdeDerivedPath]", {SerdeDerivedPath(value=path)}))
+    request = QueryMissingRequest(derived_paths={SerdeDerivedPath(value=path)})
     return await QueryMissingPlanGoal(GoalEngine(ctx), request, client).result()
 
 

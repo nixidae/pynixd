@@ -180,9 +180,20 @@ async def _build_with_pynixd_fleet(
     *both* stores are a `LocalDBStore`, so a plain `LocalStore` backend takes
     the other path -- the one every backend that is not a local daemon takes.
     """
-    common = {"extra_env": _nix_config_env(case), "no_probe": True}
-    local_spec = make_test_spec(store_id="local", store_path=local_root, no_schedule=True, **common)
-    builder_spec = make_test_spec(store_id="builder", store_path=builder_root, **common)
+    extra_env = _nix_config_env(case)
+    local_spec = make_test_spec(
+        store_id="local",
+        store_path=local_root,
+        no_schedule=True,
+        extra_env=extra_env,
+        no_probe=True,
+    )
+    builder_spec = make_test_spec(
+        store_id="builder",
+        store_path=builder_root,
+        extra_env=extra_env,
+        no_probe=True,
+    )
     async with Server(
         stores={
             StoreId("local"): LocalDBStore(local_spec),
@@ -471,9 +482,20 @@ async def test_a_client_fetches_a_backend_built_output_through_pynixd(
     added_b = delta(before_b, await _read_store(roots.nix))
     wanted = sorted(added_b.paths)
 
-    common = {"extra_env": _nix_config_env(case), "no_probe": True}
-    local_spec = make_test_spec(store_id="local", store_path=roots.pynixd, no_schedule=True, **common)
-    builder_spec = make_test_spec(store_id="builder", store_path=roots.builder, **common)
+    extra_env = _nix_config_env(case)
+    local_spec = make_test_spec(
+        store_id="local",
+        store_path=roots.pynixd,
+        no_schedule=True,
+        extra_env=extra_env,
+        no_probe=True,
+    )
+    builder_spec = make_test_spec(
+        store_id="builder",
+        store_path=roots.builder,
+        extra_env=extra_env,
+        no_probe=True,
+    )
     before_builder = await _read_store(roots.builder)
     socket_path = roots.pynixd.parent / "pynixd.sock"
     async with Server(

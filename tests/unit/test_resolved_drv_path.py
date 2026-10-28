@@ -75,7 +75,7 @@ def _defer() -> Derivation:
     """
     return Derivation(
         outputs=[DrvOutput(hash_algo="", hash_value="", output_name="out", path="")],
-        input_drvs={StorePath(BASE_DRV): ["out"]},  # pyright: ignore[reportArgumentType] -- StorePath is a str
+        input_drvs={StorePath(BASE_DRV): ["out"]},
         platform="x86_64-linux",
         builder="/bin/sh",
         args=["-e", "-c", f"cat {BASE_OUT} > $out"],
@@ -91,7 +91,7 @@ def _top() -> Derivation:
     """
     return Derivation(
         outputs=[DrvOutput(hash_algo="", hash_value="", output_name="out", path=TOP_OUT)],
-        input_drvs={StorePath(BASE_DRV): ["out"]},  # pyright: ignore[reportArgumentType] -- StorePath is a str
+        input_drvs={StorePath(BASE_DRV): ["out"]},
         platform="x86_64-linux",
         builder="/bin/sh",
         args=["-e", "-c", f"cat {BASE_OUT} > $out"],

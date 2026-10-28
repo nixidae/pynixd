@@ -461,7 +461,8 @@ async def _substitute(run: Runner, root: Path, work: Path) -> None:
     del work
     cache = f"file://{root}/cache"
     substitute = ["--substituters", cache, "--no-require-sigs", "--max-jobs", "0", "--substitute"]
-    for expr, extra in ((DERIVATION, []), (CONTENT_ADDRESSED, CA_FLAGS)):
+    pairs: list[tuple[str, list[str]]] = [(DERIVATION, []), (CONTENT_ADDRESSED, CA_FLAGS)]
+    for expr, extra in pairs:
         await run([str(NIX), "build", "--impure", "--no-link", "--json", *extra, "--expr", expr])
         await run([str(NIX), "copy", "--to", cache, "--impure", *extra, "--expr", expr])
         await run([str(NIX), "store", "gc"])

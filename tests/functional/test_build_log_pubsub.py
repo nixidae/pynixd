@@ -101,7 +101,7 @@ async def test_build_log_pubsub_two_clients() -> None:
 
         # Release the block after a short delay to simulate build execution
         # time, so the test stays fast and still takes the timing-sensitive path.
-        async def release_blocker():
+        async def release_blocker() -> None:
             await anyio.sleep(0.2)
             build_blocker.set()
 
