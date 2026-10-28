@@ -391,36 +391,10 @@ let
           + "touch $out\n"
         );
   };
-in
-package
-// {
-  inherit
-    package
-    library
-    agent
-    daemon-protocol
-    specifictest
-    fix
-    checks
-    nixFunctionalTests
-    ciWorkflows
-    ciTestWorkflows
-    ciWorkflowFiles
-    ci-workflow-update
-    pkgs
-    ;
-
   pynixd-docs = pkgs.python3Packages.callPackage ./nix/docs.nix {
     pynixd = library;
     inherit nixvenv;
   };
-
-  shell = pkgs.callPackage ./nix/shell.nix {
-    inherit agent;
-    devEnv = shellEnv;
-    nixpkgsPath = pkgs.path;
-  };
-  nixosModule = import ./nix/nixos/default.nix;
 
   tests = rec {
     simple = pkgs.callPackage ./tests/derivations/simple {
@@ -491,5 +465,64 @@ package
 
     daemonByNix = byNix daemon;
     switchByNix = byNix switch;
+  };
+
+  shell = pkgs.callPackage ./nix/shell.nix {
+    inherit agent;
+    devEnv = shellEnv;
+    nixpkgsPath = pkgs.path;
+  };
+in
+
+# The shape before nixidae/nixidae#1103. croshome, solid-kubernetes, the CI
+# workflows and nix/members.nix read these names.
+package
+// {
+  inherit
+    package
+    library
+    agent
+    daemon-protocol
+    specifictest
+    fix
+    checks
+    nixFunctionalTests
+    ciWorkflows
+    ciTestWorkflows
+    ciWorkflowFiles
+    ci-workflow-update
+    pkgs
+    pynixd-docs
+    shell
+    tests
+    ;
+  nixosModule = import ./nix/nixos/default.nix;
+}
+// {
+  packages = {
+    default = package;
+    pynixd = package;
+    pynixd-lib = library;
+    pynixd-agent = agent;
+    nix-daemon-protocol = daemon-protocol;
+  };
+  lib = { };
+  nixosModules.default = ./nix/nixos;
+  inherit checks;
+  docs.default = pynixd-docs;
+  inherit shell ciTestWorkflows;
+
+  # Not public: the names may change without notice.
+  internal = {
+    inherit
+      pkgs
+      specifictest
+      fix
+      nixFunctionalTests
+      ciWorkflows
+      ciWorkflowFiles
+      ci-workflow-update
+      tests
+      ;
   };
 }
