@@ -36,7 +36,7 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, TypedDict
+from typing import TYPE_CHECKING, Any, ClassVar, TypedDict, overload
 
 import anyio
 
@@ -118,9 +118,9 @@ class ChildMapNode:
         result.extend(self.children)
         return result
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Serialize to JSON-compatible dict."""
-        result: dict = {"outputs": self.outputs}
+        result: dict[str, Any] = {"outputs": self.outputs}
         if self.children:
             result["dynamicOutputs"] = {name: child.to_dict() for name, child in self.children.items()}
         return result
@@ -137,7 +137,7 @@ class NixDerivationOutputShow(TypedDict, total=False):
 class NixInputDrvShow(TypedDict):
     """Input derivation entry in `nix derivation show` JSON."""
 
-    dynamicOutputs: dict
+    dynamicOutputs: dict[str, NixInputDrvShow]
     outputs: list[str]
 
 
@@ -737,16 +737,23 @@ class _Parser:
                 # Unknown escape — pass through
                 parts.append(esc)
 
-    def parse_string_list[T](self, tp: Callable[[str], T] = str) -> list[T]:
+    @overload
+    def parse_string_list(self) -> list[str]: ...
+
+    @overload
+    def parse_string_list[T](self, tp: Callable[[str], T]) -> list[T]: ...
+
+    def parse_string_list[T](self, tp: Callable[[str], T] | None = None) -> list[Any]:
         """Parse [str, str, ...]."""
         self._expect("[")
-        result: list[T] = []
+        result: list[Any] = []
+        convert: Callable[[str], Any] = tp if tp is not None else str
         self._skip_ws()
         while self._peek() != "]":
             if result:
                 self._expect(",")
             self._skip_ws()
-            result.append(tp(self.parse_string()))
+            result.append(convert(self.parse_string()))
             self._skip_ws()
         self._expect("]")
         return result

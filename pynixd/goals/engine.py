@@ -158,7 +158,8 @@ class GoalEngine:
     ) -> BuildPathsResponse:
         """Execute a BuildPaths request, returning a simple success/failure response."""
         if request.build_mode != BuildMode.NORMAL:
-            return await self._straight_to_the_store(request, client)
+            straight: BuildPathsResponse = await self._straight_to_the_store(request, client)
+            return straight
         response = await self.build_paths_with_results(
             BuildPathsWithResultsRequest(
                 derived_paths=request.derived_paths,
@@ -183,7 +184,7 @@ class GoalEngine:
         request: BuildPathsWithResultsRequest,
         client: ClientConn | None = None,
         hold: Hold | None = None,
-    ):
+    ) -> BuildPathsWithResultsResponse:
         """Execute a BuildPathsWithResults request, returning per-path results.
 
         *hold* roots each path the request realised for the client's session
@@ -193,7 +194,8 @@ class GoalEngine:
         `CollectGarbage` retires it. nixidae/nixidae#1007.
         """
         if request.build_mode != BuildMode.NORMAL:
-            return await self._straight_to_the_store(request, client)
+            straight: BuildPathsWithResultsResponse = await self._straight_to_the_store(request, client)
+            return straight
         try:
             response = await BuildPathsWithResultsGoal(self, request, client).result()
             if hold is not None:

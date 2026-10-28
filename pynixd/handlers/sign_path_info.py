@@ -30,4 +30,5 @@ class SignPathInfoHandler(Handler):
             )
             return None
 
-        return await ctx.proxy.local_store.call(req)
+        response: object | None = await ctx.proxy.local_store.call(req)
+        return response

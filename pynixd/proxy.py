@@ -646,7 +646,8 @@ class DaemonProxy:
             req = await wire_cls.from_reader(
                 ReadContext(reader=self.r, version=self.version, features=self.standard_features),
             )
-            return await self.execute(req)
+            executed: WireResponse | None = await self.execute(req)
+            return executed
 
         log.warning("unhandled_op", op_num=op_num)
         await self.send_error(f"Unhandled operation: {op_num}")

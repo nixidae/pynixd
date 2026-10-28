@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     import argparse
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:
+def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     """Register the ``state`` subcommand on the root argument parser."""
     parser = subparsers.add_parser("state", help="Daemon state: tables on a terminal, JSON otherwise")
     parser.add_argument(

@@ -5,6 +5,8 @@ errors, warnings, and all non-debug level messages.
 Drops: SSH channel lifecycle, per-operation trace, SQL queries.
 """
 
+from typing import Any
+
 KEEP_EVENTS = frozenset(
     {
         "build_enqueued",
@@ -83,7 +85,7 @@ DROP_LOGGERS = frozenset({"pynixd.serde.AddMultipleToStoreRequest"})
 ALWAYS_KEEP_LEVELS = frozenset({"error", "critical"})
 
 
-def filter(logger, method_name, event_dict):  # noqa: A001 — plugin convention
+def filter(logger: object, method_name: str, event_dict: dict[str, Any]) -> dict[str, Any] | None:  # noqa: A001 — plugin convention
     level = event_dict.get("level", "").lower()
     logger_name = getattr(logger, "name", "")
     if level in ALWAYS_KEEP_LEVELS or method_name in ALWAYS_KEEP_LEVELS:

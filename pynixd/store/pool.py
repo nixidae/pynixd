@@ -324,21 +324,21 @@ class ConnectionPool:
                 kind=kind,
                 nesting_level=in_use,
             )
-            conn = await self.get_or_create_conn(options)
+            shared: Connection = await self.get_or_create_conn(options)
 
             # Increment nesting count in a NEW dict to ensure task isolation
             counts[self.store_id] = in_use + 1
             _nested_conns.set(counts)
 
             try:
-                async with conn:
-                    yield conn
+                async with shared:
+                    yield shared
             finally:
                 # Decrement nesting count
                 counts = _nested_conns.get({}).copy()
                 counts[self.store_id] = counts.get(self.store_id, 0) - 1
                 _nested_conns.set(counts)
-                await self._give_back(conn)
+                await self._give_back(shared)
             return
 
         await self._take_slot()

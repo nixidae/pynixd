@@ -28,4 +28,5 @@ class VerifyStoreHandler(Handler):
             await ctx.proxy.send_error("you are not privileged to repair paths")
             return None
 
-        return await ctx.proxy.local_store.call(req)
+        response: object | None = await ctx.proxy.local_store.call(req)
+        return response

@@ -204,8 +204,11 @@ class SSHStore(DaemonStore):
             # /proc files report size 0, so read to EOF rather than by size.
             try:
                 async with sftp.open(path, "r") as f:
-                    chunks = []
-                    while chunk := await f.read(65536):
+                    chunks: list[str] = []
+                    while True:
+                        chunk: str = await f.read(65536)
+                        if not chunk:
+                            break
                         chunks.append(chunk)
                     return "".join(chunks)
             except asyncssh.SFTPError:
@@ -405,7 +408,7 @@ class SSHSubprocessStore(SSHStore):
             persistent_connection=spec.persistent_connection,
             known_hosts=spec.known_hosts,
         )
-        self.ssh_processes: list[asyncssh.SSHClientProcess] = []
+        self.ssh_processes: list[asyncssh.SSHClientProcess[bytes]] = []
 
     async def create_conn(self) -> Connection:
         """Spawn a nix-daemon --stdio subprocess over the SSH connection."""

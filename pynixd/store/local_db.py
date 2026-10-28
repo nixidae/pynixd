@@ -5,7 +5,7 @@ from __future__ import annotations
 import functools
 import types
 from enum import Enum
-from typing import Any, Union, get_args, get_origin
+from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
 
 import structlog
 from pydantic import BaseModel
@@ -15,6 +15,11 @@ from nix_daemon_protocol.store_dir import store_prefix
 from ..local_store_db import LocalStoreDB
 from ..serde import StorePath
 from .local_daemon import LocalStore
+
+if TYPE_CHECKING:
+    from nix_daemon_protocol.wire_ops import WireRequest
+
+    from ..connection import ClientConn
 
 log = structlog.get_logger(__name__)
 
@@ -73,7 +78,7 @@ def _path_field_names(cls: type) -> tuple[str, ...]:
     return tuple(name for name, field in fields.items() if _may_hold_paths(field.annotation))
 
 
-def _path_info_response(row: tuple, ref_paths: list[str] | set[str]) -> Any:
+def _path_info_response(row: tuple[Any, ...], ref_paths: list[str] | set[str]) -> Any:
     """Answer a `QueryPathInfo` from a `ValidPaths` row and its references.
 
     Both the synchronous reader and the pooled connection land here, so the
@@ -89,7 +94,7 @@ def _path_info_response(row: tuple, ref_paths: list[str] | set[str]) -> Any:
 
     _path, deriver, nar_hash, reg_time, nar_size, ultimate, sigs, ca = row
 
-    sig_set: set = set()
+    sig_set: set[Signature] = set()
     if sigs:
         for s in sigs.split():
             sig_set.add(Signature(**Signature.from_str(s)))
@@ -120,7 +125,7 @@ def referenced_paths(request: object) -> set[str]:
     """
     if not isinstance(request, BaseModel):
         return set()
-    names = _path_field_names(type(request))
+    names = _path_field_names(type(request))  # type: ignore[arg-type]  # zuban-bug: zuban checks type[BaseModel] against Hashable through BaseModel's __eq__-derived __hash__ = None; mypy accepts the class object
     if not names:
         return set()
     found: set[str] = set()
@@ -193,7 +198,14 @@ class LocalDBStore(LocalStore):
         await self.db.close()
         await super().close()
 
-    async def execute(self, request, client=None, suppress_last=False, skip_probe=False, mark=True):  # type: ignore[no-untyped-def]  # the parent is untyped
+    async def execute(
+        self,
+        request: WireRequest,
+        client: ClientConn | None = None,
+        suppress_last: bool = False,
+        skip_probe: bool = False,
+        mark: bool = True,
+    ) -> Any:
         """Note the paths of the request, then run it.
 
         This is the one place that sees every operation, whichever route
@@ -296,7 +308,7 @@ class LocalDBStore(LocalStore):
 
         async with self.db.execute(QUERY_ALL_VALID_PATHS) as cursor:
             rows = await cursor.fetchall()
-        paths: set = {StorePath(path=r[0]) for r in rows}  # type: ignore[arg-type]
+        paths: set[StorePath] = {StorePath(path=r[0]) for r in rows}
         return QueryAllValidPathsResponse(paths=paths)
 
     async def query_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
@@ -322,7 +334,7 @@ class LocalDBStore(LocalStore):
         async with self.db.execute(QUERY_VALID_PATHS, (paths_json,)) as cursor:
             rows = await cursor.fetchall()
 
-        paths: set = {StorePath(path=r[0]) for r in rows}  # type: ignore[arg-type]
+        paths: set[StorePath] = {StorePath(path=r[0]) for r in rows}
         return QueryValidPathsResponse(paths=paths)
 
     async def query_path_from_hash_part(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
@@ -353,7 +365,7 @@ class LocalDBStore(LocalStore):
         seeds_json = json.dumps([str(p) for p in request.paths])
         async with self.db.execute(QUERY_CLOSURE, (seeds_json,)) as cursor:
             rows = await cursor.fetchall()
-        paths: set = {StorePath(path=row[0]) for row in rows}  # type: ignore[arg-type]
+        paths: set[StorePath] = {StorePath(path=row[0]) for row in rows}
         return QueryClosureResponse(paths=paths)
 
     async def query_closure_with_info(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
@@ -380,11 +392,11 @@ class LocalDBStore(LocalStore):
         async with self.db.execute(QUERY_CLOSURE_WITH_INFO, (seeds_json,)) as cursor:
             rows = await cursor.fetchall()
 
-        sorted_infos: list = []
+        sorted_infos: list[Any] = []
         for path, deriver, nar_hash, reg_time, nar_size, ultimate, sigs, ca, refs_str in rows:
             sp = StorePath(path=path)
-            references: set = {StorePath(path=r) for r in refs_str.split()} if refs_str else set()  # type: ignore[arg-type]
-            sig_set: set = set()
+            references: set[StorePath] = {StorePath(path=r) for r in refs_str.split()} if refs_str else set()
+            sig_set: set[Signature] = set()
             if sigs:
                 for s in sigs.split():
                     sig_set.add(Signature(**Signature.from_str(s)))
@@ -410,8 +422,8 @@ class LocalDBStore(LocalStore):
 
             return QueryPathInfosResponse(infos=[])
 
-        cached: dict = {}
-        uncached: list = []
+        cached: dict[Any, Any] = {}
+        uncached: list[Any] = []
         for path in request.paths:
             cached_info = self.get_path_info(path)
             if cached_info is not None:
@@ -442,16 +454,16 @@ class LocalDBStore(LocalStore):
         async with self.db.execute(QUERY_REFERENCES_BATCH, (paths_json,)) as cursor:
             ref_rows = await cursor.fetchall()
 
-        refs_map: dict = {}
+        refs_map: dict[StorePath, set[StorePath]] = {}
         for referrer, reference in ref_rows:
-            refs_map.setdefault(StorePath(path=referrer), set()).add(  # type: ignore[arg-type]
+            refs_map.setdefault(StorePath(path=referrer), set()).add(
                 StorePath(path=reference),
             )
 
-        infos: list = []
+        infos: list[Any] = []
         for path, deriver, nar_hash, reg_time, nar_size, ultimate, sigs, ca in rows:
             sp = StorePath(path=path)
-            sig_set: set = set()
+            sig_set: set[Signature] = set()
             if sigs:
                 for s in sigs.split():
                     sig_set.add(Signature(**Signature.from_str(s)))
@@ -490,11 +502,10 @@ class LocalDBStore(LocalStore):
         async with self.db.execute(QUERY_DERIVATION_OUTPUT_MAP_BATCH, (paths_json,)) as cursor:
             rows = await cursor.fetchall()
 
-        result: dict = {}
+        result: dict[StorePath, dict[str, StorePath]] = {}
+        # `DerivationOutputs.path` is NOT NULL in Nix's schema.
         for drv_path, output_name, output_path in rows:
-            sp = StorePath(path=drv_path)
-            val: StorePath | None = StorePath(path=output_path) if output_path else None
-            result.setdefault(sp, {})[output_name] = val
+            result.setdefault(StorePath(path=drv_path), {})[output_name] = StorePath(path=output_path)
 
         for drv_path in request.drv_paths:
             sp = StorePath(path=str(drv_path))

@@ -152,4 +152,4 @@ class StableRootsWatch:
                     dirty.set()
         finally:
             observer.stop()
-            await run_sync(observer.join)
+            await run_sync(observer.join)  # type: ignore[call-arg]  # zuban-bug: run_sync counts join's defaulted timeout as required; mypy accepts the call

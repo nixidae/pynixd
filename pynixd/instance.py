@@ -33,6 +33,7 @@ from .unix_server import start_unix_server
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+    from types import TracebackType
 
     import asyncssh
     from aiohttp import web
@@ -541,7 +542,8 @@ class Server:
     def port(self) -> int:
         """Bound SSH port, or the configured port if the server is not yet listening."""
         if self.ssh_server and self.ssh_server.sockets:
-            return self.ssh_server.sockets[0].getsockname()[1]
+            port: int = self.ssh_server.sockets[0].getsockname()[1]
+            return port
         return self.settings.ssh_port or 0
 
     @property
@@ -590,7 +592,12 @@ class Server:
         await self.start()
         return self
 
-    async def __aexit__(self, _exc_type, _exc_val, _exc_tb) -> None:
+    async def __aexit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        _exc_val: BaseException | None,
+        _exc_tb: TracebackType | None,
+    ) -> None:
         await self.close()
 
     async def start(self) -> None:
@@ -677,7 +684,7 @@ class Server:
         async with anyio.create_task_group() as tg:
             for store_id, store in list(self.ctx._stores.items()):
                 if store_id != LOCAL_STORE_ID:
-                    tg.start_soon(self.add_store, store)
+                    tg.start_soon(self.add_store, store, False)
 
         if self.ctx.scheduler:
             self.background_tasks.append(

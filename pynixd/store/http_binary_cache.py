@@ -8,7 +8,7 @@ import re
 import zlib
 from collections import deque
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urljoin
 
 import aiohttp
@@ -409,7 +409,13 @@ class _ZstdDecompressor:
         return [self._decompressor.flush()]
 
 
-def _decompressor(compression: str):
+class _Decompressor(Protocol):
+    def decompress(self, chunk: bytes) -> list[bytes]: ...
+
+    def finish(self) -> list[bytes]: ...
+
+
+def _decompressor(compression: str) -> _Decompressor:
     match compression:
         case "" | "none":
             return _PassthroughDecompressor()

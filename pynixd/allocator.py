@@ -255,7 +255,8 @@ def short_of_disk(store: DaemonStore, settings: StoreRankingSettings, now: float
     monitor = getattr(store, "monitor", None)
     disk = monitor.health.disk if monitor is not None else None
     if disk is not None:
-        return disk.free_bytes < settings.min_free_bytes
+        enough: bool = disk.free_bytes < settings.min_free_bytes
+        return enough
     return now < getattr(store, "disk_full_until", 0.0)
 
 

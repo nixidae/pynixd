@@ -160,7 +160,7 @@ async def start_ssh_server(
         else:
             log.info("host_key_ephemeral_generated")
 
-    async def handle_client(process: asyncssh.SSHServerProcess) -> None:
+    async def handle_client(process: asyncssh.SSHServerProcess[bytes]) -> None:
         cmd: str | None = process.command
         log.info("client_exec", cmd=cmd)
         if not cmd or ("nix-daemon" not in cmd and "nix daemon" not in cmd):

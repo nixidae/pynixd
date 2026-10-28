@@ -25,7 +25,7 @@ def _human(n: int) -> str:
     return f"{value:.1f}T"  # unreachable: the loop returns at "T"
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:
+def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     """Register the ``roots`` subcommand on the root argument parser."""
     parser = subparsers.add_parser("roots", help="Full and exclusive storage per root")
     parser.add_argument(

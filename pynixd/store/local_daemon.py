@@ -183,7 +183,7 @@ class LocalStore(DaemonStore):
         self.monitor_enabled = spec.monitor
         self.daemon_proc: asyncio.subprocess.Process | None = None
         self.daemon_ready: anyio.Event | None = None
-        self._daemon_log_task: asyncio.Task | None = None
+        self._daemon_log_task: asyncio.Task[None] | None = None
         # The last lines the daemon wrote, for the error paths of
         # `ensure_daemon`. Those used to call `daemon_proc.stderr.read()`, but
         # `_stream_daemon_output` holds a `readline()` on that same stream from
@@ -202,14 +202,15 @@ class LocalStore(DaemonStore):
         if self.managed:
             atexit.register(self._atexit_kill_daemon)
 
-        self.monitor: ResourceMonitor | None = (
+        monitor: ResourceMonitor = (
             local_monitor(
                 self.pressure_settings, self.on_pressure_sample, [get_current_system()], self._replace_monitor
             )
             if self.monitor_enabled
             else DummyResourceMonitor(self.pressure_settings, self.on_pressure_sample)
         )
-        self.monitor.disk_fn = local_disk(self.layout.real_store_dir)
+        monitor.disk_fn = local_disk(self.layout.real_store_dir)
+        self.monitor: ResourceMonitor | None = monitor
 
     def _replace_monitor(self, monitor: ResourceMonitor) -> None:
         monitor.disk_fn = local_disk(self.layout.real_store_dir)
@@ -397,7 +398,8 @@ class LocalStore(DaemonStore):
             raise RuntimeError(
                 f"`nix config show` failed with code {proc.returncode}: {stderr.decode(errors='replace')}"
             )
-        return json.loads(stdout)
+        config: dict[str, Any] = json.loads(stdout)
+        return config
 
     def _recent_output_text(self) -> str:
         """The last lines the daemon wrote, for a start-up error message.

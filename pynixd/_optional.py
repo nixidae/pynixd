@@ -11,7 +11,7 @@ does `from . import _optional` at the top, and
 attribute read on a module object, so `__getattr__` below runs and imports the
 module at the moment the configuration asks for it.
 
-The table is written twice, once for the interpreter and once for pyright.
+The table is written twice, once for the interpreter and once for the type checker.
 `tests/unit/test_import_budget.py` compares the two.
 """
 

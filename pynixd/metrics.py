@@ -39,6 +39,8 @@ from nix_daemon_protocol.store_dir import real_store_dir
 from .state_models import WaitReason
 
 if TYPE_CHECKING:
+    from prometheus_client.metrics_core import Metric
+
     from .build_queue import BuildQueue
     from .store.pool import ConnectionPool
 
@@ -617,7 +619,7 @@ class StorePoolCollector:
     def register(self, pool: ConnectionPool) -> None:
         self._pools.add(pool)
 
-    def collect(self):
+    def collect(self) -> Iterable[Metric]:
         """Yield in-flight, idle and total connections for every live pool."""
         in_flight = GaugeMetricFamily(
             "pynixd_store_pool_in_flight_connections",
@@ -734,7 +736,7 @@ class StorePressureCollector:
     def register(self, store: object) -> None:
         self._stores.add(store)
 
-    def collect(self):
+    def collect(self) -> Iterable[Metric]:
         """Yield the limit, its reason, and the sample of each live store."""
         limit = GaugeMetricFamily("pynixd_store_build_limit", "Builds the store may run now (#98)", labels=["store_id"])
         reason = GaugeMetricFamily(
@@ -815,7 +817,7 @@ class StoreTrafficCollector:
     def register(self, pool: ConnectionPool) -> None:
         self._pools.add(pool)
 
-    def collect(self):
+    def collect(self) -> Iterable[Metric]:
         """Yield read and written wire bytes for every live pool's store."""
         # Summed per `store_id`, and not one sample per pool: the comment
         # on `StorePoolCollector.collect` says why duplicates are fatal.
@@ -861,7 +863,7 @@ class StoreSpaceCollector:
     every 15 s cannot pay half a second.
     """
 
-    def collect(self):
+    def collect(self) -> Iterable[Metric]:
         """Yield the two numbers, or nothing when the store is unreachable."""
         path = real_store_dir()
         try:
@@ -936,7 +938,7 @@ class AppstarterCollector:
     store finds its own state file rather than the host's.
     """
 
-    def collect(self):
+    def collect(self) -> Iterable[Metric]:
         """Yield the one bit, or nothing when no state was recorded."""
         path = Path(real_store_dir()).parent / APPSTARTER_STATE
         try:

@@ -36,7 +36,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from itertools import batched
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 import aiosqlite
 import anyio
@@ -358,7 +358,7 @@ class SyncReader:
         finally:
             cursor.close()
 
-    def query_path_info(self, path: str) -> tuple[tuple | None, list[str]] | None:
+    def query_path_info(self, path: str) -> tuple[tuple[Any, ...] | None, list[str]] | None:
         """The `ValidPaths` row and reference paths for `path`.
 
         One statement carries both: the info columns repeat on every row
@@ -550,7 +550,7 @@ class LocalStoreDB:
     async def execute(
         self,
         query: str,
-        params: tuple = (),
+        params: tuple[Any, ...] = (),
     ) -> AsyncIterator[aiosqlite.Cursor]:
         """Execute a query and return the cursor.
 
@@ -719,8 +719,8 @@ class LocalStoreDB:
         if not self.active:
             return None
         groups: dict[tuple[str, ...], list[str]] = {}
-        for label, seeds in labeled:
-            key = tuple(sorted(set(seeds)))
+        for label, seed_paths in labeled:
+            key = tuple(sorted(set(seed_paths)))
             if key:
                 groups.setdefault(key, []).append(label)
         if not groups:

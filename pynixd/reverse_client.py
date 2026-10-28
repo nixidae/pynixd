@@ -147,7 +147,7 @@ class ReverseInitiator:
         log.info("reverse_initiator_ephemeral_key_generated")
         return [key]
 
-    async def _handle_request(self, process: asyncssh.SSHServerProcess) -> None:
+    async def _handle_request(self, process: asyncssh.SSHServerProcess[bytes]) -> None:
         cmd = process.command or ""
 
         if cmd == _REGISTRATION_COMMAND:

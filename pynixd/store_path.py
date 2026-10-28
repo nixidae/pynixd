@@ -28,6 +28,11 @@ class DrvOutput:
         DrvOutput(hash_algo="sha256", hash_value="abc", output_name="out")
     """
 
+    _hash_algo: str
+    _hash_value: str
+    _output_name: str
+    _path: str
+
     def __init__(
         self,
         value: str = "",

@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
+    from ..connection import Connection
     from .daemon import DaemonStore
 
 
@@ -233,8 +234,8 @@ def as_copied(info: ValidPathInfo) -> ValidPathInfo:
 
 
 async def _stream_paths_over_conns(
-    src_conn,
-    dst_conn,
+    src_conn: Connection,
+    dst_conn: Connection,
     to_transfer: list[ValidPathInfo],
     cancel_event: anyio.Event | None,
 ) -> None:

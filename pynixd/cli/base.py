@@ -93,7 +93,7 @@ async def open_pynixd(settings: PynixdSettings, explicit: Path | None, operation
 _DROP_SENTINEL = "_pynixd_drop"
 
 
-def _load_filter_from_plugins(plugins: list) -> Callable | None:
+def _load_filter_from_plugins(plugins: list[Any]) -> Callable[..., Any] | None:
     """Import each plugin path and return the first callable named ``filter``."""
     log = structlog.get_logger(__name__)
     for path in plugins:
@@ -101,20 +101,21 @@ def _load_filter_from_plugins(plugins: list) -> Callable | None:
         if module is None:
             continue
         if hasattr(module, "filter") and callable(module.filter):
-            return module.filter
+            filter_fn: Callable[..., Any] = module.filter
+            return filter_fn
         if callable(module):
             return module  # type: ignore[return-value]
         log.warning("log_filter_plugin_missing_filter", path=str(path))
     return None
 
 
-def _build_filter_processor(filter_fn: Callable) -> Callable:
+def _build_filter_processor(filter_fn: Callable[..., Any]) -> Callable[..., Any]:
     """Wrap a plugin filter for the structlog chain.
 
     Raises ``DropEvent`` when the filter drops the event.
     """
 
-    def _proc(logger: object, method_name: str, event_dict: dict) -> dict:
+    def _proc(logger: object, method_name: str, event_dict: dict[str, Any]) -> dict[str, Any]:
         try:
             result = filter_fn(logger, method_name, event_dict)
         except structlog.DropEvent:
@@ -130,7 +131,7 @@ def _build_filter_processor(filter_fn: Callable) -> Callable:
     return _proc
 
 
-def _build_foreign_filter_processor(filter_fn: Callable) -> Callable:
+def _build_foreign_filter_processor(filter_fn: Callable[..., Any]) -> Callable[..., Any]:
     """Wrap a plugin filter for ``ProcessorFormatter.foreign_pre_chain``.
 
     ``ProcessorFormatter`` does not catch ``DropEvent``, so this variant
@@ -138,7 +139,7 @@ def _build_foreign_filter_processor(filter_fn: Callable) -> Callable:
     in ``processors`` detects the sentinel and discards the entry.
     """
 
-    def _proc(logger: object, method_name: str, event_dict: dict) -> dict:
+    def _proc(logger: object, method_name: str, event_dict: dict[str, Any]) -> dict[str, Any]:
         try:
             result = filter_fn(logger, method_name, event_dict)
         except structlog.DropEvent:
@@ -154,7 +155,7 @@ def _build_foreign_filter_processor(filter_fn: Callable) -> Callable:
     return _proc
 
 
-def _build_processors(is_foreign: bool, filter_fn: Callable | None) -> list:
+def _build_processors(is_foreign: bool, filter_fn: Callable[..., Any] | None) -> list[Any]:
     """Build the structlog processor chain.
 
     Args:
@@ -162,7 +163,7 @@ def _build_processors(is_foreign: bool, filter_fn: Callable | None) -> list:
             downstream), False for the structlog.configure processor list.
         filter_fn: Plugin filter callable or None.
     """
-    procs: list = []
+    procs: list[Any] = []
     if is_foreign:
         # Shared formatter chain: strip metadata, render.
         procs.append(_DropFilteringRenderer())
@@ -189,13 +190,13 @@ def _build_processors(is_foreign: bool, filter_fn: Callable | None) -> list:
     return procs
 
 
-def _build_foreign_pre_chain(filter_fn: Callable | None) -> list:
+def _build_foreign_pre_chain(filter_fn: Callable[..., Any] | None) -> list[Any]:
     """Build ``foreign_pre_chain`` for ``ProcessorFormatter``.
 
     These processors run only on non-structlog log records and prepare
     the event dict for the shared rendering chain.
     """
-    chain: list = [
+    chain: list[Any] = [
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
         structlog.processors.TimeStamper(fmt="iso"),
@@ -233,7 +234,7 @@ class _DropFilteringRenderer:
     def __init__(self) -> None:
         self._json = structlog.processors.JSONRenderer()
 
-    def __call__(self, logger: object, method_name: str, event_dict: dict) -> str:
+    def __call__(self, logger: object, method_name: str, event_dict: dict[str, Any]) -> str:
         if event_dict.get(_DROP_SENTINEL):
             return ""
         event_dict.pop("_record", None)

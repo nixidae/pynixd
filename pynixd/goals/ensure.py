@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import anyio
 import structlog
@@ -422,9 +422,9 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
 
         nested_result = result.copy()
         for output_name, output_path in result.resolved_outputs.items():
-            nested_result.dynamic_paths[
-                (self.derived_path.base_store_path(), *self.derived_path.chain, output_name)
-            ] = output_path
+            head: StorePath | str = self.derived_path.base_store_path()
+            dynamic_key: tuple[StorePath | str, ...] = (head, *self.derived_path.chain, output_name)
+            nested_result.dynamic_paths[dynamic_key] = output_path
         nested_result.produced_paths.add(inner_drv)
         return nested_result
 
@@ -1238,7 +1238,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         refusal.failing_derivation = failed[0].failing_derivation
         return refusal
 
-    async def _realise_input_derivations(self, parsed) -> list[tuple[InputNode, GoalResult]]:
+    async def _realise_input_derivations(self, parsed: Derivation) -> list[tuple[InputNode, GoalResult]]:
         """Each input goal's result, beside the input node it builds an output of."""
         child_goals: list[EnsureDerivedPathGoal] = []
         nodes: list[InputNode] = []
@@ -1512,7 +1512,7 @@ def _child_map_to_derived_paths(drv_path: StorePath, node: ChildMapNode) -> list
     return results
 
 
-def _realisation_output_name(key: str, realisation) -> str:
+def _realisation_output_name(key: str, realisation: Any) -> str:
     name = getattr(realisation.id, "output_name", "")
     return str(name) if name else key.split("!", 1)[-1]
 

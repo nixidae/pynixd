@@ -22,4 +22,5 @@ class AddIndirectRootHandler(Handler):
         req = await AddIndirectRootRequest.from_reader(
             ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
         )
-        return await ctx.proxy.local_store.call(req)
+        response: object | None = await ctx.proxy.local_store.call(req)
+        return response

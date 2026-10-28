@@ -210,7 +210,7 @@ class DerivedPath:
             return self
         return DerivedPath._from_components(
             drv_path=self._drv_path,
-            chain=self._chain[:-1],
+            chain=self._chain[: len(self._chain) - 1],
             outputs=OutputsNames(frozenset({self._chain[-1]})),
         )
 

@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     import argparse
 
 
-def register(subparsers: argparse._SubParsersAction) -> None:
+def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     """Register the ``gc`` subcommand on the root argument parser."""
     parser = subparsers.add_parser("gc", help="Trigger garbage collection on stores")
     parser.add_argument(

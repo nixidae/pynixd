@@ -61,7 +61,7 @@ if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
 
     from ..config import StoreSpecBase
-    from ..connection import Connection
+    from ..connection import ClientConn, Connection
     from ..drv_parser import Derivation
     from ..psi import CpuUtil, MemInfo, SystemHealth
     from ..serde import SetOptionsRequest
@@ -628,12 +628,19 @@ class DaemonStore(Store):
 
     # ── Execution ───────────────────────────────────────────────────
 
-    async def call(self, request, client=None, suppress_last=False, raise_on_error=False, skip_probe=False):
+    async def call(
+        self,
+        request: WireRequest,
+        client: ClientConn | None = None,
+        suppress_last: bool = False,
+        raise_on_error: bool = False,
+        skip_probe: bool = False,
+    ) -> Any:
         """Send a wire request over a pooled connection."""
         if not skip_probe:
             await self.probe()
 
-        is_build = not request.forward if isinstance(request, WireRequest) else request.is_build
+        is_build = not request.forward
         pool = self.build_conn if is_build else self.transfer_conn
         options = client.options if client is not None else None
         bound = self.read_timeout if isinstance(request, _BOUNDED_READS) else math.inf
@@ -659,7 +666,14 @@ class DaemonStore(Store):
             self.record_failure()
             raise
 
-    async def execute(self, request, client=None, suppress_last=False, skip_probe=False, mark=True):
+    async def execute(
+        self,
+        request: WireRequest,
+        client: ClientConn | None = None,
+        suppress_last: bool = False,
+        skip_probe: bool = False,
+        mark: bool = True,
+    ) -> Any:
         """Execute an operation, dispatching to a registered executor or falling back to call().
 
         `mark` is accepted and ignored here: only `LocalDBStore` records
@@ -1267,7 +1281,7 @@ class DaemonStore(Store):
                         next_pending.add(ref)
             pending = next_pending
 
-        sorted_infos: list = []
+        sorted_infos: list[Any] = []
         visited: set[StorePath] = set()
         visiting: set[StorePath] = set()
 

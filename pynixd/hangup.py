@@ -65,7 +65,7 @@ async def _epoll_hangup(fd: int) -> None:
 
 async def _kqueue_hangup(fd: int) -> None:
     if sys.platform == "linux" or sys.platform == "win32":
-        # Also what lets pyright, configured for Linux, skip the body.
+        # Also what lets the type checker, configured for Linux, skip the body.
         raise RuntimeError(f"no kqueue on {sys.platform}")
     kq = select.kqueue()
     try:
@@ -79,7 +79,7 @@ async def _kqueue_hangup(fd: int) -> None:
         kq.close()
 
 
-def ssh_hangup(process: asyncssh.SSHServerProcess) -> Callable[[], Awaitable[None]]:
+def ssh_hangup(process: asyncssh.SSHServerProcess[bytes]) -> Callable[[], Awaitable[None]]:
     """A waiter that returns when the SSH client ends the channel's input.
 
     asyncssh calls `eof_received` on the session for a channel EOF, and

@@ -460,7 +460,9 @@ def _resolve_dynamic_node(
                     parent_hash,
                     leaf_out,
                 )
-            actual_path = path_map.get((drv_path, *chain, leaf_out))
+            head: StorePath | str = drv_path
+            map_key: tuple[StorePath | str, ...] = (head, *chain, leaf_out)
+            actual_path = path_map.get(map_key)
             if actual_path is None:
                 reference = "!".join((str(drv_path), *chain, leaf_out))
                 raise ValueError(f"No resolved path for {reference}")

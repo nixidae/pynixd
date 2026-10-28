@@ -9,7 +9,8 @@ feature matrices, circuit breaking) lives in DaemonStore.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, ClassVar, Self, cast
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, Self, TypeVar, cast
 
 import structlog
 from cachetools import TTLCache
@@ -31,6 +32,14 @@ if TYPE_CHECKING:
 
 
 log = structlog.get_logger(__name__)
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+class _TaggedExecutor(Protocol):
+    """A method that `Store.executor` has tagged with its operation."""
+
+    _pynixd_op: int
 
 
 class Store(ABC):
@@ -235,11 +244,11 @@ class Store(ABC):
         cls._executors[op] = name
 
     @staticmethod
-    def executor(op: int):
+    def executor(op: int) -> Callable[[_F], _F]:
         """Decorator: register a method as the executor for an operation."""
 
-        def decorator(method):
-            method._pynixd_op = op
+        def decorator(method: _F) -> _F:
+            cast("_TaggedExecutor", method)._pynixd_op = op
             return method
 
         return decorator

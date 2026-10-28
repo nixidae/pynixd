@@ -95,7 +95,8 @@ class NixReader:
         raise NotImplementedError
 
     async def read_uint64(self) -> int:
-        return _UINT64_STRUCT.unpack(await self.readexactly(8))[0]
+        value: int = _UINT64_STRUCT.unpack(await self.readexactly(8))[0]
+        return value
 
     async def read_bool(self) -> bool:
         return bool(await self.read_uint64())
@@ -175,7 +176,7 @@ class SSHNixReader(NixReader):
     # Check both before giving anything else access to the stream.
     _READAHEAD = 256 * 1024
 
-    def __init__(self, reader: asyncssh.SSHReader, identifier: str = "unknown") -> None:
+    def __init__(self, reader: asyncssh.SSHReader[bytes], identifier: str = "unknown") -> None:
         super().__init__(identifier=identifier)
         self.reader = reader
         self._buf: bytes = b""
@@ -196,7 +197,7 @@ class SSHNixReader(NixReader):
             # A read at least as large as the read-ahead goes straight through.
             # Buffering it would copy the payload to no purpose.
             if need >= self._READAHEAD:
-                data = await self.reader.readexactly(need)
+                data: bytes = await self.reader.readexactly(need)
                 # Only `need` is new: `head` came out of the buffer, where it
                 # was counted when the transport filled it.
                 self.bytes_read += need
@@ -229,7 +230,8 @@ class SSHNixReader(NixReader):
         if (len(self._buf) - self._pos) > 0:
             return True
         if hasattr(self.reader, "get_read_buffer_size"):
-            return self.reader.get_read_buffer_size() > 0  # type: ignore[reportAttributeAccessIssue]
+            buffered: int = self.reader.get_read_buffer_size()
+            return buffered > 0
         # Fallback to private access if API changed or is missing
         # _recv_buf is a dict of list of bytes
         buf = self.reader._session._recv_buf.get(
@@ -485,7 +487,7 @@ class BytesReader(NixReader):
 
 
 class SSHNixWriter(NixWriter):
-    def __init__(self, writer: asyncssh.SSHWriter, identifier: str = "unknown") -> None:
+    def __init__(self, writer: asyncssh.SSHWriter[bytes], identifier: str = "unknown") -> None:
         super().__init__(identifier=identifier)
         self.writer = writer
 

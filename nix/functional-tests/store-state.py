@@ -115,11 +115,11 @@ def _read_store(db_path: Path) -> dict[str, object]:
                 by_id[row["id"]] = {"output_path": names.get(row["outputPath"]), "references": []}
         if _table_exists(db, "RealisationsRefs"):
             for row in db.execute("select referrer, realisationReference from RealisationsRefs"):
-                referrer = by_id.get(row["referrer"])
+                entry = by_id.get(row["referrer"])
                 reference = keys.get(row["realisationReference"])
-                if referrer is None or reference is None:
+                if entry is None or reference is None:
                     continue
-                references = referrer["references"]
+                references = entry["references"]
                 if isinstance(references, list):
                     references.append(reference)
 
@@ -313,7 +313,7 @@ def _compare(control_path: Path, candidate_path: Path) -> int:
     # directory that pynixd created and Nix did not, which is issue #42, and a
     # store that holds paths is something else.
     for key in sorted(set(candidate) - set(control)):
-        held = len(candidate[key].get("paths", {}))  # pyright: ignore[reportAttributeAccessIssue]
+        held = len(candidate[key].get("paths", {}))
         print(f"EXTRA     {key} ({held} path(s))")
         extra += 1
 

@@ -1,4 +1,3 @@
-# pyright: reportAttributeAccessIssue=false
 """Unified HTTP server for pynixd.
 
 Provides:
@@ -49,7 +48,8 @@ from .store_path import StorePath
 from .wire import _CHUNK_SIZE
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterator
+    from typing import Any
 
     from .health import HealthReport
     from .store import LocalStore
@@ -501,12 +501,13 @@ class PynixdHttpServer:
             )
 
         # Now add it to the store
-        async def provide_nar(writer: NixWriter):
+        async def provide_nar(writer: NixWriter) -> None:
             log.debug("provide_nar_start", path=nar_temp_path)
             # We need to wrap the raw NAR in Nix framing (framed NAR data)
             framed = writer.framed()
 
-            def decompress_gen(path: Path):
+            def decompress_gen(path: Path) -> Iterator[bytes]:
+                ctx: contextlib.AbstractContextManager[Any]
                 if path.name.endswith(".xz"):
                     ctx = lzma.open(path, "rb")  # noqa: SIM115 -- the `with ctx` below closes it
                 elif path.name.endswith(".bz2"):
@@ -539,7 +540,7 @@ class PynixdHttpServer:
 
             gen = decompress_gen(nar_temp_path)
 
-            def get_next_chunk(g):
+            def get_next_chunk(g: Iterator[bytes]) -> bytes | None:
                 try:
                     return next(g)
                 except StopIteration:
@@ -648,9 +649,9 @@ class PynixdHttpServer:
         site = web.TCPSite(runner, host, port, ssl_context=ssl_ctx)
         await site.start()
 
-        # Resolve the actual bound port (important when port=0)
-        # types-aiohttp don't declare sockets on AbstractServer (added in Python 3.7)
-        bound_port = site._server.sockets[0].getsockname()[1]  # type: ignore[reportAttributeAccessIssue]
+        # Resolve the actual bound port (important when port=0). The server is
+        # uvloop's under uvloop, which is not an asyncio.Server.
+        bound_port: int = runner.addresses[0][1]
         log.info(
             "pynixd_http_server_listening",
             scheme=scheme,

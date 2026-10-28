@@ -7,6 +7,7 @@ over SFTP while restricting access to everything else.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -21,7 +22,9 @@ from asyncssh.constants import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable
+
+_StatResult = os.stat_result | asyncssh.SFTPAttrs
 
 _ALLOWED_PATHS: frozenset[str] = frozenset(
     {
@@ -77,12 +80,12 @@ class PSIMonitorSFTPServer(asyncssh.SFTPServer):
             raise asyncssh.SFTPError(FX_PERMISSION_DENIED, "Read only")
         return super().open(path, pflags, attrs)
 
-    def stat(self, path: bytes):
+    def stat(self, path: bytes) -> _StatResult | Awaitable[_StatResult]:
         """Stat a file, restricted to allowed paths."""
         self._check_allowed(path)
         return super().stat(path)
 
-    def lstat(self, path: bytes):
+    def lstat(self, path: bytes) -> _StatResult | Awaitable[_StatResult]:
         """Lstat a file, restricted to allowed paths (does not follow symlinks)."""
         self._check_allowed(path)
         return super().lstat(path)
@@ -92,7 +95,7 @@ class PSIMonitorSFTPServer(asyncssh.SFTPServer):
         self._check_allowed(path)
         parent = Path(self._resolve(path))
         async for entry in super().scandir(path):
-            entry_name = entry.filename.decode() if isinstance(entry.filename, bytes) else entry.filename  # type: ignore[reportAttributeAccessIssue]
+            entry_name = entry.filename.decode() if isinstance(entry.filename, bytes) else entry.filename
             entry_path = str(await (AsyncPath(parent) / entry_name).resolve())
             if self._is_allowed_path(entry_path):
                 yield entry

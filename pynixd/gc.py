@@ -549,7 +549,8 @@ class Collector:
             log.warning("gc_no_referrer_closure")
             return None
         try:
-            return await query(seeds)
+            closure: set[str] | None = await query(seeds)
+            return closure
         except Exception:
             log.warning("gc_referrer_query_failed", exc_info=True)
             return None
@@ -620,7 +621,8 @@ class Collector:
         if is_http_binary_cache(store) and store.cache_info.get("WantMassQuery") == "0":
             log.debug("gc_store_asked_despite_wantmassquery", store_id=str(store.store_id))
         try:
-            return (await store.execute(QueryValidPathsRequest(paths=paths))).paths
+            valid: set[StorePath] = (await store.execute(QueryValidPathsRequest(paths=paths))).paths
+            return valid
         except Exception:
             log.warning("gc_store_query_failed", store_id=str(store.store_id), exc_info=True)
             return set()
@@ -734,7 +736,7 @@ class Collector:
                         await say(f"deleted {len(got)} paths, {len(deleted)} total")
             pending = [path for path in retry if path not in deleted]
 
-        for group in batched(sorted(uncertain), _DELETE_BATCH_SIZE, strict=False):
+        for group in (list(members) for members in batched(sorted(uncertain), _DELETE_BATCH_SIZE, strict=False)):
             async with local.transfer_conn() as conn:
                 try:
                     await recheck(conn, group)

@@ -1045,7 +1045,7 @@ class Scheduler:
         platform = build.request.derivation.platform
         offered: dict[str, set[str]] = {}
         for store in self.stores.values():
-            for system, features in (getattr(store, "_feature_matrix", None) or {}).items():
+            for system, features in (store._feature_matrix or {}).items():
                 offered.setdefault(system, set()).update(features)
         error_msg = f"Cannot build '{build.request.drv_path}'."
         if platform not in offered:
@@ -1341,7 +1341,7 @@ class Scheduler:
         if build.wait_time is not None:
             metrics.QUEUE_WAIT_DURATION.observe(build.wait_time)
 
-        resp = await conn.call(
+        resp: BuildDerivationResponse = await conn.call(
             build.request,
             client=cast("ClientConn", _OutputClock(build)),
             options=build.options,
