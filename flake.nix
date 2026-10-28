@@ -59,11 +59,9 @@
     in
     {
       packages = forAllSystems (system: {
-        default = each.${system}.package;
-        pynixd = each.${system}.package;
-        libpynixd = each.${system}.library;
-        nix-daemon-protocol = each.${system}.daemon-protocol;
-        pynixd-docs = each.${system}.pynixd-docs;
+        inherit (each.${system}.packages) default pynixd nix-daemon-protocol;
+        libpynixd = each.${system}.packages.pynixd-lib;
+        pynixd-docs = each.${system}.docs.default;
       });
 
       devShells = forAllSystems (system: {
