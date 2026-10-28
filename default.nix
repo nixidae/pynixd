@@ -270,7 +270,7 @@ let
   # The workflow schema, the steps a job asks for by name, and the writer
   # that turns a workflow value into YAML. It takes `lib` and nothing else,
   # which is what lets this repository use it while pinning its own nixpkgs.
-  ghalib = import sources.ghanix { inherit lib; };
+  ghalib = (import sources.ghanix { inherit lib; }).lib;
 
   # A workflow as a value. `nixVersion` is the Nix this repository pins, and
   # the runner installs that one. ci/workflows/bootstrap.nix says what a
