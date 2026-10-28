@@ -102,7 +102,7 @@ let
 
   target = mkDrv {
     name = "target";
-    buildCommand = ''printf '%s' deep-target > $out'';
+    buildCommand = "printf '%s' deep-target > $out";
   };
 
   producer = mkCADrv {
@@ -117,17 +117,7 @@ let
 
   # Chain 5 levels deep.  Each outputOf wraps the previous in
   # another SingleDerivedPath::Built{drvPath=prev, output="out"}.
-  fiveDeep = builtins.outputOf
-    (builtins.outputOf
-      (builtins.outputOf
-        (builtins.outputOf
-          (builtins.outputOf
-            producer.outPath
-            "out")
-          "out")
-        "out")
-      "out")
-    "out";
+  fiveDeep = builtins.outputOf (builtins.outputOf (builtins.outputOf (builtins.outputOf (builtins.outputOf producer.outPath "out") "out") "out") "out") "out";
 
   deepWrapper = mkDrv {
     name = "deep-5";
@@ -151,17 +141,17 @@ let
 
   baseA = mkDrv {
     name = "base-a";
-    buildCommand = ''printf '%s' aaa > $out'';
+    buildCommand = "printf '%s' aaa > $out";
   };
 
   baseB = mkDrv {
     name = "base-b";
-    buildCommand = ''printf '%s' bbb > $out'';
+    buildCommand = "printf '%s' bbb > $out";
   };
 
   caFloat = mkCADrv {
     name = "ca-float";
-    buildCommand = ''printf '%s' float > $out'';
+    buildCommand = "printf '%s' float > $out";
   };
 
   producerA = mkCADrv {
@@ -186,8 +176,8 @@ let
 
   # Dynamic references at different depths
   refA = builtins.outputOf producerA.outPath "out";
-  refB = builtins.outputOf refA "out";            # 2 levels deep
-  refC = builtins.outputOf producerB.outPath "out";  # 1 level deep
+  refB = builtins.outputOf refA "out"; # 2 levels deep
+  refC = builtins.outputOf producerB.outPath "out"; # 1 level deep
 
   crazy = mkDrv {
     name = "crazy";
@@ -224,7 +214,7 @@ let
 
   caFloat2 = mkCADrv {
     name = "ca-float-2";
-    buildCommand = ''printf '%s' float2 > $out'';
+    buildCommand = "printf '%s' float2 > $out";
   };
 
   deferredDyn = mkDrv {
@@ -241,7 +231,25 @@ let
 
 in
 {
-  inherit hello producingDrv wrapper deferredProducer deferredWrapper target producer deepWrapper
-          baseA baseB caFloat producerA producerB refA refB refC crazy
-          caFloat2 deferredDyn;
+  inherit
+    hello
+    producingDrv
+    wrapper
+    deferredProducer
+    deferredWrapper
+    target
+    producer
+    deepWrapper
+    baseA
+    baseB
+    caFloat
+    producerA
+    producerB
+    refA
+    refB
+    refC
+    crazy
+    caFloat2
+    deferredDyn
+    ;
 }

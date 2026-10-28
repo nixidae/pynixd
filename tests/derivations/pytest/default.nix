@@ -1,8 +1,9 @@
-{ pkgs
-, pynixd-lib
-, src
-, nixvenv
-, system ? builtins.currentSystem
+{
+  pkgs,
+  pynixd-lib,
+  src,
+  nixvenv,
+  system ? builtins.currentSystem,
 }:
 
 let

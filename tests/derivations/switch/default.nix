@@ -90,13 +90,10 @@ vivariumLib.mkTest {
     busybox = "${pkgs.busybox}";
     system = pkgs.stdenv.hostPlatform.system;
     # `to = false` is the booted system, checked before any switch.
-    steps = map (
-      step:
-      {
-        inherit (step) name to mode;
-        nix = step.nix or null;
-      }
-    ) steps;
+    steps = map (step: {
+      inherit (step) name to mode;
+      nix = step.nix or null;
+    }) steps;
   };
 
   phases = lib.listToAttrs (

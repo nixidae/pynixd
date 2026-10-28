@@ -130,8 +130,9 @@ let
               "README.md"
               "LICENSE"
             ]
-            ++ map (p: "${p}/__init__.py")
-              (lib.importTOML (dir + "/pyproject.toml")).tool.hatch.build.targets.wheel.packages
+            ++
+              map (p: "${p}/__init__.py")
+                (lib.importTOML (dir + "/pyproject.toml")).tool.hatch.build.targets.wheel.packages
           )
         );
       };
@@ -257,15 +258,14 @@ let
       _: nix: test.extend { modules = [ { defaults.nix.package = lib.mkForce nix; } ]; }
     ) supportedNix;
 
-  nixFunctionalTests =
-    lib.mapAttrs (
-      version: nix:
-      pkgs.callPackage ./nix/functional-tests/package.nix {
-        inherit nix version;
-        pynixd = package;
-        wirelogPython = pyinstance;
-      }
-    ) supportedNix;
+  nixFunctionalTests = lib.mapAttrs (
+    version: nix:
+    pkgs.callPackage ./nix/functional-tests/package.nix {
+      inherit nix version;
+      pynixd = package;
+      wirelogPython = pyinstance;
+    }
+  ) supportedNix;
 
   # The workflow schema, the steps a job asks for by name, and the writer
   # that turns a workflow value into YAML. It takes `lib` and nothing else,

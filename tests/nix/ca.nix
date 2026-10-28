@@ -75,7 +75,10 @@ let
     name = "ca-fixed";
     inherit system;
     builder = "/bin/sh";
-    args = [ "-c" "printf '%s' ca-fixed > $out" ];
+    args = [
+      "-c"
+      "printf '%s' ca-fixed > $out"
+    ];
     outputHashAlgo = "sha256";
     outputHashMode = "text";
     outputHash = builtins.hashString "sha256" "ca-fixed";

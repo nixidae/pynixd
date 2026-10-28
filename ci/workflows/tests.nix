@@ -7,7 +7,11 @@
 # ghanix is the schema. It takes `lib` and nothing else, which is what lets
 # this repository use it while pinning its own nixpkgs.
 #
-{ lib, ghalib, nixVersion }:
+{
+  lib,
+  ghalib,
+  nixVersion,
+}:
 let
   inherit (import ./bootstrap.nix { inherit lib nixVersion; }) divertedStores;
 

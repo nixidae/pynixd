@@ -86,7 +86,10 @@ vivariumLib.mkTest {
       # stops `pynixd.socket` to take the socket itself, and hands it back
       # in its `finally`. Alphabetical order used to provide this; the edge
       # states it, so a rename cannot break the handoff.
-      after = [ "boot" "profile" ];
+      after = [
+        "boot"
+        "profile"
+      ];
       description = "IsValidPath and AddTempRoot through each daemon";
     };
     profile = {

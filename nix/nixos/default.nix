@@ -96,9 +96,9 @@ in
     };
 
     # Without build users, the roots daemon starts with the daemon.
-    systemd.sockets.nix-roots-daemon.wantedBy = lib.mkIf (
-      replace && config.nix.daemonUser != "root"
-    ) [ "nix-daemon-upstream.service" ];
+    systemd.sockets.nix-roots-daemon.wantedBy = lib.mkIf (replace && config.nix.daemonUser != "root") [
+      "nix-daemon-upstream.service"
+    ];
 
     environment.etc."pynixd/pynixd.json".source = configFile;
 

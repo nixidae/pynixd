@@ -25,9 +25,12 @@ let
   lib = pkgs.lib;
   count = 1000;
 
-  deps = lib.genList (n: pkgs.runCommand "bench-noise-${hostName}-${toString n}" {
-    inherit stamp;
-  } "touch $out") count;
+  deps = lib.genList (
+    n:
+    pkgs.runCommand "bench-noise-${hostName}-${toString n}" {
+      inherit stamp;
+    } "touch $out"
+  ) count;
 
   # `toString deps` is the store paths as a string, so this drv reads them and
   # cannot be realised until every one of them is.

@@ -8,7 +8,11 @@
 # It is the one workflow of pynixd's own repository, which josh exports from
 # nixidae (nixidae/nixidae#4). The tests run in nixidae, from
 # ci/workflows/tests.nix.
-{ lib, ghalib, nixVersion }:
+{
+  lib,
+  ghalib,
+  nixVersion,
+}:
 let
   inherit (import ./bootstrap.nix { inherit lib nixVersion; }) bootstrap;
 
