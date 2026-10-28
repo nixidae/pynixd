@@ -22,7 +22,7 @@
 }:
 let
   pkgs = import <nixpkgs> { };
-  lib = pkgs.lib;
+  inherit (pkgs) lib;
   count = 1000;
 
   deps = lib.genList (

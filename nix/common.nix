@@ -129,7 +129,7 @@ in
     };
 
     settings = lib.mkOption {
-      type = jsonFormat.type;
+      inherit (jsonFormat) type;
       default = { };
       description = ''
         Extra settings serialized to JSON and passed to pynixd via PYNIXD_CONFIG.

@@ -23,9 +23,9 @@ let
 in
 modes.standard
 // {
-  ca = modes.ca;
-  dyn = modes.dyn;
-  minimal = modes.minimal;
-  feat = modes.feat;
-  log_test = modes.log_test;
+  inherit (modes) ca;
+  inherit (modes) dyn;
+  inherit (modes) minimal;
+  inherit (modes) feat;
+  inherit (modes) log_test;
 }
