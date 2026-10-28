@@ -54,18 +54,18 @@ def _rank(platform: str, *, local_free: int = 100 * GIB, failed_on: set[StoreId]
     return [candidate.store_id for candidate in allocator.rank_stores(cast("Any", build), {})]
 
 
-def test_builds_what_only_it_can():
+def test_builds_what_only_it_can() -> None:
     assert _rank("aarch64-darwin") == [DARWIN]
 
 
-def test_takes_no_builtin_work_from_a_store_that_can_do_it():
+def test_takes_no_builtin_work_from_a_store_that_can_do_it() -> None:
     assert _rank("builtin") == [LOCAL_STORE_ID]
 
 
-def test_a_full_regular_store_means_wait_not_move():
+def test_a_full_regular_store_means_wait_not_move() -> None:
     """Capability, not load: the local store can build it, so the build waits."""
     assert _rank("builtin", local_free=GIB) == []
 
 
-def test_takes_a_build_every_regular_store_failed():
+def test_takes_a_build_every_regular_store_failed() -> None:
     assert _rank("builtin", failed_on={LOCAL_STORE_ID}) == [DARWIN]

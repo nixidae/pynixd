@@ -26,7 +26,7 @@ STATE = Path("/srv/relocated/var/nix")
 # ── The chroot store ────────────────────────────────────────────────
 
 
-def test_the_store_of_the_machine():
+def test_the_store_of_the_machine() -> None:
     layout = StoreLayout.chroot(Path("/"))
     assert layout.store_dir == DEFAULT_STORE_DIR
     assert layout.real_store_dir == DEFAULT_STORE_DIR
@@ -34,11 +34,11 @@ def test_the_store_of_the_machine():
     assert not layout.relocated
 
 
-def test_no_root_is_the_store_of_the_machine():
+def test_no_root_is_the_store_of_the_machine() -> None:
     assert StoreLayout.chroot(None) == StoreLayout.chroot(Path("/"))
 
 
-def test_a_chroot_store_moves_the_files_and_not_the_paths():
+def test_a_chroot_store_moves_the_files_and_not_the_paths() -> None:
     """`local-fs-store.hh:54-70` of Nix, measured against 2.34.8."""
     layout = StoreLayout.chroot(ROOT)
     assert layout.store_dir == DEFAULT_STORE_DIR
@@ -46,12 +46,12 @@ def test_a_chroot_store_moves_the_files_and_not_the_paths():
     assert layout.state_dir == ROOT / "nix" / "var" / "nix"
 
 
-def test_a_chroot_store_is_a_store_argument():
+def test_a_chroot_store_is_a_store_argument() -> None:
     assert StoreLayout.chroot(ROOT).daemon_arguments() == ["--store", str(ROOT)]
     assert StoreLayout.chroot(ROOT).daemon_environment() == {}
 
 
-def test_the_root_comes_back_out_of_the_two_directories():
+def test_the_root_comes_back_out_of_the_two_directories() -> None:
     assert StoreLayout.chroot(ROOT).chroot_root() == ROOT
     assert StoreLayout.chroot(Path("/")).chroot_root() == Path("/")
 
@@ -59,7 +59,7 @@ def test_the_root_comes_back_out_of_the_two_directories():
 # ── The relocated store ─────────────────────────────────────────────
 
 
-def test_a_relocated_store_moves_the_paths_themselves():
+def test_a_relocated_store_moves_the_paths_themselves() -> None:
     layout = StoreLayout.relocated_store(STORE, STATE)
     assert layout.store_dir == STORE
     assert layout.real_store_dir == STORE
@@ -67,7 +67,7 @@ def test_a_relocated_store_moves_the_paths_themselves():
     assert layout.relocated
 
 
-def test_a_relocated_store_is_two_names_and_no_argument():
+def test_a_relocated_store_is_two_names_and_no_argument() -> None:
     """`--store <dir>` would read the directory as a root and nest a store."""
     layout = StoreLayout.relocated_store(STORE, STATE)
     assert layout.daemon_arguments() == []
@@ -77,7 +77,7 @@ def test_a_relocated_store_is_two_names_and_no_argument():
     }
 
 
-def test_a_relocated_store_has_no_chroot_root():
+def test_a_relocated_store_has_no_chroot_root() -> None:
     with pytest.raises(ValueError, match="no chroot root"):
         StoreLayout.relocated_store(STORE, STATE).chroot_root()
 
@@ -85,17 +85,17 @@ def test_a_relocated_store_has_no_chroot_root():
 # ── What the four readers ask ───────────────────────────────────────
 
 
-def test_the_database_follows_the_state():
+def test_the_database_follows_the_state() -> None:
     assert StoreLayout.chroot(ROOT).db_path == ROOT / "nix" / "var" / "nix" / "db" / "db.sqlite"
     assert StoreLayout.relocated_store(STORE, STATE).db_path == STATE / "db" / "db.sqlite"
 
 
-def test_the_build_directory_follows_the_state():
+def test_the_build_directory_follows_the_state() -> None:
     assert StoreLayout.chroot(ROOT).build_dir == ROOT / "nix" / "var" / "nix" / "builds"
     assert StoreLayout.relocated_store(STORE, STATE).build_dir == STATE / "builds"
 
 
-def test_the_socket_follows_the_state():
+def test_the_socket_follows_the_state() -> None:
     """The path that pynixd used before it had a layout, for a chroot store."""
     chroot = StoreLayout.chroot(ROOT).socket_path("pynixd-nix")
     assert chroot == ROOT / "nix" / "var" / "nix" / "daemon-socket" / "pynixd-nix"
@@ -106,28 +106,28 @@ def test_the_socket_follows_the_state():
 # ── The configuration ───────────────────────────────────────────────
 
 
-def test_a_spec_with_no_store_dir_is_a_chroot_store():
+def test_a_spec_with_no_store_dir_is_a_chroot_store() -> None:
     spec = LocalSocketStoreSpec(store_path=ROOT)
     assert spec.layout() == StoreLayout.chroot(ROOT)
 
 
-def test_a_spec_with_both_names_is_a_relocated_store():
+def test_a_spec_with_both_names_is_a_relocated_store() -> None:
     spec = LocalSocketStoreSpec(store_dir=STORE, state_dir=STATE)
     assert spec.layout() == StoreLayout.relocated_store(STORE, STATE)
 
 
-def test_a_store_dir_with_no_state_dir_is_refused():
+def test_a_store_dir_with_no_state_dir_is_refused() -> None:
     """A default of `/nix/var/nix` would put the roots of a test store there."""
     with pytest.raises(ValidationError, match="store_dir needs state_dir"):
         LocalSocketStoreSpec(store_dir=STORE)
 
 
-def test_a_state_dir_with_no_store_dir_is_refused():
+def test_a_state_dir_with_no_store_dir_is_refused() -> None:
     with pytest.raises(ValidationError, match="state_dir needs store_dir"):
         LocalSocketStoreSpec(state_dir=STATE)
 
 
-def test_the_two_shapes_are_not_the_same_layout():
+def test_the_two_shapes_are_not_the_same_layout() -> None:
     """A root of `<x>` and a relocation to `<x>` name different directories."""
     same = Path("/srv/one")
     chroot = StoreLayout.chroot(same)

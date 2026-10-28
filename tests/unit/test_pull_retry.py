@@ -70,7 +70,7 @@ def _no_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
 
 class TestAPullThatFails:
     @pytest.mark.anyio
-    async def test_is_tried_again(self):
+    async def test_is_tried_again(self) -> None:
         scheduler = PullScheduler(failures=2)
 
         await _collect(scheduler)
@@ -79,7 +79,7 @@ class TestAPullThatFails:
         assert scheduler.ctx.output_locations == {OUTPUT: BUILDER}
 
     @pytest.mark.anyio
-    async def test_names_no_builder_when_it_never_arrives(self):
+    async def test_names_no_builder_when_it_never_arrives(self) -> None:
         scheduler = PullScheduler(failures=3)
 
         with pytest.raises(EOFError):
@@ -91,7 +91,7 @@ class TestAPullThatFails:
 
 class TestABuilderThatReconnects:
     @pytest.mark.anyio
-    async def test_is_pulled_from_through_its_new_connection(self):
+    async def test_is_pulled_from_through_its_new_connection(self) -> None:
         """A reverse builder that restarts registers again as a new store
         under the same id, and the old one has no connection left."""
         returned = ReverseStore.__new__(ReverseStore)

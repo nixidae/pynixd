@@ -68,7 +68,7 @@ def _local(monitor: Any, tmp_path: Path) -> Any:
 
 
 @pytest.mark.anyio
-async def test_the_peer_forwards_each_sample_of_its_monitor(tmp_path: Path):
+async def test_the_peer_forwards_each_sample_of_its_monitor(tmp_path: Path) -> None:
     local = _local(SimpleNamespace(interval=1.0, health=SystemHealth(load1=0.1)), tmp_path)
     client = Client(wanted=2)
     ctx = await _ctx(local, client, interval_ms=2000)
@@ -89,7 +89,7 @@ async def test_the_peer_forwards_each_sample_of_its_monitor(tmp_path: Path):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("monitor", ["off", "slower"])
-async def test_the_peer_samples_itself_when_its_monitor_cannot_serve(tmp_path: Path, monitor: str):
+async def test_the_peer_samples_itself_when_its_monitor_cannot_serve(tmp_path: Path, monitor: str) -> None:
     own = None if monitor == "off" else SimpleNamespace(interval=60.0, health=SystemHealth())
     local = _local(own, tmp_path)
     client = Client(wanted=2)
@@ -130,7 +130,7 @@ class Conn:
 
 
 @pytest.mark.anyio
-async def test_the_controller_publishes_samples_and_drops_a_silent_stream():
+async def test_the_controller_publishes_samples_and_drops_a_silent_stream() -> None:
     conn = Conn()
 
     class Peer:
@@ -158,7 +158,7 @@ async def test_the_controller_publishes_samples_and_drops_a_silent_stream():
 
 
 @pytest.mark.anyio
-async def test_a_peer_without_either_operation_reads_as_unmonitored():
+async def test_a_peer_without_either_operation_reads_as_unmonitored() -> None:
     class Peer:
         store_id = "old-peer"
         features: frozenset[str] = frozenset()

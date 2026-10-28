@@ -40,7 +40,7 @@ async def pynixd_server(tmp_path: Path):
         yield server, socket_path, store_path
 
 
-async def test_nix_build_via_unix(pynixd_server):
+async def test_nix_build_via_unix(pynixd_server) -> None:
     """Verify that 'nix build' works when using pynixd via Unix socket."""
     server, socket_path, store_path = pynixd_server
 
@@ -81,7 +81,7 @@ async def test_nix_build_via_unix(pynixd_server):
 
 
 @pytest.mark.legacy_nix_commands
-async def test_nix_copy_via_unix(pynixd_server, tmp_path: Path):
+async def test_nix_copy_via_unix(pynixd_server, tmp_path: Path) -> None:
     """Verify 'nix copy' works against pynixd via Unix socket."""
     server, socket_path, store_path = pynixd_server
     uri = f"unix://{socket_path}?root={store_path}"

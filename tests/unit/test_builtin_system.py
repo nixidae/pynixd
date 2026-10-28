@@ -28,10 +28,10 @@ def _supports(features: set[str]) -> bool:
 
 
 class TestTheBuiltinSystem:
-    def test_every_store_takes_it(self):
+    def test_every_store_takes_it(self) -> None:
         assert _supports(set())
 
-    def test_features_still_count(self):
+    def test_features_still_count(self) -> None:
         assert _supports({"kvm"})
         assert not _supports({"nixos-test"})
 
@@ -45,7 +45,7 @@ class LocalStore:
 
 
 @pytest.mark.anyio
-async def test_a_builtin_input_whose_output_is_missing_gets_a_goal():
+async def test_a_builtin_input_whose_output_is_missing_gets_a_goal() -> None:
     goal = SimpleNamespace(engine=SimpleNamespace(ctx=SimpleNamespace(local_store=LocalStore())))
 
     needed = await EnsureDerivedPathGoal._input_outputs_requiring_goals(  # noqa: SLF001 -- the decision is the unit
@@ -68,7 +68,7 @@ class FloatingStore(LocalStore):
 
 
 @pytest.mark.anyio
-async def test_a_floating_output_is_needed_without_asking_about_an_empty_path():
+async def test_a_floating_output_is_needed_without_asking_about_an_empty_path() -> None:
     store = FloatingStore()
     goal = SimpleNamespace(engine=SimpleNamespace(ctx=SimpleNamespace(local_store=store)))
 

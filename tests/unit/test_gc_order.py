@@ -40,8 +40,8 @@ async def test_205_child_first_paths_delete_in_three_requests() -> None:
             )
 
     local = GraphLocal(refuse_until_gone={paths[i - 1]: paths[i] for i in range(1, len(paths))})
-    collector = Collector(FakeContext(local=local, cache=None))  # type: ignore[arg-type] -- test store
-    ordered = await collector._order_batch(local, paths)  # type: ignore[arg-type] -- test store
+    collector = Collector(FakeContext(local=local, cache=None))  # type: ignore[arg-type]  # test store
+    ordered = await collector._order_batch(local, paths)  # type: ignore[arg-type]  # test store
     assert ordered == paths[::-1]
     response = await collector._delete(ordered, {}, [], None)
     assert {str(path) for path in response.store_paths} == set(paths)
@@ -50,5 +50,5 @@ async def test_205_child_first_paths_delete_in_three_requests() -> None:
 
 async def test_missing_graph_metadata_plans_no_deletion() -> None:
     local = FakeLocal()
-    collector = Collector(FakeContext(local=local, cache=None))  # type: ignore[arg-type] -- test store
-    assert await collector._order_batch(local, ["/nix/store/00000000000000000000000000000000-path"]) == []  # type: ignore[arg-type] -- test store
+    collector = Collector(FakeContext(local=local, cache=None))  # type: ignore[arg-type]  # test store
+    assert await collector._order_batch(local, ["/nix/store/00000000000000000000000000000000-path"]) == []  # type: ignore[arg-type]  # test store

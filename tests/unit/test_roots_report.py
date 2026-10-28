@@ -150,7 +150,7 @@ async def _handle(
     writer = BytesWriter("test")
     await PynixdRootsReportRequest().to_writer(WriteContext(writer=writer, version=VERSION))
     proxy = FakeProxy(writer.get_bytes()[8:], store)
-    resp = await PynixdRootsReportHandler().handle(FakeContext(proxy=proxy, role=role))  # type: ignore[arg-type] -- fakes
+    resp = await PynixdRootsReportHandler().handle(FakeContext(proxy=proxy, role=role))  # type: ignore[arg-type]  # fakes
     return proxy, resp
 
 

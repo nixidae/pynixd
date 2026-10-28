@@ -26,45 +26,45 @@ StorePath = StorePath
 
 
 class TestBuildResultStatus:
-    def test_built(self):
+    def test_built(self) -> None:
         assert BuildResultStatus.BUILT == 0
 
-    def test_permanent_failure(self):
+    def test_permanent_failure(self) -> None:
         assert BuildResultStatus.PERMANENT_FAILURE == 3
 
-    def test_not_deterministic(self):
+    def test_not_deterministic(self) -> None:
         assert BuildResultStatus.NOT_DETERMINISTIC == 12
 
-    def test_hash_mismatch(self):
+    def test_hash_mismatch(self) -> None:
         assert BuildResultStatus.HASH_MISMATCH == 101
 
 
 class TestBuildMode:
-    def test_normal(self):
+    def test_normal(self) -> None:
         assert BuildMode.NORMAL == 0
 
-    def test_repair(self):
+    def test_repair(self) -> None:
         assert BuildMode.REPAIR == 1
 
-    def test_check(self):
+    def test_check(self) -> None:
         assert BuildMode.CHECK == 2
 
 
 class TestBuiltOutput:
-    def test_from_empty_string(self):
+    def test_from_empty_string(self) -> None:
         out = BuiltOutput.from_string("")
         assert out.out_path == StorePath("")
 
-    def test_from_plain_path(self):
+    def test_from_plain_path(self) -> None:
         out = BuiltOutput.from_string("/nix/store/abc-foo")
         assert out.out_path == StorePath("/nix/store/abc-foo")
         assert out.ca == ""
 
-    def test_to_string_plain_path(self):
+    def test_to_string_plain_path(self) -> None:
         out = BuiltOutput(out_path=StorePath("/nix/store/abc-foo"))
         assert out.to_string() == "/nix/store/abc-foo"
 
-    def test_from_json(self):
+    def test_from_json(self) -> None:
         data = {
             "outPath": "/nix/store/abc-foo",
             "ca": "text:sha256:xyz",
@@ -82,7 +82,7 @@ class TestBuiltOutput:
         assert out.nar_hash == "sha256:xyz"
         assert out.nar_size == 42
 
-    def test_to_string_json(self):
+    def test_to_string_json(self) -> None:
         out = BuiltOutput(
             out_path=StorePath("/nix/store/abc-foo"),
             ca="text:sha256:xyz",
@@ -95,27 +95,27 @@ class TestBuiltOutput:
         assert parsed["ca"] == "text:sha256:xyz"
         assert parsed["narSize"] == 42
 
-    def test_to_string_empty(self):
+    def test_to_string_empty(self) -> None:
         out = BuiltOutput()
         assert out.to_string() == ""
 
-    def test_from_invalid_json(self):
+    def test_from_invalid_json(self) -> None:
         """Invalid JSON should fall back to plain path."""
         out = BuiltOutput.from_string("{not valid json}")
         assert out.out_path == StorePath("{not valid json}")
 
-    def test_from_non_dict_json(self):
+    def test_from_non_dict_json(self) -> None:
         """JSON that's not a dict should fall back to plain path."""
         out = BuiltOutput.from_string(json.dumps([1, 2, 3]))
         assert out.out_path == StorePath("[1, 2, 3]")
 
 
 class TestBuildResult:
-    def test_default_status(self):
+    def test_default_status(self) -> None:
         result = BuildResult()
         assert result.status == BuildResultStatus.BUILT
 
-    def test_from_reader_minimal(self, monkeypatch):
+    def test_from_reader_minimal(self, monkeypatch) -> None:
         """Test BuildResult.from_reader with pre-protocol-1.29 version."""
         result = BuildResult()
         result.status = BuildResultStatus.ALREADY_VALID
@@ -123,7 +123,7 @@ class TestBuildResult:
         assert result.status == BuildResultStatus.ALREADY_VALID
         assert result.error_msg == "already valid"
 
-    def test_with_built_outputs(self):
+    def test_with_built_outputs(self) -> None:
         result = BuildResult()
         result.status = BuildResultStatus.BUILT
         assert result.status == BuildResultStatus.BUILT

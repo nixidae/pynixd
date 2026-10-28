@@ -28,7 +28,7 @@ from tests.functional.mock_store import MockStore
 
 
 @pytest.mark.xfail(reason="flaky: build scheduling timing in CI")
-async def test_build_log_pubsub_two_clients():
+async def test_build_log_pubsub_two_clients() -> None:
     """Verify that two clients subscribing to the same build receive identical log output.
 
     Scenario:
@@ -131,7 +131,7 @@ async def test_build_log_pubsub_two_clients():
     assert data1.count(b"10\n") >= 1
 
 
-async def test_build_log_pubsub_late_subscriber_gets_full_history():
+async def test_build_log_pubsub_late_subscriber_gets_full_history() -> None:
     """Verify that a subscriber joining after build completion gets full replay.
 
     This test directly exercises QueuedBuild.add_subscriber() replay
@@ -185,7 +185,7 @@ async def test_build_log_pubsub_late_subscriber_gets_full_history():
     assert buf2.get_bytes().endswith(buf1.get_bytes())
 
 
-async def test_client_bound_build_cancels_after_last_unsubscribe():
+async def test_client_bound_build_cancels_after_last_unsubscribe() -> None:
     queue = BuildQueue()
     drv_path = StorePath("/nix/store/00000000000000000000000000000001-test.drv")
     request = BuildDerivationRequest(
@@ -208,7 +208,7 @@ async def test_client_bound_build_cancels_after_last_unsubscribe():
     assert "all clients disconnected" in future.result().result.error_msg
 
 
-async def test_client_bound_active_build_task_cancels_after_last_unsubscribe():
+async def test_client_bound_active_build_task_cancels_after_last_unsubscribe() -> None:
     local_store = MockStore("local", feature_matrix={"x86_64-linux": set()})
     remote = MockStore("remote", feature_matrix={"x86_64-linux": set()})
     ctx = PynixdContext(

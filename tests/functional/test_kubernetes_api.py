@@ -22,7 +22,7 @@ from tests.functional.mock_store import MockStore
 
 
 @pytest.mark.xfail(reason="MockStore missing BuildDerivationRequest response")
-async def test_dynamic_store_management():
+async def test_dynamic_store_management() -> None:
     """Verify adding and removing stores at runtime works correctly."""
     local_store = MockStore("local", feature_matrix={"x86_64-linux": set()})
 
@@ -102,7 +102,7 @@ async def test_dynamic_store_management():
         await server.close()
 
 
-async def test_prometheus_metrics_endpoint():
+async def test_prometheus_metrics_endpoint() -> None:
     """Verify that the /metrics endpoint serves Prometheus data."""
     local_store = MockStore("local", feature_matrix={"x86_64-linux": set()})
 

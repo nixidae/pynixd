@@ -32,28 +32,28 @@ class TestTheNameWithoutItsVersion:
             ("trailing-", "trailing-"),
         ],
     )
-    def test_matches_nix(self, name: str, expected: str):
+    def test_matches_nix(self, name: str, expected: str) -> None:
         assert name_without_version(name) == expected
 
 
 class TestTheIdentity:
-    def test_a_version_bump_keeps_it(self):
+    def test_a_version_bump_keeps_it(self) -> None:
         old = identity_of(_drv({"name": "hello-2.12", "src": "/nix/store/a-src", "version": "2.12"}))
         new = identity_of(_drv({"name": "hello-2.13", "src": "/nix/store/b-src", "version": "2.13"}))
 
         assert old == new
 
-    def test_pname_wins_over_the_name(self):
+    def test_pname_wins_over_the_name(self) -> None:
         assert identity_of(_drv({"name": "hello-2.12", "pname": "greeter"})).name == "greeter"
 
-    def test_a_new_attribute_is_a_new_shape(self):
+    def test_a_new_attribute_is_a_new_shape(self) -> None:
         plain = identity_of(_drv({"name": "hello-2.12"}))
         checked = identity_of(_drv({"name": "hello-2.12", "doCheck": "1"}))
 
         assert plain.name == checked.name
         assert plain.shape != checked.shape
 
-    def test_a_new_feature_is_a_new_shape(self):
+    def test_a_new_feature_is_a_new_shape(self) -> None:
         """A `big-parallel` build of the same name is another kind of build."""
         plain = identity_of(_drv({"name": "llvm-19", "requiredSystemFeatures": ""}))
         big = identity_of(_drv({"name": "llvm-19", "requiredSystemFeatures": "big-parallel"}))
@@ -61,16 +61,16 @@ class TestTheIdentity:
         assert big.features == ("big-parallel",)
         assert plain.shape != big.shape
 
-    def test_feature_order_does_not_matter(self):
+    def test_feature_order_does_not_matter(self) -> None:
         one = identity_of(_drv({"name": "x", "requiredSystemFeatures": "kvm big-parallel"}))
         other = identity_of(_drv({"name": "x", "requiredSystemFeatures": "big-parallel kvm"}))
 
         assert one.shape == other.shape
 
-    def test_the_system_is_part_of_it(self):
+    def test_the_system_is_part_of_it(self) -> None:
         assert identity_of(_drv({"name": "x"})) != identity_of(_drv({"name": "x"}, platform="aarch64-linux"))
 
-    def test_structured_attrs_read_the_json(self):
+    def test_structured_attrs_read_the_json(self) -> None:
         """With structured attrs the environment holds `__json` alone, and
         every such derivation would share one shape."""
         attrs = {"name": "hello-2.12", "pname": "hello", "requiredSystemFeatures": ["kvm"], "doCheck": True}

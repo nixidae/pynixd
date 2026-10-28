@@ -132,7 +132,7 @@ async def _database(state: Path, a: str, b: str) -> Path:
 def _collector(state: Path, store: Path, db: FakeDB) -> tuple[Collector, FakeLocal]:
     layout = StoreLayout.relocated_store(store_dir=store, state_dir=state)
     local = FakeLocal(layout=layout, db=db)
-    return Collector(FakeContext(local=local)), local  # type: ignore[arg-type] -- fakes
+    return Collector(FakeContext(local=local)), local  # type: ignore[arg-type]  # fakes
 
 
 @pytest.mark.anyio
@@ -198,7 +198,7 @@ async def test_no_layout_falls_back_to_the_nix_trace(tmp_path: Path) -> None:
 
     _state, _store, _a, _b = _lab(tmp_path)
     local = TracingLocal(layout=None, db=FakeDB(stale={b}))
-    collector = Collector(FakeContext(local=local))  # type: ignore[arg-type] -- fakes
+    collector = Collector(FakeContext(local=local))  # type: ignore[arg-type]  # fakes
 
     assert {str(path) for path in await collector.plan()} == {b}
     assert str(GCAction.RETURN_LIVE) in local.calls
@@ -226,7 +226,7 @@ async def test_a_broken_mirror_falls_back_to_the_nix_trace(tmp_path: Path) -> No
         layout=StoreLayout.relocated_store(store_dir=store, state_dir=state),
         db=FakeDB(stale={b}),
     )
-    collector = Collector(FakeContext(local=local))  # type: ignore[arg-type] -- fakes
+    collector = Collector(FakeContext(local=local))  # type: ignore[arg-type]  # fakes
 
     assert {str(path) for path in await collector.plan()} == {b}
     assert str(GCAction.RETURN_LIVE) in local.calls
@@ -247,9 +247,9 @@ async def test_close_batch_completes_the_slice(tmp_path: Path) -> None:
         layout=StoreLayout.relocated_store(store_dir=store, state_dir=state),
         db=FakeDB(referrers={image: {spec}}),
     )
-    collector = Collector(FakeContext(local=local))  # type: ignore[arg-type] -- fakes
+    collector = Collector(FakeContext(local=local))  # type: ignore[arg-type]  # fakes
 
-    assert await collector._close_batch(local, [image], {image, spec}) == [image, spec]  # type: ignore[arg-type] -- fakes
+    assert await collector._close_batch(local, [image], {image, spec}) == [image, spec]  # type: ignore[arg-type]  # fakes
 
 
 @pytest.mark.anyio
@@ -262,9 +262,9 @@ async def test_close_batch_drops_a_live_anchored_seed(tmp_path: Path) -> None:
         layout=StoreLayout.relocated_store(store_dir=store, state_dir=state),
         db=FakeDB(referrers={image: {spec}}),
     )
-    collector = Collector(FakeContext(local=local))  # type: ignore[arg-type] -- fakes
+    collector = Collector(FakeContext(local=local))  # type: ignore[arg-type]  # fakes
 
-    assert await collector._close_batch(local, [image], {image}) == []  # type: ignore[arg-type] -- fakes
+    assert await collector._close_batch(local, [image], {image}) == []  # type: ignore[arg-type]  # fakes
 
 
 @pytest.mark.anyio
@@ -316,7 +316,7 @@ async def test_delete_refuses_a_live_path_without_stopping_the_rest(tmp_path: Pa
         layout=StoreLayout.relocated_store(store_dir=store, state_dir=state),
         db=FakeDB(),
     )
-    collector = Collector(FakeContext(local=local))  # type: ignore[arg-type] -- fakes
+    collector = Collector(FakeContext(local=local))  # type: ignore[arg-type]  # fakes
 
     lines: list[Any] = []
     resp = await collector._delete([first, live, second], {}, lines, None)

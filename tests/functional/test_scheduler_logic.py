@@ -40,7 +40,7 @@ async def _one_pass(scheduler: Scheduler) -> None:
 
 
 @pytest.mark.xfail(reason="missing BuildDerivationRequest mock response in MockStore — pre-existing")
-async def test_scheduler_load_balancing():
+async def test_scheduler_load_balancing() -> None:
     """Verify that the scheduler correctly assigns builds to idle remote stores.
 
     Setup:
@@ -95,7 +95,7 @@ async def test_scheduler_load_balancing():
 
 
 @pytest.mark.xfail(reason="missing BuildDerivationRequest mock response in MockStore — pre-existing")
-async def test_scheduler_skips_saturated_store():
+async def test_scheduler_skips_saturated_store() -> None:
     """Verify that the scheduler waits for available slots instead of over-subscribing.
 
     Setup:
@@ -161,7 +161,7 @@ async def test_scheduler_skips_saturated_store():
 
 
 @pytest.mark.xfail(reason="missing BuildDerivationRequest mock response in MockStore — pre-existing")
-async def test_scheduler_proactive_transfer():
+async def test_scheduler_proactive_transfer() -> None:
     """Verify that the scheduler proactively pulls paths to an idle store.
 
     Scenario:
@@ -229,7 +229,7 @@ async def test_scheduler_proactive_transfer():
 
 
 @pytest.mark.xfail(reason="missing BuildDerivationRequest mock response in MockStore — pre-existing")
-async def test_scheduler_cpu_utilization():
+async def test_scheduler_cpu_utilization() -> None:
     """Verify that the scheduler avoids stores with high CPU utilization (PSI aware).
 
     Setup:
@@ -289,7 +289,7 @@ async def test_scheduler_cpu_utilization():
     assert queued_build.assigned_store_id == "cold"
 
 
-async def test_scheduler_feature_matching():
+async def test_scheduler_feature_matching() -> None:
     """Verify that the scheduler respects Store system/feature matrix requirements.
 
     Scenario:
@@ -350,7 +350,7 @@ async def test_scheduler_feature_matching():
     assert queued_build.assigned_store_id == "full"
 
 
-async def test_scheduler_fails_build_for_unknown_platform():
+async def test_scheduler_fails_build_for_unknown_platform() -> None:
     """Builds for platforms not in any store or dynamic_feature_matrix fail immediately."""
     local_store = MockStore("local", feature_matrix={"x86_64-linux": set()})
 
@@ -380,7 +380,7 @@ async def test_scheduler_fails_build_for_unknown_platform():
     assert result.result.status == BuildResultStatus.INPUT_REJECTED
 
 
-async def test_scheduler_queues_build_for_dynamic_platform():
+async def test_scheduler_queues_build_for_dynamic_platform() -> None:
     """Builds for platforms in dynamic_feature_matrix stay pending instead of failing."""
     local_store = MockStore("local", feature_matrix={"x86_64-linux": set()})
 
@@ -409,7 +409,7 @@ async def test_scheduler_queues_build_for_dynamic_platform():
     assert build.is_pending
 
 
-async def test_scheduler_queues_build_for_dynamic_platform_with_features():
+async def test_scheduler_queues_build_for_dynamic_platform_with_features() -> None:
     """Builds requiring features in dynamic_feature_matrix stay pending."""
     local_store = MockStore("local", feature_matrix={"x86_64-linux": set()})
 
@@ -435,7 +435,7 @@ async def test_scheduler_queues_build_for_dynamic_platform_with_features():
     assert not build.is_done
 
 
-async def test_scheduler_fails_build_for_missing_dynamic_feature():
+async def test_scheduler_fails_build_for_missing_dynamic_feature() -> None:
     """Builds requiring features NOT in dynamic_feature_matrix still fail."""
     local_store = MockStore("local", feature_matrix={"x86_64-linux": set()})
 
@@ -464,7 +464,7 @@ async def test_scheduler_fails_build_for_missing_dynamic_feature():
     assert result.result.status == BuildResultStatus.INPUT_REJECTED
 
 
-async def test_add_store_dynamic_registers_feature_matrix():
+async def test_add_store_dynamic_registers_feature_matrix() -> None:
     """add_store(dynamic=True) merges the store's feature_matrix into dynamic_feature_matrix."""
     local_store = MockStore("local", feature_matrix={"x86_64-linux": set()})
     remote = MockStore("remote", feature_matrix={"aarch64-darwin": {"kvm"}})
@@ -485,7 +485,7 @@ async def test_add_store_dynamic_registers_feature_matrix():
     assert "aarch64-darwin" in scheduler.dynamic_feature_matrix
 
 
-async def test_dynamic_feature_matrix_survives_store_removal():
+async def test_dynamic_feature_matrix_survives_store_removal() -> None:
     """After a dynamic store is removed, builds for its platform still queue."""
     local_store = MockStore("local", feature_matrix={"x86_64-linux": set()})
     remote = MockStore("remote", feature_matrix={"aarch64-darwin": set()})

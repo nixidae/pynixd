@@ -147,7 +147,7 @@ async def test_an_invalid_path_after_the_fetch_is_not_a_success() -> None:
             return EnsurePathResponse(value=1)
         return IsValidPathResponse(valid=False)
 
-    store.execute = no_write  # type: ignore[method-assign] -- the fake states one behaviour for one test
+    store.execute = no_write  # type: ignore[method-assign]  # the fake states one behaviour for one test
 
     assert await goal._try_substitute_upstream(_PATH) is None
 
@@ -169,7 +169,7 @@ async def test_a_hung_upstream_fetch_fails_fast_to_the_build_road() -> None:
             raise AssertionError("unreachable: the import budget cancels the wait")
         return IsValidPathResponse(valid=False)
 
-    store.execute = never_answers  # type: ignore[method-assign] -- the fake states one behaviour for one test
+    store.execute = never_answers  # type: ignore[method-assign]  # the fake states one behaviour for one test
     goal = _goal(store, _client(_options(substituters="file:///cache")))
     goal.engine.ctx.settings = PynixdSettings(substitution_import_timeout=0.01)
 

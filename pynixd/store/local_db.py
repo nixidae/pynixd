@@ -193,7 +193,7 @@ class LocalDBStore(LocalStore):
         await self.db.close()
         await super().close()
 
-    async def execute(self, request, client=None, suppress_last=False, skip_probe=False, mark=True):  # type: ignore[no-untyped-def] -- the parent is untyped
+    async def execute(self, request, client=None, suppress_last=False, skip_probe=False, mark=True):  # type: ignore[no-untyped-def]  # the parent is untyped
         """Note the paths of the request, then run it.
 
         This is the one place that sees every operation, whichever route

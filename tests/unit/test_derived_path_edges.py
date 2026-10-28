@@ -18,26 +18,26 @@ DRV = "/nix/store/00000000000000000000000000000001-a.drv"
         ("..-x", "first dash-separated component must not be '..'"),
     ],
 )
-def test_an_output_name_nix_refuses_is_refused(name: str, reason: str):
+def test_an_output_name_nix_refuses_is_refused(name: str, reason: str) -> None:
     """`checkName` at `path.cc:12-38`."""
     with pytest.raises(ValueError, match=reason):
         check_output_name(name)
 
 
-def test_a_bad_name_in_a_derived_path_is_refused():
+def test_a_bad_name_in_a_derived_path_is_refused() -> None:
     """`build.sh:104`: `^*nope` must fail."""
     with pytest.raises(ValueError, match="illegal character"):
         DerivedPath(f"{DRV}!*nope")
 
 
-def test_an_empty_output_list_is_an_empty_set():
+def test_an_empty_output_list_is_an_empty_set() -> None:
     """`build.sh:102`: Nix's daemon reads `drv^` and plans nothing (issue #26)."""
     outputs = DerivedPath(f"{DRV}!").outputs
     assert isinstance(outputs, OutputsNames)
     assert outputs.names == frozenset()
 
 
-def test_a_star_inside_a_chain_is_a_name_and_not_every_output():
+def test_a_star_inside_a_chain_is_a_name_and_not_every_output() -> None:
     """`a.drv^*^bin`: the outer level asks for an output literally named `*`."""
     outer = DerivedPath(f"{DRV}!*!bin").outer
 

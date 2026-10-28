@@ -170,7 +170,7 @@ def test_the_store_all_is_the_table_plus_the_one_predicate() -> None:
 
 def test_an_unknown_store_name_raises_attribute_error() -> None:
     with pytest.raises(AttributeError):
-        store.NoSuchStore  # type: ignore[attr-defined] -- that is the assertion  # noqa: B018
+        store.NoSuchStore  # type: ignore[attr-defined]  # that is the assertion  # noqa: B018
 
 
 def test_the_optional_table_and_the_pyright_copy_agree() -> None:
@@ -185,7 +185,7 @@ def test_every_optional_module_resolves() -> None:
 
 def test_an_unknown_optional_module_raises_attribute_error() -> None:
     with pytest.raises(AttributeError):
-        _optional.no_such_server  # type: ignore[attr-defined] -- that is the assertion  # noqa: B018
+        _optional.no_such_server  # type: ignore[attr-defined]  # that is the assertion  # noqa: B018
 
 
 # ── The predicate that answers without importing ─────────────────────

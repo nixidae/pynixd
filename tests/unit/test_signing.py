@@ -27,33 +27,33 @@ _SEED_64_B64 = base64.b64encode(_SEED_64).decode()
 
 
 class TestSecretKeyParse:
-    def test_parse_32_byte_seed(self):
+    def test_parse_32_byte_seed(self) -> None:
         key = SecretKey._parse(f"test:{_SEED_32_B64}")
         assert key.name == "test"
 
-    def test_parse_64_byte_libsodium(self):
+    def test_parse_64_byte_libsodium(self) -> None:
         key = SecretKey._parse(f"test:{_SEED_64_B64}")
         assert key.name == "test"
 
-    def test_parse_from_string(self):
+    def test_parse_from_string(self) -> None:
         key = SecretKey.from_string(f"mykey:{_SEED_32_B64}")
         assert key.name == "mykey"
 
-    def test_parse_invalid_length(self):
+    def test_parse_invalid_length(self) -> None:
         with pytest.raises(ValueError, match="Secret key must be 32 or 64 bytes"):
             SecretKey._parse("bad:" + base64.b64encode(b"\x01" * 16).decode())
 
-    def test_parse_empty_key(self):
+    def test_parse_empty_key(self) -> None:
         with pytest.raises(ValueError):  # noqa: PT011
             SecretKey._parse("empty:")
 
-    def test_public_key_derivation(self):
+    def test_public_key_derivation(self) -> None:
         key = SecretKey._parse(f"test:{_SEED_32_B64}")
         pub = key.public_key_bytes
         expected_pub = nacl.bindings.crypto_sign_seed_keypair(_SEED_32)[0]
         assert pub == expected_pub
 
-    def test_public_key_string_format(self):
+    def test_public_key_string_format(self) -> None:
         key = SecretKey._parse(f"test:{_SEED_32_B64}")
         pks = key.public_key_string()
         assert pks.startswith("test:")
@@ -64,7 +64,7 @@ class TestSecretKeyParse:
 
 
 class TestSecretKeySign:
-    def test_sign_deterministic(self):
+    def test_sign_deterministic(self) -> None:
         key = SecretKey._parse(f"test:{_SEED_32_B64}")
         data = b"hello world"
         sig1 = key.sign(data)
@@ -72,7 +72,7 @@ class TestSecretKeySign:
         assert sig1 == sig2
         assert len(sig1) == 64
 
-    def test_sign_fingerprint_format(self):
+    def test_sign_fingerprint_format(self) -> None:
         key = SecretKey._parse(f"test:{_SEED_32_B64}")
         fp = "1;/nix/store/abc123-foo;sha256:xyz;42;"
         sig_str = key.sign_fingerprint(fp)
@@ -82,7 +82,7 @@ class TestSecretKeySign:
         decoded = base64.b64decode(b64)
         assert len(decoded) == 64
 
-    def test_verify_with_public_key(self):
+    def test_verify_with_public_key(self) -> None:
         key = SecretKey._parse(f"test:{_SEED_32_B64}")
         data = b"verify me"
         sig = key.sign(data)
@@ -115,14 +115,14 @@ class TestFingerprint:
     two ways gave two signatures and neither one was right.
     """
 
-    def test_the_fingerprint_carries_the_base_32_digest(self):
+    def test_the_fingerprint_carries_the_base_32_digest(self) -> None:
         path = StorePath("/nix/store/abc123-foo")
 
         fp = fingerprint(path, NARHash(f"sha256:{_DIGEST_16}"), 42, set())
 
         assert fp == f"1;/nix/store/abc123-foo;sha256:{_DIGEST_32};42;"
 
-    def test_a_digest_with_no_name_of_an_algorithm_gets_one(self):
+    def test_a_digest_with_no_name_of_an_algorithm_gets_one(self) -> None:
         """`nix-daemon` sends the digest alone, and that is what pynixd holds.
 
         `NARHash` is what makes the two agree: it takes off a name that a
@@ -139,14 +139,14 @@ class TestFingerprint:
             set(),
         )
 
-    def test_a_digest_that_is_base_32_already_passes_through(self):
+    def test_a_digest_that_is_base_32_already_passes_through(self) -> None:
         path = StorePath("/nix/store/abc123-foo")
 
         fp = fingerprint(path, NARHash(f"sha256:{_DIGEST_32}"), 42, set())
 
         assert fp == f"1;/nix/store/abc123-foo;sha256:{_DIGEST_32};42;"
 
-    def test_with_references_sorted(self):
+    def test_with_references_sorted(self) -> None:
         path = StorePath("/nix/store/abc123-foo")
         refs = {
             StorePath("/nix/store/zzz-bar"),
@@ -157,19 +157,19 @@ class TestFingerprint:
 
         assert fp == (f"1;/nix/store/abc123-foo;sha256:{_DIGEST_32};42;/nix/store/aaa-baz,/nix/store/zzz-bar")
 
-    def test_empty_hash(self):
+    def test_empty_hash(self) -> None:
         path = StorePath("/nix/store/abc123-foo")
         fp = fingerprint(path, NARHash(""), 0, set())
         assert fp == "1;/nix/store/abc123-foo;;0;"
 
-    def test_large_nar_size(self):
+    def test_large_nar_size(self) -> None:
         path = StorePath("/nix/store/abc123-foo")
         fp = fingerprint(path, NARHash(f"sha256:{_DIGEST_16}"), 999999999999, set())
         assert "999999999999" in fp
 
 
 class TestSignPathInfo:
-    def test_sign_path_info_roundtrip(self):
+    def test_sign_path_info_roundtrip(self) -> None:
 
         key = SecretKey._parse(f"test:{_SEED_32_B64}")
         path = StorePath(path="/nix/store/abc123-foo")
@@ -198,12 +198,12 @@ class TestSignPathInfo:
 
 
 class TestGetDefaultSigningKey:
-    def test_no_env_var(self, monkeypatch):
+    def test_no_env_var(self, monkeypatch) -> None:
         monkeypatch.delenv("PYNIXD_SIGNING_KEY", raising=False)
 
         assert get_default_signing_key() is None
 
-    def test_with_env_var(self, monkeypatch):
+    def test_with_env_var(self, monkeypatch) -> None:
         key_str = f"mykey:{_SEED_32_B64}"
         monkeypatch.setenv("PYNIXD_SIGNING_KEY", key_str)
 

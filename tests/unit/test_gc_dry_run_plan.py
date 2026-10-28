@@ -106,7 +106,7 @@ class FakeContext:
 
 def _collector(**kwargs: Any) -> tuple[Collector, FakeLocal]:
     local = FakeLocal(**kwargs)
-    return Collector(FakeContext(local=local)), local  # type: ignore[arg-type] -- a fake context
+    return Collector(FakeContext(local=local)), local  # type: ignore[arg-type]  # a fake context
 
 
 @pytest.mark.anyio

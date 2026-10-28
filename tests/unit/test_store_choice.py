@@ -69,39 +69,39 @@ def _rank(transfer: dict[StoreId, float] | None = None) -> list[StoreId]:
 
 
 class TestTheTransferCost:
-    def test_adds_both_directions_and_the_round_trip(self):
+    def test_adds_both_directions_and_the_round_trip(self) -> None:
         link = StoreLink(send_bytes_per_s=10 * MB, receive_bytes_per_s=20 * MB, dispatch_ms=500)
 
         assert transfer_seconds(ExpectedBytes(inputs=100 * MB, pull=40 * MB), link) == pytest.approx(12.5)
 
-    def test_an_unmeasured_store_has_no_cost(self):
+    def test_an_unmeasured_store_has_no_cost(self) -> None:
         assert transfer_seconds(ExpectedBytes(inputs=100 * MB), StoreLink()) is None
 
-    def test_a_known_round_trip_alone_is_a_cost(self):
+    def test_a_known_round_trip_alone_is_a_cost(self) -> None:
         """A tiny build whose bytes were never measured still pays the dispatch."""
         assert transfer_seconds(ExpectedBytes(), StoreLink(dispatch_ms=300)) == pytest.approx(0.3)
 
 
 class TestTheLocalSlotWait:
-    def test_is_the_soonest_end(self):
+    def test_is_the_soonest_end(self) -> None:
         assert slot_wait_seconds([(10_000, 100.0), (60_000, 100.0)], now=104.0) == pytest.approx(6.0)
 
-    def test_a_build_past_its_estimate_ends_now(self):
+    def test_a_build_past_its_estimate_ends_now(self) -> None:
         assert slot_wait_seconds([(1_000, 100.0)], now=200.0) == 0.0
 
-    def test_no_estimate_is_no_answer(self):
+    def test_no_estimate_is_no_answer(self) -> None:
         assert slot_wait_seconds([(None, 100.0)], now=101.0) is None
 
 
 class TestTheRanking:
-    def test_the_local_store_is_a_candidate(self):
+    def test_the_local_store_is_a_candidate(self) -> None:
         assert LOCAL_STORE_ID in _rank()
 
-    def test_a_remote_wins_a_tie(self):
+    def test_a_remote_wins_a_tie(self) -> None:
         """The local store was only a fallback, and an unmeasured world ranks as it did."""
         assert _rank() == [REMOTE, LOCAL_STORE_ID]
 
-    def test_a_measured_transfer_puts_the_local_store_first(self):
+    def test_a_measured_transfer_puts_the_local_store_first(self) -> None:
         assert _rank({REMOTE: 5.0}) == [LOCAL_STORE_ID, REMOTE]
 
 
@@ -126,10 +126,10 @@ class TestTheMinimumScore:
         )
         return [candidate.store_id for candidate in ranked]
 
-    def test_a_large_transfer_keeps_an_idle_store(self):
+    def test_a_large_transfer_keeps_an_idle_store(self) -> None:
         assert self._rank(utilization=0.0, transfer={REMOTE: 50.0}) == [REMOTE]
 
-    def test_load_still_drops_a_store(self):
+    def test_load_still_drops_a_store(self) -> None:
         """Busy at 100 %: no CPU points, and a connection costs 50. Full is full."""
         assert self._rank(utilization=100.0, busy=1) == []
 
@@ -154,22 +154,22 @@ class TestAStoreNobodyCanMonitor:
         )
         return [candidate.store_id for candidate in ranked]
 
-    def test_ranks_under_a_fully_busy_monitored_store(self):
+    def test_ranks_under_a_fully_busy_monitored_store(self) -> None:
         assert self._rank(busy=3) == [OTHER, REMOTE]
 
-    def test_still_gets_builds_under_the_minimum_score(self):
+    def test_still_gets_builds_under_the_minimum_score(self) -> None:
         """The monitored store falls under the minimum; the blind one stays."""
         assert self._rank(busy=3, min_score=-100.0) == [REMOTE]
 
 
 class TestThePick:
-    def test_takes_the_best_ranked(self):
+    def test_takes_the_best_ranked(self) -> None:
         picked = pick_store(_ranked(REMOTE, LOCAL_STORE_ID), LOCAL_STORE_ID, local_slot_full=False)
 
         assert picked is not None
         assert picked.store_id == REMOTE
 
-    def test_a_full_local_slot_passes_to_the_next_store(self):
+    def test_a_full_local_slot_passes_to_the_next_store(self) -> None:
         picked = pick_store(_ranked(LOCAL_STORE_ID, REMOTE), LOCAL_STORE_ID, local_slot_full=True)
 
         assert picked is not None
@@ -188,7 +188,7 @@ class TestPreferLocalBuild:
         )
         return None if picked is None else picked.store_id
 
-    def test_a_free_local_slot_wins_over_a_better_ranked_remote(self):
+    def test_a_free_local_slot_wins_over_a_better_ranked_remote(self) -> None:
         picked = pick_store(
             _ranked(REMOTE, LOCAL_STORE_ID),
             LOCAL_STORE_ID,
@@ -199,17 +199,17 @@ class TestPreferLocalBuild:
         assert picked is not None
         assert picked.store_id == LOCAL_STORE_ID
 
-    def test_waits_while_the_wait_is_cheaper_than_the_weighted_delegation(self):
+    def test_waits_while_the_wait_is_cheaper_than_the_weighted_delegation(self) -> None:
         assert self._pick(wait=19.0, remote_seconds=2.0) is None
 
-    def test_delegates_once_the_wait_passes_the_weighted_delegation(self):
+    def test_delegates_once_the_wait_passes_the_weighted_delegation(self) -> None:
         assert self._pick(wait=21.0, remote_seconds=2.0) == REMOTE
 
-    def test_waits_when_the_wait_is_unknown(self):
+    def test_waits_when_the_wait_is_unknown(self) -> None:
         """Nix waits for a local slot however long; with no estimate, so does pynixd."""
         assert self._pick(wait=None, remote_seconds=2.0) is None
 
-    def test_waits_when_the_delegation_is_unmeasured(self):
+    def test_waits_when_the_delegation_is_unmeasured(self) -> None:
         assert self._pick(wait=500.0, remote_seconds=None) is None
 
 
@@ -280,14 +280,14 @@ class TestALocalStoreUnderPressure:
     deployed pynixd hung every `writeText`."""
 
     @pytest.mark.anyio
-    async def test_still_takes_a_prefer_local_build(self):
+    async def test_still_takes_a_prefer_local_build(self) -> None:
         """Nix ignores load for `preferLocalBuild`: a free slot is enough."""
         scheduler = await _assign({"preferLocalBuild": "1"})
 
         assert scheduler.assigned == [LOCAL_STORE_ID]
 
     @pytest.mark.anyio
-    async def test_leaves_other_builds_to_the_ranking(self):
+    async def test_leaves_other_builds_to_the_ranking(self) -> None:
         scheduler = await _assign({})
 
         assert scheduler.assigned == [REMOTE]
@@ -313,7 +313,7 @@ class TestOneBrokenBuild:
     build pending for good. nixidae/nixidae#1003."""
 
     @pytest.mark.anyio
-    async def test_fails_alone_and_the_pass_goes_on(self):
+    async def test_fails_alone_and_the_pass_goes_on(self) -> None:
         queue = BuildQueue()
         broken, broken_future = await queue.enqueue(_request(1))
         healthy, _ = await queue.enqueue(_request(2))
@@ -340,7 +340,7 @@ class OnePressuredPoolScheduler(AssignScheduler):
 
 
 @pytest.mark.anyio
-async def test_a_build_whose_builders_are_full_does_not_hold_back_the_next():
+async def test_a_build_whose_builders_are_full_does_not_hold_back_the_next() -> None:
     """Full is full: the first build waits, and the queue is not FIFO behind it.
     User's design, 2026-10-22."""
     queue = BuildQueue()
@@ -381,7 +381,7 @@ class WakingScheduler(OnePressuredPoolScheduler):
 
 
 @pytest.mark.anyio
-async def test_a_sample_wakes_a_build_that_waits_for_a_store():
+async def test_a_sample_wakes_a_build_that_waits_for_a_store() -> None:
     """A store that comes back by its figures alone triggered no pass, so
     the build waited for an unrelated event. Found by the handover test,
     2026-10-22. nixidae/nixidae#1016."""
@@ -416,7 +416,7 @@ class TwoRemotesScheduler(AssignScheduler):
 
 
 @pytest.mark.anyio
-async def test_a_retry_goes_to_a_store_the_build_has_not_failed_on():
+async def test_a_retry_goes_to_a_store_the_build_has_not_failed_on() -> None:
     """sg1-n1 failed one missing input three times running. nixidae/nixidae#1015."""
     queue = BuildQueue()
     build_id, _ = await queue.enqueue(_request(1))
@@ -463,13 +463,13 @@ class TestAPreferLocalBuildNeverSentToTheStore:
     sent 9.3 GB in 648 s for a 0.3 s build."""
 
     @pytest.mark.anyio
-    async def test_waits_while_its_inputs_there_are_unmeasured(self):
+    async def test_waits_while_its_inputs_there_are_unmeasured(self) -> None:
         scheduler = await _assign_prefer_local(measured=False)
 
         assert scheduler.assigned == []
 
     @pytest.mark.anyio
-    async def test_goes_once_they_are_measured_and_the_wait_is_dearer(self):
+    async def test_goes_once_they_are_measured_and_the_wait_is_dearer(self) -> None:
         scheduler = await _assign_prefer_local(measured=True)
 
         assert scheduler.assigned == [REMOTE]
@@ -498,7 +498,7 @@ class TestTheMissingInputBytes:
     as `QueryValidPaths` answers it."""
 
     @pytest.mark.anyio
-    async def test_are_what_the_store_lacks(self):
+    async def test_are_what_the_store_lacks(self) -> None:
         store = ValidityStore({"/nix/store/00000000000000000000000000000001-a"})
 
         missing = await Scheduler._missing_input_bytes(cast("Any", None), cast("Any", store), SIZES)  # noqa: SLF001 -- the estimate is the unit
@@ -506,7 +506,7 @@ class TestTheMissingInputBytes:
         assert missing == 30 * MB
 
     @pytest.mark.anyio
-    async def test_are_unknown_when_the_store_does_not_answer(self):
+    async def test_are_unknown_when_the_store_does_not_answer(self) -> None:
         store = ValidityStore(set(), broken=True)
 
         assert await Scheduler._missing_input_bytes(cast("Any", None), cast("Any", store), SIZES) is None  # noqa: SLF001 -- the estimate is the unit

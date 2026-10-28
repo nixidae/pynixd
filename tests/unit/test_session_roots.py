@@ -45,7 +45,7 @@ def _keyed(path: str, status: BuildResultStatus, outputs: dict[str, str] | None 
     return KeyedBuildResult(path=DerivedPath(path), result=result)
 
 
-def test_every_realised_output_and_opaque_path_is_held():
+def test_every_realised_output_and_opaque_path_is_held() -> None:
     response = BuildPathsWithResultsResponse(
         results=[
             _keyed("/nix/store/00000000000000000000000000000004-x.drv!out", BuildResultStatus.BUILT, {"out": OUT}),
@@ -72,7 +72,7 @@ class Daemon:
 
 
 @pytest.mark.anyio
-async def test_a_root_pynixd_cannot_write_goes_to_the_daemon():
+async def test_a_root_pynixd_cannot_write_goes_to_the_daemon() -> None:
     daemon = Daemon()
     proxy = SimpleNamespace(_temp_roots=UnwritableRoots(), local_store=daemon)
 

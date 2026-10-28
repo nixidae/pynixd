@@ -27,32 +27,32 @@ def _structured(**attrs: Any) -> BasicDerivation:
 
 
 class TestPreferLocalBuild:
-    def test_is_read_from_the_json(self):
+    def test_is_read_from_the_json(self) -> None:
         assert _structured(preferLocalBuild=True).build_local
 
-    def test_false_in_the_json_is_false(self):
+    def test_false_in_the_json_is_false(self) -> None:
         assert not _structured(preferLocalBuild=False).build_local
 
-    def test_the_string_one_is_not_a_boolean(self):
+    def test_the_string_one_is_not_a_boolean(self) -> None:
         """Nix refuses `"1"` there; it is no request for a local build."""
         assert not _structured(preferLocalBuild="1").build_local
 
 
 class TestRequiredSystemFeatures:
-    def test_are_read_from_the_json(self):
+    def test_are_read_from_the_json(self) -> None:
         """A `kvm` build otherwise matched every store, kvm or not."""
         drv = _structured(requiredSystemFeatures=["kvm", "big-parallel"])
 
         assert effective_required_features(drv) == {"kvm", "big-parallel"}
 
-    def test_a_value_that_is_not_a_list_reads_as_none(self):
+    def test_a_value_that_is_not_a_list_reads_as_none(self) -> None:
         """The builder refuses it with Nix's message; the scheduler must not raise."""
         drv = _structured(requiredSystemFeatures=None)
 
         assert drv.required_system_features == set()
         assert identity_of(drv).features == ()
 
-    def test_stripping_writes_the_json(self):
+    def test_stripping_writes_the_json(self) -> None:
         drv = _structured(requiredSystemFeatures=["dynamic-derivations", "kvm"])
         build = SimpleNamespace(request=SimpleNamespace(derivation=drv), build_id=1)
 

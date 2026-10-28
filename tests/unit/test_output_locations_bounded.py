@@ -9,7 +9,7 @@ from pynixd import context
 from pynixd.context import OutputLocations
 
 
-def test_the_oldest_location_goes_first(monkeypatch: pytest.MonkeyPatch):
+def test_the_oldest_location_goes_first(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(context, "OUTPUT_LOCATIONS_KEPT", 2)
     locations = OutputLocations()
 

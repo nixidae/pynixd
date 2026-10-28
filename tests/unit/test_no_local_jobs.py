@@ -135,13 +135,13 @@ class TestRemoteOnly:
     """The default, and Nix's behaviour."""
 
     @pytest.mark.anyio
-    async def test_sends_the_build_to_a_remote_although_local_ranks_first(self):
+    async def test_sends_the_build_to_a_remote_although_local_ranks_first(self) -> None:
         scheduler, _ = await _assign(NoLocalJobs.remote_only)
 
         assert scheduler.assigned == [REMOTE]
 
     @pytest.mark.anyio
-    async def test_fails_with_nix_message_when_no_builder_exists(self):
+    async def test_fails_with_nix_message_when_no_builder_exists(self) -> None:
         """Nix 2.35 answers InputRejected with this (`derivation-building-goal.cc:300`)."""
         scheduler, error = await _assign(NoLocalJobs.remote_only, remote=False, configured=False)
 
@@ -149,37 +149,37 @@ class TestRemoteOnly:
         assert "Reason: local builds are disabled (max-jobs = 0)" in error
 
     @pytest.mark.anyio
-    async def test_fails_with_nix_message_when_no_builder_fits(self):
+    async def test_fails_with_nix_message_when_no_builder_fits(self) -> None:
         _, error = await _assign(NoLocalJobs.remote_only, remote=False, configured=True)
 
         assert "Reason: local builds are disabled (max-jobs = 0)" in error
 
-    def test_is_the_default(self):
+    def test_is_the_default(self) -> None:
         assert StoreRankingSettings().no_local_jobs is NoLocalJobs.remote_only
 
 
 class TestTheOtherReadings:
     @pytest.mark.anyio
-    async def test_remote_first_builds_locally_when_no_remote_can(self):
+    async def test_remote_first_builds_locally_when_no_remote_can(self) -> None:
         scheduler, _ = await _assign(NoLocalJobs.remote_first, remote=False, configured=False)
 
         assert scheduler.assigned == [LOCAL_STORE_ID]
 
     @pytest.mark.anyio
-    async def test_remote_first_still_prefers_a_remote(self):
+    async def test_remote_first_still_prefers_a_remote(self) -> None:
         scheduler, _ = await _assign(NoLocalJobs.remote_first)
 
         assert scheduler.assigned == [REMOTE]
 
     @pytest.mark.anyio
-    async def test_one_slot_reads_zero_as_one(self):
+    async def test_one_slot_reads_zero_as_one(self) -> None:
         scheduler, _ = await _assign(NoLocalJobs.one_slot)
 
         assert scheduler.assigned == [LOCAL_STORE_ID]
 
 
 @pytest.mark.anyio
-async def test_a_client_with_a_local_slot_is_untouched():
+async def test_a_client_with_a_local_slot_is_untouched() -> None:
     scheduler, _ = await _assign(NoLocalJobs.remote_only, jobs=1)
 
     assert scheduler.assigned == [LOCAL_STORE_ID]

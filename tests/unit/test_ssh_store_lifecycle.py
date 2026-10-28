@@ -52,7 +52,7 @@ class RecordingSSHStore(SSHStore):
         self.connects = 0
         self.disconnects = 0
 
-    async def ensure_ssh(self):  # type: ignore[override] -- the test replaces the transport
+    async def ensure_ssh(self):  # type: ignore[override]  # the test replaces the transport
         self.connects += 1
         # Nothing here opens a channel, and the tests read the field for
         # `is None` alone. A bare object stands in for the transport.
@@ -63,7 +63,7 @@ class RecordingSSHStore(SSHStore):
         self.disconnects += 1
         self.conn = None
 
-    async def create_conn(self):  # type: ignore[override] -- nothing to dial here
+    async def create_conn(self):  # type: ignore[override]  # nothing to dial here
         raise AssertionError("this test opens no channel")
 
 

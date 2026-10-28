@@ -49,7 +49,7 @@ class Upstream:
 
 
 @pytest.mark.anyio
-async def test_add_build_log_forwards_the_framed_log_and_a_base_name():
+async def test_add_build_log_forwards_the_framed_log_and_a_base_name() -> None:
     """`daemon.cc:1013-1022` reads a base name, then a framed log."""
     client = BytesWriter("client")
     await AddBuildLogRequest(path=DRV).to_writer(WriteContext(writer=client, version=PROTOCOL_VERSION))
@@ -73,7 +73,7 @@ async def test_add_build_log_forwards_the_framed_log_and_a_base_name():
     assert reader._pos == len(reader._data)  # noqa: SLF001 -- the reader's position is the point
 
 
-def test_unwanted_outputs_leave_the_feature_shape_too():
+def test_unwanted_outputs_leave_the_feature_shape_too() -> None:
     """`derivation-goal.cc:255` keeps the wanted output alone, in either shape."""
     result = BuildResult(
         status=int(BuildResultStatus.BUILT),
@@ -89,7 +89,7 @@ def test_unwanted_outputs_leave_the_feature_shape_too():
     assert set(kept.built_outputs_by_name) == {"out"}
 
 
-def test_an_old_store_answer_reaches_a_new_client():
+def test_an_old_store_answer_reaches_a_new_client() -> None:
     """A 2.34 store answers a list; a client with the feature reads `present`."""
     request = QueryRealisationRequest(
         drv_output=DrvOutput("sha256:" + "1" * 64 + "!out"),
@@ -112,7 +112,7 @@ def test_an_old_store_answer_reaches_a_new_client():
     assert str(both.realisation.out_path) == OUT
 
 
-def test_a_new_store_answer_reaches_an_old_client():
+def test_a_new_store_answer_reaches_an_old_client() -> None:
     request = QueryRealisationRequest(
         drv_output=DrvOutput("sha256:" + "1" * 64 + "!out"),
         keyed_drv_output=KeyedDrvOutput(drv_path=StorePath("/nix/store/" + DRV), output_name="out"),

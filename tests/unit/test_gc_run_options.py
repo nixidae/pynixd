@@ -209,7 +209,7 @@ def _collector(tmp_path: Path, **kwargs: Any) -> tuple[Collector, FakeLocal, Pat
     state_dir = tmp_path / "state"
     (state_dir / "temproots").mkdir(parents=True)
     local = FakeLocal(layout=FakeLayout(state_dir=state_dir), **kwargs)
-    return Collector(FakeContext(local=local)), local, state_dir  # type: ignore[arg-type] -- fakes
+    return Collector(FakeContext(local=local)), local, state_dir  # type: ignore[arg-type]  # fakes
 
 
 def _texts(resp: Any) -> list[str]:
@@ -267,7 +267,7 @@ async def test_limit_takes_the_weight_order_head(tmp_path: Path) -> None:
     collector, local, _state_dir = _collector(tmp_path)
     client = FakeClient()
 
-    resp = await collector.run(PynixdGCAction.EXECUTE, client=client, limit=1)  # type: ignore[arg-type] -- fake client
+    resp = await collector.run(PynixdGCAction.EXECUTE, client=client, limit=1)  # type: ignore[arg-type]  # fake client
 
     assert {str(path) for path in resp.store_paths} == {B}
     assert local.deleted == [B]

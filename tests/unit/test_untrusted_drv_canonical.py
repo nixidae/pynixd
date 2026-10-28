@@ -31,7 +31,7 @@ def _fixed(method: str, digest: str) -> BasicDerivation:
     )
 
 
-def test_nix32_round_trips():
+def test_nix32_round_trips() -> None:
     assert nix32_decode(NIX32).hex() == HEX
     assert nix32_encode(bytes.fromhex(HEX)) == NIX32
 
@@ -45,7 +45,7 @@ def test_nix32_round_trips():
     ],
 )
 @pytest.mark.parametrize("digest", [NIX32, HEX, HEX.upper(), B64])
-def test_the_path_is_recomputed_and_the_hash_is_base16(method: str, path: str, digest: str):
+def test_the_path_is_recomputed_and_the_hash_is_base16(method: str, path: str, digest: str) -> None:
     out = canonical_derivation(_fixed(method, digest), "probe").outputs["out"]
 
     assert out.path == path
@@ -73,13 +73,13 @@ def test_the_path_is_recomputed_and_the_hash_is_base16(method: str, path: str, d
         ),
     ],
 )
-def test_what_nix_refuses_is_refused(outputs: dict[str, DerivationOutput], reason: str):
+def test_what_nix_refuses_is_refused(outputs: dict[str, DerivationOutput], reason: str) -> None:
     drv = BasicDerivation(outputs=outputs, platform="x86_64-linux", builder="/bin/sh")
 
     with pytest.raises(ValueError, match=reason):
         canonical_derivation(drv, "probe")
 
 
-def test_an_unknown_escape_drops_its_backslash():
+def test_an_unknown_escape_drops_its_backslash() -> None:
     """`derivations.cc:188-205`: only `\\n`, `\\r` and `\\t` map; `\\x` reads `x`."""
     assert _Parser('"a\\bc\\qd\\n"').parse_string() == "abcqd\n"

@@ -11,7 +11,7 @@ from pynixd.serde import (
 )
 
 
-async def test_wire_build_result_json_roundtrip():
+async def test_wire_build_result_json_roundtrip() -> None:
     """BuildResult JSON roundtrip (exercises wire_conditional + dict + primitives)."""
     br = BuildResult(
         status=0,
@@ -47,7 +47,7 @@ async def test_wire_build_result_json_roundtrip():
     assert br2.cpu_system.tag == 0
 
 
-async def test_wire_store_path_json():
+async def test_wire_store_path_json() -> None:
     """A store path travels as the base name in JSON, and whole on the wire.
 
     `adl_serializer<nix::StorePath>::to_json`, `src/libstore/path.cc:95` of
@@ -83,7 +83,7 @@ async def test_wire_store_path_json():
         assert str(back.path) == "/nix/store/abc-test"
 
 
-async def test_wire_build_result_json_null_conditional():
+async def test_wire_build_result_json_null_conditional() -> None:
     """OptMicroseconds not present → null in JSON."""
     br = BuildResult(status=0, error_msg="")
     # cpu_user is OptMicroseconds(tag=0) by default

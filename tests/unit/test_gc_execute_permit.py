@@ -161,9 +161,9 @@ class FakeContext:
 
 
 @pytest.mark.anyio
-async def test_execute_without_permit_raises_before_any_store_traffic():
+async def test_execute_without_permit_raises_before_any_store_traffic() -> None:
     local = FakeLocal()
-    collector = Collector(FakeContext(local=local))  # type: ignore[arg-type] -- a fake context
+    collector = Collector(FakeContext(local=local))  # type: ignore[arg-type]  # a fake context
 
     with pytest.raises(GCNotPermittedError):
         await collector.run(PynixdGCAction.EXECUTE)
@@ -173,9 +173,9 @@ async def test_execute_without_permit_raises_before_any_store_traffic():
 
 
 @pytest.mark.anyio
-async def test_dry_run_without_permit_still_plans():
+async def test_dry_run_without_permit_still_plans() -> None:
     local = FakeLocal()
-    collector = Collector(FakeContext(local=local))  # type: ignore[arg-type] -- a fake context
+    collector = Collector(FakeContext(local=local))  # type: ignore[arg-type]  # a fake context
 
     resp = await collector.run(PynixdGCAction.DRY_RUN)
 
@@ -184,10 +184,10 @@ async def test_dry_run_without_permit_still_plans():
 
 
 @pytest.mark.anyio
-async def test_execute_with_permit_deletes():
+async def test_execute_with_permit_deletes() -> None:
     """The permit opens the real path: plan, weigh, delete, report."""
     local = FakeLocal(gc_allow_execute=True)
-    collector = Collector(FakeContext(local=local))  # type: ignore[arg-type] -- a fake context
+    collector = Collector(FakeContext(local=local))  # type: ignore[arg-type]  # a fake context
 
     resp = await collector.run(PynixdGCAction.EXECUTE)
 
@@ -197,7 +197,7 @@ async def test_execute_with_permit_deletes():
 
 
 @pytest.mark.anyio
-async def test_execute_without_the_attribute_is_denied():
+async def test_execute_without_the_attribute_is_denied() -> None:
     """A store predating the knob reads as off: `getattr` defaults closed."""
 
     @dataclass
@@ -223,7 +223,7 @@ async def test_execute_without_the_attribute_is_denied():
             return {"local": self.local}
 
     local = LegacyLocal()
-    collector = Collector(LegacyContext(local=local))  # type: ignore[arg-type] -- a fake context
+    collector = Collector(LegacyContext(local=local))  # type: ignore[arg-type]  # a fake context
 
     with pytest.raises(GCNotPermittedError):
         await collector.run(PynixdGCAction.EXECUTE)

@@ -92,7 +92,7 @@ def workspace():
 
 
 @pytest.mark.anyio
-async def test_two_runs_against_the_same_daemon_agree(workspace):
+async def test_two_runs_against_the_same_daemon_agree(workspace) -> None:
     """The floor of the comparison. Two equal runs must report nothing.
 
     A false difference here would report every test of the functional suite as
@@ -115,7 +115,7 @@ async def test_two_runs_against_the_same_daemon_agree(workspace):
 
 
 @pytest.mark.anyio
-async def test_the_real_operations_decode(workspace):
+async def test_the_real_operations_decode(workspace) -> None:
     """The decoder reads what a real client really sends.
 
     `AddToStoreNar` carries a framed source, so this states that the decoder
@@ -136,7 +136,7 @@ async def test_the_real_operations_decode(workspace):
 
 
 @pytest.mark.anyio
-async def test_a_run_that_did_less_is_a_difference(workspace):
+async def test_a_run_that_did_less_is_a_difference(workspace) -> None:
     """The comparison must find a real change, and not only agree."""
     record_run(workspace / "run1", workspace / "rec1")
 

@@ -121,7 +121,7 @@ async def _create_big_path(size_mb: int) -> StorePath:
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("chunk_kb", _CHUNK_SIZES_KB)
-async def test_bench_nar_streaming_latency(bench_store: DaemonStore, dst_store: DaemonStore, chunk_kb: int):
+async def test_bench_nar_streaming_latency(bench_store: DaemonStore, dst_store: DaemonStore, chunk_kb: int) -> None:
     """Benchmark: stream a single ~1MB path via stream_paths_store_to_store."""
     store_path = await _pick_a_path(bench_store)
     info_resp = await bench_store.execute(QueryPathInfoRequest(path=serde_path(store_path)))
@@ -148,7 +148,7 @@ async def test_bench_nar_streaming_latency(bench_store: DaemonStore, dst_store: 
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("chunk_kb", _CHUNK_SIZES_KB)
-async def test_bench_nar_streaming_throughput(bench_store: DaemonStore, dst_store: DaemonStore, chunk_kb: int):
+async def test_bench_nar_streaming_throughput(bench_store: DaemonStore, dst_store: DaemonStore, chunk_kb: int) -> None:
     """Benchmark: stream a 100MB NAR via stream_paths_store_to_store at various chunk sizes."""
     store_path = await _create_big_path(100)
     info_resp = await bench_store.execute(QueryPathInfoRequest(path=serde_path(store_path)))
@@ -176,7 +176,7 @@ async def test_bench_nar_streaming_throughput(bench_store: DaemonStore, dst_stor
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("chunk_kb", _CHUNK_SIZES_KB)
-async def test_bench_copy_paths_latency(bench_store: DaemonStore, dst_store: DaemonStore, chunk_kb: int):
+async def test_bench_copy_paths_latency(bench_store: DaemonStore, dst_store: DaemonStore, chunk_kb: int) -> None:
     """Benchmark: stream a single ~1MB path via copy_paths."""
     store_path = await _pick_a_path(bench_store, need_no_refs=True)
     info_resp = await bench_store.execute(QueryPathInfoRequest(path=serde_path(store_path)))
@@ -203,7 +203,7 @@ async def test_bench_copy_paths_latency(bench_store: DaemonStore, dst_store: Dae
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("chunk_kb", _CHUNK_SIZES_KB)
-async def test_bench_copy_paths_throughput(bench_store: DaemonStore, dst_store: DaemonStore, chunk_kb: int):
+async def test_bench_copy_paths_throughput(bench_store: DaemonStore, dst_store: DaemonStore, chunk_kb: int) -> None:
     """Benchmark: stream a 100MB NAR via copy_paths at various chunk sizes."""
     store_path = await _create_big_path(100)
     info_resp = await bench_store.execute(QueryPathInfoRequest(path=serde_path(store_path)))
@@ -231,7 +231,7 @@ async def test_bench_copy_paths_throughput(bench_store: DaemonStore, dst_store: 
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("chunk_kb", _CHUNK_SIZES_KB)
-async def test_bench_copy_paths_batch(bench_store: DaemonStore, dst_store: DaemonStore, chunk_kb: int):
+async def test_bench_copy_paths_batch(bench_store: DaemonStore, dst_store: DaemonStore, chunk_kb: int) -> None:
     """Benchmark: stream 100 small paths (.drv files) in a single batch.
 
     Tests the efficiency of AddMultipleToStore for small files.

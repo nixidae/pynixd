@@ -48,7 +48,7 @@ VERSION = 0x126
 
 
 @pytest.mark.anyio
-async def test_retire_idle_closes_each_idle_connection():
+async def test_retire_idle_closes_each_idle_connection() -> None:
     pool = make_pool(300.0)
     now = time.monotonic()
     conns = [FakeConnection("a"), FakeConnection("b")]
@@ -65,7 +65,7 @@ async def test_retire_idle_closes_each_idle_connection():
 
 
 @pytest.mark.anyio
-async def test_retire_idle_leaves_a_connection_in_flight():
+async def test_retire_idle_leaves_a_connection_in_flight() -> None:
     """A build holds its paths, and issue #20 accepts that difference."""
     pool = make_pool(300.0)
     busy = FakeConnection("busy")
@@ -79,7 +79,7 @@ async def test_retire_idle_leaves_a_connection_in_flight():
 
 
 @pytest.mark.anyio
-async def test_a_store_that_pools_nothing_answers_zero():
+async def test_a_store_that_pools_nothing_answers_zero() -> None:
     """The default of `Store`. A store with no pool holds no such root."""
 
     class NoPool:
@@ -154,12 +154,12 @@ def _request() -> CollectGarbageRequest:
 
 async def _handle(handler: Any, request: Any, role: Role) -> FakeProxy:
     proxy = FakeProxy(await _body(request))
-    await handler.handle(FakeContext(proxy=proxy, role=role))  # type: ignore[arg-type] -- a fake context
+    await handler.handle(FakeContext(proxy=proxy, role=role))  # type: ignore[arg-type]  # a fake context
     return proxy
 
 
 @pytest.mark.anyio
-async def test_a_garbage_collection_retires_the_idle_connections_first():
+async def test_a_garbage_collection_retires_the_idle_connections_first() -> None:
     proxy = await _handle(CollectGarbageHandler(), _request(), Role.ADMIN)
 
     # `execute`, so the cached info of each deleted path is forgotten.
@@ -168,7 +168,7 @@ async def test_a_garbage_collection_retires_the_idle_connections_first():
 
 
 @pytest.mark.anyio
-async def test_an_untrusted_client_collects_as_well():
+async def test_an_untrusted_client_collects_as_well() -> None:
     """Nix lets every allowed user collect garbage, `daemon.cc:735`. Issue #56."""
     proxy = await _handle(CollectGarbageHandler(), _request(), Role.USER)
 
@@ -177,7 +177,7 @@ async def test_an_untrusted_client_collects_as_well():
 
 
 @pytest.mark.anyio
-async def test_a_query_of_the_roots_retires_them_as_well():
+async def test_a_query_of_the_roots_retires_them_as_well() -> None:
     """`nix-store -q --roots` prints `{temp:NNN}` for a root that a worker holds.
 
     `gc.sh:16` of the functional tests of Nix compares that output with one
@@ -206,7 +206,7 @@ async def test_a_query_of_the_roots_retires_them_as_well():
 
 
 @pytest.mark.anyio
-async def test_the_pynixd_operation_reaches_the_collector():
+async def test_the_pynixd_operation_reaches_the_collector() -> None:
     """Op 101 is pynixd's own, and the `nix daemon` under the local store
     answers `invalid operation 101` (`daemon.cc:1110`). The handler runs the
     collector, which retires the idle connections before it deletes."""
@@ -222,7 +222,7 @@ async def test_the_pynixd_operation_reaches_the_collector():
 
     with patch.object(Collector, "run", run):
         answer = await PynixdCollectGarbageHandler().handle(
-            FakeContext(proxy=proxy, role=Role.ADMIN),  # type: ignore[arg-type] -- a fake context
+            FakeContext(proxy=proxy, role=Role.ADMIN),  # type: ignore[arg-type]  # a fake context
         )
 
     assert answer == "collected"

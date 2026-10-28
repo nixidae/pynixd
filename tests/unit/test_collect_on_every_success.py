@@ -154,21 +154,21 @@ async def _run(status: BuildResultStatus) -> FakeScheduler:
 class TestABuilderThatBuiltNothing:
     @pytest.mark.anyio
     @pytest.mark.parametrize("status", SUCCESSES_THAT_BUILT_NOTHING)
-    async def test_pulls_the_realised_output(self, status: BuildResultStatus):
+    async def test_pulls_the_realised_output(self, status: BuildResultStatus) -> None:
         scheduler = await _run(status)
 
         assert scheduler.pulled == {StorePath(PRODUCED_DRV)}
 
     @pytest.mark.anyio
     @pytest.mark.parametrize("status", SUCCESSES_THAT_BUILT_NOTHING)
-    async def test_records_where_the_output_is(self, status: BuildResultStatus):
+    async def test_records_where_the_output_is(self, status: BuildResultStatus) -> None:
         scheduler = await _run(status)
 
         assert scheduler.ctx.output_locations == {PRODUCED_DRV: StoreId("sg1-n3")}
 
     @pytest.mark.anyio
     @pytest.mark.parametrize("status", SUCCESSES_THAT_BUILT_NOTHING)
-    async def test_records_the_answer_under_its_own_status(self, status: BuildResultStatus):
+    async def test_records_the_answer_under_its_own_status(self, status: BuildResultStatus) -> None:
         """A 0.2 s answer measures delegation, not the build. The estimator
         reads `BUILT` rows alone, so the row keeps its status."""
         scheduler = await _run(status)
@@ -178,7 +178,7 @@ class TestABuilderThatBuiltNothing:
 
 class TestABuilderThatBuilt:
     @pytest.mark.anyio
-    async def test_pulls_and_records_the_build(self):
+    async def test_pulls_and_records_the_build(self) -> None:
         scheduler = await _run(BuildResultStatus.BUILT)
 
         assert scheduler.pulled == {StorePath(PRODUCED_DRV)}
@@ -187,7 +187,7 @@ class TestABuilderThatBuilt:
 
 class TestAFailedBuild:
     @pytest.mark.anyio
-    async def test_pulls_nothing(self):
+    async def test_pulls_nothing(self) -> None:
         scheduler = await _run(BuildResultStatus.PERMANENT_FAILURE)
 
         assert scheduler.pulled == set()
@@ -197,7 +197,7 @@ class TestAFailedBuild:
 class TestTheCompletionMetric:
     @pytest.mark.anyio
     @pytest.mark.parametrize("status", SUCCESSES_THAT_BUILT_NOTHING)
-    async def test_counts_every_success_as_one(self, status: BuildResultStatus):
+    async def test_counts_every_success_as_one(self, status: BuildResultStatus) -> None:
         queue = BuildQueue()
         build_id, _ = await queue.enqueue(
             BuildDerivationRequest(

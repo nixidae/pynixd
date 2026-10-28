@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from pynixd import Server
 
 
-async def test_add_to_store_nar(pynixd_server: Server, tmp_path: Path):
+async def test_add_to_store_nar(pynixd_server: Server, tmp_path: Path) -> None:
     """Add a path to the store using nix store add-path to trigger AddToStoreNar.
 
     Store operations triggered:

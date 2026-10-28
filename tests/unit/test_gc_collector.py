@@ -211,18 +211,18 @@ def _collector(
         hang=hang or set(),
         silent=silent or set(),
     )
-    return Collector(FakeContext(local=local, cache=cache)), local  # type: ignore[arg-type] -- a fake context
+    return Collector(FakeContext(local=local, cache=cache)), local  # type: ignore[arg-type]  # a fake context
 
 
 @pytest.mark.anyio
-async def test_a_cached_path_is_droppable():
+async def test_a_cached_path_is_droppable() -> None:
     collector, _local = _collector(FakeCache(held={HELLO, GLIBC}))
 
     assert _names(await collector.plan()) == {HELLO, GLIBC}
 
 
 @pytest.mark.anyio
-async def test_a_unique_referrer_keeps_what_it_references():
+async def test_a_unique_referrer_keeps_what_it_references() -> None:
     """`ONLY_HERE` is nowhere upstream, and `HELLO` refers to `GLIBC`, so a
     cache that holds only `GLIBC` releases nothing: `HELLO` needs it."""
     collector, _local = _collector(FakeCache(held={GLIBC}))
@@ -231,7 +231,7 @@ async def test_a_unique_referrer_keeps_what_it_references():
 
 
 @pytest.mark.anyio
-async def test_a_live_path_stays_although_the_cache_has_it():
+async def test_a_live_path_stays_although_the_cache_has_it() -> None:
     """`gc.cc:778` throws on a live path and abandons the whole request, so
     the plan removes what Nix reported alive before it asks."""
     collector, _local = _collector(FakeCache(held={HELLO, GLIBC}), live={HELLO, GLIBC})
@@ -240,14 +240,14 @@ async def test_a_live_path_stays_although_the_cache_has_it():
 
 
 @pytest.mark.anyio
-async def test_an_unreachable_substituter_holds_nothing():
+async def test_an_unreachable_substituter_holds_nothing() -> None:
     collector, _local = _collector(FakeCache(held={HELLO, GLIBC}, reachable=False))
 
     assert _names(await collector.plan()) == set()
 
 
 @pytest.mark.anyio
-async def test_a_store_without_the_closure_feature_drops_nothing():
+async def test_a_store_without_the_closure_feature_drops_nothing() -> None:
     """The guard. Without it the empty answer would make every path droppable,
     including the ones no substituter has."""
     collector, _local = _collector(FakeCache(held={HELLO, GLIBC}), answers_closure=False)
@@ -256,7 +256,7 @@ async def test_a_store_without_the_closure_feature_drops_nothing():
 
 
 @pytest.mark.anyio
-async def test_no_substituter_named_drops_nothing():
+async def test_no_substituter_named_drops_nothing() -> None:
     collector, local = _collector(None)
 
     assert _names(await collector.plan()) == set()
@@ -264,7 +264,7 @@ async def test_no_substituter_named_drops_nothing():
 
 
 @pytest.mark.anyio
-async def test_delete_sends_100_paths_per_request():
+async def test_delete_sends_100_paths_per_request() -> None:
     """Issue #12: 205 paths take three GC requests over one connection."""
     collector, local = _collector(None)
     batch = [f"/nix/store/{i:032d}-path" for i in range(205)]
@@ -282,7 +282,7 @@ async def test_delete_sends_100_paths_per_request():
 
 
 @pytest.mark.anyio
-async def test_delete_refusal_mid_queue_deletes_the_rest():
+async def test_delete_refusal_mid_queue_deletes_the_rest() -> None:
     """A live path drops without stopping the queue; the next pass re-plans it."""
     collector, local = _collector(None, refuse={GLIBC})
     batch = [HELLO, GLIBC, ONLY_HERE]
@@ -297,7 +297,7 @@ async def test_delete_refusal_mid_queue_deletes_the_rest():
 
 
 @pytest.mark.anyio
-async def test_delete_retries_a_path_its_referrer_blocked(monkeypatch: pytest.MonkeyPatch):
+async def test_delete_retries_a_path_its_referrer_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
     """A referrer in a later group releases its child for the retry lap."""
     monkeypatch.setattr("pynixd.gc._DELETE_BATCH_SIZE", 1)
     collector, local = _collector(None, refuse_until_gone={GLIBC: HELLO})
@@ -312,7 +312,7 @@ async def test_delete_retries_a_path_its_referrer_blocked(monkeypatch: pytest.Mo
 
 
 @pytest.mark.anyio
-async def test_delete_timeout_skips_the_path_and_keeps_the_queue(monkeypatch: pytest.MonkeyPatch):
+async def test_delete_timeout_skips_the_path_and_keeps_the_queue(monkeypatch: pytest.MonkeyPatch) -> None:
     """A call past the deadline abandons its connection, not the queue.
 
     The timed-out path sits out the rest of the pass; the lap resumes
@@ -335,7 +335,7 @@ async def test_delete_timeout_skips_the_path_and_keeps_the_queue(monkeypatch: py
 
 
 @pytest.mark.anyio
-async def test_delete_silent_skip_stays_for_next_pass():
+async def test_delete_silent_skip_stays_for_next_pass() -> None:
     """A path the daemon skips without error is spared, not counted deleted."""
     collector, local = _collector(None, silent={GLIBC})
     batch = [HELLO, GLIBC, ONLY_HERE]
@@ -347,14 +347,14 @@ async def test_delete_silent_skip_stays_for_next_pass():
     assert _names(resp.store_paths) == {HELLO, ONLY_HERE}
 
 
-async def test_delete_referrer_and_child_in_one_group():
+async def test_delete_referrer_and_child_in_one_group() -> None:
     collector, local = _collector(None, refuse_until_gone={GLIBC: HELLO})
     response = await collector._delete([GLIBC, HELLO], {}, [], None)
     assert _names(response.store_paths) == {GLIBC, HELLO}
     assert local.sizes == [2]
 
 
-async def test_failed_recheck_skips_group_and_continues(monkeypatch: pytest.MonkeyPatch):
+async def test_failed_recheck_skips_group_and_continues(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("pynixd.gc._DELETE_BATCH_SIZE", 2)
     collector, local = _collector(None, refuse={GLIBC})
     local.recheck_failures = 1
@@ -365,7 +365,7 @@ async def test_failed_recheck_skips_group_and_continues(monkeypatch: pytest.Monk
     assert local.forgotten == {HELLO, GLIBC, ONLY_HERE}
 
 
-async def test_multiple_timeouts_do_not_abandon_the_rest(monkeypatch: pytest.MonkeyPatch):
+async def test_multiple_timeouts_do_not_abandon_the_rest(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("pynixd.gc._DELETE_BATCH_SIZE", 1)
     monkeypatch.setattr("pynixd.gc._DELETE_TIMEOUT_S", 0.01)
     batch = [f"/nix/store/{i:032d}-path" for i in range(6)]
@@ -377,7 +377,7 @@ async def test_multiple_timeouts_do_not_abandon_the_rest(monkeypatch: pytest.Mon
     assert all(conn.dirty for conn in local.connections[:3])
 
 
-async def test_partial_error_reports_missing_bytes_without_inventing_sizes():
+async def test_partial_error_reports_missing_bytes_without_inventing_sizes() -> None:
     collector, local = _collector(None, refuse={GLIBC})
     lines: list[Any] = []
     response = await collector._delete([HELLO, GLIBC, ONLY_HERE], {}, lines, None)
@@ -387,7 +387,7 @@ async def test_partial_error_reports_missing_bytes_without_inventing_sizes():
     assert local.attempts.count(frozenset({GLIBC})) == 2
 
 
-async def test_timeout_reconciles_partial_deletion_and_skips_group(monkeypatch: pytest.MonkeyPatch):
+async def test_timeout_reconciles_partial_deletion_and_skips_group(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("pynixd.gc._DELETE_BATCH_SIZE", 2)
     monkeypatch.setattr("pynixd.gc._DELETE_TIMEOUT_S", 0.01)
     collector, local = _collector(None, hang={GLIBC})
@@ -398,7 +398,7 @@ async def test_timeout_reconciles_partial_deletion_and_skips_group(monkeypatch: 
     assert local.connections[0].dirty
 
 
-async def test_one_refusal_in_100_does_not_stop_later_groups():
+async def test_one_refusal_in_100_does_not_stop_later_groups() -> None:
     batch = [f"/nix/store/{i:032d}-path" for i in range(205)]
     blocked = batch[50]
     collector, local = _collector(None, refuse={blocked})

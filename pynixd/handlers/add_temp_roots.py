@@ -32,4 +32,4 @@ class AddTempRootsHandler(Handler):
         )
         for path in req.paths:
             await ctx.proxy.add_temp_root(path)
-        return AddTempRootsResponse.fast(value=1)  # type: ignore[return-value] -- the base returns object | None
+        return AddTempRootsResponse.fast(value=1)  # type: ignore[return-value]  # the base returns object | None

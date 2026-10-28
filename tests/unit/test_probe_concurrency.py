@@ -63,7 +63,7 @@ async def _run(
 ) -> CountingProbe:
     probe = CountingProbe()
     limiter = anyio.CapacityLimiter(limit)
-    await fan_out(probe, *args, limiter)  # type: ignore[misc] -- unbound, on a stand-in
+    await fan_out(probe, *args, limiter)  # type: ignore[misc]  # unbound, on a stand-in
     return probe
 
 
@@ -75,7 +75,7 @@ take that set, which keeps the count honest at len(SYSTEMS) * 9 = 18."""
 
 class TestTheBound:
     @pytest.mark.anyio
-    async def test_the_feature_fan_out_stays_under_the_limiter(self):
+    async def test_the_feature_fan_out_stays_under_the_limiter(self) -> None:
         probe = await _run(DaemonStore._probe_features, set(SYSTEMS), set(), limit=PROBE_CONCURRENCY)
 
         assert probe.total == len(SYSTEMS) * len(KNOWN_FEATURES)
@@ -85,7 +85,7 @@ class TestTheBound:
         assert probe.peak <= PROBE_CONCURRENCY
 
     @pytest.mark.anyio
-    async def test_the_system_fan_out_stays_under_the_limiter(self):
+    async def test_the_system_fan_out_stays_under_the_limiter(self) -> None:
         systems = {f"s{n}" for n in range(12)}
 
         probe = await _run(DaemonStore._probe_systems, systems, limit=PROBE_CONCURRENCY)
@@ -94,7 +94,7 @@ class TestTheBound:
         assert probe.peak <= PROBE_CONCURRENCY
 
     @pytest.mark.anyio
-    async def test_the_limiter_is_what_holds_it(self):
+    async def test_the_limiter_is_what_holds_it(self) -> None:
         """The negative control: a limiter wide enough is a limiter that does
         nothing, and then the peak is the whole fan-out. Without this the two
         cases above pass against a counter that never rises."""
@@ -104,10 +104,10 @@ class TestTheBound:
 
 
 class TestTheConstant:
-    def test_it_leaves_room_for_a_build_beside_a_probe(self):
+    def test_it_leaves_room_for_a_build_beside_a_probe(self) -> None:
         # `nix` assumes the same ten for its own channels, so a probe that
         # took all of them would fail a build running next to it.
         assert PROBE_CONCURRENCY <= SSHD_DEFAULT_MAX_SESSIONS // 2
 
-    def test_it_is_more_than_one(self):
+    def test_it_is_more_than_one(self) -> None:
         assert PROBE_CONCURRENCY > 1

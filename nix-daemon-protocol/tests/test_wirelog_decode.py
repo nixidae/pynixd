@@ -168,7 +168,7 @@ async def build_ops(path: Path, operations: list[tuple[object, bytes]]) -> Path:
 
 
 @pytest.mark.anyio
-async def test_the_handshake_decodes(workdir):
+async def test_the_handshake_decodes(workdir) -> None:
     session = await decode(await build_tape(workdir / "a.wire"))
     assert session.problem is None
     assert session.handshake is not None
@@ -178,7 +178,7 @@ async def test_the_handshake_decodes(workdir):
 
 
 @pytest.mark.anyio
-async def test_each_operation_gets_its_own_response(workdir):
+async def test_each_operation_gets_its_own_response(workdir) -> None:
     session = await decode(await build_tape(workdir / "a.wire"))
     assert [op.name for op in session.operations] == ["IsValidPath", "IsValidPath"]
     assert session.operations[0].response_payload == valid(True)
@@ -186,7 +186,7 @@ async def test_each_operation_gets_its_own_response(workdir):
 
 
 @pytest.mark.anyio
-async def test_a_log_message_is_not_part_of_the_payload(workdir):
+async def test_a_log_message_is_not_part_of_the_payload(workdir) -> None:
     session = await decode(await build_tape(workdir / "a.wire", logs=("building x", "done")))
     first = session.operations[0]
     assert first.logs == ("building x", "done")
@@ -194,14 +194,14 @@ async def test_a_log_message_is_not_part_of_the_payload(workdir):
 
 
 @pytest.mark.anyio
-async def test_two_recordings_of_the_same_exchange_agree(workdir):
+async def test_two_recordings_of_the_same_exchange_agree(workdir) -> None:
     control = await decode(await build_tape(workdir / "a.wire"))
     candidate = await decode(await build_tape(workdir / "b.wire"))
     assert compare(control, candidate) == []
 
 
 @pytest.mark.anyio
-async def test_a_different_answer_names_the_operation(workdir):
+async def test_a_different_answer_names_the_operation(workdir) -> None:
     control = await decode(await build_tape(workdir / "a.wire"))
     candidate = await decode(await build_tape(workdir / "b.wire", second_answer=False))
     differences = compare(control, candidate)
@@ -210,7 +210,7 @@ async def test_a_different_answer_names_the_operation(workdir):
 
 
 @pytest.mark.anyio
-async def test_the_name_and_the_version_of_the_daemon_are_exempt(workdir):
+async def test_the_name_and_the_version_of_the_daemon_are_exempt(workdir) -> None:
     """pynixd states its own name, and that difference is on purpose."""
     control = await decode(await build_tape(workdir / "a.wire"))
     candidate = await decode(await build_tape(workdir / "b.wire", nix_version="pynixd-0.1.0"))
@@ -218,7 +218,7 @@ async def test_the_name_and_the_version_of_the_daemon_are_exempt(workdir):
 
 
 @pytest.mark.anyio
-async def test_a_feature_that_pynixd_adds_is_exempt(workdir):
+async def test_a_feature_that_pynixd_adds_is_exempt(workdir) -> None:
     control = await decode(await build_tape(workdir / "a.wire"))
     candidate = await decode(
         await build_tape(workdir / "b.wire", server_features={"nix-command", "feature_matrix:x86_64-linux"})
@@ -227,7 +227,7 @@ async def test_a_feature_that_pynixd_adds_is_exempt(workdir):
 
 
 @pytest.mark.anyio
-async def test_a_log_line_that_only_one_side_wrote_is_a_difference(workdir):
+async def test_a_log_line_that_only_one_side_wrote_is_a_difference(workdir) -> None:
     """A person reads these lines, so a line that one side dropped is a change."""
     control = await decode(await build_tape(workdir / "a.wire", logs=("deleting garbage...", "deleting 'x'")))
     candidate = await decode(await build_tape(workdir / "b.wire", logs=("deleting garbage...",)))
@@ -241,7 +241,7 @@ async def test_a_log_line_that_only_one_side_wrote_is_a_difference(workdir):
 
 
 @pytest.mark.anyio
-async def test_a_note_that_pynixd_writes_about_itself_is_exempt(workdir):
+async def test_a_note_that_pynixd_writes_about_itself_is_exempt(workdir) -> None:
     """Section 3 of `pynixd/CLAUDE.md` asks pynixd for these lines."""
     control = await decode(await build_tape(workdir / "a.wire", logs=("deleting garbage...",)))
     candidate = await decode(
@@ -255,7 +255,7 @@ async def test_a_note_that_pynixd_writes_about_itself_is_exempt(workdir):
 
 
 @pytest.mark.anyio
-async def test_a_stale_temporary_root_line_is_exempt(workdir):
+async def test_a_stale_temporary_root_line_is_exempt(workdir) -> None:
     """The line names a pid, and the two runs have two process histories."""
     control = await decode(
         await build_tape(workdir / "a.wire", logs=('removing stale temporary roots file "/x/temproots/11"',))
@@ -274,7 +274,7 @@ async def test_a_stale_temporary_root_line_is_exempt(workdir):
 
 
 @pytest.mark.anyio
-async def test_the_same_lines_in_another_order_say_so(workdir):
+async def test_the_same_lines_in_another_order_say_so(workdir) -> None:
     control = await decode(await build_tape(workdir / "a.wire", logs=("one", "two")))
     candidate = await decode(await build_tape(workdir / "b.wire", logs=("two", "one")))
 
@@ -285,7 +285,7 @@ async def test_the_same_lines_in_another_order_say_so(workdir):
 
 
 @pytest.mark.anyio
-async def test_a_response_that_stops_early_names_its_operation(workdir):
+async def test_a_response_that_stops_early_names_its_operation(workdir) -> None:
     """The watchdog kills a run, and the recording then ends anywhere."""
     whole = (await build_tape(workdir / "a.wire")).read_bytes()
     cut = workdir / "cut.wire"
@@ -296,7 +296,7 @@ async def test_a_response_that_stops_early_names_its_operation(workdir):
 
 
 @pytest.mark.anyio
-async def test_a_request_that_stops_early_names_the_operation(workdir):
+async def test_a_request_that_stops_early_names_the_operation(workdir) -> None:
     tape = Tape()
     client_one, client_two = handshake_client({"nix-command"})
     server_one, server_two = handshake_server({"nix-command"}, "2.34.8", 1)
@@ -313,7 +313,7 @@ async def test_a_request_that_stops_early_names_the_operation(workdir):
 
 
 @pytest.mark.anyio
-async def test_a_client_that_stopped_early_is_a_difference(workdir):
+async def test_a_client_that_stopped_early_is_a_difference(workdir) -> None:
     control = await decode(await build_tape(workdir / "a.wire"))
     short = Tape()
     client_one, client_two = handshake_client({"nix-command"})
@@ -333,7 +333,7 @@ async def test_a_client_that_stopped_early_is_a_difference(workdir):
 
 
 @pytest.mark.anyio
-async def test_an_operation_that_one_side_skipped_does_not_shift_the_rest(workdir):
+async def test_an_operation_that_one_side_skipped_does_not_shift_the_rest(workdir) -> None:
     """The comparison put the operations together by index, and one shifted all.
 
     An operation that one side alone sends is one difference. Every operation
@@ -375,7 +375,7 @@ async def test_an_operation_that_one_side_skipped_does_not_shift_the_rest(workdi
 
 
 @pytest.mark.anyio
-async def test_a_run_that_one_side_alone_sent_is_one_difference(workdir):
+async def test_a_run_that_one_side_alone_sent_is_one_difference(workdir) -> None:
     """A client that stops early leaves a tail, and a line for each says one thing many times."""
     control = await decode(
         await build_ops(
@@ -406,7 +406,7 @@ async def test_a_run_that_one_side_alone_sent_is_one_difference(workdir):
 
 
 @pytest.mark.anyio
-async def test_a_different_request_is_a_difference(workdir):
+async def test_a_different_request_is_a_difference(workdir) -> None:
     """A client asks a different question when an earlier answer differed."""
     control = await decode(await build_tape(workdir / "a.wire"))
 
@@ -430,14 +430,14 @@ async def test_a_different_request_is_a_difference(workdir):
 
 
 @pytest.mark.anyio
-async def test_an_answer_that_a_model_covers_differs_by_field(workdir):
+async def test_an_answer_that_a_model_covers_differs_by_field(workdir) -> None:
     """A name, and not an offset. Read the docstring of `Operation`."""
     session = await decode(await build_tape(workdir / "a.wire"))
     assert session.operations[0].response_fields == {"valid": "True"}
 
 
 @pytest.mark.anyio
-async def test_an_answer_that_no_model_covers_names_the_byte(workdir):
+async def test_an_answer_that_no_model_covers_names_the_byte(workdir) -> None:
     """Two long answers that share a prefix must not read as the same answer.
 
     The first report of a real run showed two previews of 96 bytes that were
@@ -457,14 +457,14 @@ async def test_an_answer_that_no_model_covers_names_the_byte(workdir):
     assert difference.note in str(difference)
 
 
-def test_the_offset_is_the_first_byte_that_differs():
+def test_the_offset_is_the_first_byte_that_differs() -> None:
     assert _first_difference(b"abcdef", b"abcXef") == 3
     assert _first_difference(b"abc", b"abc") == 3
     # One a prefix of the other: the offset is the end of the short one.
     assert _first_difference(b"abc", b"abcdef") == 3
 
 
-def test_a_window_states_what_it_left_out():
+def test_a_window_states_what_it_left_out() -> None:
     value = bytes(range(256))
     assert _window(value, 0).startswith("b'")
     assert _window(value, 0).endswith("...")
@@ -474,7 +474,7 @@ def test_a_window_states_what_it_left_out():
 
 
 @pytest.mark.anyio
-async def test_the_exemptions_are_not_part_of_each_report(workdir):
+async def test_the_exemptions_are_not_part_of_each_report(workdir) -> None:
     """A run compares many connections, and the reasons belong at the end.
 
     A copy of the list above every connection made the report of two tests
@@ -499,7 +499,7 @@ RESULT_TWO = "/tmp/nix-build-1610114-3168049170/result"
 
 
 @pytest.mark.anyio
-async def test_the_build_directory_of_the_client_is_exempt_in_add_indirect_root(workdir):
+async def test_the_build_directory_of_the_client_is_exempt_in_add_indirect_root(workdir) -> None:
     """The client sends its own `result` link, and its name holds a pid.
 
     Two runs are two processes, so this differs in every pair and says nothing
@@ -517,7 +517,7 @@ async def test_the_build_directory_of_the_client_is_exempt_in_add_indirect_root(
 
 
 @pytest.mark.anyio
-async def test_the_same_field_of_another_operation_is_a_finding(workdir):
+async def test_the_same_field_of_another_operation_is_a_finding(workdir) -> None:
     """The exemption names the operation, and not the field alone.
 
     `IsValidPath` carries a `path` as well. A store path that differs there is
@@ -531,7 +531,7 @@ async def test_the_same_field_of_another_operation_is_a_finding(workdir):
 
 
 @pytest.mark.anyio
-async def test_add_temp_root_takes_the_same_exemption(workdir):
+async def test_add_temp_root_takes_the_same_exemption(workdir) -> None:
     """`AddTempRoot` sends the same shape, and its exemption covers it.
 
     **Store paths here, and not the `result` links above.**

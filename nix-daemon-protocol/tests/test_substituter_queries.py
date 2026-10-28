@@ -64,7 +64,7 @@ def empty_log() -> bytes:
 
 async def to_bytes(message: object) -> bytes:
     writer = BytesWriter()
-    await message.to_writer(WriteContext(writer=writer, version=PROTOCOL_VERSION))  # type: ignore[attr-defined] -- every wire model has it
+    await message.to_writer(WriteContext(writer=writer, version=PROTOCOL_VERSION))  # type: ignore[attr-defined]  # every wire model has it
     return writer.get_bytes()
 
 

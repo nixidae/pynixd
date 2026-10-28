@@ -64,7 +64,7 @@ def asked(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 @pytest.mark.anyio
-async def test_a_local_realisation_of_the_resolved_derivation_ends_the_goal(asked: list[str]):
+async def test_a_local_realisation_of_the_resolved_derivation_ends_the_goal(asked: list[str]) -> None:
     """No client here names a substituter; the local store answers anyway."""
     answer = await _goal(Store(valid=True))._try_realise_the_resolved_one(RESOLVED, ORIGINAL, {"out"})  # noqa: SLF001
 
@@ -73,7 +73,7 @@ async def test_a_local_realisation_of_the_resolved_derivation_ends_the_goal(aske
 
 
 @pytest.mark.anyio
-async def test_a_collected_realised_path_is_substituted_first(asked: list[str]):
+async def test_a_collected_realised_path_is_substituted_first(asked: list[str]) -> None:
     goal = _goal(Store(valid=False))
     substituted: list[str] = []
 

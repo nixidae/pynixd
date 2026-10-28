@@ -83,7 +83,7 @@ async def record_exchange(root: Path, sends: list[bytes]) -> list[Path]:
 
 
 @pytest.mark.anyio
-async def test_the_recording_holds_both_directions(short_path):
+async def test_the_recording_holds_both_directions(short_path) -> None:
     files = await record_exchange(short_path, [b"hello", b"world"])
     assert len(files) == 1
     chunks = read_chunks(files[0])
@@ -92,7 +92,7 @@ async def test_the_recording_holds_both_directions(short_path):
 
 
 @pytest.mark.anyio
-async def test_the_recording_keeps_the_order_between_the_directions(short_path):
+async def test_the_recording_keeps_the_order_between_the_directions(short_path) -> None:
     files = await record_exchange(short_path, [b"one", b"two"])
     chunks = read_chunks(files[0])
     assert [(chunk.direction, chunk.data) for chunk in chunks] == [
@@ -104,7 +104,7 @@ async def test_the_recording_keeps_the_order_between_the_directions(short_path):
 
 
 @pytest.mark.anyio
-async def test_bytes_that_no_protocol_explains_go_through(short_path):
+async def test_bytes_that_no_protocol_explains_go_through(short_path) -> None:
     """The recorder must not need to understand the stream.
 
     An operation this package does not know, a NAR, a truncated message: each
@@ -117,7 +117,7 @@ async def test_bytes_that_no_protocol_explains_go_through(short_path):
 
 
 @pytest.mark.anyio
-async def test_each_connection_gets_its_own_file(short_path):
+async def test_each_connection_gets_its_own_file(short_path) -> None:
     upstream = short_path / "up.sock"
     front = short_path / "front.sock"
     out = short_path / "rec"
@@ -149,7 +149,7 @@ async def test_each_connection_gets_its_own_file(short_path):
     ]
 
 
-def test_a_recording_that_a_killed_run_cut_short_still_reads(short_path):
+def test_a_recording_that_a_killed_run_cut_short_still_reads(short_path) -> None:
     """The watchdog of the harness kills a run, and the file then ends anywhere."""
     whole = (
         encode_header(STORE_DIR)
@@ -163,14 +163,14 @@ def test_a_recording_that_a_killed_run_cut_short_still_reads(short_path):
     assert [(chunk.direction, chunk.data) for chunk in chunks] == [(Direction.CLIENT, b"kept")]
 
 
-def test_a_file_that_is_not_a_recording_is_refused(short_path):
+def test_a_file_that_is_not_a_recording_is_refused(short_path) -> None:
     path = short_path / "other.bin"
     path.write_bytes(b"not a recording")
     with pytest.raises(ValueError, match="not a recording"):
         read_chunks(path)
 
 
-def test_the_recorder_reads_no_codec_of_this_package():
+def test_the_recorder_reads_no_codec_of_this_package() -> None:
     """The rule that keeps a recording honest.
 
     A recorder that decodes can hold a defect of the codecs, and the recording

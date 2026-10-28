@@ -119,13 +119,13 @@ async def _run(*, collection_fails: bool) -> tuple[FakeScheduler, FakeBuild]:
 
 class TestACollectionFailure:
     @pytest.mark.anyio
-    async def test_fails_the_build_instead_of_completing_it(self):
+    async def test_fails_the_build_instead_of_completing_it(self) -> None:
         scheduler, _ = await _run(collection_fails=True)
 
         assert [kind for kind, _ in scheduler.queue.resolved] == ["fail"]
 
     @pytest.mark.anyio
-    async def test_says_what_failed_and_where(self):
+    async def test_says_what_failed_and_where(self) -> None:
         scheduler, _ = await _run(collection_fails=True)
 
         (_, reason) = scheduler.queue.resolved[0]
@@ -133,7 +133,7 @@ class TestACollectionFailure:
         assert PULL_FAILED in reason
 
     @pytest.mark.anyio
-    async def test_reaches_the_client_and_not_only_the_server_log(self):
+    async def test_reaches_the_client_and_not_only_the_server_log(self) -> None:
         """The acceptance of issue #12. A log line on the server is not the
         client being told."""
         _, build = await _run(collection_fails=True)
@@ -143,14 +143,14 @@ class TestACollectionFailure:
 
 class TestASuccessfulBuild:
     @pytest.mark.anyio
-    async def test_collects_before_it_completes(self):
+    async def test_collects_before_it_completes(self) -> None:
         """The order, not the set. Both steps ran in the old code too."""
         scheduler, _ = await _run(collection_fails=False)
 
         assert scheduler.steps == ["collect", "complete"]
 
     @pytest.mark.anyio
-    async def test_completes_with_the_backend_response(self):
+    async def test_completes_with_the_backend_response(self) -> None:
         scheduler, _ = await _run(collection_fails=False)
 
         (_, response) = scheduler.queue.resolved[0]

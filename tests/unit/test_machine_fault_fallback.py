@@ -29,7 +29,7 @@ FULL = "cp: cannot create symbolic link '/nix/store/x': No space left on device"
         (BuildResultStatus.BUILT, "", None),
     ],
 )
-def test_a_machine_fault_is_told_from_a_build_error(status: BuildResultStatus, message: str, fault: str | None):
+def test_a_machine_fault_is_told_from_a_build_error(status: BuildResultStatus, message: str, fault: str | None) -> None:
     assert machine_fault(BuildResult(status=int(status), error_msg=message)) == fault
 
 
@@ -59,7 +59,7 @@ def _resp(message: str) -> Any:
     return SimpleNamespace(result=BuildResult(status=int(BuildResultStatus.PERMANENT_FAILURE), error_msg=message))
 
 
-def test_a_full_disk_is_retried_while_another_remote_has_not_tried():
+def test_a_full_disk_is_retried_while_another_remote_has_not_tried() -> None:
     scheduler = _scheduler()
     retry = Scheduler._retryable_elsewhere(  # noqa: SLF001 -- the decision is the unit
         cast("Any", scheduler), _build({}), scheduler.stores[StoreId("sg1-n1")], _resp(FULL)
@@ -67,7 +67,7 @@ def test_a_full_disk_is_retried_while_another_remote_has_not_tried():
     assert retry == "No space left on device"
 
 
-def test_the_local_store_is_tried_after_every_remote():
+def test_the_local_store_is_tried_after_every_remote() -> None:
     """User: trying locally should also happen, not only the remotes."""
     scheduler = _scheduler()
     retry = Scheduler._retryable_elsewhere(  # noqa: SLF001
@@ -76,7 +76,7 @@ def test_the_local_store_is_tried_after_every_remote():
     assert retry == "No space left on device"
 
 
-def test_a_local_fault_moves_to_a_remote():
+def test_a_local_fault_moves_to_a_remote() -> None:
     scheduler = _scheduler()
     retry = Scheduler._retryable_elsewhere(  # noqa: SLF001
         cast("Any", scheduler), _build({}), scheduler.stores[LOCAL_STORE_ID], _resp(FULL)
@@ -84,7 +84,7 @@ def test_a_local_fault_moves_to_a_remote():
     assert retry == "No space left on device"
 
 
-def test_it_stops_once_every_store_has_failed():
+def test_it_stops_once_every_store_has_failed() -> None:
     scheduler = _scheduler()
     retry = Scheduler._retryable_elsewhere(  # noqa: SLF001
         cast("Any", scheduler), _build({"sg1-n2": 1, "local": 1}), scheduler.stores[StoreId("sg1-n1")], _resp(FULL)
@@ -92,7 +92,7 @@ def test_it_stops_once_every_store_has_failed():
     assert retry is None
 
 
-def test_max_jobs_zero_keeps_the_local_store_out():
+def test_max_jobs_zero_keeps_the_local_store_out() -> None:
     scheduler = _scheduler(forbids_local=True)
     retry = Scheduler._retryable_elsewhere(  # noqa: SLF001
         cast("Any", scheduler), _build({"sg1-n2": 1}), scheduler.stores[StoreId("sg1-n1")], _resp(FULL)
@@ -100,7 +100,7 @@ def test_max_jobs_zero_keeps_the_local_store_out():
     assert retry is None
 
 
-def test_a_compile_error_is_not_retried():
+def test_a_compile_error_is_not_retried() -> None:
     scheduler = _scheduler()
     retry = Scheduler._retryable_elsewhere(  # noqa: SLF001
         cast("Any", scheduler), _build({}), scheduler.stores[StoreId("sg1-n1")], _resp("error: expected ';'")

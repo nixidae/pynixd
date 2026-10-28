@@ -44,7 +44,7 @@ def info(
 
 
 class TestNarinfoRoundtrip:
-    def test_minimal(self):
+    def test_minimal(self) -> None:
         vpi = info(
             store_path="/nix/store/abc123-foo",
             nar_hash="sha256:abc123",
@@ -60,7 +60,7 @@ class TestNarinfoRoundtrip:
         assert parsed.info.sigs == set()
         assert parsed.info.ca == ""
 
-    def test_with_references(self):
+    def test_with_references(self) -> None:
         vpi = info(
             store_path="/nix/store/abc123-foo",
             nar_hash="sha256:abc123",
@@ -75,7 +75,7 @@ class TestNarinfoRoundtrip:
         assert parsed.path == vpi.path
         assert parsed.info.references == vpi.info.references
 
-    def test_with_deriver(self):
+    def test_with_deriver(self) -> None:
         vpi = info(
             store_path="/nix/store/abc123-foo",
             nar_hash="sha256:abc123",
@@ -86,7 +86,7 @@ class TestNarinfoRoundtrip:
         parsed = ValidPathInfo.from_narinfo(narinfo)
         assert parsed.info.deriver == vpi.info.deriver
 
-    def test_with_signatures(self):
+    def test_with_signatures(self) -> None:
         vpi = info(
             store_path="/nix/store/abc123-foo",
             nar_hash="sha256:abc123",
@@ -97,7 +97,7 @@ class TestNarinfoRoundtrip:
         parsed = ValidPathInfo.from_narinfo(narinfo)
         assert parsed.info.sigs == vpi.info.sigs
 
-    def test_with_ca(self):
+    def test_with_ca(self) -> None:
         vpi = info(
             store_path="/nix/store/abc123-foo",
             nar_hash="sha256:abc123",
@@ -108,7 +108,7 @@ class TestNarinfoRoundtrip:
         parsed = ValidPathInfo.from_narinfo(narinfo)
         assert parsed.info.ca == vpi.info.ca
 
-    def test_full_roundtrip(self):
+    def test_full_roundtrip(self) -> None:
         vpi = info(
             store_path="/nix/store/abc123-foo",
             deriver="/nix/store/drv1-bar.drv",
@@ -131,7 +131,7 @@ class TestNarinfoRoundtrip:
         assert parsed.info.sigs == vpi.info.sigs
         assert parsed.info.ca == vpi.info.ca
 
-    def test_nar_hash_without_prefix(self):
+    def test_nar_hash_without_prefix(self) -> None:
         """to_narinfo should add sha256: prefix if missing."""
         vpi = info(
             store_path="/nix/store/abc123-foo",
@@ -144,11 +144,11 @@ class TestNarinfoRoundtrip:
 
 
 class TestNarinfoParsingEdgeCases:
-    def test_empty_content(self):
+    def test_empty_content(self) -> None:
         parsed = ValidPathInfo.from_narinfo("")
         assert parsed.path == path("")
 
-    def test_comment_lines(self):
+    def test_comment_lines(self) -> None:
         content = """# This is a comment
 StorePath: /nix/store/abc-foo
 NarHash: sha256:xyz
@@ -157,7 +157,7 @@ NarSize: 10
         parsed = ValidPathInfo.from_narinfo(content)
         assert parsed.path == path("/nix/store/abc-foo")
 
-    def test_empty_lines(self):
+    def test_empty_lines(self) -> None:
         content = """StorePath: /nix/store/abc-foo
 
 NarHash: sha256:xyz
@@ -167,7 +167,7 @@ NarSize: 10
         parsed = ValidPathInfo.from_narinfo(content)
         assert parsed.path == path("/nix/store/abc-foo")
 
-    def test_references_without_prefix(self):
+    def test_references_without_prefix(self) -> None:
         """References without /nix/store/ prefix should be fixed up."""
         content = """StorePath: /nix/store/abc-foo
 NarHash: sha256:xyz
@@ -177,7 +177,7 @@ References: ref1-bar ref2-baz
         parsed = ValidPathInfo.from_narinfo(content)
         assert path("/nix/store/ref1-bar") in parsed.info.references
 
-    def test_deriver_without_prefix(self):
+    def test_deriver_without_prefix(self) -> None:
         content = """StorePath: /nix/store/abc-foo
 NarHash: sha256:xyz
 NarSize: 10
@@ -186,7 +186,7 @@ Deriver: drv1-bar.drv
         parsed = ValidPathInfo.from_narinfo(content)
         assert parsed.info.deriver == path("/nix/store/drv1-bar.drv")
 
-    def test_empty_deriver(self):
+    def test_empty_deriver(self) -> None:
         content = """StorePath: /nix/store/abc-foo
 NarHash: sha256:xyz
 NarSize: 10
@@ -195,7 +195,7 @@ Deriver:
         parsed = ValidPathInfo.from_narinfo(content)
         assert parsed.info.deriver is None
 
-    def test_unknown_keys_ignored(self):
+    def test_unknown_keys_ignored(self) -> None:
         content = """StorePath: /nix/store/abc-foo
 NarHash: sha256:xyz
 NarSize: 10

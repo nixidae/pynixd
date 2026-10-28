@@ -60,7 +60,7 @@ class Recorder:
         self.listen.unlink(missing_ok=True)
         listener = await anyio.create_unix_listener(self.listen)
         self._started.set()
-        task_status.started()  # type: ignore[attr-defined] -- anyio's status object
+        task_status.started()  # type: ignore[attr-defined]  # anyio's status object
         async with listener:
             await listener.serve(self._handle)
 

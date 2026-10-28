@@ -92,13 +92,13 @@ async def _two_clients(outputs: dict[str, StorePath] | None = None) -> tuple[Fak
 
 class TestTheSecondClient:
     @pytest.mark.anyio
-    async def test_reads_a_build_waiting_activity(self):
+    async def test_reads_a_build_waiting_activity(self) -> None:
         _, second, _ = await _two_clients()
 
         assert STDERR_START_ACTIVITY in _codes(second)
 
     @pytest.mark.anyio
-    async def test_reads_it_before_the_replay(self):
+    async def test_reads_it_before_the_replay(self) -> None:
         build = _build()
         build._log_writer.write(b"a line of the first builder\n")  # noqa: SLF001 -- the order against the replay is the unit under test
         first, second = FakeClient(), FakeClient()
@@ -110,7 +110,7 @@ class TestTheSecondClient:
         assert len(second.blocks) == 2, "the activity, then the replay"
 
     @pytest.mark.anyio
-    async def test_the_activity_carries_nixs_type_and_level(self):
+    async def test_the_activity_carries_nixs_type_and_level(self) -> None:
         _, second, _ = await _two_clients()
 
         block = second.blocks[0]
@@ -118,7 +118,7 @@ class TestTheSecondClient:
         assert _read_int(block, TYPE) == ActivityType.BUILD_WAITING
 
     @pytest.mark.anyio
-    async def test_it_stops_when_the_build_ends(self):
+    async def test_it_stops_when_the_build_ends(self) -> None:
         _, second, build = await _two_clients()
         before = len(second.blocks)
 
@@ -127,7 +127,7 @@ class TestTheSecondClient:
         assert _codes(second)[before:] == [STDERR_STOP_ACTIVITY]
 
     @pytest.mark.anyio
-    async def test_the_stop_names_the_activity_that_started(self):
+    async def test_the_stop_names_the_activity_that_started(self) -> None:
         _, second, build = await _two_clients()
         started = _read_int(second.blocks[0], ACT_ID)
 
@@ -138,7 +138,7 @@ class TestTheSecondClient:
 
 class TestTheFirstClient:
     @pytest.mark.anyio
-    async def test_reads_no_such_activity(self):
+    async def test_reads_no_such_activity(self) -> None:
         """It asked for the build. Nix tells nobody they are waiting for a
         lock they already hold."""
         first, _, _ = await _two_clients()
@@ -146,7 +146,7 @@ class TestTheFirstClient:
         assert STDERR_START_ACTIVITY not in _codes(first)
 
     @pytest.mark.anyio
-    async def test_gets_no_stop_either(self):
+    async def test_gets_no_stop_either(self) -> None:
         first, _, build = await _two_clients()
 
         await build.stop_waiting_activities()
@@ -156,13 +156,13 @@ class TestTheFirstClient:
 
 class TestTheMessage:
     @pytest.mark.anyio
-    async def test_names_the_output_path(self):
+    async def test_names_the_output_path(self) -> None:
         _, second, _ = await _two_clients()
 
         assert OUT.encode() in second.blocks[0]
 
     @pytest.mark.anyio
-    async def test_falls_back_to_the_drv_and_the_output_name(self):
+    async def test_falls_back_to_the_drv_and_the_output_name(self) -> None:
         """A floating content-addressed output has no path until it is built.
         `derivation-building-goal.cc:413-416` locks `<drv>.<outputName>`
         there, and this says the same."""
@@ -171,20 +171,20 @@ class TestTheMessage:
         assert f"{DRV}.out".encode() in second.blocks[0]
 
     @pytest.mark.anyio
-    async def test_reads_like_nixs_own(self):
+    async def test_reads_like_nixs_own(self) -> None:
         _, second, _ = await _two_clients()
 
         assert b"waiting for lock on" in second.blocks[0]
 
 
 class TestTheActivityId:
-    def test_it_carries_this_process(self):
+    def test_it_carries_this_process(self) -> None:
         """`logging.cc:208` puts the pid in the high half so two daemons
         cannot answer with the same id. pynixd forwards a backend's ids
         unchanged, so its own have to miss that space."""
         assert _next_activity_id() >> 32 == os.getpid()
 
-    def test_two_of_them_differ(self):
+    def test_two_of_them_differ(self) -> None:
         assert _next_activity_id() != _next_activity_id()
 
 

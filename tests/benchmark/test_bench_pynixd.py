@@ -40,7 +40,7 @@ async def bench_store(request: pytest.FixtureRequest) -> AsyncIterator[Store]:
 
 
 @pytest.mark.benchmark
-async def test_bench_query_all_valid_paths(bench_store: Store):
+async def test_bench_query_all_valid_paths(bench_store: Store) -> None:
     """Benchmark QueryAllValidPaths latency."""
     start = time.perf_counter()
     resp = await bench_store.execute(QueryAllValidPathsRequest())
@@ -56,7 +56,7 @@ async def test_bench_query_all_valid_paths(bench_store: Store):
 
 
 @pytest.mark.benchmark
-async def test_bench_query_path_info_latency(bench_store: Store):
+async def test_bench_query_path_info_latency(bench_store: Store) -> None:
     """Benchmark QueryPathInfo latency for a single path."""
     resp_all = await bench_store.execute(QueryAllValidPathsRequest())
     paths = list(resp_all.paths)
@@ -76,7 +76,7 @@ async def test_bench_query_path_info_latency(bench_store: Store):
 
 
 @pytest.mark.benchmark
-async def test_bench_is_valid_path_throughput(bench_store: Store):
+async def test_bench_is_valid_path_throughput(bench_store: Store) -> None:
     """Benchmark IsValidPath throughput (serial)."""
     resp_all = await bench_store.execute(QueryAllValidPathsRequest())
     paths = list(resp_all.paths)[:1000]
@@ -95,7 +95,7 @@ async def test_bench_is_valid_path_throughput(bench_store: Store):
 
 
 @pytest.mark.benchmark
-async def test_bench_is_valid_path_parallel(bench_store: Store):
+async def test_bench_is_valid_path_parallel(bench_store: Store) -> None:
     """Benchmark IsValidPath throughput (parallel)."""
     resp_all = await bench_store.execute(QueryAllValidPathsRequest())
     paths = list(resp_all.paths)[:1000]
@@ -113,7 +113,7 @@ async def test_bench_is_valid_path_parallel(bench_store: Store):
 
 
 @pytest.mark.benchmark
-async def test_bench_local_socket_overhead():
+async def test_bench_local_socket_overhead() -> None:
     """Benchmark the overhead of LocalSocketStore compared to direct daemon access.
 
     Compares pynixd LocalSocketStore against 'nix store query --all' directly.

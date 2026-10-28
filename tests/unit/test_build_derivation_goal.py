@@ -146,7 +146,7 @@ async def _run_with(status: BuildResultStatus, store: CountingStore) -> None:
     """Run one build goal to its answer, with *store* as the local store."""
     scheduler = FakeScheduler()
     engine = FakeEngine(scheduler)
-    engine.ctx.local_store = store  # type: ignore[misc] -- SimpleNamespace, and the goal only calls execute
+    engine.ctx.local_store = store  # type: ignore[misc]  # SimpleNamespace, and the goal only calls execute
     goal = BuildDerivationGoal(cast("GoalEngine", engine), _request_with_an_output())
 
     task = asyncio.create_task(goal.result())

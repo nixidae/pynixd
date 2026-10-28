@@ -54,12 +54,12 @@ def _goal(*, fallback: bool) -> EnsureDerivedPathGoal:
 
 
 @pytest.mark.anyio
-async def test_a_failed_copy_builds_with_fallback():
+async def test_a_failed_copy_builds_with_fallback() -> None:
     assert await _goal(fallback=True)._try_substitute_known_outputs({"out": _PATH}) is None  # noqa: SLF001
 
 
 @pytest.mark.anyio
-async def test_a_failed_copy_without_fallback_names_it():
+async def test_a_failed_copy_without_fallback_names_it() -> None:
     result = await _goal(fallback=False)._try_substitute_known_outputs({"out": _PATH})  # noqa: SLF001
 
     assert result is not None
@@ -67,7 +67,7 @@ async def test_a_failed_copy_without_fallback_names_it():
     assert "try '--fallback'" in str(result.result.error_msg)
 
 
-def test_the_unsigned_refusal_matches_nix_words():
+def test_the_unsigned_refusal_matches_nix_words() -> None:
     """`LocalStore::addToStore` at `local-store.cc:1049`."""
     message = f"cannot add path '{_PATH}' because it lacks a signature by a trusted key"
     assert UNSIGNED_REFUSAL in message

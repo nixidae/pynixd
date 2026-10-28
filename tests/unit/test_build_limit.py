@@ -45,7 +45,7 @@ def _health(
 
 
 def _limit(ceiling: int = 64, **settings: float) -> BuildLimit:
-    return BuildLimit("builder", ceiling, PressureSettings(settle=10.0, **settings))  # type: ignore[arg-type] -- floats only
+    return BuildLimit("builder", ceiling, PressureSettings(settle=10.0, **settings))  # type: ignore[arg-type]  # floats only
 
 
 def test_no_signal_leaves_the_ceiling() -> None:

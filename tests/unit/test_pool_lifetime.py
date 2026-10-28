@@ -70,19 +70,19 @@ def make_pool(max_lifetime: float) -> ConnectionPool:
     )
 
 
-def test_a_young_connection_stays():
+def test_a_young_connection_stays() -> None:
     pool = make_pool(300.0)
     assert not pool._too_old(FakeConnection("a"), time.monotonic())
 
 
-def test_a_connection_past_its_lifetime_retires():
+def test_a_connection_past_its_lifetime_retires() -> None:
     pool = make_pool(300.0)
     now = time.monotonic()
     old = FakeConnection("a", opened_at=now - 301.0)
     assert pool._too_old(old, now)
 
 
-def test_a_lifetime_of_zero_turns_the_rule_off():
+def test_a_lifetime_of_zero_turns_the_rule_off() -> None:
     """A store that wants the old behaviour sets zero, and nothing retires."""
     pool = make_pool(0.0)
     now = time.monotonic()
@@ -91,7 +91,7 @@ def test_a_lifetime_of_zero_turns_the_rule_off():
 
 
 @pytest.mark.anyio
-async def test_the_pool_does_not_hand_out_a_connection_past_its_lifetime():
+async def test_the_pool_does_not_hand_out_a_connection_past_its_lifetime() -> None:
     pool = make_pool(300.0)
     now = time.monotonic()
     old = FakeConnection("old", opened_at=now - 301.0)
@@ -106,7 +106,7 @@ async def test_the_pool_does_not_hand_out_a_connection_past_its_lifetime():
 
 
 @pytest.mark.anyio
-async def test_the_pool_reuses_a_connection_inside_its_lifetime():
+async def test_the_pool_reuses_a_connection_inside_its_lifetime() -> None:
     pool = make_pool(300.0)
     now = time.monotonic()
     young = FakeConnection("young", opened_at=now - 1.0)

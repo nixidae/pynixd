@@ -42,7 +42,7 @@ def can_write_lock(path) -> bool:
 
 
 @pytest.mark.anyio
-async def test_a_root_reaches_the_file(tmp_path):
+async def test_a_root_reaches_the_file(tmp_path) -> None:
     roots = TempRoots(tmp_path)
     await roots.add(PATH_A)
     try:
@@ -52,7 +52,7 @@ async def test_a_root_reaches_the_file(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_a_store_path_writes_what_its_string_writes(tmp_path):
+async def test_a_store_path_writes_what_its_string_writes(tmp_path) -> None:
     """The `StorePath` short-circuit skips the re-parse, not the write."""
     roots = TempRoots(tmp_path)
     await roots.add(StorePath(PATH_A))
@@ -63,7 +63,7 @@ async def test_a_store_path_writes_what_its_string_writes(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_the_file_holds_every_root_of_the_session(tmp_path):
+async def test_the_file_holds_every_root_of_the_session(tmp_path) -> None:
     roots = TempRoots(tmp_path)
     await roots.add(PATH_A)
     await roots.add(PATH_B)
@@ -74,7 +74,7 @@ async def test_the_file_holds_every_root_of_the_session(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_the_collector_cannot_take_a_live_file(tmp_path):
+async def test_the_collector_cannot_take_a_live_file(tmp_path) -> None:
     roots = TempRoots(tmp_path)
     await roots.add(PATH_A)
     try:
@@ -84,7 +84,7 @@ async def test_the_collector_cannot_take_a_live_file(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_close_releases_every_root(tmp_path):
+async def test_close_releases_every_root(tmp_path) -> None:
     roots = TempRoots(tmp_path)
     await roots.add(PATH_A)
     await roots.close()
@@ -92,7 +92,7 @@ async def test_close_releases_every_root(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_the_gc_lock_is_opened_once_for_the_session(tmp_path, monkeypatch):
+async def test_the_gc_lock_is_opened_once_for_the_session(tmp_path, monkeypatch) -> None:
     """A session opens `gc.lock` once, and not once for each root.
 
     A build adds a root for each derivation of its closure, so this is the hot
@@ -121,7 +121,7 @@ async def test_the_gc_lock_is_opened_once_for_the_session(tmp_path, monkeypatch)
 
 
 @pytest.mark.anyio
-async def test_two_sessions_write_two_files(tmp_path):
+async def test_two_sessions_write_two_files(tmp_path) -> None:
     one = TempRoots(tmp_path)
     two = TempRoots(tmp_path)
     await one.add(PATH_A)
@@ -136,7 +136,7 @@ async def test_two_sessions_write_two_files(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_one_session_ends_and_the_other_keeps_its_root(tmp_path):
+async def test_one_session_ends_and_the_other_keeps_its_root(tmp_path) -> None:
     """The reason for this class. A pooled connection cannot do this."""
     one = TempRoots(tmp_path)
     two = TempRoots(tmp_path)
@@ -152,7 +152,7 @@ async def test_one_session_ends_and_the_other_keeps_its_root(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_a_path_of_another_store_is_refused(tmp_path):
+async def test_a_path_of_another_store_is_refused(tmp_path) -> None:
     roots = TempRoots(tmp_path)
     with pytest.raises(ValueError, match="not a path of the store"):
         await roots.add("/somewhere/else/00000000000000000000000000000000-a")
@@ -160,7 +160,7 @@ async def test_a_path_of_another_store_is_refused(tmp_path):
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root writes a directory whatever its mode says")
 @pytest.mark.anyio
-async def test_a_state_directory_pynixd_cannot_write_gives_no_root(tmp_path):
+async def test_a_state_directory_pynixd_cannot_write_gives_no_root(tmp_path) -> None:
     """pynixd serves the system store as a plain user. It says so, and goes on."""
     unwritable = tmp_path / "state"
     unwritable.mkdir()
@@ -228,7 +228,7 @@ def short_path():
 
 
 @pytest.mark.anyio
-async def test_a_root_added_while_the_collector_runs_goes_over_the_socket(short_path):
+async def test_a_root_added_while_the_collector_runs_goes_over_the_socket(short_path) -> None:
     collector = Collector(short_path)
     roots = TempRoots(short_path)
     try:

@@ -33,10 +33,10 @@ def _routes(server: PynixdHttpServer) -> set[str]:
 
 
 class TestTheRoute:
-    def test_metrics_is_served_when_it_is_enabled(self):
+    def test_metrics_is_served_when_it_is_enabled(self) -> None:
         assert "/metrics" in _routes(_server(enable_metrics=True))
 
-    def test_metrics_is_absent_when_it_is_not(self):
+    def test_metrics_is_absent_when_it_is_not(self) -> None:
         """Not registered, rather than registered and refusing.
 
         A route that exists and answers 403 tells a scraper the endpoint is
@@ -44,7 +44,7 @@ class TestTheRoute:
         """
         assert "/metrics" not in _routes(_server(enable_metrics=False))
 
-    def test_the_cache_can_be_off_while_metrics_is_on(self):
+    def test_the_cache_can_be_off_while_metrics_is_on(self) -> None:
         """The combination `services.pynixd.metrics.enable` asks for.
 
         One HTTP server serves both, so turning on a metrics port turns on the
@@ -57,14 +57,14 @@ class TestTheRoute:
 
 
 class TestTheBody:
-    async def test_metrics_answers_a_prometheus_exposition(self):
+    async def test_metrics_answers_a_prometheus_exposition(self) -> None:
         response = await _server(enable_metrics=True).handle_metrics(None)  # pyright: ignore[reportArgumentType]
 
         assert response.status == 200
         assert response.content_type.startswith("text/plain")
         assert response.body is not None
 
-    async def test_the_body_names_pynixd_s_own_metrics(self):
+    async def test_the_body_names_pynixd_s_own_metrics(self) -> None:
         """A registry that answered only the process collectors would pass a
         check that reads the status alone."""
         response = await _server(enable_metrics=True).handle_metrics(None)  # pyright: ignore[reportArgumentType]
@@ -94,7 +94,7 @@ class TestRequestCounting:
         )
         return 0.0 if got is None else got
 
-    async def test_a_served_request_counts_under_its_route(self):
+    async def test_a_served_request_counts_under_its_route(self) -> None:
         server = _server(enable_metrics=True)
         before = self._requests("/healthz", "GET", "200")
 
@@ -104,7 +104,7 @@ class TestRequestCounting:
 
         assert self._requests("/healthz", "GET", "200") - before == 1
 
-    async def test_a_request_that_matches_no_route_counts_as_one_series(self):
+    async def test_a_request_that_matches_no_route_counts_as_one_series(self) -> None:
         """A probe for `/wp-login.php` must not add a series to the registry."""
         server = _server(enable_metrics=True)
         before = self._requests("unmatched", "GET", "404")
@@ -115,7 +115,7 @@ class TestRequestCounting:
 
         assert self._requests("unmatched", "GET", "404") - before == 3
 
-    def test_the_cache_routes_are_patterns(self):
+    def test_the_cache_routes_are_patterns(self) -> None:
         """What the middleware reads is `resource.canonical`, so this is the
         label a narinfo request produces."""
         assert "/{hash}.narinfo" in _routes(_server(enable_cache=True))
@@ -138,12 +138,12 @@ class TestStoreSpace:
             if line and not line.startswith("#") and "filesystem" in line
         }
 
-    def test_both_numbers_are_served(self):
+    def test_both_numbers_are_served(self) -> None:
         series = self._series()
         assert "pynixd_store_filesystem_size_bytes" in series
         assert "pynixd_store_filesystem_available_bytes" in series
 
-    def test_the_numbers_describe_a_real_file_system(self):
+    def test_the_numbers_describe_a_real_file_system(self) -> None:
         """A collector that answered 0 for both would pass a check that only
         reads the names."""
         series = self._series()
@@ -153,7 +153,7 @@ class TestStoreSpace:
         assert total > 0
         assert 0 <= available <= total
 
-    def test_an_unreadable_store_directory_serves_no_series(self, monkeypatch):
+    def test_an_unreadable_store_directory_serves_no_series(self, monkeypatch) -> None:
         """A store that is gone must not fail the scrape.
 
         Every other metric in the registry is still an answer, so the two

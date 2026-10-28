@@ -41,7 +41,7 @@ def _monitored(store_id: StoreId, *, utilization: float, cpu_psi: float = 0.0, i
 
 
 class TestTheScore:
-    def test_the_terms_add_up_to_the_final_score(self):
+    def test_the_terms_add_up_to_the_final_score(self) -> None:
         store = _monitored(REMOTE, utilization=40.0, cpu_psi=1.0, io_psi=2.0)
         store.score_penalty = 5
         store.priority = 2.0
@@ -58,13 +58,13 @@ class TestTheScore:
         assert terms.final_score == pytest.approx((terms.load_score - 30.0) * 2.0)
         assert not terms.passed
 
-    def test_an_unmonitored_store_passes_with_its_penalty(self):
+    def test_an_unmonitored_store_passes_with_its_penalty(self) -> None:
         terms = score_store(cast("Any", FakeStore(REMOTE)), StoreRankingSettings(), 0, 0, None)
 
         assert terms.unmonitored_points == -1000.0
         assert terms.passed
 
-    def test_a_store_under_the_threshold_is_left_out_with_its_terms(self):
+    def test_a_store_under_the_threshold_is_left_out_with_its_terms(self) -> None:
         busy = _monitored(REMOTE, utilization=100.0, cpu_psi=50.0)
         ranker = TelemetryStoreRanker(cast("Any", SimpleNamespace(ranking=StoreRankingSettings())))
 
@@ -74,7 +74,7 @@ class TestTheScore:
         assert [(e.store_id, e.reason) for e in ranked.excluded] == [(REMOTE, "score under min_schedule_score")]
         assert ranked.excluded[0].breakdown is not None
 
-    def test_the_allocator_names_why_a_store_is_no_candidate(self):
+    def test_the_allocator_names_why_a_store_is_no_candidate(self) -> None:
         local = FakeStore(LOCAL_STORE_ID)
         sick = FakeStore(StoreId("sick"))
         sick.is_healthy = False
@@ -91,7 +91,7 @@ class TestTheScore:
 
 
 class TestTheEstimate:
-    def test_each_phase_and_the_total(self):
+    def test_each_phase_and_the_total(self) -> None:
         estimate = StoreEstimate(
             inputs_bytes=100 * MB,
             pull_bytes=40 * MB,
@@ -103,7 +103,7 @@ class TestTheEstimate:
         assert estimate.pull_seconds == pytest.approx(2.0)
         assert estimate.total_seconds(wait_seconds=4.0) == pytest.approx(4 + 10 + 0.5 + 30 + 2)
 
-    def test_nothing_to_send_costs_nothing_on_an_unmeasured_link(self):
+    def test_nothing_to_send_costs_nothing_on_an_unmeasured_link(self) -> None:
         assert StoreEstimate(inputs_bytes=0).ship_seconds == 0.0
         assert StoreEstimate(inputs_bytes=MB).ship_seconds is None
 
@@ -168,7 +168,7 @@ async def _rows(db: LocalStoreDB, query: str) -> list[aiosqlite.Row]:
 
 @pytest.mark.anyio
 class TestTheTables:
-    async def test_a_decision_holds_each_store_with_its_terms_and_estimate(self, db: LocalStoreDB):
+    async def test_a_decision_holds_each_store_with_its_terms_and_estimate(self, db: LocalStoreDB) -> None:
         trace = PlacementTrace(db, PlacementTraceSettings(enabled=True))
         trace.record(_decision())
 
@@ -186,7 +186,7 @@ class TestTheTables:
             (str(REMOTE), 0, None, -1000.0, -20.0, 10_000, 30_000, "shape-on-store", 40_000),
         ]
 
-    async def test_the_observation_links_to_a_decision_still_in_the_buffer(self, db: LocalStoreDB):
+    async def test_the_observation_links_to_a_decision_still_in_the_buffer(self, db: LocalStoreDB) -> None:
         """A short build ends before the flush that writes its decision."""
         trace = PlacementTrace(db, PlacementTraceSettings(enabled=True))
         decision = _decision()
@@ -201,7 +201,7 @@ class TestTheTables:
             (observation_id,)
         ]
 
-    async def test_the_sweep_takes_old_rows_in_chunks_and_keeps_young_ones(self, db: LocalStoreDB):
+    async def test_the_sweep_takes_old_rows_in_chunks_and_keeps_young_ones(self, db: LocalStoreDB) -> None:
         settings = PlacementTraceSettings(enabled=True, max_age=3600.0, sweep_chunk=3)
         trace = PlacementTrace(db, settings)
         now_ms = int(time.time() * 1000)
@@ -218,7 +218,7 @@ class TestTheTables:
         left = await _rows(db, f"SELECT count(*) FROM {PLACEMENT_CANDIDATE_TABLE}")
         assert left[0][0] == 4
 
-    async def test_a_full_buffer_drops_and_counts(self, db: LocalStoreDB):
+    async def test_a_full_buffer_drops_and_counts(self, db: LocalStoreDB) -> None:
         trace = PlacementTrace(db, PlacementTraceSettings(enabled=True, buffer_limit=2))
         for index in range(5):
             trace.record(_decision(f"b{index}"))
@@ -226,7 +226,7 @@ class TestTheTables:
         assert trace.dropped == 3
         assert await trace.flush() == 2
 
-    async def test_a_disabled_trace_records_nothing(self, db: LocalStoreDB):
+    async def test_a_disabled_trace_records_nothing(self, db: LocalStoreDB) -> None:
         trace = PlacementTrace(db, PlacementTraceSettings(enabled=False))
         trace.record(_decision())
 
@@ -234,7 +234,7 @@ class TestTheTables:
 
 
 class TestARepeat:
-    def test_a_waiting_build_repeats_only_after_the_interval(self):
+    def test_a_waiting_build_repeats_only_after_the_interval(self) -> None:
         trace = PlacementTrace(None, PlacementTraceSettings(repeat_interval=30.0))
         waiting = _decision(outcome=Outcome.WAITING)
         waiting.reason = "every candidate is at its build limit"
@@ -243,7 +243,7 @@ class TestARepeat:
         assert not trace.due((waiting.key, time.monotonic()), waiting)
         assert trace.due((waiting.key, time.monotonic() - 31), waiting)
 
-    def test_a_new_reason_is_due_at_once(self):
+    def test_a_new_reason_is_due_at_once(self) -> None:
         trace = PlacementTrace(None, PlacementTraceSettings())
         before = _decision(outcome=Outcome.WAITING)
         after = _decision(outcome=Outcome.WAITING)
@@ -253,12 +253,12 @@ class TestARepeat:
 
 
 class TestTheSetting:
-    def test_off_by_default(self, monkeypatch: pytest.MonkeyPatch):
+    def test_off_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("PYNIXD_PLACEMENT_TRACE", raising=False)
 
         assert not PynixdSettings().placement_trace.enabled
 
-    def test_the_environment_turns_it_on(self, monkeypatch: pytest.MonkeyPatch):
+    def test_the_environment_turns_it_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The test session turns it on this way (`tests/_conftest/config.py`)."""
         monkeypatch.setenv("PYNIXD_PLACEMENT_TRACE", '{"enabled": true}')
 

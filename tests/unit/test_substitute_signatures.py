@@ -24,13 +24,13 @@ def _cache(*, trusted: bool) -> HTTPBinaryCacheStore:
     )
 
 
-def test_an_http_cache_is_checked():
+def test_an_http_cache_is_checked() -> None:
     assert not _trusted_source(_cache(trusted=False))
 
 
-def test_an_http_cache_marked_trusted_is_not():
+def test_an_http_cache_marked_trusted_is_not() -> None:
     assert _trusted_source(_cache(trusted=True))
 
 
-def test_a_builder_or_peer_store_is_trusted():
+def test_a_builder_or_peer_store_is_trusted() -> None:
     assert _trusted_source(cast("Any", SimpleNamespace(store_id=StoreId("sg1-n1"))))

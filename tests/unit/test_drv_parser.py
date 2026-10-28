@@ -168,77 +168,77 @@ class TestLiveProbes:
     ``nix derivation show`` canonical JSON.
     """
 
-    def test_simple_env(self, probes):
+    def test_simple_env(self, probes) -> None:
         _, drv_content, canonical = probes["simple"]
         parsed = parse_drv(drv_content)
         result = parsed.to_json(_canonical_drv_key(canonical))
         entry = result[_canonical_drv_key(canonical)]
         assert entry["env"] == _canonical_entry(canonical)["env"]
 
-    def test_simple_metadata(self, probes):
+    def test_simple_metadata(self, probes) -> None:
         _, drv_content, canonical = probes["simple"]
         parsed = parse_drv(drv_content)
         entry = _canonical_entry(canonical)
         assert parsed.platform == entry["system"]
         assert parsed.builder == entry["builder"]
 
-    def test_simple_output_kind(self, probes):
+    def test_simple_output_kind(self, probes) -> None:
         _, drv_content, _ = probes["simple"]
         parsed = parse_drv(drv_content)
         assert parsed.output_kinds() == [OutputKind.INPUT_ADDRESSED]
 
-    def test_ca_floating_env(self, probes):
+    def test_ca_floating_env(self, probes) -> None:
         _, drv_content, canonical = probes["ca-floating"]
         parsed = parse_drv(drv_content)
         result = parsed.to_json(_canonical_drv_key(canonical))
         assert result[_canonical_drv_key(canonical)]["env"] == _canonical_entry(canonical)["env"]
 
-    def test_ca_floating_output_kind(self, probes):
+    def test_ca_floating_output_kind(self, probes) -> None:
         _, drv_content, _ = probes["ca-floating"]
         parsed = parse_drv(drv_content)
         assert parsed.output_kinds() == [OutputKind.CA_FLOATING]
 
-    def test_ca_floating_no_output_path(self, probes):
+    def test_ca_floating_no_output_path(self, probes) -> None:
         _, drv_content, _ = probes["ca-floating"]
         parsed = parse_drv(drv_content)
         assert parsed.outputs[0].path == ""
 
-    def test_ca_fixed_env(self, probes):
+    def test_ca_fixed_env(self, probes) -> None:
         _, drv_content, canonical = probes["ca-fixed"]
         parsed = parse_drv(drv_content)
         result = parsed.to_json(_canonical_drv_key(canonical))
         assert result[_canonical_drv_key(canonical)]["env"] == _canonical_entry(canonical)["env"]
 
-    def test_ca_fixed_output_kind(self, probes):
+    def test_ca_fixed_output_kind(self, probes) -> None:
         _, drv_content, _ = probes["ca-fixed"]
         parsed = parse_drv(drv_content)
         # Fixed CA: path + hash_algo + hash_value all set
         assert parsed.output_kinds() == [OutputKind.CA_FIXED]
 
-    def test_text_hashed_env(self, probes):
+    def test_text_hashed_env(self, probes) -> None:
         _, drv_content, canonical = probes["text-hashed"]
         parsed = parse_drv(drv_content)
         result = parsed.to_json(_canonical_drv_key(canonical))
         assert result[_canonical_drv_key(canonical)]["env"] == _canonical_entry(canonical)["env"]
 
-    def test_dynamic_env(self, probes):
+    def test_dynamic_env(self, probes) -> None:
         _, drv_content, canonical = probes["dynamic"]
         parsed = parse_drv(drv_content)
         result = parsed.to_json(_canonical_drv_key(canonical))
         assert result[_canonical_drv_key(canonical)]["env"] == _canonical_entry(canonical)["env"]
 
-    def test_dynamic_has_dynamic_flag(self, probes):
+    def test_dynamic_has_dynamic_flag(self, probes) -> None:
         _, drv_content, _ = probes["dynamic"]
         parsed = parse_drv(drv_content)
         assert parsed.env["__dynamicDerivation"] == "1"
         assert parsed.required_system_features == {"recursive-nix"}
 
-    def test_with_features(self, probes):
+    def test_with_features(self, probes) -> None:
         _, drv_content, _ = probes["with-features"]
         parsed = parse_drv(drv_content)
         assert parsed.required_system_features == {"kvm", "big-parallel"}
 
-    def test_multiple_input_drvs(self, probes):
+    def test_multiple_input_drvs(self, probes) -> None:
         """Most probes have multiple input derivations (stdenv + bash)."""
         _, drv_content, _ = probes["simple"]
         parsed = parse_drv(drv_content)
@@ -246,13 +246,13 @@ class TestLiveProbes:
         # runCommand includes source-stdenv.sh as input srcs
         assert len(parsed.input_srcs) == 2
 
-    def test_ca_has_input_srcs(self, probes):
+    def test_ca_has_input_srcs(self, probes) -> None:
         """CA derivations include source-stdenv.sh as input sources."""
         _, drv_content, _ = probes["ca-floating"]
         parsed = parse_drv(drv_content)
         assert len(parsed.input_srcs) == 2  # source-stdenv.sh + default-builder.sh
 
-    def test_minimal(self, probes):
+    def test_minimal(self, probes) -> None:
         """stdenvNoCC.mkDerivation — minimal build environment."""
         _, drv_content, canonical = probes["minimal"]
         parsed = parse_drv(drv_content)
@@ -260,7 +260,7 @@ class TestLiveProbes:
         assert result[_canonical_drv_key(canonical)]["env"] == _canonical_entry(canonical)["env"]
         assert parsed.platform == "x86_64-linux"
 
-    def test_to_json_matches_canonical(self, probes):
+    def test_to_json_matches_canonical(self, probes) -> None:
         """For every probe, verify to_json() produces the same env as nix derivation show."""
         for name, (_, drv_content, canonical) in probes.items():
             parsed = parse_drv(drv_content)
@@ -276,15 +276,15 @@ class TestLiveProbes:
 class TestManufacturedExamples:
     """Tests using static inline strings for parser features hard to produce via nix."""
 
-    def test_deferred(self):
+    def test_deferred(self) -> None:
         parsed = parse_drv('Derive([("out","","","")],[],[],"x86_64-linux","/bin/sh",["-c","true"],[("name","def")])')
         assert parsed.output_kinds() == [OutputKind.DEFERRED]
 
-    def test_empty_env(self):
+    def test_empty_env(self) -> None:
         parsed = parse_drv('Derive([("out","/nix/store/abc-foo","","")],[],[],"x86_64-linux","/bin/sh",[],[])')
         assert parsed.env == {}
 
-    def test_escaped_strings(self):
+    def test_escaped_strings(self) -> None:
         parsed = parse_drv(
             'Derive([("out","/nix/store/abc-foo","","")]'
             ',[],[],"x86_64-linux"'
@@ -294,7 +294,7 @@ class TestManufacturedExamples:
         assert parsed.args == ["-c", 'echo "hello"']
         assert parsed.env["desc"] == "line1\nline2\ttab"
 
-    def test_multiple_outputs(self):
+    def test_multiple_outputs(self) -> None:
         parsed = parse_drv(
             'Derive([("out","/nix/store/a-out","",""),("lib","/nix/store/a-lib","","")]'
             ',[],[],"x86_64-linux"'
@@ -303,7 +303,7 @@ class TestManufacturedExamples:
         )
         assert len(parsed.outputs) == 2
 
-    def test_required_system_features(self):
+    def test_required_system_features(self) -> None:
         parsed = parse_drv(
             'Derive([("out","/nix/store/a-foo","","")]'
             ',[],[],"x86_64-linux"'
@@ -320,7 +320,7 @@ class TestDrvWithVersion:
     The example below is manufactured based on the format spec.
     """
 
-    def test_dynamic_format(self):
+    def test_dynamic_format(self) -> None:
         parsed = parse_drv(
             'DrvWithVersion("xp-dyn-drv",'
             '[("out","","text:sha256","")]'
@@ -343,10 +343,10 @@ class TestDrvWithVersion:
 class TestDerivationProperties:
     """Tests for Derivation property methods with explicit data."""
 
-    def test_required_system_features_empty(self):
+    def test_required_system_features_empty(self) -> None:
         assert Derivation(env={}).required_system_features == set()
 
-    def test_output_paths(self):
+    def test_output_paths(self) -> None:
         parsed = Derivation(
             outputs=[
                 DrvOutput(output_name="out", path="/nix/store/abc-foo", hash_algo="", hash_value=""),
@@ -354,7 +354,7 @@ class TestDerivationProperties:
         )
         assert parsed.output_paths() == {"out": StorePath("/nix/store/abc-foo")}
 
-    def test_output_kinds_mixed(self):
+    def test_output_kinds_mixed(self) -> None:
         parsed = Derivation(
             outputs=[
                 DrvOutput(output_name="ia", path="/nix/store/a", hash_algo="", hash_value=""),
@@ -368,7 +368,7 @@ class TestDerivationProperties:
             OutputKind.CA_FLOATING,
         ]
 
-    def test_name(self, probes):
+    def test_name(self, probes) -> None:
         """Name should be derived from the store path (hash-name.drv)."""
         for name, (drv_path, drv_content, _) in probes.items():
             parsed = parse_drv(drv_content)
@@ -386,7 +386,7 @@ class TestOutputClassification:
     as a content hash and called the derivation fixed-output.
     """
 
-    def test_selected_output_paths_takes_the_named_ones(self):
+    def test_selected_output_paths_takes_the_named_ones(self) -> None:
         parsed = Derivation(
             outputs=[
                 DrvOutput(output_name="out", path="/nix/store/a-out", hash_algo="", hash_value=""),
@@ -397,7 +397,7 @@ class TestOutputClassification:
         assert parsed.selected_output_paths({"dev"}) == {"dev": StorePath("/nix/store/a-dev")}
         assert parsed.selected_output_paths({"*"}) == parsed.output_paths()
 
-    def test_an_impure_derivation_registers_no_realisation(self):
+    def test_an_impure_derivation_registers_no_realisation(self) -> None:
         """Nix guards the registration, at `derivation-goal.cc:226`.
 
         Every build of an impure derivation makes a new output, so one id
@@ -415,7 +415,7 @@ class TestOutputClassification:
         assert all(not output.path for output in parsed.outputs)
         assert parsed.needs_realisations is False
 
-    def test_a_floating_output_does_register_a_realisation(self):
+    def test_a_floating_output_does_register_a_realisation(self) -> None:
         parsed = Derivation(
             outputs=[DrvOutput(output_name="out", path="", hash_algo="r:sha256", hash_value="")],
         )
@@ -423,7 +423,7 @@ class TestOutputClassification:
         assert parsed.output_kinds() == [OutputKind.CA_FLOATING]
         assert parsed.needs_realisations is True
 
-    def test_an_impure_output_is_impure_and_not_fixed(self):
+    def test_an_impure_output_is_impure_and_not_fixed(self) -> None:
         """`("out","","r:sha256","impure")` is what Nix writes for one.
 
         Three places asked this question by reading the two raw fields, and
@@ -439,7 +439,7 @@ class TestOutputClassification:
         assert parsed.is_impure
         assert not parsed.is_fixed_output
 
-    def test_a_fixed_output_derivation_is_fixed(self):
+    def test_a_fixed_output_derivation_is_fixed(self) -> None:
         parsed = Derivation(
             outputs=[DrvOutput(output_name="out", path="/nix/store/a-out", hash_algo="sha256", hash_value="abc")],
         )
@@ -447,7 +447,7 @@ class TestOutputClassification:
         assert parsed.is_fixed_output
         assert not parsed.is_impure
 
-    def test_the_hash_of_an_impure_derivation_comes_from_its_aterm(self):
+    def test_the_hash_of_an_impure_derivation_comes_from_its_aterm(self) -> None:
         """`hashDerivationModulo` at `derivations.cc:902` asks `type().isFixed()`.
 
         An impure derivation answers no, so its hash is the SHA-256 of the
@@ -464,7 +464,7 @@ class TestOutputClassification:
 
         assert parsed.hash_derivation_modulo(mask_outputs=True) == {"out": expected}
 
-    def test_an_input_addressed_derivation_with_an_input_does_not_resolve(self):
+    def test_an_input_addressed_derivation_with_an_input_does_not_resolve(self) -> None:
         """`Derivation::shouldResolve` at `derivations.cc:1129`."""
         plain = DrvOutput(output_name="out", path="/nix/store/a-out", hash_algo="", hash_value="")
         deferred = DrvOutput(output_name="out", path="", hash_algo="", hash_value="")
@@ -474,7 +474,7 @@ class TestOutputClassification:
         assert not Derivation(outputs=[plain]).should_resolve(ca_derivations=True)
         assert Derivation(outputs=[deferred], input_drvs=inputs).should_resolve(ca_derivations=False)
 
-    def test_a_fixed_output_derivation_resolves_only_with_ca_derivations(self):
+    def test_a_fixed_output_derivation_resolves_only_with_ca_derivations(self) -> None:
         """`derivations.cc:1134`: resolving one is optional, and the feature decides. nixidae/nixidae#1010."""
         fixed = DrvOutput(output_name="out", path="/nix/store/a-src", hash_algo="sha256", hash_value="00" * 32)
         drv = Derivation(outputs=[fixed], input_drvs={StorePath("/nix/store/b-curl.drv"): ["out"]})
@@ -484,19 +484,19 @@ class TestOutputClassification:
 
 
 class TestParseDrvEdgeCases:
-    def test_invalid_syntax(self):
+    def test_invalid_syntax(self) -> None:
         with pytest.raises(ValueError):  # noqa: PT011
             parse_drv("Derive(invalid")
 
-    def test_unterminated_string(self):
+    def test_unterminated_string(self) -> None:
         with pytest.raises(ValueError, match="Unterminated string"):
             parse_drv('Derive([("out","abc')
 
-    def test_unknown_version(self):
+    def test_unknown_version(self) -> None:
         with pytest.raises(ValueError, match="Unknown derivation ATerm version"):
             parse_drv('DrvWithVersion("unknown-version",[]')
 
-    def test_empty_text(self):
+    def test_empty_text(self) -> None:
         with pytest.raises(ValueError):  # noqa: PT011
             parse_drv("")
 
@@ -504,7 +504,7 @@ class TestParseDrvEdgeCases:
 class TestToBasicDerivation:
     """to_basic_derivation with mocked output_cache avoids disk I/O."""
 
-    async def test_simple_conversion(self, probes):
+    async def test_simple_conversion(self, probes) -> None:
 
         _, drv_content, _ = probes["simple"]
         parsed = parse_drv(drv_content)
@@ -512,7 +512,7 @@ class TestToBasicDerivation:
         assert len(result.outputs) == 1
         assert result.platform == "x86_64-linux"
 
-    async def test_with_output_cache(self, probes):
+    async def test_with_output_cache(self, probes) -> None:
 
         _, drv_content, _ = probes["simple"]
         parsed = parse_drv(drv_content)
@@ -522,7 +522,7 @@ class TestToBasicDerivation:
         result = await to_basic_derivation(parsed, StoreLayout.chroot(Path("/tmp/fake-store")), output_cache=cache)
         assert StorePath(path=f"/nix/store/realized-{out_name}") in result.input_srcs
 
-    async def test_cache_missing_adds_drv(self, probes):
+    async def test_cache_missing_adds_drv(self, probes) -> None:
 
         _, drv_content, _ = probes["simple"]
         parsed = parse_drv(drv_content)
@@ -532,7 +532,7 @@ class TestToBasicDerivation:
 
 
 class TestDrvOutputFields:
-    def test_fields(self):
+    def test_fields(self) -> None:
         o = DrvOutput(hash_algo="sha256", hash_value="xyz", output_name="out", path="/nix/store/a")
         assert o.hash_algo == "sha256"
         assert o.hash_value == "xyz"
@@ -542,12 +542,12 @@ class TestDrvOutputFields:
 
 
 class TestToJson:
-    def test_serializable(self, probes):
+    def test_serializable(self, probes) -> None:
         _, drv_content, _ = probes["simple"]
         parsed = parse_drv(drv_content)
         json.dumps(parsed.to_json("/nix/store/test.drv"))
 
-    def test_ca_no_path(self, probes):
+    def test_ca_no_path(self, probes) -> None:
         _, drv_content, _ = probes["ca-floating"]
         parsed = parse_drv(drv_content)
         result = parsed.to_json("/nix/store/ca.drv")
@@ -558,7 +558,7 @@ class TestToJson:
 class TestSerialize:
     """Tests for Derivation.serialize() roundtrips."""
 
-    def test_traditional_roundtrip(self):
+    def test_traditional_roundtrip(self) -> None:
         text = (
             'Derive([("out","/nix/store/result","",""),'
             '("dev","/nix/store/dev","","")],'
@@ -572,7 +572,7 @@ class TestSerialize:
         reparsed = parse_drv(serialized)
         assert reparsed.serialize() == serialized
 
-    def test_dynamic_roundtrip(self):
+    def test_dynamic_roundtrip(self) -> None:
         text = (
             'DrvWithVersion("xp-dyn-drv",'
             '[("out","/nix/store/result","","")],'
@@ -586,12 +586,12 @@ class TestSerialize:
         reparsed = parse_drv(serialized)
         assert reparsed.serialize() == serialized
 
-    def test_empty_derivation(self):
+    def test_empty_derivation(self) -> None:
         text = 'Derive([],[],[],"x86_64-linux","/bin/sh",[],[])'
         parsed = parse_drv(text)
         assert parsed.serialize() == text
 
-    def test_escaping(self):
+    def test_escaping(self) -> None:
         parsed = Derivation(
             outputs=[DrvOutput(output_name="out", path="", hash_algo="", hash_value="")],
             input_drvs={},
@@ -607,7 +607,7 @@ class TestSerialize:
         assert reparsed.args == parsed.args
         assert reparsed.env == parsed.env
 
-    def test_live_probe_roundtrip(self, probes):
+    def test_live_probe_roundtrip(self, probes) -> None:
         """Every live probe must roundtrip idempotently."""
         for name, drv_content, _ in probes.values():
             parsed = parse_drv(drv_content)

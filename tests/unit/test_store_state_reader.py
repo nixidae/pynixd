@@ -141,7 +141,7 @@ def snapshot(tmp_path: Path) -> dict:
 
 
 class TestReader:
-    def test_the_key_is_the_suite_and_the_test(self, snapshot):
+    def test_the_key_is_the_suite_and_the_test(self, snapshot) -> None:
         """The recording shim keys on `$TEST_SUITE_NAME/$TEST_NAME` too.
 
         A difference in the store and a difference on the wire must name the
@@ -150,7 +150,7 @@ class TestReader:
         """
         assert list(snapshot) == ["ca/build"]
 
-    def test_a_path_keeps_the_facts_that_state_what_it_is(self, snapshot):
+    def test_a_path_keeps_the_facts_that_state_what_it_is(self, snapshot) -> None:
         facts = snapshot["ca/build"]["paths"]["ccc-out"]
         assert facts == {
             "nar_hash": "sha256:ccc",
@@ -161,11 +161,11 @@ class TestReader:
             "references": ["aaa-builder.sh"],
         }
 
-    def test_the_store_directory_is_not_in_a_path(self, snapshot):
+    def test_the_store_directory_is_not_in_a_path(self, snapshot) -> None:
         """Every path holds the work directory, and two runs may not share one."""
         assert all("/" not in name for name in snapshot["ca/build"]["paths"])
 
-    def test_the_volatile_fields_are_absent(self, snapshot):
+    def test_the_volatile_fields_are_absent(self, snapshot) -> None:
         """`registrationTime` is a wall clock, and `sigs` names the signing key.
 
         `tests/differential/snapshot.py` states the same two reasons.
@@ -174,13 +174,13 @@ class TestReader:
         assert "registration_time" not in facts
         assert "sigs" not in facts
 
-    def test_null_ultimate_reads_as_false(self, snapshot):
+    def test_null_ultimate_reads_as_false(self, snapshot) -> None:
         """The column takes null for false, and two engines must not disagree
         because one wrote 0 and the other wrote nothing."""
         assert snapshot["ca/build"]["paths"]["aaa-builder.sh"]["ultimate"] is True
         assert snapshot["ca/build"]["paths"]["ccc-out"]["ultimate"] is False
 
-    def test_a_repeated_realisation_stays_repeated(self, snapshot):
+    def test_a_repeated_realisation_stays_repeated(self, snapshot) -> None:
         """A store that registers one realisation twice differs from a store
         that registers it once. `ca/duplicate-realisation-in-closure` is a test
         of this suite."""
@@ -188,13 +188,13 @@ class TestReader:
         assert len(realisations["sha256:ddd!out"]) == 2
         assert len(realisations["sha256:eee!out"]) == 1
 
-    def test_a_realisation_keeps_its_references(self, snapshot):
+    def test_a_realisation_keeps_its_references(self, snapshot) -> None:
         assert snapshot["ca/build"]["realisations"]["sha256:eee!out"][0]["references"] == ["sha256:ddd!out"]
 
-    def test_the_output_map_is_read(self, snapshot):
+    def test_the_output_map_is_read(self, snapshot) -> None:
         assert snapshot["ca/build"]["derivation_outputs"] == {"aaa-builder.sh": {"out": "ccc-out"}}
 
-    def test_a_store_without_ca_derivations_reads_as_empty(self, tmp_path):
+    def test_a_store_without_ca_derivations_reads_as_empty(self, tmp_path) -> None:
         """`Realisations` exists only when `ca-derivations` is on, and a store
         without it is a store and not an error."""
         _make_store(tmp_path, realisations=False)
@@ -202,7 +202,7 @@ class TestReader:
         assert store_state._snapshot(tmp_path, out) == 0
         assert json.loads(out.read_text())["ca/build"]["realisations"] == {}
 
-    def test_the_tables_of_pynixd_are_not_read(self, tmp_path):
+    def test_the_tables_of_pynixd_are_not_read(self, tmp_path) -> None:
         """pynixd writes its own tables into the store database. They are the
         work of the proxy, so an arm that has them must not differ for that."""
         _make_store(tmp_path, pynixd_tables=True)
@@ -227,10 +227,10 @@ class TestComparison:
     def store(self, snapshot) -> dict:
         return snapshot["ca/build"]
 
-    def test_a_store_agrees_with_itself(self, store):
+    def test_a_store_agrees_with_itself(self, store) -> None:
         assert store_state._compare_one(store, store) == []
 
-    def test_a_field_that_moved_is_reported(self, store):
+    def test_a_field_that_moved_is_reported(self, store) -> None:
         other = copy.deepcopy(store)
         other["paths"]["ccc-out"]["nar_size"] = 999
         lines = store_state._compare_one(store, other)
@@ -239,39 +239,39 @@ class TestComparison:
         assert "400" in lines[0]
         assert "999" in lines[0]
 
-    def test_a_path_that_one_side_lacks_is_reported(self, store):
+    def test_a_path_that_one_side_lacks_is_reported(self, store) -> None:
         other = copy.deepcopy(store)
         del other["paths"]["ccc-out"]
         lines = store_state._compare_one(store, other)
         assert any("ccc-out" in line and "pynixd does not" in line for line in lines)
 
-    def test_a_path_that_only_pynixd_has_is_reported(self, store):
+    def test_a_path_that_only_pynixd_has_is_reported(self, store) -> None:
         other = copy.deepcopy(store)
         other["paths"]["zzz-extra"] = dict(other["paths"]["ccc-out"])
         lines = store_state._compare_one(store, other)
         assert any("zzz-extra" in line and "the daemon does not" in line for line in lines)
 
-    def test_an_output_map_that_disagrees_is_reported(self, store):
+    def test_an_output_map_that_disagrees_is_reported(self, store) -> None:
         """The difference the first CA run found: `QueryDerivationOutputMap`."""
         other = copy.deepcopy(store)
         other["derivation_outputs"]["aaa-builder.sh"]["out"] = "zzz-wrong"
         lines = store_state._compare_one(store, other)
         assert any("derivation_outputs" in line and "zzz-wrong" in line for line in lines)
 
-    def test_a_realisation_registered_once_instead_of_twice_is_reported(self, store):
+    def test_a_realisation_registered_once_instead_of_twice_is_reported(self, store) -> None:
         other = copy.deepcopy(store)
         other["realisations"]["sha256:ddd!out"] = other["realisations"]["sha256:ddd!out"][:1]
         lines = store_state._compare_one(store, other)
         assert any("realisations" in line and "sha256:ddd!out" in line for line in lines)
 
-    def test_a_store_that_could_not_be_read_is_not_agreement(self, store):
+    def test_a_store_that_could_not_be_read_is_not_agreement(self, store) -> None:
         """An unreadable store holds no table, so every comparison finds
         nothing. "The two agree" is the one answer it must not give."""
         broken = {"unreadable": "database disk image is malformed"}
         assert store_state._compare_one(store, broken) != []
         assert store_state._compare_one(broken, store) != []
 
-    def test_a_reference_that_went_missing_is_reported(self, store):
+    def test_a_reference_that_went_missing_is_reported(self, store) -> None:
         """The failure a `BuildResult` hides: the build succeeded, and the path
         it registered points at nothing."""
         other = copy.deepcopy(store)
@@ -302,7 +302,7 @@ class TestNoise:
         right.write_text(json.dumps(candidate))
         return left, right
 
-    def test_a_noisy_test_is_not_counted_as_a_difference(self, pair, capsys):
+    def test_a_noisy_test_is_not_counted_as_a_difference(self, pair, capsys) -> None:
         left, right = pair
         code = store_state._compare(left, right)
         out = capsys.readouterr().out
@@ -314,7 +314,7 @@ class TestNoise:
         # Not a failure either: the run says nothing about this test.
         assert code == 0
 
-    def test_a_noisy_test_still_reaches_the_report(self, pair):
+    def test_a_noisy_test_still_reaches_the_report(self, pair) -> None:
         """Counted out of the answer, and not hidden from the reader.
 
         A difference that nobody can see is how a real one goes unnoticed once
@@ -328,7 +328,7 @@ class TestNoise:
         assert store_state.NOISE[0].reason in report
         assert "nar_size" in report
 
-    def test_a_test_outside_the_list_is_still_a_difference(self, tmp_path, snapshot):
+    def test_a_test_outside_the_list_is_still_a_difference(self, tmp_path, snapshot) -> None:
         """The list names five tests, and covers no other."""
         control = {"ca/not-noisy": snapshot["ca/build"]}
         candidate = copy.deepcopy(control)
@@ -362,7 +362,7 @@ class TestMissingAndExtra:
         right.write_text(json.dumps(candidate))
         return left, right
 
-    def test_a_store_only_the_daemon_left_is_missing(self, tmp_path, snapshot, capsys):
+    def test_a_store_only_the_daemon_left_is_missing(self, tmp_path, snapshot, capsys) -> None:
         left, right = self._write(tmp_path, snapshot, {})
         code = store_state._compare(left, right)
         out = capsys.readouterr().out
@@ -372,7 +372,7 @@ class TestMissingAndExtra:
         assert "extra:     0" in out
         assert code == 1
 
-    def test_a_store_only_pynixd_left_is_extra(self, tmp_path, snapshot, capsys):
+    def test_a_store_only_pynixd_left_is_extra(self, tmp_path, snapshot, capsys) -> None:
         left, right = self._write(tmp_path, {}, snapshot)
         code = store_state._compare(left, right)
         out = capsys.readouterr().out
@@ -382,7 +382,7 @@ class TestMissingAndExtra:
         assert "missing:   0" in out
         assert code == 1
 
-    def test_an_extra_store_says_how_many_paths_it_holds(self, tmp_path, snapshot, capsys):
+    def test_an_extra_store_says_how_many_paths_it_holds(self, tmp_path, snapshot, capsys) -> None:
         """Zero paths is the shape of #42, and any other number is not.
 
         A line that named the test alone could not tell the two apart.

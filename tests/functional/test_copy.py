@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from pynixd import Server
 
 
-async def test_copy(pynixd_server: Server):
+async def test_copy(pynixd_server: Server) -> None:
     """Copy paths between two stores via UDS.
 
     Store operations triggered:

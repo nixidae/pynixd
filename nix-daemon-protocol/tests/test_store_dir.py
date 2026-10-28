@@ -33,29 +33,29 @@ def clean_store_dir():
     reset_store_dir()
 
 
-def test_the_default_is_the_store_of_nix():
+def test_the_default_is_the_store_of_nix() -> None:
     assert store_dir() == "/nix/store"
     assert store_prefix() == "/nix/store/"
 
 
-def test_the_environment_gives_the_store_dir(monkeypatch):
+def test_the_environment_gives_the_store_dir(monkeypatch) -> None:
     monkeypatch.setenv("NIX_STORE_DIR", "/relocated/nix/store")
     reset_store_dir()
     assert store_dir() == "/relocated/nix/store"
 
 
-def test_a_separator_at_the_end_goes_away(monkeypatch):
+def test_a_separator_at_the_end_goes_away(monkeypatch) -> None:
     monkeypatch.setenv("NIX_STORE_DIR", "/relocated/nix/store/")
     reset_store_dir()
     assert store_dir() == "/relocated/nix/store"
 
 
-def test_the_real_dir_follows_the_store_dir_until_it_is_set():
+def test_the_real_dir_follows_the_store_dir_until_it_is_set() -> None:
     set_store_dir("/relocated/nix/store")
     assert real_store_dir() == "/relocated/nix/store"
 
 
-def test_a_chroot_store_keeps_the_two_apart():
+def test_a_chroot_store_keeps_the_two_apart() -> None:
     # `--store /chroot`: the files move, and the store path does not.
     set_real_store_dir("/chroot/nix/store")
     assert store_dir() == "/nix/store"
@@ -63,33 +63,33 @@ def test_a_chroot_store_keeps_the_two_apart():
     assert on_disk("/nix/store/abc-foo") == "/chroot/nix/store/abc-foo"
 
 
-def test_a_relocated_store_puts_the_two_together():
+def test_a_relocated_store_puts_the_two_together() -> None:
     # `NIX_STORE_DIR=/r/nix/store`: the store path moves with the files.
     set_store_dir("/r/nix/store")
     set_real_store_dir("/r/nix/store")
     assert on_disk("/r/nix/store/abc-foo") == "/r/nix/store/abc-foo"
 
 
-def test_on_disk_refuses_a_path_of_another_store():
+def test_on_disk_refuses_a_path_of_another_store() -> None:
     with pytest.raises(ValueError, match="not a path of the store"):
         on_disk("/somewhere/else/abc-foo")
 
 
-def test_a_relative_directory_is_refused():
+def test_a_relative_directory_is_refused() -> None:
     with pytest.raises(ValueError, match="must be an absolute path"):
         set_store_dir("nix/store")
     with pytest.raises(ValueError, match="must be an absolute path"):
         set_real_store_dir("nix/store")
 
 
-def test_the_prefix_follows_the_setter():
+def test_the_prefix_follows_the_setter() -> None:
     """The cached prefix must not outlive the directory it was built from."""
     assert store_prefix() == "/nix/store/"
     set_store_dir("/relocated/nix/store")
     assert store_prefix() == "/relocated/nix/store/"
 
 
-def test_the_prefix_follows_the_scoped_reader():
+def test_the_prefix_follows_the_scoped_reader() -> None:
     """`reading_store_dir` moves the directory for a block, and moves it back."""
     assert store_prefix() == "/nix/store/"
     with reading_store_dir("/recording/nix/store"):

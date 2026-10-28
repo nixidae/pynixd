@@ -21,7 +21,7 @@ Deriver: unknown-deriver
 """
 
 
-def test_no_compression_line_means_bzip2():
+def test_no_compression_line_means_bzip2() -> None:
     """`nar-info.cc:122`: an absent `Compression:` is bzip2, not none."""
     info = _parse_narinfo(NARINFO, expected_path=None)
 
@@ -29,12 +29,12 @@ def test_no_compression_line_means_bzip2():
     assert info.compression == "bzip2"
 
 
-def test_unknown_deriver_names_none():
+def test_unknown_deriver_names_none() -> None:
     """`nar-info.cc:75`."""
     assert ValidPathInfo.from_narinfo(NARINFO).info.deriver is None
 
 
-def test_a_narinfo_without_nar_hash_is_corrupt():
+def test_a_narinfo_without_nar_hash_is_corrupt() -> None:
     """`nar-info.cc:97-107`: no NarHash, or NarSize 0, names no NAR to check."""
     assert (
         _parse_narinfo(
@@ -45,7 +45,7 @@ def test_a_narinfo_without_nar_hash_is_corrupt():
     assert _parse_narinfo(NARINFO.replace("NarSize: 200", "NarSize: 0"), None) is None
 
 
-def test_a_copy_is_never_ultimate():
+def test_a_copy_is_never_ultimate() -> None:
     """`daemon.cc:516` registers every copied path with `ultimate = false`."""
     info = ValidPathInfo.from_narinfo(NARINFO)
     built_here = info.model_copy(update={"info": info.info.model_copy(update={"ultimate": True})})
@@ -53,7 +53,7 @@ def test_a_copy_is_never_ultimate():
     assert as_copied(built_here).info.ultimate is False
 
 
-def test_the_nar_url_stays_under_the_cache():
+def test_the_nar_url_stays_under_the_cache() -> None:
     """Nix fetches `<cache>/<url>`; `urljoin` followed a `//host` URL out of the cache."""
     store = HTTPBinaryCacheStore(HTTPBinaryCacheSpec(store_id=StoreId("cache"), url="https://cache.example/sub"))
     info = _parse_narinfo(NARINFO.replace("URL: nar/abc.nar.bz2", "URL: //evil.example/x.nar"), None)

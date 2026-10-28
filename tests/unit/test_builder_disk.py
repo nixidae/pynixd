@@ -46,17 +46,17 @@ def _store(free: int | None, held_until: float = 0.0) -> Any:
 
 
 class TestShortOfDisk:
-    def test_a_store_below_the_floor_gets_no_build(self):
+    def test_a_store_below_the_floor_gets_no_build(self) -> None:
         assert short_of_disk(_store(GIB), SETTINGS, now=0.0)
 
-    def test_a_store_with_room_gets_builds(self):
+    def test_a_store_with_room_gets_builds(self) -> None:
         assert not short_of_disk(_store(10 * GIB), SETTINGS, now=0.0)
 
-    def test_a_store_with_no_figure_is_held_back_after_running_out(self):
+    def test_a_store_with_no_figure_is_held_back_after_running_out(self) -> None:
         assert short_of_disk(_store(None, held_until=100.0), SETTINGS, now=50.0)
         assert not short_of_disk(_store(None, held_until=100.0), SETTINGS, now=150.0)
 
-    def test_a_measured_figure_beats_the_hold_back(self):
+    def test_a_measured_figure_beats_the_hold_back(self) -> None:
         """A builder that reports room again builds again, hold-back or not."""
         assert not short_of_disk(_store(10 * GIB, held_until=100.0), SETTINGS, now=50.0)
 
@@ -77,7 +77,7 @@ def _candidate(store_id: str, free: int | None) -> Any:
     return store
 
 
-def test_the_allocator_skips_a_full_store():
+def test_the_allocator_skips_a_full_store() -> None:
     local = _candidate(LOCAL_STORE_ID, 10 * GIB)
     stores = {LOCAL_STORE_ID: local, StoreId("sg1-n1"): _candidate("sg1-n1", GIB)}
     ranker = TelemetryStoreRanker(cast("Any", SimpleNamespace(ranking=SETTINGS)))
@@ -98,7 +98,7 @@ def test_the_allocator_skips_a_full_store():
         ("builder for '/nix/store/...-x.drv' failed with exit code 1", False),
     ],
 )
-def test_no_space_left_holds_the_store_back(message: str, held: bool):
+def test_no_space_left_holds_the_store_back(message: str, held: bool) -> None:
     store = _store(None)
     scheduler = SimpleNamespace(ranker=SimpleNamespace(settings=SETTINGS))
 
@@ -108,7 +108,7 @@ def test_no_space_left_holds_the_store_back(message: str, held: bool):
 
 
 @pytest.mark.anyio
-async def test_a_pynixd_peer_answers_its_hosts_health_and_disk(tmp_path: Path):
+async def test_a_pynixd_peer_answers_its_hosts_health_and_disk(tmp_path: Path) -> None:
     writer = BytesWriter("test")
     await PynixdHostHealthRequest().to_writer(WriteContext(writer=writer, version=PROTOCOL_VERSION))
     proxy = SimpleNamespace(
@@ -127,7 +127,7 @@ async def test_a_pynixd_peer_answers_its_hosts_health_and_disk(tmp_path: Path):
 
 
 @pytest.mark.anyio
-async def test_the_peer_monitor_reads_the_disk_the_peer_answered():
+async def test_the_peer_monitor_reads_the_disk_the_peer_answered() -> None:
     payload = json.dumps(
         {"files": {"/proc/loadavg": "0.5 0.4 0.3 1/100 1\n"}, "cores": 4.0, "disk": {"free_bytes": 5, "total_bytes": 9}}
     )

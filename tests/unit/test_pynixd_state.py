@@ -171,7 +171,7 @@ async def test_wire_round_trip_carries_wants_and_federated() -> None:
 @pytest.mark.anyio
 async def test_handler_refuses_an_untrusted_client() -> None:
     proxy = FakeProxy(await _body([], False), _ctx(), {})
-    resp = await PynixdStateHandler().handle(FakeContext(proxy=proxy, role=Role.USER))  # type: ignore[arg-type] -- fakes
+    resp = await PynixdStateHandler().handle(FakeContext(proxy=proxy, role=Role.USER))  # type: ignore[arg-type]  # fakes
     assert resp is None
     assert len(proxy.errors) == 1 and "administrative privileges" in proxy.errors[0]
 
@@ -181,7 +181,7 @@ async def test_handler_collects_local_sections() -> None:
     store = SimpleNamespace(is_healthy=False, feature_matrix={})
     ctx = _ctx(builds=[_build()], stores={StoreId("builder-a"): store})
     proxy = FakeProxy(await _body(["queue", "stores"], False), ctx, {})
-    resp = await PynixdStateHandler().handle(FakeContext(proxy=proxy, role=Role.ADMIN))  # type: ignore[arg-type] -- fakes
+    resp = await PynixdStateHandler().handle(FakeContext(proxy=proxy, role=Role.ADMIN))  # type: ignore[arg-type]  # fakes
     assert resp is not None
     payload = json.loads(cast(Any, resp).payload)
     assert payload["queue"]["pending"] == 1

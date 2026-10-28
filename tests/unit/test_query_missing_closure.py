@@ -103,7 +103,7 @@ def _multi() -> Derivation:
 
 
 @pytest.mark.anyio
-async def test_the_references_of_a_substitute_are_counted():
+async def test_the_references_of_a_substitute_are_counted() -> None:
     response = await _plan(HELLO, {HELLO: _available(10, HELLO, GLIBC, GONE), GLIBC: _available(100)})
 
     assert {str(path) for path in response.will_substitute} == {HELLO, GLIBC}
@@ -112,7 +112,7 @@ async def test_the_references_of_a_substitute_are_counted():
 
 
 @pytest.mark.anyio
-async def test_substitute_false_substitutes_nothing():
+async def test_substitute_false_substitutes_nothing() -> None:
     client = SimpleNamespace(options=_options(use_substitutes=False))
 
     response = await _plan(HELLO, {HELLO: _available(10)}, client=client)
@@ -122,7 +122,7 @@ async def test_substitute_false_substitutes_nothing():
 
 
 @pytest.mark.anyio
-async def test_one_unsubstitutable_output_builds_the_derivation_and_fetches_nothing():
+async def test_one_unsubstitutable_output_builds_the_derivation_and_fetches_nothing() -> None:
     response = await _plan(f"{DRV}!dev,out", {OUT: _available(10)}, Store({DRV: _multi()}))
 
     assert {str(path) for path in response.will_build} == {DRV}
@@ -131,7 +131,7 @@ async def test_one_unsubstitutable_output_builds_the_derivation_and_fetches_noth
 
 
 @pytest.mark.anyio
-async def test_a_derivation_that_forbids_substitutes_builds():
+async def test_a_derivation_that_forbids_substitutes_builds() -> None:
     derivation = _multi()
     derivation.env["allowSubstitutes"] = ""
 
@@ -156,7 +156,7 @@ def _dynamic_format() -> Derivation:
 
 
 @pytest.mark.anyio
-async def test_a_dynamic_format_derivation_whose_output_is_valid_plans_nothing():
+async def test_a_dynamic_format_derivation_whose_output_is_valid_plans_nothing() -> None:
     """`misc.cc:203-225` reads the outputs of every derivation, the format aside."""
     store = ValidStore({DRV: _dynamic_format()}, valid={OUT})
 
@@ -166,7 +166,7 @@ async def test_a_dynamic_format_derivation_whose_output_is_valid_plans_nothing()
 
 
 @pytest.mark.anyio
-async def test_a_dynamic_format_derivation_whose_output_is_substitutable_is_fetched():
+async def test_a_dynamic_format_derivation_whose_output_is_substitutable_is_fetched() -> None:
     store = ValidStore({DRV: _dynamic_format()}, valid=set())
 
     response = await _plan(f"{DRV}!out", {OUT: _available(10)}, store)

@@ -56,7 +56,7 @@ def _request(number: int) -> BuildDerivationRequest:
 
 
 @pytest.mark.anyio
-async def test_a_standalone_waiter_keeps_a_shared_build():
+async def test_a_standalone_waiter_keeps_a_shared_build() -> None:
     """An op-36 client lost the build when the goal client let go.
 
     In Nix two daemons never kill each other's build
@@ -75,7 +75,7 @@ async def test_a_standalone_waiter_keeps_a_shared_build():
 
 
 @pytest.mark.anyio
-async def test_keep_going_is_read_per_request():
+async def test_keep_going_is_read_per_request() -> None:
     """`keepGoing` belongs to one worker (`worker.cc:173`); the first asker decided for all."""
     queue = BuildQueue()
     failed, _ = await queue.enqueue(
@@ -93,7 +93,7 @@ async def test_keep_going_is_read_per_request():
     assert not queue.nobody_wants(queue.by_id[other])
 
 
-def test_several_failures_read_as_nix_names_them():
+def test_several_failures_read_as_nix_names_them() -> None:
     """`entry-points.cc:36-43`: one failure is its own message, several are named."""
     one = SimpleNamespace(
         path="/nix/store/00000000000000000000000000000001-a.drv!out", result=BuildResult(status=1, error_msg="boom")
@@ -115,7 +115,7 @@ class InvalidStore:
 
 
 @pytest.mark.anyio
-async def test_an_opaque_path_no_substituter_has_is_no_substituters():
+async def test_an_opaque_path_no_substituter_has_is_no_substituters() -> None:
     """`substitution-goal.cc:159`: NoSubstituters, with Nix's words."""
     path = "/nix/store/00000000000000000000000000000003-gone"
     engine = SimpleNamespace(ctx=SimpleNamespace(local_store=InvalidStore(), store_for_output_path=lambda _p: None))

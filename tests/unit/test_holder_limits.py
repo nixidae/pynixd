@@ -130,7 +130,7 @@ async def test_a_later_holder_with_a_tighter_silence_limit_times_out_alone() -> 
 
     client = ClientConn(BytesWriter("client"))
     client.options = _options(silent=2)
-    goal = BuildDerivationGoal(cast("GoalEngine", FakeEngine(cast("object", scheduler))), request)  # type: ignore[arg-type] -- a fake scheduler
+    goal = BuildDerivationGoal(cast("GoalEngine", FakeEngine(cast("object", scheduler))), request)  # type: ignore[arg-type]  # a fake scheduler
     await goal.subscribe(client)
 
     result = await goal.result()
@@ -151,7 +151,7 @@ async def test_a_holder_that_goes_away_leaves_the_build_to_the_others() -> None:
     )
     goals: list[BuildDerivationGoal] = []
     for request_id in (1, 2):
-        engine = FakeEngine(cast("object", scheduler))  # type: ignore[arg-type] -- a fake scheduler
+        engine = FakeEngine(cast("object", scheduler))  # type: ignore[arg-type]  # a fake scheduler
         engine.request_id = RequestId(request_id)
         goal = BuildDerivationGoal(cast("GoalEngine", engine), request)
         await goal.start()

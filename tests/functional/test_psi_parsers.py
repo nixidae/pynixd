@@ -23,7 +23,7 @@ from pynixd.psi import (
 
 
 class TestParseCpuStat:
-    def test_full_cpu_stat(self):
+    def test_full_cpu_stat(self) -> None:
         text = """usage_usec 23302029
 user_usec 18824371
 system_usec 4477658
@@ -39,7 +39,7 @@ throttled_usec 789012"""
         assert stat.throttled_usec == 789_012
         assert stat.timestamp > 0
 
-    def test_partial_cpu_stat(self):
+    def test_partial_cpu_stat(self) -> None:
         text = "usage_usec 1000\nuser_usec 800"
         stat = parse_cpu_stat(text)
         assert stat.usage_usec == 1000
@@ -48,47 +48,47 @@ throttled_usec 789012"""
         assert stat.nr_periods == 0
         assert stat.nr_throttled == 0
 
-    def test_empty_cpu_stat(self):
+    def test_empty_cpu_stat(self) -> None:
         stat = parse_cpu_stat("")
         assert stat.usage_usec == 0
 
-    def test_cpu_stat_ignores_unknown_fields(self):
+    def test_cpu_stat_ignores_unknown_fields(self) -> None:
         text = "usage_usec 5000\nunknown_field 42"
         stat = parse_cpu_stat(text)
         assert stat.usage_usec == 5000
 
 
 class TestParseCpuMax:
-    def test_limited_quota(self):
+    def test_limited_quota(self) -> None:
         assert parse_cpu_max("40000 100000") == 0.4
 
-    def test_full_core(self):
+    def test_full_core(self) -> None:
         assert parse_cpu_max("100000 100000") == 1.0
 
-    def test_two_cores(self):
+    def test_two_cores(self) -> None:
         assert parse_cpu_max("200000 100000") == 2.0
 
-    def test_max_unlimited(self):
+    def test_max_unlimited(self) -> None:
         assert parse_cpu_max("max 100000") is None
 
-    def test_partial_quarter_core(self):
+    def test_partial_quarter_core(self) -> None:
         assert parse_cpu_max("25000 100000") == 0.25
 
-    def test_malformed_empty(self):
+    def test_malformed_empty(self) -> None:
         assert parse_cpu_max("") is None
 
-    def test_malformed_single_field(self):
+    def test_malformed_single_field(self) -> None:
         assert parse_cpu_max("100") is None
 
-    def test_malformed_non_numeric(self):
+    def test_malformed_non_numeric(self) -> None:
         assert parse_cpu_max("abc def") is None
 
-    def test_zero_period(self):
+    def test_zero_period(self) -> None:
         assert parse_cpu_max("100000 0") is None
 
 
 class TestComputeCpuUtil:
-    def test_50_percent_utilization_single_core(self):
+    def test_50_percent_utilization_single_core(self) -> None:
         now = time.monotonic()
         prev = CgroupCpuStat(usage_usec=0, timestamp=now - 1.0)
         curr = CgroupCpuStat(usage_usec=500_000, timestamp=now)
@@ -98,7 +98,7 @@ class TestComputeCpuUtil:
         assert result.cores == 1.0
         assert result.throttled_pct == 0.0
 
-    def test_100_percent_utilization(self):
+    def test_100_percent_utilization(self) -> None:
         now = time.monotonic()
         prev = CgroupCpuStat(usage_usec=0, timestamp=now - 1.0)
         curr = CgroupCpuStat(usage_usec=1_000_000, timestamp=now)
@@ -106,7 +106,7 @@ class TestComputeCpuUtil:
         assert result is not None
         assert abs(result.utilization - 100.0) < 1.0
 
-    def test_saturates_at_100(self):
+    def test_saturates_at_100(self) -> None:
         now = time.monotonic()
         prev = CgroupCpuStat(usage_usec=0, timestamp=now - 1.0)
         curr = CgroupCpuStat(usage_usec=2_000_000, timestamp=now)
@@ -114,7 +114,7 @@ class TestComputeCpuUtil:
         assert result is not None
         assert result.utilization == 100.0
 
-    def test_two_cores_half_utilized(self):
+    def test_two_cores_half_utilized(self) -> None:
         now = time.monotonic()
         prev = CgroupCpuStat(usage_usec=0, timestamp=now - 1.0)
         curr = CgroupCpuStat(usage_usec=1_000_000, timestamp=now)
@@ -122,7 +122,7 @@ class TestComputeCpuUtil:
         assert result is not None
         assert abs(result.utilization - 50.0) < 1.0
 
-    def test_throttled_pct(self):
+    def test_throttled_pct(self) -> None:
         now = time.monotonic()
         prev = CgroupCpuStat(
             usage_usec=0,
@@ -140,7 +140,7 @@ class TestComputeCpuUtil:
         assert result is not None
         assert result.throttled_pct == 20.0
 
-    def test_none_cores_uses_1(self):
+    def test_none_cores_uses_1(self) -> None:
         now = time.monotonic()
         prev = CgroupCpuStat(usage_usec=0, timestamp=now - 1.0)
         curr = CgroupCpuStat(usage_usec=500_000, timestamp=now)
@@ -149,21 +149,21 @@ class TestComputeCpuUtil:
         assert abs(result.utilization - 50.0) < 1.0
         assert result.cores == 1.0
 
-    def test_zero_delta_returns_none(self):
+    def test_zero_delta_returns_none(self) -> None:
         now = time.monotonic()
         prev = CgroupCpuStat(usage_usec=500_000, timestamp=now - 1.0)
         curr = CgroupCpuStat(usage_usec=500_000, timestamp=now)
         result = compute_cpu_util(prev, curr, cores=1.0)
         assert result is None
 
-    def test_negative_delta_returns_none(self):
+    def test_negative_delta_returns_none(self) -> None:
         now = time.monotonic()
         prev = CgroupCpuStat(usage_usec=500_000, timestamp=now - 1.0)
         curr = CgroupCpuStat(usage_usec=100_000, timestamp=now)
         result = compute_cpu_util(prev, curr, cores=1.0)
         assert result is None
 
-    def test_zero_elapsed_returns_none(self):
+    def test_zero_elapsed_returns_none(self) -> None:
         now = time.monotonic()
         prev = CgroupCpuStat(usage_usec=0, timestamp=now)
         curr = CgroupCpuStat(usage_usec=100_000, timestamp=now)
@@ -172,7 +172,7 @@ class TestComputeCpuUtil:
 
 
 class TestParsePsiLine:
-    def test_some_line(self):
+    def test_some_line(self) -> None:
         kind, vals = parse_psi_line(
             "some avg10=1.50 avg60=2.30 avg300=3.10 total=12345",
         )
@@ -182,14 +182,14 @@ class TestParsePsiLine:
         assert vals["avg300"] == 3.10
         assert "total" not in vals
 
-    def test_full_line(self):
+    def test_full_line(self) -> None:
         kind, vals = parse_psi_line("full avg10=0.00 avg60=0.00 avg300=0.00 total=0")
         assert kind == "full"
         assert vals["avg10"] == 0.0
 
 
 class TestParsePsiOutput:
-    def test_cgroupv2_format(self):
+    def test_cgroupv2_format(self) -> None:
         text = """some avg10=3.27 avg60=6.86 avg300=10.09 total=98765
 full avg10=0.10 avg60=0.20 avg300=0.30 total=1234
 some avg10=0.83 avg60=1.81 avg300=3.87 total=45678
@@ -204,7 +204,7 @@ full avg10=0.00 avg60=0.00 avg300=0.00 total=0"""
         assert snap.io.some_avg10 == 0.24
         assert snap.io.full_avg10 == 0.00
 
-    def test_no_cpu_full(self):
+    def test_no_cpu_full(self) -> None:
         text = """some avg10=5.0 avg60=5.0 avg300=5.0 total=100
 some avg10=1.0 avg60=1.0 avg300=1.0 total=200
 full avg10=0.0 avg60=0.0 avg300=0.0 total=300
@@ -216,7 +216,7 @@ full avg10=0.0 avg60=0.0 avg300=0.0 total=500"""
 
 
 class TestParseMeminfoLegacy:
-    def test_standard_meminfo(self):
+    def test_standard_meminfo(self) -> None:
         text = """MemTotal:       16384000 kB
 MemAvailable:    8192000 kB
 SwapTotal:       4096000 kB
@@ -231,7 +231,7 @@ SwapFree:        2048000 kB"""
 
 
 class TestCountCpusFromProcStat:
-    def test_four_cores(self):
+    def test_four_cores(self) -> None:
         text = """cpu  155067853 29619 62202224 3065978997 6821103 0 0 0 0 0
 cpu0 38734292 7347 15614904 766372227 1701802 0 0 0 0 0
 cpu1 38870891 7346 15495720 766602600 1712987 0 0 0 0 0
@@ -241,14 +241,14 @@ intr 14951174469
 ctxt 53253630315"""
         assert count_cpus_from_proc_stat(text) == 4
 
-    def test_single_core(self):
+    def test_single_core(self) -> None:
         text = "cpu  100 0 50 1000 0 0 0 0 0 0\ncpu0 100 0 50 1000 0 0 0 0 0 0\n"
         assert count_cpus_from_proc_stat(text) == 1
 
-    def test_no_cpu_lines(self):
+    def test_no_cpu_lines(self) -> None:
         assert count_cpus_from_proc_stat("intr 42\nctxt 100\n") == 1
 
-    def test_empty(self):
+    def test_empty(self) -> None:
         assert count_cpus_from_proc_stat("") == 1
 
 
@@ -265,7 +265,7 @@ class TestCgroupv2Integration:
         except FileNotFoundError:
             return None
 
-    def test_parse_host_cpu_stat(self):
+    def test_parse_host_cpu_stat(self) -> None:
         text = self._read("/sys/fs/cgroup/cpu.stat")
         if text is None:
             pytest.skip("cgroupv2 cpu.stat not available")
@@ -273,7 +273,7 @@ class TestCgroupv2Integration:
         stat = parse_cpu_stat(text)
         assert stat.usage_usec > 0
 
-    def test_parse_host_cpu_max(self):
+    def test_parse_host_cpu_max(self) -> None:
         text = self._read("/sys/fs/cgroup/cpu.max")
         if text is None:
             pytest.skip("cgroupv2 cpu.max not available (root cgroup)")
@@ -285,7 +285,7 @@ class TestCgroupv2Integration:
             assert result is not None
             assert result > 0
 
-    def test_parse_host_psi(self):
+    def test_parse_host_psi(self) -> None:
         paths = [
             "/sys/fs/cgroup/cpu.pressure",
             "/sys/fs/cgroup/memory.pressure",
@@ -302,7 +302,7 @@ class TestCgroupv2Integration:
         assert snap.memory.some_avg10 >= 0.0
         assert snap.io.some_avg10 >= 0.0
 
-    def test_parse_host_proc_stat(self):
+    def test_parse_host_proc_stat(self) -> None:
         text = self._read("/proc/stat")
         if text is None:
             pytest.skip("/proc/stat not available")
@@ -310,7 +310,7 @@ class TestCgroupv2Integration:
         n = count_cpus_from_proc_stat(text)
         assert n >= 1
 
-    def test_compute_utilization_from_host(self):
+    def test_compute_utilization_from_host(self) -> None:
         text1 = self._read("/sys/fs/cgroup/cpu.stat")
         if text1 is None:
             pytest.skip("cgroupv2 cpu.stat not available")

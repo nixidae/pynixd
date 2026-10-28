@@ -185,7 +185,7 @@ async def _decode_request(op: int, body: bytes, version: int) -> dict[str, str] 
     reader = BytesReader(body, identifier="wirelog:request")
     try:
         model = await request_cls.from_reader(
-            ReadContext(reader=reader, version=version, logger=_QUIET),  # type: ignore[arg-type] -- see _Quiet
+            ReadContext(reader=reader, version=version, logger=_QUIET),  # type: ignore[arg-type]  # see _Quiet
         )
     except (EOFError, ConnectionError, ValueError, TypeError, KeyError):
         return None
@@ -215,7 +215,7 @@ async def _decode_body(op: int, payload: bytes, version: int) -> dict[str, str] 
     reader = BytesReader(head.get_bytes() + payload, identifier="wirelog:body")
     try:
         model = await response_cls.from_reader(
-            ReadContext(reader=reader, version=version, logger=_QUIET),  # type: ignore[arg-type] -- see _Quiet
+            ReadContext(reader=reader, version=version, logger=_QUIET),  # type: ignore[arg-type]  # see _Quiet
         )
     except (EOFError, ConnectionError, ValueError, TypeError, KeyError):
         return None

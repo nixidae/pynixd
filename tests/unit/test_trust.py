@@ -45,53 +45,53 @@ def databases(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestMatchUser:
-    def test_star_matches_anyone(self):
+    def test_star_matches_anyone(self) -> None:
         assert match_user(None, None, ["*"])
 
-    def test_name(self):
+    def test_name(self) -> None:
         assert match_user("alice", "users", ["alice"])
         assert not match_user("bob", "users", ["alice"])
 
-    def test_primary_group_by_name(self):
+    def test_primary_group_by_name(self) -> None:
         assert match_user("carol", "users", ["@users"])
 
-    def test_secondary_group_through_gr_mem(self):
+    def test_secondary_group_through_gr_mem(self) -> None:
         assert match_user("alice", "users", ["@wheel"])
         assert not match_user("bob", "users", ["@wheel"])
 
-    def test_an_unknown_group_matches_nothing(self):
+    def test_an_unknown_group_matches_nothing(self) -> None:
         assert not match_user("alice", "users", ["@nosuchgroup"])
 
 
 class TestAuthorise:
-    def test_defaults_trust_root_alone(self):
+    def test_defaults_trust_root_alone(self) -> None:
         assert authorise(Peer(1, 0, 0), TrustPolicy()) == (Role.ADMIN, "root")
         assert authorise(Peer(1, 1000, 100), TrustPolicy()) == (Role.USER, "alice")
 
-    def test_trusted_through_a_group(self):
+    def test_trusted_through_a_group(self) -> None:
         policy = TrustPolicy(trusted_users=("root", "@wheel"))
         assert authorise(Peer(1, 1000, 100), policy)[0] == Role.ADMIN
         assert authorise(Peer(1, 1001, 100), policy)[0] == Role.USER
 
-    def test_a_user_outside_allowed_users_is_refused_with_nixs_message(self):
+    def test_a_user_outside_allowed_users_is_refused_with_nixs_message(self) -> None:
         policy = TrustPolicy(allowed_users=("alice",))
         with pytest.raises(PeerRefusedError, match=r"^user 'bob' is not allowed to connect to the Nix daemon$"):
             authorise(Peer(1, 1001, 100), policy)
 
-    def test_trusted_users_need_not_be_in_allowed_users(self):
+    def test_trusted_users_need_not_be_in_allowed_users(self) -> None:
         """`daemon.cc:254`: the allowed test runs only for an untrusted user."""
         policy = TrustPolicy(trusted_users=("bob",), allowed_users=("alice",))
         assert authorise(Peer(1, 1001, 100), policy)[0] == Role.ADMIN
 
-    def test_the_build_users_group_is_refused_even_when_trusted(self):
+    def test_the_build_users_group_is_refused_even_when_trusted(self) -> None:
         policy = TrustPolicy(trusted_users=("*",), build_users_group="nixbld")
         with pytest.raises(PeerRefusedError, match="'nixbld1'"):
             authorise(Peer(1, 30001, 30000), policy)
 
-    def test_an_unset_build_users_group_refuses_nobody(self):
+    def test_an_unset_build_users_group_refuses_nobody(self) -> None:
         assert authorise(Peer(1, 30001, 30000), TrustPolicy())[0] == Role.USER
 
-    def test_a_uid_without_a_passwd_entry_is_named_by_its_number(self):
+    def test_a_uid_without_a_passwd_entry_is_named_by_its_number(self) -> None:
         """A container user with no entry here. Nix names it by the number too."""
         assert authorise(Peer(1, 4242, 4242), TrustPolicy()) == (Role.USER, "4242")
         assert authorise(Peer(1, 4242, 4242), TrustPolicy(trusted_users=("4242",)))[0] == Role.ADMIN
@@ -102,11 +102,11 @@ class TestRestrictOverrides:
 
     POLICY = TrustPolicy(substituters=("https://cache.nixos.org/",), trusted_substituters=("https://t.example/",))
 
-    def test_the_four_unrestricted_settings_pass(self):
+    def test_the_four_unrestricted_settings_pass(self) -> None:
         overrides = {"timeout": "5", "max-silent-time": "6", "build-poll-interval": "1", "connect-timeout": "2"}
         assert restrict_overrides(overrides, self.POLICY) == (overrides, [])
 
-    def test_an_alias_is_refused(self):
+    def test_an_alias_is_refused(self) -> None:
         """Nix compares `buildTimeout.name`, which is `timeout`, and no alias."""
         kept, warnings = restrict_overrides({"build-timeout": "5"}, self.POLICY)
         assert kept == {}
@@ -115,15 +115,15 @@ class TestRestrictOverrides:
             "and you are not a trusted user"
         ]
 
-    def test_builders_passes_only_when_empty(self):
+    def test_builders_passes_only_when_empty(self) -> None:
         assert restrict_overrides({"builders": ""}, self.POLICY) == ({"builders": ""}, [])
         assert restrict_overrides({"builders": "ssh://x"}, self.POLICY)[0] == {}
 
-    def test_a_trusted_key_is_refused(self):
+    def test_a_trusted_key_is_refused(self) -> None:
         assert restrict_overrides({"trusted-public-keys": "k:abc"}, self.POLICY)[0] == {}
         assert restrict_overrides({"require-sigs": "false"}, self.POLICY)[0] == {}
 
-    def test_substituters_keep_the_trusted_ones_and_add_a_slash(self):
+    def test_substituters_keep_the_trusted_ones_and_add_a_slash(self) -> None:
         kept, warnings = restrict_overrides(
             {"substituters": "https://cache.nixos.org https://t.example/ https://evil.example"}, self.POLICY
         )
@@ -133,16 +133,16 @@ class TestRestrictOverrides:
             "Run `man nix.conf` for more information on the `substituters` configuration option."
         ]
 
-    def test_extra_substituters_is_a_restricted_setting(self):
+    def test_extra_substituters_is_a_restricted_setting(self) -> None:
         """`setSubstituters` matches the name and its aliases, and `extra-` is neither."""
         assert restrict_overrides({"extra-substituters": "https://t.example/"}, self.POLICY)[0] == {}
 
-    def test_settings_nix_ignores_for_everyone_pass_through(self):
+    def test_settings_nix_ignores_for_everyone_pass_through(self) -> None:
         overrides = {"experimental-features": "nix-command", "plugin-files": ""}
         assert restrict_overrides(overrides, self.POLICY) == (overrides, [])
 
 
-def test_censor_hides_temporary_and_runtime_roots():
+def test_censor_hides_temporary_and_runtime_roots() -> None:
     """`gc.cc:207,343`: one `{censored}` per path, and a `gcroots` link stays."""
     roots = [
         FindRootsEntry(link="/home/u/result", target="/nix/store/a"),
@@ -157,7 +157,7 @@ def test_censor_hides_temporary_and_runtime_roots():
     ]
 
 
-def test_policy_from_nix_config_show():
+def test_policy_from_nix_config_show() -> None:
     config = {
         "trusted-users": {"value": ["root", "@wheel"]},
         "allowed-users": {"value": ["*"]},
@@ -176,7 +176,7 @@ def test_policy_from_nix_config_show():
     ), "the default substituters are Nix's, so this equality also checks the two list fields"
 
 
-def test_peer_of_reads_this_process():
+def test_peer_of_reads_this_process() -> None:
     """The kernel's record of the connecting process, over a real socket pair."""
     left, right = socket.socketpair(socket.AF_UNIX)
     with left, right:
@@ -184,7 +184,7 @@ def test_peer_of_reads_this_process():
     assert peer == Peer(pid=os.getpid(), uid=os.getuid(), gid=os.getgid())
 
 
-def test_dropped_settings_warn_in_name_order():
+def test_dropped_settings_warn_in_name_order() -> None:
     """`ClientSettings::apply` walks a `std::map`, so its warnings come sorted (`daemon.cc:232`)."""
     _kept, warnings = restrict_overrides({"zzz-setting": "1", "aaa-setting": "1"}, TrustPolicy())
 

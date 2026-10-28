@@ -30,18 +30,18 @@ class StubTracker:
         return set(self.live)
 
 
-async def test_refresh_never_asks_nix():
+async def test_refresh_never_asks_nix() -> None:
     """Refresh walks the mirror and asks Nix nothing: no lock, no trace."""
     tracker = StubTracker(live={A, B})
-    watch = LivenessWatch(tracker)  # type: ignore[arg-type] -- stub tracker
+    watch = LivenessWatch(tracker)  # type: ignore[arg-type]  # stub tracker
 
     assert await watch.refresh() == {A, B}
 
     assert tracker.refreshed == 1
 
 
-def test_from_local_needs_a_layout():
-    assert LivenessWatch.from_local(object()) is None  # type: ignore[arg-type] -- no layout
+def test_from_local_needs_a_layout() -> None:
+    assert LivenessWatch.from_local(object()) is None  # type: ignore[arg-type]  # no layout
 
 
 def test_from_local_mirrors_the_served_store(tmp_path: Path) -> None:
@@ -60,7 +60,7 @@ def test_from_local_mirrors_the_served_store(tmp_path: Path) -> None:
         async def call(self, request: Any, **_kwargs: Any) -> Any:
             raise AssertionError("no call on construction")
 
-    watch = LivenessWatch.from_local(LaidOut(layout=layout))  # type: ignore[arg-type] -- layout only
+    watch = LivenessWatch.from_local(LaidOut(layout=layout))  # type: ignore[arg-type]  # layout only
 
     assert watch is not None
     assert watch.tracker.state_dir == layout.state_dir
@@ -71,10 +71,10 @@ def test_from_local_mirrors_the_served_store(tmp_path: Path) -> None:
 @pytest.mark.parametrize("root_change", [False, True])
 async def test_background_tick_uses_python_only(root_change: bool) -> None:
     tracker = StubTracker(live={A, B})
-    watch = LivenessWatch(tracker)  # type: ignore[arg-type] -- stub tracker
+    watch = LivenessWatch(tracker)  # type: ignore[arg-type]  # stub tracker
     dirty = DirtyFlag()
     if root_change:
         dirty.set()
     with anyio.move_on_after(0.1):
-        await Server._liveness_tick(None, watch, 0.01, dirty)  # type: ignore[arg-type] -- no server state
+        await Server._liveness_tick(None, watch, 0.01, dirty)  # type: ignore[arg-type]  # no server state
     assert tracker.refreshed > 0
