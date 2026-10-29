@@ -136,6 +136,8 @@ class StoreEstimate:
     link: StoreLink = StoreLink()
     build_ms: int | None = None
     build_source: BuildEstimateSource | None = None
+    setup_seconds: float = 0.0
+    """`remote_setup_seconds` for a remote store, 0 for the local store."""
 
     @property
     def ship_seconds(self) -> float | None:
@@ -165,7 +167,14 @@ class StoreEstimate:
         """The known phases summed, a slot wait included: when the outputs are expected local."""
         parts = [
             part
-            for part in (wait_seconds, self.ship_seconds, self.dispatch_seconds, self.build_seconds, self.pull_seconds)
+            for part in (
+                wait_seconds,
+                self.setup_seconds or None,
+                self.ship_seconds,
+                self.dispatch_seconds,
+                self.build_seconds,
+                self.pull_seconds,
+            )
             if part is not None
         ]
         return sum(parts) if parts else None
@@ -185,12 +194,12 @@ def slot_wait_seconds(running: Iterable[tuple[int | None, float | None]], now: f
     return min(remaining) if remaining else None
 
 
-def transfer_seconds(expected: ExpectedBytes, link: StoreLink) -> float | None:
+def transfer_seconds(expected: ExpectedBytes, link: StoreLink, setup_seconds: float = 0.0) -> float | None:
     """The seconds a delegation is expected to spend outside the build itself.
 
     `None` when no part is known: an unmeasured store keeps today's ranking.
     """
-    parts: list[float] = []
+    parts: list[float] = [setup_seconds] if setup_seconds else []
     if expected.inputs is not None and link.send_bytes_per_s:
         parts.append(expected.inputs / link.send_bytes_per_s)
     if expected.pull is not None and link.receive_bytes_per_s:

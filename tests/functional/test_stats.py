@@ -166,7 +166,9 @@ async def test_build_stats_recording(tmp_path: Path) -> None:
     pynixd_remote_path.mkdir(parents=True, exist_ok=True)
 
     pynixd_local = LocalDBStore(
-        make_test_spec(store_id="local", store_path=pynixd_local_path, no_probe=True),
+        # The row under test is the remote's. With `remote_setup_seconds`
+        # the local store ranks first for this build. Issue nixidae/nixidae#1125.
+        make_test_spec(store_id="local", store_path=pynixd_local_path, no_probe=True, no_schedule=True),
     )
     pynixd_remote = StatsTestStore(
         make_test_spec(store_id="remote", store_path=pynixd_remote_path, no_probe=True),

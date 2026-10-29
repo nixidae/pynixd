@@ -89,6 +89,35 @@ class TestTheTransferCost:
         """A tiny build whose bytes were never measured still pays the dispatch."""
         assert transfer_seconds(ExpectedBytes(), StoreLink(dispatch_ms=300)) == pytest.approx(0.3)
 
+    def test_the_setup_adds_to_every_delegation(self) -> None:
+        link = StoreLink(send_bytes_per_s=10 * MB)
+
+        assert transfer_seconds(ExpectedBytes(inputs=10 * MB), link, 1.0) == pytest.approx(2.0)
+        assert transfer_seconds(ExpectedBytes(), StoreLink(), 1.0) == pytest.approx(1.0)
+        assert StoreEstimate(build_ms=230, setup_seconds=1.0).total_seconds() == pytest.approx(1.23)
+
+
+@pytest.mark.parametrize(("setup", "expected"), [(1.0, [LOCAL_STORE_ID, REMOTE]), (0.0, [REMOTE, LOCAL_STORE_ID])])
+def test_the_setup_keeps_a_trivial_build_local(setup: float, expected: list[StoreId]) -> None:
+    """dynhetz, 2026-10-29: a trivial `runCommand` took 318 ms here and was
+    expected at 230 ms on sg1, whose measured phases priced no round trip.
+    All 20 of 20 went to sg1. nixidae/nixidae#1125."""
+    local = FakeStore(LOCAL_STORE_ID)
+    local.cpu_util = SimpleNamespace(utilization=14.0)
+    remote = FakeStore(REMOTE)
+    remote.cpu_util = SimpleNamespace(utilization=1.0)
+    settings = StoreRankingSettings(time_penalty_per_second=50.0, cpu_reference_seconds=5.0)
+    ranker = TelemetryStoreRanker(cast("Any", SimpleNamespace(ranking=settings)))
+    allocator = BuildAllocator(cast("Any", {LOCAL_STORE_ID: local, REMOTE: remote}), cast("Any", local), ranker)
+    estimates = {
+        LOCAL_STORE_ID: StoreEstimate(inputs_bytes=0, pull_bytes=0, build_ms=318),
+        REMOTE: StoreEstimate(inputs_bytes=0, pull_bytes=0, build_ms=230, setup_seconds=setup),
+    }
+
+    ranked = allocator.rank_stores(cast("Any", FakeBuild()), {}, estimates=estimates, expected_build_seconds=0.318)
+
+    assert [candidate.store_id for candidate in ranked] == expected
+
 
 class TestTheLocalSlotWait:
     def test_is_the_soonest_end(self) -> None:

@@ -102,6 +102,14 @@ class StoreRankingSettings(BaseModel):
     thundering_herd_penalty: float = 100.0
     """Penalty per build assigned in current scheduling pass: -(assigned * penalty)."""
 
+    remote_setup_seconds: float = Field(default=1.0, ge=0.0)
+    """Seconds every delegation to a remote store is expected to cost before
+    and after its build, beside the bytes it moves: the connection, the
+    handshake, the input query and the output copy. Measured phases leave this
+    out: a trivial `runCommand` delegated to sg1 records 0 bytes to send, yet
+    the client waits for each round trip (nixidae/nixidae#1125). A guess, not a
+    measurement."""
+
     transfer_penalty_per_second: float = 10.0
     """Penalty per expected second of delegation, measured per store: -(seconds * penalty).
 

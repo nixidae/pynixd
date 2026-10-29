@@ -839,14 +839,20 @@ class Scheduler:
             expected = await db.expected_bytes(identity, str(store.store_id))
             link = await self._link(store.store_id)
             missing = await self._missing_input_bytes(store, sizes)
+            setup = self.ranker.settings.remote_setup_seconds
             build.transfer_seconds[store.store_id] = transfer_seconds(
-                ExpectedBytes(inputs=missing, pull=expected.pull), link
+                ExpectedBytes(inputs=missing, pull=expected.pull), link, setup
             )
             if missing is not None and (missing == 0 or link.send_bytes_per_s):
                 build.inputs_measured.add(store.store_id)
             ms, source = await build_ms(store.store_id)
             build.estimates[store.store_id] = StoreEstimate(
-                inputs_bytes=missing, pull_bytes=expected.pull, link=link, build_ms=ms, build_source=source
+                inputs_bytes=missing,
+                pull_bytes=expected.pull,
+                link=link,
+                build_ms=ms,
+                build_source=source,
+                setup_seconds=setup,
             )
 
         async def measure_local() -> None:
