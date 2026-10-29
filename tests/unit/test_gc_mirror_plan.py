@@ -28,7 +28,7 @@ from nix_daemon_protocol import (
 from nix_daemon_protocol.store_path import StorePath
 from pynixd.db_migrations import LIVENESS_ROOT_TABLE, apply_migrations
 from pynixd.exceptions import BackendError
-from pynixd.gc import Collector
+from pynixd.gc import Collector, _over_target
 from pynixd.store_layout import StoreLayout
 
 HASH_A = "00000000000000000000000000000000"
@@ -148,6 +148,30 @@ async def test_plan_reads_the_mirror_and_never_asks_nix(tmp_path: Path) -> None:
 
     assert {str(path) for path in await collector.plan()} == {b}
     assert local.calls == []
+
+
+@pytest.mark.anyio
+async def test_pressure_plans_a_fresh_dead_path(tmp_path: Path) -> None:
+    """`b` is dead but referenced within `gc_max_age`: kept on schedule, planned under pressure.
+
+    A node that builds all day keeps its dead build inputs fresh, so the
+    age rule alone frees nothing on a full disk. #1098.
+    """
+    state, store, a, b = _lab(tmp_path)
+    await _database(state, a, b)
+    collector, _local = _collector(state, store, FakeDB(stale=set()))
+
+    assert await collector.plan() == set()
+    assert {str(path) for path in await collector.plan(pressed=True)} == {b}
+
+
+def test_pressure_is_usage_over_the_target() -> None:
+    """No target or no reading is no pressure."""
+    assert _over_target((80, 100), 0.5)
+    assert not _over_target((40, 100), 0.5)
+    assert not _over_target((80, 100), None)
+    assert not _over_target(None, 0.5)
+    assert not _over_target((0, 0), 0.5)
 
 
 @pytest.mark.anyio

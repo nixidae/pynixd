@@ -9,8 +9,10 @@ collector names every path that it deletes.
 
 Age is the second rule, and it is here: `gc_max_age` on the local store
 plans the dead paths nothing referenced for that many seconds, with no
-substituter needed. Size is the third: every pass deletes in weight order,
-`(nar_size, age)` blended by disk pressure, so an empty disk collects
+substituter needed. Age yields to pressure: over `gc_target_usage`, every
+dead path is planned, the way `nix store gc --max-freed` plans. Size is
+the third: every pass deletes in weight order, `(nar_size, age)` blended
+by disk pressure, so an empty disk collects
 oldest first and a full disk biggest first. `gc_target_usage` bounds a
 pass by pressure instead of emptying the plan at once.
 """
@@ -250,9 +252,11 @@ class Collector:
                 "after the liveness mirror shows sustained zero-divergence"
             )
         lines: list[LogNext] = []
+        usage = self._disk_usage(self.ctx.local_store)
         volatile = await run_sync(self._volatile_seeds)
         vetoed = await self._veto_closure(volatile)
-        planned = await self.plan()
+        target = target_usage if target_usage is not None else getattr(self.ctx.local_store, "gc_target_usage", None)
+        planned = await self.plan(pressed=_over_target(usage, target))
         spared = {str(path) for path in planned} & vetoed
         veto = LogNext(
             text=f"volatile veto: rechecked {len(volatile)} living roots, spared {len(spared)} planned paths"
@@ -264,7 +268,6 @@ class Collector:
         weights = await self._weigh({path for path in planned if str(path) not in vetoed})
         if not weights:
             return self._answered(PynixdCollectGarbageResponse(store_paths=set(), bytes=0), lines)
-        usage = self._disk_usage(self.ctx.local_store)
         if usage is None:
             # Unknown reads as half full: with no information neither axis
             # earns the lead. The bound still defaults to unbounded on top
@@ -405,7 +408,7 @@ class Collector:
             top=[{"path": path, "bytes": weights[path][0], "age_s": weights[path][1]} for path in ordered[:count]],
         )
 
-    async def plan(self) -> set[StorePath]:
+    async def plan(self, *, pressed: bool = False) -> set[StorePath]:
         """The paths that may leave the store.
 
         Two rules, picked by `gc_max_age` on the local store. `None` keeps
@@ -415,13 +418,19 @@ class Collector:
         taking ownership of the store's old paths, and the default keeps the
         cache behaviour.
 
+        *pressed* lifts the age from the age rule: every dead path goes. A
+        node that builds all day refreshes its build inputs all day, so on
+        sg1 18000 paths were dead, fewer than 300 of them a day unreferenced,
+        and a disk over its watermark found nothing to free. #1098. The substituter
+        rule ignores it: there the cache is what makes a delete safe.
+
         Both rules refresh Python liveness, falling back to Nix only when unavailable.
         """
         local = self.ctx.local_store
         max_age = getattr(local, "gc_max_age", None)
         if max_age is None:
             return await self._plan_deferred(local)
-        return await self._plan_lru(local, max_age)
+        return await self._plan_lru(local, None if pressed else max_age)
 
     async def _mirror_live(self, local: Store) -> set[str] | None:
         """The tracker's live set, refreshed just now, or `None` with no mirror.
@@ -489,11 +498,11 @@ class Collector:
         log.info("gc_plan", valid=len(all_paths), held=len(held), live=len(live), droppable=len(droppable))
         return droppable
 
-    async def _plan_lru(self, local: Store, max_age: int) -> set[StorePath]:
-        """The dead paths nothing referenced for `max_age` seconds.
+    async def _plan_lru(self, local: Store, max_age: int | None) -> set[StorePath]:
+        """The dead paths nothing referenced for `max_age` seconds; `None` takes every dead path.
 
-        `PynixdPathAccess` dates each path. Python resolves the live set.
-        A path with no access row stays: "never seen" is not "seen long ago". The set is
+        `PynixdPathAccess` dates each path, and a path with no access row
+        dates from its registration. Python resolves the live set. The set is
         closed under referrers so Nix accepts it (`gc.cc:653`), which pulls
         in dead referrers even when they are fresh — deleting a path takes
         what still names it. A failure anywhere plans nothing: an LRU pass
@@ -510,9 +519,13 @@ class Collector:
             live = live_paths
         dead = {str(path) for path in all_paths} - live
 
-        stale = await self._stale_since(local, max_age)
-        if stale is None:
-            return set()
+        if max_age is None:
+            stale = dead
+        else:
+            found = await self._stale_since(local, max_age)
+            if found is None:
+                return set()
+            stale = found
         seeds = dead & stale
 
         closed = await self._close_under_referrers(local, seeds)
@@ -524,6 +537,7 @@ class Collector:
             valid=len(all_paths),
             live=len(live),
             stale=len(stale),
+            pressed=max_age is None,
             droppable=len(droppable),
         )
         return {StorePath(path) for path in droppable}
@@ -819,6 +833,14 @@ class Collector:
         except Exception:
             log.warning("gc_disk_usage_failed", exc_info=True)
             return None
+
+
+def _over_target(usage: tuple[int, int] | None, target: float | None) -> bool:
+    """Whether the disk holds more than the pass's target allows: the age rule yields then."""
+    if target is None or usage is None:
+        return False
+    used, total = usage
+    return total > 0 and used / total > target
 
 
 def _pressure_usage(directory: str | Path) -> tuple[int, int]:
