@@ -266,6 +266,18 @@ class TestTheExpectedTime:
         assert terms.load_score == pytest.approx(-50.0)
         assert not terms.passed
 
+    def test_a_short_build_barely_feels_the_herd(self) -> None:
+        """A burst of 20 trivial probes spread to sg1 once eight sat locally. nixidae/nixidae#1125."""
+        store = FakeStore(REMOTE)
+        store.cpu_util = SimpleNamespace(utilization=0.0)
+        settings = StoreRankingSettings(cpu_reference_seconds=5.0)
+
+        alone = score_store(cast("Any", store), settings, 0, 0, None, expected_build_seconds=0.1)
+        herded = score_store(cast("Any", store), settings, 0, 1, None, expected_build_seconds=0.1)
+
+        assert herded.herd_points == pytest.approx(-100.0)
+        assert herded.final_score - alone.final_score == pytest.approx(-2.0)
+
 
 class TestPerCoreLoad:
     """A build costs one core's share of the CPU points. nixidae/nixidae#1125:

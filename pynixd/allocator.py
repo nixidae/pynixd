@@ -53,7 +53,7 @@ class ScoreBreakdown:
     priority: float
     final_score: float
     cpu_scale: float = 1.0
-    """The share of the CPU points the order counts; `cpu_reference_seconds`."""
+    """The share of the CPU and herd points the order counts; `cpu_reference_seconds`."""
 
 
 def score_store(
@@ -113,7 +113,9 @@ def score_store(
         if settings.cpu_reference_seconds and expected_build_seconds is not None
         else 1.0
     )
-    ordered_load = load_score - (1.0 - cpu_scale) * (cpu_idle_points + cpu_psi_points)
+    # The herd term scales too: twenty 0.2 s builds in one pass do not crowd
+    # a store the way twenty compiles do.
+    ordered_load = load_score - (1.0 - cpu_scale) * (cpu_idle_points + cpu_psi_points + herd_points)
     return ScoreBreakdown(
         cpu_utilization=cpu,
         cpu_idle_points=cpu_idle_points,

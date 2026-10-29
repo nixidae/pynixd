@@ -129,8 +129,9 @@ class StoreRankingSettings(BaseModel):
     cpu_reference_seconds: float | None = None
     """The expected build seconds at which the CPU terms count in full.
 
-    A shorter build gains less from an idle CPU, so its CPU idle and CPU
-    pressure points scale by `expected / cpu_reference_seconds`. The scaled
+    A shorter build gains less from an idle CPU and crowds a store less, so
+    its CPU idle, CPU pressure and herd points scale by
+    `expected / cpu_reference_seconds`. The scaled
     points order the stores; `min_schedule_score` reads the unscaled load,
     so a full store stays full. `None` counts them in full.
     nixidae/nixidae#1125.
