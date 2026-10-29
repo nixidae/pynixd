@@ -12,9 +12,9 @@ import anyio
 import pytest
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, BuildId, StoreId
-from pynixd.allocator import BuildAllocator, PreferLocal, RankedStore, TelemetryStoreRanker, pick_store
+from pynixd.allocator import BuildAllocator, PreferLocal, RankedStore, TelemetryStoreRanker, pick_store, score_store
 from pynixd.build_queue import BuildQueue
-from pynixd.build_stats import ExpectedBytes, StoreLink, slot_wait_seconds, transfer_seconds
+from pynixd.build_stats import ExpectedBytes, StoreEstimate, StoreLink, slot_wait_seconds, transfer_seconds
 from pynixd.config import PlacementTraceSettings, StoreRankingSettings
 from pynixd.placement_trace import PlacementTrace
 from pynixd.psi import SystemHealth
@@ -169,6 +169,65 @@ class TestAStoreNobodyCanMonitor:
     def test_still_gets_builds_under_the_minimum_score(self) -> None:
         """The monitored store falls under the minimum; the blind one stays."""
         assert self._rank(busy=3, min_score=-100.0) == [REMOTE]
+
+
+class TestTheExpectedTime:
+    """The whole build's expected seconds on each store, and the CPU points
+    scaled by how long the build runs. nixidae/nixidae#1125: a 200 ms build on
+    an idle local store went to sg1, where it took 600 ms."""
+
+    @staticmethod
+    def _rank(
+        *,
+        local_cpu: float,
+        expected_build_seconds: float,
+        time_penalty: float | None = 50.0,
+        cpu_reference: float | None = 5.0,
+    ) -> list[StoreId]:
+        local = FakeStore(LOCAL_STORE_ID)
+        local.cpu_util = SimpleNamespace(utilization=local_cpu)
+        remote = FakeStore(REMOTE)
+        remote.cpu_util = SimpleNamespace(utilization=0.0)
+        settings = StoreRankingSettings(time_penalty_per_second=time_penalty, cpu_reference_seconds=cpu_reference)
+        ranker = TelemetryStoreRanker(cast("Any", SimpleNamespace(ranking=settings)))
+        ranked = BuildAllocator(cast("Any", {LOCAL_STORE_ID: local, REMOTE: remote}), cast("Any", local), ranker)
+        estimates = {
+            LOCAL_STORE_ID: StoreEstimate(inputs_bytes=0, pull_bytes=0, build_ms=200),
+            REMOTE: StoreEstimate(inputs_bytes=0, pull_bytes=0, build_ms=600),
+        }
+        return [
+            candidate.store_id
+            for candidate in ranked.rank_stores(
+                cast("Any", FakeBuild()),
+                {},
+                estimates=estimates,
+                expected_build_seconds=expected_build_seconds,
+            )
+        ]
+
+    def test_a_short_build_stays_on_a_busier_local_store(self) -> None:
+        assert self._rank(local_cpu=60.0, expected_build_seconds=0.2) == [LOCAL_STORE_ID, REMOTE]
+
+    def test_a_long_build_goes_to_the_idle_store(self) -> None:
+        assert self._rank(local_cpu=60.0, expected_build_seconds=30.0) == [REMOTE, LOCAL_STORE_ID]
+
+    def test_without_the_cpu_scale_the_idle_cpu_wins(self) -> None:
+        assert self._rank(local_cpu=60.0, expected_build_seconds=0.2, cpu_reference=None) == [REMOTE, LOCAL_STORE_ID]
+
+    def test_without_the_time_cost_the_tie_goes_remote(self) -> None:
+        assert self._rank(local_cpu=0.0, expected_build_seconds=0.2, time_penalty=None) == [REMOTE, LOCAL_STORE_ID]
+
+    def test_the_threshold_reads_the_unscaled_load(self) -> None:
+        """A full store stays full, however short the build."""
+        busy = FakeStore(REMOTE)
+        busy.cpu_util = SimpleNamespace(utilization=100.0)
+        settings = StoreRankingSettings(cpu_reference_seconds=5.0)
+
+        terms = score_store(cast("Any", busy), settings, 1, 0, None, expected_build_seconds=0.1)
+
+        assert terms.cpu_scale == pytest.approx(0.02)
+        assert terms.load_score == pytest.approx(-50.0)
+        assert not terms.passed
 
 
 class TestThePick:

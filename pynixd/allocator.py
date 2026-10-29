@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from nix_daemon_protocol.ids import StoreId
 
     from .build_queue import QueuedBuild
+    from .build_stats import StoreEstimate
     from .config import PynixdSettings
     from .store import DaemonStore
 
@@ -51,6 +52,8 @@ class ScoreBreakdown:
     transfer_points: float
     priority: float
     final_score: float
+    cpu_scale: float = 1.0
+    """The share of the CPU points the order counts; `cpu_reference_seconds`."""
 
 
 def score_store(
@@ -59,8 +62,14 @@ def score_store(
     in_flight: int,
     assigned_this_pass: int,
     transfer_seconds: float | None,
+    expected_seconds: float | None = None,
+    expected_build_seconds: float | None = None,
 ) -> ScoreBreakdown:
-    """Score *store* for one build, term by term."""
+    """Score *store* for one build, term by term.
+
+    *expected_seconds* is the whole build on this store, *expected_build_seconds*
+    the build alone wherever it ran; both from history, `None` when unknown.
+    """
     cpu = store.cpu_util.utilization if store.cpu_util else None
     cpu_idle_points = (1.0 - cpu / 100.0) * settings.cpu_idle_weight if cpu is not None else 0.0
     psi = store.monitor.health.psi if store.monitor else None
@@ -84,11 +93,22 @@ def score_store(
         + herd_points
         - store.score_penalty
     )
-    # The transfer orders the stores and never drops one: it is the cost of
+    # The time cost orders the stores and never drops one: it is the cost of
     # this build, not the load of the store. Under the threshold, a 366 MB
     # input put every idle builder below 0, and the build waited 20 minutes
     # for a cost that never falls.
-    transfer_points = -(transfer_seconds or 0.0) * settings.transfer_penalty_per_second
+    if settings.time_penalty_per_second is not None and expected_seconds is not None:
+        cost_seconds: float | None = expected_seconds
+        cost_points = -expected_seconds * settings.time_penalty_per_second
+    else:
+        cost_seconds = transfer_seconds
+        cost_points = -(transfer_seconds or 0.0) * settings.transfer_penalty_per_second
+    cpu_scale = (
+        min(1.0, expected_build_seconds / settings.cpu_reference_seconds)
+        if settings.cpu_reference_seconds and expected_build_seconds is not None
+        else 1.0
+    )
+    ordered_load = load_score - (1.0 - cpu_scale) * (cpu_idle_points + cpu_psi_points)
     return ScoreBreakdown(
         cpu_utilization=cpu,
         cpu_idle_points=cpu_idle_points,
@@ -105,10 +125,11 @@ def score_store(
         load_score=load_score,
         threshold=settings.min_schedule_score,
         passed=load_score >= settings.min_schedule_score or not monitored,
-        transfer_seconds=transfer_seconds,
-        transfer_points=transfer_points,
+        transfer_seconds=cost_seconds,
+        transfer_points=cost_points,
         priority=store.priority,
-        final_score=(load_score + transfer_points) * store.priority,
+        final_score=(ordered_load + cost_points) * store.priority,
+        cpu_scale=cpu_scale,
     )
 
 
@@ -207,6 +228,8 @@ class StoreRanker(ABC):
         assigned_this_pass: Mapping[StoreId, int],
         running_builds: Mapping[StoreId, int] | None = None,
         transfer_seconds: Mapping[StoreId, float] | None = None,
+        estimates: Mapping[StoreId, StoreEstimate] | None = None,
+        expected_build_seconds: float | None = None,
     ) -> RankedStores:
         """Score and sort available stores for the given build."""
         ...
@@ -225,17 +248,22 @@ class TelemetryStoreRanker(StoreRanker):
         assigned_this_pass: Mapping[StoreId, int],
         running_builds: Mapping[StoreId, int] | None = None,
         transfer_seconds: Mapping[StoreId, float] | None = None,
+        estimates: Mapping[StoreId, StoreEstimate] | None = None,
+        expected_build_seconds: float | None = None,
     ) -> RankedStores:
         """Score stores by CPU, pressure, running builds, herd and transfer penalties."""
         ranked: list[RankedStore] = []
         excluded: list[ExcludedStore] = []
         for store in stores:
+            estimate = estimates.get(store.store_id) if estimates else None
             terms = score_store(
                 store,
                 self.settings,
                 running_builds.get(store.store_id, 0) if running_builds else 0,
                 assigned_this_pass.get(store.store_id, 0),
                 transfer_seconds.get(store.store_id) if transfer_seconds else None,
+                expected_seconds=estimate.total_seconds() if estimate else None,
+                expected_build_seconds=expected_build_seconds,
             )
             if terms.passed:
                 ranked.append(RankedStore(store.store_id, terms.final_score, store, terms))
@@ -309,6 +337,8 @@ class BuildAllocator:
         assigned_this_pass: Mapping[StoreId, int],
         running_builds: Mapping[StoreId, int] | None = None,
         transfer_seconds: Mapping[StoreId, float] | None = None,
+        estimates: Mapping[StoreId, StoreEstimate] | None = None,
+        expected_build_seconds: float | None = None,
     ) -> RankedStores:
         """Rank stores for a build using the injected ranker."""
         build_features = effective_required_features(build.request.derivation)
@@ -349,6 +379,8 @@ class BuildAllocator:
             assigned_this_pass,
             running_builds,
             transfer_seconds,
+            estimates,
+            expected_build_seconds,
         )
         return RankedStores(list(ranked), [*excluded, *ranked.excluded])
 

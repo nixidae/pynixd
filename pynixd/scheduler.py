@@ -159,6 +159,15 @@ async def add_temp_roots(conn: Connection, paths: StorePathSet) -> None:
         await conn.call(AddTempRootRequest(path=path), raise_on_error=True)
 
 
+def expected_build_seconds(build: QueuedBuild, local_id: StoreId) -> float | None:
+    """The build alone: its local estimate, else the shortest any store has."""
+    local = build.estimates.get(local_id)
+    if local is not None and local.build_seconds is not None:
+        return local.build_seconds
+    known = [estimate.build_seconds for estimate in build.estimates.values() if estimate.build_seconds is not None]
+    return min(known) if known else None
+
+
 def build_decision_seeds(drv_path: str, input_srcs: Iterable[str]) -> set[str]:
     """The seed set a build decision records, as build-kind.
 
@@ -588,6 +597,8 @@ class Scheduler:
             assigned_this_pass,
             running_builds=running_builds,
             transfer_seconds=transfer,
+            estimates=build.estimates,
+            expected_build_seconds=expected_build_seconds(build, self.local_store.store_id),
         )
         notes.excluded = list(ranked.excluded) if isinstance(ranked, RankedStores) else []
 
@@ -792,14 +803,15 @@ class Scheduler:
             and store.is_healthy
             and store.supports_derivation(platform, features)
         ]
-        estimate_local = self.trace.enabled and local_id not in build.estimates
+        estimate_local = self._wants_estimates and local_id not in build.estimates
         if not todo and not estimate_local:
             return self._known_transfer_seconds(build)
         sizes = await self._input_closure_sizes(build) if todo else {}
 
         async def build_ms(store_id: StoreId) -> tuple[int | None, BuildEstimateSource | None]:
-            # Only the trace reads a build estimate per store; a pass pays no query for it otherwise.
-            if not self.trace.enabled:
+            # Only the trace and a time-aware ranking read a build estimate per
+            # store; a pass pays no query for it otherwise.
+            if not self._wants_estimates:
                 return None, None
             return await db.expected_build_ms_on(identity, str(store_id))
 
@@ -827,6 +839,15 @@ class Scheduler:
             if estimate_local:
                 tg.start_soon(measure_local)
         return self._known_transfer_seconds(build)
+
+    @property
+    def _wants_estimates(self) -> bool:
+        ranking = self.ranker.settings
+        return (
+            self.trace.enabled
+            or ranking.time_penalty_per_second is not None
+            or ranking.cpu_reference_seconds is not None
+        )
 
     @staticmethod
     def _known_transfer_seconds(build: QueuedBuild) -> dict[StoreId, float]:

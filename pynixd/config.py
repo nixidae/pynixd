@@ -109,6 +109,25 @@ class StoreRankingSettings(BaseModel):
     CPU (`cpu_idle_weight`). A guess, not a measurement: nixidae/nixidae#1001.
     """
 
+    time_penalty_per_second: float | None = None
+    """Penalty per expected second of the whole build on each store, the local store included.
+
+    The seconds are `StoreEstimate.total_seconds`: inputs, dispatch, build
+    and pull, from the build's history. Where a store has one, it replaces
+    `transfer_penalty_per_second`, which prices only a remote's transfer.
+    `None` keeps the transfer cost alone. nixidae/nixidae#1125.
+    """
+
+    cpu_reference_seconds: float | None = None
+    """The expected build seconds at which the CPU terms count in full.
+
+    A shorter build gains less from an idle CPU, so its CPU idle and CPU
+    pressure points scale by `expected / cpu_reference_seconds`. The scaled
+    points order the stores; `min_schedule_score` reads the unscaled load,
+    so a full store stays full. `None` counts them in full.
+    nixidae/nixidae#1125.
+    """
+
     prefer_local_weight: float = 10.0
     """A `preferLocalBuild` derivation waits for a local slot until the wait
     passes this many times the best remote's delegation seconds. A guess, not
