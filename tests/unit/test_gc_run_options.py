@@ -100,6 +100,7 @@ class FakeLocal:
     gc_defer: bool = False
     gc_target_usage: float | None = None
     answers_closure: bool = True
+    references: dict[str, set[str]] = field(default_factory=dict)
     live: set[str] = field(default_factory=set)
     sizes: dict[str, int] = field(default_factory=lambda: {A: 100, B: 200})
     calls: list[str] = field(default_factory=list)
@@ -117,7 +118,9 @@ class FakeLocal:
         if isinstance(request, QueryClosureRequest):
             if not self.answers_closure:
                 return QueryClosureResponse(paths=set())
-            return QueryClosureResponse(paths={StorePath(str(path)) for path in request.paths})
+            valid = {str(path) for path in request.paths} & set(self.sizes)
+            closed = valid.union(*(self.references.get(path, set()) for path in valid))
+            return QueryClosureResponse(paths={StorePath(path) for path in closed})
         if isinstance(request, QueryPathInfosRequest):
             return QueryPathInfosResponse(infos=[_weighed(str(path), self.sizes[str(path)]) for path in request.paths])
         raise AssertionError(f"unexpected request {type(request).__name__}")
@@ -240,6 +243,22 @@ async def test_an_unanswerable_closure_falls_back_to_the_seeds(tmp_path: Path) -
         resp = await collector.run(PynixdGCAction.DRY_RUN)
 
     assert {str(path) for path in resp.store_paths} == {B}
+
+
+@pytest.mark.anyio
+async def test_an_invalid_seed_keeps_the_rest_of_the_closure(tmp_path: Path) -> None:
+    """An in-flight build's output is not valid yet; its neighbours' closure still counts.
+
+    The temp root names `A`, which references `B`, and an output that is
+    not registered yet. The daemon answers `A`'s closure and drops the
+    unknown seed, and that answer spares `B` as well.
+    """
+    collector, _local, state_dir = _collector(tmp_path, references={A: {B}})
+    pending = "/nix/store/22222222222222222222222222222222-pending"
+    with live_temp_root(state_dir, "99", f"{A}\x00{pending}\x00".encode()):
+        resp = await collector.run(PynixdGCAction.DRY_RUN)
+
+    assert resp.store_paths == set()
 
 
 @pytest.mark.anyio

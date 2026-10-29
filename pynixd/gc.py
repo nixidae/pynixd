@@ -330,9 +330,8 @@ class Collector:
         The daemon answers the closure without taking the collector lock,
         and a path the veto spares keeps whatever still names it, which is
         what keeps the delete set closed under referrers (`gc.cc:653`). A
-        closure the daemon cannot answer -- no feature, a dropped seed --
-        falls back to the seeds alone: sparing less than the full closure,
-        but never nothing.
+        closure the daemon cannot answer falls back to the seeds alone:
+        sparing less than the full closure, but never nothing.
         """
         local = self.ctx.local_store
         if not volatile:
@@ -347,10 +346,12 @@ class Collector:
         except Exception:
             log.warning("gc_veto_closure_failed", exc_info=True)
             return volatile
-        if not volatile <= closed:
-            log.warning("gc_veto_closure_incomplete", asked=len(volatile), answered=len(closed))
-            return volatile
-        return closed
+        # A seed missing from the answer is not valid yet -- an in-flight
+        # build's output under a temp root -- and has no closure to add. The
+        # rest of the answer still holds, so the seeds join it rather than
+        # replace it: on sg1 every pass had such a seed, and the fallback to
+        # the seeds alone dropped 404 of 705 paths from the veto. #1098.
+        return closed | volatile
 
     async def _weigh(self, paths: set[StorePath]) -> dict[str, tuple[int, int]] | None:
         """`(nar_size, age_seconds)` per planned path, or `None` when unknown.
