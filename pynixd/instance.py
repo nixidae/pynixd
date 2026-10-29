@@ -8,7 +8,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import parse_qs, urlsplit
 
 import anyio
@@ -60,6 +60,8 @@ def _trigger_due(now: float, last_trigger: float, cooldown: float) -> bool:
 SILENT_UPSTREAM_WARN = 600.0
 """Seconds of silence after which an upstream operation is logged once."""
 SILENT_UPSTREAM_CHECK = 60.0
+
+_LOOPBACK_HOSTS: Final = frozenset({"127.0.0.1", "::1", "localhost"})
 
 _SUN_PATH_LIMIT = {"linux": 108, "darwin": 104}
 _SUN_PATH_LIMIT_DEFAULT = 104
@@ -151,6 +153,22 @@ def _default_unix_substituters(configured: Sequence[str]) -> list[tuple[Path, Pa
     return result
 
 
+def _is_own_cache(url: str, settings: PynixdSettings) -> bool:
+    """Whether *url* is this pynixd's own HTTP cache.
+
+    A node's nix.conf can list it, for Nix. As a substituter of pynixd, a
+    narinfo miss there asks pynixd itself, joins the race it is part of, and
+    waits out `substitution_query_timeout`: 2 s on every new local build on
+    dynhetz, 675 timeouts in 30 minutes (nixidae/nixidae#1125).
+    """
+    split = urlsplit(url)
+    port = settings.http_port if split.scheme == "http" else settings.https_port
+    if port is None or split.port != port:
+        return False
+    host = split.hostname or ""
+    return host in _LOOPBACK_HOSTS or (bool(settings.http_host) and host == settings.http_host)
+
+
 def _http_store_id(url: str) -> str:
     split = urlsplit(url)
     host = split.netloc or split.path
@@ -163,12 +181,20 @@ def _unix_store_id(socket_path: Path, store_path: Path) -> str:
     return f"unix-{safe}"[:120]
 
 
-def _add_substituter_stores(stores: dict[StoreId, Store], configured: Sequence[str]) -> list[Store]:
-    """A store in `stores` for each HTTP and unix substituter of `configured` it lacks; returns the new ones."""
+def _add_substituter_stores(
+    stores: dict[StoreId, Store], configured: Sequence[str], settings: PynixdSettings
+) -> list[Store]:
+    """A store in `stores` for each HTTP and unix substituter of `configured` it lacks; returns the new ones.
+
+    This pynixd's own HTTP cache is left out: `_is_own_cache`.
+    """
     added: list[Store] = []
     existing_http_urls = {store.url.rstrip("/") for store in stores.values() if is_http_binary_cache(store)}
     for url in _default_http_substituter_urls(configured):
         if url.rstrip("/") in existing_http_urls:
+            continue
+        if _is_own_cache(url, settings):
+            log.info("substituter_is_own_cache", url=url)
             continue
         store_id = StoreId(_http_store_id(url))
         cache_spec = HTTPBinaryCacheSpec(
@@ -232,7 +258,7 @@ class Server:
 
         configured = _configured_substituters(local_store)
         if configured is not None:
-            _add_substituter_stores(stores, configured)
+            _add_substituter_stores(stores, configured, settings)
 
         self.ctx = PynixdContext(
             settings=settings,
@@ -640,7 +666,7 @@ class Server:
         # reads from its nix.conf. Nix's default here would put
         # cache.nixos.org in place of the caches the node is configured for.
         if _configured_substituters(local_store) is None:
-            added = _add_substituter_stores(self.ctx._stores, self.ctx.trust.substituters)
+            added = _add_substituter_stores(self.ctx._stores, self.ctx.trust.substituters, self.ctx.settings)
             log.info("substituters_from_nix_conf", stores=[str(store.store_id) for store in added])
         if self.ctx.scheduler:
             self.ctx.scheduler.substitution_queue.set_import_slots(self.ctx.trust.max_substitution_jobs)

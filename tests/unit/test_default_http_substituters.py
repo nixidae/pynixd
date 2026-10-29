@@ -12,6 +12,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+from pynixd.config import PynixdSettings
 from pynixd.instance import _add_substituter_stores, _configured_substituters, _default_http_substituter_urls
 from pynixd.store import is_http_binary_cache
 
@@ -46,7 +47,22 @@ def test_non_http_and_duplicates_drop() -> None:
 
 def test_the_daemons_list_adds_only_what_is_missing() -> None:
     stores: dict[Any, Any] = {}
-    added = _add_substituter_stores(stores, [LOCAL])
+    added = _add_substituter_stores(stores, [LOCAL], PynixdSettings())
     assert [store.url.rstrip("/") for store in added if is_http_binary_cache(store)] == [LOCAL]
     assert len(added) == 1
-    assert _add_substituter_stores(stores, [f"{LOCAL}/"]) == []
+    assert _add_substituter_stores(stores, [f"{LOCAL}/"], PynixdSettings()) == []
+
+
+def test_its_own_cache_is_no_substituter() -> None:
+    """A miss there waits on itself for `substitution_query_timeout`. nixidae/nixidae#1125."""
+    settings = PynixdSettings(http_port=8080)
+    stores: dict[Any, Any] = {}
+    added = _add_substituter_stores(stores, ["http://127.0.0.1:8080", "http://[::1]:8080/", LOCAL], settings)
+    assert [store.url.rstrip("/") for store in added if is_http_binary_cache(store)] == [LOCAL]
+    assert len(added) == 1
+
+
+def test_another_port_on_loopback_is_a_substituter() -> None:
+    settings = PynixdSettings(http_port=8080)
+    added = _add_substituter_stores({}, ["http://127.0.0.1:5000"], settings)
+    assert [store.url.rstrip("/") for store in added if is_http_binary_cache(store)] == ["http://127.0.0.1:5000"]
