@@ -30,6 +30,7 @@ stdenvNoCC.mkDerivation {
     root = ../.;
     fileset = lib.fileset.unions [
       ../docs
+      ../nix/shared/sphinx_shared.py
       (lib.fileset.fileFilter (file: file.hasExt "py") ../pynixd)
     ];
   };
@@ -38,7 +39,7 @@ stdenvNoCC.mkDerivation {
 
   buildPhase = ''
     runHook preBuild
-    PYNIXD_DOCS_OFFLINE=1 sphinx-build -b html docs "$out" -W
+    NIXIDAE_DOCS_OFFLINE=1 sphinx-build -b html docs "$out" -W
     runHook postBuild
   '';
 
