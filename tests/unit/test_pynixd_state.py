@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+import tracemalloc
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, cast
@@ -71,6 +72,25 @@ def _ctx(
     queue.counts = lambda: BuildQueue.counts(cast("Any", queue))
     scheduler = SimpleNamespace(queue=queue)
     return SimpleNamespace(scheduler=scheduler, stores=stores or {}, sessions=ClientSessions())
+
+
+def test_benchmark_names_the_largest_allocation_sites() -> None:
+    """Tracing on: the section lists sites, the allocating line first."""
+    tracemalloc.start(5)
+    try:
+        held = [bytearray(1 << 20) for _ in range(4)]
+        section = state_collector._benchmark_section()
+    finally:
+        tracemalloc.stop()
+    assert section.tracing
+    assert held
+    top = section.top[0]
+    assert top.size >= 4 << 20
+    assert top.site.startswith(f"{__file__}:")
+
+
+def test_benchmark_off_lists_nothing() -> None:
+    assert state_collector._benchmark_section().top == []
 
 
 def test_collect_counts_queue_by_state() -> None:

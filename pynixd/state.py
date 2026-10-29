@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from . import metrics
 from .state_models import (
+    Allocation,
     Benchmark,
     BuildRow,
     ClientRow,
@@ -256,6 +257,10 @@ def _totals_section() -> Totals:
     )
 
 
+TOP_ALLOCATIONS = 25
+"""Allocation sites the benchmark section lists, largest first."""
+
+
 def _benchmark_section() -> Benchmark:
     """Allocator census for the growth benchmark. Cheap when tracing is off.
 
@@ -266,9 +271,20 @@ def _benchmark_section() -> Benchmark:
     if not tracemalloc.is_tracing():
         return Benchmark(tracing=False)
     current, peak = tracemalloc.get_traced_memory()
+    # Totals say that memory is held; the sites say by what. Frames come
+    # oldest first, so the allocating line is the last one.
+    stats = tracemalloc.take_snapshot().statistics("traceback")[:TOP_ALLOCATIONS]
     return Benchmark(
         tracing=True,
         tracemalloc_current=current,
         tracemalloc_peak=peak,
         gc_objects=len(gc.get_objects()),
+        top=[
+            Allocation(
+                site=" <- ".join(f"{frame.filename}:{frame.lineno}" for frame in reversed(stat.traceback)),
+                size=stat.size,
+                count=stat.count,
+            )
+            for stat in stats
+        ],
     )

@@ -137,11 +137,20 @@ class Totals(_Model):
     sessions_accepted: dict[str, int] = {}
 
 
+class Allocation(_Model):
+    site: str
+    """The traceback, innermost frame first, as `file:line` joined by ` <- `."""
+    size: int
+    count: int
+
+
 class Benchmark(_Model):
     tracing: bool = False
     tracemalloc_current: int | None = None
     tracemalloc_peak: int | None = None
     gc_objects: int | None = None
+    top: list[Allocation] = []
+    """The largest live allocation sites, by traceback. Empty when not tracing."""
 
 
 class FederatedError(_Model):
