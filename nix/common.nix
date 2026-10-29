@@ -67,14 +67,10 @@ in
     package = lib.mkOption {
       type = lib.types.package;
       description = "The pynixd package to use.";
-      # No default, on purpose, and this file must not add one. The flake
-      # wrappers -- `nixosModules.pynixd` and `darwinModules.pynixd` -- set it
-      # to the build of this repository. The default this option once had read
-      # `pynixd/default.nix` and that project's own `flake.lock`, which built a
-      # second pynixd pinned apart from the one this repository tests.
-      #
-      # A person who imports a platform module directly, and not through the
-      # flake, states the package. That is better than a silent second build.
+      # No default, on purpose, and this file must not add one. A default reads
+      # `pynixd/default.nix` and that project's own `flake.lock`, which builds
+      # a second pynixd pinned apart from the one the consumer evaluates. The
+      # consumer states `packages.pynixd` (docs/getting-started.md).
     };
 
     # **pynixd already serves `/metrics`, and nothing could reach it.**
