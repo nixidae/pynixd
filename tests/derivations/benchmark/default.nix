@@ -13,15 +13,10 @@
   lib ? pkgs.lib,
   package,
   src,
-  vivarium,
-  # Passed to vivarium's lib.nix, so it takes nixvenv from the same nixidae.
-  sources,
+  vivariumLib,
   devEnv,
 }:
 
-let
-  vivariumLib = import (vivarium + "/lib.nix") { inherit pkgs lib sources; };
-in
 vivariumLib.mkTest {
   name = "pynixd-benchmark";
   # A container shares the host's CPU, so the numbers are comparable and no

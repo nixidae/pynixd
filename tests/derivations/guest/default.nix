@@ -15,9 +15,7 @@
   lib ? pkgs.lib,
   pynixd-lib,
   src,
-  vivarium,
-  # Passed to vivarium's lib.nix, so it takes nixvenv from the same nixidae.
-  sources,
+  vivariumLib,
   # The dev shell's environment, so a suite in a guest imports what it
   # imports on the host, nanopynix's oracle for `tests/differential`
   # included.
@@ -27,8 +25,6 @@
 }:
 
 let
-  vivariumLib = import (vivarium + "/lib.nix") { inherit pkgs lib sources; };
-
   pytestEnv = devEnv;
 
   /*

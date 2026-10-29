@@ -59,7 +59,8 @@ let
     name = "pynixd-specifictest";
     testArgs = "";
   };
-  vivarium-runner = (import (sources.vivarium + "/lib.nix") { inherit pkgs sources; }).runner;
+  vivariumLib = (import sources.vivarium { inherit pkgs sources; }).lib;
+  vivarium-runner = vivariumLib.runner;
 
   nanopynix = import sources.nanopynix { inherit sources; };
 
@@ -102,14 +103,12 @@ let
       projectRoots = [
         ./.
         ./nix-daemon-protocol
-        (sources.vivarium + "/pkgs/vivarium-runner")
+        vivariumLib.runnerSource
       ];
       overlay = pySelf: _pyPrev: {
         pynixd = pySelf.callPackage (own "pynixd" ./.) { };
         nix-daemon-protocol = pySelf.callPackage (own "nix-daemon-protocol" ./nix-daemon-protocol) { };
-        vivarium-runner = pySelf.callPackage (mkProject "vivarium-runner" (
-          sources.vivarium + "/pkgs/vivarium-runner"
-        )) { };
+        vivarium-runner = pySelf.callPackage (mkProject "vivarium-runner" vivariumLib.runnerSource) { };
       };
     };
 
@@ -426,8 +425,7 @@ let
     benchmark = pkgs.callPackage ./tests/derivations/benchmark {
       inherit package;
       src = lib.cleanSource ./.;
-      inherit sources;
-      inherit (sources) vivarium;
+      inherit vivariumLib;
       devEnv = guestEnv;
     };
 
@@ -436,8 +434,7 @@ let
     guest = pkgs.callPackage ./tests/derivations/guest {
       pynixd-lib = library;
       src = lib.cleanSource ./.;
-      inherit sources;
-      inherit (sources) vivarium;
+      inherit vivariumLib;
       inherit agent;
       devEnv = guestEnv;
     };
@@ -448,8 +445,7 @@ let
     guest-nixft = pkgs.callPackage ./tests/derivations/guest-nixft {
       pynixd-lib = library;
       src = lib.cleanSource ./.;
-      inherit sources;
-      inherit (sources) vivarium;
+      inherit vivariumLib;
       nixft = nixFunctionalTests.nix_2_34;
     };
 
@@ -458,23 +454,20 @@ let
     # `--builders`.
     daemon = pkgs.callPackage ./tests/derivations/daemon {
       inherit package;
-      inherit sources;
-      inherit (sources) vivarium;
+      inherit vivariumLib;
     };
 
     # A running machine switched to pynixd and back, in each mode.
     switch = pkgs.callPackage ./tests/derivations/switch {
       inherit package;
-      inherit sources;
-      inherit (sources) vivarium;
+      inherit vivariumLib;
       nixVersions = supportedNix;
     };
 
     # What an upgrade does to builds in flight; docs/design/upgrade-handover.md.
     handover = pkgs.callPackage ./tests/derivations/handover {
       inherit package;
-      inherit sources;
-      inherit (sources) vivarium;
+      inherit vivariumLib;
     };
 
     daemonByNix = byNix daemon;
