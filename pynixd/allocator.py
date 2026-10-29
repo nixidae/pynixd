@@ -202,7 +202,7 @@ class StoreRanker(ABC):
         build: QueuedBuild,
         stores: list[DaemonStore],
         assigned_this_pass: Mapping[StoreId, int],
-        override_in_flight: Mapping[StoreId, int] | None = None,
+        running_builds: Mapping[StoreId, int] | None = None,
         transfer_seconds: Mapping[StoreId, float] | None = None,
     ) -> RankedStores:
         """Score and sort available stores for the given build."""
@@ -220,20 +220,17 @@ class TelemetryStoreRanker(StoreRanker):
         build: QueuedBuild,
         stores: list[DaemonStore],
         assigned_this_pass: Mapping[StoreId, int],
-        override_in_flight: Mapping[StoreId, int] | None = None,
+        running_builds: Mapping[StoreId, int] | None = None,
         transfer_seconds: Mapping[StoreId, float] | None = None,
     ) -> RankedStores:
-        """Score stores by CPU, pressure, concurrency, herd and transfer penalties."""
+        """Score stores by CPU, pressure, running builds, herd and transfer penalties."""
         ranked: list[RankedStore] = []
         excluded: list[ExcludedStore] = []
         for store in stores:
-            in_flight = store.in_flight
-            if override_in_flight and store.store_id in override_in_flight:
-                in_flight = override_in_flight[store.store_id]
             terms = score_store(
                 store,
                 self.settings,
-                in_flight,
+                running_builds.get(store.store_id, 0) if running_builds else 0,
                 assigned_this_pass.get(store.store_id, 0),
                 transfer_seconds.get(store.store_id) if transfer_seconds else None,
             )
@@ -307,7 +304,7 @@ class BuildAllocator:
         self,
         build: QueuedBuild,
         assigned_this_pass: Mapping[StoreId, int],
-        override_in_flight: Mapping[StoreId, int] | None = None,
+        running_builds: Mapping[StoreId, int] | None = None,
         transfer_seconds: Mapping[StoreId, float] | None = None,
     ) -> RankedStores:
         """Rank stores for a build using the injected ranker."""
@@ -347,7 +344,7 @@ class BuildAllocator:
             build,
             candidates,
             assigned_this_pass,
-            override_in_flight,
+            running_builds,
             transfer_seconds,
         )
         return RankedStores(list(ranked), [*excluded, *ranked.excluded])

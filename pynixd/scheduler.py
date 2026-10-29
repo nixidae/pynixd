@@ -457,9 +457,9 @@ class Scheduler:
             self._update_store_metrics()
             return
 
-        schedulable, override_in_flight, running_builds = self._filter_schedulable(pending)
+        schedulable, running_builds = self._filter_schedulable(pending)
 
-        waiting_slot = await self._assign_to_stores(schedulable, override_in_flight, running_builds)
+        waiting_slot = await self._assign_to_stores(schedulable, running_builds)
         self.builds_waiting = bool(waiting_slot)
 
         self._update_store_metrics()
@@ -477,37 +477,21 @@ class Scheduler:
     def _filter_schedulable(
         self,
         pending: list[QueuedBuild],
-    ) -> tuple[list[QueuedBuild], dict[StoreId, int], dict[StoreId, int]]:
-        """Triage pending builds into schedulable.
+    ) -> tuple[list[QueuedBuild], dict[StoreId, int]]:
+        """Triage pending builds into schedulable, and count the running builds per store.
 
-        Returns (schedulable, override_in_flight, running_builds).
-        override_in_flight accounts for builds assigned this cycle but not yet
-        reflected in ``store.in_flight``.
-
-        **`running_builds` counts builds, and `override_in_flight` counts
-        connections.** `DaemonStore.in_flight` at `store/daemon.py:221` answers
-        `pool.active_connections`, so a single `QueryPathInfo` raises it. The
-        ranker wants that number, because a busy store is a poor place to send
-        more work. `max-jobs` wants the other one, and the two are not
-        interchangeable: `_local_slot_is_full` read `override_in_flight` first,
-        so one active connection filled the single slot of `-j1` and every
-        build waited for a completion that no build was running to give.
-        Issue nixidae/nixidae#235.
+        **The count is of builds, not connections.** `DaemonStore.in_flight`
+        answers `pool.active_connections`, which a single `QueryPathInfo`
+        raises. Counted as builds, one query fills the single slot of `-j1`
+        (nixidae/nixidae#235), and each client query of the local store costs
+        it a build's worth of score, so builds go remote (nixidae/nixidae#1125).
         """
         schedulable: list[QueuedBuild] = []
 
-        # Count builds that are already building per store (may exceed
-        # store.in_flight because the counter hasn't been updated yet).
         assigned_count: dict[StoreId, int] = {s.store_id: 0 for s in self.stores.values()}
         for build in pending:
             if build.is_building and build.assigned_store_id:
                 assigned_count[build.assigned_store_id] += 1
-
-        # Use the max of the store's reported in_flight and our assigned_count
-        # to avoid undercounting during rapid scheduling passes.
-        override_in_flight: dict[StoreId, int] = {
-            s.store_id: max(s.in_flight, assigned_count[s.store_id]) for s in self.stores.values()
-        }
 
         for build in pending:
             if build.is_building:
@@ -517,12 +501,11 @@ class Scheduler:
             # discovered and pulled during execution.
             schedulable.append(build)
 
-        return schedulable, override_in_flight, assigned_count
+        return schedulable, assigned_count
 
     async def _assign_to_stores(
         self,
         schedulable: list[QueuedBuild],
-        override_in_flight: dict[StoreId, int],
         running_builds: dict[StoreId, int],
     ) -> list[QueuedBuild]:
         """Assign schedulable builds to backends.
@@ -541,7 +524,7 @@ class Scheduler:
             # One build that raises fails alone. The pass ran on, and the next
             # pass met the same build first, so no build anywhere started.
             try:
-                if await self._assign_one(build, override_in_flight, running_builds, assigned_this_pass):
+                if await self._assign_one(build, running_builds, assigned_this_pass):
                     waiting_slot.append(build)
             except Exception as e:
                 log.exception("build_assignment_crashed", build_id=build.build_id)
@@ -554,7 +537,6 @@ class Scheduler:
     async def _assign_one(
         self,
         build: QueuedBuild,
-        override_in_flight: dict[StoreId, int],
         running_builds: dict[StoreId, int],
         assigned_this_pass: dict[StoreId, int],
     ) -> bool:
@@ -563,7 +545,7 @@ class Scheduler:
             return False
         notes = _Notes()
         try:
-            return await self._place(build, override_in_flight, running_builds, assigned_this_pass, notes)
+            return await self._place(build, running_builds, assigned_this_pass, notes)
         finally:
             if notes.outcome is not None:
                 self._trace_decision(build, notes, running_builds, assigned_this_pass)
@@ -571,7 +553,6 @@ class Scheduler:
     async def _place(
         self,
         build: QueuedBuild,
-        override_in_flight: dict[StoreId, int],
         running_builds: dict[StoreId, int],
         assigned_this_pass: dict[StoreId, int],
         notes: _Notes,
@@ -605,7 +586,7 @@ class Scheduler:
         ranked = self.allocator.rank_stores(
             build,
             assigned_this_pass,
-            override_in_flight=override_in_flight,
+            running_builds=running_builds,
             transfer_seconds=transfer,
         )
         notes.excluded = list(ranked.excluded) if isinstance(ranked, RankedStores) else []

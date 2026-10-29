@@ -126,7 +126,7 @@ async def _assign(
         options=_options(jobs),
     )
     scheduler = NoLocalJobsScheduler(queue, mode, remote=remote, configured=configured)
-    await Scheduler._assign_to_stores(cast("Any", scheduler), [queue.by_id[build_id]], {}, {})  # noqa: SLF001 -- the assignment is the unit
+    await Scheduler._assign_to_stores(cast("Any", scheduler), [queue.by_id[build_id]], {})  # noqa: SLF001 -- the assignment is the unit
     error = str(future.result().result.error_msg) if future.done() else ""
     return scheduler, error
 

@@ -118,11 +118,10 @@ class TestTheMinimumScore:
         local.no_schedule = True
         remote = FakeStore(REMOTE)
         remote.cpu_util = SimpleNamespace(utilization=utilization)
-        remote.in_flight = busy
         stores = {LOCAL_STORE_ID: local, REMOTE: remote}
         ranker = TelemetryStoreRanker(cast("Any", SimpleNamespace(ranking=StoreRankingSettings())))
         ranked = BuildAllocator(cast("Any", stores), cast("Any", local), ranker).rank_stores(
-            cast("Any", FakeBuild()), {}, transfer_seconds=transfer
+            cast("Any", FakeBuild()), {}, running_builds={REMOTE: busy}, transfer_seconds=transfer
         )
         return [candidate.store_id for candidate in ranked]
 
@@ -130,8 +129,19 @@ class TestTheMinimumScore:
         assert self._rank(utilization=0.0, transfer={REMOTE: 50.0}) == [REMOTE]
 
     def test_load_still_drops_a_store(self) -> None:
-        """Busy at 100 %: no CPU points, and a connection costs 50. Full is full."""
+        """Busy at 100 %: no CPU points, and a running build costs 50. Full is full."""
         assert self._rank(utilization=100.0, busy=1) == []
+
+    def test_connections_without_builds_cost_nothing(self) -> None:
+        """Client queries hold the local store's connections; they are no load. nixidae/nixidae#1125."""
+        local = FakeStore(LOCAL_STORE_ID)
+        local.cpu_util = SimpleNamespace(utilization=0.0)
+        local.in_flight = 9
+        ranker = TelemetryStoreRanker(cast("Any", SimpleNamespace(ranking=StoreRankingSettings())))
+        ranked = BuildAllocator(cast("Any", {LOCAL_STORE_ID: local}), cast("Any", local), ranker).rank_stores(
+            cast("Any", FakeBuild()), {}, running_builds={LOCAL_STORE_ID: 0}
+        )
+        assert [(candidate.store_id, candidate.score) for candidate in ranked] == [(LOCAL_STORE_ID, 100.0)]
 
 
 class TestAStoreNobodyCanMonitor:
@@ -144,13 +154,12 @@ class TestAStoreNobodyCanMonitor:
         local.no_schedule = True
         seen = FakeStore(OTHER)
         seen.cpu_util = SimpleNamespace(utilization=100.0)
-        seen.in_flight = busy
         stores = {LOCAL_STORE_ID: local, REMOTE: FakeStore(REMOTE), OTHER: seen}
         ranker = TelemetryStoreRanker(
             cast("Any", SimpleNamespace(ranking=StoreRankingSettings(min_schedule_score=min_score)))
         )
         ranked = BuildAllocator(cast("Any", stores), cast("Any", local), ranker).rank_stores(
-            cast("Any", FakeBuild()), {}
+            cast("Any", FakeBuild()), {}, running_builds={OTHER: busy}
         )
         return [candidate.store_id for candidate in ranked]
 
@@ -269,7 +278,7 @@ async def _assign(env: dict[str, str]) -> AssignScheduler:
     queue = BuildQueue()
     build_id, _ = await queue.enqueue(_request(1, env))
     scheduler = AssignScheduler(queue)
-    await Scheduler._assign_to_stores(cast("Any", scheduler), [queue.by_id[build_id]], {}, {})  # noqa: SLF001 -- the assignment is the unit
+    await Scheduler._assign_to_stores(cast("Any", scheduler), [queue.by_id[build_id]], {})  # noqa: SLF001 -- the assignment is the unit
     return scheduler
 
 
@@ -320,7 +329,7 @@ class TestOneBrokenBuild:
         scheduler = BrokenScheduler(queue, broken)
 
         await Scheduler._assign_to_stores(  # noqa: SLF001 -- the assignment is the unit
-            cast("Any", scheduler), [queue.by_id[broken], queue.by_id[healthy]], {}, {}
+            cast("Any", scheduler), [queue.by_id[broken], queue.by_id[healthy]], {}
         )
 
         assert scheduler.assigned == [REMOTE]
@@ -349,7 +358,7 @@ async def test_a_build_whose_builders_are_full_does_not_hold_back_the_next() -> 
     scheduler = OnePressuredPoolScheduler(queue, blocked)
 
     waiting = await Scheduler._assign_to_stores(  # noqa: SLF001 -- the assignment is the unit
-        cast("Any", scheduler), [queue.by_id[blocked], queue.by_id[other]], {}, {}
+        cast("Any", scheduler), [queue.by_id[blocked], queue.by_id[other]], {}
     )
 
     assert scheduler.assigned == [REMOTE]
@@ -366,10 +375,8 @@ class WakingScheduler(OnePressuredPoolScheduler):
         self.triggered = 0
         self.pass_id = 0
 
-    def _filter_schedulable(
-        self, pending: list[QueuedBuild]
-    ) -> tuple[list[QueuedBuild], dict[Any, int], dict[Any, int]]:
-        return pending, {}, {}
+    def _filter_schedulable(self, pending: list[QueuedBuild]) -> tuple[list[QueuedBuild], dict[Any, int]]:
+        return pending, {}
 
     def _update_store_metrics(self) -> None:
         return
@@ -423,7 +430,7 @@ async def test_a_retry_goes_to_a_store_the_build_has_not_failed_on() -> None:
     queue.by_id[build_id].reset_for_retry(REMOTE, "getting status of ...: No such file or directory")
     scheduler = TwoRemotesScheduler(queue)
 
-    await Scheduler._assign_to_stores(cast("Any", scheduler), [queue.by_id[build_id]], {}, {})  # noqa: SLF001 -- the assignment is the unit
+    await Scheduler._assign_to_stores(cast("Any", scheduler), [queue.by_id[build_id]], {})  # noqa: SLF001 -- the assignment is the unit
 
     assert scheduler.assigned == [OTHER]
 
@@ -452,7 +459,7 @@ async def _assign_prefer_local(*, measured: bool) -> BusyLocalScheduler:
     queue = BuildQueue()
     build_id, _ = await queue.enqueue(_request(1, {"preferLocalBuild": "1"}))
     scheduler = BusyLocalScheduler(queue, measured=measured)
-    await Scheduler._assign_to_stores(cast("Any", scheduler), [queue.by_id[build_id]], {}, {})  # noqa: SLF001 -- the assignment is the unit
+    await Scheduler._assign_to_stores(cast("Any", scheduler), [queue.by_id[build_id]], {})  # noqa: SLF001 -- the assignment is the unit
     return scheduler
 
 

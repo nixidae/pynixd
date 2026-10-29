@@ -143,14 +143,13 @@ def test_a_build_on_a_backend_costs_no_local_slot() -> None:
 
 
 def test_the_count_that_reaches_the_limit_is_the_count_of_builds() -> None:
-    """`_filter_schedulable` answers a build count for this, and two counts.
+    """`_filter_schedulable` counts builds, not the connections of `DaemonStore.in_flight`.
 
-    `override_in_flight` is the other one, and it is
-    `DaemonStore.in_flight`, which answers `pool.active_connections`. One
-    `QueryPathInfo` raises that number. This limit read it first, so a single
-    query filled the one slot of `-j1`, every build waited for a slot, and no
-    build was running to end and trigger the next pass. The `ca` suite went
-    from about a minute to more than ten.
+    One `QueryPathInfo` raises the connection count. Read as builds, a single
+    query fills the one slot of `-j1`, every build waits for a slot, and no
+    build runs to end and trigger the next pass: the `ca` suite took more
+    than ten minutes instead of one. The ranker reads the same count
+    (nixidae/nixidae#1125).
     """
     pending = [
         _running_build(LOCAL_STORE_ID),
@@ -161,15 +160,13 @@ def test_the_count_that_reaches_the_limit_is_the_count_of_builds() -> None:
         "S", (), {"stores": {LOCAL_STORE_ID: FakeStore(LOCAL_STORE_ID), _BUILDER: FakeStore(_BUILDER)}}
     )()
 
-    _schedulable, override_in_flight, running_builds = Scheduler._filter_schedulable(  # noqa: SLF001 -- the two counts are the unit under test
+    _schedulable, running_builds = Scheduler._filter_schedulable(  # noqa: SLF001 -- the count is the unit under test
         scheduler,
         cast("list[QueuedBuild]", pending),
     )
 
+    # The fake stores report 9 connections each; only the builds count.
     assert running_builds == {LOCAL_STORE_ID: 1, _BUILDER: 1}
-    # The connection count of the fake store is far above the build count, and
-    # `max` keeps it. That is right for the ranker, and wrong for `max-jobs`.
-    assert override_in_flight == {LOCAL_STORE_ID: 9, _BUILDER: 9}
     assert _is_full(_options(1), running_builds, {}) is True
     assert _is_full(_options(2), running_builds, {}) is False
 
@@ -352,7 +349,6 @@ async def test_the_slot_a_failure_frees_does_not_go_to_the_same_request() -> Non
         cast("Any", scheduler),
         [pending],
         {},
-        {},
     )
 
     assert scheduler.executed == []
@@ -381,7 +377,6 @@ async def test_keep_going_still_gives_the_slot_to_the_next_build() -> None:
     await Scheduler._assign_to_stores(  # noqa: SLF001 -- same
         cast("Any", scheduler),
         [pending],
-        {},
         {},
     )
 

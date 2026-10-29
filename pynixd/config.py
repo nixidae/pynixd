@@ -94,7 +94,7 @@ class StoreRankingSettings(BaseModel):
     """Penalty scaled by IO PSI average: -(io_psi * io_pressure_penalty)."""
 
     concurrency_penalty: float = 50.0
-    """Penalty per active connection: -(active_conns * concurrency_penalty)."""
+    """Penalty per running build: -(running_builds * concurrency_penalty)."""
 
     predicted_load_penalty_per_min: float = 10.0
     """Penalty per expected minute of in-flight work: -(predicted_mins * load_penalty)."""
