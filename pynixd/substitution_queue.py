@@ -193,6 +193,11 @@ class SubstitutionQueue:
             "TTLCache[str, None, float]",
             TTLCache(maxsize=settings.substitution_cache_maxsize, ttl=settings.http_upstream_negative_ttl),
         )
+        self._negative_hash_paths = cast(
+            "TTLCache[str, StorePath, float]",
+            TTLCache(maxsize=settings.substitution_cache_maxsize, ttl=settings.substitution_negative_ttl),
+        )
+        """The path behind each hash `negative` holds, so a `.narinfo` request can find it."""
 
     async def close(self) -> None:
         for task in self._probe_tasks:
@@ -267,6 +272,8 @@ class SubstitutionQueue:
 
     def record_query_result(self, path: StorePath, result: SubstitutionQueryResult) -> None:
         cache = self.positive if result.found else self.negative
+        if not result.found:
+            self._negative_hash_paths[path.hash_part()] = path
         per_store = cache.setdefault(path, {})
         per_store[result.store_id] = result
         self.health_for(result.store_id).record(query_succeeded=result.query_succeeded)
@@ -311,6 +318,12 @@ class SubstitutionQueue:
 
         stores = self.http_substituter_stores()
         if not stores:
+            return None
+        # The scheduler asks every substituter before it builds, and the local
+        # nix-daemon then asks this cache for the same output. Raced again,
+        # the miss cost a trivial local build 2 s, the query timeout, while a
+        # remote build asks nothing (nixidae/nixidae#1125).
+        if self._every_store_missed(hash_part, stores):
             return None
 
         cached = await self._cached_http_narinfo(hash_part, stores)
@@ -588,6 +601,13 @@ class SubstitutionQueue:
             if result.found:
                 return result
         return None
+
+    def _every_store_missed(self, hash_part: str, stores: list[Store]) -> bool:
+        path = self._negative_hash_paths.get(hash_part)
+        if path is None or path in self.positive:
+            return False
+        missed = self.negative.get(path, {})
+        return all(store.store_id in missed for store in stores)
 
     def _has_cached_result(self, path: StorePath, store_id: StoreId) -> bool:
         return store_id in self.positive.get(path, {}) or store_id in self.negative.get(path, {})

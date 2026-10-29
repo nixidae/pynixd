@@ -19,7 +19,8 @@ from nix_daemon_protocol.ids import StoreId
 from pynixd.config import HTTPBinaryCacheSpec, PynixdSettings
 from pynixd.http_server import PynixdHttpServer, _rewrite_narinfo_url
 from pynixd.store.http_binary_cache import HTTPBinaryCacheStore, _parse_narinfo
-from pynixd.substitution_queue import SubstitutionQueue
+from pynixd.store_path import StorePath
+from pynixd.substitution_queue import SubstitutionQueryResult, SubstitutionQueue
 
 if TYPE_CHECKING:
     from pynixd.context import PynixdContext
@@ -117,6 +118,41 @@ async def test_race_total_miss_is_remembered_briefly() -> None:
     assert await queue.race_http_narinfo(_HASH) is None
     assert await queue.race_http_narinfo(_HASH) is None
     assert calls == 1
+
+
+async def _race_after_scheduler_misses(*missed_by: HTTPBinaryCacheStore) -> int:
+    """Race the hash after the scheduler's own query found it on none of *missed_by*; the upstream calls made."""
+    calls = 0
+    first = _store("cache-a", "https://a.example/")
+    second = _store("cache-b", "https://b.example/")
+
+    async def miss(hash_part: str) -> tuple[str, Any] | None:
+        nonlocal calls
+        calls += 1
+        return None
+
+    first.fetch_narinfo = miss  # type: ignore[method-assign]
+    second.fetch_narinfo = miss  # type: ignore[method-assign]
+    queue = _queue(first, second)
+    path = StorePath(path=f"/nix/store/{_HASH}-widget")
+    for store in (first, second):
+        if store.store_id in {missed.store_id for missed in missed_by}:
+            queue.record_query_result(
+                path, SubstitutionQueryResult(store_id=store.store_id, path_info=None, query_succeeded=True)
+            )
+
+    assert await queue.race_http_narinfo(_HASH) is None
+    return calls
+
+
+async def test_a_miss_the_scheduler_just_saw_asks_nobody() -> None:
+    """dynhetz, 2026-10-29: a trivial local build waited 2 s, the query
+    timeout, for caches the scheduler had asked a moment before. A remote
+    build waits for none. nixidae/nixidae#1125."""
+    stores = (_store("cache-a", "https://a.example/"), _store("cache-b", "https://b.example/"))
+
+    assert await _race_after_scheduler_misses(*stores) == 0
+    assert await _race_after_scheduler_misses(stores[0]) == 2, "a store nobody asked yet is still raced"
 
 
 async def test_upstream_narinfo_rewrites_only_the_url() -> None:
