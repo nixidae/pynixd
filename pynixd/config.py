@@ -140,6 +140,13 @@ class StoreRankingSettings(BaseModel):
     local_wins_ties: bool = False
     """The local store ranks first among equal scores; otherwise last, as a fallback (nixidae/nixidae#1001)."""
 
+    explore_share: float = Field(default=0.0, ge=0.0, le=1.0)
+    """The fraction of builds that go to a random roomy candidate other than
+    the best-ranked one. A store's estimate for a derivation shape changes
+    only when the store builds that shape, so with none an estimate that went
+    stale stays stale (nixidae/nixidae#1125). Buildbarn and icecream do the
+    same."""
+
     prefer_local_weight: float = 10.0
     """A `preferLocalBuild` derivation waits for a local slot until the wait
     passes this many times the best remote's delegation seconds. A guess, not

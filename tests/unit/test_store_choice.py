@@ -12,7 +12,15 @@ import anyio
 import pytest
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, BuildId, StoreId
-from pynixd.allocator import BuildAllocator, PreferLocal, RankedStore, TelemetryStoreRanker, pick_store, score_store
+from pynixd.allocator import (
+    BuildAllocator,
+    PreferLocal,
+    RankedStore,
+    TelemetryStoreRanker,
+    explore_store,
+    pick_store,
+    score_store,
+)
 from pynixd.build_queue import BuildQueue
 from pynixd.build_stats import ExpectedBytes, StoreEstimate, StoreLink, slot_wait_seconds, transfer_seconds
 from pynixd.config import PlacementTraceSettings, StoreRankingSettings
@@ -290,6 +298,37 @@ class TestThePick:
         assert picked.store_id == REMOTE
 
 
+class TestExploration:
+    """A store's estimate for a shape changes only when it builds that shape.
+    dynhetz, 2026-10-29: the local `trace-probe` median stayed at 1.1 s after
+    a fix made it 0.45 s, so 20 of 20 probes went to sg1. nixidae/nixidae#1125."""
+
+    @staticmethod
+    def _explore(*, draw: float, pick: float = 0.0, local_slot_full: bool = False) -> StoreId | None:
+        ranked = _ranked(REMOTE, LOCAL_STORE_ID, OTHER)
+        explored = explore_store(
+            ranked, ranked[0], LOCAL_STORE_ID, local_slot_full=local_slot_full, share=0.1, draw=draw, pick=pick
+        )
+        return None if explored is None else explored.store_id
+
+    def test_a_draw_over_the_share_keeps_the_best(self) -> None:
+        assert self._explore(draw=0.1) is None
+
+    def test_a_draw_under_the_share_takes_another_candidate(self) -> None:
+        assert self._explore(draw=0.05, pick=0.0) == LOCAL_STORE_ID
+        assert self._explore(draw=0.05, pick=0.99) == OTHER
+
+    def test_never_a_full_local_slot(self) -> None:
+        assert self._explore(draw=0.0, pick=0.0, local_slot_full=True) == OTHER
+
+    def test_no_other_candidate_keeps_the_best(self) -> None:
+        ranked = _ranked(REMOTE)
+        assert (
+            explore_store(ranked, ranked[0], LOCAL_STORE_ID, local_slot_full=False, share=1.0, draw=0.0, pick=0.0)
+            is None
+        )
+
+
 class TestPreferLocalBuild:
     @staticmethod
     def _pick(*, wait: float | None, remote_seconds: float | None) -> StoreId | None:
@@ -342,6 +381,7 @@ class AssignScheduler:
         remote = RankedStore(REMOTE, 0.0, cast("Any", FakeStore(REMOTE)))
         self.allocator = SimpleNamespace(rank_stores=lambda *_a, **_k: [remote])
         self.ranker = SimpleNamespace(settings=StoreRankingSettings())
+        self.rng: FixedRng | None = None
         self.stores: dict[StoreId, object] = {}
         self.assigned: list[StoreId] = []
 
@@ -538,6 +578,43 @@ async def test_a_retry_goes_to_a_store_the_build_has_not_failed_on() -> None:
     await Scheduler._assign_to_stores(cast("Any", scheduler), [queue.by_id[build_id]], {})  # noqa: SLF001 -- the assignment is the unit
 
     assert scheduler.assigned == [OTHER]
+
+
+class FixedRng:
+    """Every draw returns `value`."""
+
+    def __init__(self, value: float) -> None:
+        self.value = value
+
+    def random(self) -> float:
+        return self.value
+
+
+@pytest.mark.parametrize(("draw", "expected"), [(0.0, OTHER), (0.5, REMOTE)])
+@pytest.mark.anyio
+async def test_an_exploration_draw_sends_the_build_past_the_best(draw: float, expected: StoreId) -> None:
+    queue = BuildQueue()
+    build_id, _ = await queue.enqueue(_request(1))
+    scheduler = TwoRemotesScheduler(queue)
+    scheduler.ranker = SimpleNamespace(settings=StoreRankingSettings(explore_share=0.1))
+    scheduler.rng = FixedRng(draw)
+
+    await Scheduler._assign_to_stores(cast("Any", scheduler), [queue.by_id[build_id]], {})  # noqa: SLF001 -- the assignment is the unit
+
+    assert scheduler.assigned == [expected]
+
+
+@pytest.mark.anyio
+async def test_a_prefer_local_build_is_never_explored() -> None:
+    queue = BuildQueue()
+    build_id, _ = await queue.enqueue(_request(1, {"preferLocalBuild": "1"}))
+    scheduler = AssignScheduler(queue)
+    scheduler.ranker = SimpleNamespace(settings=StoreRankingSettings(explore_share=1.0))
+    scheduler.rng = FixedRng(0.0)
+
+    await Scheduler._assign_to_stores(cast("Any", scheduler), [queue.by_id[build_id]], {})  # noqa: SLF001 -- the assignment is the unit
+
+    assert scheduler.assigned == [LOCAL_STORE_ID]
 
 
 class BusyLocalScheduler(AssignScheduler):

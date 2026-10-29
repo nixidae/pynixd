@@ -212,6 +212,27 @@ def pick_store(
     return remote if prefer_local.wait_seconds > remote_seconds * prefer_local.weight else None
 
 
+def explore_store(
+    ranked: list[RankedStore],
+    chosen: RankedStore,
+    local_id: StoreId,
+    *,
+    local_slot_full: bool,
+    share: float,
+    draw: float,
+    pick: float,
+) -> RankedStore | None:
+    """A candidate other than `chosen` when `draw` falls under `share`; `pick` in [0, 1) selects which."""
+    if draw >= share:
+        return None
+    others = [
+        candidate
+        for candidate in ranked
+        if candidate.store_id != chosen.store_id and (candidate.store_id != local_id or not local_slot_full)
+    ]
+    return others[int(pick * len(others))] if others else None
+
+
 @dataclass(frozen=True)
 class PreferLocal:
     """What `pick_store` weighs for a `preferLocalBuild` derivation the local store can build."""

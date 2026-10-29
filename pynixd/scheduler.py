@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import random
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
@@ -33,6 +34,7 @@ from .allocator import (
     RankedStore,
     RankedStores,
     TelemetryStoreRanker,
+    explore_store,
     pick_store,
 )
 from .build_queue import BuildQueue, QueuedBuild
@@ -216,6 +218,8 @@ class Scheduler:
         self._dynamic_feature_matrix: dict[str, set[str]] = {}
 
         self.ranker = TelemetryStoreRanker(ctx.settings)
+        self.rng = random.Random()  # noqa: S311 -- placement, not cryptography
+        """Draws for `explore_share`; a test seeds or replaces it."""
         self.allocator = BuildAllocator(self.stores, self.local_store, self.ranker)
         self.trigger_event = anyio.Event()
         self.running = False
@@ -679,8 +683,24 @@ class Scheduler:
                     else "the local slot is full, and no other candidate has room",
                 )
                 return True
+            share = self.ranker.settings.explore_share
+            explored = (
+                explore_store(
+                    [c for c in roomy if c.store_id not in build.store_failures],
+                    rs,
+                    local_store.store_id,
+                    local_slot_full=notes.local_slot_full,
+                    share=share,
+                    draw=self.rng.random(),
+                    pick=self.rng.random(),
+                )
+                if share > 0 and not prefer_local
+                else None
+            )
+            if explored is not None:
+                rs = explored
             notes.chosen = rs.store_id
-            notes.end(Outcome.ASSIGNED)
+            notes.end(Outcome.ASSIGNED, "exploration" if explored is not None else None)
             log.debug(
                 "build_assigned_to_store",
                 build_id=build.build_id,
