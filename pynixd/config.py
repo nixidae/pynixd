@@ -128,6 +128,18 @@ class StoreRankingSettings(BaseModel):
     nixidae/nixidae#1125.
     """
 
+    per_core_load: bool = False
+    """Price a running build, and one assigned in this pass, at one core's share of `cpu_idle_weight`.
+
+    A store then fills when its builds match its cores, and not after the
+    one or two builds that `concurrency_penalty` and `thundering_herd_penalty`
+    allow an idle store at any size. Those two stay the price for a store
+    whose cores are unknown. nixidae/nixidae#1125.
+    """
+
+    local_wins_ties: bool = False
+    """The local store ranks first among equal scores; otherwise last, as a fallback (nixidae/nixidae#1001)."""
+
     prefer_local_weight: float = 10.0
     """A `preferLocalBuild` derivation waits for a local slot until the wait
     passes this many times the best remote's delegation seconds. A guess, not

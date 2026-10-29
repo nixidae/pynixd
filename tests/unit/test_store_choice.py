@@ -230,6 +230,52 @@ class TestTheExpectedTime:
         assert not terms.passed
 
 
+class TestPerCoreLoad:
+    """A build costs one core's share of the CPU points. nixidae/nixidae#1125:
+    at 50 and 100 points a build, a 16-core store took one build per pass."""
+
+    @staticmethod
+    def _store(cores: float | None) -> FakeStore:
+        store = FakeStore(REMOTE)
+        store.cpu_util = SimpleNamespace(utilization=0.0)
+        store.monitor = cast("Any", SimpleNamespace(health=SimpleNamespace(cores=cores, psi=None)))
+        return store
+
+    def test_a_large_store_takes_a_build_per_core(self) -> None:
+        settings = StoreRankingSettings(per_core_load=True)
+
+        terms = score_store(cast("Any", self._store(16.0)), settings, 8, 4, None)
+
+        assert terms.concurrency_points == pytest.approx(-50.0)
+        assert terms.herd_points == pytest.approx(-25.0)
+        assert terms.passed
+
+    def test_a_store_of_unknown_cores_keeps_the_fixed_prices(self) -> None:
+        settings = StoreRankingSettings(per_core_load=True)
+
+        terms = score_store(cast("Any", self._store(None)), settings, 1, 1, None)
+
+        assert terms.concurrency_points == pytest.approx(-settings.concurrency_penalty)
+        assert terms.herd_points == pytest.approx(-settings.thundering_herd_penalty)
+
+
+class TestLocalWinsTies:
+    @staticmethod
+    def _rank(*, local_wins_ties: bool) -> list[StoreId]:
+        local = FakeStore(LOCAL_STORE_ID)
+        stores = {LOCAL_STORE_ID: local, REMOTE: FakeStore(REMOTE)}
+        settings = StoreRankingSettings(local_wins_ties=local_wins_ties)
+        ranker = TelemetryStoreRanker(cast("Any", SimpleNamespace(ranking=settings)))
+        allocator = BuildAllocator(cast("Any", stores), cast("Any", local), ranker)
+        return [candidate.store_id for candidate in allocator.rank_stores(cast("Any", FakeBuild()), {})]
+
+    def test_a_remote_wins_a_tie_by_default(self) -> None:
+        assert self._rank(local_wins_ties=False) == [REMOTE, LOCAL_STORE_ID]
+
+    def test_the_local_store_wins_a_tie_when_set(self) -> None:
+        assert self._rank(local_wins_ties=True) == [LOCAL_STORE_ID, REMOTE]
+
+
 class TestThePick:
     def test_takes_the_best_ranked(self) -> None:
         picked = pick_store(_ranked(REMOTE, LOCAL_STORE_ID), LOCAL_STORE_ID, local_slot_full=False)

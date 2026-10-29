@@ -82,8 +82,13 @@ def score_store(
     io_psi_points = -io_psi / 100.0 * settings.io_pressure_penalty if io_psi is not None else 0.0
     monitored = cpu is not None or psi is not None
     unmonitored_points = 0.0 if monitored else -settings.unmonitored_penalty
-    concurrency_points = -in_flight * settings.concurrency_penalty
-    herd_points = -assigned_this_pass * settings.thundering_herd_penalty
+    cores = store.monitor.health.cores if store.monitor else None
+    if settings.per_core_load and cores:
+        concurrency_points = -in_flight / cores * settings.cpu_idle_weight
+        herd_points = -assigned_this_pass / cores * settings.cpu_idle_weight
+    else:
+        concurrency_points = -in_flight * settings.concurrency_penalty
+        herd_points = -assigned_this_pass * settings.thundering_herd_penalty
     load_score = (
         cpu_idle_points
         + cpu_psi_points
@@ -343,13 +348,16 @@ class BuildAllocator:
         """Rank stores for a build using the injected ranker."""
         build_features = effective_required_features(build.request.derivation)
 
-        # The local store is a candidate like the others, and the last one:
-        # the sort is stable, so a remote wins a tie, as when the local store
-        # was only a fallback. nixidae/nixidae#1001.
+        # The local store is a candidate like the others. The sort is stable,
+        # so its place in this list decides a tie: last by default, as when it
+        # was only a fallback (nixidae/nixidae#1001), first with
+        # `local_wins_ties`.
         remotes = [store for store_id, store in self.stores.items() if store_id != self.local_store.store_id]
         excluded: list[ExcludedStore] = []
         capable: list[DaemonStore] = []
-        for store in [*remotes, self.local_store]:
+        settings = getattr(self.ranker, "settings", StoreRankingSettings())
+        order = [self.local_store, *remotes] if settings.local_wins_ties else [*remotes, self.local_store]
+        for store in order:
             reason = incapable_reason(store, build, build_features)
             if reason is None:
                 capable.append(store)
@@ -364,7 +372,6 @@ class BuildAllocator:
                 if getattr(store, "last_resort", False)
             ]
             capable = [store for store in capable if not getattr(store, "last_resort", False)]
-        settings = getattr(self.ranker, "settings", StoreRankingSettings())
         now = time.monotonic()
         candidates: list[DaemonStore] = []
         for store in capable:

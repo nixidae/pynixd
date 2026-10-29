@@ -36,7 +36,7 @@ def _monitored(store_id: StoreId, *, utilization: float, cpu_psi: float = 0.0, i
     store = FakeStore(store_id)
     store.cpu_util = SimpleNamespace(utilization=utilization)
     psi = SimpleNamespace(cpu=SimpleNamespace(some_avg10=cpu_psi), io=SimpleNamespace(some_avg10=io_psi))
-    store.monitor = cast("Any", SimpleNamespace(health=SimpleNamespace(psi=psi)))
+    store.monitor = cast("Any", SimpleNamespace(health=SimpleNamespace(psi=psi, cores=None)))
     return store
 
 
