@@ -5,6 +5,7 @@
 :caption: Contents
 
 umbrella
+options
 daemon-protocol/index
 ```
 

@@ -7,6 +7,7 @@
   myst-parser,
   furo,
   nixvenv,
+  optionsReference,
 }:
 let
   pythonEnv = nixvenv {
@@ -39,6 +40,7 @@ stdenvNoCC.mkDerivation {
 
   buildPhase = ''
     runHook preBuild
+    cp ${optionsReference} docs/options.md
     NIXIDAE_DOCS_OFFLINE=1 sphinx-build -b html docs "$out" -W
     runHook postBuild
   '';

@@ -391,9 +391,23 @@ let
           + "touch $out\n"
         );
   };
+  optionsReference = import ./nix/shared/options-reference.nix { inherit lib pkgs; } {
+    title = "NixOS module options";
+    inherit
+      (pkgs.nixos {
+        imports = [ ./nix/nixos ];
+        system.stateVersion = lib.trivial.release;
+      })
+      options
+      ;
+    prefixes = [ "services.pynixd" ];
+    root = ./.;
+    repository = "nixidae/pynixd";
+  };
+
   pynixd-docs = pkgs.python3Packages.callPackage ./nix/docs.nix {
     pynixd = library;
-    inherit nixvenv;
+    inherit nixvenv optionsReference;
   };
 
   tests = rec {
