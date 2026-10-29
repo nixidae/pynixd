@@ -66,8 +66,11 @@ def score_store(
     psi = store.monitor.health.psi if store.monitor else None
     cpu_psi = psi.cpu.some_avg10 if psi else None
     io_psi = psi.io.some_avg10 if psi else None
-    cpu_psi_points = -cpu_psi * settings.cpu_pressure_penalty if cpu_psi is not None else 0.0
-    io_psi_points = -io_psi * settings.io_pressure_penalty if io_psi is not None else 0.0
+    # PSI `avg10` is a percent; the division puts it on the CPU figure's scale.
+    # Undivided, 0.77 % of IO stall costs 38.5 of the 100 points an idle CPU
+    # earns (nixidae/nixidae#1125).
+    cpu_psi_points = -cpu_psi / 100.0 * settings.cpu_pressure_penalty if cpu_psi is not None else 0.0
+    io_psi_points = -io_psi / 100.0 * settings.io_pressure_penalty if io_psi is not None else 0.0
     monitored = cpu is not None or psi is not None
     unmonitored_points = 0.0 if monitored else -settings.unmonitored_penalty
     concurrency_points = -in_flight * settings.concurrency_penalty

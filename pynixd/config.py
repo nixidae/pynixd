@@ -88,10 +88,10 @@ class StoreRankingSettings(BaseModel):
     """Points for CPU availability: (1.0 - cpu_utilization) * cpu_idle_weight."""
 
     cpu_pressure_penalty: float = 50.0
-    """Penalty scaled by CPU PSI average: -(cpu_psi * cpu_pressure_penalty)."""
+    """Penalty for CPU PSI `some avg10`, a percent: -(cpu_psi / 100 * cpu_pressure_penalty)."""
 
     io_pressure_penalty: float = 50.0
-    """Penalty scaled by IO PSI average: -(io_psi * io_pressure_penalty)."""
+    """Penalty for IO PSI `some avg10`, a percent: -(io_psi / 100 * io_pressure_penalty)."""
 
     concurrency_penalty: float = 50.0
     """Penalty per running build: -(running_builds * concurrency_penalty)."""

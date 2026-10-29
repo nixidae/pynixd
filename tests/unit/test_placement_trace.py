@@ -49,11 +49,12 @@ class TestTheScore:
         terms = score_store(cast("Any", store), StoreRankingSettings(), 1, 1, 3.0)
 
         assert terms.cpu_idle_points == pytest.approx(60.0)
-        assert terms.cpu_psi_points == pytest.approx(-50.0)
-        assert terms.io_psi_points == pytest.approx(-100.0)
+        # PSI is a percent: 1 % and 2 % of a 50-point penalty.
+        assert terms.cpu_psi_points == pytest.approx(-0.5)
+        assert terms.io_psi_points == pytest.approx(-1.0)
         assert terms.concurrency_points == pytest.approx(-50.0)
         assert terms.herd_points == pytest.approx(-100.0)
-        assert terms.load_score == pytest.approx(60 - 50 - 100 - 50 - 100 - 5)
+        assert terms.load_score == pytest.approx(60 - 0.5 - 1.0 - 50 - 100 - 5)
         assert terms.transfer_points == pytest.approx(-30.0)
         assert terms.final_score == pytest.approx((terms.load_score - 30.0) * 2.0)
         assert not terms.passed
