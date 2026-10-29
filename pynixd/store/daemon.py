@@ -456,11 +456,13 @@ class DaemonStore(Store):
 
     @property
     def meminfo(self) -> MemInfo | None:
-        return None
+        """System memory info, or None if unavailable."""
+        return self.monitor.health.meminfo if self.monitor else None
 
     @property
     def cpu_util(self) -> CpuUtil | None:
-        return None
+        """CPU utilization from cgroupv2, or None if unavailable."""
+        return self.monitor.health.cpu_util if self.monitor else None
 
     # ── Connection pool ─────────────────────────────────────────────
 

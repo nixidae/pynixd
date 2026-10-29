@@ -37,10 +37,6 @@ if TYPE_CHECKING:
     from nix_daemon_protocol.ids import StoreId
 
     from ..agent import AgentStream
-    from ..psi import (
-        CpuUtil,
-        MemInfo,
-    )
 
 log = structlog.get_logger(__name__)
 
@@ -280,16 +276,6 @@ class SSHStore(DaemonStore):
         if time.monotonic() - self.monitor.health.timestamp > self.monitor.interval * 3:
             return None
         return self.monitor.health.psi.pressure_score()
-
-    @property
-    def meminfo(self) -> MemInfo | None:
-        """System memory info, or None if unavailable."""
-        return self.monitor.health.meminfo if self.monitor else None
-
-    @property
-    def cpu_util(self) -> CpuUtil | None:
-        """CPU utilization from cgroupv2, or None if unavailable."""
-        return self.monitor.health.cpu_util if self.monitor else None
 
     async def ensure_ssh(self) -> asyncssh.SSHClientConnection:
         """Establish or return the existing SSH connection, with backoff."""
