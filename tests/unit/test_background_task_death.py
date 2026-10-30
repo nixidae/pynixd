@@ -1,19 +1,20 @@
-"""A background task that dies says so at once, not at shutdown.
+"""A background loop that dies says so at once, and takes the server with it.
 
-The daemon's GC loop, liveness watch and loop-lag monitor run as tasks
-that only shutdown awaits. One that raised kept its exception, and the
-journal said nothing while the work it did stopped.
+The daemon's GC loop, liveness watch and loop-lag monitor run in the
+server's background task group. One that raised used to keep its
+exception until shutdown while the work it did stopped. Now the error
+is logged when it happens and leaves `async with Server(...)`.
 """
 
 from __future__ import annotations
-
-import asyncio
 
 import anyio
 import pytest
 import structlog.testing
 
-from pynixd.instance import _log_task_death
+from nix_daemon_protocol.ids import StoreId
+from pynixd import Server
+from tests.functional.mock_store import MockStore
 
 
 async def _fails() -> None:
@@ -24,27 +25,40 @@ async def _waits() -> None:
     await anyio.sleep(3600)
 
 
+def _server() -> Server:
+    return Server(
+        stores={StoreId("local"): MockStore("local", feature_matrix={"x86_64-linux": set()})},
+        ssh_port=None,
+        unix_path=None,
+        stall_traceback_seconds=0,
+    )
+
+
 @pytest.mark.anyio
-async def test_a_failed_task_is_logged_with_its_name_and_exception() -> None:
-    with structlog.testing.capture_logs() as logs:
-        task = asyncio.create_task(_fails(), name="the-gc-loop")
-        task.add_done_callback(_log_task_death)
-        with pytest.raises(RuntimeError):
-            await task
-        await anyio.sleep(0)
+async def test_a_failed_loop_is_logged_and_stops_the_server() -> None:
+    reached_the_end = False
+    with structlog.testing.capture_logs() as logs, pytest.raises(ExceptionGroup) as raised:
+        async with _server() as server:
+            server._spawn(_fails)
+            await anyio.sleep(3600)
+            reached_the_end = True
+    assert raised.group_contains(RuntimeError, match="boom", depth=None)
+    assert not reached_the_end
     failed = [entry for entry in logs if entry["event"] == "background_task_failed"]
-    assert [entry["task"] for entry in failed] == ["the-gc-loop"]
-    assert isinstance(failed[0]["exc_info"], RuntimeError)
+    assert len(failed) == 1
+    assert "_fails" in failed[0]["task"]
 
 
 @pytest.mark.anyio
-async def test_a_cancelled_task_is_not_a_failure() -> None:
+async def test_a_loop_cancelled_at_close_is_not_a_failure() -> None:
     with structlog.testing.capture_logs() as logs:
-        task = asyncio.create_task(_waits())
-        task.add_done_callback(_log_task_death)
-        await anyio.sleep(0)
-        task.cancel()
-        with pytest.raises(anyio.get_cancelled_exc_class()):
-            await task
-        await anyio.sleep(0)
+        async with _server() as server:
+            server._spawn(_waits)
+            await anyio.sleep(0)
     assert not [entry for entry in logs if entry["event"] == "background_task_failed"]
+
+
+@pytest.mark.anyio
+async def test_spawn_outside_async_with_refuses() -> None:
+    with pytest.raises(RuntimeError, match="async with"):
+        _server()._spawn(_waits)

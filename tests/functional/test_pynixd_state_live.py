@@ -90,14 +90,12 @@ async def test_state_federated_merges_a_registered_builder(tmp_path: Path) -> No
             stores={StoreId("local"): builder_local},
             settings=builder_settings,
         )
-        await builder.start()
-
         try:
-            await _wait_for_builder(controller, builder_store_id)
-            assert ctrl_settings.unix_path is not None
-            payload = await _query(ctrl_settings.unix_path, ["queue", "stores"], True)
+            async with builder:
+                await _wait_for_builder(controller, builder_store_id)
+                assert ctrl_settings.unix_path is not None
+                payload = await _query(ctrl_settings.unix_path, ["queue", "stores"], True)
         finally:
-            await builder.close()
             rmtree_robust(STORE_PREFIX / builder_store_id)
             rmtree_robust(STORE_PREFIX / "state-controller")
 

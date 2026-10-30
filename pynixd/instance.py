@@ -32,24 +32,25 @@ from .store_layout import DEFAULT_STORE_DIR
 from .unix_server import start_unix_server
 
 if TYPE_CHECKING:
-    from collections.abc import Coroutine, Mapping, Sequence
+    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
     from types import TracebackType
 
     import asyncssh
     from aiohttp import web
+    from anyio.abc import TaskGroup, TaskStatus
 
     from .daemon_extensions.pynixd_collect_garbage import PynixdCollectGarbageResponse
 
 log = structlog.get_logger(__name__)
 
 
-def _log_task_death(task: asyncio.Task[Any]) -> None:
-    """Log a background task that ended with an exception; a cancelled one stopped on purpose."""
-    if task.cancelled():
-        return
-    exc = task.exception()
-    if exc is not None:
-        log.error("background_task_failed", task=task.get_name(), exc_info=exc)
+async def _logged(name: str, fn: Callable[..., Awaitable[object]], *args: object) -> None:
+    """Run *fn*, and log it the moment it raises: shutdown may take a while to report it."""
+    try:
+        await fn(*args)
+    except Exception:
+        log.exception("background_task_failed", task=name)
+        raise
 
 
 def _trigger_due(now: float, last_trigger: float, cooldown: float) -> bool:
@@ -278,7 +279,6 @@ class Server:
         sessions = self.ctx.sessions
         metrics.watch_client_ops(lambda: [p.current_op[1] for p in sessions.proxies() if p.current_op is not None])
 
-        self.background_tasks: list[asyncio.Task[Any]] = []
         self.ssh_server: asyncssh.SSHAcceptor | None = None
         self.unix_server: asyncio.Server | None = None
         self.reverse_acceptor: asyncssh.SSHAcceptor | None = None
@@ -302,6 +302,9 @@ class Server:
         self.https_bound_port: int | None = None
         self._started = False
         self._done_event = anyio.Event()
+        self._background: TaskGroup | None = None
+        self._running: contextlib.AbstractAsyncContextManager[Server] | None = None
+        self._background_done = anyio.Event()
 
     @staticmethod
     def _ensure_unix_socket_parent(socket_path: Path) -> None:
@@ -418,16 +421,30 @@ class Server:
         # Finally, close the store connection
         await store.close()
 
-    def _spawn(self, coro: Coroutine[Any, Any, Any]) -> None:
-        """Run *coro* for the daemon's lifetime, and log it the moment it dies.
+    def _spawn(self, fn: Callable[..., Awaitable[object]], *args: object) -> None:
+        """Run *fn* for the daemon's lifetime, in the server's background task group.
 
-        A bare task keeps its exception until someone awaits it, and these
-        are awaited only at shutdown: a GC loop that raised stopped
-        collecting with nothing in the journal.
+        A loop that raises takes the server down with it: the error leaves
+        `async with Server(...)`, and systemd restarts the daemon.
         """
-        task = asyncio.create_task(coro, name=repr(coro))
-        task.add_done_callback(_log_task_death)
-        self.background_tasks.append(task)
+        if self._background is None:
+            raise RuntimeError("Server runs its background loops only inside `async with Server(...)`")
+        name = repr(fn)
+        self._background.start_soon(_logged, name, fn, *args, name=name)
+
+    async def _host_background(self, *, task_status: TaskStatus[TaskGroup]) -> None:
+        """Hold the background task group until `close` cancels it.
+
+        Its own group, not the one around `async with`: cancelling that one
+        would cancel the caller's body too, and `close` may run inside it.
+        """
+        try:
+            async with anyio.create_task_group() as background:
+                task_status.started(background)
+                await anyio.sleep_forever()
+        finally:
+            self._background = None
+            self._background_done.set()
 
     async def _gc_tick(self) -> None:
         """Watch the disk on a short cadence, collect on pressure or schedule.
@@ -651,16 +668,35 @@ class Server:
         return HealthReport(ok=ok, checks=checks)
 
     async def __aenter__(self) -> Server:
-        await self.start()
-        return self
+        running = self._run()
+        server = await running.__aenter__()
+        self._running = running
+        return server
 
     async def __aexit__(
         self,
-        _exc_type: type[BaseException] | None,
-        _exc_val: BaseException | None,
-        _exc_tb: TracebackType | None,
-    ) -> None:
-        await self.close()
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool | None:
+        running, self._running = self._running, None
+        if running is None:
+            raise RuntimeError("Server.__aexit__ without __aenter__")
+        return await running.__aexit__(exc_type, exc_val, exc_tb)
+
+    @contextlib.asynccontextmanager
+    async def _run(self) -> AsyncIterator[Server]:
+        """The server's lifetime: its background loops live in this task group."""
+        async with anyio.create_task_group() as tg:
+            self._background = await tg.start(self._host_background)
+            try:
+                await self.start()
+                yield self
+            finally:
+                # Shielded: a loop that failed has cancelled this scope, and
+                # the clients still get their shutdown error.
+                with anyio.CancelScope(shield=True):
+                    await self.close()
 
     async def start(self) -> None:
         """Start the server listeners and background tasks."""
@@ -749,10 +785,10 @@ class Server:
                     tg.start_soon(self.add_store, store, False)
 
         if self.ctx.scheduler:
-            self._spawn(self.ctx.scheduler.start())
+            self._spawn(self.ctx.scheduler.start)
 
         if self.ctx.db and self.ctx.settings.gc_enabled:
-            self._spawn(self._gc_tick())
+            self._spawn(self._gc_tick)
             liveness_interval = self.ctx.settings.gc_liveness_interval
             if liveness_interval is not None:
                 watch = LivenessWatch.from_local(self.ctx.local_store)
@@ -761,15 +797,15 @@ class Server:
                 else:
                     dirty = DirtyFlag()
                     roots = StableRootsWatch(watch.tracker.state_dir)
-                    self._spawn(roots.run(dirty))
-                    self._spawn(self._liveness_tick(watch, liveness_interval, dirty))
+                    self._spawn(roots.run, dirty)
+                    self._spawn(self._liveness_tick, watch, liveness_interval, dirty)
 
         # Before the listeners, so a stall during their startup is recorded.
         if self.stall_watchdog is not None:
             self.stall_watchdog.beat()
             self.stall_watchdog.start(asyncio.get_running_loop())
-        self._spawn(self.loop_lag.run())
-        self._spawn(self._warn_silent_upstreams())
+        self._spawn(self.loop_lag.run)
+        self._spawn(self._warn_silent_upstreams)
 
         s = self.settings
         if s.ssh_port is not None:
@@ -795,7 +831,7 @@ class Server:
 
         if s.reverse_initiator.enabled:
             initiator = _optional.reverse_client.ReverseInitiator(self.ctx, s.reverse_initiator)
-            self._spawn(initiator.run())
+            self._spawn(initiator.run)
 
         if s.unix_path:
             self._ensure_unix_socket_parent(s.unix_path)
@@ -893,11 +929,10 @@ class Server:
         if self.ctx.scheduler:
             await self.ctx.scheduler.close()
 
-        for task in self.background_tasks:
-            task.cancel()
-            with contextlib.suppress(BaseException):
-                await task
-        self.background_tasks.clear()
+        background = self._background
+        if background is not None:
+            background.cancel_scope.cancel()
+            await self._background_done.wait()
 
         for store in self.ctx._stores.values():
             await store.close()

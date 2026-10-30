@@ -271,7 +271,11 @@ Every instruction in this file is a default. The user's explicit direction overr
 
 ## 8. Async Task & Lifecycle Rules
 
-- **Structured Concurrency**: For short-lived, bounded concurrent operations (e.g., fanning out requests, concurrent streams within a single handler, or parallel passes like GC), ALWAYS use `anyio.create_task_group` — never `asyncio.gather` or manual `create_task` management. `asyncio.TaskGroup` is better than `gather` but still the fallback: it is banned by TID251 (`ruff.toml`), and only where anyio is unavailable does it apply.
-- **Task Tracking**: Long-lived daemon components (Servers, Pools, Monitors) should continue using explicit `start()`/`close()` lifecycle methods. All background tasks created via `asyncio.create_task` in these components MUST be tracked (e.g., in a list or as a class attribute) and properly cleaned up during the component's `close()` or `stop()` method.
-- **Graceful Shutdown**: When awaiting a cancelled background task during shutdown, ALWAYS use `with contextlib.suppress(Exception, asyncio.CancelledError):`. This ensures that if a task failed with an unhandled exception during its lifetime, that exception does not crash the shutdown sequence.
-- **Orphaned Tasks**: Avoid orphaned tasks. If a `TaskGroup` cannot be used, ensure helper tasks use a `try...finally` block to guarantee they are cancelled and awaited if the primary operation fails.
+Structured concurrency everywhere; nixidae/nixidae#1143 tracks the sites still outside it.
+
+- Every task runs in an `anyio` task group that some caller owns. No `asyncio.create_task`, `gather`, `wait_for`, `Future` hand-off or `shield` in new code.
+- Short-lived fan-out: `async with anyio.create_task_group()` in the function that needs it.
+- Long-lived loops: started into the owner's task group. `Server` owns one for its lifetime (`async with Server(...)`); `Server._spawn(fn, *args)` starts into it. `Server.start()` alone cannot run background loops.
+- A long-lived loop that raises takes its owner down. A loop catches the errors it expects; an unexpected one ends the daemon, and systemd restarts it.
+- Timeouts: `anyio.fail_after` / `move_on_after`. Cleanup that must finish under cancellation: `anyio.CancelScope(shield=True)`.
+- A site that stays unstructured carries a comment saying why. Rare: a callback API with no async form (`loop.call_later` for write lingering), or an asyncio-only library (asyncssh).

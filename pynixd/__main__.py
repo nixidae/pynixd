@@ -45,15 +45,14 @@ async def async_daemon_main() -> None:
 
     async with anyio.create_task_group() as tg:
         tg.start_soon(_handle_signals)
-        await server.start()
-        # After every listener is bound: in `replace` mode the daemon socket
-        # is one, and `Type=notify` holds back what is ordered after us.
-        notify("READY=1")
-        await shutdown_event.wait()
+        async with server:
+            # After every listener is bound: in `replace` mode the daemon
+            # socket is one, and `Type=notify` holds back what is ordered
+            # after us.
+            notify("READY=1")
+            await shutdown_event.wait()
+            notify("STOPPING=1")
         tg.cancel_scope.cancel()
-
-    notify("STOPPING=1")
-    await server.close()
 
 
 def daemon_main(_args: argparse.Namespace) -> None:

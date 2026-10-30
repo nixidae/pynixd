@@ -114,25 +114,23 @@ async def test_reverse_store_registration(tmp_path: Path) -> None:
             stores={StoreId("local"): builder_local},
             settings=builder_settings,
         )
-        await builder.start()
-
         try:
-            store_id = StoreId(builder_store_id)
+            async with builder:
+                store_id = StoreId(builder_store_id)
 
-            for _ in range(50):
-                if store_id in controller.stores:
-                    break
-                await anyio.sleep(0.1)
-            else:
-                pytest.fail("Builder did not register within 5 seconds")
+                for _ in range(50):
+                    if store_id in controller.stores:
+                        break
+                    await anyio.sleep(0.1)
+                else:
+                    pytest.fail("Builder did not register within 5 seconds")
 
-            store = controller.stores[store_id]
-            assert store.store_id == store_id
-            assert isinstance(store, DaemonStore)
-            assert store.systems == {"x86_64-linux"}
+                store = controller.stores[store_id]
+                assert store.store_id == store_id
+                assert isinstance(store, DaemonStore)
+                assert store.systems == {"x86_64-linux"}
 
         finally:
-            await builder.close()
             rmtree_robust(STORE_PREFIX / builder_store_id)
 
 
@@ -155,15 +153,13 @@ async def test_reverse_wrong_builder_key_registers_nothing(tmp_path: Path) -> No
             stores={StoreId("local"): builder_local},
             settings=builder_settings,
         )
-        await builder.start()
-
         try:
-            for _ in range(20):
-                if StoreId(builder_store_id) in controller.stores:
-                    pytest.fail("Rogue builder registered with an unpinned key")
-                await anyio.sleep(0.1)
+            async with builder:
+                for _ in range(20):
+                    if StoreId(builder_store_id) in controller.stores:
+                        pytest.fail("Rogue builder registered with an unpinned key")
+                    await anyio.sleep(0.1)
         finally:
-            await builder.close()
             rmtree_robust(STORE_PREFIX / builder_store_id)
 
 
@@ -220,46 +216,44 @@ async def test_delegated_build_runs_on_the_builder(tmp_path: Path) -> None:
             stores={StoreId("local"): builder_local},
             settings=builder_settings,
         )
-        await builder.start()
-
         try:
-            await _wait_for_builder(controller, builder_store_id)
+            async with builder:
+                await _wait_for_builder(controller, builder_store_id)
 
-            expr_path = tmp_path / "delegated.nix"
-            expr_path.write_text(_DELEGATED_EXPR)  # noqa: ASYNC240 -- test setup
-            uri = f"unix://{ctrl_settings.unix_path}?root={ctrl_local.store_path}"
+                expr_path = tmp_path / "delegated.nix"
+                expr_path.write_text(_DELEGATED_EXPR)  # noqa: ASYNC240 -- test setup
+                uri = f"unix://{ctrl_settings.unix_path}?root={ctrl_local.store_path}"
 
-            rc, stdout, stderr, _both = await run_subproc(
-                [
-                    str(CLIENT_BIN),
-                    "build",
-                    "--file",
-                    str(expr_path),
-                    "--store",
-                    uri,
-                    "--no-link",
-                    "--print-out-paths",
-                    "--print-build-logs",
-                    "--impure",
-                ],
-            )
-            assert rc == 0, stderr
-            assert "/nix/store/" in stdout
-            # The controller-local store supports no system, so no local
-            # build was possible: the builder is the only store that could
-            # have answered, and it says so on the client log.
-            assert f"building on {builder_store_id}" in stderr
+                rc, stdout, stderr, _both = await run_subproc(
+                    [
+                        str(CLIENT_BIN),
+                        "build",
+                        "--file",
+                        str(expr_path),
+                        "--store",
+                        uri,
+                        "--no-link",
+                        "--print-out-paths",
+                        "--print-build-logs",
+                        "--impure",
+                    ],
+                )
+                assert rc == 0, stderr
+                assert "/nix/store/" in stdout
+                # The controller-local store supports no system, so no local
+                # build was possible: the builder is the only store that could
+                # have answered, and it says so on the client log.
+                assert f"building on {builder_store_id}" in stderr
 
-            # The builder's own pynixd streams its host's samples, disk
-            # included, with nothing else deployed. nixidae/nixidae#1016.
-            reverse = controller.stores[StoreId(builder_store_id)]
-            assert isinstance(reverse, DaemonStore)
-            with anyio.fail_after(10):
-                while reverse.monitor is None or reverse.monitor.health.disk is None:
-                    await anyio.sleep(0.1)
-            assert reverse.monitor.health.meminfo is not None
+                # The builder's own pynixd streams its host's samples, disk
+                # included, with nothing else deployed. nixidae/nixidae#1016.
+                reverse = controller.stores[StoreId(builder_store_id)]
+                assert isinstance(reverse, DaemonStore)
+                with anyio.fail_after(10):
+                    while reverse.monitor is None or reverse.monitor.health.disk is None:
+                        await anyio.sleep(0.1)
+                assert reverse.monitor.health.meminfo is not None
         finally:
-            await builder.close()
             rmtree_robust(STORE_PREFIX / builder_store_id)
             rmtree_robust(STORE_PREFIX / "delegation-controller")
 
@@ -324,15 +318,13 @@ async def test_builder_with_no_serve_path_registers_nothing(tmp_path: Path) -> N
             stores={StoreId("local"): builder_local},
             settings=builder_settings,
         )
-        await builder.start()
-
         try:
-            # The builder redials about every second; every attempt must
-            # refuse at the probe, so three seconds of dials prove refusal.
-            await anyio.sleep(3.0)
-            if StoreId(builder_store_id) in controller.stores:
-                pytest.fail("Builder with no serve path registered")
+            async with builder:
+                # The builder redials about every second; every attempt must
+                # refuse at the probe, so three seconds of dials prove refusal.
+                await anyio.sleep(3.0)
+                if StoreId(builder_store_id) in controller.stores:
+                    pytest.fail("Builder with no serve path registered")
         finally:
-            await builder.close()
             rmtree_robust(STORE_PREFIX / builder_store_id)
             rmtree_robust(STORE_PREFIX / "delegation-controller")

@@ -27,9 +27,7 @@ async def test_dynamic_store_management() -> None:
     local_store = MockStore("local", feature_matrix={"x86_64-linux": set()})
 
     server = Server(stores={StoreId("local"): local_store}, http_port=0, http_enable_metrics=True)
-    await server.start()
-
-    try:
+    async with server:
         scheduler = server.scheduler
         assert scheduler is not None
         assert len(scheduler.stores) == 0
@@ -98,9 +96,6 @@ async def test_dynamic_store_management() -> None:
         assert queued_build.assigned_store_id != "remote1"
         assert queued_build.retries == 1
 
-    finally:
-        await server.close()
-
 
 async def test_prometheus_metrics_endpoint() -> None:
     """Verify that the /metrics endpoint serves Prometheus data."""
@@ -113,9 +108,7 @@ async def test_prometheus_metrics_endpoint() -> None:
         http_enable_metrics=True,
         http_metrics_no_auth=True,
     )
-    await server.start()
-
-    try:
+    async with server:
         port = server.http_bound_port
         url = f"http://127.0.0.1:{port}/metrics"
 
@@ -125,6 +118,3 @@ async def test_prometheus_metrics_endpoint() -> None:
 
             # Check for our custom metrics
             assert "pynixd_build_queue_size" in text
-
-    finally:
-        await server.close()
