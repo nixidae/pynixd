@@ -480,34 +480,45 @@ def refresh_roots(db_path: Path, stable: dict[str, tuple[str, str]]) -> bool:
 
 
 def write_snapshot(db_path: Path, live: set[str], epoch: int) -> None:
-    """A complete liveness snapshot tagged with `epoch`, in one transaction.
+    """Make the table hold exactly `live`, writing only what changed.
 
-    Atomicity is the whole leak argument: the replace commits at once, so a
-    pass that dies leaves the previous complete snapshot, never a partial
-    epoch. Readers take the newest epoch; the prune drops anything older,
-    which only an unclean recovery could leave behind. Dead needs no rows:
-    it is the complement against `ValidPaths`.
+    The new set goes into a TEMP table first, which takes no lock on Nix's
+    database. One write transaction then deletes the paths that left and
+    inserts the ones that joined, stamped with `epoch`; an unchanged set
+    writes nothing. Deleting and reinserting all of it held Nix's write
+    lock for every row on every pass: 94k rows on dynhetz.
+
+    The transaction is the leak argument: it commits at once, so a pass
+    that dies leaves the previous complete set, never a partial one. Dead
+    needs no rows: it is the complement against `ValidPaths`.
     """
-    with closing(sqlite3.connect(db_path)) as conn:
+    with closing(sqlite3.connect(db_path, isolation_level=None)) as conn:
         # Same wait as the roots reconcile above: a snapshot that gives
         # up at once leaves no liveness evidence for that interval.
         conn.execute("PRAGMA busy_timeout = 5000")
-        with conn:
-            conn.execute(f"DELETE FROM {LIVENESS_TABLE}")
-            conn.executemany(
-                f"INSERT INTO {LIVENESS_TABLE} (path, epoch) VALUES (?, ?)",
-                [(path, epoch) for path in sorted(live)],
-            )
+        conn.execute("CREATE TEMP TABLE live_now(path TEXT PRIMARY KEY)")
+        conn.execute(
+            "INSERT INTO live_now SELECT value FROM json_each(?)",
+            (json.dumps(sorted(live)),),
+        )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(f"DELETE FROM {LIVENESS_TABLE} WHERE path NOT IN (SELECT path FROM live_now)")
+            conn.execute(f"INSERT OR IGNORE INTO {LIVENESS_TABLE} (path, epoch) SELECT path, ? FROM live_now", (epoch,))
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def read_snapshot(db_path: Path) -> tuple[set[str], int] | None:
-    """The newest snapshot: `(live paths, epoch)`, or `None` when empty."""
+    """The live set and the newest `epoch` a path joined it at, or `None` when empty."""
     with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
         row = conn.execute(f"SELECT COALESCE(MAX(epoch), -1) FROM {LIVENESS_TABLE}").fetchone()
         epoch = int(row[0])
         if epoch < 0:
             return None
-        live = {r[0] for r in conn.execute(f"SELECT path FROM {LIVENESS_TABLE} WHERE epoch = ?", (epoch,))}
+        live = {r[0] for r in conn.execute(f"SELECT path FROM {LIVENESS_TABLE}")}
     return (live, epoch)
 
 

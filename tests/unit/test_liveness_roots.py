@@ -277,6 +277,23 @@ def test_snapshot_round_trips_and_replaces(tmp_path: Path) -> None:
         assert conn.execute(f"SELECT COUNT(*) FROM {LIVENESS_TABLE}").fetchone()[0] == 2
 
 
+def test_snapshot_writes_only_what_changed(tmp_path: Path) -> None:
+    """A path that stays keeps its row: its stamp is still the epoch it joined at."""
+    db = tmp_path / "db.sqlite"
+    _tiny_db(db)
+    a = "/fake/store/00000000000000000000000000000001-a"
+    b = "/fake/store/00000000000000000000000000000002-b"
+    c = "/fake/store/00000000000000000000000000000003-c"
+
+    write_snapshot(db, {a, b}, 7)
+    write_snapshot(db, {b, c}, 9)
+    write_snapshot(db, {b, c}, 11)
+
+    with closing(sqlite3.connect(db)) as conn:
+        rows = dict(conn.execute(f"SELECT path, epoch FROM {LIVENESS_TABLE}").fetchall())
+    assert rows == {b: 7, c: 9}
+
+
 def test_live_locked_temp_file_seeds_and_survives(tmp_path: Path) -> None:
     """A lock held by a living process is a live root, and the file stays.
 
