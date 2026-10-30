@@ -14,11 +14,18 @@ a stale mirror, because the anchor check still walks the whole trees.
 What wakes the check, and why each is safe:
 
 - create/delete/move under either tree: every entry there is a root or
-  a directory of roots. The watch is recursive, so a new subdirectory is
-  covered from birth; the check re-walks the whole tree anyway.
+  a directory of roots. The watch on each tree is recursive, so a new
+  subdirectory is covered from birth; the check re-walks the whole tree
+  anyway.
 - the state dir itself: only a tree appearing or leaving counts, so the
   churn under `temproots/` never wakes anyone. This closes the startup
   gap where a tree does not exist yet.
+
+The state dir watch is not recursive. A recursive one puts an inotify
+watch on every directory under it, and `builds/` alone holds hundreds
+(578 measured on dynhetz), none of them a root (nixidae/nixidae#1142).
+A tree that appears gets its recursive watch then; one that leaves loses
+it, since the kernel drops a watch on a deleted directory.
 
 What never wakes it: symlinked directories are not descended into, the
 way neither Nix (`findRoots` reads `symlink_status`, `gc.cc:250`) nor
@@ -39,6 +46,7 @@ import structlog
 from anyio.to_thread import run_sync
 from watchdog.events import FileSystemEvent, FileSystemEventHandler, FileSystemMovedEvent
 from watchdog.observers import Observer
+from watchdog.observers.api import ObservedWatch
 
 from .liveness import STABLE_TREES
 
@@ -84,58 +92,86 @@ class DirtyFlag:
         self._event = anyio.Event()
 
 
-class _RootsHandler(FileSystemEventHandler):
-    """Queue a token for every event that may have moved the roots.
+class _TreeHandler(FileSystemEventHandler):
+    """Queue a token for every event inside a tree: each may move a root.
 
     Runs on the observer's thread and touches nothing but the queue, so
     it needs no loop and no synchronisation beyond the queue itself.
     """
 
-    def __init__(self, state_dir: Path, wake: queue.Queue[bool]) -> None:
+    def __init__(self, wake: queue.Queue[bool]) -> None:
         super().__init__()
-        self.state_dir = state_dir
         self.wake = wake
 
     def on_any_event(self, event: FileSystemEvent) -> None:
-        if self._relevant(_as_str(event.src_path)):
-            self.wake.put(True)
+        self.wake.put(True)
+
+
+_TREE_MOVES = frozenset({"created", "deleted", "moved"})
+
+
+class _StateDirHandler(FileSystemEventHandler):
+    """Follow the trees appearing and leaving in the state dir.
+
+    Anything else there -- `temproots/`, `db/`, `daemon-socket/` -- is
+    churn the check must sleep through.
+    """
+
+    def __init__(self, watch: StableRootsWatch, wake: queue.Queue[bool]) -> None:
+        super().__init__()
+        self.watch = watch
+        self.wake = wake
+
+    def on_any_event(self, event: FileSystemEvent) -> None:
+        if event.event_type not in _TREE_MOVES:
             return
-        if isinstance(event, FileSystemMovedEvent) and self._relevant(_as_str(event.dest_path)):
-            self.wake.put(True)
-
-    def _relevant(self, path: str) -> bool:
-        """True when *path* is a tree, or under one.
-
-        Anything else under the state dir -- `temproots/`, `db/`,
-        `daemon-socket/` -- is churn the check must sleep through.
-        """
-        try:
-            rel = Path(path).relative_to(self.state_dir)
-        except ValueError:
-            return False
-        if len(rel.parts) == 0:
-            # The watched root itself (a directory-modified event on it):
-            # it names no child, and every child change reports itself,
-            # so there is nothing to attribute. Coalescing backends may
-            # hide the child behind this, and then the periodic poll --
-            # the anchor, not the watch -- catches it.
-            return False
-        if len(rel.parts) == 1:
-            return rel.parts[0] in STABLE_TREES
-        return rel.parts[0] in STABLE_TREES
+        names = {Path(_as_str(event.src_path)).name}
+        if isinstance(event, FileSystemMovedEvent):
+            names.add(Path(_as_str(event.dest_path)).name)
+        trees = names & STABLE_TREES.keys()
+        if not trees:
+            return
+        for tree in trees:
+            self.watch.rewatch(tree)
+        self.wake.put(True)
 
 
 class StableRootsWatch:
-    """A recursive watch over the stable root trees, as a dirty flag."""
+    """A recursive watch over each stable root tree, as a dirty flag."""
 
     def __init__(self, state_dir: Path) -> None:
         self.state_dir = state_dir
+        self._observer = Observer()
+        self._handler: _TreeHandler | None = None
+        self._trees: dict[str, ObservedWatch] = {}
+
+    def rewatch(self, tree: str) -> None:
+        """Drop *tree*'s watch and schedule a new one if the tree is a directory.
+
+        A watch whose directory was deleted is dead, and watchdog keys
+        watches by path, so a tree that comes back needs the old one gone
+        first. Never a symlink: Nix does not descend one (`gc.cc:313`).
+        """
+        old = self._trees.pop(tree, None)
+        if old is not None:
+            self._observer.unschedule(old)
+        path = self.state_dir / tree
+        if self._handler is None or path.is_symlink() or not path.is_dir():
+            return
+        try:
+            self._trees[tree] = self._observer.schedule(self._handler, str(path), recursive=True)
+        except OSError as exc:
+            # Gone again before the watch landed; its delete event follows.
+            log.debug("stable_roots_tree_vanished", tree=tree, error=str(exc))
 
     async def run(self, dirty: DirtyFlag) -> None:
         """Watch until cancelled, setting *dirty* on every relevant change."""
         wake: queue.Queue[bool] = queue.Queue()
-        observer = Observer()
-        observer.schedule(_RootsHandler(self.state_dir, wake), str(self.state_dir), recursive=True)
+        observer = self._observer
+        self._handler = _TreeHandler(wake)
+        observer.schedule(_StateDirHandler(self, wake), str(self.state_dir), recursive=False)
+        for tree in STABLE_TREES:
+            self.rewatch(tree)
         try:
             observer.start()
         except OSError as exc:

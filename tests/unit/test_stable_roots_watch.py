@@ -108,6 +108,92 @@ async def test_the_profiles_tree_is_watched(tmp_path: Path) -> None:
     assert await _wakes(tmp_path, lambda: (profiles / "profile").unlink())
 
 
+async def _wakes_after(state: Path, setup: Callable[[], None], action: Callable[[], None]) -> bool:
+    """Whether *action* wakes the check once *setup*'s own wake is spent."""
+    watch = StableRootsWatch(state)
+    dirty = DirtyFlag()
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(watch.run, dirty)
+        await anyio.sleep(0.2)
+        setup()
+        with anyio.move_on_after(10):
+            await dirty.wait()
+        await anyio.sleep(0.2)
+        dirty.clear()
+        with anyio.move_on_after(0.5):
+            await dirty.wait()
+        assert not dirty.is_set(), "setup still waking: the action proves nothing"
+        action()
+        with anyio.move_on_after(10):
+            await dirty.wait()
+        tg.cancel_scope.cancel()
+    return dirty.is_set()
+
+
+def _inotify_watches() -> int:
+    """Inotify watches this process holds, from `/proc/self/fdinfo`."""
+    return sum(
+        line.startswith("inotify wd:")
+        for info in Path("/proc/self/fdinfo").iterdir()
+        for line in _fdinfo(info).splitlines()
+    )
+
+
+def _fdinfo(info: Path) -> str:
+    try:
+        return info.read_text()
+    except OSError:  # an fd closed between listing and reading
+        return ""
+
+
+@pytest.mark.anyio
+async def test_a_tree_that_appears_late_is_watched(tmp_path: Path) -> None:
+    """A link under a `gcroots/` made after start wakes, not only its birth."""
+    per_user = tmp_path / "gcroots" / "per-user"
+
+    assert await _wakes_after(
+        tmp_path,
+        lambda: per_user.mkdir(parents=True),
+        lambda: (per_user / "x").symlink_to(TARGET),
+    )
+
+
+@pytest.mark.anyio
+async def test_a_tree_that_comes_back_is_watched(tmp_path: Path) -> None:
+    """The old watch died with the old directory; the new one gets its own."""
+    auto, _profiles = _lab(tmp_path)
+
+    def replace() -> None:
+        (auto / "direct").unlink()
+        auto.rmdir()
+        auto.parent.rmdir()
+        auto.mkdir(parents=True)
+
+    assert await _wakes_after(tmp_path, replace, lambda: (auto / "new").symlink_to(TARGET))
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(not Path("/proc/self/fdinfo").is_dir(), reason="inotify fdinfo is Linux only")
+async def test_no_watch_outside_the_trees(tmp_path: Path) -> None:
+    """`builds/` and the rest get no watch (nixidae/nixidae#1142).
+
+    One watch for the state dir, one per directory inside the trees:
+    `gcroots`, `gcroots/auto` and `profiles`.
+    """
+    _lab(tmp_path)
+    for n in range(50):
+        (tmp_path / "builds" / str(n) / "deep").mkdir(parents=True)
+    before = _inotify_watches()
+    watch = StableRootsWatch(tmp_path)
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(watch.run, DirtyFlag())
+        await anyio.sleep(0.2)
+        held = _inotify_watches() - before
+        tg.cancel_scope.cancel()
+
+    assert held == 4
+
+
 @pytest.mark.anyio
 async def test_churn_outside_the_trees_stays_quiet(tmp_path: Path) -> None:
     """`temproots/` churn must never wake the check."""
