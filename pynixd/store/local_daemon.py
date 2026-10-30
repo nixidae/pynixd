@@ -183,7 +183,7 @@ class LocalStore(DaemonStore):
         self.monitor_enabled = spec.monitor
         self.daemon_proc: asyncio.subprocess.Process | None = None
         self.daemon_ready: anyio.Event | None = None
-        self._daemon_log_task: asyncio.Task[None] | None = None
+        self._daemon_log_scope: anyio.CancelScope | None = None
         # The last lines the daemon wrote, for the error paths of
         # `ensure_daemon`. Those used to call `daemon_proc.stderr.read()`, but
         # `_stream_daemon_output` holds a `readline()` on that same stream from
@@ -322,10 +322,7 @@ class LocalStore(DaemonStore):
         )
 
         if self.daemon_proc.stdout:
-            self._daemon_log_task = asyncio.create_task(
-                self._stream_daemon_output(),
-                name="daemon-log-forwarder",
-            )
+            self._daemon_log_scope = self._background.spawn(self._stream_daemon_output)
 
         # Wait for the socket file to appear.
         deadline = time.monotonic() + _DAEMON_START_TIMEOUT
@@ -519,10 +516,9 @@ class LocalStore(DaemonStore):
         await super().close()
         if self.monitor:
             self.monitor.stop()
-        if self._daemon_log_task and not self._daemon_log_task.done():
-            self._daemon_log_task.cancel()
-            with contextlib.suppress(BaseException):
-                await self._daemon_log_task
+        if self._daemon_log_scope is not None:
+            self._daemon_log_scope.cancel()
+            self._daemon_log_scope = None
         await self._kill_daemon()
 
     async def _kill_daemon(self) -> None:
