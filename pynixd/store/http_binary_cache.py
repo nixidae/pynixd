@@ -275,8 +275,18 @@ class HTTPBinaryCacheStore(Store):
             if response.status != 200:
                 raise RuntimeError(f"HTTP cache returned {response.status} for {nar_url}")
             decompressor = _decompressor(narinfo.compression)
+            # `lzma`, `bz2`, `zlib` and `zstandard` release the GIL while they
+            # decompress: four xz streams on four threads ran 3.8x faster than
+            # one after the other (dynhetz, 2026-10-30). On the loop, one xz
+            # NAR stalls every client of the daemon.
+            passthrough = isinstance(decompressor, _PassthroughDecompressor)
             async for chunk in response.content.iter_chunked(_HTTP_CHUNK_SIZE):
-                for out in decompressor.decompress(chunk):
+                outs = (
+                    decompressor.decompress(chunk)
+                    if passthrough
+                    else await anyio.to_thread.run_sync(decompressor.decompress, chunk)
+                )
+                for out in outs:
                     if out:
                         yield out
             for out in decompressor.finish():

@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import gzip
+import lzma
 import socket
+import threading
 from typing import TYPE_CHECKING
 
+import pytest
 from aiohttp import web
 
 from nix_daemon_protocol.ids import StoreId
 from pynixd.config import HTTPBinaryCacheSpec
 from pynixd.serde import IsValidPathRequest, QueryPathInfoRequest, QueryValidPathsRequest
-from pynixd.store.http_binary_cache import HTTPBinaryCacheStore
+from pynixd.store.http_binary_cache import HTTPBinaryCacheStore, _XzDecompressor
 from pynixd.store_path import StorePath
 
 if TYPE_CHECKING:
@@ -144,3 +147,30 @@ async def test_http_binary_cache_streams_decompressed_nar() -> None:
             assert b"".join(chunks) == _NAR
         finally:
             await store.close()
+
+
+async def test_http_binary_cache_decompresses_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An xz NAR decompresses on a worker thread, so it cannot stall the loop."""
+    threads: list[int] = []
+    decompress = _XzDecompressor.decompress
+
+    def recording(self: _XzDecompressor, chunk: bytes) -> list[bytes]:
+        threads.append(threading.get_ident())
+        return decompress(self, chunk)
+
+    monkeypatch.setattr(_XzDecompressor, "decompress", recording)
+    async for url in _serve(_narinfo(compression="xz", url=f"nar/{_HASH}.nar.xz"), nar=lzma.compress(_NAR)):
+        store = HTTPBinaryCacheStore(
+            HTTPBinaryCacheSpec(store_id=StoreId("cache"), url=url),
+        )
+        await store.start()
+        try:
+            narinfo = await store.get_narinfo(StorePath(_PATH))
+            assert narinfo is not None
+            chunks = [chunk async for chunk in store.stream_nar(narinfo)]
+            assert b"".join(chunks) == _NAR
+        finally:
+            await store.close()
+
+    assert threads
+    assert threading.get_ident() not in threads
