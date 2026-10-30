@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from nix_daemon_protocol.store_dir import on_disk
 
 from ..connection import Connection
-from ..drv_parser import drv_text, parse_drv
+from ..drv_parser import parse_drv_bytes
 from ..store_path import StorePath
 from ..unix_socket import open_unix_connection
 from ..wire import UnixNixReader, UnixNixWriter
@@ -60,4 +60,4 @@ class ExternalUnixStore(DaemonStore):
         except (FileNotFoundError, OSError):
             return await super().read_derivation(drv_store_path)
 
-        return parse_drv(drv_text(contents))
+        return await parse_drv_bytes(contents)

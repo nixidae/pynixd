@@ -500,7 +500,7 @@ class LocalStore(DaemonStore):
 
     async def read_derivation(self, drv_store_path: StorePath | str) -> Derivation | None:
         """Fast-path: read .drv file directly from the filesystem."""
-        from ..drv_parser import drv_text, parse_drv
+        from ..drv_parser import parse_drv_bytes
 
         # `on_disk` and not `self.store_path / "nix" / "store" / ...`.
         # `real_store_dir()` is where the files of the store are, and a chroot
@@ -512,7 +512,7 @@ class LocalStore(DaemonStore):
         except (FileNotFoundError, OSError):
             return await super().read_derivation(drv_store_path)
 
-        return parse_drv(drv_text(contents))
+        return await parse_drv_bytes(contents)
 
     async def close(self) -> None:
         """Close stores, stop monitor and terminate managed daemon if any."""

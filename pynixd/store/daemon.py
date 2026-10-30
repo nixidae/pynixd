@@ -32,7 +32,7 @@ from .._lazy import ssh_errors
 from ..config import PressureSettings
 from ..constants import FEATURE_REALISATION_WITH_PATH
 from ..drv_hash import output_hashes
-from ..drv_parser import drv_bytes, drv_text
+from ..drv_parser import drv_bytes, parse_drv_bytes
 from ..exceptions import BackendError
 from ..monitor import ResourceMonitor
 from ..pressure import BuildLimit
@@ -1401,7 +1401,6 @@ class DaemonStore(Store):
     async def read_derivation(self, drv_store_path: StorePath | str) -> Derivation | None:
         """Fetch and parse a .drv file from the daemon via NAR stream."""
 
-        from ..drv_parser import parse_drv
         from ..nar import NarRegular, parse_nar
         from ..serde import IsValidPathRequest, NarFromPathRequest, QueryPathInfoRequest, StorePath
 
@@ -1435,7 +1434,7 @@ class DaemonStore(Store):
             log.warning("drv_not_found", drv_path=str(drv_store_path), reason="not_regular_file")
             return None
 
-        return parse_drv(drv_text(node.contents))
+        return await parse_drv_bytes(node.contents)
 
 
 for _op, _method_name in {

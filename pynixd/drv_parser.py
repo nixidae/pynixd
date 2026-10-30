@@ -683,8 +683,38 @@ _ESCAPES = {"n": "\n", "r": "\r", "t": "\t"}
 """`parseString` at `derivations.cc:188-205` maps these three, and any other `\\x` to `x`."""
 
 
+_PIECE = 1 << 20
+"""The most text one C call of the parser handles: about 6 ms of held GIL.
+
+`parse_drv_bytes` parses a large `.drv` on a worker thread, and a thread
+hands the GIL to the event loop only between calls. One regex over a 19.5 MB
+value held it 0.13 s (nixidae/nixidae#1139).
+"""
+
+
 def _unescape(body: str) -> str:
-    """The value of an ATerm string body, by `str.replace` and not per escape.
+    """The value of an ATerm string body, one `_PIECE` at a time.
+
+    A cut never splits an escape: an odd run of backslashes in front of it
+    means the last one escapes the character after the cut.
+    """
+    if "\\" not in body:
+        return body
+    pieces: list[str] = []
+    start = 0
+    while start < len(body):
+        cut = min(start + _PIECE, len(body))
+        run = 0
+        while cut - run > start and body[cut - run - 1] == "\\":
+            run += 1
+        cut += run % 2
+        pieces.append(_unescape_piece(body[start:cut]))
+        start = cut
+    return "".join(pieces)
+
+
+def _unescape_piece(body: str) -> str:
+    """The value of a run of whole escapes, by `str.replace` and not per escape.
 
     A 23 MB `manifest.json.drv` holds 3.5 million escapes in one `__json`.
     Handled one at a time in Python, they held the event loop 1.5 s per read
@@ -733,13 +763,20 @@ class _Parser:
     def parse_string(self) -> str:
         """Parse a quoted ATerm string with escape handling."""
         self._expect('"')
-        start = self._pos
-        body = _STRING_BODY.match(self._text, start)
-        end = body.end() if body is not None else start
-        if end >= len(self._text) or self._text[end] != '"':
-            raise ValueError(f"Unterminated string starting at pos {start}")
-        self._pos = end + 1
-        return _unescape(self._text[start:end])
+        text = self._text
+        start = end = self._pos
+        while True:
+            # A window that ends inside an escape stops in front of its
+            # backslash, and the next window starts there.
+            body = _STRING_BODY.match(text, end, end + max(_PIECE, 2))
+            scanned = body.end() if body is not None else end
+            if scanned < len(text) and text[scanned] == '"':
+                break
+            if scanned == end:
+                raise ValueError(f"Unterminated string starting at pos {start}")
+            end = scanned
+        self._pos = scanned + 1
+        return _unescape(text[start:scanned])
 
     @overload
     def parse_string_list(self) -> list[str]: ...
@@ -1099,6 +1136,26 @@ def parse_drv(content: str) -> Derivation:
     return _Parser(content).parse_derivation()
 
 
+_INLINE_PARSE_BYTES = 256 * 1024
+"""Below this a parse takes under a millisecond, less than the thread hop."""
+
+
+async def parse_drv_bytes(raw: bytes) -> Derivation:
+    """`parse_drv` of a `.drv` file's bytes, off the event loop when it is large.
+
+    A 23 MB `.drv` parses in 0.29 s. On a worker thread the loop waited at
+    most 0.15 s for the GIL meanwhile, the length of the longest C call, and
+    `_PIECE` bounds that call (nixidae/nixidae#1139).
+    """
+    if len(raw) < _INLINE_PARSE_BYTES:
+        return parse_drv(drv_text(raw))
+    return await anyio.to_thread.run_sync(_parse_bytes, raw)
+
+
+def _parse_bytes(raw: bytes) -> Derivation:
+    return parse_drv(drv_text(raw))
+
+
 async def read_drv_file(drv_store_path: StorePath | str, layout: StoreLayout) -> Derivation | None:
     """Read and parse a `.drv` file from the file system of the store.
 
@@ -1132,4 +1189,4 @@ async def read_drv_file(drv_store_path: StorePath | str, layout: StoreLayout) ->
     path = anyio.Path(layout.real_store_dir / name[len(prefix) :])
     if not await path.exists():
         return None
-    return parse_drv(drv_text(await path.read_bytes()))
+    return await parse_drv_bytes(await path.read_bytes())

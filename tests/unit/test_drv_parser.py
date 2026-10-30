@@ -13,12 +13,14 @@ import asyncio
 import hashlib
 import json
 import shutil
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import anyio
 import pytest
 
+from pynixd import drv_parser
 from pynixd.drv_parser import Derivation, parse_drv, to_basic_derivation
 from pynixd.serde import OutputKind
 from pynixd.store_layout import StoreLayout
@@ -332,6 +334,39 @@ class TestManufacturedExamples:
             f'Derive([("out","/nix/store/abc-foo","","")],[],[],"x86_64-linux","/bin/sh",[],[("v","{body}")])'
         )
         assert parsed.env["v"] == "".join(expected)
+
+    @pytest.mark.parametrize("piece", [1, 2, 3, 5, 8])
+    def test_pieces_never_split_an_escape(self, piece: int, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A large value is scanned and unescaped in `_PIECE`-sized calls (nixidae/nixidae#1139).
+
+        Every cut lands inside some escape for one of these sizes.
+        """
+        body = '\\\\a\\"b\\\\\\nc\\t\\\\\\\\\\"d\\q' * 3
+        whole = parse_drv(
+            f'Derive([("out","/nix/store/abc-foo","","")],[],[],"x86_64-linux","/bin/sh",[],[("v","{body}")])'
+        )
+        monkeypatch.setattr(drv_parser, "_PIECE", piece)
+        cut = parse_drv(
+            f'Derive([("out","/nix/store/abc-foo","","")],[],[],"x86_64-linux","/bin/sh",[],[("v","{body}")])'
+        )
+        assert cut.env["v"] == whole.env["v"]
+
+    async def test_a_large_drv_parses_off_the_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Above `_INLINE_PARSE_BYTES` the parse runs on a worker thread."""
+        threads: list[int] = []
+        parse = drv_parser.parse_drv
+
+        def recording(content: str) -> Derivation:
+            threads.append(threading.get_ident())
+            return parse(content)
+
+        monkeypatch.setattr(drv_parser, "parse_drv", recording)
+        value = "x" * (drv_parser._INLINE_PARSE_BYTES + 1)
+        raw = f'Derive([("out","/nix/store/abc-foo","","")],[],[],"x86_64-linux","/bin/sh",[],[("v","{value}")])'
+        parsed = await drv_parser.parse_drv_bytes(raw.encode())
+        assert parsed.env["v"] == value
+        assert threads
+        assert threading.get_ident() not in threads
 
     def test_multiple_outputs(self) -> None:
         parsed = parse_drv(
