@@ -32,7 +32,7 @@ from .store_layout import DEFAULT_STORE_DIR
 from .unix_server import start_unix_server
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Coroutine, Mapping, Sequence
     from types import TracebackType
 
     import asyncssh
@@ -41,6 +41,15 @@ if TYPE_CHECKING:
     from .daemon_extensions.pynixd_collect_garbage import PynixdCollectGarbageResponse
 
 log = structlog.get_logger(__name__)
+
+
+def _log_task_death(task: asyncio.Task[Any]) -> None:
+    """Log a background task that ended with an exception; a cancelled one stopped on purpose."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        log.error("background_task_failed", task=task.get_name(), exc_info=exc)
 
 
 def _trigger_due(now: float, last_trigger: float, cooldown: float) -> bool:
@@ -408,6 +417,17 @@ class Server:
         # Finally, close the store connection
         await store.close()
 
+    def _spawn(self, coro: Coroutine[Any, Any, Any]) -> None:
+        """Run *coro* for the daemon's lifetime, and log it the moment it dies.
+
+        A bare task keeps its exception until someone awaits it, and these
+        are awaited only at shutdown: a GC loop that raised stopped
+        collecting with nothing in the journal.
+        """
+        task = asyncio.create_task(coro, name=repr(coro))
+        task.add_done_callback(_log_task_death)
+        self.background_tasks.append(task)
+
     async def _gc_tick(self) -> None:
         """Watch the disk on a short cadence, collect on pressure or schedule.
 
@@ -728,12 +748,10 @@ class Server:
                     tg.start_soon(self.add_store, store, False)
 
         if self.ctx.scheduler:
-            self.background_tasks.append(
-                asyncio.create_task(self.ctx.scheduler.start()),
-            )
+            self._spawn(self.ctx.scheduler.start())
 
         if self.ctx.db and self.ctx.settings.gc_enabled:
-            self.background_tasks.append(asyncio.create_task(self._gc_tick()))
+            self._spawn(self._gc_tick())
             liveness_interval = self.ctx.settings.gc_liveness_interval
             if liveness_interval is not None:
                 watch = LivenessWatch.from_local(self.ctx.local_store)
@@ -742,17 +760,15 @@ class Server:
                 else:
                     dirty = DirtyFlag()
                     roots = StableRootsWatch(watch.tracker.state_dir)
-                    self.background_tasks.append(asyncio.create_task(roots.run(dirty)))
-                    self.background_tasks.append(
-                        asyncio.create_task(self._liveness_tick(watch, liveness_interval, dirty))
-                    )
+                    self._spawn(roots.run(dirty))
+                    self._spawn(self._liveness_tick(watch, liveness_interval, dirty))
 
         # Before the listeners, so a stall during their startup is recorded.
         if self.stall_watchdog is not None:
             self.stall_watchdog.beat()
             self.stall_watchdog.start(asyncio.get_running_loop())
-        self.background_tasks.append(asyncio.create_task(self.loop_lag.run()))
-        self.background_tasks.append(asyncio.create_task(self._warn_silent_upstreams()))
+        self._spawn(self.loop_lag.run())
+        self._spawn(self._warn_silent_upstreams())
 
         s = self.settings
         if s.ssh_port is not None:
@@ -778,7 +794,7 @@ class Server:
 
         if s.reverse_initiator.enabled:
             initiator = _optional.reverse_client.ReverseInitiator(self.ctx, s.reverse_initiator)
-            self.background_tasks.append(asyncio.create_task(initiator.run()))
+            self._spawn(initiator.run())
 
         if s.unix_path:
             self._ensure_unix_socket_parent(s.unix_path)
