@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import functools
 import math
 import time
@@ -369,7 +367,7 @@ class DaemonStore(Store):
         self.reconnect_enabled = spec.reconnect
         self.reconnect_min_delay = spec.reconnect_min_delay
         self.reconnect_max_delay = spec.reconnect_max_delay
-        self._reconnect_task: asyncio.Task[None] | None = None
+        self._reconnect_scope: anyio.CancelScope | None = None
         self._reconnect_trigger = anyio.Event()
         self._reconnect_delay = self.reconnect_min_delay
         self._on_reconnect: Callable[[], Awaitable[None]] | None = None
@@ -557,21 +555,19 @@ class DaemonStore(Store):
     # ── Reconnect loop ──────────────────────────────────────────────
 
     def _schedule_reconnect(self) -> None:
-        if self._reconnect_task is not None and not self._reconnect_task.done():
+        if self._reconnect_scope is not None:
             self._reconnect_trigger.set()
 
     def _start_reconnect_loop(self) -> None:
         if not self.reconnect_enabled:
             return
-        if self._reconnect_task is None or self._reconnect_task.done():
-            self._reconnect_task = asyncio.create_task(self._reconnect_loop())
+        if self._reconnect_scope is None:
+            self._reconnect_scope = self._background.spawn(self._reconnect_loop)
 
-    async def _stop_reconnect_loop(self) -> None:
-        if self._reconnect_task is not None:
-            self._reconnect_task.cancel()
-            with contextlib.suppress(anyio.get_cancelled_exc_class()):
-                await self._reconnect_task
-            self._reconnect_task = None
+    def _stop_reconnect_loop(self) -> None:
+        if self._reconnect_scope is not None:
+            self._reconnect_scope.cancel()
+            self._reconnect_scope = None
 
     async def _do_reconnect(self) -> None:
         for pool in self.pools:
@@ -621,7 +617,7 @@ class DaemonStore(Store):
         self._start_reconnect_loop()
 
     async def close(self) -> None:
-        await self._stop_reconnect_loop()
+        self._stop_reconnect_loop()
         if self.monitor is not None:
             # A monitor that outlives its store asks a closed store for ever.
             self.monitor.stop()

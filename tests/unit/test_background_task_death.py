@@ -103,3 +103,22 @@ async def test_remove_store_closes_it() -> None:
         assert StoreId("builder") not in server._store_hosts
         with pytest.raises(RuntimeError, match="async with"):
             builder._background.spawn(_waits)
+
+
+@pytest.mark.anyio
+async def test_a_reconnect_runs_in_the_store_and_stops_with_it() -> None:
+    store = MockStore("flaky", feature_matrix={"x86_64-linux": set()})
+    store.reconnect_min_delay = 0.0
+    reconnected = anyio.Event()
+
+    async def on_reconnect() -> None:
+        reconnected.set()
+
+    store._on_reconnect = on_reconnect
+    async with store:
+        assert store._reconnect_scope is not None
+        store.record_failure()
+        with anyio.fail_after(5):
+            await reconnected.wait()
+    assert store._reconnect_scope is None
+    store.record_failure()  # a closed store schedules nothing
