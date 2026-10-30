@@ -853,8 +853,11 @@ class LocalStoreDB:
             log.debug("query_weights_failed", exc_info=True)
             return None
 
-    async def checkpoint_wal(self) -> None:
+    async def checkpoint_wal(self) -> bool:
         """Checkpoint the whole WAL into the database and truncate it to zero.
+
+        `True` when a checkpoint ran, busy or not; `False` when this store
+        has no database to checkpoint.
 
         SQLite reuses a WAL file from its start after a checkpoint but never
         shrinks it, and Nix sets no `journal_size_limit`: on dynhetz the WAL
@@ -865,7 +868,7 @@ class LocalStoreDB:
         pooled one, so nothing it leaves can reach another caller.
         """
         if not self.active or self.read_only or self.db_path is None:
-            return
+            return False
         wal = Path(f"{self.db_path}-wal")
         before = await anyio.to_thread.run_sync(_size_or_none, wal)
         try:
@@ -875,9 +878,9 @@ class LocalStoreDB:
                     row = await cursor.fetchone()
         except aiosqlite.Error:
             log.warning("db_wal_checkpoint_failed", exc_info=True)
-            return
+            return True
         if row is None:
-            return
+            return True
         busy, frames, checkpointed = row
         log.info(
             "db_wal_checkpoint",
@@ -887,6 +890,7 @@ class LocalStoreDB:
             wal_bytes_before=before,
             wal_bytes_after=await anyio.to_thread.run_sync(_size_or_none, wal),
         )
+        return True
 
     async def prune_path_access(self) -> int:
         """Drop the rows for paths the store no longer holds. Returns the count.

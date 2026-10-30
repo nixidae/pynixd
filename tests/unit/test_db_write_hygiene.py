@@ -142,7 +142,7 @@ async def test_the_wal_checkpoint_truncates_the_file(tmp_path: Path) -> None:
             writer.executemany("INSERT INTO t VALUES (?)", [(n,) for n in range(20_000)])
         assert wal.stat().st_size > 0
         try:
-            await db.checkpoint_wal()
+            assert await db.checkpoint_wal()
         finally:
             await db.close_db_pool()
         assert wal.stat().st_size == 0

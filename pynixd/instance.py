@@ -425,9 +425,13 @@ class Server:
         )
         last_full = time.monotonic()
         last_trigger = 0.0
-        await self._checkpoint_wal()
+        # The store opens its database in `start`, after this loop begins, so
+        # the first checkpoint retries each poll until it finds the database.
+        checkpoint_due = True
         while True:
             await anyio.sleep(settings.gc_poll_interval)
+            if checkpoint_due:
+                checkpoint_due = not await self._checkpoint_wal()
             now = time.monotonic()
             if self._over_watermark():
                 if not _trigger_due(now, last_trigger, settings.gc_cooldown):
@@ -491,11 +495,13 @@ class Server:
             return False
         return used / total > watermark
 
-    async def _checkpoint_wal(self) -> None:
-        """Shrink the store database's WAL: Nix never does."""
+    async def _checkpoint_wal(self) -> bool:
+        """Shrink the store database's WAL, which Nix never does. Whether a checkpoint ran."""
         checkpoint = getattr(getattr(self.ctx.local_store, "db", None), "checkpoint_wal", None)
-        if checkpoint is not None:
-            await checkpoint()
+        if checkpoint is None:
+            return False
+        ran: bool = await checkpoint()
+        return ran
 
     async def _gc_pass(self, reason: str) -> PynixdCollectGarbageResponse | None:
         """One EXECUTE pass, with the metrics the loop always reports.
