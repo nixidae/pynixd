@@ -506,12 +506,19 @@ class LocalStoreDB:
 
     @asynccontextmanager
     async def acquire_conn(self) -> AsyncIterator[aiosqlite.Connection]:
-        """Acquire a connection from the pool."""
+        """Acquire a connection from the pool.
+
+        A connection goes back to the pool only from a clean exit with no
+        transaction open. Every other connection is interrupted and closed:
+        this file is Nix's own database, and a pooled connection that kept a
+        transaction held its lock for four hours on 2026-10-06 (#697).
+        """
         if not self.active:
             raise RuntimeError("Database not active")
 
         await self._sem.acquire()
         conn: aiosqlite.Connection | None = None
+        clean = False
         try:
             async with self._pool_lock:
                 if self._idle_conns:
@@ -529,22 +536,47 @@ class LocalStoreDB:
                     self._all_conns.append(conn)
 
             yield conn
+            clean = True
         finally:
-            # Cleanup runs shielded: a cancellation landing here must not
-            # strand the connection or the semaphore with it. Everything
-            # inside is bounded (one instant rollback, one short lock).
+            # Shielded: a cancellation landing here must not strand the
+            # connection or the semaphore with it.
             with anyio.CancelScope(shield=True):
                 if conn is not None:
-                    # A checkout that failed or was cancelled can leave a
-                    # write transaction open; returned as-is, the pooled
-                    # connection holds the file lock until restart, and
-                    # every later writer fails behind it. Rollback is a
-                    # no-op on a clean connection.
-                    with suppress(Exception):
-                        await conn.rollback()
-                    async with self._pool_lock:
-                        self._idle_conns.append(conn)
+                    await self._checkin(conn, clean=clean)
                 self._sem.release()
+
+    async def _checkin(self, conn: aiosqlite.Connection, *, clean: bool) -> None:
+        """Pool *conn* when it is provably idle; otherwise close it.
+
+        A checkout that raised or was cancelled may still have a statement
+        running on the connection's thread, so it never returns to the
+        pool, whatever `in_transaction` says. A clean checkout that left a
+        transaction open is a caller bug: it is logged, and the connection
+        closes too, which rolls the transaction back.
+
+        The interrupt stops a running statement at once, so the close that
+        follows is quick. The close has no timeout on purpose: a connection
+        given up on before it closed is the leak this exists to prevent.
+        """
+        try:
+            idle = clean and not conn.in_transaction
+        except Exception:
+            idle = False
+        if idle:
+            async with self._pool_lock:
+                self._idle_conns.append(conn)
+            return
+        if clean:
+            log.warning("db_checkin_open_transaction")
+        async with self._pool_lock:
+            with suppress(ValueError):
+                self._all_conns.remove(conn)
+        with suppress(Exception):
+            await conn.interrupt()
+        try:
+            await conn.close()
+        except Exception:
+            log.warning("db_checkin_close_failed", exc_info=True)
 
     @asynccontextmanager
     async def execute(
