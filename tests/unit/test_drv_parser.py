@@ -298,6 +298,41 @@ class TestManufacturedExamples:
         assert parsed.args == ["-c", 'echo "hello"']
         assert parsed.env["desc"] == "line1\nline2\ttab"
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "",
+            "plain",
+            '\\"quoted\\"',
+            "\\\\",
+            "\\\\n",
+            "\\\\\\n",
+            '\\\\\\"',
+            "\\n\\r\\t",
+            "\\a\\z\\$\\'",
+            "\\\\\\\\\\x",
+            "nul\0and\\\\\\n\\q",
+        ],
+    )
+    def test_escapes_read_as_nix_reads_them(self, body: str) -> None:
+        """`parseString` at `derivations.cc:188-205`, one escape at a time.
+
+        The parser unescapes by `str.replace` (nixidae/nixidae#1139); this is
+        the loop it must agree with, NUL fallback included.
+        """
+        expected: list[str] = []
+        chars = iter(body)
+        for ch in chars:
+            if ch == "\\":
+                esc = next(chars)
+                expected.append({"n": "\n", "r": "\r", "t": "\t"}.get(esc, esc))
+            else:
+                expected.append(ch)
+        parsed = parse_drv(
+            f'Derive([("out","/nix/store/abc-foo","","")],[],[],"x86_64-linux","/bin/sh",[],[("v","{body}")])'
+        )
+        assert parsed.env["v"] == "".join(expected)
+
     def test_multiple_outputs(self) -> None:
         parsed = parse_drv(
             'Derive([("out","/nix/store/a-out","",""),("lib","/nix/store/a-lib","","")]'

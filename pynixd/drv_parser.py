@@ -36,7 +36,7 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, TypedDict, overload
+from typing import TYPE_CHECKING, Any, TypedDict, overload
 
 import anyio
 
@@ -677,7 +677,30 @@ class Derivation:
         return {o.name: h for o in self.outputs}
 
 
-_STRING_CHUNK = re.compile(r'([^"\\]*)(["\\])')
+_STRING_BODY = re.compile(r'(?:[^"\\]++|\\.)*+', re.DOTALL)
+_ESCAPED = re.compile(r"\\(.)", re.DOTALL)
+_ESCAPES = {"n": "\n", "r": "\r", "t": "\t"}
+"""`parseString` at `derivations.cc:188-205` maps these three, and any other `\\x` to `x`."""
+
+
+def _unescape(body: str) -> str:
+    """The value of an ATerm string body, by `str.replace` and not per escape.
+
+    A 23 MB `manifest.json.drv` holds 3.5 million escapes in one `__json`.
+    Handled one at a time in Python, they held the event loop 1.5 s per read
+    (nixidae/nixidae#1139). `\\\\` goes to NUL first, so every backslash left
+    starts one escape; no Nix string holds a NUL, and one that does takes the
+    slow road.
+    """
+    if "\\" not in body:
+        return body
+    if "\0" in body:
+        return _ESCAPED.sub(lambda m: _ESCAPES.get(m[1], m[1]), body)
+    text = body.replace("\\\\", "\0").replace('\\"', '"').replace("\\n", "\n").replace("\\r", "\r")
+    text = text.replace("\\t", "\t")
+    if "\\" in text:
+        text = _ESCAPED.sub(r"\1", text)
+    return text.replace("\0", "\\")
 
 
 class _Parser:
@@ -707,35 +730,16 @@ class _Parser:
         while self._pos < len(self._text) and self._text[self._pos] in " \t\n\r":
             self._pos += 1
 
-    _ESCAPE: ClassVar[dict[str, str]] = {"n": "\n", "r": "\r", "t": "\t"}
-    """`parseString` at `derivations.cc:188-205` maps these three, and any other `\\x` to `x`."""
-
     def parse_string(self) -> str:
-        """Parse a quoted ATerm string with escape handling.
-
-        Uses regex to scan chunks of non-special characters at once
-        for performance on large strings (e.g. multi-MB env values).
-        """
+        """Parse a quoted ATerm string with escape handling."""
         self._expect('"')
-        parts: list[str] = []
-        while True:
-            m = _STRING_CHUNK.search(self._text, self._pos)
-            if m is None:
-                raise ValueError(f"Unterminated string starting at pos {self._pos}")
-            content, terminator = m.group(1), m.group(2)
-            self._pos = m.end()
-            if content:
-                parts.append(content)
-            if terminator == '"':
-                return "".join(parts)
-            # terminator == '\\' — read escape
-            esc = self._advance()
-            ch = self._ESCAPE.get(esc)
-            if ch is not None:
-                parts.append(ch)
-            else:
-                # Unknown escape — pass through
-                parts.append(esc)
+        start = self._pos
+        body = _STRING_BODY.match(self._text, start)
+        end = body.end() if body is not None else start
+        if end >= len(self._text) or self._text[end] != '"':
+            raise ValueError(f"Unterminated string starting at pos {start}")
+        self._pos = end + 1
+        return _unescape(self._text[start:end])
 
     @overload
     def parse_string_list(self) -> list[str]: ...
