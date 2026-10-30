@@ -127,8 +127,8 @@ QUERY_REFERRER_CLOSURE = f"""
 SELECT path FROM ValidPaths WHERE id IN ({_REFERRERS_OF_SEEDS})
 """
 
-QUERY_ACCESS_TIMES = f"""
-SELECT v.path, COALESCE(a.lastReferencedAt, v.registrationTime) FROM ValidPaths v
+QUERY_WEIGHTS = f"""
+SELECT v.path, v.narSize, COALESCE(a.lastReferencedAt, v.registrationTime) FROM ValidPaths v
 LEFT JOIN {PATH_ACCESS_TABLE} a ON a.path = v.path
 WHERE v.path IN (SELECT value FROM json_each(?))
 """
@@ -794,26 +794,29 @@ class LocalStoreDB:
             log.debug("query_referrer_closure_failed", exc_info=True)
             return None
 
-    async def query_access_times(self, paths: Iterable[str]) -> dict[str, int] | None:
-        """The last-referenced time of each of `paths` that either table dates.
+    async def query_weights(self, paths: Iterable[str]) -> dict[str, tuple[int, int | None]] | None:
+        """`(nar_size, last_referenced)` for each of `paths` the store holds.
 
-        The planner weighs its candidates by age, and this is the one read
-        of that column per pass: indexed, and bounded by the candidate set.
+        The planner weighs its candidates by size and age, and this is the
+        one read of both per pass: indexed, and bounded by the candidate set.
+        Not path infos: those carry every reference, and a 105k-path plan
+        loaded 9.2M reference rows to read one column (nixidae#1133).
         The date is the access row when one exists, else the registration
         time -- the same resolution the staleness query uses, so the planner
-        and the weigher never disagree about a path's age. Paths neither
-        table dates stay unknown to the caller, which treats them as age
-        zero rather than as old. `None` when the database cannot answer.
+        and the weigher never disagree about a path's age. A path neither
+        table dates carries `None`, which the caller treats as age zero
+        rather than as old. Paths outside `ValidPaths` are absent. `None`
+        when the database cannot answer.
         """
         if not self.active or not self.schema.usable:
             return None
         try:
             paths_json = json.dumps(sorted(set(paths)))
-            async with self.execute(QUERY_ACCESS_TIMES, (paths_json,)) as cursor:
+            async with self.execute(QUERY_WEIGHTS, (paths_json,)) as cursor:
                 rows = await cursor.fetchall()
-            return {r[0]: int(r[1]) for r in rows if r[1] is not None}
+            return {r[0]: (r[1] or 0, None if r[2] is None else int(r[2])) for r in rows}
         except (aiosqlite.Error, ValueError):
-            log.debug("query_access_times_failed", exc_info=True)
+            log.debug("query_weights_failed", exc_info=True)
             return None
 
     async def prune_path_access(self) -> int:

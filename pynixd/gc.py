@@ -359,39 +359,28 @@ class Collector:
     async def _weigh(self, paths: set[StorePath]) -> dict[str, tuple[int, int]] | None:
         """`(nar_size, age_seconds)` per planned path, or `None` when unknown.
 
-        Sizes come from the path infos, ages from the access table; a path
-        with no access row weighs age zero, which deprioritises it without
+        Sizes come from `ValidPaths`, ages from the access table; a path
+        with no date weighs age zero, which deprioritises it without
         excluding it. `None` fails the pass closed: a pass that cannot see
         the whole state deletes nothing, and shows nothing either.
         """
         if not paths:
             return {}
-        local = self.ctx.local_store
-        try:
-            # Unmarked: these are the judged, not the living. Marking them
-            # would freshen every candidate the pass weighs, and a dry-run
-            # must not move what it measures. `mark` is a LocalDBStore
-            # capability, not a Store one, so the attribute reads through
-            # `getattr` like the other local-only answers here.
-            execute = getattr(local, "execute")  # noqa: B009 -- `mark` is LocalDBStore's, not Store's
-            resp = await execute(QueryPathInfosRequest(paths=paths), mark=False)
-        except Exception:
-            log.warning("gc_weigh_infos_failed", exc_info=True)
-            return None
-        sizes = {str(info.path): info.info.nar_size for info in resp.infos}
-        query = getattr(getattr(local, "db", None), "query_access_times", None)
+        # A database read, not a store request: it marks nothing, so weighing
+        # never freshens the judged, and it loads no references.
+        query = getattr(getattr(self.ctx.local_store, "db", None), "query_weights", None)
         if query is None:
             log.warning("gc_no_access_tracking")
             return None
         try:
-            times = await query(set(sizes))
+            rows = await query({str(path) for path in paths})
         except Exception:
-            log.warning("gc_weigh_ages_failed", exc_info=True)
+            log.warning("gc_weigh_failed", exc_info=True)
             return None
-        if times is None:
+        if rows is None:
             return None
         now = time.time()
-        return {path: (size, max(0, int(now - times.get(path, now)))) for path, size in sizes.items()}
+        return {path: (size, 0 if seen is None else max(0, int(now - seen))) for path, (size, seen) in rows.items()}
 
     def _log_top(
         self, ordered: list[str], weights: dict[str, tuple[int, int]], pressure: float, count: int = 10

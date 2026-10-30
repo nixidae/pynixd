@@ -105,6 +105,7 @@ class FakeLocal:
     sizes: dict[str, int] = field(default_factory=lambda: {A: 100, B: 200})
     calls: list[str] = field(default_factory=list)
     marks: list[tuple[str, bool]] = field(default_factory=list)
+    weighed: list[set[str]] = field(default_factory=list)
     deleted: list[str] = field(default_factory=list)
 
     def forget_path_info(self, path: str) -> None:
@@ -133,15 +134,16 @@ class FakeLocal:
         """The seeds themselves: nothing here refers to anything."""
         return set(seeds)
 
-    async def query_access_times(self, paths: set[str]) -> dict[str, float]:
+    async def query_weights(self, paths: set[str]) -> dict[str, tuple[int, int | None]]:
         """`B` is old and big, `A` is fresh and small: `B` leads at any pressure.
 
         Equal ages tie-break by path string, and a fresh tmpfs reports
         usage zero, so uniform timestamps would order by name instead of
         weight. The split timestamps keep the weight order total.
         """
-        now = time.time()
-        return {path: (now if path == A else 0.0) for path in paths}
+        self.weighed.append(set(paths))
+        now = int(time.time())
+        return {path: (self.sizes[path], now if path == A else 0) for path in paths & self.sizes.keys()}
 
     async def retire_idle_connections(self) -> int:
         return 0
@@ -265,6 +267,8 @@ async def test_an_invalid_seed_keeps_the_rest_of_the_closure(tmp_path: Path) -> 
 async def test_gc_bookkeeping_queries_do_not_mark_the_judged(tmp_path: Path) -> None:
     """Weighing and keep-closure name dead candidates; marking them would freshen the judged.
 
+    Weighing reads the database and sends the store no request at all.
+
     A dry-run must not move what it measures: the paths a pass weighs and
     closes over are under judgment, and recording them as referenced would
     keep every candidate fresh for ever. The veto keeps its marks --
@@ -275,7 +279,7 @@ async def test_gc_bookkeeping_queries_do_not_mark_the_judged(tmp_path: Path) -> 
     with live_temp_root(state_dir, "99", f"{A}\x00".encode()):
         await collector.run(PynixdGCAction.DRY_RUN)
 
-    assert ("QueryPathInfosRequest", False) in local.marks
+    assert "QueryPathInfosRequest" not in local.calls
     closure_marks = sorted(mark for name, mark in local.marks if name == "QueryClosureRequest")
     assert closure_marks == [False, True]
 

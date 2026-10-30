@@ -59,8 +59,8 @@ class FakeLocal:
     def db(self) -> Any:
         return self
 
-    async def query_access_times(self, paths: set[str]) -> dict[str, float]:
-        return {path: 0.0 for path in paths}
+    async def query_weights(self, paths: set[str]) -> dict[str, tuple[int, int | None]]:
+        return {A: (100, 0)} if A in paths else {}
 
     async def retire_idle_connections(self) -> int:
         return 0

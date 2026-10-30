@@ -60,11 +60,11 @@ def _store_with_a_closure(tmp_path: Path) -> Path:
         conn.execute(
             "CREATE TABLE ValidPaths ("
             "id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL, "
-            "deriver TEXT, registrationTime INTEGER)",
+            "deriver TEXT, registrationTime INTEGER, narSize INTEGER)",
         )
         conn.execute("CREATE TABLE Refs (referrer INTEGER, reference INTEGER)")
-        conn.execute("INSERT INTO ValidPaths (id, path, registrationTime) VALUES (1, ?, 0)", (HELLO,))
-        conn.execute("INSERT INTO ValidPaths (id, path, registrationTime) VALUES (2, ?, 0)", (LIBC,))
+        conn.execute("INSERT INTO ValidPaths (id, path, registrationTime, narSize) VALUES (1, ?, 0, 300)", (HELLO,))
+        conn.execute("INSERT INTO ValidPaths (id, path, registrationTime, narSize) VALUES (2, ?, 0, 100)", (LIBC,))
         conn.execute("INSERT INTO Refs (referrer, reference) VALUES (1, 2)")
     return db_path
 
@@ -530,7 +530,7 @@ class TestAskingTheTable:
             # LIBC: seen long ago, registered just now -- the row condemns it.
             assert {str(p) for p in stale} == {LIBC}
 
-    async def test_access_times_fall_back_to_registration_time(self, tmp_path: Path) -> None:
+    async def test_weights_date_by_registration_time_without_a_row(self, tmp_path: Path) -> None:
         """The weigher resolves age the same way the planner does."""
         _store_with_a_closure(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
@@ -542,9 +542,11 @@ class TestAskingTheTable:
                 )
                 await conn.commit()
 
-            times = await db.query_access_times([HELLO, LIBC, GONE])
+            weights = await db.query_weights([HELLO, LIBC, GONE])
 
-            assert times is not None
+            assert weights is not None
+            assert {path: size for path, (size, _seen) in weights.items()} == {HELLO: 300, LIBC: 100}
+            times = {path: seen for path, (_size, seen) in weights.items()}
             # HELLO carries its witnessed date, LIBC Nix's, and GONE --
             # in no `ValidPaths` row -- stays unknown instead of leaking in
             # through a dangling access row.
