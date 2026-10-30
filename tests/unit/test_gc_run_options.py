@@ -326,6 +326,24 @@ async def test_target_usage_override_wins_over_the_store(tmp_path: Path, monkeyp
 
 
 @pytest.mark.anyio
+async def test_an_execute_pass_under_target_weighs_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A disk at its target takes nothing, so the pass returns before weighing the plan.
+
+    The dry-run beside it still weighs and answers the whole plan (#73).
+    """
+    monkeypatch.setattr(Collector, "_disk_usage", staticmethod(lambda local: (80, 100)))
+    collector, local, _state_dir = _collector(tmp_path, gc_target_usage=0.8)
+
+    resp = await collector.run(PynixdGCAction.EXECUTE)
+
+    assert resp.store_paths == set()
+    assert local.weighed == []
+    assert local.deleted == []
+    assert {str(path) for path in (await collector.run(PynixdGCAction.DRY_RUN)).store_paths} == {A, B}
+    assert local.weighed == [{A, B}]
+
+
+@pytest.mark.anyio
 async def test_bounds_below_zero_are_refused(tmp_path: Path) -> None:
     collector, _local, _state_dir = _collector(tmp_path)
 

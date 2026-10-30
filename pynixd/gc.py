@@ -265,6 +265,17 @@ class Collector:
         if client is not None:
             await client.send(veto)
         log.info("gc_volatile_veto", fresh=len(volatile), spared=len(spared))
+        if (
+            action == PynixdGCAction.EXECUTE
+            and target is not None
+            and usage is not None
+            and not _over_target(usage, target)
+        ):
+            # The bound takes nothing from a disk already at its target, so
+            # weighing the plan first is all cost: on dynhetz, 105k paths
+            # every hour for no delete (#1133).
+            log.info("gc_under_target", target=target, used=usage[0], total=usage[1], planned=len(planned))
+            return self._answered(PynixdCollectGarbageResponse(store_paths=set(), bytes=0), lines)
         weights = await self._weigh({path for path in planned if str(path) not in vetoed})
         if not weights:
             return self._answered(PynixdCollectGarbageResponse(store_paths=set(), bytes=0), lines)
