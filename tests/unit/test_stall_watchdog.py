@@ -227,3 +227,35 @@ async def test_it_fires_against_a_real_cpu_bound_stall() -> None:
     assert dog.dumps >= 1, "a one second CPU-bound stall produced no dump"
     assert "has not run a callback" in out.getvalue()
     assert threading.current_thread() is threading.main_thread()
+
+
+def _hold_the_gil() -> None:
+    # One C call, about 0.5 s on dynhetz, with the GIL held throughout: no
+    # other Python thread runs until it returns.
+    sum(range(50_000_000))
+
+
+async def test_a_c_call_holding_the_gil_is_named_while_it_runs(tmp_path: Path) -> None:
+    """The watchdog thread cannot run during such a call; `faulthandler` can.
+
+    101 of 107 dumps on dynhetz showed the loop idle, because the Python
+    thread dumped after the call returned. nixidae/nixidae#1139.
+    """
+    log = tmp_path / "stall.log"
+    with log.open("w") as out:
+        dog = StallWatchdog(threshold=0.2, interval=0.05, stream=out)
+        monitor = LoopLagMonitor(interval=0.02, watchdog=dog)
+        thread = dog.start()
+        task = asyncio.create_task(monitor.run())
+        try:
+            await monitor.wait_for_sample()
+            _hold_the_gil()
+        finally:
+            monitor.stop()
+            dog.stop()
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            thread.join(timeout=5)
+
+    assert "_hold_the_gil" in log.read_text(), "no dump named the call while it ran"

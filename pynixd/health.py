@@ -21,6 +21,7 @@ the useful form of this number is a graph that rises before anything restarts.
 from __future__ import annotations
 
 import asyncio
+import faulthandler
 import sys
 import threading
 import time
@@ -78,11 +79,15 @@ class StallWatchdog:
     on the loop runs after the stall, where the stack no longer shows what
     held it.
 
-    It works for the case that matters. CPU-bound Python releases the GIL
-    every switch interval, so this thread is scheduled even while the loop
-    never yields. A stall inside a C call that holds the GIL for its whole
-    duration would defeat it, and no dump appearing is itself a fact worth
-    having.
+    CPU-bound Python releases the GIL every switch interval, so this thread
+    is scheduled even while the loop never yields.
+
+    **A C call that holds the GIL defeats this thread, and `faulthandler`
+    covers it.** The thread runs only after the call returns, so its dump
+    shows the loop idle: 101 of 107 dumps on dynhetz did (nixidae/nixidae#1139).
+    `faulthandler.dump_traceback_later` dumps from a C thread without the GIL,
+    while the call still runs, and names the Python frame that made it. Every
+    beat re-arms it, so it fires once per stall, to stderr only.
 
     One dump per stall, not one per check, or a ten-minute stall writes
     hundreds.
@@ -116,11 +121,14 @@ class StallWatchdog:
         self.sink_skipped = 0
         self._reported_full = False
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._fault_stream: TextIO | None = None
 
     def beat(self) -> None:
         """Record that the loop is still running callbacks."""
         self._last_beat = time.monotonic()
         self._armed = True
+        if self._fault_stream is not None:
+            faulthandler.dump_traceback_later(self.threshold, file=self._fault_stream)
 
     def _check(self, now: float) -> bool:
         """Whether a dump is due. Separate from the thread so a test can drive it."""
@@ -233,12 +241,25 @@ class StallWatchdog:
 
     def start(self, loop: asyncio.AbstractEventLoop | None = None) -> threading.Thread:
         self._loop = loop
+        stream = self._stream if self._stream is not None else sys.stderr
+        try:
+            stream.fileno()
+        except (OSError, ValueError):
+            # `faulthandler` writes to a descriptor; a buffer has none.
+            pass
+        else:
+            if self.threshold > 0:
+                self._fault_stream = stream
+                self.beat()
         thread = threading.Thread(target=self.run, name="pynixd-stall-watchdog", daemon=True)
         thread.start()
         return thread
 
     def stop(self) -> None:
         self._stop.set()
+        if self._fault_stream is not None:
+            self._fault_stream = None
+            faulthandler.cancel_dump_traceback_later()
 
 
 def _await_chain(awaitable: object) -> Iterator[FrameType]:
