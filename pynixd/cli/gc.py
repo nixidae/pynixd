@@ -58,21 +58,18 @@ async def _gc_main(args: argparse.Namespace) -> None:
         parser_error = f"--limit takes a count, and {args.limit} is not one"
         raise SystemExit(f"pynixd gc: error: {parser_error}")
 
-    store = await open_pynixd(settings, args.socket, PynixdCollectGarbageRequest.name)
-
-    try:
-        resp = await store.execute(
-            PynixdCollectGarbageRequest(
-                action=action,
-                has_limit=args.limit is not None,
-                limit=args.limit or 0,
+    async with open_pynixd(settings, args.socket, PynixdCollectGarbageRequest.name) as store:
+        try:
+            resp = await store.execute(
+                PynixdCollectGarbageRequest(
+                    action=action,
+                    has_limit=args.limit is not None,
+                    limit=args.limit or 0,
+                )
             )
-        )
-    except Exception:
-        log.exception("gc_failed")
-        raise
-    finally:
-        await store.close()
+        except Exception:
+            log.exception("gc_failed")
+            raise
 
     for msg in resp.logs.messages:
         text = getattr(msg, "text", None) or getattr(msg, "msg", None)

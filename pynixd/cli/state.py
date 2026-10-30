@@ -51,17 +51,14 @@ async def _state_main(args: argparse.Namespace) -> None:
     setup_logging(settings)
     log = structlog.get_logger(__name__)
 
-    store = await open_pynixd(settings, args.socket, PynixdStateRequest.name)
-
-    try:
-        resp = await store.execute(
-            PynixdStateRequest(wants=args.section, federated=args.federated),
-        )
-    except Exception:
-        log.exception("state_failed")
-        raise
-    finally:
-        await store.close()
+    async with open_pynixd(settings, args.socket, PynixdStateRequest.name) as store:
+        try:
+            resp = await store.execute(
+                PynixdStateRequest(wants=args.section, federated=args.federated),
+            )
+        except Exception:
+            log.exception("state_failed")
+            raise
 
     report = StateReport.model_validate_json(resp.payload)
     if args.json or not sys.stdout.isatty():

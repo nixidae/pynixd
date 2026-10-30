@@ -76,18 +76,15 @@ async def test_handshake_feature_announcement(tmp_path: Path) -> None:
         )
 
         # But it should be probed IMMEDIATELY upon connection via handshake
-        await client_store.start()
+        async with client_store:
+            # Verify feature matrix matches fm_b
+            fm_client = client_store.feature_matrix
+            assert fm_client == fm_b
 
-        # Verify feature matrix matches fm_b
-        fm_client = client_store.feature_matrix
-        assert fm_client == fm_b
+            # Verify that it didn't actually run the probe logic (conn_counter should be low)
+            # 1 for start (QueryAllValidPaths), maybe some for handshake?
+            # A real probe runs 2 requests: ProbeSystems and ProbeFeatures.
+            # If it skipped probing, it should NOT have run those.
 
-        # Verify that it didn't actually run the probe logic (conn_counter should be low)
-        # 1 for start (QueryAllValidPaths), maybe some for handshake?
-        # A real probe runs 2 requests: ProbeSystems and ProbeFeatures.
-        # If it skipped probing, it should NOT have run those.
-
-        # Check op_log or similar if available, but checking feature_matrix is the main thing.
-        log.info("client_probed_successfully", fm=fm_client)
-
-        await client_store.close()
+            # Check op_log or similar if available, but checking feature_matrix is the main thing.
+            log.info("client_probed_successfully", fm=fm_client)

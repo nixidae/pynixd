@@ -1,9 +1,7 @@
 """A reverse store keeps one health monitor, however often it starts.
 
-Registration starts the store before its probe, and `Server.add_store`
-starts it again. A monitor per start left one that `close()` never
-stopped, and it sampled the closed connection for ever. Issue
-nixidae/nixidae#1065.
+A monitor per start left one that `close()` never stopped, and it sampled
+the closed connection for ever. Issue nixidae/nixidae#1065.
 """
 
 from __future__ import annotations
@@ -26,10 +24,10 @@ class _CountedMonitor:
         self.running = False
         _CountedMonitor.instances.append(self)
 
-    def start(self) -> None:
+    def start(self, _background: object) -> None:
         self.running = True
 
-    async def stop(self) -> None:
+    def stop(self) -> None:
         self.running = False
 
 

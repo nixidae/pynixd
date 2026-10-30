@@ -615,7 +615,7 @@ class DaemonStore(Store):
             return
         await self.probe()
         if self.monitor:
-            self.monitor.start()
+            self.monitor.start(self._background)
         self._started = True
         self._start_reconnect_loop()
 
@@ -623,7 +623,7 @@ class DaemonStore(Store):
         await self._stop_reconnect_loop()
         if self.monitor is not None:
             # A monitor that outlives its store asks a closed store for ever.
-            await self.monitor.stop()
+            self.monitor.stop()
             self.monitor = None
         for pool in self.pools:
             await pool.close()

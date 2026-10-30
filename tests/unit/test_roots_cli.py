@@ -8,8 +8,9 @@ leaves the other two off.
 from __future__ import annotations
 
 import argparse
+import contextlib
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -19,6 +20,9 @@ from pynixd.daemon_extensions.pynixd_roots_report import (
     PynixdRootsReportResponse,
     RootsReportRow,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 ROWS = [
     RootsReportRow(label="small", full_paths=2, full_bytes=1500, exclusive_paths=1, exclusive_bytes=1000),
@@ -49,8 +53,9 @@ class _FakeStore:
 
 
 def _fake_daemon(monkeypatch: pytest.MonkeyPatch, store: _FakeStore) -> None:
-    async def open_pynixd(*args: Any) -> _FakeStore:
-        return store
+    @contextlib.asynccontextmanager
+    async def open_pynixd(*args: Any) -> AsyncIterator[_FakeStore]:
+        yield store
 
     monkeypatch.setattr(roots_cli, "open_pynixd", open_pynixd)
     monkeypatch.setattr(roots_cli, "load_settings", lambda: SimpleNamespace(unix_path="/sock"))

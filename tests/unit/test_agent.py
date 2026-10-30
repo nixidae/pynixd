@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 import anyio
 
 from pynixd.agent import AGENT_HELLO, AgentMonitor, agent_args, agent_for, local_monitor, read_agent_frame
+from pynixd.background import Background
 from pynixd.config import PressureSettings
 from pynixd.monitor import SAMPLED_FILES, GenericResourcePoller, ResourceMonitor, health_from_files
 from pynixd.psi import DiskSpace
@@ -167,11 +168,12 @@ async def test_the_local_store_runs_the_agent_for_its_triggers() -> None:
 
     monitor = local_monitor(settings, seen.append, ["this-system"], replaced.append)
     assert isinstance(monitor, AgentMonitor)
-    monitor.start()
-    with anyio.fail_after(5):
-        while len(seen) < 2:
-            await anyio.sleep(0.05)
-    await monitor.stop()
+    background = Background("test")
+    async with background.running():
+        monitor.start(background)
+        with anyio.fail_after(5):
+            while len(seen) < 2:
+                await anyio.sleep(0.05)
     assert replaced == []
     assert seen[0].meminfo is not None and seen[0].meminfo.mem_total > 0
 

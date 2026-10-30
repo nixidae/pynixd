@@ -12,8 +12,6 @@ iteration; `pynixd/agent.py` waits for POLLPRI instead.
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import json
 import os
 import time
@@ -48,6 +46,7 @@ from .serde.context import WriteContext
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine, Mapping
 
+    from .background import Background
     from .config import PressureSettings
 
 log = structlog.get_logger(__name__)
@@ -60,7 +59,7 @@ class ResourceMonitor(ABC):
         self.settings = settings
         self.on_sample = on_sample
         self.running = False
-        self.task: asyncio.Task[None] | None = None
+        self._scope: anyio.CancelScope | None = None
         self.health = SystemHealth()
         self.disk_fn: Callable[[], Awaitable[DiskSpace | None]] | None = None
         """Samples the store's filesystem, whatever reads the other files.
@@ -78,19 +77,17 @@ class ResourceMonitor(ABC):
         """Monitor loop."""
         ...
 
-    def start(self) -> None:
-        """Start the monitor loop as a background task."""
+    def start(self, background: Background) -> None:
+        """Run the monitor loop in its store's *background*."""
         if not self.running:
             self.running = True
-            self.task = asyncio.create_task(self.run())
+            self._scope = background.spawn(self.run)
 
-    async def stop(self) -> None:
-        """Stop the monitor loop and cancel its background task."""
+    def stop(self) -> None:
+        """Cancel the monitor loop. Its store's close waits for it to end."""
         self.running = False
-        if self.task:
-            self.task.cancel()
-            with contextlib.suppress(Exception, anyio.get_cancelled_exc_class()):
-                await self.task
+        if self._scope is not None:
+            self._scope.cancel()
 
     async def _publish_sample(self, health: SystemHealth) -> None:
         """Add the store's disk to *health*, then publish it."""

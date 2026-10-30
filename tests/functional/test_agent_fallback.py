@@ -44,13 +44,9 @@ async def test_a_refused_upload_falls_back_to_sftp(pynixd_server: Server) -> Non
             pressure=PressureSettings(interval=0.2, agents={system: Path(binary)}),
         ),
     )
-    try:
-        await store.ensure_ssh()
+    async with store:
         with anyio.fail_after(20):
             while store.build_limit.sampled_at is None:
                 await anyio.sleep(0.1)
         assert isinstance(store.monitor, GenericResourcePoller)
         assert store.build_limit.reason is not LimitReason.unmonitored
-    finally:
-        await store.close_ssh()
-        await store.close()

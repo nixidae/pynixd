@@ -8,17 +8,21 @@ feature matrices, circuit breaking) lives in DaemonStore.
 
 from __future__ import annotations
 
+import contextlib
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, Self, TypeVar, cast
 
+import anyio
 import structlog
 from cachetools import TTLCache
 
+from ..background import Background
 from ..trust import TrustPolicy
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Set as AbstractSet
+    from collections.abc import AsyncIterator, Iterable, Mapping, Set as AbstractSet
+    from types import TracebackType
 
     from nix_daemon_protocol.ids import StoreId
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
@@ -78,6 +82,8 @@ class Store(ABC):
             ),
         )
         self._started: bool = False
+        self._background = Background(f"store {self.store_id}")
+        self._running: contextlib.AbstractAsyncContextManager[None] | None = None
 
     @property
     def feature_matrix(self) -> dict[str, set[str]]:
@@ -126,11 +132,41 @@ class Store(ABC):
         ...
 
     async def __aenter__(self) -> Self:
-        await self.start()
+        if self._running is not None:
+            raise RuntimeError(f"store {self.store_id} is already open")
+        running = self._run()
+        await running.__aenter__()
+        self._running = running
         return self
 
-    async def __aexit__(self, *args: object) -> None:
-        await self.close()
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool | None:
+        running, self._running = self._running, None
+        if running is None:
+            raise RuntimeError(f"{type(self).__name__}.__aexit__ without __aenter__")
+        return await running.__aexit__(exc_type, exc_val, exc_tb)
+
+    @contextlib.asynccontextmanager
+    async def _run(self) -> AsyncIterator[None]:
+        """The store's lifetime: its background loops live in this block.
+
+        A loop that raises leaves `async with store` as an `ExceptionGroup`,
+        and the store closes.
+        """
+        async with self._background.running():
+            try:
+                await self.start()
+                yield
+            finally:
+                # Shielded: a failed loop has cancelled this scope. The loops
+                # stop before the connections they use close.
+                with anyio.CancelScope(shield=True):
+                    await self._background.aclose()
+                    await self.close()
 
     # ── Connection / execution ──────────────────────────────────────
 

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 import anyio
 
+from ..background import Background
 from ..daemon_extensions.pynixd_host_health import (
     HEALTH_JSON,
     PynixdHostHealthRequest,
@@ -76,23 +77,21 @@ class PynixdHostHealthStreamHandler(Handler):
             with contextlib.suppress(anyio.WouldBlock):
                 send.send_nowait(health)
 
-        own = None
         interval = request.interval_ms / 1000
         monitor = local.monitor
-        if monitor is None or isinstance(monitor, DummyResourceMonitor) or monitor.interval > interval:
-            own = create_monitor(local.pressure_settings.model_copy(update={"interval": interval}), listen)
-            own.disk_fn = local_disk(local.layout.real_store_dir)
-            own.start()
-        else:
-            local.sample_listeners.add(listen)
-            listen(monitor.health)
-        try:
-            async with receive:
-                async for health in receive:
-                    await ctx.proxy.client.send(LogNext(text=HEALTH_JSON.dump_json(health).decode()))
-        finally:
-            local.sample_listeners.discard(listen)
-            if own is not None:
-                with anyio.CancelScope(shield=True):
-                    await own.stop()
+        background = Background("PynixdHostHealthStream")
+        async with background.running():
+            if monitor is None or isinstance(monitor, DummyResourceMonitor) or monitor.interval > interval:
+                own = create_monitor(local.pressure_settings.model_copy(update={"interval": interval}), listen)
+                own.disk_fn = local_disk(local.layout.real_store_dir)
+                own.start(background)
+            else:
+                local.sample_listeners.add(listen)
+                listen(monitor.health)
+            try:
+                async with receive:
+                    async for health in receive:
+                        await ctx.proxy.client.send(LogNext(text=HEALTH_JSON.dump_json(health).decode()))
+            finally:
+                local.sample_listeners.discard(listen)
         return None

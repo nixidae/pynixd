@@ -42,13 +42,10 @@ async def _query(
             monitor=False,
         ),
     )
-    await client.start(sync_paths=False)
-    try:
+    async with client:
         resp = await client.execute(PynixdStateRequest(wants=wants, federated=federated))
         state: dict[str, Any] = json.loads(resp.payload)
         return state
-    finally:
-        await client.close()
 
 
 async def test_state_local_sections_through_a_live_daemon(tmp_path: Path) -> None:

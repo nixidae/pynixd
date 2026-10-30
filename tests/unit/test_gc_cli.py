@@ -8,14 +8,18 @@ says what. The daemon answers the set; the flag only prints it.
 from __future__ import annotations
 
 import argparse
+import contextlib
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from pynixd.cli import gc as gc_cli
 from pynixd.daemon_extensions.pynixd_collect_garbage import PynixdCollectGarbageResponse
 from pynixd.serde import StorePath
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 PATH_B = "/nix/store/11111111111111111111111111111111-b"
 PATH_C = "/nix/store/22222222222222222222222222222222-c"
@@ -44,8 +48,9 @@ class _FakeStore:
 def _args(monkeypatch: pytest.MonkeyPatch, **kwargs: Any) -> argparse.Namespace:
     """`_gc_main` with the daemon and the settings faked out."""
 
-    async def open_pynixd(*args: Any) -> _FakeStore:
-        return _FakeStore()
+    @contextlib.asynccontextmanager
+    async def open_pynixd(*args: Any) -> AsyncIterator[_FakeStore]:
+        yield _FakeStore()
 
     monkeypatch.setattr(gc_cli, "open_pynixd", open_pynixd)
     monkeypatch.setattr(gc_cli, "load_settings", lambda: SimpleNamespace(unix_path="/sock"))

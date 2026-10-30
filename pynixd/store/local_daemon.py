@@ -215,7 +215,7 @@ class LocalStore(DaemonStore):
     def _replace_monitor(self, monitor: ResourceMonitor) -> None:
         monitor.disk_fn = local_disk(self.layout.real_store_dir)
         self.monitor = monitor
-        monitor.start()
+        monitor.start(self._background)
 
     async def start(self, sync_paths: bool = True) -> None:
         """Spawn managed daemon and initialize the store."""
@@ -518,7 +518,7 @@ class LocalStore(DaemonStore):
         """Close stores, stop monitor and terminate managed daemon if any."""
         await super().close()
         if self.monitor:
-            await self.monitor.stop()
+            self.monitor.stop()
         if self._daemon_log_task and not self._daemon_log_task.done():
             self._daemon_log_task.cancel()
             with contextlib.suppress(BaseException):

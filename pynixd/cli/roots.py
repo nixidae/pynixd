@@ -50,15 +50,12 @@ async def _roots_main(args: argparse.Namespace) -> None:
     setup_logging(settings)
     log = structlog.get_logger(__name__)
 
-    store = await open_pynixd(settings, args.socket, PynixdRootsReportRequest.name)
-
-    try:
-        resp = await store.execute(PynixdRootsReportRequest())
-    except Exception:
-        log.exception("roots_failed")
-        raise
-    finally:
-        await store.close()
+    async with open_pynixd(settings, args.socket, PynixdRootsReportRequest.name) as store:
+        try:
+            resp = await store.execute(PynixdRootsReportRequest())
+        except Exception:
+            log.exception("roots_failed")
+            raise
 
     rows = sorted(resp.rows, key=lambda row: row.exclusive_bytes, reverse=True)[: args.top]
     print(f"{'LABEL':<44}{'PATHS':>8}{'FULL':>10}{'EXCLUSIVE':>10}{'EXCL_PATHS':>11}")  # noqa: T201

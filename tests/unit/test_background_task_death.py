@@ -1,9 +1,10 @@
-"""A background loop that dies says so at once, and takes the server with it.
+"""A background loop that dies says so at once.
 
 The daemon's GC loop, liveness watch and loop-lag monitor run in the
-server's background task group. One that raised used to keep its
-exception until shutdown while the work it did stopped. Now the error
-is logged when it happens and leaves `async with Server(...)`.
+server's background task group: one that raises is logged when it happens
+and leaves `async with Server(...)`. A store's loops run in that store's
+group: one that raises closes that store, and the server serves on.
+nixidae/nixidae#1143.
 """
 
 from __future__ import annotations
@@ -62,3 +63,43 @@ async def test_a_loop_cancelled_at_close_is_not_a_failure() -> None:
 async def test_spawn_outside_async_with_refuses() -> None:
     with pytest.raises(RuntimeError, match="async with"):
         _server()._spawn(_waits)
+
+
+@pytest.mark.anyio
+async def test_a_failed_store_loop_closes_that_store_alone() -> None:
+    builder = MockStore("builder", feature_matrix={"x86_64-linux": set()})
+    with structlog.testing.capture_logs() as logs:
+        async with _server() as server:
+            assert await server.add_store(builder)
+            host = server._store_hosts[StoreId("builder")]
+            builder._background.spawn(_fails)
+            with anyio.fail_after(5):
+                await host.done.wait()
+            assert StoreId("builder") not in server.ctx.stores
+            assert StoreId("local") in server.ctx.stores
+            server._spawn(_waits)
+    assert [entry["store_id"] for entry in logs if entry["event"] == "store_background_failed"] == ["builder"]
+
+
+@pytest.mark.anyio
+async def test_a_local_store_with_its_own_id_opens_once() -> None:
+    """The key is "local", the store's own id need not be. Registering it under its id opened it twice."""
+    local = MockStore("b-local", feature_matrix={"x86_64-linux": set()})
+    server = Server(stores={StoreId("local"): local}, ssh_port=None, unix_path=None, stall_traceback_seconds=0)
+    with structlog.testing.capture_logs() as logs:
+        async with server:
+            assert StoreId("b-local") not in server.ctx.stores
+    assert not [entry for entry in logs if entry["event"] == "store_start_failed"]
+
+
+@pytest.mark.anyio
+async def test_remove_store_closes_it() -> None:
+    builder = MockStore("builder", feature_matrix={"x86_64-linux": set()})
+    async with _server() as server:
+        assert await server.add_store(builder)
+        builder._background.spawn(_waits)
+        await server.remove_store(StoreId("builder"), drain_timeout=0)
+        assert StoreId("builder") not in server.ctx.stores
+        assert StoreId("builder") not in server._store_hosts
+        with pytest.raises(RuntimeError, match="async with"):
+            builder._background.spawn(_waits)

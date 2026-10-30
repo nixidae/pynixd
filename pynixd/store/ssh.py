@@ -4,7 +4,6 @@ SSH Store implementations for pynixd.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import functools
 import os
@@ -59,7 +58,6 @@ class SSHStore(DaemonStore):
     max_backoff: float
     last_failure: float
     store_id: StoreId
-    _bg_tasks: set[asyncio.Task[Any]]
 
     INITIAL_BACKOFF: float = 1.0
     MAX_BACKOFF: float = 60.0
@@ -90,7 +88,6 @@ class SSHStore(DaemonStore):
             )
         self.conn = None
         self.ssh_lock = anyio.Lock()
-        self._bg_tasks = set()
         self.backoff = self.INITIAL_BACKOFF
         self.max_backoff = self.MAX_BACKOFF
         self.last_failure = 0.0
@@ -144,7 +141,7 @@ class SSHStore(DaemonStore):
         if not self.monitor_enabled:
             if self.monitor is None:
                 self.monitor = DummyResourceMonitor(self.pressure_settings, self.on_pressure_sample)
-                self.monitor.start()
+                self.monitor.start(self._background)
             return
         if self.monitor is not None and not isinstance(self.monitor, DummyResourceMonitor):
             return
@@ -155,12 +152,12 @@ class SSHStore(DaemonStore):
             # (`unmonitored_penalty`). nixidae/nixidae#1016.
             log.warning("ssh_store_unmonitored", store_id=self.store_id)
             self.monitor = DummyResourceMonitor(self.pressure_settings, self.on_pressure_sample)
-            self.monitor.start()
+            self.monitor.start(self._background)
 
         def fall_back() -> None:
             self.monitor = self._sftp_poller(conn, blind)
             self.monitor.disk_fn = self._sftp_disk(conn)
-            self.monitor.start()
+            self.monitor.start(self._background)
 
         if self.pressure_settings.agent:
             self.monitor = AgentMonitor(
@@ -170,7 +167,7 @@ class SSHStore(DaemonStore):
                 fall_back,
                 disk_path=str(self.layout.store_dir),
             )
-            self.monitor.start()
+            self.monitor.start(self._background)
         else:
             fall_back()
 
@@ -256,9 +253,7 @@ class SSHStore(DaemonStore):
     def stop_psi_polling(self) -> None:
         """Cancel the resource polling task."""
         if self.monitor is not None:
-            task = asyncio.create_task(self.monitor.stop())
-            self._bg_tasks.add(task)
-            task.add_done_callback(self._bg_tasks.discard)
+            self.monitor.stop()
             self.monitor = None
 
     @property

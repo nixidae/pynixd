@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import os
 import sys
 import time
@@ -18,6 +19,7 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from nix_daemon_protocol.store_dir import set_real_store_dir, set_store_dir
 
 from . import _optional, metrics, wire
+from .background import Background
 from .config import ExternalUnixStoreSpec, HTTPBinaryCacheSpec, LocalSocketStoreSpec, PynixdSettings
 from .context import PynixdContext
 from .exceptions import GCNotPermittedError
@@ -37,20 +39,19 @@ if TYPE_CHECKING:
 
     import asyncssh
     from aiohttp import web
-    from anyio.abc import TaskGroup, TaskStatus
+    from anyio.abc import TaskStatus
 
     from .daemon_extensions.pynixd_collect_garbage import PynixdCollectGarbageResponse
 
 log = structlog.get_logger(__name__)
 
 
-async def _logged(name: str, fn: Callable[..., Awaitable[object]], *args: object) -> None:
-    """Run *fn*, and log it the moment it raises: shutdown may take a while to report it."""
-    try:
-        await fn(*args)
-    except Exception:
-        log.exception("background_task_failed", task=name)
-        raise
+@dataclasses.dataclass(frozen=True, slots=True)
+class _StoreHost:
+    """The task that holds one store open: cancel *scope*, then await *done*."""
+
+    scope: anyio.CancelScope = dataclasses.field(default_factory=anyio.CancelScope)
+    done: anyio.Event = dataclasses.field(default_factory=anyio.Event)
 
 
 def _trigger_due(now: float, last_trigger: float, cooldown: float) -> bool:
@@ -302,9 +303,9 @@ class Server:
         self.https_bound_port: int | None = None
         self._started = False
         self._done_event = anyio.Event()
-        self._background: TaskGroup | None = None
+        self._background = Background("Server")
         self._running: contextlib.AbstractAsyncContextManager[Server] | None = None
-        self._background_done = anyio.Event()
+        self._store_hosts: dict[StoreId, _StoreHost] = {}
 
     @staticmethod
     def _ensure_unix_socket_parent(socket_path: Path) -> None:
@@ -359,12 +360,20 @@ class Server:
         """The build scheduler, or ``None`` if scheduling is disabled."""
         return self.ctx.scheduler
 
-    async def add_store(self, store: Store, dynamic: bool = False) -> None:
-        """Add a store to the server.
+    async def add_store(
+        self,
+        store: Store,
+        dynamic: bool = False,
+        admit: Callable[[Store], Awaitable[bool]] | None = None,
+    ) -> bool:
+        """Start *store* and serve from it until `remove_store` or shutdown.
 
         If dynamic=True, the store's feature_matrix is also registered in
         the scheduler's dynamic_feature_matrix, so builds for that platform
         continue to queue even after the store is removed.
+
+        *admit* runs on the started store, before any build can reach it; a
+        store it refuses closes. Answers whether the store was added.
         """
         # Wire reconnect callback before start so the loop is ready
         captured_dynamic = dynamic
@@ -377,7 +386,7 @@ class Server:
             store._on_reconnect = _on_store_reconnect
 
         try:
-            await store.start()
+            host = await self._background.start(self._host_store, store, dynamic, admit, False)
         except Exception:
             log.warning(
                 "store_start_failed",
@@ -386,13 +395,67 @@ class Server:
             )
             # Store is already in ctx._stores from construction.
             # Don't register with scheduler — it's unavailable.
-            return
+            return False
+        return host is not None
 
+    async def _host_store(
+        self,
+        store: Store,
+        dynamic: bool,
+        admit: Callable[[Store], Awaitable[bool]] | None,
+        local: bool,
+        *,
+        task_status: TaskStatus[_StoreHost | None],
+    ) -> None:
+        """Hold *store* open in the server's background task group.
+
+        A store loop that raises closes that store alone, and the daemon
+        serves on. The *local* store is the exception: without it pynixd
+        serves nothing. It is never registered, because its `store_id` need
+        not be the key it already has.
+        """
+        host = _StoreHost()
+        started = False
+        try:
+            with host.scope:
+                async with store:
+                    if admit is not None and not await admit(store):
+                        started = True
+                        task_status.started(None)
+                        return
+                    if not local:
+                        self._register_store(store, dynamic)
+                        self._store_hosts[store.store_id] = host
+                    started = True
+                    task_status.started(host)
+                    await anyio.sleep_forever()
+        except Exception:
+            if not started or local:
+                raise
+            log.exception("store_background_failed", store_id=store.store_id)
+            with anyio.CancelScope(shield=True):
+                await self._forget_store(store.store_id, drain_timeout=0)
+        finally:
+            if self._store_hosts.get(store.store_id) is host:
+                del self._store_hosts[store.store_id]
+            host.done.set()
+
+    def _register_store(self, store: Store, dynamic: bool) -> None:
         # Server is the primary owner and mutator of the stores collection
         self.ctx._stores[store.store_id] = store
 
         if self.scheduler and isinstance(store, DaemonStore) and not store.no_schedule:
             self.scheduler.on_store_added(store, dynamic=dynamic)
+
+    async def _forget_store(self, store_id: StoreId, drain_timeout: float) -> Store | None:
+        if self.scheduler:
+            # First, drain the store in the scheduler to cancel/requeue jobs
+            await self.scheduler.drain_store(store_id, drain_timeout=drain_timeout)
+
+        store = self.ctx._stores.pop(store_id, None)
+        if store is not None and self.scheduler:
+            self.scheduler.allocator.discard_store(store_id)
+        return store
 
     async def remove_store(self, store_id: StoreId, drain_timeout: float = 300.0) -> None:
         """Remove a remote store, cleaning DB records and closing connections.
@@ -401,25 +464,12 @@ class Server:
         """
         if store_id == LOCAL_STORE_ID:
             raise RuntimeError("Cannot remove local store")
-        if self.scheduler:
-            # First, drain the store in the scheduler to cancel/requeue jobs
-            await self.scheduler.drain_store(store_id, drain_timeout=drain_timeout)
-
-        # Then remove from the context
-        store = self.ctx._stores.pop(store_id, None)
-        if store is None:
+        if await self._forget_store(store_id, drain_timeout) is None:
             log.warning("remove_store_not_found", store_id=store_id)
-            return
-        if self.scheduler:
-            self.scheduler.allocator.discard_store(store_id)
-
-        local_store = self.local_store
-        if isinstance(local_store, LocalDBStore):
-            # DB cleanup is handled at the DB layer when paths are flushed.
-            pass
-
-        # Finally, close the store connection
-        await store.close()
+        host = self._store_hosts.pop(store_id, None)
+        if host is not None:
+            host.scope.cancel()
+            await host.done.wait()
 
     def _spawn(self, fn: Callable[..., Awaitable[object]], *args: object) -> None:
         """Run *fn* for the daemon's lifetime, in the server's background task group.
@@ -427,24 +477,7 @@ class Server:
         A loop that raises takes the server down with it: the error leaves
         `async with Server(...)`, and systemd restarts the daemon.
         """
-        if self._background is None:
-            raise RuntimeError("Server runs its background loops only inside `async with Server(...)`")
-        name = repr(fn)
-        self._background.start_soon(_logged, name, fn, *args, name=name)
-
-    async def _host_background(self, *, task_status: TaskStatus[TaskGroup]) -> None:
-        """Hold the background task group until `close` cancels it.
-
-        Its own group, not the one around `async with`: cancelling that one
-        would cancel the caller's body too, and `close` may run inside it.
-        """
-        try:
-            async with anyio.create_task_group() as background:
-                task_status.started(background)
-                await anyio.sleep_forever()
-        finally:
-            self._background = None
-            self._background_done.set()
+        self._background.spawn(fn, *args)
 
     async def _gc_tick(self) -> None:
         """Watch the disk on a short cadence, collect on pressure or schedule.
@@ -687,8 +720,7 @@ class Server:
     @contextlib.asynccontextmanager
     async def _run(self) -> AsyncIterator[Server]:
         """The server's lifetime: its background loops live in this task group."""
-        async with anyio.create_task_group() as tg:
-            self._background = await tg.start(self._host_background)
+        async with self._background.running():
             try:
                 await self.start()
                 yield self
@@ -718,7 +750,7 @@ class Server:
         """Open stores, start tasks, and bind every listener."""
         local_store = self.ctx.local_store
 
-        await local_store.start()
+        await self._background.start(self._host_store, local_store, False, None, True)
 
         if local_store.version < wire.proto(1, 35):
             raise RuntimeError(
@@ -782,7 +814,7 @@ class Server:
         async with anyio.create_task_group() as tg:
             for store_id, store in list(self.ctx._stores.items()):
                 if store_id != LOCAL_STORE_ID:
-                    tg.start_soon(self.add_store, store, False)
+                    tg.start_soon(self.add_store, store, False, None)
 
         if self.ctx.scheduler:
             self._spawn(self.ctx.scheduler.start)
@@ -827,6 +859,7 @@ class Server:
             self.reverse_acceptor = await _optional.reverse_server.start_reverse_acceptor(
                 server=self,
                 settings=s.reverse_acceptor,
+                spawn=self._spawn,
             )
 
         if s.reverse_initiator.enabled:
@@ -929,12 +962,7 @@ class Server:
         if self.ctx.scheduler:
             await self.ctx.scheduler.close()
 
-        background = self._background
-        if background is not None:
-            background.cancel_scope.cancel()
-            await self._background_done.wait()
-
-        for store in self.ctx._stores.values():
-            await store.close()
+        # The stores' hosts are background tasks: this closes the stores too.
+        await self._background.aclose()
         self.ctx._stores.clear()
         self._done_event.set()

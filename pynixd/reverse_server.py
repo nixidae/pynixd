@@ -10,7 +10,6 @@ dispatching.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import TYPE_CHECKING
 
@@ -25,9 +24,10 @@ from .ssh_auth import load_pinned_keys
 from .store.reverse import ReverseStore
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from .instance import Server
+    from .store import Store
 
 log = structlog.get_logger(__name__)
 
@@ -54,12 +54,14 @@ def _known_hosts_matcher(
 async def start_reverse_acceptor(
     server: Server,
     settings: ReverseAcceptorSettings,
+    spawn: Callable[[Callable[[], Awaitable[None]]], object],
 ) -> asyncssh.SSHAcceptor | None:
     """Start the reverse store SSH listener on the controller.
 
     Builders connect to this listener and register themselves as build stores.
     The controller gets an ``SSHClientConnection`` per builder and can spawn
     ``nix-daemon --stdio`` processes on it via standard SSH exec channels.
+    Each builder's lifecycle runs in *spawn*, the server's background.
 
     Returns the SSH acceptor, or ``None`` if the reverse server is not enabled.
     """
@@ -77,8 +79,6 @@ async def start_reverse_acceptor(
             log.info("reverse_client_key_generated", host_key_path=settings.host_key_path)
         else:
             log.info("reverse_client_key_ephemeral_generated")
-
-    _bg_tasks: set[asyncio.Task[None]] = set()
 
     # Pinned builder host keys, or empty for an explicit no-pins setup.
     # A missing file raises here, failing the acceptor at startup rather
@@ -147,38 +147,21 @@ async def start_reverse_acceptor(
 
             store = ReverseStore(spec, conn)
 
-            try:
-                await store.start()
-            except Exception:
-                log.warning("reverse_store_start_failed", store_id=store_id_val, exc_info=True)
-                conn.abort()
-                return
-
-            if systems:
+            async def _proves(_: Store) -> bool:
+                if not systems:
+                    log.info(
+                        "reverse_builder_probe_skipped",
+                        store_id=store_id_val,
+                        detail="no systems reported, nothing to prove",
+                    )
+                    return True
                 reason = await store.prove_serves(sorted(systems)[0], settings.registration_probe_timeout)
                 if reason is not None:
-                    log.warning(
-                        "reverse_builder_probe_failed",
-                        store_id=store_id_val,
-                        reason=reason,
-                    )
-                    try:
-                        await store.close()
-                    except Exception:
-                        log.warning("reverse_probe_close_failed", store_id=store_id_val, exc_info=True)
-                    conn.abort()
-                    return
-            else:
-                log.info(
-                    "reverse_builder_probe_skipped",
-                    store_id=store_id_val,
-                    detail="no systems reported, nothing to prove",
-                )
+                    log.warning("reverse_builder_probe_failed", store_id=store_id_val, reason=reason)
+                    return False
+                return True
 
-            try:
-                await server.add_store(store, dynamic=True)
-            except Exception:
-                log.exception("reverse_add_store_failed", store_id=store_id_val)
+            if not await server.add_store(store, dynamic=True, admit=_proves):
                 conn.abort()
                 return
 
@@ -200,9 +183,15 @@ async def start_reverse_acceptor(
                     exc_info=True,
                 )
 
-        task = asyncio.create_task(_lifecycle())
-        _bg_tasks.add(task)
-        task.add_done_callback(_bg_tasks.discard)
+        async def _guarded() -> None:
+            # One builder's bug must not stop the daemon that serves the rest.
+            try:
+                await _lifecycle()
+            except Exception:
+                log.exception("reverse_builder_lifecycle_failed", store_id=store_id_val)
+                conn.abort()
+
+        spawn(_guarded)
 
     acceptor = await asyncssh.listen_reverse(
         host=settings.host,

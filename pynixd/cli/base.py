@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from pathlib import Path
@@ -18,7 +19,7 @@ from ..store import LocalStore as LocalSocketStore
 
 if TYPE_CHECKING:
     import argparse
-    from collections.abc import Callable
+    from collections.abc import AsyncIterator, Callable
 
 PYNIXD_SOCKET = Path("/run/pynixd/pynixd.sock")
 NIX_DAEMON_SOCKET = Path("/nix/var/nix/daemon-socket/socket")
@@ -60,7 +61,10 @@ def socket_candidates(settings: PynixdSettings, explicit: Path | None) -> list[P
     return list(dict.fromkeys(found))
 
 
-async def open_pynixd(settings: PynixdSettings, explicit: Path | None, operation: str) -> LocalSocketStore:
+@contextlib.asynccontextmanager
+async def open_pynixd(
+    settings: PynixdSettings, explicit: Path | None, operation: str
+) -> AsyncIterator[LocalSocketStore]:
     """Connect to the first candidate socket whose daemon serves *operation*.
 
     The handshake names every extension operation pynixd serves, so a plain
@@ -74,17 +78,17 @@ async def open_pynixd(settings: PynixdSettings, explicit: Path | None, operation
         store = LocalSocketStore(
             LocalSocketStoreSpec(store_id=StoreId("cli"), socket_path=path, probe=False, monitor=False),
         )
-        try:
-            await store.start(sync_paths=False)
-            async with store.transfer_conn(None) as conn:
-                features = set(conn.features)
-        except Exception as ex:  # noqa: BLE001 -- reported below, with every other candidate
-            await store.close()
-            tried.append(f"{path}: {type(ex).__name__}: {ex}")
-            continue
-        if operation in features:
-            return store
-        await store.close()
+        async with contextlib.AsyncExitStack() as stack:
+            try:
+                await stack.enter_async_context(store)
+                async with store.transfer_conn(None) as conn:
+                    features = set(conn.features)
+            except Exception as ex:  # noqa: BLE001 -- reported below, with every other candidate
+                tried.append(f"{path}: {type(ex).__name__}: {ex}")
+                continue
+            if operation in features:
+                yield store
+                return
         tried.append(f"{path}: a Nix daemon that does not serve {operation}, so not pynixd")
     lines = "\n  ".join(tried)
     raise SystemExit(f"pynixd: no pynixd daemon found. Tried:\n  {lines}\nName one with --socket or PYNIXD_UNIX_PATH.")
