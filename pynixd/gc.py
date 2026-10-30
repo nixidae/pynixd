@@ -23,11 +23,12 @@ import os
 import stat
 import time
 from collections import deque
-from heapq import heappop, heappush
+from contextlib import asynccontextmanager
 from itertools import batched
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import aiosqlite
 import anyio
 import structlog
 from anyio.to_thread import run_sync
@@ -48,12 +49,13 @@ from .daemon_extensions import (
     QueryPathInfosRequest,
 )
 from .exceptions import BackendError, GCNotPermittedError
+from .gc_sql import Bound, SqlPlan, referrer_first
 from .liveness import RootsTracker, walk_volatile
-from .local_store_db import resolve_db_path
+from .local_store_db import LocalStoreDB, resolve_db_path
 from .store import is_http_binary_cache
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 
     from .connection import ClientConn, Connection
     from .context import PynixdContext
@@ -171,30 +173,48 @@ def _take_until_below_target(ordered: Sequence[tuple[str, int]], used: int, tota
     return batch
 
 
-def _referrer_first(ordered: Sequence[str], references: Mapping[str, set[str]]) -> list[str]:
-    """Order referrers before references, with weight order breaking ties."""
-    rank = {path: index for index, path in enumerate(dict.fromkeys(ordered))}
-    paths = list(rank)
-    children = {path: references.get(path, set()) & rank.keys() - {path} for path in paths}
-    waiting = dict.fromkeys(paths, 0)
-    for refs in children.values():
-        for ref in refs:
-            waiting[ref] += 1
-    ready: list[int] = []
-    for path, count in waiting.items():
-        if count == 0:
-            heappush(ready, rank[path])
-    result = []
-    while ready:
-        path = paths[heappop(ready)]
-        result.append(path)
-        for ref in children[path]:
-            waiting[ref] -= 1
-            if waiting[ref] == 0:
-                heappush(ready, rank[ref])
-    if len(result) != len(paths):
-        log.warning("gc_delete_order_blocked", paths=len(paths) - len(result))
-    return result
+class _MemoryPlan:
+    """A plan held as Python sets: the substituter rule, and stores without pynixd's tables.
+
+    The same questions `SqlPlan` answers, through the collector's own
+    helpers; the age rule on a store with pynixd's tables plans in SQLite.
+    """
+
+    def __init__(self, collector: Collector, planned: set[str], vetoed: set[str]) -> None:
+        self._collector = collector
+        self._planned = planned
+        self._vetoed = vetoed
+        self._weights: dict[str, tuple[int, int]] = {}
+        self.size = len(planned)
+        self.spared = len(planned & vetoed)
+
+    async def weighed(
+        self, *, pressure: float, now: int, bound: Bound | None, limit: int | None
+    ) -> list[tuple[str, int, int]] | None:
+        weights = await self._collector._weigh({StorePath(path) for path in self._planned - self._vetoed})
+        if weights is None:
+            return None
+        self._weights = weights
+        ordered = _by_weight(weights, pressure)
+        if bound is not None:
+            ordered = _take_until_below_target(
+                [(path, weights[path][0]) for path in ordered], bound.used, bound.total, bound.target
+            )
+        if limit is not None:
+            ordered = ordered[:limit]
+        return [(path, *weights[path]) for path in ordered]
+
+    def whole(self, batch: list[str]) -> bool:
+        return set(batch) == self._planned
+
+    async def weights_of(self, paths: list[str], now: int) -> dict[str, tuple[int, int]]:
+        return {path: self._weights[path] for path in paths if path in self._weights}
+
+    async def close_batch(self, batch: list[str]) -> list[str]:
+        return await self._collector._close_batch(self._collector.ctx.local_store, batch, self._planned)
+
+    async def order_batch(self, batch: list[str]) -> list[str]:
+        return await self._collector._order_batch(self._collector.ctx.local_store, batch)
 
 
 class Collector:
@@ -252,19 +272,9 @@ class Collector:
                 "after the liveness mirror shows sustained zero-divergence"
             )
         lines: list[LogNext] = []
-        usage = self._disk_usage(self.ctx.local_store)
-        volatile = await run_sync(self._volatile_seeds)
-        vetoed = await self._veto_closure(volatile)
-        target = target_usage if target_usage is not None else getattr(self.ctx.local_store, "gc_target_usage", None)
-        planned = await self.plan(pressed=_over_target(usage, target))
-        spared = {str(path) for path in planned} & vetoed
-        veto = LogNext(
-            text=f"volatile veto: rechecked {len(volatile)} living roots, spared {len(spared)} planned paths"
-        )
-        lines.append(veto)
-        if client is not None:
-            await client.send(veto)
-        log.info("gc_volatile_veto", fresh=len(volatile), spared=len(spared))
+        local = self.ctx.local_store
+        usage = self._disk_usage(local)
+        target = target_usage if target_usage is not None else getattr(local, "gc_target_usage", None)
         if (
             action == PynixdGCAction.EXECUTE
             and target is not None
@@ -272,13 +282,18 @@ class Collector:
             and not _over_target(usage, target)
         ):
             # The bound takes nothing from a disk already at its target, so
-            # weighing the plan first is all cost: on dynhetz, 105k paths
-            # every hour for no delete (#1133).
-            log.info("gc_under_target", target=target, used=usage[0], total=usage[1], planned=len(planned))
+            # planning first is all cost: on dynhetz, a 150k-path plan every
+            # hour for no delete (#1133).
+            log.info("gc_under_target", target=target, used=usage[0], total=usage[1])
+            line = LogNext(
+                text=f"usage {usage[0] / usage[1]:.3f} is at or under the target {target}: nothing to delete"
+            )
+            lines.append(line)
+            if client is not None:
+                await client.send(line)
             return self._answered(PynixdCollectGarbageResponse(store_paths=set(), bytes=0), lines)
-        weights = await self._weigh({path for path in planned if str(path) not in vetoed})
-        if not weights:
-            return self._answered(PynixdCollectGarbageResponse(store_paths=set(), bytes=0), lines)
+        volatile = await run_sync(self._volatile_seeds)
+        vetoed = await self._veto_closure(volatile)
         if usage is None:
             # Unknown reads as half full: with no information neither axis
             # earns the lead. The bound still defaults to unbounded on top
@@ -289,35 +304,107 @@ class Collector:
         else:
             used, total = usage
             pressure = used / total if total else 0.5
-        ordered = _by_weight(weights, pressure)
-        if action != PynixdGCAction.EXECUTE:
-            # A dry-run answers the plan, not the pressure: the store's
-            # `gc_target_usage` bounds what an execute pass deletes, but a
-            # dry-run reports what is droppable, so an under-target disk
-            # does not read as clean. Issue #73.
-            batch = ordered
-        else:
-            batch = self._bound_batch(self.ctx.local_store, ordered, weights, usage, target_usage)
-        if limit is not None:
-            batch = batch[:limit]
-        planned_paths = {str(path) for path in planned}
-        if set(batch) != planned_paths:
-            # Slicing breaks the referrer closure the planners promise, and
-            # gc.cc refuses a batch whose referrer rides below the slice.
-            # Re-close: referrers in the plan join, seeds that escape it drop.
-            # Issues #69 and #70.
-            batch = await self._close_batch(self.ctx.local_store, batch, planned_paths)
-        if action != PynixdGCAction.EXECUTE:
-            self._log_top(batch, weights, pressure)
-            return self._answered(
-                PynixdCollectGarbageResponse(
-                    store_paths={StorePath(path) for path in batch},
-                    bytes=sum(weights[path][0] for path in batch),
-                ),
-                lines,
-            )
-        batch = await self._order_batch(self.ctx.local_store, batch)
+        # A dry-run answers the plan, not the pressure: the store's
+        # `gc_target_usage` bounds what an execute pass deletes, but a
+        # dry-run reports what is droppable, so an under-target disk does
+        # not read as clean. Issue #73. An execute pass reaching here is
+        # over its target, so the bound has a nonzero total.
+        bound = (
+            Bound(used=usage[0], total=usage[1], target=target)
+            if action == PynixdGCAction.EXECUTE and target is not None and usage is not None
+            else None
+        )
+        empty = PynixdCollectGarbageResponse(store_paths=set(), bytes=0)
+        try:
+            async with self._open_plan(pressed=_over_target(usage, target), vetoed=vetoed) as plan:
+                veto = LogNext(
+                    text=f"volatile veto: rechecked {len(volatile)} living roots, spared {plan.spared} planned paths"
+                )
+                lines.append(veto)
+                if client is not None:
+                    await client.send(veto)
+                log.info("gc_volatile_veto", fresh=len(volatile), spared=plan.spared)
+                now = int(time.time())
+                rows = await plan.weighed(pressure=pressure, now=now, bound=bound, limit=limit)
+                if rows is None:
+                    return self._answered(empty, lines)
+                if bound is not None:
+                    log.info(
+                        "gc_bounded_pass",
+                        target=bound.target,
+                        usage=bound.used / bound.total,
+                        batch=len(rows),
+                        planned=plan.size,
+                    )
+                weights = {path: (size, age) for path, size, age in rows}
+                batch = [path for path, _, _ in rows]
+                if not batch:
+                    return self._answered(empty, lines)
+                if not plan.whole(batch):
+                    # Slicing breaks the referrer closure the planners promise, and
+                    # gc.cc refuses a batch whose referrer rides below the slice.
+                    # Re-close: referrers in the plan join, seeds that escape it drop.
+                    # Issues #69 and #70.
+                    batch = await plan.close_batch(batch)
+                    weights |= await plan.weights_of([path for path in batch if path not in weights], now)
+                if action != PynixdGCAction.EXECUTE:
+                    self._log_top(batch, weights, pressure)
+                    return self._answered(
+                        PynixdCollectGarbageResponse(
+                            store_paths={StorePath(path) for path in batch},
+                            bytes=sum(weights[path][0] for path in batch),
+                        ),
+                        lines,
+                    )
+                batch = await plan.order_batch(batch)
+        except aiosqlite.Error:
+            # Fail closed: a plan the database could not finish deletes nothing.
+            log.warning("gc_plan_failed", exc_info=True)
+            return self._answered(empty, lines)
+        # The plan's connection is closed by here: the deletes below must not
+        # run under its read transaction.
         return await self._delete(batch, weights, lines, client)
+
+    @asynccontextmanager
+    async def _open_plan(self, *, pressed: bool, vetoed: set[str]) -> AsyncIterator[SqlPlan | _MemoryPlan]:
+        """The pass's plan: in SQLite for the age rule on a store with pynixd's tables, else in memory.
+
+        The substituter rule asks the caches about every path, which is not
+        a database question, and a store without pynixd's tables has no
+        access dates to plan by.
+        """
+        local = self.ctx.local_store
+        max_age = getattr(local, "gc_max_age", None)
+        db = getattr(local, "db", None)
+        if (
+            max_age is None
+            or not isinstance(db, LocalStoreDB)
+            or not db.active
+            or not db.schema.usable
+            or db.db_path is None
+        ):
+            yield _MemoryPlan(self, {str(path) for path in await self.plan(pressed=pressed)}, vetoed)
+            return
+        live = await self._live_paths(local)
+        async with SqlPlan.open(db.db_path) as plan:
+            counts = await plan.plan(live=live, vetoed=vetoed, cutoff=None if pressed else int(time.time()) - max_age)
+            log.info(
+                "gc_plan_lru",
+                valid=counts.valid,
+                live=counts.live,
+                stale=counts.stale,
+                pressed=pressed,
+                droppable=counts.planned,
+                planner="sqlite",
+            )
+            yield plan
+
+    async def _live_paths(self, local: Store) -> set[str]:
+        """The mirror's live set, refreshed just now, or Nix's when there is no mirror."""
+        mirror = await self._mirror_live(local)
+        if mirror is not None:
+            return mirror
+        return {str(path) for path in (await local.call(_request(GCAction.RETURN_LIVE, set()))).paths_deleted}
 
     @staticmethod
     def _answered(response: PynixdCollectGarbageResponse, lines: list[LogNext]) -> PynixdCollectGarbageResponse:
@@ -618,7 +705,7 @@ class Collector:
         if not set(batch) <= references.keys():
             log.warning("gc_delete_order_incomplete", asked=len(batch), answered=len(references))
             return []
-        return _referrer_first(batch, references)
+        return referrer_first(batch, references)
 
     async def _held_by(self, store: Store, paths: set[StorePath]) -> set[StorePath]:
         """The paths of *paths* that *store* confirms it has.
@@ -789,38 +876,6 @@ class Collector:
             PynixdCollectGarbageResponse(store_paths={StorePath(path) for path in deleted}, bytes=freed),
             lines,
         )
-
-    def _bound_batch(
-        self,
-        local: Store,
-        ordered: list[str],
-        weights: dict[str, tuple[int, int]],
-        usage: tuple[int, int] | None,
-        target_override: float | None = None,
-    ) -> list[str]:
-        """The leading paths to delete: all planned, or down to the target.
-
-        `gc_target_usage` bounds the pass by disk pressure: in weight order,
-        stopping once the freed bytes project usage to or under the
-        fraction. The hourly loop then relieves a full disk over several
-        passes rather than emptying the plan at once. `None` keeps one
-        unbounded pass. An unreadable usage keeps it too: the target cannot
-        bind what nobody measured. A per-call override wins over the store
-        for one pass.
-        """
-        target = target_override if target_override is not None else getattr(local, "gc_target_usage", None)
-        if target is None or usage is None:
-            return ordered
-        used, total = usage
-        batch = _take_until_below_target([(path, weights[path][0]) for path in ordered], used, total, target)
-        log.info(
-            "gc_bounded_pass",
-            target=target,
-            usage=used / total,
-            batch=len(batch),
-            planned=len(ordered),
-        )
-        return batch
 
     @staticmethod
     def _disk_usage(local: Store) -> tuple[int, int] | None:

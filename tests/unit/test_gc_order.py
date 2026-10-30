@@ -5,12 +5,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from pynixd.gc import Collector, _referrer_first
+from pynixd.gc import Collector
+from pynixd.gc_sql import referrer_first
 from tests.unit.test_gc_collector import FakeContext, FakeLocal
 
 
 def test_referrers_precede_references_across_priority_levels() -> None:
-    assert _referrer_first(["child", "other", "parent"], {"parent": {"child"}}) == [
+    assert referrer_first(["child", "other", "parent"], {"parent": {"child"}}) == [
         "other",
         "parent",
         "child",
@@ -18,11 +19,11 @@ def test_referrers_precede_references_across_priority_levels() -> None:
 
 
 def test_self_references_do_not_block_deletion() -> None:
-    assert _referrer_first(["a", "b"], {"a": {"a", "outside"}}) == ["a", "b"]
+    assert referrer_first(["a", "b"], {"a": {"a", "outside"}}) == ["a", "b"]
 
 
 def test_cycles_stay_without_blocking_independent_paths() -> None:
-    assert _referrer_first(["a", "b", "c"], {"a": {"b"}, "b": {"a"}}) == ["c"]
+    assert referrer_first(["a", "b", "c"], {"a": {"b"}, "b": {"a"}}) == ["c"]
 
 
 async def test_205_child_first_paths_delete_in_three_requests() -> None:
