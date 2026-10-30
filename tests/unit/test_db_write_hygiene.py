@@ -129,6 +129,26 @@ async def test_a_cancelled_checkout_never_returns_to_the_pool(tmp_path: Path) ->
         await db.close_db_pool()
 
 
+@pytest.mark.anyio
+async def test_the_wal_checkpoint_truncates_the_file(tmp_path: Path) -> None:
+    """Nix leaves its WAL at its largest size; the checkpoint takes it back to zero."""
+    db = _pool(tmp_path)
+    wal = tmp_path / "db.sqlite-wal"
+    # The writer stays open, the way Nix's daemon keeps its connection:
+    # SQLite deletes a WAL when its last connection closes.
+    with closing(sqlite3.connect(tmp_path / "db.sqlite")) as writer:
+        writer.execute("PRAGMA journal_mode=WAL")
+        with writer:
+            writer.executemany("INSERT INTO t VALUES (?)", [(n,) for n in range(20_000)])
+        assert wal.stat().st_size > 0
+        try:
+            await db.checkpoint_wal()
+        finally:
+            await db.close_db_pool()
+        assert wal.stat().st_size == 0
+        assert writer.execute("SELECT count(*) FROM t").fetchone()[0] == 20_000
+
+
 HELLO = "/nix/store/00000000000000000000000000000001-hello"
 LIBC = "/nix/store/00000000000000000000000000000002-libc"
 

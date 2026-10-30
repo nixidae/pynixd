@@ -63,6 +63,8 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+_CHECKPOINT_BUSY_MS = 1000
+
 
 # ── SQL constants ─────────────────────────────────────────────────────
 
@@ -851,6 +853,41 @@ class LocalStoreDB:
             log.debug("query_weights_failed", exc_info=True)
             return None
 
+    async def checkpoint_wal(self) -> None:
+        """Checkpoint the whole WAL into the database and truncate it to zero.
+
+        SQLite reuses a WAL file from its start after a checkpoint but never
+        shrinks it, and Nix sets no `journal_size_limit`: on dynhetz the WAL
+        stood at 1.8 GB beside a 1.6 GB database. A TRUNCATE checkpoint
+        needs every reader on the newest snapshot and blocks new writers
+        while it waits, so the wait is one second: a busy store skips this
+        pass and the next one tries again. Its own connection, never a
+        pooled one, so nothing it leaves can reach another caller.
+        """
+        if not self.active or self.read_only or self.db_path is None:
+            return
+        wal = Path(f"{self.db_path}-wal")
+        before = await anyio.to_thread.run_sync(_size_or_none, wal)
+        try:
+            async with aiosqlite.connect(f"file:{self.db_path}?mode=rw", uri=True, isolation_level=None) as conn:
+                await conn.execute(f"PRAGMA busy_timeout = {_CHECKPOINT_BUSY_MS}")
+                async with conn.execute("PRAGMA wal_checkpoint(TRUNCATE)") as cursor:
+                    row = await cursor.fetchone()
+        except aiosqlite.Error:
+            log.warning("db_wal_checkpoint_failed", exc_info=True)
+            return
+        if row is None:
+            return
+        busy, frames, checkpointed = row
+        log.info(
+            "db_wal_checkpoint",
+            busy=bool(busy),
+            frames=frames,
+            checkpointed=checkpointed,
+            wal_bytes_before=before,
+            wal_bytes_after=await anyio.to_thread.run_sync(_size_or_none, wal),
+        )
+
     async def prune_path_access(self) -> int:
         """Drop the rows for paths the store no longer holds. Returns the count.
 
@@ -1145,6 +1182,13 @@ class LocalStoreDB:
             self._all_conns.clear()
             self._idle_conns.clear()
             self.db_path = None
+
+
+def _size_or_none(path: Path) -> int | None:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
 
 
 def resolve_db_path(layout: StoreLayout) -> Path | None:

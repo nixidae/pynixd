@@ -425,6 +425,7 @@ class Server:
         )
         last_full = time.monotonic()
         last_trigger = 0.0
+        await self._checkpoint_wal()
         while True:
             await anyio.sleep(settings.gc_poll_interval)
             now = time.monotonic()
@@ -490,6 +491,12 @@ class Server:
             return False
         return used / total > watermark
 
+    async def _checkpoint_wal(self) -> None:
+        """Shrink the store database's WAL: Nix never does."""
+        checkpoint = getattr(getattr(self.ctx.local_store, "db", None), "checkpoint_wal", None)
+        if checkpoint is not None:
+            await checkpoint()
+
     async def _gc_pass(self, reason: str) -> PynixdCollectGarbageResponse | None:
         """One EXECUTE pass, with the metrics the loop always reports.
 
@@ -500,6 +507,8 @@ class Server:
         started = time.monotonic()
         try:
             resp = await Collector(self.ctx).run(PynixdGCAction.EXECUTE)
+            # A pass that deleted wrote its removals through the WAL.
+            await self._checkpoint_wal()
         except anyio.get_cancelled_exc_class():
             raise
         except GCNotPermittedError:
