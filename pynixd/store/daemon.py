@@ -336,6 +336,7 @@ class DaemonStore(Store):
             ConnectionPool(
                 store_id=self.store_id,
                 factory=self._create_conn_with_counter,
+                background=self._background,
                 idle_ttl=self.idle_ttl,
                 max_lifetime=self.max_lifetime,
                 max_connections=slots,

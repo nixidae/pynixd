@@ -4,7 +4,6 @@ Connection pooling and concurrency limiting for Nix daemon connections.
 
 from __future__ import annotations
 
-import asyncio
 import time
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from contextvars import ContextVar
@@ -18,6 +17,7 @@ from .. import metrics
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
+    from ..background import Background
     from ..connection import Connection
     from ..serde import SetOptionsRequest
 
@@ -40,6 +40,7 @@ class ConnectionPool:
         self,
         store_id: str,
         factory: Callable[[], Awaitable[Connection]],
+        background: Background,
         idle_ttl: float = 10.0,
         max_lifetime: float = 300.0,
         max_connections: int = 64,
@@ -94,7 +95,9 @@ class ConnectionPool:
         self.active_connections = 0
         self.idle_conns: list[tuple[Connection, float]] = []
         self.all_conns: list[Connection] = []
-        self.sweep_task: asyncio.Task[None] | None = None
+        self._background = background
+        """The owning store's loops. The idle sweep runs there, so it ends when the store closes."""
+        self._sweep: anyio.CancelScope | None = None
         # The collector holds this weakly and reads the three counts above on
         # each scrape, so nothing here updates a gauge per acquire.
         metrics.STORE_POOLS.register(self)
@@ -142,14 +145,21 @@ class ConnectionPool:
         return [conn for conn in self.all_conns if conn.current_op is not None]
 
     def start_sweep(self) -> None:
-        """Start the idle connection sweep task if not already running."""
-
-        """Start the idle sweep task if not already running."""
-        if self.sweep_task is None or self.sweep_task.done():
-            self.sweep_task = asyncio.create_task(self.sweep_idle())
+        """Start the idle sweep if it is not running."""
+        if self._sweep is None:
+            self._sweep = self._background.spawn(self.sweep_idle)
 
     async def sweep_idle(self) -> None:
         """Periodically close idle connections that have expired."""
+        # `close` clears `_sweep` while this unwinds, and a newer sweep may take its place.
+        mine = self._sweep
+        try:
+            await self._sweep_until_empty()
+        finally:
+            if self._sweep is mine:
+                self._sweep = None
+
+    async def _sweep_until_empty(self) -> None:
         while self.idle_conns:
             await anyio.sleep(self.idle_ttl / 2)
             now = time.monotonic()
@@ -199,8 +209,8 @@ class ConnectionPool:
         try:
             await self.on_pool_empty()
         except Exception:
-            # The owner's teardown is not this sweep's business to fail on,
-            # and the sweep task has nobody to report to.
+            # A sweep that raises closes the whole store, and a failed
+            # teardown of the transport is no reason for that.
             log.exception("pool_empty_callback_failed", store_id=self.store_id)
 
     def _too_old(self, conn: Connection, now: float) -> bool:
@@ -373,7 +383,8 @@ class ConnectionPool:
         """Keep *conn* idle for the next caller, or close it when it may not serve again."""
         now = time.monotonic()
         retired = self._too_old(conn, now)
-        if conn.dirty or retired or not self.reuse:
+        # A closed store runs no sweep, so an idle connection would never expire.
+        if conn.dirty or retired or not self.reuse or not self._background.open:
             if conn.dirty:
                 log.warning(
                     "store_discarding_dirty_connection",
@@ -448,12 +459,10 @@ class ConnectionPool:
         return len(idle)
 
     async def close(self) -> None:
-        """Close all connections and cancel the idle sweep task."""
-        if self.sweep_task is not None:
-            self.sweep_task.cancel()
-            with suppress(BaseException):
-                await self.sweep_task
-            self.sweep_task = None
+        """Close all connections and cancel the idle sweep."""
+        if self._sweep is not None:
+            self._sweep.cancel()
+            self._sweep = None
 
         for conn in self.all_conns:
             with suppress(Exception):

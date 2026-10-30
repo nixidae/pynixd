@@ -81,6 +81,11 @@ class Background:
             self._tg = None
             self._done.set()
 
+    @property
+    def open(self) -> bool:
+        """Whether `spawn` and `start` accept a loop now."""
+        return self._tg is not None
+
     def spawn(self, fn: Callable[..., Awaitable[object]], *args: object) -> anyio.CancelScope:
         """Run *fn* until the owner closes, or until the answered scope is cancelled."""
         if self._tg is None:

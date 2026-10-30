@@ -76,14 +76,15 @@ async def test_a_build_connection_closes_when_returned_and_a_transfer_one_waits(
     not delete the output around pynixd."""
     store = MockStore("lanes-reuse", feature_matrix={"x86_64-linux": set()})
 
-    async with store.build_conn():
-        pass
-    async with store.transfer_conn():
-        pass
+    async with store:
+        async with store.build_conn():
+            pass
+        async with store.transfer_conn():
+            pass
 
-    assert store.build_pool.all_conns == []
-    assert store.build_pool.idle_conns == []
-    assert len(store.transfer_pool.idle_conns) == 1
+        assert store.build_pool.all_conns == []
+        assert store.build_pool.idle_conns == []
+        assert len(store.transfer_pool.idle_conns) == 1
 
 
 async def test_state_shows_each_pool_and_who_waits() -> None:
@@ -110,6 +111,36 @@ async def test_state_shows_each_pool_and_who_waits() -> None:
         assert pools["transfer"].waiting == 0
 
 
+async def test_a_closed_pool_sweeps_what_returns_after_it() -> None:
+    """A reconnect closes the pools of a store that runs on. The old sweep
+    unwinds after the close, and the next idle connection still gets one.
+    nixidae/nixidae#1143."""
+    store = MockStore("lanes-sweep", feature_matrix={"x86_64-linux": set()})
+    pool = store.transfer_pool
+    async with store:
+        async with store.transfer_conn():
+            pass
+        old = pool._sweep  # noqa: SLF001 -- the sweep's life is the unit
+        assert old is not None
+        await pool.close()
+        async with store.transfer_conn():
+            pass
+        new = pool._sweep  # noqa: SLF001
+        assert new is not None
+        assert new is not old
+        await anyio.sleep(0)
+        assert pool._sweep is new, "the old sweep's unwind cleared the new one"  # noqa: SLF001
+
+
+async def test_a_closed_store_keeps_no_idle_connection() -> None:
+    """No sweep runs there, so an idle connection would never expire."""
+    store = MockStore("lanes-closed", feature_matrix={"x86_64-linux": set()})
+    async with store.transfer_conn():
+        pass
+    assert store.transfer_pool.idle_conns == []
+    assert store.transfer_pool.all_conns == []
+
+
 def test_a_spec_sizes_the_pools() -> None:
     """A high ceiling is a configuration; the build limit decides below it. Issue #98."""
     store = MockStore("lanes-size", feature_matrix={"x86_64-linux": set()})
@@ -124,14 +155,15 @@ async def test_a_transfer_inside_a_build_connection_reuses_an_idle_connection() 
     one apply. nixidae/nixidae#1075."""
     store = MockStore("lanes-nested", feature_matrix={"x86_64-linux": set()})
 
-    async with store.build_conn():
-        async with store.transfer_conn() as first:
-            pass
-        async with store.transfer_conn() as second:
-            pass
+    async with store:
+        async with store.build_conn():
+            async with store.transfer_conn() as first:
+                pass
+            async with store.transfer_conn() as second:
+                pass
 
-    assert first is second
-    assert [conn for conn, _ in store.transfer_pool.idle_conns] == [first]
+        assert first is second
+        assert [conn for conn, _ in store.transfer_pool.idle_conns] == [first]
 
 
 async def test_a_transfer_inside_a_build_connection_skips_a_full_pool() -> None:

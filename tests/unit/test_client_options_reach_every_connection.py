@@ -23,6 +23,7 @@ import anyio
 import pytest
 
 from nix_daemon_protocol.ids import BuildId, RequestId
+from pynixd.background import Background
 from pynixd.connection import ClientConn, Connection
 from pynixd.goals.build_derivation import BuildDerivationGoal
 from pynixd.handlers.set_options import SetOptionsHandler
@@ -314,6 +315,7 @@ def _pool() -> ConnectionPool:
     return ConnectionPool(
         store_id="test",
         factory=cast("Any", factory),
+        background=Background("test"),
         max_lifetime=0.0,
         idle_ttl=10_000.0,
     )

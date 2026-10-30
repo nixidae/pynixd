@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from pynixd import metrics
+from pynixd.background import Background
 from pynixd.connection import Connection
 from pynixd.metrics import StoreTrafficCollector
 from pynixd.store.pool import ConnectionPool
@@ -119,6 +120,7 @@ def _pool() -> ConnectionPool:
     return ConnectionPool(
         store_id="wire-pool",
         factory=factory,
+        background=Background("test"),
     )
 
 

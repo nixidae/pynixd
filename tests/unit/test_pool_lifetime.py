@@ -14,6 +14,7 @@ from typing import Any, cast
 
 import pytest
 
+from pynixd.background import Background
 from pynixd.connection import Connection
 from pynixd.store.pool import ConnectionPool
 
@@ -66,6 +67,7 @@ def make_pool(max_lifetime: float) -> ConnectionPool:
     return ConnectionPool(
         store_id="test",
         factory=factory,
+        background=Background("test"),
         max_lifetime=max_lifetime,
     )
 

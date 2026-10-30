@@ -31,6 +31,7 @@ import asyncssh
 import pytest
 
 from nix_daemon_protocol.ids import StoreId
+from pynixd.background import Background
 from pynixd.config import SSHSubprocessStoreSpec
 from pynixd.constants import SSH_KEEPALIVE_COUNT_MAX, SSH_KEEPALIVE_INTERVAL
 from pynixd.store.pool import ConnectionPool
@@ -159,6 +160,7 @@ class TestPoolEmptyNotification:
         return ConnectionPool(
             store_id="builder",
             factory=factory,
+            background=Background("test"),
             idle_ttl=0.01,
             on_pool_empty=on_empty,
         )
@@ -179,7 +181,7 @@ class TestPoolEmptyNotification:
 
     @pytest.mark.anyio
     async def test_a_failing_callback_does_not_escape_the_sweep(self) -> None:
-        """The sweep task has nobody to report to, so it must not die."""
+        """A sweep that raises closes the whole store."""
 
         async def boom() -> None:
             raise RuntimeError("teardown failed")
@@ -190,6 +192,7 @@ class TestPoolEmptyNotification:
         pool = ConnectionPool(
             store_id="builder",
             factory=factory,
+            background=Background("test"),
             on_pool_empty=boom,
         )
         with anyio.fail_after(1):
