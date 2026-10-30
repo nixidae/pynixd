@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import bz2
+import gzip
+import io
 import lzma
 import re
-import zlib
 from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
@@ -36,7 +37,7 @@ from ..store_path import StorePath
 from .base import Store
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncGenerator, Buffer
 
     from nix_daemon_protocol.wire_ops import WireRequest
 
@@ -48,6 +49,7 @@ log = structlog.get_logger(__name__)
 
 _NARINFO_KEY_RE = re.compile(r"^([A-Za-z]+):\s*(.*)$")
 _HTTP_CHUNK_SIZE = 1024 * 256
+_NAR_PIECE = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -260,7 +262,7 @@ class HTTPBinaryCacheStore(Store):
         """
         return f"{self.url.rstrip('/')}/{narinfo.url.lstrip('/')}"
 
-    async def stream_nar(self, narinfo: HTTPNarInfo) -> AsyncIterator[bytes]:
+    async def stream_nar(self, narinfo: HTTPNarInfo) -> AsyncGenerator[bytes]:
         """Stream a decompressed NAR from the cache as an async byte iterator."""
 
         session = self._require_session()
@@ -274,24 +276,23 @@ class HTTPBinaryCacheStore(Store):
                 raise NarGone(f"HTTP cache returned {response.status} for {nar_url}")
             if response.status != 200:
                 raise RuntimeError(f"HTTP cache returned {response.status} for {nar_url}")
-            decompressor = _decompressor(narinfo.compression)
-            # `lzma`, `bz2`, `zlib` and `zstandard` release the GIL while they
-            # decompress: four xz streams on four threads ran 3.8x faster than
-            # one after the other (dynhetz, 2026-10-30). On the loop, one xz
-            # NAR stalls every client of the daemon.
-            passthrough = isinstance(decompressor, _PassthroughDecompressor)
-            async for chunk in response.content.iter_chunked(_HTTP_CHUNK_SIZE):
-                outs = (
-                    decompressor.decompress(chunk)
-                    if passthrough
-                    else await anyio.to_thread.run_sync(decompressor.decompress, chunk)
-                )
-                for out in outs:
-                    if out:
-                        yield out
-            for out in decompressor.finish():
-                if out:
-                    yield out
+            if narinfo.compression == "none":
+                async for chunk in response.content.iter_chunked(_HTTP_CHUNK_SIZE):
+                    yield chunk
+                return
+            # **The codec pulls, as Nix's does** (`Source::drainInto`, 8 KiB):
+            # each `read` returns at most `_NAR_PIECE`, whatever the ratio.
+            # Pushed a chunk at a time, 10 KB of xz came out as one 64 MiB
+            # string. The codecs release the GIL: four xz streams on four
+            # threads ran 3.8x faster than in turn (dynhetz, 2026-10-30).
+            codec = _open_codec(
+                narinfo.compression, io.BufferedReader(_SocketReader(response.content), _HTTP_CHUNK_SIZE)
+            )
+            try:
+                while piece := await anyio.to_thread.run_sync(codec.read, _NAR_PIECE):
+                    yield piece
+            finally:
+                codec.close()
 
     async def _load_cache_info(self) -> dict[str, str]:
         def _check_response(status: int) -> None:
@@ -356,89 +357,40 @@ class HTTPBinaryCacheStore(Store):
         return self._session
 
 
-class _PassthroughDecompressor:
-    def decompress(self, chunk: bytes) -> list[bytes]:
-        return [chunk]
+class _SocketReader(io.RawIOBase):
+    """A response body as a blocking file, for a codec on a worker thread."""
 
-    def finish(self) -> list[bytes]:
-        return []
+    def __init__(self, content: aiohttp.StreamReader) -> None:
+        self._content = content
 
+    def readable(self) -> bool:
+        return True
 
-class _ZlibDecompressor:
-    def __init__(self) -> None:
-        self._decompressor = zlib.decompressobj()
-
-    def decompress(self, chunk: bytes) -> list[bytes]:
-        return [self._decompressor.decompress(chunk)]
-
-    def finish(self) -> list[bytes]:
-        return [self._decompressor.flush()]
+    def readinto(self, buffer: Buffer) -> int:
+        view = memoryview(buffer)
+        data = anyio.from_thread.run(self._content.read, len(view))
+        view[: len(data)] = data
+        return len(data)
 
 
-class _GzipDecompressor:
-    def __init__(self) -> None:
-        self._decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+class _Codec(Protocol):
+    def read(self, size: int = -1, /) -> bytes: ...
 
-    def decompress(self, chunk: bytes) -> list[bytes]:
-        return [self._decompressor.decompress(chunk)]
-
-    def finish(self) -> list[bytes]:
-        return [self._decompressor.flush()]
+    def close(self) -> None: ...
 
 
-class _Bzip2Decompressor:
-    def __init__(self) -> None:
-        self._decompressor = bz2.BZ2Decompressor()
-
-    def decompress(self, chunk: bytes) -> list[bytes]:
-        return [self._decompressor.decompress(chunk)]
-
-    def finish(self) -> list[bytes]:
-        return []
-
-
-class _XzDecompressor:
-    def __init__(self) -> None:
-        self._decompressor = lzma.LZMADecompressor()
-
-    def decompress(self, chunk: bytes) -> list[bytes]:
-        return [self._decompressor.decompress(chunk)]
-
-    def finish(self) -> list[bytes]:
-        return []
-
-
-class _ZstdDecompressor:
-    def __init__(self) -> None:
-        self._decompressor = zstd.ZstdDecompressor().decompressobj()
-
-    def decompress(self, chunk: bytes) -> list[bytes]:
-        return [self._decompressor.decompress(chunk)]
-
-    def finish(self) -> list[bytes]:
-        return [self._decompressor.flush()]
-
-
-class _Decompressor(Protocol):
-    def decompress(self, chunk: bytes) -> list[bytes]: ...
-
-    def finish(self) -> list[bytes]: ...
-
-
-def _decompressor(compression: str) -> _Decompressor:
+def _open_codec(compression: str, raw: io.BufferedReader) -> _Codec:
     match compression:
-        case "" | "none":
-            return _PassthroughDecompressor()
         case "bzip2":
-            return _Bzip2Decompressor()
+            return bz2.BZ2File(raw)
         case "gzip":
-            return _GzipDecompressor()
+            return gzip.GzipFile(fileobj=raw)
         case "xz":
-            return _XzDecompressor()
-        case "zlib":
-            return _ZlibDecompressor()
+            return lzma.LZMAFile(raw)
         case "zstd":
-            return _ZstdDecompressor()
+            # Nix writes independent frames (`ZstdMultiFrameCompressionSink`);
+            # without `read_across_frames` the NAR ends at the first.
+            return zstd.ZstdDecompressor().stream_reader(raw, read_across_frames=True)
         case _:
             raise RuntimeError(f"unsupported NAR compression: {compression}")
 

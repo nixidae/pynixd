@@ -2,21 +2,25 @@ from __future__ import annotations
 
 import gzip
 import lzma
+import os
 import socket
 import threading
 from typing import TYPE_CHECKING
 
+import anyio
 import pytest
+import zstandard as zstd
 from aiohttp import web
+from aiohttp.test_utils import TestServer
 
 from nix_daemon_protocol.ids import StoreId
 from pynixd.config import HTTPBinaryCacheSpec
 from pynixd.serde import IsValidPathRequest, QueryPathInfoRequest, QueryValidPathsRequest
-from pynixd.store.http_binary_cache import HTTPBinaryCacheStore, _XzDecompressor
+from pynixd.store.http_binary_cache import _NAR_PIECE, HTTPBinaryCacheStore, _SocketReader
 from pynixd.store_path import StorePath
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Buffer
 
 
 _PATH = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-test"
@@ -152,13 +156,13 @@ async def test_http_binary_cache_streams_decompressed_nar() -> None:
 async def test_http_binary_cache_decompresses_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     """An xz NAR decompresses on a worker thread, so it cannot stall the loop."""
     threads: list[int] = []
-    decompress = _XzDecompressor.decompress
+    readinto = _SocketReader.readinto
 
-    def recording(self: _XzDecompressor, chunk: bytes) -> list[bytes]:
+    def recording(self: _SocketReader, buffer: Buffer) -> int:
         threads.append(threading.get_ident())
-        return decompress(self, chunk)
+        return readinto(self, buffer)
 
-    monkeypatch.setattr(_XzDecompressor, "decompress", recording)
+    monkeypatch.setattr(_SocketReader, "readinto", recording)
     async for url in _serve(_narinfo(compression="xz", url=f"nar/{_HASH}.nar.xz"), nar=lzma.compress(_NAR)):
         store = HTTPBinaryCacheStore(
             HTTPBinaryCacheSpec(store_id=StoreId("cache"), url=url),
@@ -174,3 +178,74 @@ async def test_http_binary_cache_decompresses_off_the_event_loop(monkeypatch: py
 
     assert threads
     assert threading.get_ident() not in threads
+
+
+async def _stream(narinfo: str, nar: bytes) -> list[bytes]:
+    async for url in _serve(narinfo, nar=nar):
+        store = HTTPBinaryCacheStore(HTTPBinaryCacheSpec(store_id=StoreId("cache"), url=url))
+        await store.start()
+        try:
+            info = await store.get_narinfo(StorePath(_PATH))
+            assert info is not None
+            return [chunk async for chunk in store.stream_nar(info)]
+        finally:
+            await store.close()
+    raise AssertionError("the cache never served")
+
+
+async def test_http_binary_cache_bounds_each_decompressed_piece() -> None:
+    """64 MiB of zeros is 10 KB of xz; no piece holds more than `_NAR_PIECE`.
+
+    Nix pulls decompressed output through an 8 KiB buffer (`serialise.cc`
+    `Source::drainInto`), so a high ratio never lands in memory at once.
+    """
+    raw = bytes(64 * 2**20)
+    chunks = await _stream(_narinfo(compression="xz", url=f"nar/{_HASH}.nar.xz"), lzma.compress(raw))
+    assert sum(map(len, chunks)) == len(raw)
+    assert max(map(len, chunks)) <= _NAR_PIECE
+
+
+async def test_http_binary_cache_reads_every_zstd_frame() -> None:
+    """Nix writes a zstd NAR as independent frames (`compression.cc`
+    `ZstdMultiFrameCompressionSink`); every frame is part of the NAR."""
+    first, second = b"first-frame " * 1000, b"second-frame " * 1000
+    compressor = zstd.ZstdCompressor()
+    frames = compressor.compress(first) + compressor.compress(second)
+    chunks = await _stream(_narinfo(compression="zstd", url=f"nar/{_HASH}.nar.zst"), frames)
+    assert b"".join(chunks) == first + second
+
+
+async def test_http_binary_cache_stream_stops_when_the_consumer_does() -> None:
+    """A consumer that stops mid-NAR is not held for the next network read."""
+    raw = os.urandom(4 * 2**20)
+    compressed = lzma.compress(raw, preset=0)
+    stalled = anyio.Event()
+    app = web.Application()
+
+    async def get_narinfo(request: web.Request) -> web.Response:
+        return web.Response(
+            text=_narinfo(compression="xz", url=f"nar/{_HASH}.nar.xz"), content_type="text/x-nix-narinfo"
+        )
+
+    async def get_nar(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(headers={"Content-Length": str(len(compressed))})
+        await response.prepare(request)
+        await response.write(compressed[: len(compressed) // 2])
+        await stalled.wait()
+        return response
+
+    app.router.add_get("/{hash}.narinfo", get_narinfo)
+    app.router.add_get("/nar/{filename}", get_nar)
+    async with TestServer(app) as server:
+        store = HTTPBinaryCacheStore(HTTPBinaryCacheSpec(store_id=StoreId("cache"), url=str(server.make_url("/"))))
+        await store.start()
+        try:
+            info = await store.get_narinfo(StorePath(_PATH))
+            assert info is not None
+            with anyio.fail_after(5):
+                stream = store.stream_nar(info)
+                assert await anext(stream)
+                await stream.aclose()
+        finally:
+            stalled.set()
+            await store.close()
