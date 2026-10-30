@@ -852,14 +852,8 @@ class PynixdSettings(BaseSettings):
     Nix asks each substituter in turn for every path. pynixd asks all of
     its HTTP substituters at once instead: the `.narinfo` goes out from
     the first store that answers, and a NAR the local store does not hold
-    redirects to the highest-priority store that answered. Issue #85.
-    """
-    http_prefer_local_nar: bool = True
-    """Serve a locally held NAR over HTTP instead of redirecting upstream.
-
-    `True` spends local disk and bandwidth so the bytes always come from
-    here. `False` redirects even on a local hit, for an operator whose
-    upstreams sit behind a faster pipe than this machine. Issue #85.
+    streams, decompressed, from the highest-priority store that answered.
+    Issue #85, nixidae/nixidae#1137.
     """
     http_upstream_negative_ttl: float = 60.0
     """How long a total upstream miss stays a miss for one `.narinfo` hash.

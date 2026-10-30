@@ -59,16 +59,26 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
-def _rewrite_narinfo_url(raw: str, path_hash: str) -> str:
-    """Point an upstream `.narinfo` at this cache's own `/nar` endpoint.
+_FILE_FIELDS = ("URL:", "Compression:", "FileHash:", "FileSize:")
 
-    Every line passes through untouched except `URL:`, which becomes the
-    path-hash filename `handle_nar` resolves and redirects. The hashes
-    and signatures stay the upstream's, so a client verifies the same
-    bytes it would have fetched there. Issue #85.
+
+def _uncompressed_narinfo(raw: str, path_hash: str) -> str:
+    """An upstream `.narinfo`, describing the raw NAR this cache streams.
+
+    The four fields of the upstream's file go, and `URL` and `Compression:
+    none` take their place. NarHash, NarSize and the signatures stay: a
+    signature covers the path, NarHash, NarSize and references
+    (`path-info.cc:50` `fingerprint`), never the file. `Compression` is
+    always written, because an absent one means bzip2 (`nar-info.cc:101`).
+
+    **One URL, one set of bytes.** Nix keeps a narinfo for 30 days
+    (`narinfo-cache-positive-ttl`) and honours no HTTP header that would
+    shorten it. A URL that served an upstream's xz file and then a local raw
+    NAR failed with "input compression not recognized".
+    nixidae/nixidae#1137.
     """
-    rewritten = [f"URL: nar/{path_hash}.nar" if line.startswith("URL: ") else line for line in raw.splitlines()]
-    return "\n".join(rewritten) + "\n"
+    kept = [line for line in raw.splitlines() if not line.startswith(_FILE_FIELDS)]
+    return "\n".join([*kept, f"URL: nar/{path_hash}.nar", "Compression: none"]) + "\n"
 
 
 class PynixdHttpServer:
@@ -93,7 +103,6 @@ class PynixdHttpServer:
         health_check: Callable[[], HealthReport] | None = None,
         substitution_queue: SubstitutionQueue | None = None,
         upstream_race: bool = True,
-        prefer_local_nar: bool = True,
     ) -> None:
         """Initialize the HTTP server and register route handlers.
 
@@ -113,14 +122,11 @@ class PynixdHttpServer:
             substitution_queue: Races the HTTP substituters on a local
                 cache miss. ``None`` keeps every miss a 404. Issue #85.
             upstream_race: Whether a local miss may ask the substituters.
-            prefer_local_nar: Serve a locally held NAR instead of
-                redirecting to the upstream that also holds it.
         """
         self._health_check = health_check
         self.store = local_store
         self.substitution_queue = substitution_queue
         self.upstream_race = upstream_race
-        self.prefer_local_nar = prefer_local_nar
         self.enable_cache = enable_cache
         self.enable_metrics = enable_metrics
         self.metrics_no_auth = metrics_no_auth
@@ -287,11 +293,10 @@ class PynixdHttpServer:
     async def handle_upstream_narinfo(self, hash_part: str) -> web.Response:
         """Answer a local `.narinfo` miss from the fastest upstream.
 
-        The winner's text goes out with only the URL line rewritten to
-        this cache, so the client fetches the NAR here and the redirect
-        decision stays with `handle_nar`. The losing requests are not
-        cancelled: they land in the substitution caches and rank the
-        later redirect by priority. Issue #85.
+        The winner's text goes out describing the raw NAR, so the client
+        fetches the NAR here and `handle_nar` chooses the upstream. The
+        losing requests are not cancelled: they land in the substitution
+        caches and rank that later choice by priority. Issue #85.
         """
         if not self.upstream_race or self.substitution_queue is None:
             return web.Response(status=HTTPStatus.NOT_FOUND, text="not found\n")
@@ -306,7 +311,7 @@ class PynixdHttpServer:
             store_id=winner.store.store_id,
         )
         return web.Response(
-            text=_rewrite_narinfo_url(winner.raw, winner.info.path.hash_part()),
+            text=_uncompressed_narinfo(winner.raw, winner.info.path.hash_part()),
             content_type="text/x-nix-narinfo",
         )
 
@@ -326,17 +331,12 @@ class PynixdHttpServer:
 
         path = await self.resolve_path(hash_part)
         if path is None:
-            return await self.handle_upstream_nar(hash_part)
+            return await self.handle_upstream_nar(request, hash_part)
 
         # Get path info for NAR size (needed for Content-Length and streaming)
         vinfo = await self.get_path_info(path)
         if vinfo is None:
-            return await self.handle_upstream_nar(hash_part)
-
-        if not self.prefer_local_nar:
-            redirect = await self.redirect_to_upstream(hash_part)
-            if redirect is not None:
-                return redirect
+            return await self.handle_upstream_nar(request, hash_part)
 
         response = web.StreamResponse(
             status=HTTPStatus.OK,
@@ -376,29 +376,44 @@ class PynixdHttpServer:
         await response.write_eof()
         return response
 
-    async def handle_upstream_nar(self, hash_part: str) -> web.Response:
-        """Redirect a NAR the local store does not hold.
+    async def handle_upstream_nar(self, request: web.Request, hash_part: str) -> web.StreamResponse:
+        """Stream a NAR the local store does not hold, decompressed.
 
-        The target is the highest-priority upstream that answered for the
+        The source is the highest-priority upstream that answered for the
         hash, not the fastest: the race already happened for the
-        `.narinfo`, so this ranks its results instead of re-racing.
-        A 307 keeps the GET a GET at the upstream. Issue #85.
+        `.narinfo`, so this ranks its results instead of re-racing. No
+        redirect: an upstream's file is compressed, and the narinfo this
+        cache served says `Compression: none`. nixidae/nixidae#1137.
         """
-        redirect = await self.redirect_to_upstream(hash_part)
-        if redirect is not None:
-            return redirect
-        return web.Response(status=HTTPStatus.NOT_FOUND, text="not found\n")
-
-    async def redirect_to_upstream(self, hash_part: str) -> web.Response | None:
-        """Highest-priority upstream URL for one NAR hash, if any answered."""
         if not self.upstream_race or self.substitution_queue is None:
-            return None
-        url = await self.substitution_queue.upstream_nar_redirect(hash_part)
-        if url is None:
-            return None
-        log.info("http_cache_nar_redirect", hash=hash_part, url=url)
-        metrics.HTTP_CACHE_UPSTREAM.labels(result="redirect").inc()
-        return web.HTTPTemporaryRedirect(location=url)
+            return web.Response(status=HTTPStatus.NOT_FOUND, text="not found\n")
+        source = await self.substitution_queue.upstream_nar_source(hash_part)
+        if source is None:
+            return web.Response(status=HTTPStatus.NOT_FOUND, text="not found\n")
+        store, narinfo = source
+        log.info("http_cache_nar_upstream", hash=hash_part, store_id=store.store_id, compression=narinfo.compression)
+        metrics.HTTP_CACHE_UPSTREAM.labels(result="stream").inc()
+
+        response = web.StreamResponse(
+            status=HTTPStatus.OK,
+            headers={
+                "Content-Type": "application/x-nix-nar",
+                "Content-Length": str(narinfo.valid_path_info.info.nar_size),
+            },
+        )
+        await response.prepare(request)
+        try:
+            async for chunk in store.stream_nar(narinfo):
+                await response.write(chunk)
+                metrics.HTTP_NAR_BYTES_SENT.inc(len(chunk))
+        except Exception:
+            log.exception("upstream_nar_streaming_failed", hash=hash_part, store_id=store.store_id)
+            if request.protocol and request.protocol.transport:
+                request.protocol.transport.close()
+            raise
+
+        await response.write_eof()
+        return response
 
     async def handle_put_nar(self, request: web.Request) -> web.Response:
         """Receive NAR data and save it to a temporary file."""

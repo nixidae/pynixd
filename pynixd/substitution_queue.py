@@ -8,7 +8,6 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
-from urllib.parse import urljoin
 
 import anyio
 import structlog
@@ -31,7 +30,7 @@ if TYPE_CHECKING:
     from .config import PynixdSettings
     from .context import PynixdContext
     from .store import Store
-    from .store.http_binary_cache import HTTPNarInfo
+    from .store.http_binary_cache import HTTPBinaryCacheStore, HTTPNarInfo
     from .store_path import StorePath
 
 log = structlog.get_logger(__name__)
@@ -343,12 +342,14 @@ class SubstitutionQueue:
             self._http_hash_negative[hash_part] = None
         return race.winner
 
-    async def upstream_nar_redirect(self, hash_part: str) -> str | None:
-        """Highest-priority upstream URL for one NAR hash, if any answered.
+    async def upstream_nar_source(self, hash_part: str) -> tuple[HTTPBinaryCacheStore, HTTPNarInfo] | None:
+        """Highest-priority upstream holding one NAR hash, with its narinfo.
 
-        The hash is a store-path hash from a `.narinfo` this cache served,
-        rewritten or local. Stale stores are queried first so the redirect
-        ranks answers and not whoever answered fastest. Issue #85.
+        The hash is a store-path hash from a `.narinfo` this cache served.
+        Stale stores are queried first so the choice ranks answers and not
+        whoever answered fastest. Any upstream's file decompresses to the
+        one NAR the served narinfo hashes, so the choice may differ from the
+        store that answered the narinfo. Issue #85, nixidae/nixidae#1137.
         """
         path = self._http_hash_paths.get(hash_part)
         if path is None:
@@ -376,7 +377,7 @@ class SubstitutionQueue:
                 continue
             narinfo = await store.get_narinfo(path)
             if narinfo is not None:
-                return urljoin(store.url, narinfo.url)
+                return store, narinfo
         return None
 
     async def _cached_http_narinfo(self, hash_part: str, stores: list[Store]) -> UpstreamNarinfo | None:

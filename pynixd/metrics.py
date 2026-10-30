@@ -498,7 +498,7 @@ BINARY_CACHE_NARINFO = Counter(
 HTTP_CACHE_UPSTREAM = Counter(
     "pynixd_http_cache_upstream_total",
     "Local HTTP cache misses answered from the upstream race",
-    ["result"],  # redirect
+    ["result"],  # stream
 )
 
 # --- Garbage collection ---

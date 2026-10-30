@@ -2,22 +2,25 @@
 
 Nix asks each substituter in turn for every path. The `.narinfo` handler
 asks all HTTP substituters at once instead: the first store that answers
-wins the narinfo, served with only the URL line rewritten to this cache,
-and a NAR request redirects to the highest-priority store that answered.
+wins the narinfo, served as a description of the raw NAR, and a NAR request
+streams it decompressed from the highest-priority store that answered.
 The losing requests are not cancelled; they land in the substitution
-caches and rank the later redirect. Issue #85.
+caches and rank that later choice. Issue #85, nixidae/nixidae#1137.
 """
 
 from __future__ import annotations
 
+import lzma
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import anyio
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 
 from nix_daemon_protocol.ids import StoreId
 from pynixd.config import HTTPBinaryCacheSpec, PynixdSettings
-from pynixd.http_server import PynixdHttpServer, _rewrite_narinfo_url
+from pynixd.http_server import PynixdHttpServer, _uncompressed_narinfo
 from pynixd.store.http_binary_cache import HTTPBinaryCacheStore, _parse_narinfo
 from pynixd.store_path import StorePath
 from pynixd.substitution_queue import SubstitutionQueryResult, SubstitutionQueue
@@ -155,8 +158,8 @@ async def test_a_miss_the_scheduler_just_saw_asks_nobody() -> None:
     assert await _race_after_scheduler_misses(stores[0]) == 2, "a store nobody asked yet is still raced"
 
 
-async def test_upstream_narinfo_rewrites_only_the_url() -> None:
-    """The winner's text goes out with signatures and hashes intact."""
+async def test_upstream_narinfo_describes_the_raw_nar() -> None:
+    """The winner's text goes out as a raw NAR, signatures and hashes intact."""
     store = _store("cache-a", "https://a.example/")
 
     async def hit(hash_part: str) -> tuple[str, Any] | None:
@@ -173,29 +176,34 @@ async def test_upstream_narinfo_rewrites_only_the_url() -> None:
     assert response.status == 200
     assert response.text is not None
     assert f"URL: nar/{_HASH}.nar\n" in response.text
+    assert "Compression: none\n" in response.text
     assert "URL: nar/deadbeef.nar.xz" not in response.text
     assert "Sig: cache.nixos.org-1:dddd" in response.text
     assert "NarHash: sha256:cccc" in response.text
 
 
-def test_rewrite_narinfo_url_leaves_other_lines_alone() -> None:
-    """The rewrite touches the URL line and nothing else, byte for byte."""
-    rewritten = _rewrite_narinfo_url(_NARINFO, _HASH)
+def test_uncompressed_narinfo_drops_the_upstream_file() -> None:
+    """The upstream's file fields go; every other line stays, byte for byte."""
+    rewritten = _uncompressed_narinfo(_NARINFO, _HASH)
     assert rewritten.splitlines() == [
         f"StorePath: /nix/store/{_HASH}-widget",
-        f"URL: nar/{_HASH}.nar",
-        "Compression: xz",
-        "FileHash: sha256:bbbb",
-        "FileSize: 123",
         "NarHash: sha256:cccc",
         "NarSize: 456",
         "References: ",
         "Sig: cache.nixos.org-1:dddd",
+        f"URL: nar/{_HASH}.nar",
+        "Compression: none",
     ]
 
 
-async def test_nar_redirect_picks_highest_priority_responder() -> None:
-    """The redirect ranks by priority, not by who answered fastest."""
+def test_uncompressed_narinfo_names_none_when_upstream_names_nothing() -> None:
+    """An absent `Compression` means bzip2 to Nix (`nar-info.cc:101`)."""
+    bare = "".join(line for line in _NARINFO.splitlines(keepends=True) if not line.startswith("Compression:"))
+    assert "Compression: none" in _uncompressed_narinfo(bare, _HASH).splitlines()
+
+
+async def test_nar_source_picks_highest_priority_responder() -> None:
+    """The NAR's source ranks by priority, not by who answered fastest."""
     cheap = _store("cache-cheap", "https://cheap.example/", priority=40.0)
     dear = _store("cache-dear", "https://dear.example/", priority=5.0)
 
@@ -220,14 +228,56 @@ async def test_nar_redirect_picks_highest_priority_responder() -> None:
     cheap.get_narinfo = narinfo  # type: ignore[method-assign]
     dear.get_narinfo = narinfo  # type: ignore[method-assign]
 
-    redirect = await server.redirect_to_upstream(_HASH)
-    assert redirect is not None
-    assert redirect.status == 307
-    assert redirect.headers["Location"] == "https://dear.example/nar/deadbeef.nar.xz"
+    source = await queue.upstream_nar_source(_HASH)
+    assert source is not None
+    assert source[0].store_id == StoreId("cache-dear")
 
 
-async def test_nar_redirect_misses_when_nobody_answered() -> None:
-    """No upstream answer means no redirect, and the handler says 404."""
+def _nar_client(server: PynixdHttpServer) -> TestClient[web.Request, web.Application]:
+    """A client of `handle_upstream_nar` alone; no local store is consulted."""
+    app = web.Application()
+
+    async def nar(request: web.Request) -> web.StreamResponse:
+        return await server.handle_upstream_nar(request, request.match_info["hash"])
+
+    app.router.add_get("/nar/{hash}.nar", nar)
+    return TestClient(TestServer(app))
+
+
+async def test_upstream_nar_streams_decompressed() -> None:
+    """An upstream's xz file reaches the client as the raw NAR the narinfo hashes."""
+    raw = b"nix-archive-1 widget " * 4096
+    narinfo = _NARINFO.replace("NarSize: 456", f"NarSize: {len(raw)}")
+    upstream = web.Application()
+
+    async def get_nar(request: web.Request) -> web.Response:
+        return web.Response(body=lzma.compress(raw))
+
+    upstream.router.add_get("/nar/deadbeef.nar.xz", get_nar)
+    async with TestServer(upstream) as upstream_server:
+        store = _store("cache-a", str(upstream_server.make_url("/")))
+        await store.start()
+        try:
+
+            async def hit(hash_part: str) -> tuple[str, Any] | None:
+                return _fetched(narinfo)
+
+            store.fetch_narinfo = hit  # type: ignore[method-assign]
+            server = PynixdHttpServer(
+                SimpleNamespace(),  # type: ignore[arg-type]
+                substitution_queue=_queue(store),
+            )
+            async with _nar_client(server) as client:
+                response = await client.get(f"/nar/{_HASH}.nar")
+                assert response.status == 200
+                assert response.headers["Content-Length"] == str(len(raw))
+                assert await response.read() == raw
+        finally:
+            await store.close()
+
+
+async def test_upstream_nar_misses_when_nobody_answered() -> None:
+    """No upstream answer means no source, and the handler says 404."""
     store = _store("cache-a", "https://a.example/")
 
     async def miss(hash_part: str) -> tuple[str, Any] | None:
@@ -240,9 +290,9 @@ async def test_nar_redirect_misses_when_nobody_answered() -> None:
         substitution_queue=queue,
     )
 
-    assert await server.redirect_to_upstream(_HASH) is None
-    response = await server.handle_upstream_nar(_HASH)
-    assert response.status == 404
+    assert await queue.upstream_nar_source(_HASH) is None
+    async with _nar_client(server) as client:
+        assert (await client.get(f"/nar/{_HASH}.nar")).status == 404
 
 
 async def test_upstream_race_disabled_keeps_misses_404() -> None:
@@ -264,5 +314,6 @@ async def test_upstream_race_disabled_keeps_misses_404() -> None:
     )
 
     assert (await server.handle_upstream_narinfo(_HASH)).status == 404
-    assert (await server.handle_upstream_nar(_HASH)).status == 404
+    async with _nar_client(server) as client:
+        assert (await client.get(f"/nar/{_HASH}.nar")).status == 404
     assert calls == 0
