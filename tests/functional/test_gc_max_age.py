@@ -133,13 +133,13 @@ def _freeze_tracker(server: Server) -> None:
     The planner reads `PynixdPathAccess`, and the tracker's flush loop would
     rewrite the backdated rows the next time it fires. The tracker has its
     own tests (`test_path_access`); here only the planner is under test.
-    Cancelled before any operation runs, so the loop's final flush finds
-    nothing pending and writes nothing.
+    Cancelled before any operation runs, so the final flush of `close`
+    finds nothing pending and writes nothing.
     """
     db = getattr(server.ctx.local_store, "db", None)
-    task = getattr(db, "flush_task", None)
-    if task is not None:
-        task.cancel()
+    scope = getattr(db, "flush_scope", None)
+    if scope is not None:
+        scope.cancel()
 
 
 async def _lab(tmp_path: Path) -> _Lab:

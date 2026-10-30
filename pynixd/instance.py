@@ -807,9 +807,6 @@ class Server:
                 reason="the local store is not a LocalDBStore, so no SQLite fast path is available",
             )
 
-        if self.ctx.db:
-            self.ctx.db.start()
-
         # Start non-local stores concurrently — they're already in _stores.
         async with anyio.create_task_group() as tg:
             for store_id, store in list(self.ctx._stores.items()):

@@ -26,7 +26,6 @@ give the first and refuse the second, and then every fast path that reads
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import sqlite3
@@ -59,6 +58,7 @@ if TYPE_CHECKING:
 
     from nix_daemon_protocol.aliases import StorePathSet
 
+    from .background import Background
     from .build_stats import BuildObservation, DerivationIdentity
 
 log = structlog.get_logger(__name__)
@@ -447,7 +447,8 @@ class LocalStoreDB:
         in which closure runs, never in what is stored. See `MarkKind`.
         """
 
-        self.flush_task: asyncio.Task[None] | None = None
+        self.flush_scope: anyio.CancelScope | None = None
+        self._flush_ended: anyio.Event | None = None
 
         self.schema = SchemaState(version=0, usable=False, reason="the schema was never checked")
         """The state of the tables pynixd owns. `open` replaces it.
@@ -1146,13 +1147,16 @@ class LocalStoreDB:
         async with db.execute(query, (json.dumps(sorted(seeds)),)) as cursor:
             return {str(row[0]) for row in await cursor.fetchall()}
 
-    def start(self) -> None:
-        """Start background regtime flush task. Call from async context."""
-        if not self.active or self.flush_task is not None or self.read_only:
+    def start(self, background: Background) -> None:
+        """Flush the references in *background*, the loops of the store that owns this database."""
+        if not self.active or self.flush_scope is not None or self.read_only:
             return
-        self.flush_task = asyncio.create_task(self.flush_loop())
+        self.flush_scope = background.spawn(self.flush_loop, anyio.Event())
 
-    async def flush_loop(self) -> None:
+    async def flush_loop(self, ended: anyio.Event) -> None:
+        """Flush every interval. `close` flushes what is left."""
+        # Set here, not in `start`: a task cancelled before its first step never runs, and never sets *ended*.
+        self._flush_ended = ended
         try:
             while True:
                 await anyio.sleep(self.reference_flush_interval)
@@ -1160,21 +1164,20 @@ class LocalStoreDB:
                     await self.flush_references()
                 except aiosqlite.Error:
                     log.exception("db_flush_loop_iteration_failed")
-        except anyio.get_cancelled_exc_class():
-            with suppress(Exception):
-                await self.flush_references()
-        except Exception:
-            log.exception("db_flush_loop_crashed")
+        finally:
+            ended.set()
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
     async def close(self) -> None:
         """Stop flush task, flush pending writes, close database."""
-        if self.flush_task is not None:
-            self.flush_task.cancel()
-            with suppress(BaseException):
-                await self.flush_task
-            self.flush_task = None
+        if self.flush_scope is not None:
+            self.flush_scope.cancel()
+            self.flush_scope = None
+        # The loop may be inside a flush, on a connection the pool closes below.
+        if self._flush_ended is not None:
+            await self._flush_ended.wait()
+            self._flush_ended = None
         await self.flush_references()
         await self.close_db_pool()
 

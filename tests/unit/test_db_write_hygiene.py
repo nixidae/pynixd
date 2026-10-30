@@ -24,6 +24,7 @@ import aiosqlite
 import anyio
 import pytest
 
+from pynixd.background import Background
 from pynixd.db_migrations import PATH_ACCESS_TABLE, apply_migrations
 from pynixd.local_store_db import LocalStoreDB
 
@@ -220,3 +221,21 @@ async def test_failed_flush_keeps_seeds_queued(tmp_path: Path, monkeypatch: pyte
         assert await _touched(db) == set()
     finally:
         await db.close_db_pool()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("stepped", [True, False], ids=["loop-running", "loop-never-stepped"])
+async def test_close_stops_the_flush_loop_and_flushes_the_rest(tmp_path: Path, stepped: bool) -> None:
+    """The loop runs in its owner's task group. nixidae/nixidae#1143."""
+    db = await _flushing_db(tmp_path)
+    background = Background("test")
+    async with background.running():
+        db.start(background)
+        assert db.flush_scope is not None
+        if stepped:
+            await anyio.sleep(0)
+        db.pending_references = {HELLO}
+        with anyio.fail_after(5):
+            await db.close()
+        assert db.pending_references == set()
+        assert db.flush_scope is None

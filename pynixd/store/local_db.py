@@ -191,6 +191,7 @@ class LocalDBStore(LocalStore):
             self.db = LocalStoreDB.inactive(self.layout)
         else:
             self.db = await LocalStoreDB.open(self.layout)
+        self.db.start(self._background)
         await super().start(sync_paths=sync_paths)
 
     async def close(self) -> None:
