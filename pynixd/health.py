@@ -83,11 +83,18 @@ class StallWatchdog:
     is scheduled even while the loop never yields.
 
     **A C call that holds the GIL defeats this thread, and `faulthandler`
-    covers it.** The thread runs only after the call returns, so its dump
-    shows the loop idle: 101 of 107 dumps on dynhetz did (nixidae/nixidae#1139).
-    `faulthandler.dump_traceback_later` dumps from a C thread without the GIL,
-    while the call still runs, and names the Python frame that made it. Every
-    beat re-arms it, so it fires once per stall, to stderr only.
+    covers it when asked to (`gil_dump`).** The thread runs only after the
+    call returns, so its dump shows the loop idle: 101 of 107 dumps on
+    dynhetz did (nixidae/nixidae#1139). `faulthandler.dump_traceback_later`
+    dumps from a C thread without the GIL, while the call still runs, and
+    names the Python frame that made it. Every beat re-arms it, so it fires
+    once per stall, to stderr only.
+
+    **Off by default, because that dump can crash the process.** It walks
+    the thread list without the lock that guards it, so a thread exiting
+    during the dump segfaults CPython 3.14.7: 3 of 3 runs of 3000 dumps
+    against 20 exiting threads each (nixidae/nixidae#1143). anyio's worker
+    threads exit after 10 s idle, so in a daemon a long stall can meet one.
 
     One dump per stall, not one per check, or a ten-minute stall writes
     hundreds.
@@ -107,8 +114,10 @@ class StallWatchdog:
         stream: TextIO | None = None,
         path: Path | None = None,
         max_bytes: int | None = None,
+        gil_dump: bool = False,
     ) -> None:
         self.threshold = threshold
+        self.gil_dump = gil_dump
         self._interval = interval
         self._stream = stream
         self._path = path
@@ -248,7 +257,7 @@ class StallWatchdog:
             # `faulthandler` writes to a descriptor; a buffer has none.
             pass
         else:
-            if self.threshold > 0:
+            if self.gil_dump and self.threshold > 0:
                 self._fault_stream = stream
                 self.beat()
         thread = threading.Thread(target=self.run, name="pynixd-stall-watchdog", daemon=True)

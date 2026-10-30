@@ -907,6 +907,10 @@ class PynixdSettings(BaseSettings):
     # Point it at a persistent volume. On a pod that boots from a PVC, a path
     # under that volume survives both the restart and the recreation.
     stall_traceback_path: Path | None = None
+    # Also arm `faulthandler`, whose dump names a C call that holds the GIL
+    # while it runs. For debugging a stall only: that dump can segfault the
+    # process when a thread exits during it (`StallWatchdog`).
+    stall_traceback_gil_dump: bool = False
     # How large `stall_traceback_path` may grow. 0 removes the cap.
     #
     # A setting rather than a constant because a constant can only be changed
