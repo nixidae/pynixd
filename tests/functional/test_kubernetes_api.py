@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio
+import functools
 
 import aiohttp
 import anyio
@@ -76,13 +76,10 @@ async def test_dynamic_store_management() -> None:
 
         # 3. Remove store with short timeout (force kill)
         # We start the removal in background because it will wait for the build
-        remove_task = asyncio.create_task(
-            server.remove_store(StoreId("remote1"), drain_timeout=0.1),
-        )
-
-        # Wait for drain timeout to trigger hard-kill
-        await anyio.sleep(0.2)
-        await remove_task
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(functools.partial(server.remove_store, StoreId("remote1"), drain_timeout=0.1))
+            # Wait for drain timeout to trigger hard-kill
+            await anyio.sleep(0.2)
 
         assert "remote1" not in scheduler.stores
 

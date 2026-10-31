@@ -15,8 +15,6 @@ running it proves that.
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import io
 import os
 import sys
@@ -207,22 +205,23 @@ async def test_it_fires_against_a_real_cpu_bound_stall() -> None:
     monitor = LoopLagMonitor(interval=0.02, watchdog=dog)
     dog.beat()
     thread = dog.start()
-    task = asyncio.create_task(monitor.run())
     try:
-        await monitor.wait_for_sample()
-        assert dog.dumps == 0, "a loop that is running must not be dumped"
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(monitor.run)
+            try:
+                await monitor.wait_for_sample()
+                assert dog.dumps == 0, "a loop that is running must not be dumped"
 
-        # Block the loop the way the reported failure does: Python, on the
-        # loop, without awaiting.
-        deadline = time.monotonic() + 1.0
-        while time.monotonic() < deadline:
-            sum(range(2000))
+                # Block the loop the way the reported failure does: Python, on the
+                # loop, without awaiting.
+                deadline = time.monotonic() + 1.0
+                while time.monotonic() < deadline:
+                    sum(range(2000))
+            finally:
+                monitor.stop()
+                dog.stop()
+                tg.cancel_scope.cancel()
     finally:
-        monitor.stop()
-        dog.stop()
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
         thread.join(timeout=5)
 
     assert dog.dumps >= 1, "a one second CPU-bound stall produced no dump"

@@ -7,8 +7,8 @@ ranks last (`tests/unit/test_store_choice.py`). nixidae/nixidae#1016.
 
 from __future__ import annotations
 
-import asyncio
 import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -38,24 +38,23 @@ def _exec_in(home: Path) -> Any:
         if process.command is None:
             process.exit(1)  # the SFTP subsystem, refused
             return
-        local = await asyncio.create_subprocess_shell(
-            str(process.command), cwd=home, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE
-        )
-        assert local.stdin is not None and local.stdout is not None
-        stdin, stdout = local.stdin, local.stdout
+        async with await anyio.open_process(
+            str(process.command), cwd=home, stdin=subprocess.PIPE, stdout=subprocess.PIPE
+        ) as local:
+            assert local.stdin is not None and local.stdout is not None
+            stdin, stdout = local.stdin, local.stdout
 
-        async def feed() -> None:
-            while data := await process.stdin.read(65536):
-                stdin.write(data)
-                await stdin.drain()
-            stdin.close()
+            async def feed() -> None:
+                while data := await process.stdin.read(65536):
+                    await stdin.send(data)
+                await stdin.aclose()
 
-        async with anyio.create_task_group() as tg:
-            tg.start_soon(feed)
-            while data := await stdout.read(65536):
-                process.stdout.write(data)
-            tg.cancel_scope.cancel()
-        process.exit(await local.wait())
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(feed)
+                async for data in stdout:
+                    process.stdout.write(data)
+                tg.cancel_scope.cancel()
+            process.exit(await local.wait())
 
     return handle
 

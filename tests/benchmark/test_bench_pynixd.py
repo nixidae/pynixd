@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -14,6 +13,7 @@ from nix_daemon_protocol.ids import StoreId
 from pynixd.config import LocalSocketStoreSpec
 from pynixd.serde import IsValidPathRequest, QueryAllValidPathsRequest, QueryPathInfoRequest
 from pynixd.store import LocalSocketStore, Store
+from tests._conftest.all_of import all_of
 from tests.conftest import CLIENT_BIN, run_subproc
 
 if TYPE_CHECKING:
@@ -101,7 +101,7 @@ async def test_bench_is_valid_path_parallel(bench_store: Store) -> None:
     paths = list(resp_all.paths)[:1000]
 
     start = time.perf_counter()
-    await asyncio.gather(*[bench_store.execute(IsValidPathRequest(path=p)) for p in paths])
+    await all_of(*[bench_store.execute(IsValidPathRequest(path=p)) for p in paths])
     elapsed = time.perf_counter() - start
 
     log.info(

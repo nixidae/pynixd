@@ -13,11 +13,12 @@ one real pass rather than the fastest column of each.
 
 from __future__ import annotations
 
-import asyncio
 import random
 import sys
 import time
 from pathlib import Path
+
+import anyio
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID
 from pynixd.config import LocalSocketStoreSpec
@@ -118,4 +119,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    anyio.run(main, backend="asyncio")

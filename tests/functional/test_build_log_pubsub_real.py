@@ -7,12 +7,12 @@ same QueuedBuild. Both should receive identical build log output.
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
 import anyio
 import structlog
 
+from tests._conftest.all_of import all_of
 from tests.conftest import CLIENT_BIN, TEST_NIX, run_subproc, server_uri
 
 if TYPE_CHECKING:
@@ -101,7 +101,7 @@ async def test_build_log_pubsub_real_nix(
 
     log.info("starting_both_clients")
 
-    result1, result2 = await asyncio.gather(
+    result1, result2 = await all_of(
         _run_client_build(store1, uri, str(TEST_NIX), "log_test"),
         _run_client2_delayed(store2, uri, str(TEST_NIX), "log_test"),
     )

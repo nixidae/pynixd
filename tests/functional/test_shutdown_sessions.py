@@ -59,15 +59,16 @@ async def test_shutdown_answers_in_flight_op(tmp_path: Path) -> None:
             await release.wait()
             return await real_dispatch(self, op_num)
 
-        with mock.patch.object(DaemonProxy, "dispatch", blocking_dispatch):
-            op = asyncio.create_task(
-                conn.call(
+        async def op() -> None:
+            with pytest.raises(Exception, match="shutting down"):
+                await conn.call(
                     IsValidPathRequest(path=StorePath(path="/nix/store/does-not-exist")),
                     raise_on_error=True,
                 )
-            )
-            await asyncio.wait_for(entered.wait(), 30)
-            await asyncio.wait_for(server.close(), 30)
-            with pytest.raises(Exception, match="shutting down"):
-                await asyncio.wait_for(op, 30)
+
+        with mock.patch.object(DaemonProxy, "dispatch", blocking_dispatch), anyio.fail_after(60):
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(op)
+                await entered.wait()
+                await server.close()
         await conn.close()

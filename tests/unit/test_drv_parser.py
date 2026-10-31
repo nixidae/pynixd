@@ -9,7 +9,6 @@ Tests are split into two categories:
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import shutil
@@ -84,63 +83,38 @@ def probes(drv_probes_path: Path) -> Probes:
 
     async def _eval_all() -> Probes:
         # List attribute names using --apply
-        proc = await asyncio.create_subprocess_exec(
-            NIX_BIN,
-            "eval",
-            "--impure",
-            "--file",
-            str(drv_probes_path),
-            "--apply",
-            "builtins.attrNames",
-            "--json",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        proc = await anyio.run_process(
+            [NIX_BIN, "eval", "--impure", "--file", str(drv_probes_path), "--apply", "builtins.attrNames", "--json"],
+            check=False,
         )
-        stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
-            raise RuntimeError(f"Failed to list probes: {stderr.decode()}")
-        names = json.loads(stdout.decode())
+            raise RuntimeError(f"Failed to list probes: {proc.stderr.decode()}")
+        names = json.loads(proc.stdout.decode())
 
         result: Probes = {}
         for name in names:
-            proc = await asyncio.create_subprocess_exec(
-                NIX_BIN,
-                "eval",
-                "--impure",
-                "--file",
-                str(drv_probes_path),
-                f"{name}.drvPath",
-                "--raw",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            proc = await anyio.run_process(
+                [NIX_BIN, "eval", "--impure", "--file", str(drv_probes_path), f"{name}.drvPath", "--raw"],
+                check=False,
             )
-            stdout, stderr = await proc.communicate()
             if proc.returncode != 0:
-                raise RuntimeError(f"eval {name}.drvPath failed: {stderr.decode()}")
-            drv_path = stdout.decode().strip()
+                raise RuntimeError(f"eval {name}.drvPath failed: {proc.stderr.decode()}")
+            drv_path = proc.stdout.decode().strip()
             try:
                 drv_content = await anyio.Path(drv_path).read_text()
             except FileNotFoundError as ex:
                 raise _ProbesUnavailable(drv_path) from ex
 
-            proc = await asyncio.create_subprocess_exec(
-                NIX_BIN,
-                "derivation",
-                "show",
-                drv_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate()
+            proc = await anyio.run_process([NIX_BIN, "derivation", "show", drv_path], check=False)
             if proc.returncode != 0:
-                raise RuntimeError(f"derivation show {name} failed: {stderr.decode()}")
-            canonical = json.loads(stdout.decode())
+                raise RuntimeError(f"derivation show {name} failed: {proc.stderr.decode()}")
+            canonical = json.loads(proc.stdout.decode())
 
             result[name] = (drv_path, drv_content, canonical)
         return result
 
     try:
-        return asyncio.run(_eval_all())
+        return anyio.run(_eval_all, backend="asyncio")
     except _ProbesUnavailable as ex:
         pytest.skip(str(ex))
 

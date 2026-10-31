@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import shutil
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -13,6 +13,7 @@ import anyio
 from pynixd.agent import AGENT_HELLO, AgentMonitor, agent_args, agent_for, local_monitor, read_agent_frame
 from pynixd.background import Background
 from pynixd.config import PressureSettings
+from pynixd.line_reader import LineReader
 from pynixd.monitor import SAMPLED_FILES, GenericResourcePoller, ResourceMonitor, health_from_files
 from pynixd.psi import DiskSpace
 
@@ -132,21 +133,18 @@ async def test_the_real_agent_speaks_what_the_parser_reads() -> None:
     """
     binary = shutil.which("pynixd-agent")
     assert binary is not None, "pynixd-agent is not on PATH"
-    proc = await asyncio.create_subprocess_exec(
-        binary,
-        # A long interval, so the frame after the first is the asked one.
-        *agent_args(PressureSettings(interval=10.0), "/"),
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-    )
-    assert proc.stdin is not None and proc.stdout is not None
+    # A long interval, so the frame after the first is the asked one.
+    args = [binary, *agent_args(PressureSettings(interval=10.0), "/")]
     with anyio.fail_after(5):
-        hello = (await proc.stdout.readline()).decode()
-        first = await read_agent_frame(proc.stdout)
-        proc.stdin.write(b"\n")
-        asked = (await read_agent_frame(proc.stdout)).reason
-        proc.stdin.close()
-        rc = await proc.wait()
+        async with await anyio.open_process(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE) as proc:
+            assert proc.stdin is not None and proc.stdout is not None
+            out = LineReader(proc.stdout)
+            hello = (await out.readline()).decode()
+            first = await read_agent_frame(out)
+            await proc.stdin.send(b"\n")
+            asked = (await read_agent_frame(out)).reason
+            await proc.stdin.aclose()
+            rc = await proc.wait()
 
     assert hello.startswith(AGENT_HELLO)
     assert first.reason == "tick"

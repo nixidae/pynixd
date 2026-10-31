@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 import time
 from typing import TYPE_CHECKING
 
@@ -84,16 +85,11 @@ async def test_throughput_daemon() -> None:
     daemon_env["NIX_DAEMON_SOCKET_PATH"] = str(socket_path)
 
     log.info("spawning_baseline_daemon", store_path=str(store_path))
-    proc = await asyncio.create_subprocess_exec(
-        str(NIX_BIN),
-        "daemon",
-        "--store",
-        str(store_path),
-        "--max-jobs",
-        str(MAX_JOBS),
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
+    proc = await anyio.open_process(
+        [str(NIX_BIN), "daemon", "--store", str(store_path), "--max-jobs", str(MAX_JOBS)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         env=daemon_env,
     )
 
@@ -140,7 +136,8 @@ async def test_throughput_daemon() -> None:
         log.info("daemon_baseline_finished", elapsed=f"{elapsed:.2f}s")
     finally:
         proc.terminate()
-        await proc.wait()
+        with anyio.CancelScope(shield=True):
+            await proc.aclose()
 
 
 @pytest.mark.benchmark

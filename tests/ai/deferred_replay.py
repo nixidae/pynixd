@@ -14,13 +14,14 @@ Exercises the exact code path that pynixd's scheduler will use:
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
 import sys
 import traceback
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+import anyio
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -344,4 +345,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    anyio.run(main, backend="asyncio")

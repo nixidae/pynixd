@@ -1,7 +1,5 @@
 """Tests for the build log pub/sub system (QueuedBuild subscribers + byte buffer replay)."""
 
-import asyncio
-
 import anyio
 import pytest
 
@@ -106,12 +104,11 @@ async def test_build_log_pubsub_two_clients() -> None:
             await anyio.sleep(0.2)
             build_blocker.set()
 
-        release_task = asyncio.create_task(release_blocker())
-
-        # Wait for the build to complete (this is when _execute() fans out logs).
-        resp = await future.wait()
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(release_blocker)
+            # Wait for the build to complete (this is when _execute() fans out logs).
+            resp = await future.wait()
         assert resp.result.status == BuildResultStatus.BUILT
-        await release_task
 
     # Now subscribe client2 — the build is already done, so add_subscriber
     # will replay the full _log_buf.

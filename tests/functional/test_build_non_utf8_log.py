@@ -30,10 +30,10 @@ assert the raw bytes. Issue nixidae/nixidae#663.
 
 from __future__ import annotations
 
-import asyncio
 import os
 from typing import TYPE_CHECKING
 
+import anyio
 import structlog
 
 from tests.conftest import CLIENT_BIN, DEFAULT_SSH_OPTS, server_uri
@@ -75,56 +75,51 @@ async def test_build_with_non_utf8_log_succeeds(
     nix_file = tmp_path / "stderr-binary.nix"
     nix_file.write_text(REPRODUCER)
 
-    proc = await asyncio.create_subprocess_exec(
-        str(CLIENT_BIN),
-        "build",
-        "-v",
-        "-v",
-        "--store",
-        str(store),
-        "--builders",
-        f"{uri} x86_64-linux",
-        "--file",
-        str(nix_file),
-        "--no-link",
-        "--print-out-paths",
-        "--max-jobs",
-        "0",
+    proc = await anyio.run_process(
+        [
+            str(CLIENT_BIN),
+            "build",
+            "-v",
+            "-v",
+            "--store",
+            str(store),
+            "--builders",
+            f"{uri} x86_64-linux",
+            "--file",
+            str(nix_file),
+            "--no-link",
+            "--print-out-paths",
+            "--max-jobs",
+            "0",
+        ],
         env=os.environ.copy()
         | {
             "NIX_STATE_DIR": str(store / "var/nix"),
             # `run_subproc` sets this itself; raw pipes do not get it.
             "NIX_SSHOPTS": DEFAULT_SSH_OPTS,
         },
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        check=False,
         start_new_session=True,
     )
-    stdout, stderr = await proc.communicate()
 
-    assert proc.returncode == 0, stderr.decode("utf-8", errors="replace")
-    out = stdout.strip()
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", errors="replace")
+    out = proc.stdout.strip()
     assert out != b""
 
     # The log comes back through `nix log`, which reads the client-side
     # record the build wrote (see the module docstring for whose bytes those
     # are). Raw pipes again, for the same bytes the helper cannot decode.
-    log_proc = await asyncio.create_subprocess_exec(
-        str(CLIENT_BIN),
-        "log",
-        "--store",
-        str(store),
-        out.decode(),
+    log_proc = await anyio.run_process(
+        [str(CLIENT_BIN), "log", "--store", str(store), out.decode()],
         env=os.environ.copy()
         | {
             "NIX_STATE_DIR": str(store / "var/nix"),
             "NIX_SSHOPTS": DEFAULT_SSH_OPTS,
         },
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        check=False,
         start_new_session=True,
     )
-    log_out, log_err = await log_proc.communicate()
+    log_out, log_err = log_proc.stdout, log_proc.stderr
 
     assert log_proc.returncode == 0, log_err.decode("utf-8", errors="replace")
     log.info(

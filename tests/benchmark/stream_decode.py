@@ -13,9 +13,10 @@ nothing else. Run it in a guest, where a container shares the host's CPU.
 
 from __future__ import annotations
 
-import asyncio
 import sys
 import time
+
+import anyio
 
 import nix_daemon_protocol
 from nix_daemon_protocol import PROTOCOL_VERSION
@@ -81,4 +82,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    anyio.run(main, backend="asyncio")

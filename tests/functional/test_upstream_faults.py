@@ -74,19 +74,19 @@ async def rig() -> AsyncIterator[_Rig]:
     daemon = LocalSocketStore(make_test_spec(store_id="faults-daemon", store_path=root / "store", no_probe=True))
     async with daemon:
         proxy = FaultProxy(root / "proxy.sock", daemon.socket_path)
-        await proxy.start()
-        local = LocalSocketStore(
-            make_test_spec(
-                store_id="local",
-                store_path=root / "store",
-                no_probe=True,
-                managed=False,
-                socket_path=root / "proxy.sock",
-                read_timeout=_READ_TIMEOUT,
+        async with proxy.running():
+            await proxy.start()
+            local = LocalSocketStore(
+                make_test_spec(
+                    store_id="local",
+                    store_path=root / "store",
+                    no_probe=True,
+                    managed=False,
+                    socket_path=root / "proxy.sock",
+                    read_timeout=_READ_TIMEOUT,
+                )
             )
-        )
-        client_socket = root / "pynixd.sock"
-        try:
+            client_socket = root / "pynixd.sock"
             async with Server(
                 stores={StoreId("local"): local},
                 unix_path=client_socket,
@@ -98,8 +98,6 @@ async def rig() -> AsyncIterator[_Rig]:
                 # in a handshake.
                 assert await rig.ask() is False
                 yield rig
-        finally:
-            await proxy.close()
 
 
 # CORRUPT: flipped bytes read as a huge length, and pynixd waits for bytes the

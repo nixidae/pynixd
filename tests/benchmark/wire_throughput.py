@@ -47,8 +47,8 @@ import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+import anyio
 import structlog
-import uvloop
 
 # The working copies in front of the environment, like the shell hook does
 # with `$PWD` -- but this script also runs where `PWD` is unset (a systemd
@@ -202,8 +202,8 @@ async def _amain(iters: int) -> dict[str, dict[str, list[float]]]:
 def main(iters: int) -> None:
     """Run every case under asyncio and uvloop, then print the medians."""
     all_samples: dict[str, dict[str, dict[str, list[float]]]] = {}
-    for loop, runner in (("asyncio", asyncio.run), ("uvloop", uvloop.run)):
-        all_samples[loop] = runner(_amain(iters))
+    for loop, use_uvloop in (("asyncio", False), ("uvloop", True)):
+        all_samples[loop] = anyio.run(_amain, iters, backend="asyncio", backend_options={"use_uvloop": use_uvloop})
     print(f"{'case':<12} {'loop':<8} {'msgs/s':>12} {'MiB/s':>10}")  # noqa: T201
     for case in _CASES:
         for loop in ("asyncio", "uvloop"):

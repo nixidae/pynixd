@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -23,6 +22,7 @@ from pynixd.substitution_queue import (
     SubstitutionQueryResult,
     SubstitutionQueue,
 )
+from tests._conftest.all_of import all_of
 
 if TYPE_CHECKING:
     from nix_daemon_protocol.wire_ops import WireRequest
@@ -255,7 +255,7 @@ async def test_substitute_deduplicates_active_imports(monkeypatch: pytest.Monkey
     monkeypatch.setattr(queue, "_import_nar", fake_import)
 
     async with queue.running():
-        first, second = await asyncio.gather(queue.substitute(path), queue.substitute(path))
+        first, second = await all_of(queue.substitute(path), queue.substitute(path))
 
     assert first.substituted
     assert second.substituted
@@ -338,7 +338,7 @@ async def test_imports_stream_max_substitution_jobs_at_once(monkeypatch: pytest.
     monkeypatch.setattr(queue, "_import_nar", fake_import)
     paths = [StorePath(f"/nix/store/{i:032d}-example") for i in range(6)]
     async with queue.running():
-        results = await asyncio.gather(*(queue.substitute(path) for path in paths))
+        results = await all_of(*(queue.substitute(path) for path in paths))
 
     assert all(result.substituted for result in results)
     assert peak == 2

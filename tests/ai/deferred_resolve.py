@@ -13,7 +13,6 @@ Validates against known Nix output paths.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import hashlib
 import json
@@ -632,4 +631,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    anyio.run(main, backend="asyncio")

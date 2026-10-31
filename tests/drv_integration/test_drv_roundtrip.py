@@ -6,9 +6,9 @@ These tests are skipped during normal collection; run them explicitly with:
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
+import anyio
 import pytest
 import structlog
 
@@ -33,7 +33,7 @@ def _get_system_drv_paths() -> list[str]:
         finally:
             await store.close()
 
-    return asyncio.run(_inner())
+    return anyio.run(_inner, backend="asyncio")
 
 
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:

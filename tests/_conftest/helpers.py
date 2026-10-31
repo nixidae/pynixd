@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import glob as glob_module
 import os
@@ -10,9 +9,11 @@ import shlex
 import shutil
 import signal
 import stat
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import anyio
 import structlog
 
 from pynixd.nix_config import NixConfig
@@ -23,6 +24,8 @@ from tests._conftest.nix_config import host_daemon_substituters
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
+
+    from anyio.abc import ByteReceiveStream, Process
 
     from pynixd.store import DaemonStore
 
@@ -136,56 +139,66 @@ async def run_subproc(
 
     str_cmd = [str(c) for c in cmd]
     log.debug("run_subproc", cmd=shlex.join(str_cmd), env=run_env)
-    proc = await asyncio.create_subprocess_exec(
-        *str_cmd,
-        env=os.environ.copy() | run_env,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        start_new_session=True,
-    )
-
     stdout: list[str] = []
     stderr: list[str] = []
     stdboth: list[str] = []
 
-    async def stream(name: str, accumulator: list[str], pipe: asyncio.StreamReader) -> None:
-        while True:
-            line = await pipe.readline()
-            # Lossy on purpose: this streams display text to the log, and a
-            # builder can print bytes no UTF-8 decoder accepts (a gzip
-            # stream in a containerd build log did exactly that). The bytes
-            # themselves travel the wire untouched. Issue nixidae/nixidae#662.
-            decoded_line = line.decode(errors="replace")
-            accumulator.append(decoded_line)
-            stdboth.append(decoded_line)
-            if not line:
-                break
-            if verbose:
-                log.info(name, message=decoded_line.rstrip())
+    def emit(name: str, accumulator: list[str], line: bytes) -> None:
+        # Lossy on purpose: this streams display text to the log, and a
+        # builder can print bytes no UTF-8 decoder accepts (a gzip
+        # stream in a containerd build log did exactly that). The bytes
+        # themselves travel the wire untouched. Issue nixidae/nixidae#662.
+        decoded_line = line.decode(errors="replace")
+        accumulator.append(decoded_line)
+        stdboth.append(decoded_line)
+        if verbose:
+            log.info(name, message=decoded_line.rstrip())
 
-    assert proc.stdout is not None
-    assert proc.stderr is not None
-    try:
-        await asyncio.gather(
-            stream("stdout", stdout, proc.stdout),
-            stream("stderr", stderr, proc.stderr),
-        )
-        await proc.wait()
-    except asyncio.CancelledError:
-        log.warning("run_subproc_cancelled", cmd=shlex.join(str_cmd), pid=proc.pid)
-        if proc.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(proc.pid, signal.SIGTERM)
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5)
-            except TimeoutError:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(proc.pid, signal.SIGKILL)
-                await proc.wait()
-        raise
+    async def stream(name: str, accumulator: list[str], pipe: ByteReceiveStream) -> None:
+        pending = b""
+        async for chunk in pipe:
+            *lines, pending = (pending + chunk).split(b"\n")
+            for line in lines:
+                emit(name, accumulator, line + b"\n")
+        if pending:
+            emit(name, accumulator, pending)
+
+    async with await anyio.open_process(
+        str_cmd,
+        env=os.environ.copy() | run_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    ) as proc:
+        assert proc.stdout is not None
+        assert proc.stderr is not None
+        try:
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(stream, "stdout", stdout, proc.stdout)
+                tg.start_soon(stream, "stderr", stderr, proc.stderr)
+            await proc.wait()
+        except anyio.get_cancelled_exc_class():
+            log.warning("run_subproc_cancelled", cmd=shlex.join(str_cmd), pid=proc.pid)
+            with anyio.CancelScope(shield=True):
+                await _stop_the_group(proc)
+            raise
     rc = proc.returncode if proc.returncode is not None else 0
     if expected_retcode is not None and rc != expected_retcode:
         raise RuntimeError(
             f"Command failed with rc={rc} (expected {expected_retcode}):\n{''.join(stdboth)}",
         )
     return (rc, "".join(stdout), "".join(stderr), "".join(stdboth))
+
+
+async def _stop_the_group(proc: Process) -> None:
+    # The child runs in its own session, so its builders die only with the group.
+    if proc.returncode is not None:
+        return
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(proc.pid, signal.SIGTERM)
+    with anyio.move_on_after(5):
+        await proc.wait()
+    if proc.returncode is None:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        await proc.wait()

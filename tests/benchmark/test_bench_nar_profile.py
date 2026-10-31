@@ -141,6 +141,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import anyio
 import pytest
 import structlog
 
@@ -370,13 +371,13 @@ async def _copy_paths_and_measure(
     ]
 
     lag = LoopLag()
-    lag_task = asyncio.create_task(lag.run())
-    try:
-        with _measure(label, count=count, sent_bytes=sent_bytes, lag=lag):
-            rc, _, stderr, _ = await run_subproc(cmd)
-    finally:
-        lag.stop()
-        await lag_task
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(lag.run)
+        try:
+            with _measure(label, count=count, sent_bytes=sent_bytes, lag=lag):
+                rc, _, stderr, _ = await run_subproc(cmd)
+        finally:
+            lag.stop()
 
     assert rc == 0, f"nix copy failed:\n{stderr}"
 
@@ -418,13 +419,13 @@ async def _add_path_and_measure(
     ]
 
     lag = LoopLag()
-    lag_task = asyncio.create_task(lag.run())
-    try:
-        with _measure(label, count=1, sent_bytes=size_kib * 1024, lag=lag):
-            rc, stdout, stderr, _ = await run_subproc(cmd)
-    finally:
-        lag.stop()
-        await lag_task
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(lag.run)
+        try:
+            with _measure(label, count=1, sent_bytes=size_kib * 1024, lag=lag):
+                rc, stdout, stderr, _ = await run_subproc(cmd)
+        finally:
+            lag.stop()
 
     assert rc == 0, f"nix store add-path failed:\n{stderr}"
     assert stdout.strip().startswith("/nix/store/"), stdout
@@ -460,13 +461,13 @@ async def _pull_and_measure(
     ]
 
     lag = LoopLag()
-    lag_task = asyncio.create_task(lag.run())
-    try:
-        with _measure(label, count=len(paths), sent_bytes=sent_bytes, lag=lag):
-            rc, _, stderr, _ = await run_subproc(cmd)
-    finally:
-        lag.stop()
-        await lag_task
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(lag.run)
+        try:
+            with _measure(label, count=len(paths), sent_bytes=sent_bytes, lag=lag):
+                rc, _, stderr, _ = await run_subproc(cmd)
+        finally:
+            lag.stop()
 
     assert rc == 0, f"nix copy --from failed:\n{stderr}"
     rmtree_robust(dst)

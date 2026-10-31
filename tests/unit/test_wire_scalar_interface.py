@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any, Self
 
+import pytest
 from pydantic_core import core_schema
 
 from nix_daemon_protocol.context import ReadContext, WriteContext
@@ -88,10 +89,9 @@ def test_a_scalar_needs_no_base_class() -> None:
     assert not issubclass(Tag, WireScalar)
 
 
-def test_a_scalar_that_is_not_a_str_round_trips() -> None:
-    import asyncio
-
-    read = asyncio.run(_round_trip(Tagged(tag=Tag("hello"))))
+@pytest.mark.anyio
+async def test_a_scalar_that_is_not_a_str_round_trips() -> None:
+    read = await _round_trip(Tagged(tag=Tag("hello")))
 
     assert read.tag == Tag("hello")
     assert not isinstance(read.tag, str)

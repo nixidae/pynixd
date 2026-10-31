@@ -12,9 +12,10 @@ decodes strict UTF-8.
 
 from __future__ import annotations
 
-import asyncio
 import os
 from typing import TYPE_CHECKING
+
+import anyio
 
 from tests.conftest import CLIENT_BIN, DEFAULT_SSH_OPTS, server_uri
 
@@ -36,16 +37,13 @@ REPRODUCER = (
 
 
 async def _nix(*args: str, store: Path) -> tuple[int, bytes, bytes]:
-    proc = await asyncio.create_subprocess_exec(
-        str(CLIENT_BIN),
-        *args,
+    proc = await anyio.run_process(
+        [str(CLIENT_BIN), *args],
         env=os.environ.copy() | {"NIX_STATE_DIR": str(store / "var/nix"), "NIX_SSHOPTS": DEFAULT_SSH_OPTS},
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        check=False,
         start_new_session=True,
     )
-    stdout, stderr = await proc.communicate()
-    return proc.returncode or 0, stdout, stderr
+    return proc.returncode, proc.stdout, proc.stderr
 
 
 async def test_pynixd_as_the_store_builds_it(pynixd_server: Server, tmp_path: Path) -> None:

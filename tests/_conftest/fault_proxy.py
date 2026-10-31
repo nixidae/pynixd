@@ -11,13 +11,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import enum
+import functools
 import socket
 import struct
 from typing import TYPE_CHECKING
 
 import anyio
 
+from pynixd.background import Background
+
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from pathlib import Path
 
 
@@ -40,7 +44,7 @@ class FaultProxy:
         self.upstream = upstream
         self._armed: Fault | None = None
         self._links: set[tuple[asyncio.StreamWriter, asyncio.StreamWriter]] = set()
-        self._tasks: set[asyncio.Task[None]] = set()
+        self._pumps = Background("fault proxy")
         self._server: asyncio.AbstractServer | None = None
         self.triggered = anyio.Event()
         self.drip_delay = 0.1
@@ -57,14 +61,15 @@ class FaultProxy:
         with contextlib.suppress(FileNotFoundError):
             self.listen.unlink()
 
-    async def close(self) -> None:
-        await self.stop_listening()
-        self.cut_every_link()
-        for task in list(self._tasks):
-            task.cancel()
-        for task in list(self._tasks):
-            with contextlib.suppress(BaseException):
-                await task
+    @contextlib.asynccontextmanager
+    async def running(self) -> AsyncIterator[None]:
+        """Pump the links for the body of this block; `start` and `stop_listening` work inside it."""
+        async with self._pumps.running():
+            try:
+                yield
+            finally:
+                await self.stop_listening()
+                self.cut_every_link()
 
     def arm(self, fault: Fault) -> None:
         self.triggered = anyio.Event()
@@ -85,11 +90,8 @@ class FaultProxy:
         upstream_r, upstream_w = await asyncio.open_unix_connection(str(self.upstream))
         link = (client_w, upstream_w)
         self._links.add(link)
-        down = asyncio.create_task(self._pump(upstream_r, client_w, link, from_daemon=True))
-        up = asyncio.create_task(self._pump(client_r, upstream_w, link, from_daemon=False))
-        self._tasks |= {down, up}
-        for task in (down, up):
-            task.add_done_callback(self._tasks.discard)
+        self._pumps.spawn(functools.partial(self._pump, upstream_r, client_w, link, from_daemon=True))
+        self._pumps.spawn(functools.partial(self._pump, client_r, upstream_w, link, from_daemon=False))
 
     async def _pump(
         self,

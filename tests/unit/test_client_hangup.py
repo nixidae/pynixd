@@ -54,6 +54,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
+    from anyio.abc import TaskGroup
+
     from pynixd.build_queue import BuildQueue, QueuedBuild
 
 _DRV = StorePath("/nix/store/00000000000000000000000000000001-hung-test.drv")
@@ -172,11 +174,12 @@ class _Session:
         self.entered.set()
         try:
             await self.release.wait()
-        except asyncio.CancelledError:
+        except anyio.get_cancelled_exc_class():
             self.cancelled = True
             raise
 
-    async def connect(self) -> tuple[asyncio.Task[None], Connection]:
+    async def connect(self, tg: TaskGroup) -> tuple[anyio.Event, Connection]:
+        """Run the session in *tg*; the event is set when it ends."""
         r, w = await asyncio.open_unix_connection(sock=self.server_sock)
         proxy = DaemonProxy(
             UnixNixReader(r, identifier="client"),
@@ -187,32 +190,54 @@ class _Session:
             transport="unix",
             hangup=lambda: wait_for_socket_hangup(self.server_sock.fileno()),
         )
-        session = asyncio.create_task(proxy.run())
+        ended = anyio.Event()
+
+        async def session() -> None:
+            try:
+                await proxy.run()
+            finally:
+                ended.set()
+
+        tg.start_soon(session)
         cr, cw = await asyncio.open_unix_connection(sock=self.client_sock)
         conn = Connection(UnixNixReader(cr, identifier="test"), UnixNixWriter(cw, identifier="test"), "test")
         await conn.connect()
-        return session, conn
+        return ended, conn
 
-    async def start(self) -> tuple[asyncio.Task[None], Connection, asyncio.Task[Any]]:
-        session, conn = await self.connect()
-        op = asyncio.create_task(conn.call(IsValidPathRequest(path=SerdeStorePath(path=str(_DRV)))))
-        await asyncio.wait_for(self.entered.wait(), 5)
-        return session, conn, op
+    async def start(self, tg: TaskGroup) -> tuple[anyio.Event, Connection, anyio.CancelScope]:
+        ended, conn = await self.connect(tg)
+        op = _call_in(tg, conn, IsValidPathRequest(path=SerdeStorePath(path=str(_DRV))))
+        with anyio.fail_after(5):
+            await self.entered.wait()
+        return ended, conn, op
+
+
+def _call_in(tg: TaskGroup, conn: Connection, request: Any) -> anyio.CancelScope:  # noqa: ANN401 -- any request `Connection.call` takes
+    """Run the call in *tg* until it ends or the answered scope is cancelled."""
+    scope = anyio.CancelScope()
+
+    async def call() -> None:
+        # The hangup fails the call. The tests read the session, not this.
+        with scope, contextlib.suppress(Exception):
+            await conn.call(request)
+
+    tg.start_soon(call)
+    return scope
 
 
 async def test_a_hangup_cancels_the_operation_and_ends_the_session(monkeypatch: pytest.MonkeyPatch) -> None:
     with _socketpair() as (server_sock, client_sock):
         s = _Session(server_sock, client_sock)
         s.patch_dispatch(monkeypatch)
-        session, conn, op = await s.start()
+        async with anyio.create_task_group() as tg:
+            ended, conn, _ = await s.start(tg)
 
-        await conn.close()
-        await asyncio.wait_for(session, 5)
+            await conn.close()
+            with anyio.fail_after(5):
+                await ended.wait()
 
         assert s.cancelled
         assert len(s.ctx.sessions) == 0
-        with contextlib.suppress(Exception):
-            await op
 
 
 async def test_a_hangup_cancels_the_build_only_that_client_wanted() -> None:
@@ -224,18 +249,18 @@ async def test_a_hangup_cancels_the_build_only_that_client_wanted() -> None:
     with _socketpair() as (server_sock, client_sock):
         s = _Session(server_sock, client_sock)
         queue = _queue_that_never_builds(s.ctx)
-        session, conn = await s.connect()
-        op = asyncio.create_task(conn.call(_build_request()))
-        build = await _the_subscribed_build(queue)
+        async with anyio.create_task_group() as tg:
+            ended, conn = await s.connect(tg)
+            _call_in(tg, conn, _build_request())
+            build = await _the_subscribed_build(queue)
 
-        await conn.close()
-        await asyncio.wait_for(session, 5)
+            await conn.close()
+            with anyio.fail_after(5):
+                await ended.wait()
 
         assert build.is_done
         assert not build.subscribers
         assert len(s.ctx.sessions) == 0
-        with contextlib.suppress(Exception):
-            await op
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="kqueue's EV_EOF fires on a half-close too, as in Nix")
@@ -244,20 +269,20 @@ async def test_a_half_close_is_not_a_hangup(monkeypatch: pytest.MonkeyPatch) -> 
     with _socketpair() as (server_sock, client_sock):
         s = _Session(server_sock, client_sock)
         s.patch_dispatch(monkeypatch)
-        session, conn, op = await s.start()
+        async with anyio.create_task_group() as tg:
+            ended, conn, op = await s.start(tg)
 
-        client_sock.shutdown(socket.SHUT_WR)
-        await anyio.sleep(0.5)
-        assert not s.cancelled
-        assert not session.done()
+            client_sock.shutdown(socket.SHUT_WR)
+            await anyio.sleep(0.5)
+            assert not s.cancelled
+            assert not ended.is_set()
 
-        s.release.set()
-        await asyncio.wait_for(session, 5)
-        assert not s.cancelled
-        op.cancel()
-        with contextlib.suppress(BaseException):
-            await op
-        await conn.close()
+            s.release.set()
+            with anyio.fail_after(5):
+                await ended.wait()
+            assert not s.cancelled
+            op.cancel()
+            await conn.close()
 
 
 @pytest.mark.parametrize("hang_up", ["eof", "disconnect"])
@@ -288,21 +313,20 @@ async def test_an_ssh_client_that_goes_cancels_its_build(hang_up: str, tmp_path:
                 "test",
             )
             await conn.connect()
-            op = asyncio.create_task(conn.call(_build_request()))
-            build = await _the_subscribed_build(queue)
+            async with anyio.create_task_group() as tg:
+                op = _call_in(tg, conn, _build_request())
+                build = await _the_subscribed_build(queue)
 
-            if hang_up == "eof":
-                process.stdin.write_eof()
-            else:
-                ssh.abort()
+                if hang_up == "eof":
+                    process.stdin.write_eof()
+                else:
+                    ssh.abort()
 
-            with anyio.fail_after(5):
-                while not build.is_done or len(ctx.sessions) > 0:
-                    await anyio.sleep(0.01)
-            assert not build.subscribers
-            op.cancel()
-            with contextlib.suppress(BaseException):
-                await op
+                with anyio.fail_after(5):
+                    while not build.is_done or len(ctx.sessions) > 0:
+                        await anyio.sleep(0.01)
+                assert not build.subscribers
+                op.cancel()
     finally:
         server.close()
         await server.wait_closed()

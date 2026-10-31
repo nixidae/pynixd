@@ -47,14 +47,15 @@ not happen".
 
 from __future__ import annotations
 
-import asyncio
 import os
 import time
 from typing import TYPE_CHECKING
 
+import anyio
 import pytest
 import structlog
 
+from tests._conftest.all_of import all_of
 from tests.conftest import (
     CLIENT_BIN,
     STORE_PREFIX,
@@ -113,13 +114,13 @@ async def _seed(src: Path, count: int, size_kib: int) -> list[str]:
 async def _run_concurrently(server: Server, label: str, clients: int, cmds: list[list[str]]) -> float:
     """Run every command at once and report what the loop did. Returns max lag in ms."""
     lag = LoopLag()
-    lag_task = asyncio.create_task(lag.run())
     wall0 = time.perf_counter()
-    try:
-        results = await asyncio.gather(*(run_subproc(cmd) for cmd in cmds))
-    finally:
-        lag.stop()
-        await lag_task
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(lag.run)
+        try:
+            results = await all_of(*(run_subproc(cmd) for cmd in cmds))
+        finally:
+            lag.stop()
     wall = time.perf_counter() - wall0
 
     for rc, _, stderr, _ in results:
