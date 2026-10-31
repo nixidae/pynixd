@@ -86,9 +86,7 @@ Pynixd will adversise 1.38 support even if local_store is 1.35 and translate whe
     )
     ```
   - **Asserts**: NEVER use `assert` statements outside of the `tests/` directory. For runtime validation, use explicit `if not cond: raise RuntimeError(...)`. To satisfy type checkers, use local variable aliasing or explicit `if cond is None` checks.
-  - **Asyncio**: 
-    - NEVER use `asyncio.get_event_loop()`. Use `asyncio.get_running_loop()` inside async functions. For timestamps, use `time.monotonic()` instead of `loop.time()`.
-    - ALWAYS maintain a strong reference (e.g., in a class instance variable `set` or `list`) to background tasks created via `asyncio.create_task()`. Failure to do so allows the garbage collector to destroy the task mid-execution.
+  - **Concurrency**: anyio, structured; section 8. Timestamps: `time.monotonic()`, not `loop.time()`.
 - **Trust**: `Role.ADMIN` is a trusted user, `Role.USER` an untrusted one (`pynixd/trust.py`, issue #56). Every upstream connection is root's, so nix-daemon applies none of its untrusted-user rules on it; pynixd applies each one in the operation's `handle`, with Nix's message and at Nix's point. An error Nix raises before `startWork` closes the session (`ClosingError`); one after it does not. Never answer a refused operation with a silent success. `execute` must always perform the actual upstream daemon operation.
 - **HTTP Cache Streaming**: If a NAR transfer fails after the `200 OK` header is sent, the server MUST abruptly close the connection to signal failure to the client. Full buffering to avoid this is not supported due to memory constraints.
 - **pathlib.Path**: Use pathlib.Path when dealing with any strings that aren't Nix daemon protocol related. Convert to string as late as possible if needed
@@ -271,7 +269,7 @@ Every instruction in this file is a default. The user's explicit direction overr
 
 ## 8. Async Task & Lifecycle Rules
 
-Structured concurrency everywhere. `checks.lint` bans the asyncio task API (`nix/shared/ruff-anyio.toml`); `tests/` is exempt until nixidae/nixidae#1144 converts it.
+Structured concurrency everywhere. `checks.lint` bans the asyncio task API (`nix/shared/ruff-anyio.toml`), `tests/` included. A test that needs results of concurrent calls uses `tests/_conftest/all_of.py`.
 
 - Every task runs in an `anyio` task group that some caller owns. No `asyncio.create_task`, `gather`, `wait_for`, `Future` hand-off or `shield` in new code.
 - Short-lived fan-out: `async with anyio.create_task_group()` in the function that needs it.

@@ -14,10 +14,6 @@ extend = "nix/shared/ruff-anyio.toml"
 # `ruff-strict.toml` beside this file is the target, not a gate: 66 findings
 # on 2026-09-16. It extends this file, so a change here reaches it.
 
-[lint]
-# The suite still uses the asyncio task API: nixidae/nixidae#1144.
-extend-per-file-ignores = { "tests/**" = ["TID251"] }
-
 # `I` is selected, and without this section isort sorts this tree's own
 # absolute imports as third-party packages. Each name needs saying:
 #
