@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -17,13 +16,17 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
 from . import metrics
+from .background import Background
 from .exceptions import NarGone, OpNotImplementedError, leaves
 from .serde import AddToStoreNarRequest, NarFromPathRequest, QueryPathInfoRequest, StorePath
 from .serde.context import ReadContext, WriteContext
 from .store import DaemonStore, is_http_binary_cache
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Awaitable, Callable, Iterable
+    from contextlib import AbstractAsyncContextManager
+
+    from anyio.abc import TaskStatus
 
     from nix_daemon_protocol.ids import StoreId
 
@@ -178,7 +181,8 @@ class SubstitutionQueue:
             TTLCache(maxsize=settings.substitution_cache_maxsize, ttl=settings.substitution_negative_ttl),
         )
         self.health: dict[StoreId, SubstitutionHealthLog] = {}
-        self._probe_tasks: set[asyncio.Task[None]] = set()
+        self._probes = Background("SubstitutionQueue")
+        """The probes that outlive their lookup: the stragglers of a race, and the unhealthy stores."""
         self._active_imports: dict[StorePath, asyncio.Task[SubstitutionImportResult]] = {}
         # Created on first use: a limiter needs the running loop.
         self._import_limit: anyio.CapacityLimiter | None = None
@@ -198,12 +202,18 @@ class SubstitutionQueue:
         )
         """The path behind each hash `negative` holds, so a `.narinfo` request can find it."""
 
+    def running(self) -> AbstractAsyncContextManager[None]:
+        """Run the probes for the body of this block; a lookup outside it raises."""
+        return self._probes.running()
+
+    async def serve(self, *, task_status: TaskStatus[None]) -> None:
+        """Run the probes until cancelled, for an owner's task group."""
+        async with self.running():
+            task_status.started()
+            await anyio.sleep_forever()
+
     async def close(self) -> None:
-        for task in self._probe_tasks:
-            task.cancel()
-        for task in list(self._probe_tasks):
-            with contextlib.suppress(Exception, asyncio.CancelledError):
-                await task
+        await self._probes.aclose()
 
     async def can_substitute(self, path: StorePath) -> SubstitutionAvailability:
         cached = self._cached_positive(path)
@@ -236,7 +246,7 @@ class SubstitutionQueue:
                     done.set()
 
         for store in to_probe:
-            self._track_probe_task(asyncio.create_task(probe_store(store)))
+            self._spawn_probe(probe_store, store)
 
         if not healthy_pending:
             return SubstitutionAvailability.unavailable()
@@ -334,7 +344,7 @@ class SubstitutionQueue:
             race = _UpstreamNarinfoRace(remaining=len(stores))
             self._http_races[hash_part] = race
             for store in stores:
-                self._track_probe_task(asyncio.create_task(self._probe_http_narinfo(hash_part, store, race)))
+                self._spawn_probe(self._probe_http_narinfo, hash_part, store, race)
 
         await race.event.wait()
         self._http_races.pop(hash_part, None)
@@ -495,7 +505,7 @@ class SubstitutionQueue:
                 tg.start_soon(query_and_record, store)
 
         for store in background_stores:
-            self._track_probe_task(asyncio.create_task(query_and_record(store)))
+            self._spawn_probe(query_and_record, store)
 
     @property
     def import_limit(self) -> anyio.CapacityLimiter:
@@ -613,16 +623,13 @@ class SubstitutionQueue:
     def _has_cached_result(self, path: StorePath, store_id: StoreId) -> bool:
         return store_id in self.positive.get(path, {}) or store_id in self.negative.get(path, {})
 
-    def _track_probe_task(self, task: asyncio.Task[None]) -> None:
-        self._probe_tasks.add(task)
+    def _spawn_probe(self, fn: Callable[..., Awaitable[None]], *args: object) -> None:
+        self._probes.spawn(_best_effort, fn, *args)
 
-        def done_callback(done_task: asyncio.Task[None]) -> None:
-            self._probe_tasks.discard(done_task)
-            if done_task.cancelled():
-                return
-            try:
-                done_task.result()
-            except Exception:
-                log.warning("substitution_probe_task_failed", exc_info=True)
 
-        task.add_done_callback(done_callback)
+async def _best_effort(fn: Callable[..., Awaitable[None]], *args: object) -> None:
+    """A probe that raises costs its own answer, not the queue's other probes."""
+    try:
+        await fn(*args)
+    except Exception:
+        log.warning("substitution_probe_task_failed", exc_info=True)

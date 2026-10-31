@@ -95,13 +95,14 @@ async def test_race_returns_first_responder_and_keeps_the_stragglers() -> None:
     slow.fetch_narinfo = slow_fetch  # type: ignore[method-assign]
     queue = _queue(fast, slow)
 
-    winner = await queue.race_http_narinfo(_HASH)
-    assert winner is not None
-    assert winner.store.store_id == StoreId("cache-fast")
+    async with queue.running():
+        winner = await queue.race_http_narinfo(_HASH)
+        assert winner is not None
+        assert winner.store.store_id == StoreId("cache-fast")
 
-    path = winner.info.path
-    await _wait_for(lambda: slow.store_id in queue.positive.get(path, {}))
-    assert queue.positive[path][slow.store_id].found
+        path = winner.info.path
+        await _wait_for(lambda: slow.store_id in queue.positive.get(path, {}))
+        assert queue.positive[path][slow.store_id].found
 
 
 async def test_race_total_miss_is_remembered_briefly() -> None:
@@ -118,8 +119,9 @@ async def test_race_total_miss_is_remembered_briefly() -> None:
     store.fetch_narinfo = miss  # type: ignore[method-assign]
     queue = _queue(store)
 
-    assert await queue.race_http_narinfo(_HASH) is None
-    assert await queue.race_http_narinfo(_HASH) is None
+    async with queue.running():
+        assert await queue.race_http_narinfo(_HASH) is None
+        assert await queue.race_http_narinfo(_HASH) is None
     assert calls == 1
 
 
@@ -144,7 +146,8 @@ async def _race_after_scheduler_misses(*missed_by: HTTPBinaryCacheStore) -> int:
                 path, SubstitutionQueryResult(store_id=store.store_id, path_info=None, query_succeeded=True)
             )
 
-    assert await queue.race_http_narinfo(_HASH) is None
+    async with queue.running():
+        assert await queue.race_http_narinfo(_HASH) is None
     return calls
 
 
@@ -172,7 +175,8 @@ async def test_upstream_narinfo_describes_the_raw_nar() -> None:
         substitution_queue=queue,
     )
 
-    response = await server.handle_upstream_narinfo(_HASH)
+    async with queue.running():
+        response = await server.handle_upstream_narinfo(_HASH)
     assert response.status == 200
     assert response.text is not None
     assert f"URL: nar/{_HASH}.nar\n" in response.text
@@ -218,17 +222,18 @@ async def test_nar_source_picks_highest_priority_responder() -> None:
         substitution_queue=queue,
     )
 
-    # One narinfo race teaches the queue the hash and fills both caches.
-    response = await server.handle_upstream_narinfo(_HASH)
-    assert response.status == 200
-
     async def narinfo(path: Any) -> Any:
         return SimpleNamespace(url="nar/deadbeef.nar.xz")
 
-    cheap.get_narinfo = narinfo  # type: ignore[method-assign]
-    dear.get_narinfo = narinfo  # type: ignore[method-assign]
+    async with queue.running():
+        # One narinfo race teaches the queue the hash and fills both caches.
+        response = await server.handle_upstream_narinfo(_HASH)
+        assert response.status == 200
 
-    source = await queue.upstream_nar_source(_HASH)
+        cheap.get_narinfo = narinfo  # type: ignore[method-assign]
+        dear.get_narinfo = narinfo  # type: ignore[method-assign]
+
+        source = await queue.upstream_nar_source(_HASH)
     assert source is not None
     assert source[0].store_id == StoreId("cache-dear")
 
@@ -263,11 +268,12 @@ async def test_upstream_nar_streams_decompressed() -> None:
                 return _fetched(narinfo)
 
             store.fetch_narinfo = hit  # type: ignore[method-assign]
+            queue = _queue(store)
             server = PynixdHttpServer(
                 SimpleNamespace(),  # type: ignore[arg-type]
-                substitution_queue=_queue(store),
+                substitution_queue=queue,
             )
-            async with _nar_client(server) as client:
+            async with queue.running(), _nar_client(server) as client:
                 response = await client.get(f"/nar/{_HASH}.nar")
                 assert response.status == 200
                 assert response.headers["Content-Length"] == str(len(raw))
@@ -290,9 +296,10 @@ async def test_upstream_nar_misses_when_nobody_answered() -> None:
         substitution_queue=queue,
     )
 
-    assert await queue.upstream_nar_source(_HASH) is None
-    async with _nar_client(server) as client:
-        assert (await client.get(f"/nar/{_HASH}.nar")).status == 404
+    async with queue.running():
+        assert await queue.upstream_nar_source(_HASH) is None
+        async with _nar_client(server) as client:
+            assert (await client.get(f"/nar/{_HASH}.nar")).status == 404
 
 
 async def test_upstream_race_disabled_keeps_misses_404() -> None:

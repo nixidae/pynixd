@@ -814,6 +814,7 @@ class Server:
                     tg.start_soon(self.add_store, store, False, None)
 
         if self.ctx.scheduler:
+            await self._background.start(self.ctx.scheduler.substitution_queue.serve)
             self._spawn(self.ctx.scheduler.start)
 
         if self.ctx.db and self.ctx.settings.gc_enabled:

@@ -112,13 +112,14 @@ async def test_can_substitute_returns_first_positive_and_keeps_probing() -> None
     )
     queue = SubstitutionQueue(ctx)
 
-    availability = await queue.can_substitute(path)
+    async with queue.running():
+        availability = await queue.can_substitute(path)
 
-    assert availability.available
-    assert availability.nar_size == 123
-    assert fast_hit.queries == 1
-    await anyio.sleep(0.06)
-    assert slow_missing.queries == 1
+        assert availability.available
+        assert availability.nar_size == 123
+        assert fast_hit.queries == 1
+        await anyio.sleep(0.06)
+        assert slow_missing.queries == 1
 
 
 @pytest.mark.anyio
@@ -140,11 +141,63 @@ async def test_can_substitute_does_not_wait_for_unhealthy_slow_store() -> None:
     queue = SubstitutionQueue(ctx)
     queue.health_for(slow_hit.store_id).record(query_succeeded=False)
 
-    availability = await queue.can_substitute(path)
+    async with queue.running():
+        availability = await queue.can_substitute(path)
 
-    assert not availability.available
-    assert fast_missing.queries == 1
-    assert slow_hit.queries == 1
+        assert not availability.available
+        assert fast_missing.queries == 1
+        assert slow_hit.queries == 1
+
+
+@pytest.mark.anyio
+async def test_a_probe_that_raises_costs_only_its_own_answer() -> None:
+    path = StorePath("/nix/store/00000000000000000000000000000000-example")
+    hit = FakeSubstituter("hit", valid=True)
+    ctx = cast(
+        "PynixdContext",
+        SimpleNamespace(
+            settings=PynixdSettings(),
+            stores={StoreId("local"): SimpleNamespace(no_schedule=False), hit.store_id: hit},
+        ),
+    )
+    queue = SubstitutionQueue(ctx)
+
+    async def broken() -> None:
+        raise RuntimeError("probe bug")
+
+    async with queue.running():
+        queue._spawn_probe(broken)
+        await anyio.sleep(0)
+        availability = await queue.can_substitute(path)
+
+    assert availability.available
+
+
+@pytest.mark.anyio
+async def test_close_cancels_the_stragglers() -> None:
+    path = StorePath("/nix/store/00000000000000000000000000000000-example")
+    fast_hit = FakeSubstituter("fast-hit", valid=True)
+    stuck = FakeSubstituter("stuck", valid=False, delay=3600)
+    ctx = cast(
+        "PynixdContext",
+        SimpleNamespace(
+            settings=PynixdSettings(),
+            stores={
+                StoreId("local"): SimpleNamespace(no_schedule=False),
+                fast_hit.store_id: fast_hit,
+                stuck.store_id: stuck,
+            },
+        ),
+    )
+    queue = SubstitutionQueue(ctx)
+
+    with anyio.fail_after(5):
+        async with queue.running():
+            assert (await queue.can_substitute(path)).available
+            await queue.close()
+
+    assert stuck.queries == 1
+    assert path not in queue.negative
 
 
 @pytest.mark.anyio
