@@ -32,6 +32,7 @@ from pynixd.serde import (
     TimeSpan,
     Verbosity,
 )
+from tests.goal_group import result_of
 
 if TYPE_CHECKING:
     from pynixd.connection import ClientConn
@@ -187,11 +188,13 @@ async def _run(
         build_mode=BuildMode.NORMAL,
     )
 
-    response = await BuildPathsWithResultsGoal(
-        cast("GoalEngine", engine),
-        request,
-        _client(options),
-    ).result()
+    response = await result_of(
+        BuildPathsWithResultsGoal(
+            cast("GoalEngine", engine),
+            request,
+            _client(options),
+        )
+    )
 
     return started, [str(item.path) for item in response.results]
 

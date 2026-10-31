@@ -13,7 +13,6 @@ program that made it.
 
 from __future__ import annotations
 
-import asyncio
 import time
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -45,6 +44,7 @@ from pynixd.serde.context import WriteContext
 from pynixd.store.pool import ConnectionPool
 from pynixd.trust import TrustPolicy
 from pynixd.wire import PROTOCOL_VERSION, STDERR_LAST, BytesReader, BytesWriter
+from tests.goal_group import goals_running
 
 if TYPE_CHECKING:
     from pynixd.goals.engine import GoalEngine
@@ -264,13 +264,14 @@ async def test_the_build_carries_the_set_of_the_client_that_asked() -> None:
     client.options = _options("/hook.sh")
     await goal.subscribe(client)
 
-    task = asyncio.create_task(goal.result())
-    await scheduler.started.wait()
-    answer = scheduler.answer
-    if answer is None:
-        raise RuntimeError("the scheduler made no answer")
-    answer.set(BuildDerivationResponse(result=BuildResult(status=BuildResultStatus.BUILT)))
-    await task
+    async with goals_running(goal.engine):
+        await goal.start()
+        await scheduler.started.wait()
+        answer = scheduler.answer
+        if answer is None:
+            raise RuntimeError("the scheduler made no answer")
+        answer.set(BuildDerivationResponse(result=BuildResult(status=BuildResultStatus.BUILT)))
+        await goal.result()
 
     assert scheduler.options == _options("/hook.sh")
 

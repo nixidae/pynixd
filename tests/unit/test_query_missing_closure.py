@@ -18,7 +18,6 @@ import pytest
 
 from pynixd.drv_parser import Derivation
 from pynixd.goals.engine import GoalEngine
-from pynixd.goals.query_missing import QueryMissingPlanGoal
 from pynixd.serde import (
     DerivedPath as SerdeDerivedPath,
     IsValidPathResponse,
@@ -91,7 +90,7 @@ async def _plan(
         SimpleNamespace(local_store=store or Store(), scheduler=SimpleNamespace(substitution_queue=Queue(known))),
     )
     request = QueryMissingRequest(derived_paths={SerdeDerivedPath(value=path)})
-    return await QueryMissingPlanGoal(GoalEngine(ctx), request, client).result()
+    return await GoalEngine(ctx).query_missing(request, client)
 
 
 def _multi() -> Derivation:

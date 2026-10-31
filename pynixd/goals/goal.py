@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, ClassVar, TypeVar, cast
 
 import anyio
+
+from ..answer import Answer
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -37,50 +38,57 @@ class Goal[T]:
     def __init__(self, engine: GoalEngine) -> None:
         self.engine = engine
         self._lock = anyio.Lock()
-        self._task: asyncio.Task[T] | None = None
+        self._scope: anyio.CancelScope | None = None
+        self._answer: Answer[T] = Answer()
 
     async def start(self) -> None:
-        """Begin the goal, and do not wait for the answer.
+        """Begin the goal in the task group of the request, and do not wait for the answer.
 
         `result` waits as well, and a caller that wants the goal to run
         beside it needs the two apart. `EnsureDerivedPathGoal` starts a build
         goal and then waits for the build to reach the queue, which is
         earlier than the end of the build. Issue nixidae/nixidae#246.
-
-        The instance keeps the task, so nothing else must hold a reference to
-        it.
         """
-        async with self._lock:
-            if self._task is None:
-                self._task = asyncio.create_task(self._run())
+        if self._scope is None:
+            self._scope = self.engine.goal_group.spawn(self._answer_with_the_run)
+
+    async def _answer_with_the_run(self) -> None:
+        # An error goes to the waiters, never to the group: it would cancel every other goal of the request.
+        try:
+            self._answer.set(await self._run())
+        except Exception as e:
+            self._answer.set_exception(e)
+        finally:
+            # Cancelled: a waiter outside the cancelled scope gets an error, not a wait without end.
+            if not self._answer.done():
+                self._answer.set_exception(RuntimeError(f"{type(self).__name__} was cancelled"))
 
     def has_started(self) -> bool:
-        """Did `start` or `result` make the task of this goal?
+        """Did `start` or `result` spawn this goal?
 
         A goal serves every request that names its derived path, so a request
         can meet a goal that another one already runs. Such a goal is past
         every gate that a request sets for it. Issue nixidae/nixidae#246.
         """
-        return self._task is not None
+        return self._scope is not None
 
     async def result(self) -> T:
-        """Await the goal's result, starting execution on first call."""
-        async with self._lock:
-            if self._task is None:
-                self._task = asyncio.create_task(self._run())
-            task = self._task
-        return await task
+        """Await the goal's result, starting execution on first call.
+
+        A cancelled waiter cancels only its own wait, and the goal runs on for the others.
+        """
+        await self.start()
+        return await self._answer.wait()
 
     def cancel(self) -> bool:
-        """Cancel the goal's task. True when a live task was cancelled.
+        """Cancel the goal. True when an unanswered goal was cancelled.
 
         Sync, so a request teardown runs it even under cancellation. A
         finished goal answers False: nothing watches it, nothing reaps it.
         """
-        task = self._task
-        if task is None or task.done():
+        if self._scope is None or self._answer.done():
             return False
-        task.cancel()
+        self._scope.cancel()
         return True
 
     async def _run(self) -> T:

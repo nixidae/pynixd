@@ -43,6 +43,7 @@ from pynixd.serde import (
 )
 from pynixd.store_layout import StoreLayout
 from pynixd.store_path import StorePath
+from tests.goal_group import result_of
 
 if TYPE_CHECKING:
     from pynixd.drv_parser import Derivation
@@ -175,7 +176,7 @@ async def _run(engine: FakeEngine) -> GoalResult:
         build_mode=BuildMode.NORMAL,
         substituter_ids=(),
     )
-    return await goal.result()
+    return await result_of(goal)
 
 
 @pytest.mark.anyio

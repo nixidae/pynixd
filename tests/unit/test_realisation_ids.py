@@ -45,6 +45,7 @@ from pynixd.serde import (
 )
 from pynixd.store_layout import StoreLayout
 from pynixd.store_path import StorePath
+from tests.goal_group import result_of
 
 if TYPE_CHECKING:
     from pynixd.drv_parser import Derivation
@@ -228,7 +229,7 @@ async def _run(response: BuildResult, drv_path: str = TOP_PATH) -> tuple[FakeEng
         build_mode=BuildMode.NORMAL,
         substituter_ids=(),
     )
-    result = await goal.result()
+    result = await result_of(goal)
     return engine, result
 
 

@@ -23,6 +23,7 @@ from pynixd.serde import (
     BuildResultStatus,
     DerivedPath as SerdeDerivedPath,
 )
+from tests.goal_group import result_of
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -104,7 +105,7 @@ class FakeEngine:
         hold: Any = None,
     ) -> BuildPathsWithResultsResponse:
         del hold
-        return await BuildPathsWithResultsGoal(cast("GoalEngine", self), request, client).result()
+        return await result_of(BuildPathsWithResultsGoal(cast("GoalEngine", self), request, client))
 
 
 def _serde_path(path: str) -> Any:
@@ -135,10 +136,12 @@ async def test_build_paths_with_results_keeps_successes_when_one_root_fails() ->
     for goal in engine.goals.values():
         goal.engine = cast("GoalEngine", engine)
 
-    response = await BuildPathsWithResultsGoal(
-        cast("GoalEngine", engine),
-        _request({success_path, failure_path}),
-    ).result()
+    response = await result_of(
+        BuildPathsWithResultsGoal(
+            cast("GoalEngine", engine),
+            _request({success_path, failure_path}),
+        )
+    )
 
     results_by_path = {str(item.path): item.result for item in response.results}
     assert set(results_by_path) == {success_path, failure_path}
@@ -237,10 +240,12 @@ async def test_build_paths_with_results_runs_root_goals_in_parallel() -> None:
         goal.engine = cast("GoalEngine", engine)
 
     with anyio.fail_after(1):
-        response = await BuildPathsWithResultsGoal(
-            cast("GoalEngine", engine),
-            _request({first_path, second_path}),
-        ).result()
+        response = await result_of(
+            BuildPathsWithResultsGoal(
+                cast("GoalEngine", engine),
+                _request({first_path, second_path}),
+            )
+        )
 
     assert {str(item.path) for item in response.results} == {first_path, second_path}
 
@@ -268,13 +273,15 @@ async def test_the_answers_come_back_in_the_order_of_the_request() -> None:
         goal.engine = cast("GoalEngine", engine)
 
     derived_paths: list[Any] = [_serde_path(later), _serde_path(earlier)]
-    response = await BuildPathsWithResultsGoal(
-        cast("GoalEngine", engine),
-        BuildPathsWithResultsRequest(
-            derived_paths=cast("list[SerdeDerivedPath]", derived_paths),
-            build_mode=BuildMode.NORMAL,
-        ),
-    ).result()
+    response = await result_of(
+        BuildPathsWithResultsGoal(
+            cast("GoalEngine", engine),
+            BuildPathsWithResultsRequest(
+                derived_paths=cast("list[SerdeDerivedPath]", derived_paths),
+                build_mode=BuildMode.NORMAL,
+            ),
+        )
+    )
 
     assert [str(item.path) for item in response.results] == [later, earlier]
 
@@ -288,12 +295,14 @@ async def test_a_repeated_path_gets_one_answer_for_each_request() -> None:
         goal.engine = cast("GoalEngine", engine)
 
     derived_paths: list[Any] = [_serde_path(path), _serde_path(path)]
-    response = await BuildPathsWithResultsGoal(
-        cast("GoalEngine", engine),
-        BuildPathsWithResultsRequest(
-            derived_paths=cast("list[SerdeDerivedPath]", derived_paths),
-            build_mode=BuildMode.NORMAL,
-        ),
-    ).result()
+    response = await result_of(
+        BuildPathsWithResultsGoal(
+            cast("GoalEngine", engine),
+            BuildPathsWithResultsRequest(
+                derived_paths=cast("list[SerdeDerivedPath]", derived_paths),
+                build_mode=BuildMode.NORMAL,
+            ),
+        )
+    )
 
     assert [str(item.path) for item in response.results] == [path, path]

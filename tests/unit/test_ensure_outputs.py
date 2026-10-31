@@ -36,6 +36,7 @@ from pynixd.serde import BuildMode, DrvOutput as SerdeDrvOutput, IsValidPathResp
 from pynixd.store_layout import StoreLayout
 from pynixd.store_path import DrvOutput, StorePath
 from pynixd.utils import nix32_encode
+from tests.goal_group import result_of
 
 if TYPE_CHECKING:
     from pynixd.goals.engine import GoalEngine
@@ -184,7 +185,7 @@ async def test_one_wanted_output_still_sends_every_output() -> None:
     """The defect of issue nixidae/nixidae#217, stated where the derivation goes on the wire."""
     engine = FakeEngine()
 
-    await _goal(engine, f"{_DRV}!out").result()
+    await result_of(_goal(engine, f"{_DRV}!out"))
 
     assert len(engine.build_goals) == 1
     sent = engine.build_goals[0].request.derivation
@@ -201,7 +202,7 @@ async def test_the_builder_can_rewrite_every_placeholder_it_meets() -> None:
     """
     engine = FakeEngine()
 
-    await _goal(engine, f"{_DRV}!out").result()
+    await result_of(_goal(engine, f"{_DRV}!out"))
 
     sent = engine.build_goals[0].request.derivation
     rewritable = {hash_placeholder(name) for name in sent.outputs}
@@ -218,7 +219,7 @@ async def test_the_answer_holds_the_wanted_output_alone() -> None:
     """`derivation-goal.cc:291` of Nix removes the others, so this does too."""
     engine = FakeEngine()
 
-    result = await _goal(engine, f"{_DRV}!out").result()
+    result = await result_of(_goal(engine, f"{_DRV}!out"))
 
     built = result.result.built_outputs or {}
     assert {item.id.output_name for item in built.values()} == {"out"}
@@ -228,7 +229,7 @@ async def test_the_answer_holds_the_wanted_output_alone() -> None:
 async def test_a_request_for_every_output_keeps_every_answer() -> None:
     engine = FakeEngine()
 
-    result = await _goal(engine, f"{_DRV}!*").result()
+    result = await result_of(_goal(engine, f"{_DRV}!*"))
 
     built = result.result.built_outputs or {}
     assert {item.id.output_name for item in built.values()} == set(_OUT_PATH)
@@ -239,8 +240,8 @@ async def test_two_wanted_outputs_make_one_derivation() -> None:
     """The derivation is the dedup key, so it must not follow the wanted set."""
     engine = FakeEngine()
 
-    await _goal(engine, f"{_DRV}!out").result()
-    await _goal(engine, f"{_DRV}!bin").result()
+    await result_of(_goal(engine, f"{_DRV}!out"))
+    await result_of(_goal(engine, f"{_DRV}!bin"))
 
     first, second = (goal.request.derivation for goal in engine.build_goals)
     assert first == second
@@ -256,7 +257,7 @@ async def test_an_already_valid_output_still_names_its_path() -> None:
     """
     engine = FakeEngine(valid=frozenset(_OUT_PATH.values()))
 
-    result = await _goal(engine, f"{_DRV}!out").result()
+    result = await result_of(_goal(engine, f"{_DRV}!out"))
 
     assert engine.build_goals == [], "an already-valid output needs no build"
     built = result.result.built_outputs or {}
@@ -279,7 +280,7 @@ async def test_the_realisation_names_the_derivation_that_made_it() -> None:
     """
     engine = FakeEngine(valid=frozenset(_OUT_PATH.values()))
 
-    result = await _goal(engine, f"{_DRV}!out").result()
+    result = await result_of(_goal(engine, f"{_DRV}!out"))
 
     built = result.result.built_outputs or {}
     [key] = built

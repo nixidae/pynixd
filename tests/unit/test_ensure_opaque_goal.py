@@ -27,6 +27,7 @@ from pynixd.goals.results import result_succeeded
 from pynixd.serde import BuildMode, IsValidPathResponse
 from pynixd.store.daemon import DaemonStore
 from pynixd.store_path import StorePath
+from tests.goal_group import result_of
 
 if TYPE_CHECKING:
     from pynixd.goals.engine import GoalEngine
@@ -111,7 +112,7 @@ async def test_an_opaque_path_a_backend_holds_is_ensured() -> None:
     )
     engine = FakeEngine(ctx)
 
-    result = await _goal(engine).result()
+    result = await result_of(_goal(engine))
 
     assert result_succeeded(result.result), result.result.error_msg
     assert result.resolved_outputs == {"out": StorePath(_OUTPUT)}
@@ -136,7 +137,7 @@ async def test_an_opaque_path_no_store_holds_is_still_a_failure() -> None:
     # reached before. `FakeEngine` raises there, which is the proof it got
     # that far.
     with pytest.raises(AssertionError, match="before it asks a substituter"):
-        await _goal(engine).result()
+        await result_of(_goal(engine))
 
 
 @pytest.mark.anyio

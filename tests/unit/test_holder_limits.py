@@ -8,6 +8,7 @@ the owner's build without end -- the shape of the hang in #89.
 
 from __future__ import annotations
 
+import contextlib
 import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
@@ -31,6 +32,7 @@ from pynixd.serde import (
     Verbosity,
 )
 from pynixd.wire import BytesWriter
+from tests.goal_group import goals_running, result_of
 from tests.unit.test_build_derivation_goal import FakeEngine
 
 if TYPE_CHECKING:
@@ -133,7 +135,7 @@ async def test_a_later_holder_with_a_tighter_silence_limit_times_out_alone() -> 
     goal = BuildDerivationGoal(cast("GoalEngine", FakeEngine(cast("object", scheduler))), request)  # type: ignore[arg-type]  # a fake scheduler
     await goal.subscribe(client)
 
-    result = await goal.result()
+    result = await result_of(goal)
 
     assert result.result.status == BuildResultStatus.TIMED_OUT
     assert result.result.error_msg == "timed out after 2 seconds"
@@ -149,34 +151,36 @@ async def test_a_holder_that_goes_away_leaves_the_build_to_the_others() -> None:
         derivation=BasicDerivation(platform="x86_64-linux", builder=""),
         build_mode=BuildMode.NORMAL,
     )
-    goals: list[BuildDerivationGoal] = []
-    for request_id in (1, 2):
-        engine = FakeEngine(cast("object", scheduler))  # type: ignore[arg-type]  # a fake scheduler
-        engine.request_id = RequestId(request_id)
-        goal = BuildDerivationGoal(cast("GoalEngine", engine), request)
-        await goal.start()
-        await goal.wait_until_it_reached_the_queue()
-        goals.append(goal)
-    hung_up, waiting = goals
-    shared = next(iter(scheduler.queue.by_id.values())).answer
+    async with contextlib.AsyncExitStack() as requests:
+        goals: list[BuildDerivationGoal] = []
+        for request_id in (1, 2):
+            engine = FakeEngine(cast("object", scheduler))  # type: ignore[arg-type]  # a fake scheduler
+            engine.request_id = RequestId(request_id)
+            await requests.enter_async_context(goals_running(engine))
+            goal = BuildDerivationGoal(cast("GoalEngine", engine), request)
+            await goal.start()
+            await goal.wait_until_it_reached_the_queue()
+            goals.append(goal)
+        hung_up, waiting = goals
+        shared = next(iter(scheduler.queue.by_id.values())).answer
 
-    hung_up.cancel()
-    await anyio.sleep(0)
-    await anyio.sleep(0)
+        hung_up.cancel()
+        await anyio.sleep(0)
+        await anyio.sleep(0)
 
-    assert not shared.done()
-    shared.set(
-        BuildDerivationResponse(
-            result=BuildResult(
-                status=BuildResultStatus.BUILT,
-                error_msg="",
-                times_built=1,
-                is_non_deterministic=0,
-                start_time=0,
-                stop_time=0,
-                built_outputs={},
-            ),
+        assert not shared.done()
+        shared.set(
+            BuildDerivationResponse(
+                result=BuildResult(
+                    status=BuildResultStatus.BUILT,
+                    error_msg="",
+                    times_built=1,
+                    is_non_deterministic=0,
+                    start_time=0,
+                    stop_time=0,
+                    built_outputs={},
+                ),
+            )
         )
-    )
-    result = await waiting.result()
-    assert result.result.status == BuildResultStatus.BUILT
+        result = await waiting.result()
+        assert result.result.status == BuildResultStatus.BUILT

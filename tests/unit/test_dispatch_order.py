@@ -11,7 +11,8 @@ Issue nixidae/nixidae#246, and issue nixidae/nixidae#235 holds the assertion.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, ClassVar, cast
 
 import anyio
 import pytest
@@ -22,6 +23,7 @@ from pynixd.goals.ensure import EnsureDerivedPathGoal
 from pynixd.goals.goal import Goal
 from pynixd.goals.results import GoalResult
 from pynixd.serde import BuildMode
+from tests.goal_group import goals_running
 
 if TYPE_CHECKING:
     from pynixd.goals.engine import GoalEngine
@@ -129,18 +131,12 @@ class _NeverEndingEnsureGoal(EnsureDerivedPathGoal):
         await anyio.sleep_forever()
         raise AssertionError("sleep_forever does not return")
 
-    def stop_for_the_test(self) -> None:
-        """End the task, so the loop does not close with it still there."""
-        task = self._task
-        if task is not None:
-            task.cancel()
-
 
 def _ensure_goal[G: EnsureDerivedPathGoal = EnsureDerivedPathGoal](cls: type[G] | None = None) -> G:
     """A root goal with no engine behind it, for the turn alone."""
     goal_cls: type[G] = cls if cls is not None else cast("type[G]", EnsureDerivedPathGoal)
     return goal_cls(
-        engine=cast("GoalEngine", cast("Any", object())),
+        engine=cast("GoalEngine", SimpleNamespace()),
         derived_path=DerivedPath("/nix/store/" + "0" * 32 + "-x1.drv!out"),
         build_mode=BuildMode.NORMAL,
         substituter_ids=(),
@@ -153,7 +149,8 @@ async def test_a_wait_for_a_root_goal_gives_up_the_place() -> None:
     goal = _ensure_goal()
     goal.take_a_turn(order.turn(0))
 
-    await goal.run_child(_ChildThatReachesARootGoal(goal.engine))
+    async with goals_running(goal.engine):
+        await goal.run_child(_ChildThatReachesARootGoal(goal.engine))
 
     with anyio.fail_after(1):
         await order.turn(1).wait()
@@ -165,7 +162,8 @@ async def test_a_wait_for_a_build_keeps_the_place() -> None:
     goal = _ensure_goal()
     goal.take_a_turn(order.turn(0))
 
-    await goal.run_child(_ChildThatReachesNoRootGoal(goal.engine))
+    async with goals_running(goal.engine):
+        await goal.run_child(_ChildThatReachesNoRootGoal(goal.engine))
 
     with pytest.raises(TimeoutError):
         with anyio.fail_after(0.05):
@@ -220,7 +218,8 @@ async def test_two_root_goals_that_depend_on_each_other_do_not_deadlock() -> Non
             return "z"
 
     with anyio.fail_after(2):
-        answer = await early.run_child(_Late(early.engine))
+        async with goals_running(early.engine):
+            answer = await early.run_child(_Late(early.engine))
         await early._wait_for_my_turn()  # noqa: SLF001 -- the gate under test is private
 
     assert answer == "z"
@@ -237,8 +236,8 @@ async def test_a_goal_that_already_started_takes_no_turn() -> None:
     """
     order = DispatchOrder(2)
     goal = _ensure_goal(_NeverEndingEnsureGoal)
-    await goal.start()
-    try:
+    async with goals_running(goal.engine):
+        await goal.start()
         goal.take_a_turn(order.turn(0))
 
         # The goal behind it enqueues, and the started goal reads no turn.
@@ -246,5 +245,3 @@ async def test_a_goal_that_already_started_takes_no_turn() -> None:
             await order.turn(1).wait()
         with anyio.fail_after(1):
             await goal._wait_for_my_turn()  # noqa: SLF001 -- the gate under test is private
-    finally:
-        goal.stop_for_the_test()

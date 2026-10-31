@@ -29,6 +29,7 @@ from pynixd.serde import BuildMode, IsValidPathResponse, QueryRealisationRequest
 from pynixd.store_layout import StoreLayout
 from pynixd.store_path import DrvOutput, StorePath
 from pynixd.trust import TrustPolicy
+from tests.goal_group import result_of
 
 if TYPE_CHECKING:
     from pynixd.goals.engine import GoalEngine
@@ -178,7 +179,7 @@ async def _run(drv_path: str) -> tuple[FakeEngine, GoalResult]:
         build_mode=BuildMode.NORMAL,
         substituter_ids=(),
     )
-    return engine, await goal.result()
+    return engine, await result_of(goal)
 
 
 @pytest.mark.anyio

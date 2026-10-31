@@ -42,6 +42,7 @@ from pynixd.serde import BuildMode, IsValidPathResponse, QueryRealisationRequest
 from pynixd.store_layout import StoreLayout
 from pynixd.store_path import DrvOutput, StorePath
 from pynixd.trust import TrustPolicy
+from tests.goal_group import result_of
 
 if TYPE_CHECKING:
     from pynixd.goals.engine import GoalEngine
@@ -220,7 +221,7 @@ async def _sent(drv_path: str = DEP_DRV) -> Any:
         build_mode=BuildMode.NORMAL,
         substituter_ids=(),
     )
-    await goal.result()
+    await result_of(goal)
     assert len(engine.build_goals) == 1
     return engine.build_goals[0].request.derivation
 
@@ -355,7 +356,7 @@ async def test_nested_goals_record_the_complete_output_chain(chain: tuple[str, .
         build_mode=BuildMode.NORMAL,
         substituter_ids=(),
     )
-    result = await goal.result()
+    result = await result_of(goal)
 
     assert requested == [dp.outer, dp.wrap(inner)]
     key: tuple[StorePath | str, ...] = (producer, *chain, "out")  # type: ignore[assignment]  # zuban-bug: a tuple of StorePath and str is joined to object even with a declared type
@@ -393,7 +394,7 @@ async def test_a_chain_past_a_plain_output_fails_as_nix_fails() -> None:
         build_mode=BuildMode.NORMAL,
         substituter_ids=(),
     )
-    result = await goal.result()
+    result = await result_of(goal)
 
     assert requested == [dp.outer]
     assert "is not a valid derivation path" in str(result.result.error_msg)

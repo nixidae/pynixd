@@ -40,6 +40,7 @@ from pynixd.goals.substitute import SubstituteAttempt
 from pynixd.serde import BuildMode, IsValidPathResponse, QueryRealisationRequest, QueryRealisationResponse
 from pynixd.store_layout import StoreLayout
 from pynixd.store_path import DrvOutput, StorePath
+from tests.goal_group import result_of
 
 if TYPE_CHECKING:
     from pynixd.goals.engine import GoalEngine
@@ -203,7 +204,7 @@ async def _request(drv_path: str = DEFER_DRV, *, takes_text: bool = True) -> tup
         build_mode=BuildMode.NORMAL,
         substituter_ids=(),
     )
-    await goal.result()
+    await result_of(goal)
     assert len(engine.build_goals) == 1
     return engine, engine.build_goals[0].request
 

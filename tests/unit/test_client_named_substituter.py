@@ -14,7 +14,7 @@ import pytest
 
 from nix_daemon_protocol.exceptions import DaemonProtocolError
 from pynixd.goals.engine import GoalEngine
-from pynixd.goals.query_missing import QueryMissingPlanGoal, client_names_a_substituter
+from pynixd.goals.query_missing import client_names_a_substituter
 from pynixd.serde import (
     ContentAddress,
     DerivedPath as SerdeDerivedPath,
@@ -23,6 +23,7 @@ from pynixd.serde import (
     IsValidPathRequest,
     IsValidPathResponse,
     QueryMissingRequest,
+    QueryMissingResponse,
     QuerySubstitutablePathInfosRequest,
     QuerySubstitutablePathInfosResponse,
     SetOptionsRequest,
@@ -91,14 +92,14 @@ class FakeUpstream:
         return None
 
 
-def _goal(store: FakeUpstream, client: ClientConn | None) -> QueryMissingPlanGoal:
+async def _plan(store: FakeUpstream, client: ClientConn | None) -> QueryMissingResponse:
     ctx = cast(
         "PynixdContext",
         SimpleNamespace(local_store=store, scheduler=None),
     )
     derived_paths: set[Any] = {SerdeDerivedPath(value=PATH)}
     request = QueryMissingRequest(derived_paths=cast("set[SerdeDerivedPath]", derived_paths))
-    return QueryMissingPlanGoal(GoalEngine(ctx), request, client)
+    return await GoalEngine(ctx).query_missing(request, client)
 
 
 def test_a_client_that_names_no_substituter_is_recognised() -> None:
@@ -119,7 +120,7 @@ async def test_the_plan_reads_the_substituter_of_the_client() -> None:
         infos=[SubstitutablePathInfo(path=StorePath(path=PATH), download_size=11, nar_size=22)],
     )
 
-    response = await _goal(store, _client(_options(substituters="file:///cache"))).result()
+    response = await _plan(store, _client(_options(substituters="file:///cache")))
 
     assert {str(path) for path in response.will_substitute} == {PATH}
     assert response.download_size == 11
@@ -133,7 +134,7 @@ async def test_the_plan_asks_the_infos_operation_and_not_the_set_operation() -> 
         infos=[SubstitutablePathInfo(path=StorePath(path=PATH), download_size=1, nar_size=2)],
     )
 
-    await _goal(store, _client(_options(substituters="file:///cache"))).result()
+    await _plan(store, _client(_options(substituters="file:///cache")))
 
     asked = [req for req in store.requests if isinstance(req, QuerySubstitutablePathInfosRequest)]
     assert len(asked) == 1
@@ -145,7 +146,7 @@ async def test_the_plan_asks_nothing_upstream_for_a_client_that_named_none() -> 
     """A client that asked for no substituter pays no round trip."""
     store = FakeUpstream(infos=[])
 
-    response = await _goal(store, _client(_options())).result()
+    response = await _plan(store, _client(_options()))
 
     assert {str(path) for path in response.unknown} == {PATH}
     assert not [req for req in store.requests if isinstance(req, QuerySubstitutablePathInfosRequest)]
@@ -155,7 +156,7 @@ async def test_the_plan_asks_nothing_upstream_for_a_client_that_named_none() -> 
 async def test_an_empty_answer_leaves_the_path_unknown() -> None:
     store = FakeUpstream(infos=[])
 
-    response = await _goal(store, _client(_options(substituters="file:///cache"))).result()
+    response = await _plan(store, _client(_options(substituters="file:///cache")))
 
     assert {str(path) for path in response.unknown} == {PATH}
     assert not response.will_substitute
@@ -166,7 +167,7 @@ async def test_an_answer_about_another_path_does_not_count() -> None:
     other = "/nix/store/11111111111111111111111111111111-other"
     store = FakeUpstream(infos=[SubstitutablePathInfo(path=StorePath(path=other))])
 
-    response = await _goal(store, _client(_options(substituters="file:///cache"))).result()
+    response = await _plan(store, _client(_options(substituters="file:///cache")))
 
     assert {str(path) for path in response.unknown} == {PATH}
 

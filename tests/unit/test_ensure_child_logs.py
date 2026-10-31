@@ -39,6 +39,7 @@ from pynixd.serde import (
 )
 from pynixd.store_layout import StoreLayout
 from pynixd.store_path import DrvOutput, StorePath
+from tests.goal_group import result_of
 
 if TYPE_CHECKING:
     from pynixd.goals.engine import GoalEngine
@@ -208,7 +209,7 @@ async def test_the_client_watches_the_goal_of_each_input() -> None:
     client = FakeClient()
     await goal.subscribe(cast("Any", client))
 
-    await goal.result()
+    await result_of(goal)
 
     assert len(engine.child_goals) == 1
     assert engine.child_goals[0].subscribers == [client]
@@ -227,7 +228,7 @@ async def test_the_client_reads_which_derivation_pynixd_really_builds() -> None:
     client = FakeClient()
     await goal.subscribe(cast("Any", client))
 
-    await goal.result()
+    await result_of(goal)
 
     assert client.lines == [f"resolved derivation: '{TOP_DRV}' -> '{RESOLVED_PREFIX}-top.drv'...\n"]
 
@@ -293,7 +294,7 @@ async def test_a_failed_child_goal_writes_its_reason() -> None:
     await goal.subscribe(cast("Any", client))
     goal.note_a_parent()
 
-    result = await goal.result()
+    result = await result_of(goal)
 
     assert not result_succeeded(result.result)
     assert client.lines == [f"{_ERROR_PREFIX}{result.result.error_msg}"]
@@ -311,7 +312,7 @@ async def test_a_failed_top_goal_writes_no_reason() -> None:
     client = FakeClient()
     await goal.subscribe(cast("Any", client))
 
-    result = await goal.result()
+    result = await result_of(goal)
 
     assert not result_succeeded(result.result)
     assert client.lines == []
@@ -343,7 +344,7 @@ async def test_a_client_that_watches_one_goal_twice_reads_each_line_once() -> No
     await goal.subscribe(cast("Any", client))
     goal.note_a_parent()
 
-    result = await goal.result()
+    result = await result_of(goal)
 
     assert not result_succeeded(result.result)
     assert client.lines == [f"{_ERROR_PREFIX}{result.result.error_msg}"]

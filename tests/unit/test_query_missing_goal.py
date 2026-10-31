@@ -10,7 +10,6 @@ import pytest
 
 from pynixd.drv_parser import ChildMapNode, Derivation
 from pynixd.goals.engine import GoalEngine
-from pynixd.goals.query_missing import QueryMissingPlanGoal
 from pynixd.serde import (
     DerivedPath as SerdeDerivedPath,
     DrvOutput as SerdeDrvOutput,
@@ -130,7 +129,7 @@ async def test_query_missing_reports_substitutable_opaque_path() -> None:
     )
     request = QueryMissingRequest(derived_paths=_derived_path_set(path))
 
-    response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+    response = await GoalEngine(ctx).query_missing(request)
 
     assert {str(path) for path in response.will_substitute} == {path}
     assert not response.unknown
@@ -152,7 +151,7 @@ async def test_query_missing_reports_unknown_when_no_substituter_has_path() -> N
     )
     request = QueryMissingRequest(derived_paths=_derived_path_set(path))
 
-    response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+    response = await GoalEngine(ctx).query_missing(request)
 
     assert {str(path) for path in response.unknown} == {path}
     assert not response.will_substitute
@@ -177,7 +176,7 @@ async def test_query_missing_skips_valid_derivation_output() -> None:
     )
     request = QueryMissingRequest(derived_paths=_derived_path_set(f"{drv_path}!out"))
 
-    response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+    response = await GoalEngine(ctx).query_missing(request)
 
     assert not response.will_build
     assert not response.will_substitute
@@ -206,7 +205,7 @@ async def test_query_missing_reports_substitutable_derivation_output() -> None:
     )
     request = QueryMissingRequest(derived_paths=_derived_path_set(f"{drv_path}!out"))
 
-    response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+    response = await GoalEngine(ctx).query_missing(request)
 
     assert {str(path) for path in response.will_substitute} == {out_path}
     assert not response.will_build
@@ -231,7 +230,7 @@ async def test_query_missing_reports_will_build_for_missing_derivation_output() 
     )
     request = QueryMissingRequest(derived_paths=_derived_path_set(f"{drv_path}!out"))
 
-    response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+    response = await GoalEngine(ctx).query_missing(request)
 
     assert {str(path) for path in response.will_build} == {drv_path}
     assert not response.will_substitute
@@ -256,7 +255,7 @@ async def test_query_missing_reports_will_build_for_dynamic_derivation() -> None
     )
     request = QueryMissingRequest(derived_paths=_derived_path_set(f"{drv_path}!out"))
 
-    response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+    response = await GoalEngine(ctx).query_missing(request)
 
     assert {str(path) for path in response.will_build} == {drv_path}
 
@@ -300,7 +299,7 @@ async def test_a_realised_content_addressed_output_is_in_no_bucket() -> None:
     )
     request = QueryMissingRequest(derived_paths=_derived_path_set(f"{drv_path}!out"))
 
-    response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+    response = await GoalEngine(ctx).query_missing(request)
 
     assert not response.will_build
     assert not response.will_substitute
@@ -320,7 +319,7 @@ async def test_a_content_addressed_output_with_no_realisation_gets_built() -> No
     )
     request = QueryMissingRequest(derived_paths=_derived_path_set(f"{drv_path}!out"))
 
-    response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+    response = await GoalEngine(ctx).query_missing(request)
 
     assert {str(path) for path in response.will_build} == {drv_path}
 
@@ -346,7 +345,7 @@ async def test_a_realisation_that_names_a_deleted_path_gets_built() -> None:
     )
     request = QueryMissingRequest(derived_paths=_derived_path_set(f"{drv_path}!out"))
 
-    response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+    response = await GoalEngine(ctx).query_missing(request)
 
     assert {str(path) for path in response.will_build} == {drv_path}
     assert substitution_queue.queries == [out_path]
@@ -393,7 +392,7 @@ async def test_a_request_that_names_no_output_plans_nothing(wanted: str) -> None
     )
     request = QueryMissingRequest(derived_paths=_derived_path_set(f"{drv_path}!{wanted}"))
 
-    response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+    response = await GoalEngine(ctx).query_missing(request)
 
     assert not response.will_build
     assert not response.will_substitute
@@ -441,7 +440,7 @@ async def test_a_sibling_output_with_no_realisation_does_not_force_a_build() -> 
     )
     request = QueryMissingRequest(derived_paths=_derived_path_set(f"{drv_path}!out"))
 
-    response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+    response = await GoalEngine(ctx).query_missing(request)
 
     assert not response.will_build
     assert not response.will_substitute
@@ -462,7 +461,7 @@ async def test_an_input_addressed_output_asks_for_no_realisation() -> None:
     )
     request = QueryMissingRequest(derived_paths=_derived_path_set(f"{drv_path}!out"))
 
-    await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+    await GoalEngine(ctx).query_missing(request)
 
     assert store.realisation_queries == []
 
@@ -482,7 +481,7 @@ async def test_query_missing_classifies_roots_in_parallel() -> None:
     request = QueryMissingRequest(derived_paths=_derived_paths({blocked_path, releasing_path}))
 
     with anyio.fail_after(1):
-        response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+        response = await GoalEngine(ctx).query_missing(request)
 
     assert {str(path) for path in response.unknown} == {blocked_path, releasing_path}
     assert set(substitution_queue.queries) == {blocked_path, releasing_path}
@@ -525,7 +524,7 @@ async def test_query_missing_walks_the_input_derivations() -> None:
     )
     request = QueryMissingRequest(derived_paths=_derived_path_set(f"{top}!out"))
 
-    response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+    response = await GoalEngine(ctx).query_missing(request)
 
     assert {str(path) for path in response.will_build} == {top, middle, bottom}
     assert not response.unknown
@@ -574,7 +573,7 @@ async def test_query_missing_reads_a_shared_input_once() -> None:
     )
     request = QueryMissingRequest(derived_paths=_derived_paths({f"{left}!out", f"{right}!out"}))
 
-    response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+    response = await GoalEngine(ctx).query_missing(request)
 
     assert {str(path) for path in response.will_build} == {left, right, shared}
     assert reads.count(shared) == 1
@@ -605,7 +604,7 @@ async def test_a_dynamic_input_gets_a_warning_and_no_bucket() -> None:
     )
     request = QueryMissingRequest(derived_paths=_derived_path_set(f"{top}!out"))
 
-    response = await QueryMissingPlanGoal(GoalEngine(ctx), request).result()
+    response = await GoalEngine(ctx).query_missing(request)
 
     assert {str(path) for path in response.will_build} == {top}
     assert not response.unknown

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
@@ -26,6 +25,7 @@ from pynixd.serde import (
     StorePath,
 )
 from pynixd.wire import BytesWriter
+from tests.goal_group import goals_running
 
 if TYPE_CHECKING:
     from pynixd.context import PynixdContext
@@ -99,19 +99,20 @@ async def test_build_derivation_goal_unsubscribes_late_subscriber() -> None:
     goal = BuildDerivationGoal(cast("GoalEngine", engine), _request())
     client = ClientConn(BytesWriter("client"))
 
-    task = asyncio.create_task(goal.result())
-    await scheduler.started.wait()
-    await goal.subscribe(client)
+    async with goals_running(goal.engine):
+        await goal.start()
+        await scheduler.started.wait()
+        await goal.subscribe(client)
 
-    answer = scheduler.answer
-    if answer is None:
-        raise RuntimeError("scheduler did not create a build answer")
-    answer.set(
-        BuildDerivationResponse(
-            result=BuildResult(status=BuildResultStatus.BUILT),
+        answer = scheduler.answer
+        if answer is None:
+            raise RuntimeError("scheduler did not create a build answer")
+        answer.set(
+            BuildDerivationResponse(
+                result=BuildResult(status=BuildResultStatus.BUILT),
+            )
         )
-    )
-    await task
+        await goal.result()
 
     assert engine.subscribed == [(BuildId(1), client)]
     assert engine.unsubscribed == [(BuildId(1), client)]
@@ -150,13 +151,14 @@ async def _run_with(status: BuildResultStatus, store: CountingStore) -> None:
     engine.ctx.local_store = store  # type: ignore[misc]  # SimpleNamespace, and the goal only calls execute
     goal = BuildDerivationGoal(cast("GoalEngine", engine), _request_with_an_output())
 
-    task = asyncio.create_task(goal.result())
-    await scheduler.started.wait()
-    answer = scheduler.answer
-    if answer is None:
-        raise RuntimeError("scheduler did not create a build answer")
-    answer.set(BuildDerivationResponse(result=BuildResult(status=status)))
-    await task
+    async with goals_running(goal.engine):
+        await goal.start()
+        await scheduler.started.wait()
+        answer = scheduler.answer
+        if answer is None:
+            raise RuntimeError("scheduler did not create a build answer")
+        answer.set(BuildDerivationResponse(result=BuildResult(status=status)))
+        await goal.result()
 
 
 @pytest.mark.anyio

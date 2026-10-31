@@ -22,6 +22,7 @@ from pynixd.derived_path import DerivedPath
 from pynixd.goals.ensure import EnsureDerivedPathGoal
 from pynixd.goals.results import GoalResult, goal_failure, result_succeeded
 from pynixd.serde import BuildMode, BuildResultStatus
+from tests.goal_group import result_of
 
 if TYPE_CHECKING:
     from pynixd.goals.engine import GoalEngine
@@ -64,7 +65,7 @@ def _goal() -> EnsureDerivedPathGoal:
 
 @pytest.mark.anyio
 async def test_the_message_names_the_derivation_that_never_arrived() -> None:
-    result = await _goal().result()
+    result = await result_of(_goal())
 
     assert not result_succeeded(result.result)
     assert str(result.result.error_msg) == f"failed to obtain derivation of '{PRODUCER}^out'"
@@ -73,6 +74,6 @@ async def test_the_message_names_the_derivation_that_never_arrived() -> None:
 @pytest.mark.anyio
 async def test_the_status_says_a_dependency_failed() -> None:
     """`derivation-trampoline-goal.cc:105` gives `DependencyFailed`."""
-    result = await _goal().result()
+    result = await result_of(_goal())
 
     assert result.result.status == BuildResultStatus.DEPENDENCY_FAILED

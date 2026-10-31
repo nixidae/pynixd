@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -72,18 +71,12 @@ async def _the_result_unless_it_stops(goal: EnsureDerivedPathGoal, stop: anyio.E
     names it. pynixd waited for `slow` and then reported it, and with a fifo
     that nothing opens the wait has no end.
 
-    `asyncio.shield` is the one primitive that does this. `Goal.result`
-    awaits the `asyncio.Task` of the goal, and a cancellation of the awaiting
-    task cancels that task as well, because `Task.__step` cancels the future
-    it waits on. `shield` puts a second future between the two, and a
-    cancellation reaches that one alone. It also reads the outcome of the
-    goal when nothing else does, so an abandoned failure raises no "exception
-    was never retrieved" report. anyio offers no equivalent, and the goal
-    system is asyncio below `Goal.result`. Issue nixidae/nixidae#235.
+    `Goal.result` waits on the `Answer` of the goal, and a cancelled wait
+    cancels nothing else, so the stop cancels this wait and the goal runs
+    on in the task group of the request. Issue nixidae/nixidae#235.
     """
     if stop.is_set():
         return None
-    shielded = asyncio.shield(goal.result())
     result: GoalResult | None = None
 
     async def watch_the_stop() -> None:
@@ -92,7 +85,7 @@ async def _the_result_unless_it_stops(goal: EnsureDerivedPathGoal, stop: anyio.E
 
     async def take_the_result() -> None:
         nonlocal result
-        result = await shielded
+        result = await goal.result()
         tg.cancel_scope.cancel()
 
     async with anyio.create_task_group() as tg:

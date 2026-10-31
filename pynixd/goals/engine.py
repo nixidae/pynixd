@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import itertools
 import json
@@ -12,6 +13,7 @@ import structlog
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId
 
+from ..background import Background
 from ..exceptions import BackendError
 from ..serde import (
     BuildDerivationRequest,
@@ -32,7 +34,7 @@ from .results import result_succeeded
 from .substitute import SubstitutePathGoal, substituter_fingerprint
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable
+    from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 
     from nix_daemon_protocol.ids import BuildId
 
@@ -101,7 +103,28 @@ class GoalEngine:
         self.request_id = RequestId(next(_REQUEST_IDS))
         self._lock = anyio.Lock()
         self._goals: dict[Any, Goal[Any]] = {}
+        self._background: Background | None = None
         self.substitution_import_limiter = anyio.Semaphore(4)
+
+    @property
+    def goal_group(self) -> Background:
+        """The task group the goals of this request run in, open inside `running`."""
+        if self._background is None:
+            raise RuntimeError("GoalEngine runs its goals only inside `running`")
+        return self._background
+
+    @contextlib.asynccontextmanager
+    async def running(self) -> AsyncIterator[None]:
+        """Run the goals of this request for the body of this block, and cancel what is left at its end."""
+        if self._background is not None:
+            raise RuntimeError("GoalEngine is running already")
+        # A fresh one each time: a `Background` runs once.
+        self._background = Background("GoalEngine")
+        try:
+            async with self._background.running():
+                yield
+        finally:
+            self._background = None
 
     async def let_go_of_every_build(self) -> None:
         """Give back every build reference that this request took.
@@ -196,24 +219,25 @@ class GoalEngine:
         if request.build_mode != BuildMode.NORMAL:
             straight: BuildPathsWithResultsResponse = await self._straight_to_the_store(request, client)
             return straight
-        try:
-            response = await BuildPathsWithResultsGoal(self, request, client).result()
-            if hold is not None:
-                for path in _realised_paths(response):
-                    await hold(path)
-            return response
-        finally:
-            # The answer of this request is the moment it wants nothing more.
-            # `let_go_of_every_build` says what the build queue does with that.
-            # Shielded: a hung-up client cancels this request, and
-            # `anyio.Lock` raises at once inside a cancelled scope, which
-            # leaves the reference held. Issue #91.
-            with anyio.CancelScope(shield=True):
-                try:
-                    await self.let_go_of_every_build()
-                finally:
-                    # Whatever state the goals are in, nobody waits for them now.
-                    self.reap()
+        async with self.running():
+            try:
+                response = await BuildPathsWithResultsGoal(self, request, client).result()
+                if hold is not None:
+                    for path in _realised_paths(response):
+                        await hold(path)
+                return response
+            finally:
+                # The answer of this request is the moment it wants nothing more.
+                # `let_go_of_every_build` says what the build queue does with that.
+                # Shielded: a hung-up client cancels this request, and
+                # `anyio.Lock` raises at once inside a cancelled scope, which
+                # leaves the reference held. Issue #91.
+                with anyio.CancelScope(shield=True):
+                    try:
+                        await self.let_go_of_every_build()
+                    finally:
+                        # Whatever state the goals are in, nobody waits for them now.
+                        self.reap()
 
     async def _straight_to_the_store(self, request: Any, client: ClientConn | None) -> Any:
         """A check or a repair goes to the local store, and the goal system stands aside.
@@ -248,10 +272,11 @@ class GoalEngine:
         client: ClientConn | None = None,
     ) -> QueryMissingResponse:
         """Execute a read-only QueryMissing request, classifying paths as build/substitute/unknown."""
-        try:
-            return await QueryMissingPlanGoal(self, request, client).result()
-        finally:
-            self.reap()
+        async with self.running():
+            try:
+                return await QueryMissingPlanGoal(self, request, client).result()
+            finally:
+                self.reap()
 
     async def get_ensure_derived_path_goal(
         self,
