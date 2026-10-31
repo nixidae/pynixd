@@ -13,6 +13,7 @@ Exercises the full dynamic derivation lifecycle against a root Nix store:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import sys
 from pathlib import Path
@@ -48,13 +49,13 @@ DYN_NIX_CONFIG = for_dynamic_derivations(
 )
 
 
-async def main() -> None:
+async def _main(stack: contextlib.AsyncExitStack) -> None:
     root_path = STORE_PREFIX / "dyn-drv-root"
     rmtree_robust(root_path)
     root_store = LocalSocketStore(
         make_test_spec(store_id="dyn-drv-root", store_path=root_path, nix_config=DYN_NIX_CONFIG),
     )
-    await root_store.ensure_daemon()
+    await stack.enter_async_context(root_store)
 
     # Step 1: Build hello
     print("=" * 70)
@@ -356,7 +357,10 @@ GAPS IDENTIFIED:
    content-addressed paths correctly
 """)
 
-    await root_store.close()
+
+async def main() -> None:
+    async with contextlib.AsyncExitStack() as stack:
+        await _main(stack)
 
 
 if __name__ == "__main__":

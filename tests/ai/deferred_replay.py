@@ -15,6 +15,7 @@ Exercises the exact code path that pynixd's scheduler will use:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sys
 import traceback
@@ -89,7 +90,7 @@ async def add_text_to_store(
         return None
 
 
-async def main() -> None:
+async def _main(stack: contextlib.AsyncExitStack) -> None:
     # -- Step 1: Build reference on root store --
     print("=" * 70)
     print("Step 1: Build reference on root store")
@@ -100,7 +101,7 @@ async def main() -> None:
     root_store = LocalSocketStore(
         make_test_spec(store_id="deferred-replay-root", store_path=root_path, nix_config=CA_NIX_CONFIG),
     )
-    await root_store.ensure_daemon()
+    await stack.enter_async_context(root_store)
 
     cmd_ca = [
         NIX_BIN,
@@ -209,7 +210,7 @@ async def main() -> None:
     builder_store = LocalSocketStore(
         make_test_spec(store_id="deferred-replay-builder", store_path=builder_path, nix_config=CA_NIX_CONFIG),
     )
-    await builder_store.ensure_daemon()
+    await stack.enter_async_context(builder_store)
 
     paths_to_transfer: set[StorePath] = set()
     paths_to_transfer.add(ca_drv_path)
@@ -299,8 +300,6 @@ async def main() -> None:
 
     if not local_resolved_path or not builder_resolved_path:
         print("\nAddToStore FAILED — cannot proceed with build")
-        await root_store.close()
-        await builder_store.close()
         return
 
     if local_resolved_path != builder_resolved_path:
@@ -338,8 +337,10 @@ async def main() -> None:
 
     print(f"\nExpected output: {deferred_out_path}")
 
-    await root_store.close()
-    await builder_store.close()
+
+async def main() -> None:
+    async with contextlib.AsyncExitStack() as stack:
+        await _main(stack)
 
 
 if __name__ == "__main__":

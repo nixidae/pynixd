@@ -14,6 +14,7 @@ Validates against known Nix output paths.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import sqlite3
@@ -307,7 +308,7 @@ def resolve_derivation(
     return resolved
 
 
-async def main() -> None:
+async def _main(stack: contextlib.AsyncExitStack) -> None:
     # ── Verify Nix32 encoding against Nix test vectors ──
     print("=" * 70)
     print("Step 0: Verify Nix32 encoding against Nix test vectors")
@@ -338,7 +339,7 @@ async def main() -> None:
     root_store = LocalSocketStore(
         make_test_spec(store_id="deferred-replay-root", store_path=root_path, nix_config=CA_NIX_CONFIG),
     )
-    await root_store.ensure_daemon()
+    await stack.enter_async_context(root_store)
 
     cmd_ca = [
         NIX_BIN,
@@ -516,7 +517,7 @@ async def main() -> None:
     test_store = LocalSocketStore(
         make_test_spec(store_id="deferred-replay-resolve", store_path=test_path, nix_config=CA_NIX_CONFIG),
     )
-    await test_store.ensure_daemon()
+    await stack.enter_async_context(test_store)
 
     # Transfer needed paths: CA .drv + CA output + deferred .drv
     await stream_paths_store_to_store(
@@ -624,8 +625,10 @@ async def main() -> None:
     else:
         print("  No resolved .drv to transfer from root store")
 
-    await root_store.close()
-    await test_store.close()
+
+async def main() -> None:
+    async with contextlib.AsyncExitStack() as stack:
+        await _main(stack)
 
 
 if __name__ == "__main__":
