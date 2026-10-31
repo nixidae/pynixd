@@ -42,18 +42,17 @@ async def test_feature_probe_in_memory() -> None:
             nix_config=FEATURE_NIX_CONFIG,
         ),
     )
-    await store.ensure_daemon()
+    async with store:
+        await store.probe()
 
-    await store.probe()
-
-    fm = store.feature_matrix
-    assert fm, "feature_matrix should not be empty after probe"
-    assert "x86_64-linux" in fm
-    assert "big-parallel" in fm["x86_64-linux"]
-    assert "ca-derivations" in fm["x86_64-linux"]
-    assert "nixos-test" in fm["x86_64-linux"]
-    assert "apple-virt" not in fm.get("x86_64-linux", set())
-    assert "uid-range" not in fm.get("x86_64-linux", set())
+        fm = store.feature_matrix
+        assert fm, "feature_matrix should not be empty after probe"
+        assert "x86_64-linux" in fm
+        assert "big-parallel" in fm["x86_64-linux"]
+        assert "ca-derivations" in fm["x86_64-linux"]
+        assert "nixos-test" in fm["x86_64-linux"]
+        assert "apple-virt" not in fm.get("x86_64-linux", set())
+        assert "uid-range" not in fm.get("x86_64-linux", set())
 
 
 @pytest.mark.nixbuild

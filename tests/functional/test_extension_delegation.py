@@ -47,7 +47,6 @@ async def test_extension_delegation(tmp_path: Path) -> None:
             no_probe=True,
         ),
     )
-    await store_b.ensure_daemon()
 
     # Add a path to store B
     cmd = [

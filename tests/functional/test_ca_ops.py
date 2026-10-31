@@ -56,9 +56,7 @@ async def test_ca_simple_build_root_store(
         make_test_spec(store_id="ca-root", store_path=store_path, nix_config=CA_NIX_CONFIG),
     )
 
-    try:
-        await store.ensure_daemon()
-
+    async with store:
         cmd = [
             str(CLIENT_BIN),
             "build",
@@ -76,8 +74,6 @@ async def test_ca_simple_build_root_store(
         out_path = stdout.strip()
         assert out_path.startswith("/nix/store/"), f"Unexpected output path: {out_path}"
         log.info("ca_simple_output", path=out_path)
-    finally:
-        await store.close()
 
 
 @pytest.mark.ca_derivations
@@ -92,9 +88,7 @@ async def test_ca_multi_output_build_root_store(
         make_test_spec(store_id="ca-root-multi", store_path=store_path, nix_config=CA_NIX_CONFIG),
     )
 
-    try:
-        await store.ensure_daemon()
-
+    async with store:
         cmd = [
             str(CLIENT_BIN),
             "build",
@@ -114,8 +108,6 @@ async def test_ca_multi_output_build_root_store(
         for p in paths:
             assert p.startswith("/nix/store/"), f"Unexpected output path: {p}"
         log.info("ca_multi_output_paths", paths=paths)
-    finally:
-        await store.close()
 
 
 @pytest.mark.ca_derivations
@@ -130,9 +122,7 @@ async def test_ca_depends_on_ca_root_store(
         make_test_spec(store_id="ca-root-depends", store_path=store_path, nix_config=CA_NIX_CONFIG),
     )
 
-    try:
-        await store.ensure_daemon()
-
+    async with store:
         cmd = [
             str(CLIENT_BIN),
             "build",
@@ -150,8 +140,6 @@ async def test_ca_depends_on_ca_root_store(
         out_path = stdout.strip()
         assert out_path.startswith("/nix/store/"), f"Unexpected output path: {out_path}"
         log.info("ca_depends_on_ca_output", path=out_path)
-    finally:
-        await store.close()
 
 
 @pytest.mark.ca_derivations
@@ -166,9 +154,7 @@ async def test_non_ca_depends_on_ca_root_store(
         make_test_spec(store_id="ca-root-non-ca-depends", store_path=store_path, nix_config=CA_NIX_CONFIG),
     )
 
-    try:
-        await store.ensure_daemon()
-
+    async with store:
         cmd = [
             str(CLIENT_BIN),
             "build",
@@ -186,8 +172,6 @@ async def test_non_ca_depends_on_ca_root_store(
         out_path = stdout.strip()
         assert out_path.startswith("/nix/store/"), f"Unexpected output path: {out_path}"
         log.info("non_ca_depends_on_ca_output", path=out_path)
-    finally:
-        await store.close()
 
 
 @pytest.mark.ca_derivations
@@ -436,58 +420,57 @@ async def test_ca_query_derivation_output_map_root_store(
         make_test_spec(store_id="ca-root-qdom", store_path=store_path, nix_config=CA_NIX_CONFIG),
     )
 
-    await store.ensure_daemon()
+    async with store:
+        # Build the CA derivation
+        cmd = [
+            str(CLIENT_BIN),
+            "build",
+            "--store",
+            str(store_path),
+            "--impure",
+            "--file",
+            str(TEST_NIX),
+            "ca.simple",
+            "--no-link",
+            "--print-out-paths",
+        ]
+        rc, stdout, stderr, stdboth = await run_subproc(cmd, nix_config=CA_NIX_CONFIG)
+        assert rc == 0, f"CA build failed:\n{stdboth}"
+        out_path = stdout.strip()
+        assert out_path.startswith("/nix/store/")
 
-    # Build the CA derivation
-    cmd = [
-        str(CLIENT_BIN),
-        "build",
-        "--store",
-        str(store_path),
-        "--impure",
-        "--file",
-        str(TEST_NIX),
-        "ca.simple",
-        "--no-link",
-        "--print-out-paths",
-    ]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd, nix_config=CA_NIX_CONFIG)
-    assert rc == 0, f"CA build failed:\n{stdboth}"
-    out_path = stdout.strip()
-    assert out_path.startswith("/nix/store/")
+        # Get the .drv path
+        cmd = [
+            str(CLIENT_BIN),
+            "eval",
+            "--store",
+            str(store_path),
+            "--impure",
+            "--file",
+            str(TEST_NIX),
+            "ca.simple.drvPath",
+            "--raw",
+        ]
+        rc, drv_out, stderr, stdboth = await run_subproc(cmd, nix_config=CA_NIX_CONFIG)
+        assert rc == 0, f"CA drvPath eval failed:\n{stdboth}"
+        drv_path = drv_out.strip()
 
-    # Get the .drv path
-    cmd = [
-        str(CLIENT_BIN),
-        "eval",
-        "--store",
-        str(store_path),
-        "--impure",
-        "--file",
-        str(TEST_NIX),
-        "ca.simple.drvPath",
-        "--raw",
-    ]
-    rc, drv_out, stderr, stdboth = await run_subproc(cmd, nix_config=CA_NIX_CONFIG)
-    assert rc == 0, f"CA drvPath eval failed:\n{stdboth}"
-    drv_path = drv_out.strip()
+        # Query the CA derivation's output map via nix path-info.
+        # This exercises QueryDerivationOutputMap (op 41) and RegisterDrvOutput (op 42).
+        cmd = [
+            str(CLIENT_BIN),
+            "path-info",
+            "--store",
+            str(store_path),
+            "--json",
+            f"{drv_path}^*",
+        ]
+        rc, stdout, stderr, stdboth = await run_subproc(cmd, nix_config=CA_NIX_CONFIG)
+        assert rc == 0, f"path-info failed:\n{stderr}"
 
-    # Query the CA derivation's output map via nix path-info.
-    # This exercises QueryDerivationOutputMap (op 41) and RegisterDrvOutput (op 42).
-    cmd = [
-        str(CLIENT_BIN),
-        "path-info",
-        "--store",
-        str(store_path),
-        "--json",
-        f"{drv_path}^*",
-    ]
-    rc, stdout, stderr, stdboth = await run_subproc(cmd, nix_config=CA_NIX_CONFIG)
-    assert rc == 0, f"path-info failed:\n{stderr}"
-
-    info = json.loads(stdout)
-    assert out_path in info, f"Expected {out_path} in {info}"
-    assert "ca" in info[out_path], f"Expected 'ca' field in {info[out_path]}"
+        info = json.loads(stdout)
+        assert out_path in info, f"Expected {out_path} in {info}"
+        assert "ca" in info[out_path], f"Expected 'ca' field in {info[out_path]}"
 
 
 @pytest.mark.ca_derivations
@@ -676,9 +659,7 @@ async def test_text_hashed_ca_build_root_store(
         make_test_spec(store_id="ca-root-text", store_path=store_path, nix_config=CA_NIX_CONFIG),
     )
 
-    try:
-        await store.ensure_daemon()
-
+    async with store:
         cmd = [
             str(CLIENT_BIN),
             "build",
@@ -701,8 +682,6 @@ async def test_text_hashed_ca_build_root_store(
         assert full_path.exists(), f"Output file missing: {full_path}"
         content = full_path.read_text().strip()
         assert content.startswith("text-content-"), f"Unexpected content: {content!r}"
-    finally:
-        await store.close()
 
 
 @pytest.mark.ca_derivations

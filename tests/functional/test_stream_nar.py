@@ -55,7 +55,7 @@ async def test_stream_nar() -> None:
         make_test_spec(store_id="test-stream-nar", store_path=dst_path, no_probe=True),
     )
 
-    try:
+    async with src_store, dst_store:
         # 2. Stream the path from src to dst
         # Check if path exists in src
         is_valid_src = await src_store.execute(IsValidPathRequest(path=StorePath(path=str(store_path))))
@@ -91,6 +91,3 @@ async def test_stream_nar() -> None:
             IsValidPathRequest(path=StorePath(path=str(store_path))),
         )
         assert is_valid_dst_after.valid
-    finally:
-        await src_store.close()
-        await dst_store.close()

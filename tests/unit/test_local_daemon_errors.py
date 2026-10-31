@@ -57,7 +57,8 @@ async def test_a_daemon_that_dies_reports_what_the_daemon_said(tmp_path: Path) -
     )
 
     with pytest.raises(RuntimeError) as raised:
-        await store.ensure_daemon()
+        async with store:
+            pass
 
     message = str(raised.value)
     assert _DISTINCTIVE in message, f"the daemon's own output is missing from:\n{message}"

@@ -44,7 +44,6 @@ async def test_handshake_feature_announcement(tmp_path: Path) -> None:
             feature_matrix=fm_b,
         ),
     )
-    await store_b.ensure_daemon()
 
     # 1. Start Server B (Proxying store_b)
     async with Server(

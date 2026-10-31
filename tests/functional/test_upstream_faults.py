@@ -72,35 +72,34 @@ async def rig() -> AsyncIterator[_Rig]:
     rmtree_robust(root)
     root.mkdir(parents=True)
     daemon = LocalSocketStore(make_test_spec(store_id="faults-daemon", store_path=root / "store", no_probe=True))
-    await daemon.ensure_daemon()
-    proxy = FaultProxy(root / "proxy.sock", daemon.socket_path)
-    await proxy.start()
-    local = LocalSocketStore(
-        make_test_spec(
-            store_id="local",
-            store_path=root / "store",
-            no_probe=True,
-            managed=False,
-            socket_path=root / "proxy.sock",
-            read_timeout=_READ_TIMEOUT,
+    async with daemon:
+        proxy = FaultProxy(root / "proxy.sock", daemon.socket_path)
+        await proxy.start()
+        local = LocalSocketStore(
+            make_test_spec(
+                store_id="local",
+                store_path=root / "store",
+                no_probe=True,
+                managed=False,
+                socket_path=root / "proxy.sock",
+                read_timeout=_READ_TIMEOUT,
+            )
         )
-    )
-    client_socket = root / "pynixd.sock"
-    try:
-        async with Server(
-            stores={StoreId("local"): local},
-            unix_path=client_socket,
-            ssh_port=None,
-            http_port=None,
-        ) as server:
-            rig = _Rig(server, proxy, client_socket)
-            # Warm the pool, so an armed fault lands mid-operation and not
-            # in a handshake.
-            assert await rig.ask() is False
-            yield rig
-    finally:
-        await proxy.close()
-        await daemon.close()
+        client_socket = root / "pynixd.sock"
+        try:
+            async with Server(
+                stores={StoreId("local"): local},
+                unix_path=client_socket,
+                ssh_port=None,
+                http_port=None,
+            ) as server:
+                rig = _Rig(server, proxy, client_socket)
+                # Warm the pool, so an armed fault lands mid-operation and not
+                # in a handshake.
+                assert await rig.ask() is False
+                yield rig
+        finally:
+            await proxy.close()
 
 
 # CORRUPT: flipped bytes read as a huge length, and pynixd waits for bytes the
