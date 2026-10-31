@@ -36,6 +36,7 @@ from .build_result import (
 from .build_result import BuiltOutput as BuiltOutput
 from .collect_garbage import CollectGarbageRequest as CollectGarbageRequest
 from .collect_garbage import CollectGarbageResponse as CollectGarbageResponse
+from .collect_garbage import GCPaths as GCPaths
 from .constants import FEATURE_ADD_TEMP_ROOTS as FEATURE_ADD_TEMP_ROOTS
 from .constants import FEATURE_ADD_TO_STORE_SCANNING as FEATURE_ADD_TO_STORE_SCANNING
 from .constants import FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS as FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS

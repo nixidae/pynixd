@@ -115,7 +115,9 @@ the thing recursive Nix exists for. Every output of such a build is
 content-addressed. `docs/notes/reentrancy.md` holds the detail, as Fact 9.
 """
 
-SUPPORTED_STANDARD_FEATURES: Final[frozenset[str]] = frozenset({FEATURE_REALISATION_WITH_PATH, FEATURE_ADD_TEMP_ROOTS})
+SUPPORTED_STANDARD_FEATURES: Final[frozenset[str]] = frozenset(
+    {FEATURE_REALISATION_WITH_PATH, FEATURE_ADD_TEMP_ROOTS, FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS}
+)
 """The standard features that this package has a codec for.
 
 A name belongs here when the codec that the name gates is in this package,

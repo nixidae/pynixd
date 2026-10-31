@@ -50,9 +50,6 @@ the detail, as Fact 9.
 """
 
 MISSING_CODECS = {
-    ndp.FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS: (
-        "`CollectGarbage` gains the referrers of a named set of paths, and `collect_garbage.py` has no field for them."
-    ),
     ndp.FEATURE_DISABLE_SET_OPTIONS: (
         "`SetOptions` must become a no-op. A builder cannot change the settings of the daemon that serves it."
     ),
@@ -96,8 +93,8 @@ def test_the_ledger_names_every_feature_that_pynixd_does_not_claim() -> None:
         assert reason, feature
 
 
-def test_pynixd_claims_the_build_trace_and_batch_roots_features() -> None:
-    """The first two codecs landed: realisations and batch temp roots.
+def test_pynixd_claims_every_feature_of_nix_latest() -> None:
+    """Three codecs landed: realisations, batch temp roots and the GC paths.
 
     `realisation-with-path-not-hash` covers `DrvOutput`,
     `UnkeyedRealisation`, `BuildResult.builtOutputs`, `QueryRealisation` and
@@ -107,8 +104,12 @@ def test_pynixd_claims_the_build_trace_and_batch_roots_features() -> None:
 
     `addTempRoots` covers op 49, which the proxy serves itself the way it
     serves op 11. Issue #66.
+
+    `delete-dead-specific-referrers` covers the paths of `CollectGarbage`.
+    Without it, the parity suite against Nix 2.35 could not decode a GC
+    request between two Nix peers.
     """
-    assert frozenset({ndp.FEATURE_REALISATION_WITH_PATH, ndp.FEATURE_ADD_TEMP_ROOTS}) == ndp.SUPPORTED_STANDARD_FEATURES
+    assert frozenset(FEATURES_OF_NIX_LATEST) == ndp.SUPPORTED_STANDARD_FEATURES
 
 
 def test_the_negotiation_is_the_intersection() -> None:
@@ -118,12 +119,11 @@ def test_the_negotiation_is_the_intersection() -> None:
     assert wire.negotiate_features(set(), {"a"}) == frozenset()
 
 
-def test_a_client_of_the_master_branch_negotiates_the_build_trace() -> None:
+def test_a_client_of_the_master_branch_negotiates_every_feature() -> None:
     """A `nix` client of the master branch names three features of `latest`.
 
-    pynixd names two of the three back, so a realisation survives the proxy,
-    batch roots arrive as op 49, and `delete-dead-specific-referrers` stays
-    off. Issue #14.
+    pynixd names all three back, so a realisation survives the proxy, batch
+    roots arrive as op 49, and GC paths arrive as a `GCPaths`. Issue #14.
 
     **This is what the codecs can do, and not what a proxy will claim.**
     `DaemonProxy.honourable_features` widens it again to what any store
@@ -132,7 +132,7 @@ def test_a_client_of_the_master_branch_negotiates_the_build_trace() -> None:
     """
     negotiated = wire.negotiate_features(FEATURES_OF_NIX_LATEST, ndp.SUPPORTED_STANDARD_FEATURES)
 
-    assert negotiated == frozenset({ndp.FEATURE_REALISATION_WITH_PATH, ndp.FEATURE_ADD_TEMP_ROOTS})
+    assert negotiated == frozenset(FEATURES_OF_NIX_LATEST)
 
 
 class _Store:

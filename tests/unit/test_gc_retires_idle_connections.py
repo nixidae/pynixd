@@ -36,6 +36,7 @@ from test_pool_lifetime import (  # type: ignore[import-not-found]  # pytest put
 
 from pynixd.daemon_extensions.protocol import PynixdGCAction
 from pynixd.daemon_extensions.pynixd_collect_garbage import PynixdCollectGarbageRequest
+from pynixd.exceptions import ClosingError
 from pynixd.gc import Collector
 from pynixd.handlers.collect_garbage import CollectGarbageHandler
 from pynixd.handlers.pynixd_collect_garbage import PynixdCollectGarbageHandler
@@ -45,6 +46,7 @@ from pynixd.serde.context import WriteContext
 from pynixd.serde.protocol import GCAction
 from pynixd.store.base import Store
 from pynixd.store.daemon import DaemonStore
+from pynixd.store_path import StorePath
 from pynixd.wire import BytesReader, BytesWriter
 
 VERSION = 0x126
@@ -177,6 +179,17 @@ async def test_an_untrusted_client_collects_as_well() -> None:
 
     assert proxy.local_store.calls == ["retire", "execute:CollectGarbageRequest"]
     assert not proxy.errors
+
+
+@pytest.mark.anyio
+async def test_named_dead_paths_are_refused_without_the_feature() -> None:
+    """A 2.34 daemon deletes every dead path for such a request (`gc.cc:698`),
+    and Nix 2.35 refuses it unless both sides negotiated the feature
+    (`daemon.cc:766`). The store never sees it."""
+    request = _request().model_copy(update={"paths_to_delete": {StorePath("/nix/store/" + "0" * 32 + "-x")}})
+
+    with pytest.raises(ClosingError, match="not supported by the negotiated protocol"):
+        await _handle(CollectGarbageHandler(), request, Role.ADMIN)
 
 
 @pytest.mark.anyio
