@@ -8,7 +8,6 @@ a broken connection leaves the pool, and pynixd keeps serving.
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -22,6 +21,7 @@ from pynixd.connection import Connection
 from pynixd.serde import IsValidPathRequest, StorePath
 from pynixd.state import upstream_in_flight
 from pynixd.store import LocalSocketStore
+from pynixd.unix_socket import open_unix_connection
 from pynixd.wire import UnixNixReader, UnixNixWriter
 from tests._conftest.fault_proxy import Fault, FaultProxy
 from tests.conftest import STORE_PREFIX, make_test_spec, rmtree_robust
@@ -49,8 +49,8 @@ class _Rig:
 
     async def ask(self) -> bool:
         """One IsValidPath through pynixd, which forwards it to the daemon."""
-        r, w = await asyncio.open_unix_connection(str(self.client_socket))
-        conn = Connection(UnixNixReader(r, identifier="t"), UnixNixWriter(w, identifier="t"), "t")
+        link = await open_unix_connection(self.client_socket)
+        conn = Connection(UnixNixReader(link, identifier="t"), UnixNixWriter(link, identifier="t"), "t")
         try:
             await conn.connect()
             response = await conn.call(IsValidPathRequest(path=StorePath(path=_ABSENT)), raise_on_error=True)

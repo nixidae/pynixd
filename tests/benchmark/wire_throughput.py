@@ -39,16 +39,18 @@ Baseline, shared machine, medians of 3 runs of 3 iters (2026-10-07):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import resource
 import statistics
 import sys
 import tempfile
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
 import anyio
 import structlog
+from anyio.abc import SocketStream
 
 # The working copies in front of the environment, like the shell hook does
 # with `$PWD` -- but this script also runs where `PWD` is unset (a systemd
@@ -56,6 +58,7 @@ import structlog
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "nix-daemon-protocol" / "src"))
 
+from pynixd.unix_socket import UnixLink, as_link  # noqa: E402
 from pynixd.wire import UnixNixReader, UnixNixWriter  # noqa: E402
 
 log = structlog.get_logger(__name__)
@@ -68,29 +71,31 @@ LARGE_SIZE = _MIB
 ITERS = 3
 
 
-async def _blackhole(reader: asyncio.StreamReader, total: int) -> None:
+async def _blackhole(stream: SocketStream, total: int) -> None:
     """Read and discard exactly *total* bytes."""
     got = 0
     while got < total:
-        chunk = await reader.read(64 * 1024)
-        if not chunk:
-            raise EOFError(f"peer closed after {got} of {total} bytes")
+        try:
+            chunk = await stream.receive(64 * 1024)
+        except anyio.EndOfStream:
+            raise EOFError(f"peer closed after {got} of {total} bytes") from None
         got += len(chunk)
 
 
-async def _serve(
-    sock: Path,
-    handler: Callable[[asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]],
-) -> asyncio.AbstractServer:
-    """A unix-socket server calling *handler* per connection."""
+@contextlib.asynccontextmanager
+async def _serving(sock: Path, handler: Callable[[SocketStream], Awaitable[None]]) -> AsyncIterator[UnixLink]:
+    """A unix-socket server that runs *handler* on one connection; yields the client's end."""
+    listener = await anyio.create_unix_listener(sock)
 
-    async def _on_conn(r: asyncio.StreamReader, w: asyncio.StreamWriter) -> None:
-        try:
-            await handler(r, w)
-        finally:
-            w.close()
+    async def _one() -> None:
+        async with await listener.accept() as stream:
+            await handler(stream)
 
-    return await asyncio.start_unix_server(_on_conn, str(sock))
+    async with listener, anyio.create_task_group() as tg:
+        tg.start_soon(_one)
+        link = await as_link(await anyio.connect_unix(sock))
+        async with link.stream:
+            yield link
 
 
 def _cpu() -> float:
@@ -101,14 +106,11 @@ def _cpu() -> float:
 async def _write_small(sock: Path) -> tuple[int, int]:
     """100k 8-byte messages, drained per message. Returns (msgs, payload bytes)."""
     total = SMALL_COUNT * 8
-    server = await _serve(sock, lambda r, w: _blackhole(r, total))
-    _, w = await asyncio.open_unix_connection(str(sock))
-    writer = UnixNixWriter(w)
-    for _ in range(SMALL_COUNT):
-        writer.write_uint64(1)
-        await writer.drain()
-    w.close()
-    server.close()
+    async with _serving(sock, lambda s: _blackhole(s, total)) as client:
+        writer = UnixNixWriter(client)
+        for _ in range(SMALL_COUNT):
+            writer.write_uint64(1)
+            await writer.drain()
     return SMALL_COUNT, total
 
 
@@ -116,52 +118,40 @@ async def _read_small(sock: Path) -> tuple[int, int]:
     """100k 8-byte messages read one `read_uint64` at a time."""
     blob = (1).to_bytes(8, "little") * SMALL_COUNT
 
-    async def _pump(r: asyncio.StreamReader, w: asyncio.StreamWriter) -> None:
-        w.write(blob)
-        await w.drain()
+    async def _pump(stream: SocketStream) -> None:
+        await stream.send(blob)
 
-    server = await _serve(sock, _pump)
-    r, w = await asyncio.open_unix_connection(str(sock))
-    reader = UnixNixReader(r)
-    for _ in range(SMALL_COUNT):
-        assert await reader.read_uint64() == 1
-    w.close()
-    server.close()
+    async with _serving(sock, _pump) as client:
+        reader = UnixNixReader(client)
+        for _ in range(SMALL_COUNT):
+            assert await reader.read_uint64() == 1
     return SMALL_COUNT, len(blob)
 
 
 async def _write_large(sock: Path) -> tuple[int, int]:
     """64 1 MiB payloads through `write_bytes`, one drain at the end."""
     total = LARGE_COUNT * LARGE_SIZE
-    server = await _serve(sock, lambda r, w: _blackhole(r, total))
-    _, w = await asyncio.open_unix_connection(str(sock))
-    writer = UnixNixWriter(w)
-    payload = bytes(LARGE_SIZE)
-    for _ in range(LARGE_COUNT):
-        writer.write_bytes(payload)
-    await writer.drain()
-    w.close()
-    server.close()
+    async with _serving(sock, lambda s: _blackhole(s, total)) as client:
+        writer = UnixNixWriter(client)
+        payload = bytes(LARGE_SIZE)
+        for _ in range(LARGE_COUNT):
+            writer.write_bytes(payload)
+        await writer.drain()
     return LARGE_COUNT, total
 
 
 async def _read_large(sock: Path) -> tuple[int, int]:
     """64 1 MiB payloads read one `read_bytes` at a time."""
 
-    async def _pump(r: asyncio.StreamReader, w: asyncio.StreamWriter) -> None:
+    async def _pump(stream: SocketStream) -> None:
         for _ in range(LARGE_COUNT):
-            w.write(LARGE_SIZE.to_bytes(8, "little"))
-            w.write(bytes(LARGE_SIZE))
-        await w.drain()
+            await stream.send(LARGE_SIZE.to_bytes(8, "little") + bytes(LARGE_SIZE))
 
-    server = await _serve(sock, _pump)
-    r, w = await asyncio.open_unix_connection(str(sock))
-    reader = UnixNixReader(r)
-    for _ in range(LARGE_COUNT):
-        data = await reader.read_bytes()
-        assert len(data) == LARGE_SIZE
-    w.close()
-    server.close()
+    async with _serving(sock, _pump) as client:
+        reader = UnixNixReader(client)
+        for _ in range(LARGE_COUNT):
+            data = await reader.read_bytes()
+            assert len(data) == LARGE_SIZE
     return LARGE_COUNT, LARGE_COUNT * LARGE_SIZE
 
 

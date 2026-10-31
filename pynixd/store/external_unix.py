@@ -37,10 +37,10 @@ class ExternalUnixStore(DaemonStore):
     async def create_conn(self) -> Connection:
         """Create a connection by connecting to the external Unix socket."""
         conn_id = f"{self.store_id}-{self.conn_counter}"
-        r, w = await open_unix_connection(self.socket_path)
+        link = await open_unix_connection(self.socket_path)
         conn = Connection(
-            UnixNixReader(r, identifier=conn_id),
-            UnixNixWriter(w, identifier=conn_id),
+            UnixNixReader(link, identifier=conn_id),
+            UnixNixWriter(link, identifier=conn_id),
             conn_id,
             store_path=self.store_path,
         )

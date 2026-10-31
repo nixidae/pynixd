@@ -22,10 +22,11 @@ from pynixd.connection import Connection
 from pynixd.metrics import StoreTrafficCollector
 from pynixd.store.pool import ConnectionPool
 from pynixd.wire import SSHNixReader, SSHNixWriter, UnixNixReader, UnixNixWriter
+from tests._conftest.socket_pair import socket_pair
 
 
 class _Raw:
-    """An underlying transport yielding fixed-size chunks."""
+    """An SSH reader yielding fixed-size chunks."""
 
     def __init__(self, chunk_size: int) -> None:
         self.chunk_size = chunk_size
@@ -47,15 +48,17 @@ class _Sink:
         self.data.extend(data)
 
 
-def test_unix_writer_counts_flushed_bytes() -> None:
+async def test_unix_writer_counts_flushed_bytes() -> None:
     """One int-add per flush, through the coalescing buffer too."""
-    writer = UnixNixWriter(cast("Any", _Sink()))
-    writer._write_to_transport(b"abc")
-    assert writer.bytes_written == 3
+    async with socket_pair() as (ours, _):
+        writer = UnixNixWriter(ours)
+        writer._write_to_transport(b"abc")
+        assert writer.bytes_written == 3
 
-    writer = UnixNixWriter(cast("Any", _Sink()))
-    writer.write(b"x" * 70_000)
-    assert writer.bytes_written == 70_000
+    async with socket_pair() as (ours, _):
+        writer = UnixNixWriter(ours)
+        writer.write(b"x" * 70_000)
+        assert writer.bytes_written == 70_000
 
 
 def test_ssh_writer_counts_flushed_bytes() -> None:
@@ -67,18 +70,22 @@ def test_ssh_writer_counts_flushed_bytes() -> None:
 
 async def test_unix_reader_counts_transport_fills_once() -> None:
     """A buffer fill counts; serving from the buffer counts nothing."""
-    reader = UnixNixReader(cast("Any", _Raw(chunk_size=100)))
-    assert await reader.readexactly(8) == b"z" * 8
-    assert reader.bytes_read == 100
-    assert await reader.readexactly(8) == b"z" * 8
-    assert reader.bytes_read == 100
+    async with socket_pair() as (ours, theirs):
+        await theirs.send(b"z" * 100)
+        reader = UnixNixReader(ours)
+        assert await reader.readexactly(8) == b"z" * 8
+        assert reader.bytes_read == 100
+        assert await reader.readexactly(8) == b"z" * 8
+        assert reader.bytes_read == 100
 
 
 async def test_unix_reader_counts_a_passthrough_exactly() -> None:
     """A read past the readahead counts only the new transport bytes."""
-    reader = UnixNixReader(cast("Any", _Raw(chunk_size=100)))
-    assert len(await reader.readexactly(20_000)) == 20_000
-    assert reader.bytes_read == 20_000
+    async with socket_pair() as (ours, theirs):
+        await theirs.send(b"z" * 20_000)
+        reader = UnixNixReader(ours)
+        assert len(await reader.readexactly(20_000)) == 20_000
+        assert reader.bytes_read == 20_000
 
 
 async def test_ssh_reader_counts_transport_fills_once() -> None:

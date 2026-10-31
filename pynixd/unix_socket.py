@@ -20,10 +20,17 @@ with cannot bind that. Issue #44.
 
 from __future__ import annotations
 
-import asyncio
 import os
+import socket
 import sys
-from pathlib import Path
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+import anyio
+from anyio.abc import SocketAttribute, SocketStream
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _SUN_PATH_MAX = 107
 """Bytes of a Unix socket path, without the terminating NUL.
@@ -44,7 +51,38 @@ def _refusal(socket_path: Path, measured: int) -> RuntimeError:
     )
 
 
-async def open_unix_connection(socket_path: Path) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+@dataclass(frozen=True, slots=True)
+class UnixLink:
+    """One Unix connection: the stream that reads it, and the socket the writer and the pool's checks use.
+
+    The stream's own `raw_socket` cannot send or peek: asyncio and uvloop answer
+    a transport's socket with a stand-in. `sock` is the same descriptor, and
+    closing the stream closes it too.
+    """
+
+    stream: SocketStream
+    sock: socket.socket
+
+
+async def as_link(stream: SocketStream) -> UnixLink:
+    """*stream* rebuilt on a loop transport.
+
+    A transport holds one read registration for the life of the socket. anyio's
+    raw Unix stream registers and drops the descriptor on every wait, and a
+    request-response round trip then measured 40.7k/s against 50.3k/s on
+    uvloop (nixidae/nixidae#1145).
+    """
+    sock = stream.extra(SocketAttribute.raw_socket).dup()
+    await stream.aclose()
+    return await link_socket(sock)
+
+
+async def link_socket(sock: socket.socket) -> UnixLink:
+    """A connected Unix socket as a link; the link owns it from here."""
+    return UnixLink(await SocketStream.from_socket(sock), sock)
+
+
+async def open_unix_connection(socket_path: Path) -> UnixLink:
     """Connect to `socket_path`, rerouting an over-long one on Linux.
 
     A path within the limit connects directly. A longer one connects
@@ -53,13 +91,13 @@ async def open_unix_connection(socket_path: Path) -> tuple[asyncio.StreamReader,
     numbers rather than failing later with `OSError: AF_UNIX path too long`.
     """
     if len(os.fsencode(str(socket_path))) <= _SUN_PATH_MAX:
-        return await asyncio.open_unix_connection(str(socket_path))
+        return await as_link(await anyio.connect_unix(str(socket_path)))
     if len(os.fsencode(socket_path.name)) > _SUN_PATH_MAX:
         raise _refusal(socket_path, len(os.fsencode(str(socket_path))))
     if sys.platform != "linux":
         raise _refusal(socket_path, len(os.fsencode(str(socket_path))))
     fd = os.open(socket_path.parent, os.O_PATH | os.O_CLOEXEC)
     try:
-        return await asyncio.open_unix_connection(f"/proc/self/fd/{fd}/{socket_path.name}")
+        return await as_link(await anyio.connect_unix(f"/proc/self/fd/{fd}/{socket_path.name}"))
     finally:
         os.close(fd)

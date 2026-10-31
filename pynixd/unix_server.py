@@ -7,7 +7,7 @@ for each client. Used for testing (avoids SSH) and local daemon mode.
 
 from __future__ import annotations
 
-import asyncio
+import contextlib
 import os
 import socket
 from typing import TYPE_CHECKING
@@ -15,17 +15,24 @@ from typing import TYPE_CHECKING
 import anyio
 import anyio.to_thread
 import structlog
+from anyio.abc import SocketListener
 
 from .config import ScheduleMode
 from .hangup import wait_for_socket_hangup
 from .proxy import DaemonProxy
 from .trust import PeerRefusedError, authorise, peer_of
+from .unix_socket import as_link
 from .wire import UnixNixReader, UnixNixWriter
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from pathlib import Path
 
+    from anyio.abc import SocketStream
+
     from .context import PynixdContext
+
+    type Spawn = Callable[..., None]
 
 log = structlog.get_logger(__name__)
 
@@ -51,42 +58,88 @@ def inherited_listener(socket_path: Path) -> socket.socket | None:
     return None
 
 
+class UnixServer:
+    """The listener, and the loop that hands each client to the owner's task group.
+
+    Not `listener.serve`: its own task group cancels every client when the
+    listener closes, and shutdown closes the listener first and answers the
+    clients after (`Instance.close`, issue #64).
+    """
+
+    def __init__(self, listener: SocketListener, socket_path: Path, *, owns_path: bool) -> None:
+        self.listener = listener
+        self.socket_path = socket_path
+        self.owns_path = owns_path
+        self._accepting = anyio.CancelScope()
+        self._accept_ended = anyio.Event()
+
+    async def accept_loop(self, spawn: Spawn, handle: Callable[[SocketStream], Awaitable[None]]) -> None:
+        try:
+            with self._accepting:
+                while True:
+                    try:
+                        stream = await self.listener.accept()
+                    except anyio.BrokenResourceError as ex:
+                        # EMFILE and the like: asyncio's server waits a second
+                        # and accepts again, and so does this one.
+                        log.warning("unix_accept_failed", error=str(ex.__cause__ or ex))
+                        await anyio.sleep(1)
+                        continue
+                    spawn(handle, stream)
+        finally:
+            self._accept_ended.set()
+
+    async def aclose(self) -> None:
+        # The accept ends before the socket closes: anyio's listener leaves a
+        # waiting accept registered on the closed descriptor otherwise.
+        self._accepting.cancel()
+        await self._accept_ended.wait()
+        await self.listener.aclose()
+        # The path is systemd's when it passed the socket: removing it would
+        # break the socket unit for the next start.
+        if self.owns_path:
+            with contextlib.suppress(FileNotFoundError):
+                await anyio.Path(self.socket_path).unlink()
+
+
 async def start_unix_server(
     ctx: PynixdContext,
     socket_path: Path,
+    spawn: Spawn,
     schedule_mode: ScheduleMode | None = None,
-) -> asyncio.Server:
-    """Start a Unix socket server.
+) -> UnixServer:
+    """Listen on `socket_path`, and run each client session through *spawn*."""
 
-    Args:
-        ctx: Shared application context
-        socket_path: Path for the Unix domain socket
-        schedule_mode: Scheduling mode for this listener
-
-    Returns:
-        The asyncio.Server instance.
-    """
-
-    async def handle_client(
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
-    ) -> None:
-        peer = peer_of(writer.get_extra_info("socket"))
+    async def handle_client(accepted: SocketStream) -> None:
+        # An error here must not reach the owner's task group: it would end
+        # every other session with it.
         try:
+            link = await as_link(accepted)
+        except Exception:
+            log.exception("unix_client_accept_failed")
+            await accepted.aclose()
+            return
+        stream, sock = link.stream, link.sock
+        try:
+            peer = peer_of(sock)
             # A thread, because NSS may answer from the network.
             role, user = await anyio.to_thread.run_sync(authorise, peer, ctx.trust)
         except PeerRefusedError as ex:
             # nix-daemon closes the socket before the handshake, and the
             # client reads end-of-file.
             log.warning("unix_client_refused", pid=peer.pid, uid=peer.uid, reason=str(ex))
-            writer.close()
+            await stream.aclose()
+            return
+        except Exception:
+            log.exception("unix_client_authorise_failed")
+            await stream.aclose()
             return
         log.info("unix_client_connected", pid=peer.pid, user=user, role=role.name)
-        fd: int = writer.get_extra_info("socket").fileno()
+        fd = sock.fileno()
         try:
             proxy = DaemonProxy(
-                UnixNixReader(reader, identifier="client"),
-                UnixNixWriter(writer, identifier="client"),
+                UnixNixReader(link, identifier="client"),
+                UnixNixWriter(link, identifier="client"),
                 ctx=ctx,
                 role=role,
                 username=user or "<unknown>",
@@ -99,22 +152,17 @@ async def start_unix_server(
         except Exception:
             log.exception("unix_proxy_session_failed")
         finally:
-            writer.close()
+            anyio.notify_closing(sock)
+            await stream.aclose()
 
     inherited = inherited_listener(socket_path)
     if inherited is not None:
-        # The path is systemd's: removing it on close would break the
-        # socket unit for the next start.
-        server = await asyncio.start_unix_server(handle_client, sock=inherited, limit=2**18, cleanup_socket=False)
+        server = UnixServer(await SocketListener.from_socket(inherited), socket_path, owns_path=False)
         log.info("unix_server_listening", socket_path=socket_path, inherited=True)
-        return server
-
-    # Clean up stale socket
-    sock = anyio.Path(socket_path)
-    if await sock.exists():
-        await sock.unlink()
-
-    server = await asyncio.start_unix_server(handle_client, path=str(socket_path), limit=2**18)
-    await sock.chmod(0o666)
-    log.info("unix_server_listening", socket_path=socket_path)
+    else:
+        # `create_unix_listener` removes a stale socket at the path first.
+        listener = await anyio.create_unix_listener(socket_path, mode=0o666)
+        server = UnixServer(listener, socket_path, owns_path=True)
+        log.info("unix_server_listening", socket_path=socket_path)
+    spawn(server.accept_loop, spawn, handle_client)
     return server

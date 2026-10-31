@@ -4,7 +4,7 @@ Nix daemon wire protocol primitives (async).
 All integers are little-endian uint64. Strings are length-prefixed with
 zero-padding to 8-byte alignment.
 
-Read functions are async (for asyncio.StreamReader / asyncssh.SSHReader).
+Read functions are async (for a Unix socket or an asyncssh.SSHReader).
 Write functions are sync (writer.write() buffers; callers await drain()).
 """
 
@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+import socket
 import struct
 import time
 from typing import TYPE_CHECKING, Any, Protocol, overload
 
+import anyio
 from anyio.lowlevel import checkpoint
 
 from nix_daemon_protocol.logs import LogMessage, drain as drain_log_stream, read_stream as read_log_stream
@@ -42,6 +44,9 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Iterable
 
     import asyncssh
+    from anyio.abc import SocketStream
+
+    from .unix_socket import UnixLink
 
 
 def _env_int(name: str, default: int) -> int:
@@ -241,14 +246,31 @@ class SSHNixReader(NixReader):
         return any(isinstance(chunk, (bytes, bytearray)) and chunk for chunk in buf)
 
 
+def _peek(sock: socket.socket) -> bytes | None:
+    """A byte the kernel holds for *sock*, `b""` at its end, or `None` when nothing waits."""
+    try:
+        return sock.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT)
+    except BlockingIOError:
+        return None
+    except OSError:
+        return b""
+
+
+def _queued(stream: SocketStream) -> bool:
+    """Whether the transport under *stream* holds bytes no `receive` took yet.
+
+    anyio's asyncio backend keeps them in its protocol, and says so nowhere else.
+    """
+    return bool(stream._protocol.read_queue)  # type: ignore[attr-defined]  # anyio's asyncio SocketStream
+
+
 class UnixNixReader(NixReader):
-    # Read ahead, because `StreamReader.readexactly` is one await per call and
-    # the protocol makes three of them for every string: the 8-byte length, the
-    # payload, and its padding. A build sends thousands of store paths, so the
-    # reader spends its time suspended between fields rather than parsing them.
-    # One larger read serves many small ones from memory.
+    # Read ahead, because the protocol makes three reads for every string: the
+    # 8-byte length, the payload, and its padding. A build sends thousands of
+    # store paths, so a loop turn per field costs more than parsing them. One
+    # larger read serves many small ones from memory.
     #
-    # **Safe only because nothing else reads `self.reader`.** A byte held here
+    # **Safe only because nothing else reads the stream.** A byte held here
     # is invisible to anything that reads the stream directly, so a second
     # reader would lose it. `_transport_is_dirty` counts this buffer for the
     # same reason. Check both before giving another caller the stream.
@@ -256,13 +278,26 @@ class UnixNixReader(NixReader):
 
     def __init__(
         self,
-        reader: asyncio.StreamReader,
+        link: UnixLink,
         identifier: str = "unknown",
     ) -> None:
         super().__init__(identifier=identifier)
-        self.reader = reader
+        self.stream = link.stream
+        self._sock = link.sock
         self._buf: bytes = b""
         self._pos = 0
+
+    async def _receive(self, max_bytes: int) -> bytes:
+        """At most *max_bytes*, and `b""` at the end of the stream."""
+        try:
+            chunk = await self.stream.receive(max_bytes)
+        except anyio.EndOfStream:
+            return b""
+        except (anyio.BrokenResourceError, anyio.ClosedResourceError) as ex:
+            raise ConnectionResetError(str(ex) or type(ex).__name__) from ex
+        self.bytes_read += len(chunk)
+        self.last_read_at = time.monotonic()
+        return chunk
 
     async def readexactly(self, n: int) -> bytes:
         if (len(self._buf) - self._pos) >= n:
@@ -274,24 +309,23 @@ class UnixNixReader(NixReader):
         self._buf = b""
         self._pos = 0
         need = n - len(head)
+        parts = [head]
 
         # A read at least as large as the read-ahead goes straight through.
         # Buffering it would copy the payload to no purpose.
         if need >= self._READAHEAD:
-            data = await self.reader.readexactly(need)
-            # Only `need` is new: `head` came out of the buffer, where it
-            # was counted when the transport filled it.
-            self.bytes_read += need
-            self.last_read_at = time.monotonic()
-            return head + data
+            while need > 0:
+                chunk = await self._receive(need)
+                if not chunk:
+                    raise asyncio.IncompleteReadError(b"".join(parts), n)
+                parts.append(chunk)
+                need -= len(chunk)
+            return b"".join(parts)
 
-        parts = [head]
         while need > 0:
-            chunk = await self.reader.read(self._READAHEAD)
+            chunk = await self._receive(self._READAHEAD)
             if not chunk:
                 raise asyncio.IncompleteReadError(b"".join(parts), n)
-            self.bytes_read += len(chunk)
-            self.last_read_at = time.monotonic()
             if len(chunk) >= need:
                 parts.append(chunk[:need])
                 self._buf = chunk
@@ -303,12 +337,12 @@ class UnixNixReader(NixReader):
         return b"".join(parts)
 
     def _transport_is_dirty(self) -> bool:
-        if (len(self._buf) - self._pos) > 0:
-            return True
-        return bool(self.reader._buffer)  # type: ignore[attr-defined]
+        return (len(self._buf) - self._pos) > 0 or _queued(self.stream) or bool(_peek(self._sock))
 
     def peer_closed(self) -> bool:
-        return self._pos >= len(self._buf) and self.reader.at_eof()
+        # The transport reads only inside `receive`, so an idle close waits in
+        # the kernel, where a peek finds it.
+        return self._pos >= len(self._buf) and not _queued(self.stream) and _peek(self._sock) == b""
 
 
 class StrCoercible(Protocol):
@@ -511,31 +545,47 @@ class SSHNixWriter(NixWriter):
 
 
 class UnixNixWriter(NixWriter):
+    # `_write_to_transport` is sync, because the write linger of `ClientConn`
+    # flushes from a loop callback, and the bytes must leave then. So it hands
+    # them to the transport under the stream, which sends at once and keeps the
+    # rest. `stream.send` cannot: it is a coroutine, and a loop turn per drain.
+    # A cancelled drain loses nothing, since the transport still holds it all.
     def __init__(
         self,
-        writer: asyncio.StreamWriter,
+        link: UnixLink,
         identifier: str = "unknown",
     ) -> None:
         super().__init__(identifier=identifier)
-        self.writer = writer
+        self.stream = link.stream
+        self._transport: asyncio.WriteTransport = link.stream._transport  # type: ignore[attr-defined]  # anyio's asyncio SocketStream
+        # Two drains may wait at once, as on asyncio's `StreamWriter`; anyio's
+        # send refuses a second sender.
+        self._draining = anyio.Lock(fast_acquire=True)
 
     def _write_to_transport(self, data: bytes) -> None:
         self.bytes_written += len(data)
-        self.writer.write(data)
+        self._transport.write(data)
 
     async def _drain_transport(self) -> None:
-        await self.writer.drain()
+        if not self._transport.get_write_buffer_size():
+            return
+        # An empty send waits for the transport to empty: anyio sets its
+        # write buffer limit to zero, so the protocol pauses on any backlog.
+        try:
+            async with self._draining:
+                await self.stream.send(b"")
+        except (anyio.BrokenResourceError, anyio.ClosedResourceError) as ex:
+            raise BrokenPipeError(str(ex) or type(ex).__name__) from ex
 
     def _transport_is_dirty(self) -> bool:
-        return self.writer.transport.get_write_buffer_size() > 0
+        return self._transport.get_write_buffer_size() > 0
 
     async def close(self) -> None:
         # As `SSHNixWriter.close`: the transport closes whatever the drain does.
         try:
             await self.drain()
         finally:
-            self.writer.close()
-        await self.writer.wait_closed()
+            await self.stream.aclose()
 
 
 async def stream_parse_nar(

@@ -15,7 +15,6 @@ belonged to clients that were gone (issue #89).
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import socket
 import sys
@@ -45,6 +44,7 @@ from pynixd.serde import (
 from pynixd.serde.auth import Role
 from pynixd.ssh_server import start_ssh_server
 from pynixd.store_path import StorePath
+from pynixd.unix_socket import link_socket
 from pynixd.wire import SSHNixReader, SSHNixWriter, UnixNixReader, UnixNixWriter
 from tests._conftest.ssh_keys import make_ssh_test_keys
 from tests.conftest import serde_path
@@ -180,10 +180,10 @@ class _Session:
 
     async def connect(self, tg: TaskGroup) -> tuple[anyio.Event, Connection]:
         """Run the session in *tg*; the event is set when it ends."""
-        r, w = await asyncio.open_unix_connection(sock=self.server_sock)
+        served = await link_socket(self.server_sock)
         proxy = DaemonProxy(
-            UnixNixReader(r, identifier="client"),
-            UnixNixWriter(w, identifier="client"),
+            UnixNixReader(served, identifier="client"),
+            UnixNixWriter(served, identifier="client"),
             ctx=self.ctx,
             role=Role.ADMIN,
             schedule_mode=ScheduleMode.scheduler,
@@ -199,8 +199,8 @@ class _Session:
                 ended.set()
 
         tg.start_soon(session)
-        cr, cw = await asyncio.open_unix_connection(sock=self.client_sock)
-        conn = Connection(UnixNixReader(cr, identifier="test"), UnixNixWriter(cw, identifier="test"), "test")
+        client = await link_socket(self.client_sock)
+        conn = Connection(UnixNixReader(client, identifier="test"), UnixNixWriter(client, identifier="test"), "test")
         await conn.connect()
         return ended, conn
 

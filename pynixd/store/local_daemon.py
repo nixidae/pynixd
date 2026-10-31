@@ -449,13 +449,13 @@ class LocalStore(DaemonStore):
         closes. Returns True only if a real Nix daemon responded.
         """
         try:
-            r, w = await open_unix_connection(self.socket_path)
+            link = await open_unix_connection(self.socket_path)
         except (ConnectionRefusedError, ConnectionResetError, FileNotFoundError, OSError):
             return False
 
         conn = Connection(
-            UnixNixReader(r, identifier="probe"),
-            UnixNixWriter(w, identifier="probe"),
+            UnixNixReader(link, identifier="probe"),
+            UnixNixWriter(link, identifier="probe"),
             "probe",
             store_path=self.store_path,
         )
@@ -478,10 +478,10 @@ class LocalStore(DaemonStore):
             socket_path=str(self.socket_path),
             conn_id=conn_id,
         )
-        r, w = await open_unix_connection(self.socket_path)
+        link = await open_unix_connection(self.socket_path)
         conn = Connection(
-            UnixNixReader(r, identifier=conn_id),
-            UnixNixWriter(w, identifier=conn_id),
+            UnixNixReader(link, identifier=conn_id),
+            UnixNixWriter(link, identifier=conn_id),
             conn_id,
             store_path=self.store_path,
         )

@@ -28,6 +28,7 @@ from anyio.to_thread import run_sync
 
 from pynixd.store.local_daemon import _refuse_a_socket_path_python_cannot_reach
 from pynixd.unix_socket import _SUN_PATH_MAX, open_unix_connection
+from pynixd.wire import UnixNixReader
 
 
 def _a_path_of(length: int) -> Path:
@@ -140,12 +141,10 @@ class TestTheReroute:
         try:
             async with anyio.create_task_group() as tg:
                 tg.start_soon(serve)
-                reader, writer = await open_unix_connection(sock_path)
-                writer.write(b"ping")
-                await writer.drain()
-                assert await reader.readexactly(4) == b"pong"
-                writer.close()
-                await writer.wait_closed()
+                link = await open_unix_connection(sock_path)
+                await link.stream.send(b"ping")
+                assert await UnixNixReader(link).readexactly(4) == b"pong"
+                await link.stream.aclose()
         finally:
             listener.close()
         assert served == [b"ping"]
@@ -164,12 +163,10 @@ class TestTheReroute:
         try:
             async with anyio.create_task_group() as tg:
                 tg.start_soon(serve)
-                reader, writer = await open_unix_connection(sock_path)
-                writer.write(b"ping")
-                await writer.drain()
-                assert await reader.readexactly(4) == b"pong"
-                writer.close()
-                await writer.wait_closed()
+                link = await open_unix_connection(sock_path)
+                await link.stream.send(b"ping")
+                assert await UnixNixReader(link).readexactly(4) == b"pong"
+                await link.stream.aclose()
         finally:
             listener.close()
         assert served == [b"ping"]

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from unittest import mock
 
@@ -13,6 +12,7 @@ from pynixd.connection import Connection
 from pynixd.proxy import DaemonProxy
 from pynixd.serde import IsValidPathRequest, StorePath
 from pynixd.store import LocalSocketStore
+from pynixd.unix_socket import open_unix_connection
 from pynixd.wire import UnixNixReader, UnixNixWriter
 from tests.conftest import make_test_spec
 
@@ -42,10 +42,10 @@ async def test_shutdown_answers_in_flight_op(tmp_path: Path) -> None:
         ssh_port=None,
         http_port=None,
     ) as server:
-        reader, writer = await asyncio.open_unix_connection(str(socket_path))
+        link = await open_unix_connection(socket_path)
         conn = Connection(
-            UnixNixReader(reader, identifier="test"),
-            UnixNixWriter(writer, identifier="test"),
+            UnixNixReader(link, identifier="test"),
+            UnixNixWriter(link, identifier="test"),
             "test-shutdown",
         )
         await conn.connect()

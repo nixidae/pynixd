@@ -10,6 +10,7 @@ and then up to 9.4 s, and the liveness probe killed the process. Issue #507.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import tracemalloc
 from typing import Any, cast
@@ -24,7 +25,8 @@ from nix_daemon_protocol.protocol import FieldType, ResultType
 from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest
 from pynixd.connection import ClientConn, Connection
 from pynixd.exceptions import BackendError
-from pynixd.wire import UnixNixReader, UnixNixWriter
+from pynixd.wire import NixReader, NixWriter, UnixNixWriter
+from tests._conftest.socket_pair import socket_pair
 
 _MESSAGES = 100_000
 
@@ -91,16 +93,33 @@ class _Daemon:
         return out
 
 
-class _Socket:
+class _DaemonReader(NixReader):
+    """The daemon's end of the socket: every read returns at once, as a socket that always has data."""
+
+    def __init__(self, daemon: _Daemon) -> None:
+        super().__init__(identifier="backend")
+        self.daemon = daemon
+
+    async def readexactly(self, n: int) -> bytes:
+        out = await self.daemon.read(n)
+        if len(out) < n:
+            raise asyncio.IncompleteReadError(out, n)
+        return out
+
+
+class _Socket(NixWriter):
+    """The client's end: counts each write the transport would see."""
+
     def __init__(self) -> None:
+        super().__init__(identifier="client")
         self.writes = 0
         self.written = 0
 
-    def write(self, data: bytes) -> None:
+    def _write_to_transport(self, data: bytes) -> None:
         self.writes += 1
         self.written += len(data)
 
-    async def drain(self) -> None:
+    async def _drain_transport(self) -> None:
         return None
 
 
@@ -140,7 +159,7 @@ def _held() -> int:
 
 
 def _connection(daemon: _Daemon) -> Connection:
-    conn = Connection(UnixNixReader(cast("Any", daemon)), UnixNixWriter(cast("Any", _Socket())), "backend")
+    conn = Connection(_DaemonReader(daemon), _Socket(), "backend")
     conn.connected = True
     return conn
 
@@ -167,8 +186,8 @@ async def test_progress_streams_to_the_client_and_is_not_kept() -> None:
 async def test_a_long_stream_lets_the_event_loop_run() -> None:
     """A socket that always has data never suspends a read, so the stream must yield itself.
 
-    Each read here returns at once, as `StreamReader.read` does while its
-    buffer holds bytes. `/healthz` and every other client wait for the loop.
+    Each read here returns at once, as a socket read does while the kernel
+    holds bytes. `/healthz` and every other client wait for the loop.
     """
     daemon = _Daemon(_MESSAGES, _answer())
     conn = _connection(daemon)
@@ -225,7 +244,7 @@ async def test_streamed_messages_reach_the_client_in_chunks() -> None:
     stalled for up to 10.4 s with the CPU at its limit.
     """
     socket = _Socket()
-    client = ClientConn(UnixNixWriter(cast("Any", socket)))
+    client = ClientConn(socket)
     msg = _progress_message()
     for _ in range(_MESSAGES):
         await client.send(msg)
@@ -239,8 +258,17 @@ async def test_streamed_messages_reach_the_client_in_chunks() -> None:
 async def test_a_lone_message_reaches_the_client_without_a_flush() -> None:
     """A build that prints one line a minute still shows it at once."""
     socket = _Socket()
-    client = ClientConn(UnixNixWriter(cast("Any", socket)))
+    client = ClientConn(socket)
     await client.send(_progress_message())
     with anyio.fail_after(1):
         while socket.written == 0:
             await anyio.sleep(0.01)
+
+
+async def test_a_lone_message_reaches_a_unix_client_without_a_drain() -> None:
+    """The linger flushes from a loop callback, so the Unix writer must send with no await."""
+    async with socket_pair() as (ours, theirs):
+        client = ClientConn(UnixNixWriter(ours))
+        await client.send(_progress_message())
+        with anyio.fail_after(1):
+            assert await theirs.receive()

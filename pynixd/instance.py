@@ -31,7 +31,7 @@ from .serde.protocol import PynixdGCAction
 from .state import upstream_in_flight
 from .store import DaemonStore, ExternalUnixStore, LocalDBStore, LocalStore, Store, is_http_binary_cache
 from .store_layout import DEFAULT_STORE_DIR
-from .unix_server import start_unix_server
+from .unix_server import UnixServer, start_unix_server
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
@@ -281,7 +281,7 @@ class Server:
         metrics.watch_client_ops(lambda: [p.current_op[1] for p in sessions.proxies() if p.current_op is not None])
 
         self.ssh_server: asyncssh.SSHAcceptor | None = None
-        self.unix_server: asyncio.Server | None = None
+        self.unix_server: UnixServer | None = None
         self.reverse_acceptor: asyncssh.SSHAcceptor | None = None
         self.http_server: web.AppRunner | None = None
         self.stall_watchdog = (
@@ -869,6 +869,7 @@ class Server:
             self.unix_server = await start_unix_server(
                 ctx=self.ctx,
                 socket_path=s.unix_path,
+                spawn=self._spawn,
                 schedule_mode=s.schedule_mode,
             )
 
@@ -943,8 +944,7 @@ class Server:
             await self.ssh_server.wait_closed()
             self.ssh_server = None
         if self.unix_server:
-            self.unix_server.close()
-            await self.unix_server.wait_closed()
+            await self.unix_server.aclose()
             self.unix_server = None
 
         # Answer every established client before tearing down the state
