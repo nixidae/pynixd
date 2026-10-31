@@ -316,13 +316,10 @@ class Scheduler:
         store.draining = True
         self.trigger()
 
-        start = time.monotonic()
-        while time.monotonic() - start < drain_timeout:
-            if store.in_flight == 0:
-                break
-            await anyio.sleep(1.0)
-        else:
-            log.warning("drain_timeout_reached", store_id=store_id)
+        with anyio.move_on_after(drain_timeout) as waited:
+            await store.until_idle()
+        if waited.cancelled_caught:
+            log.warning("drain_timeout_reached", store_id=store_id, in_flight=store.in_flight)
 
         pending = await self.queue.get_pending()
         for build in pending:

@@ -93,6 +93,8 @@ class ConnectionPool:
         """
 
         self.active_connections = 0
+        self._idle: anyio.Event | None = None
+        """Set when `active_connections` drops to zero; made on first wait."""
         self.idle_conns: list[tuple[Connection, float]] = []
         self.all_conns: list[Connection] = []
         self._background = background
@@ -134,6 +136,13 @@ class ConnectionPool:
     def in_flight(self) -> int:
         """Number of currently active connections."""
         return self.active_connections
+
+    async def until_idle(self) -> None:
+        """Return once no caller holds a connection from this pool."""
+        while self.active_connections:
+            if self._idle is None:
+                self._idle = anyio.Event()
+            await self._idle.wait()
 
     @property
     def stats(self) -> str:
@@ -376,6 +385,9 @@ class ConnectionPool:
                         await self._give_back(conn)
             finally:
                 self.active_connections -= 1
+                if not self.active_connections and self._idle is not None:
+                    self._idle.set()
+                    self._idle = None
         finally:
             self._slots.release()
 

@@ -474,6 +474,11 @@ class DaemonStore(Store):
         """Number of currently active connections."""
         return sum(pool.active_connections for pool in self.pools)
 
+    async def until_idle(self) -> None:
+        """Return once no pool of this store has a connection out."""
+        while busy := [pool for pool in self.pools if pool.active_connections]:
+            await busy[0].until_idle()
+
     @property
     def pool_stats(self) -> str:
         """Human-readable pool statistics string."""
