@@ -75,7 +75,6 @@ rec {
   # front of the job's `steps`, ahead of everything the job wrote itself.
   bootstrap = {
     checkout.enable = true;
-    remoteBuilder = import ../../nix/shared/remote-builder.nix;
     nix.install = {
       enable = true;
       version = nixVersion;
