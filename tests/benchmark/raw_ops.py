@@ -60,9 +60,7 @@ async def one_pass(socket_path: Path, sample: list[StorePath], tag: str) -> tupl
     large NAR. `tag` names the pass, so every pass writes paths no earlier
     pass wrote: the second pass must not measure the first pass's dedup.
     """
-    client = LocalSocketStore(spec(socket_path))
-    await client.start()
-    try:
+    async with LocalSocketStore(spec(socket_path)) as client:
         await client.execute(IsValidPathRequest(path=sample[0]))
         await client.execute(AddTempRootRequest(path=sample[0]))
 
@@ -87,8 +85,6 @@ async def one_pass(socket_path: Path, sample: list[StorePath], tag: str) -> tupl
                 len(texts) / (end - store_start),
             ),
         )
-    finally:
-        await client.close()
 
 
 async def measure(socket_path: Path, sample: list[StorePath], label: str) -> None:

@@ -291,7 +291,7 @@ for line in sys.stdin:
             rec.get("breakdown", {}),
             rec.get("encode_breakdown", {}),
         ))
-rows.sort(reverse=True)
+rows.sort(key=lambda row: row[0], reverse=True)
 for total_ops, total_time, total_encode, ops, encode in rows:
     print(f"session total_ops={total_ops} dispatch={total_time} encode={total_encode}")
     for name, value in sorted(ops.items(), key=lambda kv: kv[1], reverse=True):
