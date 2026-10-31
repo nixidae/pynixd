@@ -14,7 +14,7 @@ import anyio
 import pytest
 import structlog
 
-from tests._conftest.constants import TMP_PREFIX, _log_dir_key
+from tests._conftest.constants import TMP_PREFIX, _log_dir_key, log_folder_name
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Generator
@@ -130,7 +130,7 @@ def pytest_runtest_makereport(
         log_dir = item.config.stash.get(_log_dir_key, None)
         if log_dir:
             test_file = item.path.stem
-            test_name = item.name.replace("/", "_").replace("[", "_").replace("]", "_")
+            test_name = log_folder_name(item.name)
             folder = log_dir / test_file / test_name
             folder.mkdir(parents=True, exist_ok=True)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,17 @@ except ImportError:
 # ── Pytest stash keys ─────────────────────────────────────────────
 
 _log_dir_key = pytest.StashKey[Path]()
+
+
+def log_folder_name(test_name: str) -> str:
+    """*test_name* as a directory name that an artifact upload accepts.
+
+    A parametrized id holds whatever the parameter printed, colons included,
+    and `actions/upload-artifact` refuses the whole artifact for one such
+    path. A red run then kept no log at all.
+    """
+    return re.sub(r"[^A-Za-z0-9._-]", "_", test_name)
+
 
 # ── Store paths ───────────────────────────────────────────────────
 

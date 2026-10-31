@@ -30,7 +30,7 @@ import pytest
 import structlog
 from structlog import DropEvent
 
-from tests._conftest.constants import _log_dir_key
+from tests._conftest.constants import _log_dir_key, log_folder_name
 
 # ── Life counter: cooperative vote-to-drop system ────────────────
 
@@ -496,7 +496,7 @@ def test_logging(request: pytest.FixtureRequest, test_log_dir: Path) -> Generato
 
     # Build folder path: <run_id>/<test_file>/<test_name>/
     test_file = request.node.path.stem
-    test_name = request.node.name.replace("/", "_").replace("[", "_").replace("]", "_")
+    test_name = log_folder_name(request.node.name)
     log_dir = test_log_dir / test_file / test_name
 
     file_handler, stderr_handler = _setup_test_logging(log_dir)
