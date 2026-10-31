@@ -4,13 +4,13 @@ Local Nix daemon store implementation.
 
 from __future__ import annotations
 
-import asyncio
 import atexit
 import contextlib
 import json
 import os
 import shlex
 import signal
+import subprocess
 import sys
 import time
 from collections import deque
@@ -25,6 +25,7 @@ from nix_daemon_protocol.store_dir import on_disk
 from ..agent import local_monitor
 from ..config import LocalSocketStoreSpec, PynixdSettings
 from ..connection import Connection
+from ..line_reader import LineReader
 from ..monitor import DummyResourceMonitor, local_disk
 from ..store_path import StorePath
 from ..trust import TrustPolicy
@@ -34,6 +35,8 @@ from .base import get_current_system
 from .daemon import DaemonStore
 
 if TYPE_CHECKING:
+    from anyio.abc import ByteReceiveStream, Process
+
     from ..drv_parser import Derivation
     from ..monitor import ResourceMonitor
     from ..store_layout import StoreLayout
@@ -181,7 +184,7 @@ class LocalStore(DaemonStore):
 
         self.nix_bin = spec.nix_bin
         self.monitor_enabled = spec.monitor
-        self.daemon_proc: asyncio.subprocess.Process | None = None
+        self.daemon_proc: Process | None = None
         self.daemon_ready: anyio.Event | None = None
         self._daemon_log_scope: anyio.CancelScope | None = None
         # The last lines the daemon wrote, for the error paths of
@@ -312,11 +315,9 @@ class LocalStore(DaemonStore):
         # are. Issue nixidae/nixidae#215.
         env.update(self.layout.daemon_environment())
 
-        self.daemon_proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        self.daemon_proc = await anyio.open_process(
+            cmd,
+            stdin=subprocess.DEVNULL,
             env=env,
             start_new_session=True,
         )
@@ -378,24 +379,17 @@ class LocalStore(DaemonStore):
         env = os.environ.copy()
         env.update(self.extra_env)
         env.update(self.layout.daemon_environment())
-        proc = await asyncio.create_subprocess_exec(
-            self.nix_bin,
-            "--extra-experimental-features",
-            "nix-command",
-            "config",
-            "show",
-            "--json",
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        result = await anyio.run_process(
+            [self.nix_bin, "--extra-experimental-features", "nix-command", "config", "show", "--json"],
+            stdin=subprocess.DEVNULL,
             env=env,
+            check=False,
         )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
+        if result.returncode != 0:
             raise RuntimeError(
-                f"`nix config show` failed with code {proc.returncode}: {stderr.decode(errors='replace')}"
+                f"`nix config show` failed with code {result.returncode}: {result.stderr.decode(errors='replace')}"
             )
-        config: dict[str, Any] = json.loads(stdout)
+        config: dict[str, Any] = json.loads(result.stdout)
         return config
 
     def _recent_output_text(self) -> str:
@@ -417,11 +411,10 @@ class LocalStore(DaemonStore):
         if not self.daemon_proc or not self.daemon_proc.stdout or not self.daemon_proc.stderr:
             return
 
-        async def _forward(stream: asyncio.StreamReader | None, label: str) -> None:
-            if stream is None:
-                return
+        async def _forward(stream: ByteReceiveStream, label: str) -> None:
+            reader = LineReader(stream)
             while True:
-                line = await stream.readline()
+                line = await reader.readline()
                 if not line:
                     break
                 decoded = line.decode(errors="replace").rstrip()

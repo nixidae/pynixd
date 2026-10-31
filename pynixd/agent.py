@@ -9,7 +9,6 @@ frame with the code the SFTP poller uses.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
 import os
@@ -20,6 +19,7 @@ from typing import TYPE_CHECKING, Protocol
 import anyio
 import structlog
 
+from .line_reader import LineReader
 from .monitor import ResourceMonitor, create_monitor, health_from_files
 from .psi import DiskSpace
 
@@ -117,19 +117,15 @@ def local_monitor(
 
     @contextlib.asynccontextmanager
     async def launch(args: list[str]) -> AsyncIterator[AgentStream]:
-        proc = await asyncio.create_subprocess_exec(
-            str(agent), *args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE
-        )
+        proc = await anyio.open_process([str(agent), *args], stderr=None)
         try:
             if proc.stdout is None:
                 raise AgentUnavailableError("no stdout")
-            yield proc.stdout
+            yield LineReader(proc.stdout)
         finally:
-            if proc.stdin is not None:
-                proc.stdin.close()
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
-            await proc.wait()
+            await proc.aclose()
 
     return AgentMonitor(settings, on_sample, launch, lambda: replace(create_monitor(settings, on_sample)))
 
