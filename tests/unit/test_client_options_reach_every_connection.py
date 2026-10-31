@@ -23,6 +23,7 @@ import anyio
 import pytest
 
 from nix_daemon_protocol.ids import BuildId, RequestId
+from pynixd.answer import Answer
 from pynixd.background import Background
 from pynixd.connection import ClientConn, Connection
 from pynixd.goals.build_derivation import BuildDerivationGoal
@@ -206,9 +207,9 @@ async def test_an_untrusted_user_keeps_the_set_without_its_restricted_settings()
 class FakeScheduler:
     def __init__(self) -> None:
         self.options: SetOptionsRequest | None = None
-        self.future: asyncio.Future[BuildDerivationResponse] | None = None
+        self.answer: Answer[BuildDerivationResponse] | None = None
         self.started = anyio.Event()
-        # No queued build, so a holder waits on the future alone.
+        # No queued build, so a holder waits on the answer alone.
         self.queue = SimpleNamespace(by_id={})
 
     async def build_derivation(
@@ -218,12 +219,12 @@ class FakeScheduler:
         goal_request_id: RequestId | None = None,
         options: SetOptionsRequest | None = None,
         delegated: bool = False,
-    ) -> tuple[BuildId, asyncio.Future[BuildDerivationResponse]]:
+    ) -> tuple[BuildId, Answer[BuildDerivationResponse]]:
         del request, from_goal_path, goal_request_id, delegated
         self.options = options
-        self.future = asyncio.get_running_loop().create_future()
+        self.answer = Answer()
         self.started.set()
-        return BuildId(1), self.future
+        return BuildId(1), self.answer
 
 
 class FakeCtx:
@@ -265,10 +266,10 @@ async def test_the_build_carries_the_set_of_the_client_that_asked() -> None:
 
     task = asyncio.create_task(goal.result())
     await scheduler.started.wait()
-    future = scheduler.future
-    if future is None:
-        raise RuntimeError("the scheduler made no future")
-    future.set_result(BuildDerivationResponse(result=BuildResult(status=BuildResultStatus.BUILT)))
+    answer = scheduler.answer
+    if answer is None:
+        raise RuntimeError("the scheduler made no answer")
+    answer.set(BuildDerivationResponse(result=BuildResult(status=BuildResultStatus.BUILT)))
     await task
 
     assert scheduler.options == _options("/hook.sh")

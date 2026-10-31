@@ -10,6 +10,7 @@ import anyio
 import pytest
 
 from nix_daemon_protocol.ids import BuildId, RequestId
+from pynixd.answer import Answer
 from pynixd.connection import ClientConn
 from pynixd.goals.build_derivation import BuildDerivationGoal
 from pynixd.serde import (
@@ -37,9 +38,9 @@ OUTPUT_PATH = "/nix/store/00000000000000000000000000000002-test"
 class FakeScheduler:
     def __init__(self) -> None:
         self.started = anyio.Event()
-        self.future: asyncio.Future[BuildDerivationResponse] | None = None
+        self.answer: Answer[BuildDerivationResponse] | None = None
         self.goal_request_id: RequestId | None = None
-        # No queued build, so a holder waits on the future alone.
+        # No queued build, so a holder waits on the answer alone.
         self.queue = SimpleNamespace(by_id={})
 
     async def build_derivation(
@@ -50,14 +51,14 @@ class FakeScheduler:
         goal_request_id: RequestId | None = None,
         options: SetOptionsRequest | None = None,
         delegated: bool = False,
-    ) -> tuple[BuildId, asyncio.Future[BuildDerivationResponse]]:
+    ) -> tuple[BuildId, Answer[BuildDerivationResponse]]:
         del request, options, delegated
         self.goal_request_id = goal_request_id
         if not from_goal_path:
             raise RuntimeError("BuildDerivationGoal must mark scheduler builds as goal-owned")
-        self.future = asyncio.get_running_loop().create_future()
+        self.answer = Answer()
         self.started.set()
-        return BuildId(1), self.future
+        return BuildId(1), self.answer
 
 
 class FakeEngine:
@@ -102,10 +103,10 @@ async def test_build_derivation_goal_unsubscribes_late_subscriber() -> None:
     await scheduler.started.wait()
     await goal.subscribe(client)
 
-    future = scheduler.future
-    if future is None:
-        raise RuntimeError("scheduler did not create a build future")
-    future.set_result(
+    answer = scheduler.answer
+    if answer is None:
+        raise RuntimeError("scheduler did not create a build answer")
+    answer.set(
         BuildDerivationResponse(
             result=BuildResult(status=BuildResultStatus.BUILT),
         )
@@ -151,10 +152,10 @@ async def _run_with(status: BuildResultStatus, store: CountingStore) -> None:
 
     task = asyncio.create_task(goal.result())
     await scheduler.started.wait()
-    future = scheduler.future
-    if future is None:
-        raise RuntimeError("scheduler did not create a build future")
-    future.set_result(BuildDerivationResponse(result=BuildResult(status=status)))
+    answer = scheduler.answer
+    if answer is None:
+        raise RuntimeError("scheduler did not create a build answer")
+    answer.set(BuildDerivationResponse(result=BuildResult(status=status)))
     await task
 
 

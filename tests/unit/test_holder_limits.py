@@ -158,14 +158,14 @@ async def test_a_holder_that_goes_away_leaves_the_build_to_the_others() -> None:
         await goal.wait_until_it_reached_the_queue()
         goals.append(goal)
     hung_up, waiting = goals
-    shared = next(iter(scheduler.queue.by_id.values())).future
+    shared = next(iter(scheduler.queue.by_id.values())).answer
 
     hung_up.cancel()
     await anyio.sleep(0)
     await anyio.sleep(0)
 
-    assert not shared.cancelled()
-    shared.set_result(
+    assert not shared.done()
+    shared.set(
         BuildDerivationResponse(
             result=BuildResult(
                 status=BuildResultStatus.BUILT,

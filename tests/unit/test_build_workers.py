@@ -116,7 +116,7 @@ async def test_a_crashed_worker_leaves_its_siblings_running(monkeypatch: pytest.
         release.set()
         await _until(lambda: slow.is_done)
 
-    assert slow.future.result().result.status == BuildResultStatus.BUILT
+    assert slow.answer.result().result.status == BuildResultStatus.BUILT
 
 
 async def test_a_build_cancelled_before_its_worker_starts_never_runs(monkeypatch: pytest.MonkeyPatch) -> None:

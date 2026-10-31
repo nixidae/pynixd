@@ -6,6 +6,7 @@ import anyio
 import pytest
 
 from nix_daemon_protocol.ids import BuildId, StoreId
+from pynixd.answer import Answer
 from pynixd.build_queue import BuildQueue
 from pynixd.config import PynixdSettings
 from pynixd.connection import ClientConn
@@ -108,7 +109,7 @@ async def test_build_log_pubsub_two_clients() -> None:
         release_task = asyncio.create_task(release_blocker())
 
         # Wait for the build to complete (this is when _execute() fans out logs).
-        resp = await future
+        resp = await future.wait()
         assert resp.result.status == BuildResultStatus.BUILT
         await release_task
 
@@ -146,12 +147,11 @@ async def test_build_log_pubsub_late_subscriber_gets_full_history() -> None:
         build_mode=BuildMode.NORMAL,
     )
 
-    loop = asyncio.get_running_loop()
-    future: asyncio.Future[BuildDerivationResponse] = loop.create_future()
+    answer: Answer[BuildDerivationResponse] = Answer()
     build = QueuedBuild(
         build_id=BuildId(1),
         request=request,
-        future=future,
+        answer=answer,
     )
 
     # Create two client connections.

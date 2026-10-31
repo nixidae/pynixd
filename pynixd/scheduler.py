@@ -13,7 +13,6 @@ they are pulled automatically.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import random
 import time
@@ -70,6 +69,7 @@ if TYPE_CHECKING:
     from nix_daemon_protocol.ids import BuildId, RequestId, StoreId
     from nix_daemon_protocol.logs import LogMessage
 
+    from .answer import Answer
     from .connection import ClientConn, Connection
     from .context import PynixdContext
     from .derived_path import DerivedPath
@@ -347,7 +347,7 @@ class Scheduler:
         goal_request_id: RequestId | None = None,
         options: SetOptionsRequest | None = None,
         delegated: bool = False,
-    ) -> tuple[BuildId, asyncio.Future[BuildDerivationResponse]]:
+    ) -> tuple[BuildId, Answer[BuildDerivationResponse]]:
         """Add a build to the queue and trigger the scheduler."""
         t0 = time.monotonic()
         hint = None

@@ -365,7 +365,7 @@ async def test_the_slot_a_failure_frees_does_not_go_to_the_same_request() -> Non
     # waitees that `Goal::amDone` drops, and `build.sh:167` counts the
     # `error:` lines of the run. A reason here made that count three where
     # the test asserts one. `_cancel_locked` keeps the reason in the log.
-    assert not pending.future.result().result.error_msg
+    assert not pending.answer.result().result.error_msg
 
 
 @pytest.mark.anyio

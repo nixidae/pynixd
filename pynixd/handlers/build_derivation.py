@@ -72,7 +72,7 @@ class BuildDerivationHandler(Handler):
         options = ctx.proxy.client.options if ctx.proxy.client is not None else None
         delegated = ctx.proxy.client is not None and ctx.proxy.client.delegated
         try:
-            build_id, future = await ctx.proxy.scheduler.build_derivation(
+            build_id, answer = await ctx.proxy.scheduler.build_derivation(
                 self_req, options=options, delegated=delegated
             )
         except DelegationLoopError as exc:
@@ -93,7 +93,7 @@ class BuildDerivationHandler(Handler):
             required_count=len(self_req.derivation.input_srcs),
         )
         try:
-            response = await future
+            response = await answer.wait()
             logger.debug("responded_op")
             # **The backend and this client negotiate their features apart.**
             # A backend that offers `realisation-with-path-not-hash` fills one

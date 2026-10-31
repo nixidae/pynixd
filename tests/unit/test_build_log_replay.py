@@ -11,12 +11,12 @@ build two or three times.
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
 from nix_daemon_protocol.ids import BuildId
+from pynixd.answer import Answer
 from pynixd.build_queue import QueuedBuild
 
 if TYPE_CHECKING:
@@ -54,7 +54,7 @@ def _build() -> QueuedBuild:
     return QueuedBuild(
         build_id=BuildId(1),
         request=cast("BuildDerivationRequest", _Request()),
-        future=asyncio.get_running_loop().create_future(),
+        answer=Answer(),
     )
 
 

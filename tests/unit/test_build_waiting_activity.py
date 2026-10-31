@@ -18,7 +18,6 @@ activity added here carries no `error:` line, and the count has to stay one.
 
 from __future__ import annotations
 
-import asyncio
 import os
 from typing import TYPE_CHECKING, cast
 
@@ -27,6 +26,7 @@ import pytest
 from nix_daemon_protocol.constants import STDERR_START_ACTIVITY, STDERR_STOP_ACTIVITY
 from nix_daemon_protocol.ids import BuildId
 from nix_daemon_protocol.protocol import ActivityType, Verbosity
+from pynixd.answer import Answer
 from pynixd.build_queue import QueuedBuild, _next_activity_id
 from pynixd.store_path import StorePath
 
@@ -70,7 +70,7 @@ def _build(outputs: dict[str, StorePath] | None = None) -> QueuedBuild:
     return QueuedBuild(
         build_id=BuildId(1),
         request=cast("BuildDerivationRequest", FakeRequest(outputs or {"out": StorePath(OUT)})),
-        future=asyncio.get_running_loop().create_future(),
+        answer=Answer(),
     )
 
 

@@ -5,7 +5,6 @@ All tests in this file are statistics/metrics tests that don't trigger Store ope
 
 from __future__ import annotations
 
-import asyncio
 import sqlite3
 from contextlib import asynccontextmanager, closing
 from typing import TYPE_CHECKING, Any, Self
@@ -16,6 +15,7 @@ import structlog
 
 from nix_daemon_protocol.ids import BuildId, StoreId
 from pynixd import Server
+from pynixd.answer import Answer
 from pynixd.build_queue import QueuedBuild
 from pynixd.build_stats import BuildObservation, identity_of
 from pynixd.local_store_db import LocalStoreDB
@@ -211,7 +211,7 @@ async def test_build_stats_recording(tmp_path: Path) -> None:
         _build_id, future = await scheduler.build_derivation(
             req,
         )
-        await future
+        await future.wait()
 
         # 2. Check the DB.
         #
@@ -220,7 +220,7 @@ async def test_build_stats_recording(tmp_path: Path) -> None:
         # backend answers, and `_collect_outputs` runs after that and holds
         # `_record_observation`. Issue #12 states the same order from the
         # other side: the client is told the build succeeded before the pull
-        # runs. So the row lands a moment after `await future` returns, and a
+        # runs. So the row lands a moment after `await future.wait()` returns, and a
         # read at that instant found nothing and read as "the recording is
         # broken". Issue #29.
         assert pynixd_local.db is not None
@@ -424,11 +424,10 @@ async def test_scheduler_skips_saturated_store(tmp_path: Path) -> None:
             derivation=drv,
             build_mode=BuildMode.NORMAL,
         )
-        loop = asyncio.get_running_loop()
         build = QueuedBuild(
             build_id=BuildId(1),
             request=req,
-            future=loop.create_future(),
+            answer=Answer(),
         )
 
         ranked = scheduler.allocator.rank_stores(build, {})

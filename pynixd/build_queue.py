@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import itertools
 import os
 import time
@@ -17,6 +16,7 @@ from nix_daemon_protocol.logs import LogStartActivity, LogStopActivity
 from nix_daemon_protocol.protocol import ActivityType, Verbosity
 
 from . import metrics, wire
+from .answer import Answer
 from .exceptions import DelegationLoopError
 from .serde import BuildDerivationResponse, BuildMode, BuildResult, BuildResultStatus
 from .serde.context import WriteContext
@@ -63,7 +63,7 @@ class SchedulerBuildRequest:
     """Tracks the full lifecycle of a build_derived_paths() call.
 
     Individual QueuedBuilds come and go (completing, spawning trampoline
-    derivations, etc.), but this request future stays until all paths
+    derivations, etc.), but this request answer stays until all paths
     the client asked for are satisfied.
     """
 
@@ -71,7 +71,7 @@ class SchedulerBuildRequest:
     derived_paths: set[DerivedPath]
     build_mode: BuildMode
     client: ClientConn | None
-    future: asyncio.Future[dict[DerivedPath, BuildResult]]
+    answer: Answer[dict[DerivedPath, BuildResult]]
     active_build_ids: set[BuildId] = field(default_factory=set)
     all_build_ids: set[BuildId] = field(default_factory=set)
     build_to_derived: dict[BuildId, set[DerivedPath]] = field(default_factory=dict)
@@ -89,9 +89,9 @@ class SchedulerBuildRequest:
         return not self.active_build_ids
 
     def resolve_if_done(self) -> bool:
-        """Resolve the future if all active builds are done."""
-        if not self.active_build_ids and not self.future.done():
-            self.future.set_result(dict(self.results))
+        """Resolve the answer if all active builds are done."""
+        if not self.active_build_ids and not self.answer.done():
+            self.answer.set(dict(self.results))
             return True
         return False
 
@@ -102,14 +102,14 @@ class QueuedBuild:
     Lifecycle:
     - is_pending: queued but not assigned
     - is_building: task spawned and running
-    - is_done: future resolved
+    - is_done: answer resolved
     """
 
     def __init__(
         self,
         build_id: BuildId,
         request: BuildDerivationRequest,
-        future: asyncio.Future[BuildDerivationResponse],
+        answer: Answer[BuildDerivationResponse],
         expected_duration: int | None = None,
         scheduler_request_ids: set[RequestId] | None = None,
         options: SetOptionsRequest | None = None,
@@ -119,7 +119,7 @@ class QueuedBuild:
         Args:
             build_id: Unique build identifier.
             request: The build request (drv, build mode, etc.).
-            future: Resolved when the build completes or fails.
+            answer: Resolved when the build completes or fails.
             expected_duration: Hint from the scheduler for store assignment.
             scheduler_request_ids: Request IDs this build belongs to (dedup).
             options: The option set of the client that asked for the build.
@@ -138,7 +138,7 @@ class QueuedBuild:
         A later holder enforces its own timeouts on its wait:
         `BuildDerivationGoal._wait_within_my_limits`. Issue nixidae/nixidae#231.
         """
-        self.future = future
+        self.answer = answer
         self.expected_duration = expected_duration
         self.enqueued_at = time.monotonic()
         self.started_at: float | None = None
@@ -230,8 +230,8 @@ class QueuedBuild:
 
     @property
     def is_done(self) -> bool:
-        """Whether the build future has been resolved (success or failure)."""
-        return self.future.done()
+        """Whether the build answer has been resolved (success or failure)."""
+        return self.answer.done()
 
     @property
     def is_pending(self) -> bool:
@@ -585,8 +585,7 @@ class BuildQueue:
         client: ClientConn | None,
     ) -> tuple[RequestId, SchedulerBuildRequest]:
         """Create a SchedulerBuildRequest and return it."""
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[dict[DerivedPath, BuildResult]] = loop.create_future()
+        answer: Answer[dict[DerivedPath, BuildResult]] = Answer()
         async with self.lock:
             req_id = RequestId(self.next_request_id)
             req = SchedulerBuildRequest(
@@ -594,7 +593,7 @@ class BuildQueue:
                 derived_paths=derived_paths,
                 build_mode=build_mode,
                 client=client,
-                future=future,
+                answer=answer,
             )
             self.next_request_id += 1
             self._requests[req.id] = req
@@ -610,10 +609,10 @@ class BuildQueue:
         goal_request_id: RequestId | None = None,
         options: SetOptionsRequest | None = None,
         delegated: bool = False,
-    ) -> tuple[BuildId, asyncio.Future[BuildDerivationResponse]]:
+    ) -> tuple[BuildId, Answer[BuildDerivationResponse]]:
         """Add a build to the queue (deduplicates if already present).
 
-        Returns (build_id, future) - caller awaits the future for the response.
+        Returns (build_id, answer) - caller awaits the answer for the response.
         Dedup only applies to builds that are still pending (not building/done).
 
         If scheduler_request_id is set, the build is tracked as part of that
@@ -663,11 +662,10 @@ class BuildQueue:
                                 existing.build_id,
                                 derived_paths_for_request,
                             )
-                return existing.build_id, existing.future
+                return existing.build_id, existing.answer
 
-            # Create new build with future
-            loop = asyncio.get_running_loop()
-            future: asyncio.Future[BuildDerivationResponse] = loop.create_future()
+            # Create new build with answer
+            answer: Answer[BuildDerivationResponse] = Answer()
             build_id = BuildId(self.next_id)
             scheduler_request_ids: set[RequestId] = (
                 {scheduler_request_id} if scheduler_request_id is not None else set()
@@ -675,7 +673,7 @@ class BuildQueue:
             build = QueuedBuild(
                 build_id=build_id,
                 request=request,
-                future=future,
+                answer=answer,
                 expected_duration=expected_duration,
                 scheduler_request_ids=scheduler_request_ids,
                 options=options,
@@ -701,7 +699,7 @@ class BuildQueue:
                 description=build.description,
                 request_ids=list(scheduler_request_ids),
             )
-            return build.build_id, future
+            return build.build_id, answer
 
     async def subscribe(self, build_id: BuildId, client: ClientConn, *, cancel_on_unsubscribe: bool = False) -> bool:
         """Subscribe a client to a build's log stream.
@@ -803,15 +801,15 @@ class BuildQueue:
         build_id: BuildId,
         response: BuildDerivationResponse,
     ) -> None:
-        """Mark build as completed, resolve the future."""
+        """Mark build as completed, resolve the answer."""
         await self._stop_waiting(build_id)
         async with self.lock:
             for b in self._queue:
                 if b.build_id == build_id:
-                    if b.future.done():
+                    if b.answer.done():
                         return
                     b.finished_at = time.monotonic()
-                    b.future.set_result(response)
+                    b.answer.set(response)
                     self._note_a_request_that_gave_up(b, response.result.status)
                     log.info("build_completed", build_id=build_id)
 
@@ -840,12 +838,12 @@ class BuildQueue:
     async def fail(
         self, build_id: BuildId, error_msg: str, status: BuildResultStatus = BuildResultStatus.MISC_FAILURE
     ) -> None:
-        """Mark build as failed, resolve future with an error response."""
+        """Mark build as failed, resolve answer with an error response."""
         await self._stop_waiting(build_id)
         async with self.lock:
             for b in self._queue:
                 if b.build_id == build_id:
-                    if b.future.done():
+                    if b.answer.done():
                         return
                     b.finished_at = time.monotonic()
                     response = BuildDerivationResponse(
@@ -859,7 +857,7 @@ class BuildQueue:
                             built_outputs={},
                         ),
                     )
-                    b.future.set_result(response)
+                    b.answer.set(response)
                     self._note_a_request_that_gave_up(b, response.result.status)
                     log.info("build_failed", build_id=build_id, error_msg=error_msg)
 
@@ -918,13 +916,13 @@ class BuildQueue:
 
         **Skipping such a build is not enough, and leaving it pending
         deadlocks.** A build of a request that gave up can still have a goal
-        of that request awaiting its future: `_realise_input_derivations`
+        of that request awaiting its answer: `_realise_input_derivations`
         waits for the input goals of a root, and the root has not answered
         yet, so `release_request` has not run. `main:build` measured it
         -- build 12 of `nix build -f fod-failing.nix -L x4` was skipped, never
         cancelled and never completed, and the whole test hit its 300 s cap.
 
-        Resolving the future is what breaks that: the goal reads a failure,
+        Resolving the answer is what breaks that: the goal reads a failure,
         the root fails with it, the request answers, and `release_request` then finds
         nothing left to do. Nix reaches the same end differently --
         `Goal::amDone` at `goal.cc:242` drops every waitee that is left when
@@ -966,8 +964,8 @@ class BuildQueue:
                 built_outputs={},
             ),
         )
-        if not build.future.done():
-            build.future.set_result(response)
+        if not build.answer.done():
+            build.answer.set(response)
         # The reason belongs in the line, because two roads reach this
         # method: a client that disconnected, and a goal system that let go.
         log.info("build_cancelled", build_id=build.build_id, reason=log_reason or error_msg)

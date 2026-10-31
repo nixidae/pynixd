@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
@@ -25,6 +24,7 @@ from .results import GoalResult, goal_failure, result_succeeded
 if TYPE_CHECKING:
     from nix_daemon_protocol.ids import BuildId
 
+    from ..answer import Answer
     from ..build_queue import QueuedBuild
     from ..connection import ClientConn
     from ..serde import SetOptionsRequest
@@ -94,18 +94,6 @@ def _timed_out(seconds: int) -> BuildDerivationResponse:
             error_msg=f"timed out after {seconds} seconds",
         )
     )
-
-
-async def _the_shared_answer(future: asyncio.Future[BuildDerivationResponse]) -> BuildDerivationResponse:
-    """The answer of a build that other requests may hold too.
-
-    `await future` would cancel the future when this waiter is cancelled, and
-    so fail the build for every holder: a reaped request took the builds of
-    the others with it. `asyncio.wait` cancels only its own wait.
-    Issue nixidae/nixidae#15.
-    """
-    await asyncio.wait({future})
-    return future.result()
 
 
 @dataclass
@@ -204,7 +192,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
         # connection that runs it must get the set from the queue. Issue nixidae/nixidae#231.
         options = next((c.options for c in self._subscribers if c.options is not None), None)
         try:
-            build_id, future = await self.engine.ctx.scheduler.build_derivation(
+            build_id, answer = await self.engine.ctx.scheduler.build_derivation(
                 self.request,
                 from_goal_path=True,
                 goal_request_id=self.engine.request_id,
@@ -225,7 +213,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
             await self._subscribe_active(build_id, client)
 
         try:
-            response = await self._wait_within_my_limits(build_id, future, options)
+            response = await self._wait_within_my_limits(build_id, answer, options)
         finally:
             async with self._lock:
                 self._finished = True
@@ -283,7 +271,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
     async def _wait_within_my_limits(
         self,
         build_id: BuildId,
-        future: asyncio.Future[BuildDerivationResponse],
+        answer: Answer[BuildDerivationResponse],
         mine: SetOptionsRequest | None,
     ) -> BuildDerivationResponse:
         """The build's answer, or Nix's timeout once this client's own limit passes.
@@ -303,19 +291,18 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
         scheduler = self.engine.ctx.scheduler
         build = None if scheduler is None else scheduler.queue.by_id.get(build_id)
         if build is None:
-            return await _the_shared_answer(future)
+            return await answer.wait()
         silent, timeout = limits_the_owner_leaves(mine, build.options)
         if not silent and not timeout:
-            return await _the_shared_answer(future)
-        while not future.done():
+            return await answer.wait()
+        while not answer.done():
             passed, wait = limit_reached(build, silent, timeout, time.monotonic())
             if passed is not None:
                 log.info("build_holder_timed_out", build_id=int(build_id), after_s=passed)
                 return _timed_out(passed)
-            # `asyncio.wait` and not a cancelled `await`: cancelling an await
-            # of the shared future would cancel it for every holder.
-            await asyncio.wait({future}, timeout=wait)
-        return future.result()
+            with anyio.move_on_after(wait):
+                await answer.wait()
+        return answer.result()
 
     async def _wait_for_local_paths(self, paths: set[StorePath]) -> None:
         if not paths:

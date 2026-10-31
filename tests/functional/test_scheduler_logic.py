@@ -90,7 +90,7 @@ async def test_scheduler_load_balancing() -> None:
         assert queued_build.assigned_store_id == StoreId("remote1")
 
         # 6. Wait for completion
-        resp = await future
+        resp = await future.wait()
         assert resp.result.status == BuildResultStatus.BUILT
 
 
@@ -375,7 +375,7 @@ async def test_scheduler_fails_build_for_unknown_platform() -> None:
 
     build = scheduler.queue.by_id[build_id]
     assert build.is_done
-    result = build.future.result()
+    result = build.answer.result()
     # Nix's `reject` answers InputRejected (`derivation-building-goal.cc:285`).
     assert result.result.status == BuildResultStatus.INPUT_REJECTED
 
@@ -459,7 +459,7 @@ async def test_scheduler_fails_build_for_missing_dynamic_feature() -> None:
 
     build = scheduler.queue.by_id[build_id]
     assert build.is_done
-    result = build.future.result()
+    result = build.answer.result()
     # Nix's `reject` answers InputRejected (`derivation-building-goal.cc:285`).
     assert result.result.status == BuildResultStatus.INPUT_REJECTED
 
