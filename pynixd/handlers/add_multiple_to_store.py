@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, ClassVar
 
 import anyio
@@ -139,7 +138,8 @@ class AddMultipleToStoreHandler(Handler):
 
         await fdst.finalize()
         try:
-            await asyncio.wait_for(fsrc.ensure_eof(), timeout=10)
+            with anyio.fail_after(10):
+                await fsrc.ensure_eof()
         except TimeoutError:
             if metered:
                 metrics.NAR_FORWARD_EOF_TIMEOUTS.inc()
