@@ -16,7 +16,6 @@ running it proves that.
 from __future__ import annotations
 
 import io
-import os
 import sys
 import threading
 import time
@@ -239,8 +238,7 @@ async def test_a_c_call_holding_the_gil_is_named_while_it_runs(tmp_path: Path) -
     """
     log = tmp_path / "stall.log"
     child = Path(__file__).with_name("stall_gil_child.py")
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}
-    result = await anyio.run_process([sys.executable, str(child), str(log)], env=env, check=False)
+    result = await anyio.run_process([sys.executable, str(child), str(log)], check=False)
 
     assert result.returncode == 0, result.stderr.decode()
     assert "_hold_the_gil" in log.read_text(), "no dump named the call while it ran"
