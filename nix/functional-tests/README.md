@@ -33,12 +33,13 @@ the test scripts of that Nix, pynixd, and every tool the scripts need. Nothing
 comes off the PATH of the machine.
 
 ```sh
-nix build --file . internal.nixFunctionalTests.nix_2_34 --out-link result
-./result/bin/nanopynix-nixft-nix_2_34 all
+nix build --file . internal.nixFunctionalTests.default --out-link result
+./result/bin/nanopynix-nixft-nix_2_35 all
 ```
 
 `nix_2_34`, `nix_2_35` and `git` are the versions, and they are the versions
-that `supportedNixFloor` in `default.nix` selects. The commands are:
+that `supportedNixFloor` in `default.nix` selects. `default` is the one of
+`nixVersions.latest`. The commands are:
 
 | command   | what it does                                           |
 | --------- | ------------------------------------------------------ |
@@ -83,13 +84,13 @@ run, so the file has to leave in the same invocation:
 A path with no leading `/` is relative to the work directory. Give the option
 again for a second file.
 
-**`--nix-version` picks which Nix the suite measures.** `nix_2_34` is the
-default, because `supportedNixFloor` in `default.nix` names 2.34 as the floor
-of this repository. `nix_2_35` and `git` are the other two.
+**`--nix-version` picks which Nix the suite measures.** `default` is the
+default: `nixVersions.latest`, because pynixd runs against the newest release.
+`nix_2_34` measures the floor that `supportedNixFloor` in `default.nix` names.
 
 ```sh
-./pynixd/nix/functional-tests/nixft.sh --nix-version nix_2_35 \
-    --work /scratch/nixft-235 all --suite ca
+./pynixd/nix/functional-tests/nixft.sh --nix-version nix_2_34 \
+    --work /scratch/nixft-234 all --suite ca
 ```
 
 **2.35 is the only arm that can see the gap of issue #14.** The protocol
@@ -182,12 +183,12 @@ SRC=$(nix eval --raw --impure --expr \
 
 # In the machine.
 vzrun \
-    nix build --file "$SRC" internal.nixFunctionalTests.nix_2_34 --no-link --print-out-paths
+    nix build --file "$SRC" internal.nixFunctionalTests.default --no-link --print-out-paths
 
 # `/scratch` of the machine is on a disk. `/` is a tmpfs, and the stores of the
 # tests do not fit in it.
-vzrun env NIXFT_WORK=/scratch/nixft-2.34 \
-    /nix/store/...-nanopynix-nixft-nix_2_34/bin/nanopynix-nixft-nix_2_34 all
+vzrun env NIXFT_WORK=/scratch/nixft-2.35 \
+    /nix/store/...-nanopynix-nixft-nix_2_35/bin/nanopynix-nixft-nix_2_35 all
 ```
 
 **Give the machine the fetch cache of the host, once for each start of the

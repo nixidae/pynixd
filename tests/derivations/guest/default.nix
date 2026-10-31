@@ -22,6 +22,7 @@
   devEnv,
   # `pynixd-agent`, which `tests/unit/test_agent.py` runs against the parser.
   agent,
+  nix,
 }:
 
 let
@@ -176,7 +177,7 @@ vivariumLib.mkTest (
       environment.systemPackages = [
         pytestEnv
         agent
-        pkgs.nix
+        nix
         pkgs.coreutils
         pkgs.util-linux
       ];

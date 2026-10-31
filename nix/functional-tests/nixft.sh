@@ -45,10 +45,10 @@
 #                 with no leading `/` is relative to the work directory.
 #   --nix-version V
 #                 the attribute of `nixFunctionalTests` to run, such as
-#                 `nix_2_34` (the default), `nix_2_35` or `git`. 2.34 is the
-#                 floor of this repository, so the default measures the floor.
-#                 2.35 offers the protocol features that 2.34 does not, so it
-#                 is the only arm that can see the gap of issue #162. Give a
+#                 `default` (the default, `nixVersions.latest`), `nix_2_34`,
+#                 `nix_2_35` or `git`. 2.35 offers the protocol features that
+#                 2.34 does not, so it is the only arm that can see the gap of
+#                 issue #162. 2.34 is the floor of this repository. Give a
 #                 separate `--work` for each version: the work directory holds
 #                 the checked-out test scripts of one Nix, and `setup` runs
 #                 only when the build directory is absent.

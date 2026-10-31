@@ -36,7 +36,7 @@ vivariumLib.mkTest (
       it arrives through `hostStore` on the node below.
     */
     settings = {
-      nixft = "${nixft}/bin/nanopynix-nixft-nix_2_34";
+      nixft = lib.getExe nixft;
     };
 
     phases = {

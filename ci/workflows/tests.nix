@@ -15,6 +15,9 @@
 let
   inherit (import ./bootstrap.nix { inherit lib nixVersion; }) divertedStores;
 
+  # The attribute of `nixFunctionalTests` for the Nix the runner installs.
+  nixft = "nix_" + lib.replaceStrings [ "." ] [ "_" ] (lib.versions.majorMinor nixVersion);
+
   # A gate, as one step. Each one names what broke without a reader opening a
   # log, and each pytest suite is its own process.
   #
@@ -46,7 +49,7 @@ ghalib.evalWorkflow {
       harness, and it must not fail this job: `main:db-migration` is one, it
       wants an older Nix, and issue #45 holds it.
 
-      `nanopynix-nixft-nix_2_34 all` already ends in that comparison and exits
+      `nanopynix-nixft-<version> all` already ends in that comparison and exits
       non-zero only on a regression, so the job is the program and its exit
       code.
 
@@ -81,12 +84,12 @@ ghalib.evalWorkflow {
       ghanix = divertedStores;
       steps = [
         {
-          name = "Build the suite for nix 2.34";
-          run = "nix build --file . internal.nixFunctionalTests.nix_2_34 --out-link nixft --print-build-logs";
+          name = "Build the suite for nix ${lib.versions.majorMinor nixVersion}";
+          run = "nix build --file . internal.nixFunctionalTests.${nixft} --out-link nixft --print-build-logs";
         }
         {
           name = "Both arms, and the comparison";
-          run = "./nixft/bin/nanopynix-nixft-nix_2_34 all";
+          run = "./nixft/bin/nanopynix-nixft-${nixft} all";
         }
         # The meson log holds the whole output of every test. The step output
         # holds the tail of the failed ones, which is not enough to tell a

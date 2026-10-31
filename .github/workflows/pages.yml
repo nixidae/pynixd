@@ -22,7 +22,7 @@ jobs:
           substituters = https://cache.nixos.org?priority=1 https://nixkube.cachix.org?priority=2 https://lillecarl.cachix.org?priority=3
           trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nixkube.cachix.org-1:H8UE0jlI9pxHexK/NhDmEoLDarJXp1WTymQrsajlh7M= lillecarl.cachix.org-1:NN/LLMg7mbyvZCu32Qlo8LpSHqNw7Rr3VBCEYQvRpT0=
           trusted-users = root runner
-        install_url: https://releases.nixos.org/nix/nix-2.34.8/install
+        install_url: https://releases.nixos.org/nix/nix-2.35.2/install
     - timeout-minutes: 15
       uses: cachix/cachix-action@master
       with:

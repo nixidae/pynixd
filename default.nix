@@ -50,7 +50,7 @@ let
         })
       ];
       text = ''
-        export NIX_BIN=${lib.getExe pkgs.nix}
+        export NIX_BIN=${lib.getExe defaultNix}
         exec pytest -p no:cacheprovider --timeout=60 ${testArgs} "$@"
       '';
     };
@@ -60,6 +60,15 @@ let
     testArgs = "";
   };
   vivariumLib = (import sources.vivarium { inherit pkgs sources; }).lib;
+
+  # The Nix pynixd runs against unless a test names another: the newest
+  # release, not `pkgs.nix`, which nixpkgs keeps a minor behind.
+  defaultNix = pkgs.nixVersions.latest;
+  # Its name in `nixVersions` and in `nixFunctionalTests`, such as `nix_2_35`.
+  defaultNixName =
+    "nix_" + lib.replaceStrings [ "." ] [ "_" ] (lib.versions.majorMinor defaultNix.version);
+  # Every guest's daemon and client. NixOS defaults `nix.package` to `pkgs.nix`.
+  withDefaultNix = test: test.extend { modules = [ { defaults.nix.package = defaultNix; } ]; };
   vivarium-runner = vivariumLib.runner;
 
   nanopynix = import sources.nanopynix { inherit sources; };
@@ -278,7 +287,7 @@ let
     module:
     import module {
       inherit lib ghalib;
-      nixVersion = pkgs.nix.version;
+      nixVersion = defaultNix.version;
     };
 
   # The workflows of pynixd's own repository, beside the file each renders
@@ -415,6 +424,7 @@ let
     };
     pytest = pkgs.callPackage ./tests/derivations/pytest {
       pynixd-lib = library;
+      nix = defaultNix;
       inherit nixvenv;
       src = lib.cleanSource ./.;
     };
@@ -422,40 +432,49 @@ let
     # The performance benchmarks, in a guest. Not a gate: they print numbers
     # and pass unless the run fails. `nix run --file . internal.tests.benchmark.driver
     # -- --out <abs>`.
-    benchmark = pkgs.callPackage ./tests/derivations/benchmark {
-      inherit package;
-      src = lib.cleanSource ./.;
-      inherit vivariumLib;
-      devEnv = guestEnv;
-    };
+    benchmark = withDefaultNix (
+      pkgs.callPackage ./tests/derivations/benchmark {
+        inherit package;
+        src = lib.cleanSource ./.;
+        inherit vivariumLib;
+        devEnv = guestEnv;
+      }
+    );
 
     # The same suites in a guest, where cleanup is a poweroff rather than
     # a promise.
-    guest = pkgs.callPackage ./tests/derivations/guest {
-      pynixd-lib = library;
-      src = lib.cleanSource ./.;
-      inherit vivariumLib;
-      inherit agent;
-      devEnv = guestEnv;
-    };
+    guest = withDefaultNix (
+      pkgs.callPackage ./tests/derivations/guest {
+        pynixd-lib = library;
+        src = lib.cleanSource ./.;
+        inherit vivariumLib;
+        inherit agent;
+        devEnv = guestEnv;
+        nix = defaultNix;
+      }
+    );
 
     # The Nix functional suite in a UML guest, where cleanup is a poweroff
     # rather than a promise. `nix run --file . internal.tests.guest-nixft.driver
     # -- --out <abs>`. Issue #45.
-    guest-nixft = pkgs.callPackage ./tests/derivations/guest-nixft {
-      pynixd-lib = library;
-      src = lib.cleanSource ./.;
-      inherit vivariumLib;
-      nixft = nixFunctionalTests.nix_2_34;
-    };
+    guest-nixft = withDefaultNix (
+      pkgs.callPackage ./tests/derivations/guest-nixft {
+        pynixd-lib = library;
+        src = lib.cleanSource ./.;
+        inherit vivariumLib;
+        nixft = nixFunctionalTests.${defaultNixName};
+      }
+    );
 
     # pynixd as the Nix daemon of a guest, against nix-daemon on another,
     # over the paths a user takes: a local build, `ssh-ng://` and
     # `--builders`.
-    daemon = pkgs.callPackage ./tests/derivations/daemon {
-      inherit package;
-      inherit vivariumLib;
-    };
+    daemon = withDefaultNix (
+      pkgs.callPackage ./tests/derivations/daemon {
+        inherit package;
+        inherit vivariumLib;
+      }
+    );
 
     # A running machine switched to pynixd and back, in each mode.
     switch = pkgs.callPackage ./tests/derivations/switch {
@@ -465,10 +484,12 @@ let
     };
 
     # What an upgrade does to builds in flight; docs/design/upgrade-handover.md.
-    handover = pkgs.callPackage ./tests/derivations/handover {
-      inherit package;
-      inherit vivariumLib;
-    };
+    handover = withDefaultNix (
+      pkgs.callPackage ./tests/derivations/handover {
+        inherit package;
+        inherit vivariumLib;
+      }
+    );
 
     daemonByNix = byNix daemon;
     switchByNix = byNix switch;
@@ -476,6 +497,7 @@ let
 
   shell = pkgs.callPackage ./nix/shell.nix {
     inherit agent;
+    nix = defaultNix;
     devEnv = shellEnv;
     nixpkgsPath = pkgs.path;
   };
@@ -498,11 +520,14 @@ in
 
   # Not public: the names may change without notice.
   internal = {
+    # `default` is the suite of `defaultNix`, for a command that names no version.
+    nixFunctionalTests = nixFunctionalTests // {
+      default = nixFunctionalTests.${defaultNixName};
+    };
     inherit
       pkgs
       specifictest
       fix
-      nixFunctionalTests
       ciWorkflows
       ciWorkflowFiles
       ci-workflow-update

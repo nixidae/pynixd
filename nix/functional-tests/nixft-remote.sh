@@ -20,7 +20,7 @@
 #   DUMP         files to write to stdout after the command, `:` between
 #                them, or `-`. A relative name goes under the work directory.
 #   NIX_VERSION  the attribute of `nixFunctionalTests` to build, such as
-#                `nix_2_34`, `nix_2_35` or `git`, or `-` for the default.
+#                `default`, `nix_2_34`, `nix_2_35` or `git`, or `-` for `default`.
 #   ...          the arguments of the runner, for example `pynixd --suite ca`
 #
 # The last line it writes is `NIXFT-DONE <code>`. The host reads that line to
@@ -37,12 +37,12 @@ DUMP=$6
 NIX_VERSION=$7
 shift 7
 
-# **2.34 is the floor of this repository, and the suite measures the floor.**
-# `supportedNixFloor` in `default.nix` names it. A run against another version
-# measures something else on purpose: 2.35 offers the protocol features that
-# 2.34 does not, so it is the only arm that can see the gap of issue #162.
+# **`default` is `nixVersions.latest`, the newest release.** 2.35 offers the
+# protocol features that 2.34 does not, so it is the only arm that can see the
+# gap of issue #162. `nix_2_34` measures the floor that `supportedNixFloor` in
+# `default.nix` names.
 if [[ "$NIX_VERSION" == "-" ]]; then
-    NIX_VERSION=nix_2_34
+    NIX_VERSION=default
 fi
 
 # **`WARNING` is the default, and a debug run is how a goal question gets an

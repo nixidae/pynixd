@@ -3,8 +3,8 @@
 # **Every tool it needs comes from this closure, and every path it needs is
 # written in at build time.** A person runs three commands and gets a result:
 #
-#     nix build --file . internal.nixFunctionalTests.nix_2_34 --out-link result
-#     ./result/bin/nanopynix-nixft-nix_2_34 all
+#     nix build --file . internal.nixFunctionalTests.default --out-link result
+#     ./result/bin/nanopynix-nixft-nix_2_35 all
 #
 # The name of the program holds the version, so two versions can be on one
 # PATH and a person can see which one a command ran.
@@ -13,7 +13,7 @@
 # derivations. The store is shared with that machine, so the same store path
 # runs there:
 #
-#     vzrun /nix/store/...-nanopynix-nixft-nix_2_34/bin/nanopynix-nixft-nix_2_34 all
+#     vzrun /nix/store/...-nanopynix-nixft-nix_2_35/bin/nanopynix-nixft-nix_2_35 all
 #
 # `ci/steps.nix` explains why a body belongs in a package rather than in a
 # shell command that a person types. The same three reasons apply here:

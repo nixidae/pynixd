@@ -16,7 +16,7 @@ WORK=${WORK:-/scratch/nixft}
 
 if [[ -z "$NIX_SRC" ]]; then
     echo "setup.sh: set NIX_SRC to the source of Nix. For example:" >&2
-    echo "  NIX_SRC=\$(nix build --file . internal.pkgs.nixVersions.nix_2_34.src --no-link --print-out-paths)" >&2
+    echo "  NIX_SRC=\$(nix build --file . internal.pkgs.nixVersions.latest.src --no-link --print-out-paths)" >&2
     exit 2
 fi
 if [[ ! -d "$NIX_SRC/tests/functional/common" ]]; then
