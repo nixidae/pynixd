@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -16,6 +15,7 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
 from . import metrics
+from .answer import Answer
 from .background import Background
 from .exceptions import NarGone, OpNotImplementedError, leaves
 from .serde import AddToStoreNarRequest, NarFromPathRequest, QueryPathInfoRequest, StorePath
@@ -183,7 +183,7 @@ class SubstitutionQueue:
         self.health: dict[StoreId, SubstitutionHealthLog] = {}
         self._probes = Background("SubstitutionQueue")
         """The probes that outlive their lookup: the stragglers of a race, and the unhealthy stores."""
-        self._active_imports: dict[StorePath, asyncio.Task[SubstitutionImportResult]] = {}
+        self._active_imports: dict[StorePath, Answer[SubstitutionImportResult]] = {}
         # Created on first use: a limiter needs the running loop.
         self._import_limit: anyio.CapacityLimiter | None = None
         self._import_slots = 16
@@ -268,16 +268,27 @@ class SubstitutionQueue:
         return self._best_candidate_from_cache(path, stores)
 
     async def substitute(self, path: StorePath) -> SubstitutionImportResult:
-        existing = self._active_imports.get(path)
-        if existing is not None:
-            return await existing
+        """Import *path*, once for every caller that asks while it runs.
 
-        task = asyncio.create_task(self._substitute_uncached(path))
-        self._active_imports[path] = task
+        The import runs in the queue's task group, so a caller that leaves cancels its own wait and not the
+        import of the others.
+        """
+        answer = self._active_imports.get(path)
+        if answer is None:
+            answer = Answer()
+            self._probes.spawn(self._answer_the_import, path, answer)
+            self._active_imports[path] = answer
+        return await answer.wait()
+
+    async def _answer_the_import(self, path: StorePath, answer: Answer[SubstitutionImportResult]) -> None:
         try:
-            return await task
+            answer.set(await self._substitute_uncached(path))
+        except Exception as e:
+            answer.set_exception(e)
         finally:
             self._active_imports.pop(path, None)
+            if not answer.done():
+                answer.set_exception(RuntimeError("the substitution queue closed during the import"))
 
     def record_query_result(self, path: StorePath, result: SubstitutionQueryResult) -> None:
         cache = self.positive if result.found else self.negative

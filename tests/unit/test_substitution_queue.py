@@ -17,7 +17,12 @@ from nix_daemon_protocol.wire_time import Time
 from pynixd.config import PynixdSettings
 from pynixd.serde import QueryPathInfoResponse
 from pynixd.store_path import StorePath
-from pynixd.substitution_queue import SubstitutionHealthLog, SubstitutionQueryResult, SubstitutionQueue
+from pynixd.substitution_queue import (
+    SubstitutionHealthLog,
+    SubstitutionImportResult,
+    SubstitutionQueryResult,
+    SubstitutionQueue,
+)
 
 if TYPE_CHECKING:
     from nix_daemon_protocol.wire_ops import WireRequest
@@ -249,12 +254,59 @@ async def test_substitute_deduplicates_active_imports(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(queue, "_import_nar", fake_import)
 
-    first, second = await asyncio.gather(queue.substitute(path), queue.substitute(path))
+    async with queue.running():
+        first, second = await asyncio.gather(queue.substitute(path), queue.substitute(path))
 
     assert first.substituted
     assert second.substituted
     assert imports == 1
     assert store.queries == 1
+
+
+@pytest.mark.anyio
+async def test_a_waiter_that_leaves_leaves_the_import_to_the_others(monkeypatch: pytest.MonkeyPatch) -> None:
+    path = StorePath("/nix/store/00000000000000000000000000000000-example")
+    store = FakeSubstituter("cache", valid=True)
+    ctx = cast(
+        "PynixdContext",
+        SimpleNamespace(
+            settings=PynixdSettings(),
+            stores={
+                StoreId("local"): SimpleNamespace(no_schedule=False),
+                store.store_id: store,
+            },
+        ),
+    )
+    queue = SubstitutionQueue(ctx)
+    importing = anyio.Event()
+    release = anyio.Event()
+    imports = 0
+    results: list[SubstitutionImportResult] = []
+
+    async def fake_import(path_arg: StorePath, candidate: object) -> None:
+        nonlocal imports
+        del path_arg, candidate
+        imports += 1
+        importing.set()
+        await release.wait()
+
+    monkeypatch.setattr(queue, "_import_nar", fake_import)
+
+    async def stay() -> None:
+        results.append(await queue.substitute(path))
+
+    with anyio.fail_after(5):
+        async with queue.running(), anyio.create_task_group() as tg:
+            with anyio.CancelScope() as leaver:
+                tg.start_soon(stay)
+                await importing.wait()
+                leaver.cancel()
+                await queue.substitute(path)
+            await anyio.sleep(0)
+            release.set()
+
+    assert [result.substituted for result in results] == [True]
+    assert imports == 1
 
 
 @pytest.mark.anyio
@@ -285,7 +337,8 @@ async def test_imports_stream_max_substitution_jobs_at_once(monkeypatch: pytest.
 
     monkeypatch.setattr(queue, "_import_nar", fake_import)
     paths = [StorePath(f"/nix/store/{i:032d}-example") for i in range(6)]
-    results = await asyncio.gather(*(queue.substitute(path) for path in paths))
+    async with queue.running():
+        results = await asyncio.gather(*(queue.substitute(path) for path in paths))
 
     assert all(result.substituted for result in results)
     assert peak == 2
