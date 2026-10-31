@@ -29,7 +29,7 @@ class LogSink(Protocol):
     `ClientConn` satisfies it.
     """
 
-    async def send(self, message: LogMessage, /) -> None: ...
+    async def send(self, message: LogMessage, /) -> None: ...  # type: ignore[valid-type, unused-ignore]  # zuban-bug: about 1 run in 25 reads the TYPE_CHECKING import as invalid; mypy accepts it
 
 
 _NO_FEATURES: Final[frozenset[str]] = frozenset()
