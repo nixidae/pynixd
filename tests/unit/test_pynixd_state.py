@@ -291,13 +291,14 @@ class _FakeSession:
     request_id: int | None = None
 
 
-def test_clients_name_the_operation_each_session_runs() -> None:
+@pytest.mark.anyio
+async def test_clients_name_the_operation_each_session_runs() -> None:
     ctx = _ctx()
     now = time.monotonic()
     busy = _FakeSession("unix", "alice", now - 60, ("BuildPaths", now - 30))
     idle = _FakeSession("ssh", "bob", now - 5, None)
-    ctx.sessions.track(cast("Any", busy), None)
-    ctx.sessions.track(cast("Any", idle), None)
+    ctx.sessions.track(cast("Any", busy))
+    ctx.sessions.track(cast("Any", idle))
 
     rows = state_collector.collect(cast("PynixdContext", ctx), ["clients"]).clients
     assert rows is not None

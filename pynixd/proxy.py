@@ -7,8 +7,6 @@ and dispatches them to request type handle() classmethods.
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import time
 from typing import TYPE_CHECKING, Any, cast
 
@@ -206,59 +204,63 @@ class DaemonProxy:
         metrics.DAEMON_SESSIONS.labels(transport=self.transport).inc()
         # Register before the handshake: from here on this session exists,
         # and shutdown must answer it. Issue #64.
-        self.ctx.sessions.track(self, asyncio.current_task())
+        session = self.ctx.sessions.track(self)
         try:
-            with anyio.CancelScope() as scope:
-                watcher = None if self._hangup is None else asyncio.create_task(self._cancel_on_hangup(scope))
-                try:
-                    await self.handshake()
-                    self._open_sync_reader()
-                    await self.op_loop()
-                finally:
-                    if watcher is not None:
-                        watcher.cancel()
-                        with contextlib.suppress(Exception, asyncio.CancelledError):
-                            await watcher
-        except (EOFError, BrokenPipeError, ConnectionError, OSError, *ssh_connection_lost()):
+            with session.scope:
+                async with anyio.create_task_group() as tg:
+                    if self._hangup is not None:
+                        tg.start_soon(self._cancel_on_hangup, tg.cancel_scope)
+                    try:
+                        await self.handshake()
+                        self._open_sync_reader()
+                        await self.op_loop()
+                    finally:
+                        tg.cancel_scope.cancel()
+        except* (EOFError, BrokenPipeError, ConnectionError, OSError, *ssh_connection_lost()):
             log.debug("client_disconnected")
-        except Exception:
+        except* Exception:
             log.exception("session_error")
         finally:
-            self.ctx.sessions.untrack(self)
             metrics.DAEMON_SESSIONS.labels(transport=self.transport).dec()
-            if self._temp_roots is not None:
-                await self._temp_roots.close()
-            self._close_sync_reader()
-            if self._op_timing:
-                total_time = sum(t for _, t in self._op_timing.values())
-                total_ops = sum(n for n, _ in self._op_timing.values())
-                total_encode = sum(t for _, t in self._encode_timing.values())
-                breakdown = {}
-                for op_num, (count, acc_time) in sorted(self._op_timing.items()):
-                    req_cls = WIRE_REGISTRY.get(op_num)
-                    name = req_cls.name if req_cls else f"op_{op_num}"
-                    breakdown[name] = f"x{count} {acc_time:.3f}s"
-                encode = {}
-                for op_num, (count, acc_time) in sorted(self._encode_timing.items()):
-                    req_cls = WIRE_REGISTRY.get(op_num)
-                    name = req_cls.name if req_cls else f"op_{op_num}"
-                    encode[name] = f"x{count} {acc_time:.3f}s"
-                log.info(
-                    "client_op_timing",
-                    total_ops=total_ops,
-                    total_time=f"{total_time:.3f}s",
-                    total_encode=f"{total_encode:.3f}s",
-                    breakdown=breakdown,
-                    encode_breakdown=encode,
-                )
+            try:
+                await self._session_cleanup()
+            finally:
+                self.ctx.sessions.untrack(session)
+
+    async def _session_cleanup(self) -> None:
+        if self._temp_roots is not None:
+            await self._temp_roots.close()
+        self._close_sync_reader()
+        if not self._op_timing:
+            return
+        total_time = sum(t for _, t in self._op_timing.values())
+        total_ops = sum(n for n, _ in self._op_timing.values())
+        total_encode = sum(t for _, t in self._encode_timing.values())
+        breakdown = {}
+        for op_num, (count, acc_time) in sorted(self._op_timing.items()):
+            req_cls = WIRE_REGISTRY.get(op_num)
+            name = req_cls.name if req_cls else f"op_{op_num}"
+            breakdown[name] = f"x{count} {acc_time:.3f}s"
+        encode = {}
+        for op_num, (count, acc_time) in sorted(self._encode_timing.items()):
+            req_cls = WIRE_REGISTRY.get(op_num)
+            name = req_cls.name if req_cls else f"op_{op_num}"
+            encode[name] = f"x{count} {acc_time:.3f}s"
+        log.info(
+            "client_op_timing",
+            total_ops=total_ops,
+            total_time=f"{total_time:.3f}s",
+            total_encode=f"{total_encode:.3f}s",
+            breakdown=breakdown,
+            encode_breakdown=encode,
+        )
 
     async def _cancel_on_hangup(self, scope: anyio.CancelScope) -> None:
         """End the session when the client hangs up, as `MonitorFdHup` does.
 
         `daemon.cc:1016` interrupts whatever operation runs. A request that
         waits for a build then gives its reference back, and the queue ends a
-        build that nobody else wants. Not a task group: that wraps the
-        session's own `EOFError` in an `ExceptionGroup`. Issue #91.
+        build that nobody else wants. Issue #91.
         """
         if self._hangup is None:
             return

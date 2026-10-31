@@ -16,10 +16,11 @@ cancelled and waited on, with a deadline.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
+import anyio
 import structlog
 
 if TYPE_CHECKING:
@@ -39,38 +40,47 @@ SHUTDOWN_DEADLINE = 5.0
 handler that ignores cancellation is abandoned; the process exits next."""
 
 
+@dataclass(eq=False)
+class Session:
+    """One registered session: the scope its operations run in, and its end."""
+
+    proxy: DaemonProxy
+    scope: anyio.CancelScope = field(default_factory=anyio.CancelScope)
+    """Shutdown cancels it. The session's cleanup runs outside it."""
+    ended: anyio.Event = field(default_factory=anyio.Event)
+
+
 class ClientSessions:
     """Every established client session, for the shutdown path."""
 
     def __init__(self) -> None:
-        self._sessions: set[tuple[DaemonProxy, asyncio.Task[Any] | None]] = set()
+        self._sessions: set[Session] = set()
 
     def __len__(self) -> int:
         return len(self._sessions)
 
     def proxies(self) -> list[DaemonProxy]:
         """Every live session. The state collector reads this."""
-        return [proxy for proxy, _task in list(self._sessions)]
+        return [session.proxy for session in list(self._sessions)]
 
     def by_transport(self) -> dict[str, int]:
         """Live sessions by transport. The state collector reads this."""
         counts: dict[str, int] = {}
-        for proxy, _task in list(self._sessions):
-            counts[proxy.transport] = counts.get(proxy.transport, 0) + 1
+        for session in list(self._sessions):
+            transport = session.proxy.transport
+            counts[transport] = counts.get(transport, 0) + 1
         return counts
 
-    def track(self, proxy: DaemonProxy, task: asyncio.Task[Any] | None) -> None:
-        """Remember *proxy* running as *task*. *task* is `None` when the
-        session runs outside a task, and then shutdown answers it but
-        cannot cancel it."""
-        self._sessions.add((proxy, task))
+    def track(self, proxy: DaemonProxy) -> Session:
+        """Register *proxy*. It runs its operations in the answered scope."""
+        session = Session(proxy)
+        self._sessions.add(session)
+        return session
 
-    def untrack(self, proxy: DaemonProxy) -> None:
-        """Forget *proxy*. Sessions unregister on exit, so a session that
-        is gone is simply absent at shutdown."""
-        for session in list(self._sessions):
-            if session[0] is proxy:
-                self._sessions.discard(session)
+    def untrack(self, session: Session) -> None:
+        """Forget *session*, and tell `shutdown` that it has ended."""
+        self._sessions.discard(session)
+        session.ended.set()
 
     async def shutdown(self, reason: str = SHUTDOWN_ERROR) -> None:
         """Answer every in-flight operation with *reason*, then close them.
@@ -87,15 +97,10 @@ class ClientSessions:
         if not sessions:
             return
         log.info("server_closing_client_sessions", count=len(sessions))
-        tasks: list[asyncio.Task[Any]] = []
-        for proxy, task in sessions:
-            if task is None or task.done():
-                continue
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(proxy.send_error(reason), ERROR_TIMEOUT)
-            if not task.done():
-                task.cancel()
-                tasks.append(task)
-        if tasks:
-            with contextlib.suppress(Exception, asyncio.CancelledError):
-                await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), SHUTDOWN_DEADLINE)
+        for session in sessions:
+            with contextlib.suppress(Exception), anyio.move_on_after(ERROR_TIMEOUT):
+                await session.proxy.send_error(reason)
+            session.scope.cancel()
+        with anyio.move_on_after(SHUTDOWN_DEADLINE):
+            for session in sessions:
+                await session.ended.wait()
