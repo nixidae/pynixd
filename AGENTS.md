@@ -271,7 +271,7 @@ Every instruction in this file is a default. The user's explicit direction overr
 
 ## 8. Async Task & Lifecycle Rules
 
-Structured concurrency everywhere; nixidae/nixidae#1143 tracks the sites still outside it.
+Structured concurrency everywhere. `checks.lint` bans the asyncio task API (`nix/shared/ruff-anyio.toml`); `tests/` is exempt until nixidae/nixidae#1144 converts it.
 
 - Every task runs in an `anyio` task group that some caller owns. No `asyncio.create_task`, `gather`, `wait_for`, `Future` hand-off or `shield` in new code.
 - Short-lived fan-out: `async with anyio.create_task_group()` in the function that needs it.

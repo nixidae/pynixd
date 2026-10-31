@@ -1,4 +1,4 @@
-extend = "nix/shared/ruff.toml"
+extend = "nix/shared/ruff-anyio.toml"
 
 # The gate. `checks.lint` and `checks.format` in default.nix read this file,
 # and ruff finds it by proximity, so do not add a `[tool.ruff]` to
@@ -15,9 +15,8 @@ extend = "nix/shared/ruff.toml"
 # on 2026-09-16. It extends this file, so a change here reaches it.
 
 [lint]
-# TID251 alone reports the banned-api table below. TID252 would ban the
-# relative imports this project uses by design.
-extend-select = ["TID251"]
+# The suite still uses the asyncio task API: nixidae/nixidae#1144.
+extend-per-file-ignores = { "tests/**" = ["TID251"] }
 
 # `I` is selected, and without this section isort sorts this tree's own
 # absolute imports as third-party packages. Each name needs saying:
@@ -37,34 +36,9 @@ known-first-party = [
 ]
 
 # The repository writes concurrency in one vocabulary, and that vocabulary is
-# anyio. This project starts with `anyio.run(backend="asyncio", ...)` in
-# `__main__.py`, so an anyio primitive works anywhere in it. Issue #131 ported
-# the remaining 48 uses.
-#
-# Not nix/shared/ruff-anyio.toml: that table also bans asyncio.create_task,
-# gather, wait_for and the subprocess calls, which pynixd still uses (88 sites
-# on 2026-10-28). `ruff-strict.toml` has no banned-api table.
-#
-[lint.flake8-tidy-imports.banned-api]
-"asyncio.get_event_loop".msg = "Use asyncio.get_running_loop() inside async code; time.monotonic() for timestamps."
-"asyncio.set_event_loop".msg = "anyio.run() owns the event loop; do not install a process-global default underneath it."
-"asyncio.new_event_loop".msg = "Use anyio.run(), which creates and owns the loop."
-"asyncio.get_event_loop_policy".msg = "Select a backend via anyio.run(backend=...) rather than a global loop policy."
-"asyncio.set_event_loop_policy".msg = "Select a backend via anyio.run(backend=..., backend_options=...) rather than a global loop policy."
-"asyncio.to_thread".msg = "Use anyio.to_thread.run_sync(fn, *args) -- bounded by a CapacityLimiter, unlike asyncio's unbounded spawn. It does NOT forward **kwargs: wrap keyword args in functools.partial."
-"asyncio.wrap_future".msg = "Prefer anyio.to_thread / anyio.from_thread.BlockingPortal."
-"asyncio.sleep".msg = "Use anyio.sleep()."
-"asyncio.Lock".msg = "Use anyio.Lock()."
-"asyncio.Event".msg = "Use anyio.Event(). Note it has no clear(): PressureFlag in monitor.py shows how to re-arm."
-"asyncio.Semaphore".msg = "Use anyio.Semaphore(initial_value)."
-"asyncio.BoundedSemaphore".msg = "Use anyio.Semaphore(n, max_value=n)."
-"asyncio.Condition".msg = "Use anyio.Condition()."
-"asyncio.TaskGroup".msg = "Use `async with anyio.create_task_group() as tg:`, and `tg.start_soon(fn, *args)`."
-"asyncio.timeout".msg = "Use `with anyio.fail_after(seconds):` (or move_on_after to expire silently)."
-"asyncio.timeout_at".msg = "Use `with anyio.CancelScope(deadline=...):`, against anyio.current_time()."
-# ═══════════════════════════════════════════════════════════════
-# END SHARED
-# ═══════════════════════════════════════════════════════════════
+# anyio: the banned-api table of `nix/shared/ruff-anyio.toml`. This project
+# starts with `anyio.run(backend="asyncio", ...)` in `__main__.py`, so an anyio
+# primitive works anywhere in it. nixidae/nixidae#1143.
 
 # WireModel.from_reader / _wire_fields / _find_reader all resolve type
 # annotations at runtime (get_type_hints + issubclass checks). Without this,
