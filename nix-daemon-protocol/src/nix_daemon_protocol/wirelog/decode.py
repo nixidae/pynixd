@@ -74,6 +74,11 @@ class Handshake:
     nix_version: str | None
     trusted: int | None
 
+    @property
+    def features(self) -> frozenset[str]:
+        """The negotiated set: each side reads the names both offered."""
+        return self.client_features & self.server_features
+
 
 @dataclass(frozen=True)
 class Operation:
@@ -167,7 +172,7 @@ def _flatten(value: object, prefix: str, out: dict[str, str]) -> None:
     out[prefix] = repr(value)
 
 
-async def _decode_request(op: int, body: bytes, version: int) -> dict[str, str] | None:
+async def _decode_request(op: int, body: bytes, version: int, features: frozenset[str]) -> dict[str, str] | None:
     """The request of one operation as named fields, or None.
 
     `body` starts after the 8-byte operation code, which is where the model of
@@ -181,7 +186,7 @@ async def _decode_request(op: int, body: bytes, version: int) -> dict[str, str] 
     reader = BytesReader(body, identifier="wirelog:request")
     try:
         model = await request_cls.from_reader(
-            ReadContext(reader=reader, version=version, logger=_QUIET),
+            ReadContext(reader=reader, version=version, features=features, logger=_QUIET),
         )
     except (EOFError, ConnectionError, ValueError, TypeError, KeyError):
         return None
@@ -195,7 +200,7 @@ async def _decode_request(op: int, body: bytes, version: int) -> dict[str, str] 
     return out
 
 
-async def _decode_body(op: int, payload: bytes, version: int) -> dict[str, str] | None:
+async def _decode_body(op: int, payload: bytes, version: int, features: frozenset[str]) -> dict[str, str] | None:
     """The payload of one answer as named fields, or None.
 
     The model of a response reads the log stream first, and `payload` starts
@@ -211,7 +216,7 @@ async def _decode_body(op: int, payload: bytes, version: int) -> dict[str, str] 
     reader = BytesReader(head.get_bytes() + payload, identifier="wirelog:body")
     try:
         model = await response_cls.from_reader(
-            ReadContext(reader=reader, version=version, logger=_QUIET),
+            ReadContext(reader=reader, version=version, features=features, logger=_QUIET),
         )
     except (EOFError, ConnectionError, ValueError, TypeError, KeyError):
         return None
@@ -332,6 +337,7 @@ async def _decode(chunks: list[Chunk], path: Path) -> Session:
         return session
 
     version = session.handshake.negotiated
+    features = session.handshake.features
 
     # Where each request starts in the client stream. The op loop needs the
     # start of request N+1 to close the window of response N, so it reads the
@@ -348,7 +354,7 @@ async def _decode(chunks: list[Chunk], path: Path) -> Session:
             session.problem = f"operation {op} at offset {offset} of the request stream is not in the registry"
             break
         try:
-            await request_cls.from_reader(ReadContext(reader=client, version=version))
+            await request_cls.from_reader(ReadContext(reader=client, version=version, features=features))
             if op in FRAMED_REQUESTS:
                 await _skip_framed_source(client)
         except (EOFError, ValueError) as exc:
@@ -365,7 +371,7 @@ async def _decode(chunks: list[Chunk], path: Path) -> Session:
         error: str | None = None
         reader = BytesReader(window, identifier=f"{path}:response:{index}")
         try:
-            async for message in read_stream(ReadContext(reader=reader, version=version)):
+            async for message in read_stream(ReadContext(reader=reader, version=version, features=features)):
                 if isinstance(message, LogNext):
                     logs.append(str(message.text))
                 elif isinstance(message, LogError):
@@ -383,11 +389,11 @@ async def _decode(chunks: list[Chunk], path: Path) -> Session:
                 op=op,
                 name=request_cls.name,
                 request_body=body,
-                request_fields=await _decode_request(op, body, version),
+                request_fields=await _decode_request(op, body, version, features),
                 response_payload=payload,
                 logs=tuple(logs),
                 error=error,
-                response_fields=await _decode_body(op, payload, version),
+                response_fields=await _decode_body(op, payload, version, features),
             )
         )
 
