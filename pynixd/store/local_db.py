@@ -19,6 +19,7 @@ from .local_daemon import LocalStore
 if TYPE_CHECKING:
     from nix_daemon_protocol.wire_ops import WireRequest
 
+    from ..config import LocalSocketStoreSpec
     from ..connection import ClientConn
 
 log = structlog.get_logger(__name__)
@@ -161,7 +162,10 @@ class LocalDBStore(LocalStore):
     `_refuses_a_database` is what keeps that from happening quietly.
     """
 
-    db: LocalStoreDB
+    def __init__(self, spec: LocalSocketStoreSpec) -> None:
+        super().__init__(spec)
+        # `start` replaces it. A start that fails before then still reaches `close`.
+        self.db = LocalStoreDB.inactive(self.layout)
 
     def _refuses_a_database(self) -> str | None:
         """Why this store must not use SQLite, or `None` when it may.
