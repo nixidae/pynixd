@@ -59,6 +59,16 @@ class ReverseStore(SSHStore):
             self.monitor = PeerHealthMonitor(self.pressure_settings, self.on_pressure_sample, self)
             self.monitor.start(self._background)
 
+    async def close(self) -> None:
+        """Close the store, then the builder's connection.
+
+        A store closed by a failed loop is gone from the scheduler, and an open
+        connection keeps its builder registered to nothing. Closed, the builder
+        reconnects and registers again.
+        """
+        await super().close()
+        self._ssh_conn.close()
+
     async def create_conn(self) -> Connection:
         """Spawn nix-daemon --stdio on the builder over the reverse SSH connection."""
         conn_id = f"{self.store_id}-{self.conn_counter}"

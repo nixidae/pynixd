@@ -1,4 +1,4 @@
-"""A reverse store keeps one health monitor, however often it starts.
+"""A reverse store keeps one health monitor, however often it starts, and its close ends the builder's connection.
 
 A monitor per start left one that `close()` never stopped, and it sampled
 the closed connection for ever. Issue nixidae/nixidae#1065.
@@ -15,6 +15,18 @@ from pynixd.config import ReverseStoreSpec
 from pynixd.store import reverse
 from pynixd.store.daemon import DaemonStore
 from pynixd.store.reverse import ReverseStore
+
+
+class _Connection:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _store(name: str, conn: _Connection) -> ReverseStore:
+    return ReverseStore(ReverseStoreSpec(store_id=StoreId(name)), conn)  # type: ignore[arg-type]
 
 
 class _CountedMonitor:
@@ -35,14 +47,10 @@ async def test_a_second_start_keeps_one_monitor_and_close_stops_it(monkeypatch: 
     async def _started(self: DaemonStore, sync_paths: bool = True) -> None:
         del self, sync_paths
 
-    async def _no_ssh(self: ReverseStore) -> None:
-        del self
-
     _CountedMonitor.instances.clear()
     monkeypatch.setattr(DaemonStore, "start", _started)
-    monkeypatch.setattr(ReverseStore, "close_ssh", _no_ssh)
     monkeypatch.setattr(reverse, "PeerHealthMonitor", _CountedMonitor)
-    store = ReverseStore(ReverseStoreSpec(store_id=StoreId("start-twice")), None)  # type: ignore[arg-type]
+    store = _store("start-twice", _Connection())
 
     await store.start()
     await store.start()
@@ -50,3 +58,12 @@ async def test_a_second_start_keeps_one_monitor_and_close_stops_it(monkeypatch: 
 
     await store.close()
     assert not any(monitor.running for monitor in _CountedMonitor.instances)
+
+
+async def test_a_closed_store_closes_the_builders_connection() -> None:
+    """A store that a failed loop closed left its builder waiting on a
+    connection nobody served, so the builder never registered again."""
+    conn = _Connection()
+    store = _store("closes-conn", conn)
+    await store.close()
+    assert conn.closed
