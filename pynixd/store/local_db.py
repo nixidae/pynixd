@@ -5,14 +5,17 @@ from __future__ import annotations
 import functools
 import types
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
+from typing import TYPE_CHECKING, Any, ClassVar, Union, get_args, get_origin
 
 import structlog
 from pydantic import BaseModel
 
+from nix_daemon_protocol.operations import STANDARD_OPERATIONS
 from nix_daemon_protocol.store_dir import store_prefix
 
+from .. import metrics
 from ..local_store_db import LocalStoreDB
+from ..op_routes import OpRoute, Owned
 from ..serde import StorePath
 from .local_daemon import LocalStore
 
@@ -23,6 +26,27 @@ if TYPE_CHECKING:
     from ..connection import ClientConn
 
 log = structlog.get_logger(__name__)
+
+_OP_CODES = {op.name: op.code for op in STANDARD_OPERATIONS}
+_OP_NAMES = {op.code: op.name for op in STANDARD_OPERATIONS}
+
+#: The most of one value a shadow mismatch logs: `QueryAllValidPaths` answers the whole store.
+_LOGGED_CHARACTERS = 2000
+
+
+def _value(response: Any) -> Any:
+    """What an answer says, without the log messages that came with it."""
+    if isinstance(response, BaseModel):
+        return response.model_dump(exclude={"logs"})
+    return response
+
+
+def _bounded(value: Any) -> str:
+    text = repr(value)
+    if len(text) <= _LOGGED_CHARACTERS:
+        return text
+    return f"{text[:_LOGGED_CHARACTERS]}... ({len(text)} characters)"
+
 
 _SCALAR_ANNOTATIONS = (str, bytes, int, float, bool)
 """Annotations whose values never pass the `isinstance` below.
@@ -162,10 +186,45 @@ class LocalDBStore(LocalStore):
     `_refuses_a_database` is what keeps that from happening quietly.
     """
 
+    #: pynixd's answer to each operation it can answer, by op code.
+    OWNED: ClassVar[dict[int, Owned]] = {
+        1: Owned("own_is_valid_path", default=OpRoute.pynixd),
+        23: Owned("own_query_all_valid_paths", default=OpRoute.pynixd),
+        26: Owned("own_query_path_info", default=OpRoute.pynixd),
+        29: Owned("own_query_path_from_hash_part", default=OpRoute.pynixd),
+        31: Owned("own_query_valid_paths", default=OpRoute.pynixd),
+    }
+
     def __init__(self, spec: LocalSocketStoreSpec) -> None:
         super().__init__(spec)
         # `start` replaces it. A start that fails before then still reaches `close`.
         self.db = LocalStoreDB.inactive(self.layout)
+        self.configured_routes = {_OP_CODES[name]: route for name, route in spec.op_routes.items()}
+        for op, route in self.configured_routes.items():
+            if route is OpRoute.daemon:
+                continue
+            owned = self.OWNED.get(op)
+            if owned is None:
+                raise ValueError(f"op_routes: pynixd has no answer to {_OP_NAMES[op]}; its route is daemon")
+            if route is OpRoute.shadow and owned.writes:
+                raise ValueError(f"op_routes: {_OP_NAMES[op]} writes, so it cannot run beside the daemon in shadow")
+        self.routes = {op: self.configured_routes.get(op, owned.default) for op, owned in self.OWNED.items()}
+
+    def _refuse_routes_without_a_database(self) -> None:
+        """A route set by hand to an answer that reads SQLite needs SQLite.
+
+        A default route falls through instead, and the fall-through counter
+        shows it. A route set by hand says the operator wants pynixd's answer,
+        so a store that cannot give one says so at start.
+        """
+        if self.db.active:
+            return
+        asked = sorted(_OP_NAMES[op] for op, route in self.configured_routes.items() if route is not OpRoute.daemon)
+        if asked:
+            raise RuntimeError(
+                f"op_routes: {', '.join(asked)} need the store database, and pynixd cannot read it: "
+                f"{self._refuses_a_database() or 'the database did not open'}"
+            )
 
     def _refuses_a_database(self) -> str | None:
         """Why this store must not use SQLite, or `None` when it may.
@@ -195,6 +254,7 @@ class LocalDBStore(LocalStore):
             self.db = LocalStoreDB.inactive(self.layout)
         else:
             self.db = await LocalStoreDB.open(self.layout)
+        self._refuse_routes_without_a_database()
         self.db.start(self._background)
         await super().start(sync_paths=sync_paths)
 
@@ -230,14 +290,69 @@ class LocalDBStore(LocalStore):
         background task woke every five seconds to do nothing. So
         `registrationTime` was never refreshed, and the LRU garbage collection
         that the refresh exists for never had an input. Issue nixidae/nixidae#205.
+
+        Then the route of the operation picks who answers (`op_routes.py`).
         """
         if mark:
             self.db.mark_paths(referenced_paths(request))
-        return await super().execute(request, client=client, suppress_last=suppress_last, skip_probe=skip_probe)
+        owned = self.OWNED.get(request.op)
+        route = self.routes.get(request.op, OpRoute.daemon)
+        if owned is None or route is OpRoute.daemon:
+            return await super().execute(request, client=client, suppress_last=suppress_last, skip_probe=skip_probe)
+        if route is OpRoute.pynixd:
+            if not skip_probe:
+                await self.probe()
+            answer = await self._own_answer(owned, request, client, suppress_last)
+            if answer is not None:
+                return answer
+            metrics.OP_FALLTHROUGH.labels(store_id=self.store_id, op=request.name).inc()
+            return await super().execute(request, client=client, suppress_last=suppress_last, skip_probe=True)
+        theirs = await super().execute(request, client=client, suppress_last=suppress_last, skip_probe=skip_probe)
+        await self._shadow(owned, request, client, theirs)
+        return theirs
 
-    # ── Fast-path overrides ────────────────────────────────────────
+    async def _own_answer(
+        self, owned: Owned, request: WireRequest, client: ClientConn | None, suppress_last: bool
+    ) -> Any:
+        """pynixd's answer, or `None` where it has none and the daemon answers."""
+        if not self.db.active:
+            return None
+        method = getattr(self, owned.method)
+        return await method(request, client=client, suppress_last=suppress_last)
 
-    async def is_valid_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+    async def _shadow(self, owned: Owned, request: WireRequest, client: ClientConn | None, theirs: Any) -> None:
+        """Compute pynixd's answer beside the daemon's, and count how they compare.
+
+        The daemon's answer is the one the client gets, whatever happens here.
+        The logs are left out of the comparison: pynixd notes its own answers
+        there (`"pynixd: IsValidPath (SQLite hit)"`). A match logs nothing,
+        because `IsValidPath` comes once for each derivation of a closure.
+        """
+        counter = metrics.OP_SHADOW
+        try:
+            ours = await self._own_answer(owned, request, client, suppress_last=True)
+        except Exception:
+            log.warning("op_shadow_error", op=request.name, exc_info=True)
+            counter.labels(store_id=self.store_id, op=request.name, outcome="error").inc()
+            return
+        if ours is None:
+            counter.labels(store_id=self.store_id, op=request.name, outcome="declined").inc()
+            return
+        if _value(ours) == _value(theirs):
+            counter.labels(store_id=self.store_id, op=request.name, outcome="match").inc()
+            return
+        counter.labels(store_id=self.store_id, op=request.name, outcome="mismatch").inc()
+        log.warning(
+            "op_shadow_mismatch",
+            op=request.name,
+            request=_bounded(request.model_dump(exclude={"logs"})),
+            pynixd=_bounded(_value(ours)),
+            daemon=_bounded(_value(theirs)),
+        )
+
+    # ── pynixd's answers, by route ─────────────────────────────────
+
+    async def own_is_valid_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """IsValidPath — fast-path via SQLite lookup.
 
         The synchronous reader of the session answers this when it has one.
@@ -268,7 +383,7 @@ class LocalDBStore(LocalStore):
 
         return IsValidPathResponse.fast(valid=False)
 
-    async def query_path_info(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+    async def own_query_path_info(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryPathInfo — fast-path via SQLite, with in-memory cache check.
 
         The synchronous reader of the session answers this when it has one,
@@ -304,7 +419,7 @@ class LocalDBStore(LocalStore):
 
         return _path_info_response(rows[0][:8], {r[8] for r in rows if r[8] is not None})
 
-    async def query_all_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+    async def own_query_all_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryAllValidPaths — fast-path via SQLite."""
 
         from pynixd.serde import QueryAllValidPathsResponse, StorePath
@@ -316,7 +431,7 @@ class LocalDBStore(LocalStore):
         paths: set[StorePath] = {StorePath(path=r[0]) for r in rows}
         return QueryAllValidPathsResponse(paths=paths)
 
-    async def query_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+    async def own_query_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryValidPaths — fast-path via SQLite."""
         if request.substitute:
             # The daemon substitutes before it queries: `daemon.cc:377` runs
@@ -342,7 +457,7 @@ class LocalDBStore(LocalStore):
         paths: set[StorePath] = {StorePath(path=r[0]) for r in rows}
         return QueryValidPathsResponse(paths=paths)
 
-    async def query_path_from_hash_part(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+    async def own_query_path_from_hash_part(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryPathFromHashPart — fast-path via SQLite."""
 
         from pynixd.serde import QueryPathFromHashPartResponse, StorePath

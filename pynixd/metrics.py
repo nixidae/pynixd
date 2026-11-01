@@ -61,6 +61,18 @@ UPSTREAM_READ_TIMEOUTS = Counter(
     ["store_id"],
 )
 
+OP_FALLTHROUGH = Counter(
+    "pynixd_op_fallthrough_total",
+    "Operations routed to pynixd that pynixd could not answer, so the daemon did (nixidae/nixidae#1155)",
+    ["store_id", "op"],
+)
+
+OP_SHADOW = Counter(
+    "pynixd_op_shadow_total",
+    "Shadow-routed operations, by how pynixd's answer compared with the daemon's (nixidae/nixidae#1155)",
+    ["store_id", "op", "outcome"],
+)
+
 POOL_SLOT_WAIT = Counter(
     "pynixd_store_pool_slot_wait_seconds_total",
     "Time operations spent waiting for a free connection slot, per pool lane (#97)",

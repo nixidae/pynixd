@@ -121,8 +121,8 @@ class TestTheStoreUsesTheSessionReader:
 
             client = Client()
             try:
-                held = await store.is_valid_path(IsValidPathRequest(path=StorePath(path=HELLO)), client=client)
-                gone = await store.is_valid_path(IsValidPathRequest(path=StorePath(path=GONE)), client=client)
+                held = await store.own_is_valid_path(IsValidPathRequest(path=StorePath(path=HELLO)), client=client)
+                gone = await store.own_is_valid_path(IsValidPathRequest(path=StorePath(path=GONE)), client=client)
             finally:
                 if client.sync_reader is not None:
                     client.sync_reader.close()
@@ -138,8 +138,8 @@ class TestTheStoreUsesTheSessionReader:
             store.db = db
             store.path_info_cache = TTLCache[str, ValidPathInfo](maxsize=10000, ttl=300)
 
-            held = await store.is_valid_path(IsValidPathRequest(path=StorePath(path=HELLO)), client=None)
-            gone = await store.is_valid_path(IsValidPathRequest(path=StorePath(path=GONE)), client=None)
+            held = await store.own_is_valid_path(IsValidPathRequest(path=StorePath(path=HELLO)), client=None)
+            gone = await store.own_is_valid_path(IsValidPathRequest(path=StorePath(path=GONE)), client=None)
 
             assert held.valid is True
             assert gone.valid is False
@@ -236,8 +236,8 @@ class TestTheStoreUsesTheReaderForPathInfo:
 
             client = Client()
             try:
-                held = await store.query_path_info(QueryPathInfoRequest(path=StorePath(path=HELLO)), client=client)
-                gone = await store.query_path_info(QueryPathInfoRequest(path=StorePath(path=GONE)), client=client)
+                held = await store.own_query_path_info(QueryPathInfoRequest(path=StorePath(path=HELLO)), client=client)
+                gone = await store.own_query_path_info(QueryPathInfoRequest(path=StorePath(path=GONE)), client=client)
             finally:
                 if client.sync_reader is not None:
                     client.sync_reader.close()
@@ -260,13 +260,13 @@ class TestTheStoreUsesTheReaderForPathInfo:
 
             client = Client()
             try:
-                via_reader = await store.query_path_info(
+                via_reader = await store.own_query_path_info(
                     QueryPathInfoRequest(path=StorePath(path=HELLO)), client=client
                 )
             finally:
                 if client.sync_reader is not None:
                     client.sync_reader.close()
-            via_pool = await store.query_path_info(QueryPathInfoRequest(path=StorePath(path=HELLO)), client=None)
+            via_pool = await store.own_query_path_info(QueryPathInfoRequest(path=StorePath(path=HELLO)), client=None)
 
             assert via_reader.model_dump() == via_pool.model_dump()
 
@@ -278,8 +278,8 @@ class TestTheStoreUsesTheReaderForPathInfo:
             store.db = db
             store.path_info_cache = TTLCache[str, ValidPathInfo](maxsize=10000, ttl=300)
 
-            held = await store.query_path_info(QueryPathInfoRequest(path=StorePath(path=HELLO)), client=None)
-            gone = await store.query_path_info(QueryPathInfoRequest(path=StorePath(path=GONE)), client=None)
+            held = await store.own_query_path_info(QueryPathInfoRequest(path=StorePath(path=HELLO)), client=None)
+            gone = await store.own_query_path_info(QueryPathInfoRequest(path=StorePath(path=GONE)), client=None)
 
             assert held.valid is True
             assert {str(r) for r in held.info.references} == {LIBC}

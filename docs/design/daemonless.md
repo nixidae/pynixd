@@ -117,5 +117,19 @@ Reads first, writes second, builds last.
 5. Roots, the live set, and deletion.
 6. The builder. This is where the experiments in nixidae/nixidae#1155 live.
 
-Before any of it: a per-operation switch, so each op moves to pynixd one at a
-time, and moves back with a setting rather than a revert.
+## The switch
+
+`op_routes` on a local store gives each operation one of three routes:
+`daemon`, `shadow` or `pynixd` (`pynixd/op_routes.py`). An answer pynixd
+gains enters `LocalDBStore.OWNED` at `daemon`, runs in `shadow` against real
+traffic, and moves to `pynixd` when `pynixd_op_shadow_total` shows no
+mismatch. `pynixd_op_fallthrough_total` then shows what of it still reaches
+the daemon. An answer that writes has no shadow.
+
+```json
+{"stores": {"local": {"type": "local-socket", "op_routes": {"QueryReferrers": "shadow"}}}}
+```
+
+The switch covers the operations that pass through `LocalDBStore.execute`.
+The handlers that forward bytes (the `AddToStore` family, `NarFromPath`,
+`AddBuildLog`) take it when they gain an answer of their own.

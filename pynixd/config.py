@@ -18,6 +18,7 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 
 from .constants import STALL_TRACEBACK_MAX_BYTES
 from .nix_config import NixConfig
+from .op_routes import OPERATION_NAMES, OpRoute
 from .store_layout import StoreLayout
 
 
@@ -459,6 +460,22 @@ class LocalSocketStoreSpec(StoreSpecBase):
     extra_args: list[str] | None = None
     use_db: bool = True
     monitor: bool = True
+    op_routes: dict[str, OpRoute] = Field(default_factory=dict)
+    """The route of each named operation: `daemon`, `shadow` or `pynixd`.
+
+    Keyed by the operation's name, `QueryReferrers`. An operation left out
+    takes the default its answer declares; `pynixd/op_routes.py` says what
+    each route does. The store refuses to start on a route it cannot take.
+    """
+
+    @model_validator(mode="after")
+    def _check_the_op_routes(self) -> LocalSocketStoreSpec:
+        unknown = sorted(set(self.op_routes) - OPERATION_NAMES)
+        if unknown:
+            raise ValueError(f"op_routes names no operation of the protocol: {', '.join(unknown)}")
+        if not self.use_db and any(route is not OpRoute.daemon for route in self.op_routes.values()):
+            raise ValueError("op_routes: a store with use_db = false answers every operation through the daemon")
+        return self
 
     @model_validator(mode="after")
     def _check_the_two_shapes(self) -> LocalSocketStoreSpec:

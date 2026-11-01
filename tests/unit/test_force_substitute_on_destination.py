@@ -99,4 +99,4 @@ async def test_the_sqlite_fast_path_yields_on_substitute() -> None:
             store_path=Path("/"),
         )
     )
-    assert await store.query_valid_paths(QueryValidPathsRequest(paths=set(), substitute=1)) is None
+    assert await store.own_query_valid_paths(QueryValidPathsRequest(paths=set(), substitute=1)) is None
