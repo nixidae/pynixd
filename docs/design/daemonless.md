@@ -38,7 +38,7 @@ some cases and sends the rest to the daemon.
 | 1 IsValidPath | owned (SQLite; session reader first) | none while the database is active | the inactive-database case (overlay stores) |
 | 26 QueryPathInfo | owned (cache, then SQLite) | none while the database is active | as above |
 | 23 QueryAllValidPaths | owned (SQLite) | none | — |
-| 29 QueryPathFromHashPart | partly: a miss falls through | answers the miss with "not found" | answer the miss from SQLite |
+| 29 QueryPathFromHashPart | owned (SQLite, hit and miss) | a hash part that is not 32 characters, which Nix refuses | — |
 | 31 QueryValidPaths | partly: `substitute=true` falls through | substitutes, then queries (`daemon.cc:377`) | substitution (below) |
 | 6 QueryReferrers | owned (SQLite, Nix's own statement) | none while the database is active | — |
 | 33 QueryValidDerivers | owned (SQLite, Nix's own statement) | none while the database is active | — |
@@ -107,7 +107,7 @@ Reads first, writes second, builds last.
 
 1. The read ops with a SQL answer: QueryReferrers (done), QueryValidDerivers (done),
    QueryDerivationOutputMap, QueryRealisation, and the QueryPathFromHashPart
-   miss. No privilege, no lock, and the parity run compares each answer with
+   miss (done). No privilege, no lock, and the parity run compares each answer with
    the daemon's.
 2. NarFromPath: a read of the file system, and every copy out of the store
    uses it.

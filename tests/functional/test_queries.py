@@ -165,6 +165,16 @@ async def test_query_path_from_hash_part(
     assert stdout.strip() == out_path
 
 
+async def test_query_path_from_hash_part_miss(query_env: tuple[Server, str, str]) -> None:
+    """A hash part no valid path has: pynixd answers the empty path, and the CLI refuses it."""
+    _server, uri, _out_path = query_env
+    hash_part = "0" * 32
+    cmd = [CLIENT_BIN, "store", "path-from-hash-part", "--store", uri, hash_part]
+    _rc, stdout, _stderr, stdboth = await run_subproc(cmd, expected_retcode=1)
+    assert stdout == ""
+    assert f"there is no store path corresponding to '{hash_part}'" in stdboth
+
+
 @pytest.mark.legacy_nix_commands
 async def test_query_valid_derivers(profiler: pyinstrument.Profiler, query_env: tuple[Server, str, str]) -> None:
     """Verify QueryValidDerivers via 'nix-store -q --valid-derivers'.

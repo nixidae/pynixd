@@ -29,6 +29,7 @@ log = structlog.get_logger(__name__)
 
 _OP_CODES = {op.name: op.code for op in STANDARD_OPERATIONS}
 _OP_NAMES = {op.code: op.name for op in STANDARD_OPERATIONS}
+_HASH_PART_LENGTH = 32  # `StorePath::HashLen`
 
 #: The most of one value a shadow mismatch logs: `QueryAllValidPaths` answers the whole store.
 _LOGGED_CHARACTERS = 2000
@@ -480,20 +481,22 @@ class LocalDBStore(LocalStore):
         return QueryValidPathsResponse(paths=paths)
 
     async def own_query_path_from_hash_part(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
-        """QueryPathFromHashPart — fast-path via SQLite."""
+        """QueryPathFromHashPart: the valid path whose hash part this is (`local-store.cc:958`).
 
+        A miss is the empty path. A hash part of another length goes to the
+        daemon, which refuses it with Nix's own error.
+        """
         from pynixd.serde import QueryPathFromHashPartResponse, StorePath
 
         from .queries import QUERY_PATH_FROM_HASH_PART
 
+        if len(request.path) != _HASH_PART_LENGTH:
+            return None
         prefix = f"{store_prefix()}{request.path}"
         upper = prefix[:-1] + chr(ord(prefix[-1]) + 1)
         async with self.db.execute(QUERY_PATH_FROM_HASH_PART, (prefix, upper)) as cursor:
             row = await cursor.fetchone()
-        if row:
-            return QueryPathFromHashPartResponse(value=StorePath(path=row[0]))
-
-        return None  # fall through
+        return QueryPathFromHashPartResponse.fast(value=StorePath(path=row[0] if row else ""))
 
     async def query_closure(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryClosure — fast-path via SQLite recursive CTE."""
