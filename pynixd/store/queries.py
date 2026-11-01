@@ -25,6 +25,12 @@ QUERY_REFERRERS = "select path from Refs join ValidPaths on referrer = id where 
 # valid, whether or not the output it names is.
 QUERY_VALID_DERIVERS = "select v.id, v.path from DerivationOutputs d join ValidPaths v on d.drv = v.id where d.path = ?"
 
+# `local-store.cc:372`, with the drv's id looked up in the same statement. No
+# row is a drv that is not valid, which Nix refuses (`queryValidPathId`).
+QUERY_DERIVATION_OUTPUTS = (
+    "select v.id, d.id, d.path from ValidPaths v left join DerivationOutputs d on d.drv = v.id where v.path = ?"
+)
+
 QUERY_VALID_PATHS = """
 SELECT path FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
 """

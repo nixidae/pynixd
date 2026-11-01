@@ -196,6 +196,7 @@ class LocalDBStore(LocalStore):
         29: Owned("own_query_path_from_hash_part", default=OpRoute.pynixd),
         31: Owned("own_query_valid_paths", default=OpRoute.pynixd),
         33: Owned("own_query_valid_derivers", default=OpRoute.pynixd),
+        41: Owned("own_query_derivation_output_map", default=OpRoute.pynixd),
     }
 
     def __init__(self, spec: LocalSocketStoreSpec) -> None:
@@ -453,6 +454,30 @@ class LocalDBStore(LocalStore):
         async with self.db.execute(QUERY_VALID_DERIVERS, (str(request.path),)) as cursor:
             rows = await cursor.fetchall()
         return QueryValidDeriversResponse.fast(paths={StorePath(path=row[1]) for row in rows})
+
+    async def own_query_derivation_output_map(
+        self, request: Any, client: Any = None, suppress_last: bool = False
+    ) -> Any:
+        """QueryDerivationOutputMap: the outputs `DerivationOutputs` holds for a derivation.
+
+        That table is the whole answer only without `ca-derivations`
+        (`store-api.cc:471`); with it, Nix also reads the derivation and its
+        realisations, so the daemon answers. A derivation that is not valid
+        goes to the daemon too, which refuses it with Nix's own error.
+        """
+        from nix_daemon_protocol.query_derivation_output_map import QueryDerivationOutputMapResponse
+
+        from .queries import QUERY_DERIVATION_OUTPUTS
+
+        if "ca-derivations" in (await self.trust_policy()).experimental_features:
+            return None
+        async with self.db.execute(QUERY_DERIVATION_OUTPUTS, (str(request.path),)) as cursor:
+            rows = await cursor.fetchall()
+        if not rows:
+            return None
+        return QueryDerivationOutputMapResponse.fast(
+            items={name: StorePath(path=path) for _drv, name, path in rows if name is not None}
+        )
 
     async def own_query_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryValidPaths — fast-path via SQLite."""

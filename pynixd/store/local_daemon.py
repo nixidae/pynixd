@@ -196,6 +196,7 @@ class LocalStore(DaemonStore):
         self._recent_output: deque[str] = deque(maxlen=_RECENT_OUTPUT_LINES)
         self.nix_config = spec.nix_config
         self.extra_env = spec.extra_env or {}
+        self._trust_policy: TrustPolicy | None = None
         self.extra_args = spec.extra_args or []
         self.settings = spec.settings or PynixdSettings()
         self._probe_requested = spec.probe
@@ -370,8 +371,13 @@ class LocalStore(DaemonStore):
         )
 
     async def trust_policy(self) -> TrustPolicy:
-        """`trusted-users`, `allowed-users` and `build-users-group`, as this store's Nix reads them."""
-        return TrustPolicy.from_nix_config(await self.read_nix_config())
+        """`trusted-users`, `allowed-users` and `build-users-group`, as this store's Nix reads them.
+
+        Read once: nix-daemon reads its configuration once, at start, too.
+        """
+        if self._trust_policy is None:
+            self._trust_policy = TrustPolicy.from_nix_config(await self.read_nix_config())
+        return self._trust_policy
 
     async def read_nix_config(self) -> dict[str, Any]:
         """`nix config show --json` in the daemon's environment, so includes,

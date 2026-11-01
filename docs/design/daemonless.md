@@ -42,7 +42,7 @@ some cases and sends the rest to the daemon.
 | 31 QueryValidPaths | partly: `substitute=true` falls through | substitutes, then queries (`daemon.cc:377`) | substitution (below) |
 | 6 QueryReferrers | owned (SQLite, Nix's own statement) | none while the database is active | — |
 | 33 QueryValidDerivers | owned (SQLite, Nix's own statement) | none while the database is active | — |
-| 41 QueryDerivationOutputMap | daemon (op 106, the batch, is owned) | reads the derivation and `DerivationOutputs` | the single form of op 106 |
+| 41 QueryDerivationOutputMap | partly: owned without `ca-derivations` (SQLite) | with `ca-derivations`, reads the derivation and each output's realisation (`outputs-query.cc:119`); a drv that is not valid | the CA case, on top of QueryRealisation |
 | 43 QueryRealisation | daemon | reads `Realisations` | a SQL query, both wire shapes |
 | 14 FindRoots | daemon, censored by pynixd | walks `gcroots`, `/proc`, temp roots | the root walk in Python |
 | 21, 30, 32 QuerySubstitutable* | daemon | asks the substituters | `HTTPBinaryCacheStore` already reads narinfo |
