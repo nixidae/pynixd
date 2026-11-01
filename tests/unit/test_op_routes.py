@@ -92,6 +92,28 @@ class TestTheConfig:
                 LocalSocketStoreSpec(store_id=STORE, store_path=tmp_path, op_routes={"AddSignatures": OpRoute.shadow})
             )
 
+    def test_writes_are_off_unless_a_deployment_turns_them_on(self) -> None:
+        assert LocalSocketStoreSpec().pynixd_writes is False
+
+    def test_a_route_to_an_answer_that_writes_needs_the_opt_in(self, tmp_path: Path) -> None:
+        class Writes(LocalDBStore):
+            OWNED: ClassVar[dict[int, Owned]] = {37: Owned("own_add_signatures", default=OpRoute.pynixd, writes=True)}
+
+        routes = {"AddSignatures": OpRoute.pynixd}
+        with pytest.raises(ValueError, match="pynixd_writes is off"):
+            Writes(LocalSocketStoreSpec(store_id=STORE, store_path=tmp_path, op_routes=routes))
+        on = Writes(LocalSocketStoreSpec(store_id=STORE, store_path=tmp_path, op_routes=routes, pynixd_writes=True))
+        assert on.routes == {37: OpRoute.pynixd}
+
+    def test_an_answer_that_writes_defaults_to_the_daemon_even_with_the_opt_in(self, tmp_path: Path) -> None:
+        """Its declared default is `pynixd`; only a route set by hand takes it."""
+
+        class Writes(LocalDBStore):
+            OWNED: ClassVar[dict[int, Owned]] = {37: Owned("own_add_signatures", default=OpRoute.pynixd, writes=True)}
+
+        store = Writes(LocalSocketStoreSpec(store_id=STORE, store_path=tmp_path, pynixd_writes=True))
+        assert store.routes == {37: OpRoute.daemon}
+
     def test_the_defaults_keep_the_routes_of_before(self, tmp_path: Path) -> None:
         """The SQLite answers pynixd gives, and nothing more."""
         store, _ = _store(tmp_path)

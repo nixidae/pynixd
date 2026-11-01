@@ -228,7 +228,15 @@ class LocalDBStore(LocalStore):
                 raise ValueError(f"op_routes: pynixd has no answer to {_OP_NAMES[op]}; its route is daemon")
             if route is OpRoute.shadow and owned.writes:
                 raise ValueError(f"op_routes: {_OP_NAMES[op]} writes, so it cannot run beside the daemon in shadow")
-        self.routes = {op: self.configured_routes.get(op, owned.default) for op, owned in self.OWNED.items()}
+            if owned.writes and not spec.pynixd_writes:
+                raise ValueError(f"op_routes: {_OP_NAMES[op]} writes the store, and pynixd_writes is off")
+        #: Whether pynixd itself may change the store (`LocalSocketStoreSpec.pynixd_writes`).
+        self.pynixd_writes = spec.pynixd_writes
+        # An answer that writes defaults to the daemon even with writes on: only a route set by hand takes it.
+        self.routes = {
+            op: self.configured_routes.get(op, OpRoute.daemon if owned.writes else owned.default)
+            for op, owned in self.OWNED.items()
+        }
 
     def _refuse_routes_without_a_database(self) -> None:
         """A route set by hand to an answer that reads SQLite needs SQLite.
@@ -601,10 +609,13 @@ class LocalDBStore(LocalStore):
         # worker holds a temporary root for each path it took, which no client holds.
         await self.retire_idle_connections()
         state_dir, store_dir = self.layout.state_dir, str(self.layout.store_dir)
+        tidy = self.pynixd_writes
 
         def walk() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-            unlink_stale_auto_roots(state_dir, store_dir)
-            return walk_roots(state_dir, store_dir)
+            # Nix tidies here; pynixd only with `pynixd_writes`. The answer is the same either way.
+            if tidy:
+                unlink_stale_auto_roots(state_dir, store_dir)
+            return walk_roots(state_dir, store_dir, reap=tidy)
 
         checked, temporary = await run_sync(walk)
         async with self.db.execute(QUERY_VALID_PATHS, (json.dumps(sorted(checked)),)) as cursor:

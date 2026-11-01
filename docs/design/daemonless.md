@@ -129,6 +129,13 @@ traffic, and moves to `pynixd` when `pynixd_op_shadow_total` shows no
 mismatch. `pynixd_op_fallthrough_total` then shows what of it still reaches
 the daemon. An answer that writes has no shadow.
 
+Writes are opt-in twice. `pynixd_writes` on the store spec is off by default,
+and with it off a route to `pynixd` for an answer that writes refuses to
+start. With it on, such an answer still defaults to `daemon`: only a route
+set by hand takes it. The test specs turn `pynixd_writes` on. FindRoots
+tidies as Nix does (a stale `gcroots/auto` link, a dead process's temporary
+roots file) only with it on; its answer is the same either way.
+
 ```json
 {"stores": {"local": {"type": "local-socket", "op_routes": {"QueryReferrers": "shadow"}}}}
 ```

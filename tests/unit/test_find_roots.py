@@ -152,6 +152,23 @@ class TestTheAnswer:
             ("{temp:4242}", f"/nix/store/{C}"),
         }
 
+    @pytest.mark.parametrize("writes", [False, True])
+    async def test_pynixd_tidies_only_with_the_opt_in(self, tmp_path: Path, writes: bool) -> None:
+        """A stale `gcroots/auto` link and a dead process's file go only with `pynixd_writes`."""
+        _store_db(tmp_path, [])
+        state = tmp_path / "nix" / "var" / "nix"
+        (state / "gcroots" / "auto").mkdir(parents=True)
+        (state / "temproots").mkdir()
+        (state / "gcroots" / "auto" / "stale").symlink_to(tmp_path / "gone")
+        (state / "temproots" / "99").write_bytes(f"/nix/store/{A}\x00".encode())  # noqa: ASYNC240 -- test setup
+        spec = LocalSocketStoreSpec(store_id=StoreId("local"), store_path=tmp_path, managed=True, pynixd_writes=writes)
+        store = LocalDBStore(spec)
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as store.db:
+            answer = await store.own_find_roots(FindRootsRequest())
+        assert answer.roots == []
+        assert (state / "gcroots" / "auto" / "stale").is_symlink() is not writes
+        assert (state / "temproots" / "99").exists() is not writes
+
     async def test_a_daemon_that_is_not_pynixd_s_answers_for_a_user(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

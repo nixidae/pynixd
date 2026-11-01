@@ -135,6 +135,8 @@ def make_test_spec(
         store_path = STORE_PREFIX / store_id
 
     nix_bin = str(kwargs.pop("nix_bin", NIX_BIN))
+    # A test store is the test's own, so pynixd may write it, as a deployment may not by default.
+    kwargs.setdefault("pynixd_writes", True)
 
     return LocalSocketStoreSpec(
         store_id=StoreId(store_id),

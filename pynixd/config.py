@@ -467,6 +467,15 @@ class LocalSocketStoreSpec(StoreSpecBase):
     takes the default its answer declares; `pynixd/op_routes.py` says what
     each route does. The store refuses to start on a route it cannot take.
     """
+    pynixd_writes: bool = False
+    """Whether pynixd itself may change the store: its files, its database, its state directory.
+
+    Off, every answer that writes goes to the daemon, whatever `op_routes`
+    says, and a route to `pynixd` for one refuses to start. A read that
+    tidies as Nix does (FindRoots unlinking a stale `gcroots/auto` link,
+    reaping a dead process's temporary roots file) leaves that to the
+    daemon. The test suites turn it on; a deployment turns it on by hand.
+    """
 
     @model_validator(mode="after")
     def _check_the_op_routes(self) -> LocalSocketStoreSpec:

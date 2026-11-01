@@ -224,7 +224,9 @@ def _walk_runtime_roots(proc_dir: Path, roots: Labeled, store_dir: str) -> None:
             roots.setdefault(content, set()).add(str(kernel_file))
 
 
-def _walk_temp_roots_grouped(state_dir: Path, *, every_name: bool = False) -> tuple[dict[str, set[str]], int]:
+def _walk_temp_roots_grouped(
+    state_dir: Path, *, every_name: bool = False, reap: bool = True
+) -> tuple[dict[str, set[str]], int]:
     """Temporary roots by owning file, plus the files reaped.
 
     The same walk as `_walk_temp_roots`, kept per file: one file is one
@@ -233,6 +235,7 @@ def _walk_temp_roots_grouped(state_dir: Path, *, every_name: bool = False) -> tu
 
     `every_name` reads every name but a dotfile, as `findTempRoots` does.
     A foreign name still is not reaped: its unlocked file seeds nothing.
+    Without `reap`, no dead owner's file is reaped, and none seeds.
     """
     try:
         entries = list(os.scandir(state_dir / "temproots"))
@@ -262,7 +265,7 @@ def _walk_temp_roots_grouped(state_dir: Path, *, every_name: bool = False) -> tu
             raise
         try:
             seeds: set[str] = set()
-            if _seed_or_reap_temp_file(fd, entry.path, seeds, reap=ours):
+            if _seed_or_reap_temp_file(fd, entry.path, seeds, reap=ours and reap):
                 reaped += 1
             elif seeds:
                 grouped[entry.name] = seeds
@@ -451,13 +454,16 @@ def unlink_stale_auto_roots(state_dir: Path, store_dir: str, tree: Path | None =
                 raise
 
 
-def walk_roots(state_dir: Path, store_dir: str, proc_dir: Path | None = None) -> tuple[Labeled, Labeled]:
+def walk_roots(
+    state_dir: Path, store_dir: str, proc_dir: Path | None = None, *, reap: bool = True
+) -> tuple[Labeled, Labeled]:
     """`(checked, temporary)`: each store path a root names, with its links, as `findRoots(false)` does.
 
     Nix keeps a root in `gcroots`, in `profiles` and in `/proc` only when its
     store path is valid (`gc.cc:235`, `:362`); that check is the caller's,
     against the store database. A temporary root needs none (`gc.cc:225`)
-    and is labelled `{temp:<file name>}`.
+    and is labelled `{temp:<file name>}`. `reap` unlinks a dead process's
+    file, as Nix does; the answer is the same without it.
     """
     checked: Labeled = {}
     for link, (path, _kind) in walk_stable(state_dir, store_dir).items():
@@ -468,7 +474,7 @@ def walk_roots(state_dir: Path, store_dir: str, proc_dir: Path | None = None) ->
         if (runtime_path := _store_path_of(target, store_dir)) is not None:
             checked.setdefault(runtime_path, set()).update(links)
     temporary: Labeled = {}
-    grouped, _reaped = _walk_temp_roots_grouped(state_dir, every_name=True)
+    grouped, _reaped = _walk_temp_roots_grouped(state_dir, every_name=True, reap=reap)
     for name, seeds in grouped.items():
         for seed in seeds:
             if _store_path_of(seed, store_dir) == seed:
