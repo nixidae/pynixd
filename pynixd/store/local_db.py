@@ -21,6 +21,8 @@ from ..serde import StorePath
 from .local_daemon import LocalStore
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from nix_daemon_protocol.wire_ops import WireRequest
 
     from ..config import LocalSocketStoreSpec
@@ -204,6 +206,7 @@ class LocalDBStore(LocalStore):
         26: Owned("own_query_path_info", default=OpRoute.pynixd),
         29: Owned("own_query_path_from_hash_part", default=OpRoute.pynixd),
         31: Owned("own_query_valid_paths", default=OpRoute.pynixd),
+        38: Owned("own_nar_from_path", default=OpRoute.shadow),
         32: Owned("own_query_substitutable_paths", default=OpRoute.pynixd),
         33: Owned("own_query_valid_derivers", default=OpRoute.pynixd),
         41: Owned("own_query_derivation_output_map", default=OpRoute.pynixd),
@@ -369,6 +372,32 @@ class LocalDBStore(LocalStore):
         )
 
     # ── pynixd's answers, by route ─────────────────────────────────
+
+    async def own_nar_from_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        """None: a NAR is a stream, which `NarFromPathHandler` takes from `nar_pieces` on this route."""
+        return None
+
+    async def nar_pieces(self, path: StorePath) -> AsyncIterator[bytes]:
+        """The NAR of *path*, dumped from the store's files (`Store::narFromPath`, `store-api.cc:385`).
+
+        Each piece is read on a worker thread, one hop per piece of about 64
+        KiB. A thread that fed a queue would need a task group across the
+        `yield`, which an async generator cannot hold.
+
+        The files are under this store's `real_store_dir`. `on_disk` reads the
+        process's one store setting, which in a process with several chroot
+        stores names whichever was set last.
+        """
+        from anyio.to_thread import run_sync
+
+        from ..nar_fs import dump_path
+
+        pieces = dump_path(self.layout.real_store_dir / path.name)
+        try:
+            while (piece := await run_sync(next, pieces, None)) is not None:
+                yield piece
+        finally:
+            pieces.close()
 
     async def own_is_valid_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """IsValidPath — fast-path via SQLite lookup.

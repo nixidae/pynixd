@@ -17,8 +17,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from nix_daemon_protocol.ids import StoreId
+from nix_daemon_protocol.store_dir import reset_store_dir, set_real_store_dir
+from pynixd.config import LocalSocketStoreSpec
 from pynixd.nar import NarDirectory, NarDirectoryEntry, NarRegular, NarSymlink, write_nar
 from pynixd.nar_fs import MAX_DEPTH, BadArchive, dump_path, restore_path
+from pynixd.serde import StorePath
+from pynixd.store.local_db import LocalDBStore
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -119,6 +124,24 @@ class TestRestore:
         restore_path(tmp_path / "f", read)
         assert (tmp_path / "f").read_bytes() == BIG  # noqa: ASYNC240 -- test assertion
         assert max(asked) <= 64 * 1024
+
+
+@pytest.mark.anyio
+async def test_a_store_dumps_its_own_files_when_the_process_names_another(tmp_path: Path) -> None:
+    """The functional suite runs several chroot stores in one process, and the process-wide
+    `real_store_dir` names whichever was set last. The session store then dumped another
+    test's directory and broke the client's NAR."""
+    name = "00000000000000000000000000000001-hello"
+    for root, text in ((tmp_path / "mine", b"mine"), (tmp_path / "other", b"other")):
+        (root / "nix" / "store").mkdir(parents=True)
+        (root / "nix" / "store" / name).write_bytes(text)  # noqa: ASYNC240 -- test setup
+    store = LocalDBStore(LocalSocketStoreSpec(store_id=StoreId("local"), store_path=tmp_path / "mine"))
+    set_real_store_dir(tmp_path / "other" / "nix" / "store")
+    try:
+        dumped = b"".join([piece async for piece in store.nar_pieces(StorePath(path=f"/nix/store/{name}"))])
+    finally:
+        reset_store_dir()
+    assert dumped == write_nar(NarRegular(b"mine"))
 
 
 def _entries(*names: str) -> bytes:

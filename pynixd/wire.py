@@ -745,6 +745,7 @@ async def forward_raw(
     size: int,
     chunk_size: int = _CHUNK_SIZE,
     on_bytes: Callable[[int], None] | None = None,
+    on_chunk: Callable[[bytes], None] | None = None,
 ) -> None:
     """Forward exactly *size* unframed bytes from src to dst.
 
@@ -756,12 +757,14 @@ async def forward_raw(
 
     `on_bytes` takes each chunk's length. The caller passes its own counter
     rather than this naming one, because the op a transfer belongs to is
-    known at the handler and not here.
+    known at the handler and not here. `on_chunk` sees each chunk itself.
     """
     remaining = size
     while remaining > 0:
         to_read = min(remaining, chunk_size)
         chunk = await src.readexactly(to_read)
+        if on_chunk is not None:
+            on_chunk(chunk)
         dst.write(chunk)
         await dst.drain()
         await checkpoint()

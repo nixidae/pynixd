@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING, ClassVar
 
+import anyio
 import structlog
 
 from nix_daemon_protocol.logs import WireLogs
@@ -11,8 +13,10 @@ from nix_daemon_protocol.nar_from_path import NarFromPathRequest
 
 from .. import metrics, wire
 from ..exceptions import ClosingError, error_text
+from ..op_routes import OpRoute
 from ..serde import QueryPathInfoRequest
 from ..serde.context import ReadContext, WriteContext
+from ..store.local_db import LocalDBStore
 from ._base import Handler
 
 if TYPE_CHECKING:
@@ -20,6 +24,51 @@ if TYPE_CHECKING:
     from ..store.daemon import DaemonStore
 
 logger = structlog.get_logger(__name__)
+
+
+class _Shadow:
+    """pynixd's dump of a path, beside the daemon's NAR of it, compared by SHA-256 and size.
+
+    The client gets the daemon's bytes, whatever the comparison says. The
+    dump reads the same files at the same time, and a failure in it counts
+    as `error` and touches nothing else.
+    """
+
+    def __init__(self, store: LocalDBStore, req: NarFromPathRequest) -> None:
+        self.store = store
+        self.req = req
+        self.theirs = hashlib.sha256()
+        self.ours = hashlib.sha256()
+        self.our_size = 0
+        self.error: Exception | None = None
+        self.done = False
+
+    async def dump(self) -> None:
+        try:
+            async for piece in self.store.nar_pieces(self.req.path):
+                self.ours.update(piece)
+                self.our_size += len(piece)
+        except Exception as exc:
+            self.error = exc
+        self.done = True
+
+    def compare(self, their_size: int) -> None:
+        counter = metrics.OP_SHADOW.labels(store_id=self.store.store_id, op="NarFromPath", outcome="error")
+        if self.error is not None or not self.done:
+            logger.warning("op_shadow_error", op="NarFromPath", path=str(self.req.path), error=repr(self.error))
+            counter.inc()
+            return
+        same = self.our_size == their_size and self.ours.digest() == self.theirs.digest()
+        outcome = "match" if same else "mismatch"
+        metrics.OP_SHADOW.labels(store_id=self.store.store_id, op="NarFromPath", outcome=outcome).inc()
+        if not same:
+            logger.warning(
+                "op_shadow_mismatch",
+                op="NarFromPath",
+                path=str(self.req.path),
+                pynixd=(self.our_size, self.ours.hexdigest()),
+                daemon=(their_size, self.theirs.hexdigest()),
+            )
 
 
 class NarFromPathHandler(Handler):
@@ -55,14 +104,23 @@ class NarFromPathHandler(Handler):
         nar_size = info_resp.info.nar_size
         logger.debug("nar_from_path_streaming", path=req.path, size=nar_size)
 
-        # 3. Forward request to daemon (serde), stream NAR to client
         meter = metrics.TransferMeter(
             enabled=ctx.proxy.metrics_enabled,
             byte_counter=metrics.NAR_SERVE_BYTES,
             path_counter=metrics.NAR_SERVE_PATHS,
             duration=metrics.NAR_SERVE_DURATION,
         )
-        async with store.transfer_conn() as conn:
+        route = store.routes.get(self.op) if isinstance(store, LocalDBStore) else OpRoute.daemon
+        if isinstance(store, LocalDBStore) and route is OpRoute.pynixd:
+            await self._dump(ctx, store, req, meter)
+            return
+        shadow = _Shadow(store, req) if isinstance(store, LocalDBStore) and route is OpRoute.shadow else None
+
+        # 3. Forward request to daemon (serde), stream NAR to client
+        failure: Exception | None = None
+        async with anyio.create_task_group() as tg, store.transfer_conn() as conn:
+            if shadow is not None and nar_size > 0:
+                tg.start_soon(shadow.dump)
             await req.to_writer(WriteContext.from_conn(conn))
             await conn.w.drain()
 
@@ -82,16 +140,52 @@ class NarFromPathHandler(Handler):
             # nixidae/nixidae#1008.
             try:
                 if nar_size > 0:
-                    await wire.forward_raw(conn.r, ctx.proxy.w, nar_size, on_bytes=meter.on_bytes)
+                    await wire.forward_raw(
+                        conn.r,
+                        ctx.proxy.w,
+                        nar_size,
+                        on_bytes=meter.on_bytes,
+                        on_chunk=shadow.theirs.update if shadow is not None else None,
+                    )
                 else:
                     # No nar_size to count against, and the parse reports no
                     # lengths, so these bytes stay off the byte counter. The
                     # path and the duration still count in `finish` below.
+                    # The shadow needs the size, so it sits this one out.
                     await wire.stream_parse_nar(conn.r, ctx.proxy.w)
             except Exception as exc:
-                raise ClosingError(f"pynixd: the NAR of '{req.path}' broke off: {error_text(exc)}") from exc
+                # Raised outside the group, which would wrap it in an ExceptionGroup.
+                failure = exc
+                tg.cancel_scope.cancel()
+        if failure is not None:
+            raise ClosingError(f"pynixd: the NAR of '{req.path}' broke off: {error_text(failure)}") from failure
 
         await ctx.proxy.w.drain()
         meter.finish()
+        if shadow is not None and nar_size > 0:
+            shadow.compare(nar_size)
         logger.debug("responded_op")
         return
+
+    async def _dump(
+        self, ctx: RequestContext, store: LocalDBStore, req: NarFromPathRequest, meter: metrics.TransferMeter
+    ) -> None:
+        """`STDERR_LAST`, then the NAR dumped from the store's files, as `daemon.cc:966` sends them.
+
+        A failure after `STDERR_LAST` ends the session, as on the daemon route.
+        """
+        await ctx.proxy.client.flush()
+        await WireLogs().to_writer(
+            WriteContext(writer=ctx.proxy.w, version=ctx.version, features=ctx.proxy.standard_features)
+        )
+        count = meter.on_bytes
+        try:
+            async for piece in store.nar_pieces(req.path):
+                ctx.proxy.w.write(piece)
+                await ctx.proxy.w.drain()
+                if count is not None:
+                    count(len(piece))
+        except Exception as exc:
+            raise ClosingError(f"pynixd: the NAR of '{req.path}' broke off: {error_text(exc)}") from exc
+        await ctx.proxy.w.drain()
+        meter.finish()

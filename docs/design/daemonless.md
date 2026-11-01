@@ -66,7 +66,7 @@ or both. pynixd writes none of `ValidPaths`, `Refs`, `DerivationOutputs` or
 | 11, 49 AddTempRoot(s) | owned where pynixd can write `temproots`; else the daemon (a `NIX-DEVIATION`) | run where pynixd owns the state directory |
 | 12 AddIndirectRoot | handler forwards | a symlink in `gcroots/auto` |
 | 47 AddPermRoot | handler forwards | the symlink, plus the indirect root |
-| 38 NarFromPath | handler streams the daemon's dump | dump the path to NAR (`pynixd/nar.py` writes NARs) |
+| 38 NarFromPath | shadow by default: the client gets the daemon's NAR, compared with `nar_fs.dump_path` of the store's files by SHA-256 and size; route `pynixd` streams the dump | — |
 
 ### Builds and substitution
 
@@ -110,8 +110,10 @@ Reads first, writes second, builds last.
    QueryDerivationOutputMap (done), QueryRealisation (done), and the QueryPathFromHashPart
    miss (done). No privilege, no lock, and the parity run compares each answer with
    the daemon's.
-2. NarFromPath: a read of the file system, and every copy out of the store
-   uses it.
+2. NarFromPath (done for a client; the cache proxy, `transfer.py` and the
+   substitution queue still read the daemon's dump): a read of the file
+   system, and every copy out of the store uses it. `nar_fs.restore_path`
+   unpacks a NAR for the write path.
 3. The registration routine, then the write ops on top of it, beside a
    running daemon.
 4. Substitution, through `HTTPBinaryCacheStore` and the write path.
@@ -132,5 +134,7 @@ the daemon. An answer that writes has no shadow.
 ```
 
 The switch covers the operations that pass through `LocalDBStore.execute`.
-The handlers that forward bytes (the `AddToStore` family, `NarFromPath`,
-`AddBuildLog`) take it when they gain an answer of their own.
+The handlers that forward bytes take it when they gain an answer of their
+own: `NarFromPath` streams pynixd's dump on the `pynixd` route, and the
+daemon's on the other two. The `AddToStore` family and `AddBuildLog` have
+none yet.
