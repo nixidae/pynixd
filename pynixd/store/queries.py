@@ -31,6 +31,16 @@ QUERY_DERIVATION_OUTPUTS = (
     "select v.id, d.id, d.path from ValidPaths v left join DerivationOutputs d on d.drv = v.id where v.path = ?"
 )
 
+# Nix's own statements for a realisation. Nix 2.34 and 2.35 key `Realisations`
+# by the hash of the derivation (`local-store.cc:377` of 2.34); Nix master keys
+# `BuildTraceV3` by its path, without the store directory (`local-store.cc:407`).
+QUERY_REALISATION_BY_HASH = (
+    "select Output.path, Realisations.signatures from Realisations "
+    "inner join ValidPaths as Output on Output.id = Realisations.outputPath "
+    "where drvPath = ? and outputName = ?"
+)
+QUERY_REALISATION_BY_PATH = "select outputPath, signatures from BuildTraceV3 where drvPath = ? and outputName = ?"
+
 QUERY_VALID_PATHS = """
 SELECT path FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
 """

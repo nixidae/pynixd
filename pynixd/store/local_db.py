@@ -197,6 +197,7 @@ class LocalDBStore(LocalStore):
         31: Owned("own_query_valid_paths", default=OpRoute.pynixd),
         33: Owned("own_query_valid_derivers", default=OpRoute.pynixd),
         41: Owned("own_query_derivation_output_map", default=OpRoute.pynixd),
+        43: Owned("own_query_realisation", default=OpRoute.pynixd),
     }
 
     def __init__(self, spec: LocalSocketStoreSpec) -> None:
@@ -454,6 +455,48 @@ class LocalDBStore(LocalStore):
         async with self.db.execute(QUERY_VALID_DERIVERS, (str(request.path),)) as cursor:
             rows = await cursor.fetchall()
         return QueryValidDeriversResponse.fast(paths={StorePath(path=row[1]) for row in rows})
+
+    async def own_query_realisation(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        """QueryRealisation: the build trace of one derivation output, in both wire shapes.
+
+        The table and its key follow the shape this store's daemon reads, the
+        way `query_realisation` of `DaemonStore` turns the request. Without
+        `ca-derivations` the daemon answers: Nix 2.34 answers nothing there,
+        and Nix master never prepares the statement.
+        """
+        from nix_daemon_protocol.constants import FEATURE_REALISATION_WITH_PATH
+        from nix_daemon_protocol.query_realisation import QueryRealisationResponse
+        from nix_daemon_protocol.realisation import Realisation
+        from nix_daemon_protocol.signature import Signature
+        from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
+
+        from .daemon import answer_in_both_shapes
+        from .queries import QUERY_REALISATION_BY_HASH, QUERY_REALISATION_BY_PATH
+
+        if "ca-derivations" not in (await self.trust_policy()).experimental_features:
+            return None
+        shaped = await self._request_in_the_shape_this_store_reads(request)
+        if FEATURE_REALISATION_WITH_PATH in self.features:
+            keyed = shaped.keyed_drv_output
+            query, key = QUERY_REALISATION_BY_PATH, (keyed.drv_path.name, keyed.output_name)
+        else:
+            query, key = QUERY_REALISATION_BY_HASH, (shaped.drv_output.drv_hash, shaped.drv_output.output_name)
+        async with self.db.execute(query, key) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return QueryRealisationResponse()
+        out_path = StorePath(path=row[0])
+        # Nix orders a `std::set<Signature>` by key name, then signature.
+        signatures = sorted((Signature(text) for text in (row[1] or "").split()), key=lambda s: (s.name, s.signature))
+        if FEATURE_REALISATION_WITH_PATH in self.features:
+            response = QueryRealisationResponse(
+                present=1, realisation=UnkeyedRealisation(out_path=out_path, signatures=set(signatures))
+            )
+        else:
+            response = QueryRealisationResponse(
+                realisations=[Realisation(id=shaped.drv_output, out_path=out_path, signatures=signatures)]
+            )
+        return answer_in_both_shapes(response, request)
 
     async def own_query_derivation_output_map(
         self, request: Any, client: Any = None, suppress_last: bool = False

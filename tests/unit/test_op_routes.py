@@ -95,7 +95,7 @@ class TestTheConfig:
     def test_the_defaults_keep_the_routes_of_before(self, tmp_path: Path) -> None:
         """The SQLite answers pynixd gives, and nothing more."""
         store, _ = _store(tmp_path)
-        assert store.routes == {op: OpRoute.pynixd for op in (1, 6, 23, 26, 29, 31, 33, 41)}
+        assert store.routes == {op: OpRoute.pynixd for op in (1, 6, 23, 26, 29, 31, 33, 41, 43)}
 
 
 @pytest.mark.anyio
