@@ -41,7 +41,7 @@ some cases and sends the rest to the daemon.
 | 29 QueryPathFromHashPart | partly: a miss falls through | answers the miss with "not found" | answer the miss from SQLite |
 | 31 QueryValidPaths | partly: `substitute=true` falls through | substitutes, then queries (`daemon.cc:377`) | substitution (below) |
 | 6 QueryReferrers | owned (SQLite, Nix's own statement) | none while the database is active | — |
-| 33 QueryValidDerivers | daemon | one SQL query | a SQL query on `DerivationOutputs` |
+| 33 QueryValidDerivers | owned (SQLite, Nix's own statement) | none while the database is active | — |
 | 41 QueryDerivationOutputMap | daemon (op 106, the batch, is owned) | reads the derivation and `DerivationOutputs` | the single form of op 106 |
 | 43 QueryRealisation | daemon | reads `Realisations` | a SQL query, both wire shapes |
 | 14 FindRoots | daemon, censored by pynixd | walks `gcroots`, `/proc`, temp roots | the root walk in Python |
@@ -105,7 +105,7 @@ first.
 
 Reads first, writes second, builds last.
 
-1. The read ops with a SQL answer: QueryReferrers (done), QueryValidDerivers,
+1. The read ops with a SQL answer: QueryReferrers (done), QueryValidDerivers (done),
    QueryDerivationOutputMap, QueryRealisation, and the QueryPathFromHashPart
    miss. No privilege, no lock, and the parity run compares each answer with
    the daemon's.

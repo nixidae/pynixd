@@ -167,28 +167,23 @@ async def test_query_path_from_hash_part(
 
 @pytest.mark.legacy_nix_commands
 async def test_query_valid_derivers(profiler: pyinstrument.Profiler, query_env: tuple[Server, str, str]) -> None:
-    """Verify QueryValidDerivers via 'nix-store -q --deriver'.
+    """Verify QueryValidDerivers via 'nix-store -q --valid-derivers'.
 
-    Store operations triggered:
-    - QueryValidDerivers: Queries valid derivers
+    `--deriver` reads the deriver from QueryPathInfo; `--valid-derivers` is
+    the command that sends QueryValidDerivers. Each answer must name the
+    derivation the other names.
     """
     _server, uri, out_path = query_env
 
-    # Could use `nix path-info --derivation <store-path>` as a nix3 equivalent,
-    # but `nix-store -q --deriver` is kept for consistency with other query tests.
-    cmd = [
-        CLIENT_BIN.parent / "nix-store",
-        "--store",
-        uri,
-        "-q",
-        "--deriver",
-        out_path,
-    ]
-    rc, stdout, _stderr, _stdboth = await run_subproc(cmd)
-    assert rc == 0
-    deriver = stdout.strip()
+    answers = []
+    for flag in ("--deriver", "--valid-derivers"):
+        cmd = [CLIENT_BIN.parent / "nix-store", "--store", uri, "-q", flag, out_path]
+        rc, stdout, _stderr, stdboth = await run_subproc(cmd)
+        assert rc == 0, stdboth
+        answers.append(stdout.split())
+    [deriver], valid_derivers = answers
     assert deriver.endswith(".drv")
-    assert deriver.startswith("/nix/store/")
+    assert valid_derivers == [deriver]
 
 
 async def test_query_missing(profiler: pyinstrument.Profiler, query_env: tuple[Server, str, str]) -> None:

@@ -21,6 +21,10 @@ QUERY_ALL_VALID_PATHS = "SELECT path FROM ValidPaths"
 # has no id, so it has no referrers, and a path that refers to itself is one.
 QUERY_REFERRERS = "select path from Refs join ValidPaths on referrer = id where reference = (select id from ValidPaths where path = ?)"
 
+# Nix's own statement, `local-store.cc:371`. A deriver counts while it is
+# valid, whether or not the output it names is.
+QUERY_VALID_DERIVERS = "select v.id, v.path from DerivationOutputs d join ValidPaths v on d.drv = v.id where d.path = ?"
+
 QUERY_VALID_PATHS = """
 SELECT path FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
 """

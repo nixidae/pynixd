@@ -80,24 +80,22 @@ class TestTheConfig:
             LocalSocketStoreSpec(use_db=False, op_routes={"IsValidPath": OpRoute.pynixd})
 
     def test_a_route_to_an_operation_pynixd_cannot_answer_is_refused(self, tmp_path: Path) -> None:
-        with pytest.raises(ValueError, match="no answer to QueryValidDerivers"):
-            _store(tmp_path, QueryValidDerivers=OpRoute.pynixd)
+        with pytest.raises(ValueError, match="no answer to AddSignatures"):
+            _store(tmp_path, AddSignatures=OpRoute.pynixd)
 
     def test_an_answer_that_writes_has_no_shadow(self, tmp_path: Path) -> None:
         class Writes(LocalDBStore):
-            OWNED: ClassVar[dict[int, Owned]] = {33: Owned("own_query_valid_derivers", writes=True)}
+            OWNED: ClassVar[dict[int, Owned]] = {37: Owned("own_add_signatures", writes=True)}
 
         with pytest.raises(ValueError, match="cannot run beside the daemon"):
             Writes(
-                LocalSocketStoreSpec(
-                    store_id=STORE, store_path=tmp_path, op_routes={"QueryValidDerivers": OpRoute.shadow}
-                )
+                LocalSocketStoreSpec(store_id=STORE, store_path=tmp_path, op_routes={"AddSignatures": OpRoute.shadow})
             )
 
     def test_the_defaults_keep_the_routes_of_before(self, tmp_path: Path) -> None:
         """The SQLite answers pynixd gives, and nothing more."""
         store, _ = _store(tmp_path)
-        assert store.routes == {op: OpRoute.pynixd for op in (1, 6, 23, 26, 29, 31)}
+        assert store.routes == {op: OpRoute.pynixd for op in (1, 6, 23, 26, 29, 31, 33)}
 
 
 @pytest.mark.anyio

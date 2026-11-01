@@ -194,6 +194,7 @@ class LocalDBStore(LocalStore):
         26: Owned("own_query_path_info", default=OpRoute.pynixd),
         29: Owned("own_query_path_from_hash_part", default=OpRoute.pynixd),
         31: Owned("own_query_valid_paths", default=OpRoute.pynixd),
+        33: Owned("own_query_valid_derivers", default=OpRoute.pynixd),
     }
 
     def __init__(self, spec: LocalSocketStoreSpec) -> None:
@@ -441,6 +442,16 @@ class LocalDBStore(LocalStore):
         async with self.db.execute(QUERY_REFERRERS, (str(request.path),)) as cursor:
             rows = await cursor.fetchall()
         return QueryReferrersResponse.fast(paths={StorePath(path=row[0]) for row in rows})
+
+    async def own_query_valid_derivers(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        """QueryValidDerivers: the valid derivations that name this path as an output (`daemon.cc:398`)."""
+        from nix_daemon_protocol.query_valid_derivers import QueryValidDeriversResponse
+
+        from .queries import QUERY_VALID_DERIVERS
+
+        async with self.db.execute(QUERY_VALID_DERIVERS, (str(request.path),)) as cursor:
+            rows = await cursor.fetchall()
+        return QueryValidDeriversResponse.fast(paths={StorePath(path=row[1]) for row in rows})
 
     async def own_query_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryValidPaths — fast-path via SQLite."""
