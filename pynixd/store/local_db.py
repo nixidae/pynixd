@@ -471,18 +471,15 @@ class LocalDBStore(LocalStore):
         from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
 
         from .daemon import answer_in_both_shapes
-        from .queries import QUERY_REALISATION_BY_HASH, QUERY_REALISATION_BY_PATH
 
         if "ca-derivations" not in (await self.trust_policy()).experimental_features:
             return None
         shaped = await self._request_in_the_shape_this_store_reads(request)
         if FEATURE_REALISATION_WITH_PATH in self.features:
             keyed = shaped.keyed_drv_output
-            query, key = QUERY_REALISATION_BY_PATH, (keyed.drv_path.name, keyed.output_name)
+            row = await self._realisation_row(keyed.drv_path.name, keyed.output_name)
         else:
-            query, key = QUERY_REALISATION_BY_HASH, (shaped.drv_output.drv_hash, shaped.drv_output.output_name)
-        async with self.db.execute(query, key) as cursor:
-            row = await cursor.fetchone()
+            row = await self._realisation_row(shaped.drv_output.drv_hash, shaped.drv_output.output_name)
         if row is None:
             return QueryRealisationResponse()
         out_path = StorePath(path=row[0])
@@ -498,29 +495,71 @@ class LocalDBStore(LocalStore):
             )
         return answer_in_both_shapes(response, request)
 
+    async def _realisation_row(self, drv: str, output_name: str) -> tuple[str, str | None] | None:
+        """`(output path, signatures)` of one realisation, or `None`.
+
+        *drv* is the key of the table this store's Nix reads: the hash of the
+        derivation (`sha256:<hex>`) without `realisation-with-path-not-hash`,
+        and the base name of the derivation with it.
+        """
+        from nix_daemon_protocol.constants import FEATURE_REALISATION_WITH_PATH
+
+        from .queries import QUERY_REALISATION_BY_HASH, QUERY_REALISATION_BY_PATH
+
+        query = (
+            QUERY_REALISATION_BY_PATH if FEATURE_REALISATION_WITH_PATH in self.features else QUERY_REALISATION_BY_HASH
+        )
+        async with self.db.execute(query, (drv, output_name)) as cursor:
+            row = await cursor.fetchone()
+        return None if row is None else (row[0], row[1])
+
     async def own_query_derivation_output_map(
         self, request: Any, client: Any = None, suppress_last: bool = False
     ) -> Any:
-        """QueryDerivationOutputMap: the outputs `DerivationOutputs` holds for a derivation.
+        """QueryDerivationOutputMap: the outputs of a derivation (`store-api.cc:467`).
 
-        That table is the whole answer only without `ca-derivations`
-        (`store-api.cc:471`); with it, Nix also reads the derivation and its
-        realisations, so the daemon answers. A derivation that is not valid
-        goes to the daemon too, which refuses it with Nix's own error.
+        `DerivationOutputs` holds the outputs whose path is known statically.
+        With `ca-derivations`, each output of the derivation then takes its
+        realisation, and an output with none and no row maps to the empty
+        path (`outputs-query.cc:119`). Nix master keys the realisation by the
+        derivation path; Nix 2.34 by the hash of each output
+        (`staticOutputHashes`, `store-api.cc:406` of 2.34).
+
+        A derivation that is not valid goes to the daemon, which refuses it
+        with Nix's own error. So does one whose file pynixd cannot read or
+        whose hashes the closure cannot give.
         """
+        from nix_daemon_protocol.constants import FEATURE_REALISATION_WITH_PATH
         from nix_daemon_protocol.query_derivation_output_map import QueryDerivationOutputMapResponse
 
+        from ..drv_hash import output_hashes
         from .queries import QUERY_DERIVATION_OUTPUTS
 
-        if "ca-derivations" in (await self.trust_policy()).experimental_features:
-            return None
         async with self.db.execute(QUERY_DERIVATION_OUTPUTS, (str(request.path),)) as cursor:
             rows = await cursor.fetchall()
         if not rows:
             return None
-        return QueryDerivationOutputMapResponse.fast(
-            items={name: StorePath(path=path) for _drv, name, path in rows if name is not None}
-        )
+        items = {name: StorePath(path=path) for _drv, name, path in rows if name is not None}
+        if "ca-derivations" not in (await self.trust_policy()).experimental_features:
+            return QueryDerivationOutputMapResponse.fast(items=items)
+
+        parsed = await self.read_derivation(request.path)
+        if parsed is None:
+            return None
+        if FEATURE_REALISATION_WITH_PATH in self.features:
+            keys = {output.output_name: request.path.name for output in parsed.outputs}
+        else:
+            hashes = await output_hashes(parsed, self.read_derivation)
+            if hashes is None:
+                return None
+            keys = {name: f"sha256:{digest}" for name, digest in hashes.items()}
+        for name, drv in keys.items():
+            row = await self._realisation_row(drv, name)
+            if row is not None:
+                items[name] = StorePath(path=row[0])
+            else:
+                items.setdefault(name, StorePath())
+        return QueryDerivationOutputMapResponse.fast(items=items)
 
     async def own_query_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryValidPaths — fast-path via SQLite."""

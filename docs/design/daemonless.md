@@ -42,7 +42,7 @@ some cases and sends the rest to the daemon.
 | 31 QueryValidPaths | partly: `substitute=true` falls through | substitutes, then queries (`daemon.cc:377`) | substitution (below) |
 | 6 QueryReferrers | owned (SQLite, Nix's own statement) | none while the database is active | — |
 | 33 QueryValidDerivers | owned (SQLite, Nix's own statement) | none while the database is active | — |
-| 41 QueryDerivationOutputMap | partly: owned without `ca-derivations` (SQLite) | with `ca-derivations`, reads the derivation and each output's realisation (`outputs-query.cc:119`); a drv that is not valid | the CA case, on top of QueryRealisation |
+| 41 QueryDerivationOutputMap | owned (SQLite; with `ca-derivations`, the derivation file and each output's realisation) | a drv that is not valid, or whose file or closure hashes pynixd cannot read | — |
 | 43 QueryRealisation | owned with `ca-derivations` (SQLite: `Realisations` by hash, or `BuildTraceV3` by path; both wire shapes) | without `ca-derivations` | — |
 | 14 FindRoots | daemon, censored by pynixd | walks `gcroots`, `/proc`, temp roots | the root walk in Python |
 | 21, 30, 32 QuerySubstitutable* | daemon | asks the substituters | `HTTPBinaryCacheStore` already reads narinfo |
@@ -106,7 +106,7 @@ first.
 Reads first, writes second, builds last.
 
 1. The read ops with a SQL answer: QueryReferrers (done), QueryValidDerivers (done),
-   QueryDerivationOutputMap (without `ca-derivations`), QueryRealisation (done), and the QueryPathFromHashPart
+   QueryDerivationOutputMap (done), QueryRealisation (done), and the QueryPathFromHashPart
    miss (done). No privilege, no lock, and the parity run compares each answer with
    the daemon's.
 2. NarFromPath: a read of the file system, and every copy out of the store
