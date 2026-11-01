@@ -30,6 +30,8 @@ class FakeReader:
 
 
 class FakeWriter:
+    bytes_written = 0
+
     async def is_dirty(self) -> bool:
         return False
 
@@ -42,8 +44,10 @@ class FakeConnection(Connection):
 
     It inherits the real class so the pool takes it without a cast at each
     call. `Connection.__init__` opens nothing -- it assigns fields -- so the
-    two casts here are the whole of the pretence: the pool reads `is_dirty`
-    and `close` off the pair, and nothing else of a reader or a writer.
+    two casts here are the whole of the pretence: the pool reads `is_dirty`,
+    `close` and the byte counts off the pair. A pool outlives its test until
+    the garbage collector frees it, so the traffic collector
+    (`metrics.py`) can read these fakes during a later test.
     """
 
     def __init__(self, conn_id: str, opened_at: float | None = None) -> None:
