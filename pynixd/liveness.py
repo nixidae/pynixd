@@ -22,9 +22,10 @@ land in the table at all; they join each closure query as a parameter.
 Typical pass cost is the walks plus three cheap queries (roots diff,
 fingerprint, skip check); the closure runs only when something moved.
 
-What it deliberately does not mirror: unlinking stale `gcroots/auto`
-links (Nix owns that mutation; the mirror only skips them), and censoring
-(a tracker has no untrusted reader).
+What the mirror deliberately does not do: unlink stale `gcroots/auto`
+links (it only skips them; `unlink_stale_auto_roots` does that for a
+FindRoots request, as Nix does), and censor (a tracker has no untrusted
+reader). `walk_roots` is the same walk with Nix's link for each root.
 """
 
 from __future__ import annotations
@@ -149,13 +150,17 @@ def _walk_tree(tree: Path, found: dict[str, tuple[str, str]], kind: str, store_d
                 raise
 
 
-def _walk_proc_link(path: Path, roots: set[str]) -> None:
+type Labeled = dict[str, set[str]]
+"""Each target a runtime root names, with the files that name it (`local-gc.cc:21`)."""
+
+
+def _walk_proc_link(path: Path, roots: Labeled) -> None:
     target = _readlink(path)
     if target is not None and target.is_absolute():
-        roots.add(str(target))
+        roots.setdefault(str(target), set()).add(str(path))
 
 
-def _walk_proc(pid: Path, roots: set[str], store_dir: str) -> None:
+def _walk_proc(pid: Path, roots: Labeled, store_dir: str) -> None:
     """One `/proc/<pid>`: exe, cwd, fds, mapped files, environment matches."""
     _walk_proc_link(pid / "exe", roots)
     _walk_proc_link(pid / "cwd", roots)
@@ -169,8 +174,9 @@ def _walk_proc(pid: Path, roots: set[str], store_dir: str) -> None:
         if fd.name.startswith("."):
             continue
         _walk_proc_link(Path(fd.path), roots)
+    maps_file = pid / "maps"
     try:
-        maps = (pid / "maps").read_text(errors="replace").splitlines()
+        maps = maps_file.read_text(errors="replace").splitlines()
     except OSError as exc:
         if _suppressed(exc):
             return
@@ -178,18 +184,20 @@ def _walk_proc(pid: Path, roots: set[str], store_dir: str) -> None:
     for line in maps:
         match = _MAPS_PATH.match(line)
         if match is not None:
-            roots.add(match.group(1))
+            roots.setdefault(match.group(1), set()).add(str(maps_file))
+    environ_file = pid / "environ"
     try:
-        environ = (pid / "environ").read_bytes()
+        environ = environ_file.read_bytes()
     except OSError as exc:
         if _suppressed(exc):
             return
         raise
     pattern = re.compile(re.escape(store_dir).encode() + rb"/[0-9a-z]+[0-9a-zA-Z+\-._?=]*")
-    roots.update(match.decode() for match in pattern.findall(environ))
+    for found in pattern.findall(environ):
+        roots.setdefault(found.decode(), set()).add(str(environ_file))
 
 
-def _walk_runtime_roots(proc_dir: Path, roots: set[str], store_dir: str) -> None:
+def _walk_runtime_roots(proc_dir: Path, roots: Labeled, store_dir: str) -> None:
     """`findRuntimeRootsUnchecked`, without the censoring."""
     try:
         entries = list(os.scandir(proc_dir))
@@ -205,22 +213,26 @@ def _walk_runtime_roots(proc_dir: Path, roots: set[str], store_dir: str) -> None
                 if not _suppressed(exc):
                     raise
     for name in ("modprobe", "fbsplash", "poweroff_cmd"):
+        kernel_file = proc_dir / "sys" / "kernel" / name
         try:
-            content = (proc_dir / "sys" / "kernel" / name).read_text().strip()
+            content = kernel_file.read_text().strip()
         except OSError as exc:
             if _suppressed(exc):
                 continue
             raise
         if content:
-            roots.add(content)
+            roots.setdefault(content, set()).add(str(kernel_file))
 
 
-def _walk_temp_roots_grouped(state_dir: Path) -> tuple[dict[str, set[str]], int]:
+def _walk_temp_roots_grouped(state_dir: Path, *, every_name: bool = False) -> tuple[dict[str, set[str]], int]:
     """Temporary roots by owning file, plus the files reaped.
 
     The same walk as `_walk_temp_roots`, kept per file: one file is one
     process's roots, which is the unit the storage report attributes.
     Files that seed nothing hold no live paths and are left out.
+
+    `every_name` reads every name but a dotfile, as `findTempRoots` does.
+    A foreign name still is not reaped: its unlocked file seeds nothing.
     """
     try:
         entries = list(os.scandir(state_dir / "temproots"))
@@ -237,7 +249,8 @@ def _walk_temp_roots_grouped(state_dir: Path) -> tuple[dict[str, set[str]], int]
         # not this reaper's to unlink, so it stays out.
         if entry.name.startswith(".") or not entry.is_file(follow_symlinks=False):
             continue
-        if not (entry.name.isdigit() or entry.name.startswith(PYNIXD_TEMP_ROOTS_PREFIX)):
+        ours = entry.name.isdigit() or entry.name.startswith(PYNIXD_TEMP_ROOTS_PREFIX)
+        if not (ours or every_name):
             continue
         try:
             fd = os.open(entry.path, os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW)
@@ -249,7 +262,7 @@ def _walk_temp_roots_grouped(state_dir: Path) -> tuple[dict[str, set[str]], int]
             raise
         try:
             seeds: set[str] = set()
-            if _seed_or_reap_temp_file(fd, entry.path, seeds):
+            if _seed_or_reap_temp_file(fd, entry.path, seeds, reap=ours):
                 reaped += 1
             elif seeds:
                 grouped[entry.name] = seeds
@@ -287,13 +300,13 @@ def _walk_temp_roots(state_dir: Path, roots: set[str]) -> int:
     return reaped
 
 
-def _seed_or_reap_temp_file(fd: int, path: str, roots: set[str]) -> bool:
+def _seed_or_reap_temp_file(fd: int, path: str, roots: set[str], *, reap: bool = True) -> bool:
     """Seed live temp roots, or unlink a dead owner's file. Returns unlinked.
 
     A separate function so the race guard has a deterministic test: the
     caller opens `path`, and between that open and this call the name may
     have been recreated. Only `True` unlinks, and only the locked file's
-    own name.
+    own name. Without `reap`, a dead owner's file seeds nothing and stays.
     """
     st = os.fstat(fd)
     if not stat.S_ISREG(st.st_mode):
@@ -313,7 +326,11 @@ def _seed_or_reap_temp_file(fd: int, path: str, roots: set[str]) -> bool:
                 break
             chunks.append(chunk)
         content = b"".join(chunks)
-        roots.update(part.decode(errors="replace") for part in content.split(b"\x00") if part.strip())
+        # The last part has no NUL yet: a write in progress, which Nix skips (`gc.cc:169`).
+        terminated = content.split(b"\x00")[:-1]
+        roots.update(part.decode(errors="replace") for part in terminated if part.strip())
+        return False
+    if not reap:
         return False
     try:
         current = os.stat(path)
@@ -356,8 +373,9 @@ def walk_volatile(state_dir: Path, store_dir: str, proc_dir: Path | None = None)
     Never stored: they change constantly, and writing them would churn the
     table for no reader. They join each closure query as a parameter.
     """
-    targets: set[str] = set()
-    _walk_runtime_roots(proc_dir if proc_dir is not None else Path("/proc"), targets, store_dir)
+    labeled: Labeled = {}
+    _walk_runtime_roots(proc_dir if proc_dir is not None else Path("/proc"), labeled, store_dir)
+    targets = set(labeled)
     _walk_temp_roots(state_dir, targets)
     return {path for target in targets if (path := _store_path_of(target, store_dir)) is not None}
 
@@ -390,12 +408,72 @@ def walk_labeled_roots(state_dir: Path, store_dir: str, proc_dir: Path | None = 
         kept = {seed for seed in seeds if seed.startswith(prefix)}
         if kept:
             labeled.append((f"temproot:{name}", kept))
-    targets: set[str] = set()
+    targets: Labeled = {}
     _walk_runtime_roots(proc_dir if proc_dir is not None else Path("/proc"), targets, store_dir)
     proc = {path for target in targets if (path := _store_path_of(target, store_dir)) is not None}
     if proc:
         labeled.append(("proc", proc))
     return labeled
+
+
+def unlink_stale_auto_roots(state_dir: Path, store_dir: str, tree: Path | None = None) -> None:
+    """Unlink each link under `gcroots/auto` whose target is gone, as `findRoots` does (`gc.cc:268`).
+
+    A link into the store stays whatever it names. Any other target is made
+    absolute against the link, and the link goes when nothing is there:
+    `pathExists` is an `lstat`, so a dangling intermediate still counts.
+    """
+    tree = tree if tree is not None else state_dir / "gcroots" / "auto"
+    try:
+        entries = list(os.scandir(tree))
+    except OSError as exc:
+        if _suppressed(exc):
+            return
+        raise
+    for entry in entries:
+        link = Path(entry.path)
+        if entry.is_dir(follow_symlinks=False):
+            unlink_stale_auto_roots(state_dir, store_dir, link)
+            continue
+        if not entry.is_symlink():
+            continue
+        target = _readlink(link)
+        if target is None or str(target).startswith(store_dir + "/"):
+            continue
+        resolved = os.path.normpath(link.parent / target)
+        if os.path.lexists(resolved):
+            continue
+        log.info("removing_stale_gc_root", link=str(link), target=resolved)
+        try:
+            link.unlink()
+        except OSError as exc:
+            if not _suppressed(exc):
+                raise
+
+
+def walk_roots(state_dir: Path, store_dir: str, proc_dir: Path | None = None) -> tuple[Labeled, Labeled]:
+    """`(checked, temporary)`: each store path a root names, with its links, as `findRoots(false)` does.
+
+    Nix keeps a root in `gcroots`, in `profiles` and in `/proc` only when its
+    store path is valid (`gc.cc:235`, `:362`); that check is the caller's,
+    against the store database. A temporary root needs none (`gc.cc:225`)
+    and is labelled `{temp:<file name>}`.
+    """
+    checked: Labeled = {}
+    for link, (path, _kind) in walk_stable(state_dir, store_dir).items():
+        checked.setdefault(path, set()).add(link)
+    runtime: Labeled = {}
+    _walk_runtime_roots(proc_dir if proc_dir is not None else Path("/proc"), runtime, store_dir)
+    for target, links in runtime.items():
+        if (runtime_path := _store_path_of(target, store_dir)) is not None:
+            checked.setdefault(runtime_path, set()).update(links)
+    temporary: Labeled = {}
+    grouped, _reaped = _walk_temp_roots_grouped(state_dir, every_name=True)
+    for name, seeds in grouped.items():
+        for seed in seeds:
+            if _store_path_of(seed, store_dir) == seed:
+                temporary.setdefault(seed, set()).add(f"{{temp:{name}}}")
+    return checked, temporary
 
 
 QUERY_LIVE_SET = f"""

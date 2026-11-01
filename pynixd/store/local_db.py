@@ -35,10 +35,16 @@ _HASH_PART_LENGTH = 32  # `StorePath::HashLen`
 _LOGGED_CHARACTERS = 2000
 
 
-def _value(response: Any) -> Any:
-    """What an answer says, without the log messages that came with it."""
+def _value(response: Any, unordered: frozenset[str] = frozenset()) -> Any:
+    """What an answer says, without the log messages that came with it.
+
+    The fields in *unordered* are sorted, because their order says nothing.
+    """
     if isinstance(response, BaseModel):
-        return response.model_dump(exclude={"logs"})
+        dumped = response.model_dump(exclude={"logs"})
+        for name in unordered & dumped.keys():
+            dumped[name] = sorted(dumped[name], key=repr)
+        return dumped
     return response
 
 
@@ -191,6 +197,7 @@ class LocalDBStore(LocalStore):
     OWNED: ClassVar[dict[int, Owned]] = {
         1: Owned("own_is_valid_path", default=OpRoute.pynixd),
         6: Owned("own_query_referrers", default=OpRoute.pynixd),
+        14: Owned("own_find_roots", default=OpRoute.pynixd, unordered=frozenset({"roots"})),
         23: Owned("own_query_all_valid_paths", default=OpRoute.pynixd),
         26: Owned("own_query_path_info", default=OpRoute.pynixd),
         29: Owned("own_query_path_from_hash_part", default=OpRoute.pynixd),
@@ -343,7 +350,8 @@ class LocalDBStore(LocalStore):
         if ours is None:
             counter.labels(store_id=self.store_id, op=request.name, outcome="declined").inc()
             return
-        if _value(ours) == _value(theirs):
+        mine, its = _value(ours, owned.unordered), _value(theirs, owned.unordered)
+        if mine == its:
             counter.labels(store_id=self.store_id, op=request.name, outcome="match").inc()
             return
         counter.labels(store_id=self.store_id, op=request.name, outcome="mismatch").inc()
@@ -351,8 +359,8 @@ class LocalDBStore(LocalStore):
             "op_shadow_mismatch",
             op=request.name,
             request=_bounded(request.model_dump(exclude={"logs"})),
-            pynixd=_bounded(_value(ours)),
-            daemon=_bounded(_value(theirs)),
+            pynixd=_bounded(mine),
+            daemon=_bounded(its),
         )
 
     # ── pynixd's answers, by route ─────────────────────────────────
@@ -494,6 +502,44 @@ class LocalDBStore(LocalStore):
                 realisations=[Realisation(id=shaped.drv_output, out_path=out_path, signatures=signatures)]
             )
         return answer_in_both_shapes(response, request)
+
+    async def own_find_roots(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        """FindRoots: every root and the links that name it, uncensored (`gc.cc:319`).
+
+        The handler censors for an untrusted client. Nix walks the roots in
+        the daemon, so the walk sees what the daemon's user sees. A managed
+        daemon is pynixd's own child, and root sees everything; any other
+        daemon may see more than pynixd, and it answers instead.
+        """
+        import json
+        import os
+
+        from anyio.to_thread import run_sync
+
+        from nix_daemon_protocol.find_roots import FindRootsEntry, FindRootsResponse
+
+        from ..liveness import unlink_stale_auto_roots, walk_roots
+        from .queries import QUERY_VALID_PATHS
+
+        if not self.managed and os.geteuid() != 0:
+            return None
+        # As on the daemon route (`find_roots` of `DaemonStore`): an idle pooled
+        # worker holds a temporary root for each path it took, which no client holds.
+        await self.retire_idle_connections()
+        state_dir, store_dir = self.layout.state_dir, str(self.layout.store_dir)
+
+        def walk() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+            unlink_stale_auto_roots(state_dir, store_dir)
+            return walk_roots(state_dir, store_dir)
+
+        checked, temporary = await run_sync(walk)
+        async with self.db.execute(QUERY_VALID_PATHS, (json.dumps(sorted(checked)),)) as cursor:
+            valid = {row[0] for row in await cursor.fetchall()}
+        entries = {(link, path) for path in valid for link in checked[path]}
+        entries |= {(link, path) for path, links in temporary.items() for link in links}
+        return FindRootsResponse.fast(
+            roots=[FindRootsEntry(link=link, target=path) for link, path in sorted(entries, key=lambda e: (e[1], e[0]))]
+        )
 
     async def _realisation_row(self, drv: str, output_name: str) -> tuple[str, str | None] | None:
         """`(output path, signatures)` of one realisation, or `None`.

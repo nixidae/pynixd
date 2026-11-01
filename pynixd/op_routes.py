@@ -44,3 +44,6 @@ class Owned:
     default: OpRoute = OpRoute.daemon
     #: An answer that writes cannot run beside the daemon's, so it has no shadow.
     writes: bool = False
+    #: List fields of the response whose order Nix leaves unspecified. The
+    #: shadow sorts them before it compares: `FindRoots` walks an unordered map.
+    unordered: frozenset[str] = frozenset()

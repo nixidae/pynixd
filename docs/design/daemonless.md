@@ -44,7 +44,7 @@ some cases and sends the rest to the daemon.
 | 33 QueryValidDerivers | owned (SQLite, Nix's own statement) | none while the database is active | — |
 | 41 QueryDerivationOutputMap | owned (SQLite; with `ca-derivations`, the derivation file and each output's realisation) | a drv that is not valid, or whose file or closure hashes pynixd cannot read | — |
 | 43 QueryRealisation | owned with `ca-derivations` (SQLite: `Realisations` by hash, or `BuildTraceV3` by path; both wire shapes) | without `ca-derivations` | — |
-| 14 FindRoots | daemon, censored by pynixd | walks `gcroots`, `/proc`, temp roots | the root walk in Python |
+| 14 FindRoots | owned (the walk of `liveness.py`, validity from SQLite), censored by the handler | a daemon pynixd did not start, while pynixd is not root: that daemon may see more of `/proc` | — |
 | 21, 30, 32 QuerySubstitutable* | daemon | asks the substituters | `HTTPBinaryCacheStore` already reads narinfo |
 | 40 QueryMissing | goal engine; leaves ask the daemon | — | its leaves are ops 31 and 30 |
 

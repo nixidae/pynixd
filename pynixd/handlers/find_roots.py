@@ -36,7 +36,7 @@ def censor(roots: list[FindRootsEntry]) -> list[FindRootsEntry]:
 
 
 class FindRootsHandler(Handler):
-    """Server handler for FindRoots. The upstream connection is root's, so pynixd censors."""
+    """Server handler for FindRoots. The store answers uncensored, so pynixd censors."""
 
     op: ClassVar[int] = 14
 
