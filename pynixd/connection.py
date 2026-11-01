@@ -272,6 +272,29 @@ class Connection:
                 report, self.on_close = self.on_close, None
                 report(self)
 
+    async def close_after_peer(self, timeout: float) -> None:
+        """Close, after the daemon worker at the other end has exited.
+
+        A worker of `nix-daemon` closes its socket only when it exits, and its
+        exit releases the lock on its temporary roots file (`gc.cc:62`). So
+        this half-closes the socket and reads to the end, for at most
+        *timeout* seconds. After that, a walk of the temporary roots finds the
+        file unlocked. Only a Unix socket can half-close; any other transport
+        closes at once.
+        """
+        writer = self.w
+        if isinstance(writer, wire.UnixNixWriter):
+            with (
+                anyio.move_on_after(timeout),
+                contextlib.suppress(OSError, anyio.BrokenResourceError, anyio.ClosedResourceError),
+            ):
+                await writer.drain()
+                await writer.stream.send_eof()
+                with contextlib.suppress(asyncio.IncompleteReadError, EOFError, ConnectionResetError):
+                    while True:
+                        await self.r.readexactly(1)
+        await self.close()
+
     async def apply_options(self, options: SetOptionsRequest | None) -> None:
         """Give this connection the option set of a client, when it needs it.
 

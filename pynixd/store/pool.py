@@ -23,6 +23,9 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+_RETIRE_WAIT = 5.0
+"""Seconds `retire_idle` waits for one idle worker to exit; an idle worker exits at once on EOF."""
+
 
 # Per-store connection holder tracking via ContextVar
 # Tracks nested connection count per store_id
@@ -459,6 +462,11 @@ class ConnectionPool:
         one that issue #20 states: give each client session its own upstream
         connection, and close it with the session. Then a root lives as long
         as the client that made it, as in `nix-daemon`, and no window is left.
+
+        Each close waits for its worker to exit (`close_after_peer`), so the
+        worker's temporary roots are gone when this returns. A close that
+        returns at once leaves a race: the walk of `FindRoots` reads the roots
+        files within milliseconds, which can be sooner than a worker exits.
         """
         idle = self.idle_conns
         self.idle_conns = []
@@ -467,7 +475,7 @@ class ConnectionPool:
                 self.all_conns.remove(conn)
             log.debug("pool_retiring_idle", store_id=self.store_id, conn_id=conn.id)
             with suppress(Exception):
-                await conn.close()
+                await conn.close_after_peer(_RETIRE_WAIT)
         return len(idle)
 
     async def close(self) -> None:
