@@ -118,7 +118,7 @@ class TestTheConfig:
         """The SQLite answers pynixd gives, and nothing more."""
         store, _ = _store(tmp_path)
         pynixd = {op: OpRoute.pynixd for op in (1, 6, 14, 23, 26, 29, 31, 32, 33, 41, 43)}
-        assert store.routes == {**pynixd, 38: OpRoute.shadow}
+        assert store.routes == {**pynixd, 38: OpRoute.daemon}
 
 
 @pytest.mark.anyio

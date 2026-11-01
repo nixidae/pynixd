@@ -119,7 +119,9 @@ cat > "$config" <<JSON
       "nix_bin": "$REAL_NIX",
       "use_db": true,
       "monitor": false,
-      "probe": false
+      "probe": false,
+      "pynixd_writes": true,
+      "op_routes": {"NarFromPath": "shadow"}
     }
   },
   "unix_path": "$NIX_DAEMON_SOCKET_PATH",

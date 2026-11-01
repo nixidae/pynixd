@@ -263,6 +263,8 @@ def _config(work: Path, root: Path) -> Path:
                         "use_db": True,
                         "monitor": False,
                         "probe": False,
+                        "pynixd_writes": True,
+                        "op_routes": {"NarFromPath": "shadow"},
                     },
                 },
                 "unix_path": str(work / "inner.sock"),

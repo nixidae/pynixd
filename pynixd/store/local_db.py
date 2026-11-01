@@ -206,7 +206,8 @@ class LocalDBStore(LocalStore):
         26: Owned("own_query_path_info", default=OpRoute.pynixd),
         29: Owned("own_query_path_from_hash_part", default=OpRoute.pynixd),
         31: Owned("own_query_valid_paths", default=OpRoute.pynixd),
-        38: Owned("own_nar_from_path", default=OpRoute.shadow),
+        # The daemon in a deployment: the shadow reads every NAR twice. The test stores run it in shadow.
+        38: Owned("own_nar_from_path"),
         32: Owned("own_query_substitutable_paths", default=OpRoute.pynixd),
         33: Owned("own_query_valid_derivers", default=OpRoute.pynixd),
         41: Owned("own_query_derivation_output_map", default=OpRoute.pynixd),

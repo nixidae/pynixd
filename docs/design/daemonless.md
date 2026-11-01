@@ -66,7 +66,7 @@ or both. pynixd writes none of `ValidPaths`, `Refs`, `DerivationOutputs` or
 | 11, 49 AddTempRoot(s) | owned where pynixd can write `temproots`; else the daemon (a `NIX-DEVIATION`) | run where pynixd owns the state directory |
 | 12 AddIndirectRoot | handler forwards | a symlink in `gcroots/auto` |
 | 47 AddPermRoot | handler forwards | the symlink, plus the indirect root |
-| 38 NarFromPath | shadow by default: the client gets the daemon's NAR, compared with `nar_fs.dump_path` of the store's files by SHA-256 and size; route `pynixd` streams the dump | — |
+| 38 NarFromPath | on trial: the daemon in a deployment; shadow in every test store, where the client gets the daemon's NAR, compared with `nar_fs.dump_path` of the store's files by SHA-256 and size; route `pynixd` streams the dump | — |
 
 ### Builds and substitution
 
@@ -128,6 +128,13 @@ gains enters `LocalDBStore.OWNED` at `daemon`, runs in `shadow` against real
 traffic, and moves to `pynixd` when `pynixd_op_shadow_total` shows no
 mismatch. `pynixd_op_fallthrough_total` then shows what of it still reaches
 the daemon. An answer that writes has no shadow.
+
+An answer on trial defaults to `daemon`, so a deployment keeps working as it
+did. The test stores route it to `shadow` (`TEST_OP_ROUTES` in
+`tests/_conftest/config.py`, and the parity and functional-suite shim
+configurations), and a shadow mismatch or error fails the functional suite
+(`tests/functional/conftest.py`). It moves to `pynixd` when the suites
+have shown it agrees.
 
 Writes are opt-in twice. `pynixd_writes` on the store spec is off by default,
 and with it off a route to `pynixd` for an answer that writes refuses to

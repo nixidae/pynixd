@@ -14,6 +14,7 @@ from environs import env
 from nix_daemon_protocol.ids import StoreId
 from pynixd import Server
 from pynixd.config import LocalSocketStoreSpec
+from pynixd.op_routes import OpRoute
 from pynixd.store.local_db import LocalDBStore
 from tests._conftest.constants import (
     _NO_PROBE_FEATURE_MATRIX,
@@ -33,6 +34,12 @@ if TYPE_CHECKING:
 
 
 log = structlog.get_logger(__name__)
+
+TEST_OP_ROUTES: dict[str, OpRoute] = {"NarFromPath": OpRoute.shadow}
+"""Answers on trial: in shadow in every test store, on the daemon in a deployment.
+
+`nix/functional-tests/make-shim.sh` and `tests/parity/test_wire_parity.py`
+write the same routes into their configurations."""
 
 # ── Nix binary paths ─────────────────────────────────────────────
 
@@ -137,6 +144,10 @@ def make_test_spec(
     nix_bin = str(kwargs.pop("nix_bin", NIX_BIN))
     # A test store is the test's own, so pynixd may write it, as a deployment may not by default.
     kwargs.setdefault("pynixd_writes", True)
+    # The answers still on trial run in shadow here, and on the daemon in a deployment.
+    # A store without its database has no answer of pynixd's to shadow.
+    if kwargs.get("use_db", True):
+        kwargs["op_routes"] = {**TEST_OP_ROUTES, **kwargs.get("op_routes", {})}
 
     return LocalSocketStoreSpec(
         store_id=StoreId(store_id),
