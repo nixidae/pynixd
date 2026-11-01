@@ -2,13 +2,6 @@
 
 This document defines the foundational architectural patterns and engineering standards for `pynixd`. These instructions take precedence over general defaults.
 
-## 1. Version Control: Jujutsu (jj)
-- **Tool**: Use `jj` (Jujutsu), NOT `git`.
-- **Committing**: Prefer `jj commit -m "..."` to finish a task. It creates a new revision and provides a clean working copy.
-- **Squashing**: If your changes are a fixup for the last commit, prefer `jj squash --use-destination-message` to keep the commit message or `jj squash -m "..."` to update the commit message
-- **Paging**: Always include `--no-pager` in all `jj` commands to ensure non-interactive execution.
-- **Subagents must NEVER use VCS tools** (no `jj`, no `git`, no `jj squash`, no `jj commit`, nothing). Subagents are strictly limited to reading/writing files and running validation commands (`nix build --file . checks.format checks.lint checks.types`). If a subagent cannot complete its task, it should report the error back to the primary agent and let the primary agent handle it.
-
 ## 2. Core Architectural Pattern: Request-Driven Execution
 `pynixd` follows a strict three-tier execution pattern to separate protocol IO from business logic.
 
@@ -130,8 +123,7 @@ Write the tag exactly, and give four parts:
 3. what pynixd could do instead;
 4. why pynixd still copies it, or how pynixd already deviates.
 
-Report the defect on the fork, which is `Lillecarl/nix`, and name that report
-in part 4. Do not report it upstream.
+Name the report of the defect in part 4.
 
 ### `NIX-DEVIATION (#27):`, for a decision of pynixd
 
@@ -180,7 +172,7 @@ paragraph names a file of Nix.
 ## 6. Execution Sanity & Recovery
 - **Halt on Ambiguity**: If a tool output indicates potential corruption (e.g., duplicate declarations in a `replace` output, unexpected truncations), or if you lose track of the file state relative to the VCS, **STOP immediately**. Do not attempt blind recovery (like `write_file` with partial content).
 - **Verify Before Rewrite**: Before using `write_file` to "fix" a large file, you MUST have read the *entire* file in the current turn to ensure no data loss.
-- **VCS Truth**: If `jj status` or `jj diff` contradicts your internal model of the changes, re-sync by reading the files from disk before taking further action. Do not guess.
+- **VCS Truth**: If the VCS status or diff contradicts your internal model of the changes, re-sync by reading the files from disk before taking further action. Do not guess.
 
 ## 7. Documentation & Onboarding
 - **Glossary**: A comprehensive `GLOSSARY.md` is maintained in the repository root. It defines both foundational Nix terminology (NAR, StorePath, etc.) and `pynixd`-specific concepts (Trampolining, Three-Tier Execution).
