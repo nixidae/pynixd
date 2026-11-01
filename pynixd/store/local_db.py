@@ -7,6 +7,7 @@ import types
 from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, Union, get_args, get_origin
 
+import anyio
 import structlog
 from pydantic import BaseModel
 
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
 
     from ..config import LocalSocketStoreSpec
     from ..connection import ClientConn
+    from ..substitution_queue import SubstitutionQueue
 
 log = structlog.get_logger(__name__)
 
@@ -202,6 +204,7 @@ class LocalDBStore(LocalStore):
         26: Owned("own_query_path_info", default=OpRoute.pynixd),
         29: Owned("own_query_path_from_hash_part", default=OpRoute.pynixd),
         31: Owned("own_query_valid_paths", default=OpRoute.pynixd),
+        32: Owned("own_query_substitutable_paths", default=OpRoute.pynixd),
         33: Owned("own_query_valid_derivers", default=OpRoute.pynixd),
         41: Owned("own_query_derivation_output_map", default=OpRoute.pynixd),
         43: Owned("own_query_realisation", default=OpRoute.pynixd),
@@ -211,6 +214,8 @@ class LocalDBStore(LocalStore):
         super().__init__(spec)
         # `start` replaces it. A start that fails before then still reaches `close`.
         self.db = LocalStoreDB.inactive(self.layout)
+        #: The scheduler's race over the substituters; the instance sets it at start.
+        self.substitution_queue: SubstitutionQueue | None = None
         self.configured_routes = {_OP_CODES[name]: route for name, route in spec.op_routes.items()}
         for op, route in self.configured_routes.items():
             if route is OpRoute.daemon:
@@ -502,6 +507,46 @@ class LocalDBStore(LocalStore):
                 realisations=[Realisation(id=shaped.drv_output, out_path=out_path, signatures=signatures)]
             )
         return answer_in_both_shapes(response, request)
+
+    async def own_query_substitutable_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        """QuerySubstitutablePaths: the paths some substituter holds, from the scheduler's race.
+
+        NIX-DEVIATION (#27): `Store::querySubstitutablePaths` at
+        `store-api.cc:504` asks the substituters one after another, in
+        priority order, and skips each one without `want-mass-query`. pynixd
+        asks every substituter backend at once for each path, takes the first
+        hit, and keeps hits and misses in the queue's caches
+        (`SubstitutionQueue.can_substitute`), as its binary cache proxy does.
+        The set is the same while the caches agree: a path counts when any
+        substituter holds it, in both. The cost is a path a cache without
+        `want-mass-query` holds, which Nix leaves out and pynixd includes.
+        To reverse it, measure that against the time of the sequential walk.
+
+        A client that names its own substituters gets the daemon's answer:
+        those are not pynixd's backends. Without `substitute`, nothing is
+        substitutable (`store-api.cc:506`).
+        """
+        from nix_daemon_protocol.query_substitutable_paths import QuerySubstitutablePathsResponse
+
+        from ..goals.query_missing import client_names_a_substituter
+
+        queue = self.substitution_queue
+        if queue is None or client_names_a_substituter(client):
+            return None
+        options = client.options if client is not None else None
+        if options is not None and not options.use_substitutes:
+            return QuerySubstitutablePathsResponse.fast(paths=set())
+
+        found: set[StorePath] = set()
+
+        async def ask(path: StorePath) -> None:
+            if (await queue.can_substitute(path)).available:
+                found.add(path)
+
+        async with anyio.create_task_group() as tg:
+            for path in request.paths:
+                tg.start_soon(ask, path)
+        return QuerySubstitutablePathsResponse.fast(paths=found)
 
     async def own_find_roots(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """FindRoots: every root and the links that name it, uncensored (`gc.cc:319`).

@@ -776,6 +776,8 @@ class Server:
             self.ctx.scheduler.substitution_queue.set_import_slots(self.ctx.trust.max_substitution_jobs)
 
         if isinstance(local_store, LocalDBStore):
+            if self.ctx.scheduler:
+                local_store.substitution_queue = self.ctx.scheduler.substitution_queue
             self.ctx.db = local_store.db
             log.info(
                 "local_store_db_connected",
