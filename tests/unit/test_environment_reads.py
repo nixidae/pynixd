@@ -4,7 +4,7 @@ Issue #30 took `environs` out of the library. It answered four calls across
 three modules and cost 64 ms of every daemon start, because it pulls
 `marshmallow` and `python-dotenv`, and nothing ever called `env.read_env()`.
 `pynixd/tests/_conftest/config.py` still uses it, which is what
-`pynixd/CLAUDE.md` asks of a test.
+nixidae's `CLAUDE.md` asks of a test.
 
 `os.environ.get(name, "")` is exact for the two string reads.
 `wire._env_int` is not exact, and this file pins the one place it differs:

@@ -167,7 +167,7 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
 
         This starts no goal after the failure, and it cancels none. A build of
         pynixd survives the client that asked for it, which is the property
-        that `AGENTS.md` states, so a cancellation here would kill work that
+        that nixidae's `CLAUDE.md` states, so a cancellation here would kill work that
         another client still waits for.
 
         The answer holds `None` for each goal that never ran.

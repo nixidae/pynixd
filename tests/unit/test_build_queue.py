@@ -250,7 +250,7 @@ async def test_keep_going_keeps_every_build_of_the_request_wanted() -> None:
 async def test_a_build_that_a_second_request_wants_stays_wanted() -> None:
     """A build of pynixd serves every client that asked for the same derivation.
 
-    `AGENTS.md` states the property, and the subset test is what keeps it: the
+    nixidae's `CLAUDE.md` states the property, and the subset test is what keeps it: the
     failure of one request must not take the work of another. Issue nixidae/nixidae#325.
     """
     queue = BuildQueue()

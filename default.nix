@@ -238,7 +238,7 @@ let
     wire.
 
     Below the floor the suite does not describe a daemon this proxy claims to
-    serve.  See the protocol matrix in CLAUDE.md.
+    serve.  See the protocol matrix in nixidae's CLAUDE.md.
   */
   supportedNixFloor = "2.34";
 

@@ -105,7 +105,7 @@ EXEMPTIONS: tuple[Exemption, ...] = (
         field="logs.pynixd_note",
         reason=(
             "A log line that starts with `pynixd: ` is a note of pynixd about itself, "
-            "and the daemon writes none. Section 3 of `pynixd/CLAUDE.md` asks for these: "
+            "and the daemon writes none. nixidae's `CLAUDE.md` (pynixd) asks for these: "
             "a cached answer says so, and a build says where it goes."
         ),
     ),

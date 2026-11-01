@@ -248,7 +248,7 @@ async def test_a_log_line_that_only_one_side_wrote_is_a_difference(workdir: Path
 
 @pytest.mark.anyio
 async def test_a_note_that_pynixd_writes_about_itself_is_exempt(workdir: Path) -> None:
-    """Section 3 of `pynixd/CLAUDE.md` asks pynixd for these lines."""
+    """nixidae's `CLAUDE.md` (pynixd) asks pynixd for these lines."""
     control = await decode(await build_tape(workdir / "a.wire", logs=("deleting garbage...",)))
     candidate = await decode(
         await build_tape(

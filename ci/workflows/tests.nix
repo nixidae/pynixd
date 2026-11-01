@@ -152,7 +152,7 @@ ghalib.evalWorkflow {
         # green run here is not proof on its own that it ran. 16 tests, 47 s.
         (pytestSuite "Differential tests" [ "tests/differential" ])
         # The parity suite: the same workload against `nix daemon` and against
-        # pynixd, byte for byte. `AGENTS.md` calls this the measure of
+        # pynixd, byte for byte. nixidae's `CLAUDE.md` calls this the measure of
         # pynixd's contract, and its own docstring lists six defects it found
         # -- and no wired path ran it. Issue #33 is the same hole one suite
         # over. 8 tests, 22 s.

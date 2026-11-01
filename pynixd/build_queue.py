@@ -901,7 +901,7 @@ class BuildQueue:
         pass runs after `trigger`.
 
         **A build that a second, live request also wants is still wanted.**
-        That is the property `AGENTS.md` states -- a build of pynixd serves
+        That is the property nixidae's `CLAUDE.md` states -- a build of pynixd serves
         every client that asked for it -- and the subset test is what keeps
         it.
 

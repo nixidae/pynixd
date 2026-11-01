@@ -370,7 +370,7 @@ number is something else.
 
 **`NOISE` is not an exemption table.** An exemption covers a difference
 somebody explained and decided to keep, under one of the two verdicts of
-`CLAUDE.md` section 5b. This covers a test that measures nothing, which
+nixidae's `CLAUDE.md`, pynixd "Divergence markers". This covers a test that measures nothing, which
 needs no verdict. There is still no exemption table here -- see below.
 
 #### What the first run found
