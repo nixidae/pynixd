@@ -80,22 +80,24 @@ class TestTheConfig:
             LocalSocketStoreSpec(use_db=False, op_routes={"IsValidPath": OpRoute.pynixd})
 
     def test_a_route_to_an_operation_pynixd_cannot_answer_is_refused(self, tmp_path: Path) -> None:
-        with pytest.raises(ValueError, match="no answer to QueryReferrers"):
-            _store(tmp_path, QueryReferrers=OpRoute.pynixd)
+        with pytest.raises(ValueError, match="no answer to QueryValidDerivers"):
+            _store(tmp_path, QueryValidDerivers=OpRoute.pynixd)
 
     def test_an_answer_that_writes_has_no_shadow(self, tmp_path: Path) -> None:
         class Writes(LocalDBStore):
-            OWNED: ClassVar[dict[int, Owned]] = {6: Owned("own_query_referrers", writes=True)}
+            OWNED: ClassVar[dict[int, Owned]] = {33: Owned("own_query_valid_derivers", writes=True)}
 
         with pytest.raises(ValueError, match="cannot run beside the daemon"):
             Writes(
-                LocalSocketStoreSpec(store_id=STORE, store_path=tmp_path, op_routes={"QueryReferrers": OpRoute.shadow})
+                LocalSocketStoreSpec(
+                    store_id=STORE, store_path=tmp_path, op_routes={"QueryValidDerivers": OpRoute.shadow}
+                )
             )
 
     def test_the_defaults_keep_the_routes_of_before(self, tmp_path: Path) -> None:
-        """The five SQLite answers pynixd gave before the switch, and nothing more."""
+        """The SQLite answers pynixd gives, and nothing more."""
         store, _ = _store(tmp_path)
-        assert store.routes == {op: OpRoute.pynixd for op in (1, 23, 26, 29, 31)}
+        assert store.routes == {op: OpRoute.pynixd for op in (1, 6, 23, 26, 29, 31)}
 
 
 @pytest.mark.anyio

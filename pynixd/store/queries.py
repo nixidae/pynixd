@@ -17,6 +17,10 @@ WHERE v.path = ?
 
 QUERY_ALL_VALID_PATHS = "SELECT path FROM ValidPaths"
 
+# Nix's own statement, `local-store.cc:364`. A path the store does not hold
+# has no id, so it has no referrers, and a path that refers to itself is one.
+QUERY_REFERRERS = "select path from Refs join ValidPaths on referrer = id where reference = (select id from ValidPaths where path = ?)"
+
 QUERY_VALID_PATHS = """
 SELECT path FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
 """

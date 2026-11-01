@@ -189,6 +189,7 @@ class LocalDBStore(LocalStore):
     #: pynixd's answer to each operation it can answer, by op code.
     OWNED: ClassVar[dict[int, Owned]] = {
         1: Owned("own_is_valid_path", default=OpRoute.pynixd),
+        6: Owned("own_query_referrers", default=OpRoute.pynixd),
         23: Owned("own_query_all_valid_paths", default=OpRoute.pynixd),
         26: Owned("own_query_path_info", default=OpRoute.pynixd),
         29: Owned("own_query_path_from_hash_part", default=OpRoute.pynixd),
@@ -430,6 +431,16 @@ class LocalDBStore(LocalStore):
             rows = await cursor.fetchall()
         paths: set[StorePath] = {StorePath(path=r[0]) for r in rows}
         return QueryAllValidPathsResponse(paths=paths)
+
+    async def own_query_referrers(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        """QueryReferrers: the paths whose references name this one (`daemon.cc:397`)."""
+        from nix_daemon_protocol.query_referrers import QueryReferrersResponse
+
+        from .queries import QUERY_REFERRERS
+
+        async with self.db.execute(QUERY_REFERRERS, (str(request.path),)) as cursor:
+            rows = await cursor.fetchall()
+        return QueryReferrersResponse.fast(paths={StorePath(path=row[0]) for row in rows})
 
     async def own_query_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryValidPaths — fast-path via SQLite."""
