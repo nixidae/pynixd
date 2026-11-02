@@ -131,3 +131,26 @@ def content_addressed_path(
         )
     payload = f"fixed:out:{ca.method}{ca.algo}:{ca.digest.hex()}:"
     return make_store_path("output:out", "sha256", hashlib.sha256(payload.encode()).digest(), name, store_dir)
+
+
+def store_path_name(path: str) -> str:
+    """The name of a printed store path: what follows the hash part."""
+    return path.rsplit("/", 1)[-1].split("-", 1)[1]
+
+
+def is_content_addressed(path: str, ca: str, references: Iterable[str], store_dir: str) -> bool:
+    """`ValidPathInfo::isContentAddressed` at `path-info.cc:108`: whether *ca* and *references* give *path*.
+
+    A malformed *ca* raises `ValueError`; an address that Nix cannot turn into a path is `False`.
+    """
+    if not ca:
+        return False
+    address = ContentAddress.parse(ca)
+    references = set(references)
+    try:
+        expected = content_addressed_path(
+            address, store_path_name(path), references - {path}, store_dir, self_reference=path in references
+        )
+    except ValueError:
+        return False
+    return expected == path

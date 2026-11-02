@@ -16,7 +16,13 @@ import anyio
 
 from nix_daemon_protocol.derivation_output import DerivationOutput, OutputKind
 
-from ..content_address import ContentAddress, content_addressed_path, fixed_output_address
+from ..content_address import (
+    ContentAddress,
+    content_addressed_path,
+    fixed_output_address,
+    is_content_addressed,
+    store_path_name,
+)
 from ..drv_hash import output_hashes
 from ..drv_parser import read_drv_file
 from ..goals.resolution import _make_output_path, _output_path_name
@@ -62,10 +68,6 @@ class Registration:
     derivation_outputs: Mapping[str, str]
 
 
-def _name_of(path: str) -> str:
-    return path.rsplit("/", 1)[-1].split("-", 1)[1]
-
-
 def _signatures(sigs: Iterable[Signature]) -> str | None:
     """`Signature::toStrings` of a `std::set<Signature>`: ordered by key name, then by the decoded bytes."""
     ordered = sorted(sigs, key=lambda sig: (sig.name, base64.b64decode(sig.signature)))
@@ -85,19 +87,11 @@ async def prepare(info: ValidPathInfo, layout: StoreLayout) -> Registration:
 
     ca: str | None = None
     if unkeyed.ca:
-        address = ContentAddress.parse(str(unkeyed.ca))
-        others = references - {path}
-        try:
-            expected = content_addressed_path(
-                address, _name_of(path), others, store_dir, self_reference=path in references
-            )
-        except ValueError:
-            expected = None
-        if expected != path:
+        if not is_content_addressed(path, str(unkeyed.ca), references, store_dir):
             raise RegistrationError(
                 f"cannot add path '{path}' to the Nix store because it claims to be content-addressed but isn't"
             )
-        ca = address.render()
+        ca = ContentAddress.parse(str(unkeyed.ca)).render()
 
     outputs: dict[str, str] = {}
     if path.endswith(_DRV_EXTENSION):
@@ -126,7 +120,7 @@ async def _derivation_outputs(drv_path: str, layout: StoreLayout) -> dict[str, s
     parsed = await read_drv_file(drv_path, layout)
     if parsed is None:
         raise RegistrationError(f"getting status of '{drv_path}': No such file or directory")
-    drv_name = _name_of(drv_path).removesuffix(_DRV_EXTENSION)
+    drv_name = store_path_name(drv_path).removesuffix(_DRV_EXTENSION)
     if parsed.env.get("name") != drv_name:
         raise RegistrationError(
             f"derivation '{drv_path}' has name '{parsed.env.get('name', '')}' which does not match its path"
