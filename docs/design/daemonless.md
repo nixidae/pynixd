@@ -52,8 +52,10 @@ some cases and sends the rest to the daemon.
 ### Writes to the store
 
 Each of these registers a path in `db.sqlite`, writes the store file system,
-or both. pynixd writes none of `ValidPaths`, `Refs`, `DerivationOutputs` or
-`Realisations` today. It writes only tables of its own (`local_store_db.py`).
+or both. `LocalDBStore.register_valid_paths` (`store/register.py`) writes
+`ValidPaths`, `Refs` and `DerivationOutputs` as `registerValidPaths` does, with
+Nix's statements, and only with `pynixd_writes` on. No operation calls it yet.
+`Realisations` has no writer in pynixd.
 
 | op | today | to own it |
 | --- | --- | --- |
@@ -114,8 +116,11 @@ Reads first, writes second, builds last.
    substitution queue still read the daemon's dump): a read of the file
    system, and every copy out of the store uses it. `nar_fs.restore_path`
    unpacks a NAR for the write path.
-3. The registration routine, then the write ops on top of it, beside a
-   running daemon.
+3. The registration routine (done: a differential against Nix's own rows in
+   `tests/functional/test_register_valid_paths.py`), then the write ops on
+   top of it, beside a running daemon. A daemon worker keeps no path-info
+   cache (`pathInfoCacheSize = 0`, `daemon.cc:439`), so a pooled worker sees
+   a registration by pynixd at once.
 4. Substitution, through `HTTPBinaryCacheStore` and the write path.
 5. Roots, the live set, and deletion.
 6. The builder. This is where the experiments in nixidae/nixidae#1155 live.

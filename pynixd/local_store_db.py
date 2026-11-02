@@ -9,9 +9,10 @@ heads only, never closures. Marking one path used to touch its whole
 transitive closure -- tens of thousands of rows in one write transaction
 against the daemon's own database, every few seconds -- for paths nobody
 observed. A row now means exactly "named in traffic"; anything untouched
-resolves its age from `registrationTime` instead. Nix's own tables are
-never written: not even `registrationTime`, which Nix writes once at
-registration and `nix path-info` reports as the entry age.
+resolves its age from `registrationTime` instead. The access tracker never
+writes Nix's own tables: not even `registrationTime`, which Nix writes once at
+registration and `nix path-info` reports as the entry age. The one writer of
+Nix's tables is `store/register.py`, behind `pynixd_writes`.
 
 If the database can't be opened (permissions, missing file, wrong schema),
 logs a warning and becomes unavailable — callers fall back to the daemon.

@@ -19,10 +19,12 @@ from ..local_store_db import LocalStoreDB
 from ..op_routes import OpRoute, Owned
 from ..serde import StorePath
 from .local_daemon import LocalStore
+from .register import prepare, register_valid_paths
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Iterable
 
+    from nix_daemon_protocol.valid_path_info import ValidPathInfo
     from nix_daemon_protocol.wire_ops import WireRequest
 
     from ..config import LocalSocketStoreSpec
@@ -407,6 +409,24 @@ class LocalDBStore(LocalStore):
                 yield piece
         finally:
             pieces.close()
+
+    async def register_valid_paths(self, infos: Iterable[ValidPathInfo]) -> None:
+        """Make *infos* valid in Nix's own tables, as `LocalStore::registerValidPaths` does.
+
+        The files must already be in the store. Only a store with
+        `pynixd_writes` on may call this; `RegistrationError` carries Nix's
+        reason for a path Nix would refuse.
+        """
+        if not self.pynixd_writes:
+            raise RuntimeError(f"store {self.store_id}: pynixd_writes is off, so pynixd registers no path")
+        if not self.db.active or self.db.read_only:
+            raise RuntimeError(f"store {self.store_id}: pynixd cannot write the store database")
+        infos = list(infos)
+        registrations = [await prepare(info, self.layout) for info in infos]
+        async with self.db.acquire_conn() as conn:
+            await register_valid_paths(conn, registrations)
+        for info in infos:
+            self.forget_path_info(info.path)
 
     async def own_is_valid_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """IsValidPath — fast-path via SQLite lookup.

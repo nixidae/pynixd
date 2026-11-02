@@ -101,3 +101,11 @@ FROM DerivationOutputs do
 JOIN ValidPaths vp_drv ON do.drv = vp_drv.id
 WHERE vp_drv.path IN (SELECT value FROM json_each(?))
 """
+
+# Nix's own statements for a registration, `local-store.cc:331-348` of 2.34,
+# the same on master. Every write to Nix's tables uses one of these.
+REGISTER_VALID_PATH = "insert into ValidPaths (path, hash, registrationTime, deriver, narSize, ultimate, sigs, ca) values (?, ?, ?, ?, ?, ?, ?, ?);"
+UPDATE_PATH_INFO = "update ValidPaths set narSize = ?, hash = ?, ultimate = ?, sigs = ?, ca = ? where path = ?;"
+ADD_REFERENCE = "insert or replace into Refs (referrer, reference) values (?, ?);"
+ADD_DERIVATION_OUTPUT = "insert or replace into DerivationOutputs (drv, id, path) values (?, ?, ?);"
+QUERY_VALID_PATH_ID = "select id from ValidPaths where path = ?;"
