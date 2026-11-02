@@ -54,12 +54,12 @@ some cases and sends the rest to the daemon.
 Each of these registers a path in `db.sqlite`, writes the store file system,
 or both. `LocalDBStore.register_valid_paths` (`store/register.py`) writes
 `ValidPaths`, `Refs` and `DerivationOutputs` as `registerValidPaths` does, with
-Nix's statements, and only with `pynixd_writes` on. AddToStoreNar and
-AddMultipleToStore call it on their `pynixd` routes. `Realisations` has no writer in pynixd.
+Nix's statements, and only with `pynixd_writes` on. AddToStore, AddToStoreNar
+and AddMultipleToStore call it on their `pynixd` routes. `Realisations` has no writer in pynixd.
 
 | op | today | to own it |
 | --- | --- | --- |
-| 7 AddToStore | handler forwards the framed NAR | unpack the NAR, hash, canonicalise, register |
+| 7 AddToStore | on trial: the daemon in a deployment; route `pynixd` adds the flat or NAR dump as `addToStoreFromDump` does (`local-store.cc:1168`): restore into a locked `tmp-*` directory while hashing, the path from the address and references, a temp root, then the path lock, move, NAR hash, canonical metadata, registration. A Git address, an algorithm pynixd does not know, an address Nix cannot make a path of, a name Nix refuses, a client before 1.25, repair, `auto-optimise-store` and `fsync-store-paths` go to the daemon | — |
 | 39 AddToStoreNar | on trial: the daemon in a deployment; route `pynixd` imports it (`store/add.py`): signatures, path lock, restore into a locked `tmp-*` directory, NAR and content hash, canonical metadata, registration. Repair, a Git address, `auto-optimise-store` and `fsync-store-paths` go to the daemon | — |
 | 44 AddMultipleToStore | on trial: the daemon in a deployment; route `pynixd` imports each path as AddToStoreNar does, in stream order, one registration per path (`daemon.cc:505`). The first error ends the op and keeps the paths before it. A Git address goes to the daemon as AddToStoreNar for that path; repair, `auto-optimise-store` and `fsync-store-paths` send the whole op there | — |
 | 37 AddSignatures | daemon | update `ValidPaths.sigs` |
@@ -159,5 +159,6 @@ daemon's on the other two. `AddToStoreNar` imports the NAR itself on the
 `pynixd` route, and the test that sets that route compares the result with
 the daemon's import (`tests/functional/test_add_to_store_nar_import.py`).
 `AddMultipleToStore` does the same for `nix copy`
-(`tests/functional/test_add_multiple_to_store_import.py`). `AddToStore` and
-`AddBuildLog` have none yet.
+(`tests/functional/test_add_multiple_to_store_import.py`), and `AddToStore`
+for an evaluation's derivations (`tests/functional/test_add_to_store_import.py`).
+`AddBuildLog` has none yet.
