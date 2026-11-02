@@ -15,10 +15,10 @@ reach it from the code of today.
 - The write path is `StoreEngine` (`store/engine.py`, step 2 below). Its
   parts are `store/add.py` and `store/register.py`. `LocalDBStore` holds one
   engine, and still answers the reads itself.
-- `WriteRouter` (`write_router.py`, step 3 below) chooses the engine or the
-  daemon for the five call sites: the handlers of ops 7, 39 and 44, the
-  substitution queue, and the HTTP cache's upload. Each one asks it, then
-  calls the engine or forwards the bytes itself.
+- `WriteRouter` (`write_router.py`, steps 3 and 4 below) chooses the engine
+  or the daemon for the five call sites, and runs the write there: the
+  handlers of ops 7, 39 and 44, the substitution queue, and the HTTP
+  cache's upload. Each one makes one call with Nix's name.
 - The write path reads its bytes through one `Source` (step 1, below).
 
 Each of these works, and the suites prove it. Each one also makes the next
@@ -100,14 +100,14 @@ that nothing moved.
    names, and the two modules are their parts.)
 3. The router and its reason table. The five call sites call it. (Done:
    `REASONS` in `write_router.py`, first match wins.)
-4. The handlers of ops 7, 39 and 44 call one router method each. (First
-   half done: `DaemonWrites`, `store/daemon_writes.py`, is the daemon
-   backend with the engine's names, and every write to the daemon goes
-   through it. The second half, the router methods, waits on step 5: op 7's
-   engine route answers with the path's info, which is a read the engine
-   does not own yet.)
+4. The handlers of ops 7, 39 and 44 call one router method each. (Done:
+   `DaemonWrites`, `store/daemon_writes.py`, is the daemon backend with the
+   engine's names. The router's `add_to_store`, `add_to_store_from_dump`,
+   `add_multiple_to_store` and `import_nar` choose and run each write, and
+   `WriteClient` is what a write needs of the session.)
 5. The read answers (`own_*`) move into the engine with plain types, and
-   `LocalDBStore` stops being a subclass of `DaemonStore`.
+   `LocalDBStore` stops being a subclass of `DaemonStore`. (Started:
+   `StoreEngine.query_path_info`.)
 6. The package split.
 
 New operations go into the engine from step 2 on, not into `LocalDBStore`.
