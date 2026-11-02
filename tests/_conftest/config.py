@@ -35,11 +35,16 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-TEST_OP_ROUTES: dict[str, OpRoute] = {"NarFromPath": OpRoute.shadow}
-"""Answers on trial: in shadow in every test store, on the daemon in a deployment.
+TEST_OP_ROUTES: dict[str, OpRoute] = {"NarFromPath": OpRoute.shadow, "AddToStoreNar": OpRoute.pynixd}
+"""Answers on trial: in every test store, and on the daemon in a deployment.
 
-`nix/functional-tests/make-shim.sh` and `tests/parity/test_wire_parity.py`
-write the same routes into their configurations."""
+An answer that writes has no shadow, so it takes the `pynixd` route here, in a
+store with `pynixd_writes` on. `nix/functional-tests/make-shim.sh` and
+`tests/parity/test_wire_parity.py` write the same routes into their
+configurations."""
+
+_WRITES = frozenset({"AddToStoreNar"})
+"""The trial routes that a store with `pynixd_writes` off cannot take."""
 
 # ── Nix binary paths ─────────────────────────────────────────────
 
@@ -147,7 +152,8 @@ def make_test_spec(
     # The answers still on trial run in shadow here, and on the daemon in a deployment.
     # A store without its database has no answer of pynixd's to shadow.
     if kwargs.get("use_db", True):
-        kwargs["op_routes"] = {**TEST_OP_ROUTES, **kwargs.get("op_routes", {})}
+        trial = {op: route for op, route in TEST_OP_ROUTES.items() if kwargs["pynixd_writes"] or op not in _WRITES}
+        kwargs["op_routes"] = {**trial, **kwargs.get("op_routes", {})}
 
     return LocalSocketStoreSpec(
         store_id=StoreId(store_id),
