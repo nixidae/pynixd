@@ -25,6 +25,7 @@ from ..content_address import (
 )
 from ..drv_hash import output_hashes
 from ..drv_parser import read_drv_file
+from ..exceptions import PynixdError
 from ..goals.resolution import _make_output_path, _output_path_name
 from .queries import (
     ADD_DERIVATION_OUTPUT,
@@ -48,7 +49,7 @@ if TYPE_CHECKING:
 _DRV_EXTENSION = ".drv"
 
 
-class RegistrationError(Exception):
+class RegistrationError(PynixdError):
     """Nix refuses this registration, and the message is Nix's."""
 
 

@@ -816,6 +816,24 @@ class FramedReader(NixReader):
             self._compact()
         return result
 
+    async def next_chunk(self) -> bytes:
+        """What is buffered, else the next frame whole; `b""` at the end.
+
+        A reader on another thread pays one hop per call, so a frame is the unit, not a token.
+        """
+        if self._pos < len(self._buf):
+            rest = bytes(self._buf[self._pos :])
+            self._buf.clear()
+            self._pos = 0
+            return rest
+        if self._eof:
+            return b""
+        size = await self._src.read_uint64()
+        if size == 0:
+            self._eof = True
+            return b""
+        return await self._src.readexactly(size)
+
     async def ensure_eof(self) -> None:
         """Read until the end of the framed stream (size=0).
 

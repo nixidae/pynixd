@@ -54,13 +54,13 @@ some cases and sends the rest to the daemon.
 Each of these registers a path in `db.sqlite`, writes the store file system,
 or both. `LocalDBStore.register_valid_paths` (`store/register.py`) writes
 `ValidPaths`, `Refs` and `DerivationOutputs` as `registerValidPaths` does, with
-Nix's statements, and only with `pynixd_writes` on. No operation calls it yet.
-`Realisations` has no writer in pynixd.
+Nix's statements, and only with `pynixd_writes` on. AddToStoreNar calls it on
+its `pynixd` route. `Realisations` has no writer in pynixd.
 
 | op | today | to own it |
 | --- | --- | --- |
 | 7 AddToStore | handler forwards the framed NAR | unpack the NAR, hash, canonicalise, register |
-| 39 AddToStoreNar | handler forwards | the same, plus signature checks against `trusted-public-keys` |
+| 39 AddToStoreNar | on trial: the daemon in a deployment; route `pynixd` imports it (`store/add.py`): signatures, path lock, restore into a locked `tmp-*` directory, NAR and content hash, canonical metadata, registration. Repair, a Git address, `auto-optimise-store` and `fsync-store-paths` go to the daemon | — |
 | 44 AddMultipleToStore | handler forwards | the same, many paths in one transaction |
 | 37 AddSignatures | daemon | update `ValidPaths.sigs` |
 | 42 RegisterDrvOutput | daemon | insert into `Realisations` |
@@ -155,5 +155,7 @@ roots file) only with it on; its answer is the same either way.
 The switch covers the operations that pass through `LocalDBStore.execute`.
 The handlers that forward bytes take it when they gain an answer of their
 own: `NarFromPath` streams pynixd's dump on the `pynixd` route, and the
-daemon's on the other two. The `AddToStore` family and `AddBuildLog` have
-none yet.
+daemon's on the other two. `AddToStoreNar` imports the NAR itself on the
+`pynixd` route, and the test that sets that route compares the result with
+the daemon's import (`tests/functional/test_add_to_store_nar_import.py`).
+`AddToStore`, `AddMultipleToStore` and `AddBuildLog` have none yet.

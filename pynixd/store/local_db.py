@@ -15,15 +15,18 @@ from nix_daemon_protocol.operations import STANDARD_OPERATIONS
 from nix_daemon_protocol.store_dir import store_prefix
 
 from .. import metrics
+from ..constants import proto
 from ..local_store_db import LocalStoreDB
 from ..op_routes import OpRoute, Owned
 from ..serde import StorePath
+from .add import ImportSettings
 from .local_daemon import LocalStore
 from .register import prepare, register_valid_paths
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable
 
+    from nix_daemon_protocol.add_to_store_nar import AddToStoreNarRequest
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
     from nix_daemon_protocol.wire_ops import WireRequest
 
@@ -36,6 +39,8 @@ log = structlog.get_logger(__name__)
 _OP_CODES = {op.name: op.code for op in STANDARD_OPERATIONS}
 _OP_NAMES = {op.code: op.name for op in STANDARD_OPERATIONS}
 _HASH_PART_LENGTH = 32  # `StorePath::HashLen`
+#: `daemon.cc:943`: from 1.23 the NAR of AddToStoreNar comes framed.
+_FRAMED_NAR = proto(1, 23)
 
 #: The most of one value a shadow mismatch logs: `QueryAllValidPaths` answers the whole store.
 _LOGGED_CHARACTERS = 2000
@@ -210,6 +215,7 @@ class LocalDBStore(LocalStore):
         31: Owned("own_query_valid_paths", default=OpRoute.pynixd),
         # The daemon in a deployment: the shadow reads every NAR twice. The test stores run it in shadow.
         38: Owned("own_nar_from_path"),
+        39: Owned("own_add_to_store_nar", writes=True),
         32: Owned("own_query_substitutable_paths", default=OpRoute.pynixd),
         33: Owned("own_query_valid_derivers", default=OpRoute.pynixd),
         41: Owned("own_query_derivation_output_map", default=OpRoute.pynixd),
@@ -220,6 +226,7 @@ class LocalDBStore(LocalStore):
         super().__init__(spec)
         # `start` replaces it. A start that fails before then still reaches `close`.
         self.db = LocalStoreDB.inactive(self.layout)
+        self._import_settings: ImportSettings | None = None
         #: The scheduler's race over the substituters; the instance sets it at start.
         self.substitution_queue: SubstitutionQueue | None = None
         self.configured_routes = {_OP_CODES[name]: route for name, route in spec.op_routes.items()}
@@ -386,6 +393,36 @@ class LocalDBStore(LocalStore):
 
     async def own_nar_from_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """None: a NAR is a stream, which `NarFromPathHandler` takes from `nar_pieces` on this route."""
+        return None
+
+    async def own_add_to_store_nar(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        """None: the NAR follows the request, and `AddToStoreNarHandler` imports it with `store/add.py`."""
+        return None
+
+    async def import_settings(self) -> ImportSettings:
+        """What `addToStore` reads of this store's Nix settings. Read once, as the daemon reads them."""
+        if self._import_settings is None:
+            self._import_settings = ImportSettings.from_nix_config(await self.read_nix_config())
+        return self._import_settings
+
+    async def why_the_daemon_imports(self, request: AddToStoreNarRequest, version: int) -> str | None:
+        """Why the daemon must import this NAR on the `pynixd` route, or `None` when pynixd can.
+
+        Known from the header, before a byte of the NAR: a NAR has no replay.
+        """
+        settings = await self.import_settings()
+        if not self.db.active or self.db.read_only:
+            return "the store database is not writable"
+        if version < _FRAMED_NAR:
+            return "the client sends the NAR unframed"
+        if request.repair:
+            return "repair"
+        if settings.auto_optimise_store:
+            return "auto-optimise-store"
+        if settings.fsync_store_paths:
+            return "fsync-store-paths"
+        if str(request.info.info.ca).startswith("fixed:git:"):
+            return "a Git content address"
         return None
 
     async def nar_pieces(self, path: StorePath) -> AsyncIterator[bytes]:
