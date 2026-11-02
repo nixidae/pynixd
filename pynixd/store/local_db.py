@@ -12,7 +12,6 @@ import structlog
 from pydantic import BaseModel
 
 from nix_daemon_protocol.operations import STANDARD_OPERATIONS
-from nix_daemon_protocol.store_dir import store_prefix
 
 from .. import metrics
 from ..local_store_db import LocalStoreDB
@@ -20,7 +19,7 @@ from ..op_routes import OpRoute, Owned
 from ..serde import StorePath
 from ..write_router import WriteRouter
 from .daemon_writes import DaemonWrites
-from .engine import StoreEngine, path_info
+from .engine import StoreEngine
 from .local_daemon import LocalStore
 
 if TYPE_CHECKING:
@@ -424,35 +423,16 @@ class LocalDBStore(LocalStore):
         await self.engine.register_valid_paths(infos)
 
     async def own_is_valid_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
-        """IsValidPath — fast-path via SQLite lookup.
+        """IsValidPath, from the engine.
 
-        The synchronous reader of the session answers this when it has one.
-        It skips the `aiosqlite` thread hop, which is most of the cost of the
-        query: one build sends an `IsValidPath` for every derivation of its
-        closure. A reader that cannot answer reports `None`, and the pooled
-        connection answers instead.
+        The session's synchronous reader answers when it can. It skips the
+        `aiosqlite` thread hop, which is most of the cost of the query: one
+        build sends an `IsValidPath` for every derivation of its closure.
         """
-        if not self.db.active:
-            return None
-
-        path_str = str(request.path)
-
         from pynixd.serde import IsValidPathResponse
 
-        reader = getattr(client, "sync_reader", None)
-        if reader is not None:
-            valid = reader.is_valid_path(path_str)
-            if valid is not None:
-                return IsValidPathResponse.fast(valid=valid)
-
-        from .queries import IS_VALID_PATH
-
-        async with self.db.execute(IS_VALID_PATH, (path_str,)) as cursor:
-            row = await cursor.fetchone()
-        if row is not None:
-            return IsValidPathResponse.fast(valid=True)
-
-        return IsValidPathResponse.fast(valid=False)
+        valid = await self.engine.is_valid_path(str(request.path), reader=getattr(client, "sync_reader", None))
+        return IsValidPathResponse.fast(valid=valid)
 
     async def own_query_path_info(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryPathInfo: the path-info cache, then the engine."""
@@ -466,36 +446,22 @@ class LocalDBStore(LocalStore):
         return QueryPathInfoResponse.fast(valid=True, info=info.info)
 
     async def own_query_all_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
-        """QueryAllValidPaths — fast-path via SQLite."""
+        """QueryAllValidPaths, from the engine."""
+        from pynixd.serde import QueryAllValidPathsResponse
 
-        from pynixd.serde import QueryAllValidPathsResponse, StorePath
-
-        from .queries import QUERY_ALL_VALID_PATHS
-
-        async with self.db.execute(QUERY_ALL_VALID_PATHS) as cursor:
-            rows = await cursor.fetchall()
-        paths: set[StorePath] = {StorePath(path=r[0]) for r in rows}
-        return QueryAllValidPathsResponse(paths=paths)
+        return QueryAllValidPathsResponse(paths=await self.engine.query_all_valid_paths())
 
     async def own_query_referrers(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
-        """QueryReferrers: the paths whose references name this one (`daemon.cc:397`)."""
+        """QueryReferrers (`daemon.cc:397`), from the engine."""
         from nix_daemon_protocol.query_referrers import QueryReferrersResponse
 
-        from .queries import QUERY_REFERRERS
-
-        async with self.db.execute(QUERY_REFERRERS, (str(request.path),)) as cursor:
-            rows = await cursor.fetchall()
-        return QueryReferrersResponse.fast(paths={StorePath(path=row[0]) for row in rows})
+        return QueryReferrersResponse.fast(paths=await self.engine.query_referrers(str(request.path)))
 
     async def own_query_valid_derivers(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
-        """QueryValidDerivers: the valid derivations that name this path as an output (`daemon.cc:398`)."""
+        """QueryValidDerivers (`daemon.cc:398`), from the engine."""
         from nix_daemon_protocol.query_valid_derivers import QueryValidDeriversResponse
 
-        from .queries import QUERY_VALID_DERIVERS
-
-        async with self.db.execute(QUERY_VALID_DERIVERS, (str(request.path),)) as cursor:
-            rows = await cursor.fetchall()
-        return QueryValidDeriversResponse.fast(paths={StorePath(path=row[1]) for row in rows})
+        return QueryValidDeriversResponse.fast(paths=await self.engine.query_valid_derivers(str(request.path)))
 
     async def own_query_realisation(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryRealisation: the build trace of one derivation output, in both wire shapes.
@@ -695,19 +661,9 @@ class LocalDBStore(LocalStore):
             # (`force_substitute_on_destination`): without it, forcing would
             # answer from the mirror and substitute nothing. Issue #54.
             return None  # fall through
+        from pynixd.serde import QueryValidPathsResponse
 
-        import json
-
-        from pynixd.serde import QueryValidPathsResponse, StorePath
-
-        from .queries import QUERY_VALID_PATHS
-
-        paths_json = json.dumps([str(p) for p in request.paths])
-        async with self.db.execute(QUERY_VALID_PATHS, (paths_json,)) as cursor:
-            rows = await cursor.fetchall()
-
-        paths: set[StorePath] = {StorePath(path=r[0]) for r in rows}
-        return QueryValidPathsResponse(paths=paths)
+        return QueryValidPathsResponse(paths=await self.engine.query_valid_paths(str(p) for p in request.paths))
 
     async def own_query_path_from_hash_part(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryPathFromHashPart: the valid path whose hash part this is (`local-store.cc:958`).
@@ -717,89 +673,42 @@ class LocalDBStore(LocalStore):
         """
         from pynixd.serde import QueryPathFromHashPartResponse, StorePath
 
-        from .queries import QUERY_PATH_FROM_HASH_PART
-
         if len(request.path) != _HASH_PART_LENGTH:
             return None
-        prefix = f"{store_prefix()}{request.path}"
-        upper = prefix[:-1] + chr(ord(prefix[-1]) + 1)
-        async with self.db.execute(QUERY_PATH_FROM_HASH_PART, (prefix, upper)) as cursor:
-            row = await cursor.fetchone()
-        return QueryPathFromHashPartResponse.fast(value=StorePath(path=row[0] if row else ""))
+        found = await self.engine.query_path_from_hash_part(str(request.path))
+        return QueryPathFromHashPartResponse.fast(value=found or StorePath(path=""))
 
     async def query_closure(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
-        """QueryClosure — fast-path via SQLite recursive CTE."""
+        """QueryClosure, from the engine."""
+        from pynixd.serde import QueryClosureResponse
 
-        import json
-
-        from pynixd.serde import QueryClosureResponse, StorePath
-
-        from .queries import QUERY_CLOSURE
-
-        seeds_json = json.dumps([str(p) for p in request.paths])
-        async with self.db.execute(QUERY_CLOSURE, (seeds_json,)) as cursor:
-            rows = await cursor.fetchall()
-        paths: set[StorePath] = {StorePath(path=row[0]) for row in rows}
-        return QueryClosureResponse(paths=paths)
+        return QueryClosureResponse(paths=await self.engine.query_closure(str(p) for p in request.paths))
 
     async def query_closure_with_info(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
-        """QueryClosureWithInfo — fast-path via SQLite recursive CTE with full info."""
-
-        if not request.paths:
-            from pynixd.serde import QueryClosureWithInfoResponse
-
-            return QueryClosureWithInfoResponse(infos=[])
-
-        import json
-
+        """QueryClosureWithInfo, from the engine."""
         from pynixd.serde import QueryClosureWithInfoResponse
 
-        from .queries import QUERY_CLOSURE_WITH_INFO
-
-        seeds_json = json.dumps([str(p) for p in request.paths])
-        async with self.db.execute(QUERY_CLOSURE_WITH_INFO, (seeds_json,)) as cursor:
-            rows = await cursor.fetchall()
-        return QueryClosureWithInfoResponse(infos=[path_info(row[:8], (row[8] or "").split()) for row in rows])
+        if not request.paths:
+            return QueryClosureWithInfoResponse(infos=[])
+        return QueryClosureWithInfoResponse(
+            infos=await self.engine.query_closure_with_info(str(p) for p in request.paths)
+        )
 
     async def query_path_infos(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
-        """QueryPathInfos — batch path info query via SQLite with per-path cache check."""
-
-        if not request.paths:
-            from pynixd.serde import QueryPathInfosResponse
-
-            return QueryPathInfosResponse(infos=[])
-
-        cached: dict[Any, Any] = {}
-        uncached: list[Any] = []
-        for path in request.paths:
-            cached_info = self.get_path_info(path)
-            if cached_info is not None:
-                cached[path] = cached_info
-            else:
-                uncached.append(path)
-
-        if not uncached:
-            from pynixd.serde import QueryPathInfosResponse
-
-            return QueryPathInfosResponse(infos=list(cached.values()))
-
-        import json
-
+        """QueryPathInfos: the path-info cache for each path, then the engine for the rest."""
         from pynixd.serde import QueryPathInfosResponse
 
-        from .queries import QUERY_PATH_INFOS_BATCH, QUERY_REFERENCES_BATCH
-
-        paths_json = json.dumps([str(p) for p in uncached])
-        async with self.db.execute(QUERY_PATH_INFOS_BATCH, (paths_json,)) as cursor:
-            rows = await cursor.fetchall()
-        async with self.db.execute(QUERY_REFERENCES_BATCH, (paths_json,)) as cursor:
-            ref_rows = await cursor.fetchall()
-
-        references: dict[str, set[str]] = {}
-        for referrer, reference in ref_rows:
-            references.setdefault(referrer, set()).add(reference)
-        infos = [path_info(tuple(row), references.get(row[0], ())) for row in rows]
-        return QueryPathInfosResponse(infos=[*cached.values(), *infos])
+        cached: list[ValidPathInfo] = []
+        uncached: list[str] = []
+        for path in request.paths:
+            info = self.get_path_info(path)
+            if info is not None:
+                cached.append(info)
+            else:
+                uncached.append(str(path))
+        if not uncached:
+            return QueryPathInfosResponse(infos=cached)
+        return QueryPathInfosResponse(infos=[*cached, *await self.engine.query_path_infos(uncached)])
 
     async def query_derivation_output_map_batch(
         self, request: Any, client: Any = None, suppress_last: bool = False

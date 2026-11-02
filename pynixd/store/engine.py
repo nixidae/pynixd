@@ -9,6 +9,7 @@ above it (a path that changed) come in as callables.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 from nix_daemon_protocol.content_address import ContentAddress
@@ -22,7 +23,19 @@ from nix_daemon_protocol.wire_time import Time
 from ..local_store_db import LocalStoreDB
 from ..temp_roots import TempRoots
 from . import add, register
-from .queries import IS_VALID_PATH, QUERY_PATH_INFO_WITH_REFS
+from .queries import (
+    IS_VALID_PATH,
+    QUERY_ALL_VALID_PATHS,
+    QUERY_CLOSURE,
+    QUERY_CLOSURE_WITH_INFO,
+    QUERY_PATH_FROM_HASH_PART,
+    QUERY_PATH_INFO_WITH_REFS,
+    QUERY_PATH_INFOS_BATCH,
+    QUERY_REFERENCES_BATCH,
+    QUERY_REFERRERS,
+    QUERY_VALID_DERIVERS,
+    QUERY_VALID_PATHS,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping
@@ -104,6 +117,65 @@ class StoreEngine:
         if not rows:
             return None
         return path_info(rows[0][:8], {r[8] for r in rows if r[8] is not None})
+
+    async def is_valid_path(self, path: str, *, reader: SyncReader | None = None) -> bool:
+        """`isValidPathUncached`, through a session's *reader* when it can answer."""
+        valid = reader.is_valid_path(path) if reader is not None else None
+        if valid is not None:
+            return valid
+        async with self.db.execute(IS_VALID_PATH, (path,)) as cursor:
+            return await cursor.fetchone() is not None
+
+    async def _paths(self, query: str, params: tuple[Any, ...] = (), column: int = 0) -> set[StorePath]:
+        async with self.db.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+        return {StorePath(path=row[column]) for row in rows}
+
+    async def query_all_valid_paths(self) -> set[StorePath]:
+        """`LocalStore::queryAllValidPaths` (`local-store.cc:822`)."""
+        return await self._paths(QUERY_ALL_VALID_PATHS)
+
+    async def query_valid_paths(self, paths: Iterable[str]) -> set[StorePath]:
+        """The valid ones of *paths*, without substitution (`Store::queryValidPaths`)."""
+        return await self._paths(QUERY_VALID_PATHS, (json.dumps(list(paths)),))
+
+    async def query_referrers(self, path: str) -> set[StorePath]:
+        """`LocalStore::queryReferrers`: the paths whose references name *path*."""
+        return await self._paths(QUERY_REFERRERS, (path,))
+
+    async def query_valid_derivers(self, path: str) -> set[StorePath]:
+        """`LocalStore::queryValidDerivers`: the valid derivations that name *path* as an output."""
+        return await self._paths(QUERY_VALID_DERIVERS, (path,), column=1)
+
+    async def query_path_from_hash_part(self, hash_part: str) -> StorePath | None:
+        """`LocalStore::queryPathFromHashPart` (`local-store.cc:958`): the valid path with this hash part."""
+        prefix = f"{self.layout.store_dir}/{hash_part}"
+        upper = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+        async with self.db.execute(QUERY_PATH_FROM_HASH_PART, (prefix, upper)) as cursor:
+            row = await cursor.fetchone()
+        return None if row is None else StorePath(path=row[0])
+
+    async def query_closure(self, paths: Iterable[str]) -> set[StorePath]:
+        """`computeFSClosure` of *paths* over the references."""
+        return await self._paths(QUERY_CLOSURE, (json.dumps(list(paths)),))
+
+    async def query_closure_with_info(self, paths: Iterable[str]) -> list[ValidPathInfo]:
+        """The closure of *paths*, each with its info."""
+        async with self.db.execute(QUERY_CLOSURE_WITH_INFO, (json.dumps(list(paths)),)) as cursor:
+            rows = await cursor.fetchall()
+        return [path_info(row[:8], (row[8] or "").split()) for row in rows]
+
+    async def query_path_infos(self, paths: Iterable[str]) -> list[ValidPathInfo]:
+        """The info of each valid one of *paths*."""
+        paths_json = json.dumps(list(paths))
+        async with self.db.execute(QUERY_PATH_INFOS_BATCH, (paths_json,)) as cursor:
+            rows = await cursor.fetchall()
+        async with self.db.execute(QUERY_REFERENCES_BATCH, (paths_json,)) as cursor:
+            reference_rows = await cursor.fetchall()
+        references: dict[str, set[str]] = {}
+        for referrer, reference in reference_rows:
+            references.setdefault(referrer, set()).add(reference)
+        return [path_info(tuple(row), references.get(row[0], ())) for row in rows]
 
     def invalidate_path_info_cache_for(self, path: StorePath | str) -> None:
         """`Store::invalidatePathInfoCacheFor`: the cache above the engine forgets *path*."""
