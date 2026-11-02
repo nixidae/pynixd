@@ -161,4 +161,6 @@ the daemon's import (`tests/functional/test_add_to_store_nar_import.py`).
 `AddMultipleToStore` does the same for `nix copy`
 (`tests/functional/test_add_multiple_to_store_import.py`), and `AddToStore`
 for an evaluation's derivations (`tests/functional/test_add_to_store_import.py`).
-`AddBuildLog` has none yet.
+`AddBuildLog` has none yet. pynixd's own imports, a substitution and the HTTP
+cache's upload, follow AddToStoreNar's route
+(`tests/functional/test_substitution_import.py`).
