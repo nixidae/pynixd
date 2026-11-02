@@ -1,0 +1,150 @@
+"""The writes of a Nix daemon, with the engine's names and plain types: Nix's `RemoteStore`.
+
+Each method opens a transfer connection, sends one op, and its body from a
+`Source`. The bytes to the daemon carry the same content as the client's, in
+frames of their own: a frame boundary carries no meaning (`forward_framed`).
+
+**The connection that adds a path carries the options of the client.**
+`LocalStore::addToStore` checks each signature against `trusted-public-keys`,
+and that setting reaches the daemon through `SetOptions` alone. With no
+options, the daemon read its own keys, and `nix copy --from` with
+`--trusted-public-keys` was refused for a path the cache had signed
+correctly. `secret-key-files` travels the same way; `require-sigs` does not
+(`daemon.cc:489`). nixidae/nixidae#236 and nixidae/nixidae#231.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import anyio
+from anyio.lowlevel import checkpoint
+
+from nix_daemon_protocol.add_multiple_to_store import AddMultipleToStoreRequest, AddMultipleToStoreResponse
+from nix_daemon_protocol.add_to_store import AddToStoreResponse
+from nix_daemon_protocol.add_to_store_nar import AddToStoreNarRequest, AddToStoreNarResponse
+from nix_daemon_protocol.content_address import ContentAddress
+
+from ..serde import AddToStoreRequest, StorePath
+from ..serde.context import ReadContext, WriteContext
+from ..wire import FramedWriter, send_framed, send_raw
+from .transfer import as_copied
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Awaitable, Callable
+
+    from nix_daemon_protocol.valid_path_info import ValidPathInfo
+
+    from ..connection import ClientConn, Connection
+    from ..serde import SetOptionsRequest
+    from .daemon import DaemonStore
+    from .source import Source
+
+
+class DaemonWrites:
+    """The write operations of *store*'s daemon."""
+
+    def __init__(self, store: DaemonStore) -> None:
+        self.store = store
+
+    async def add_to_store(
+        self,
+        info: ValidPathInfo,
+        source: Source,
+        *,
+        repair: bool = False,
+        dont_check_sigs: bool = False,
+        options: SetOptionsRequest | None = None,
+        logs: ClientConn | None = None,
+        on_bytes: Callable[[int], None] | None = None,
+    ) -> None:
+        """AddToStoreNar (op 39). *logs* gets the daemon's log lines as they come."""
+        request = AddToStoreNarRequest(info=info, repair=int(repair), dont_check_sigs=int(dont_check_sigs))
+        async with self.store.transfer_conn(options) as conn:
+            await conn.apply_options(options)
+            await request.to_writer(WriteContext.from_conn(conn))
+            await conn.w.drain()
+            await send_framed(source.read, conn.w, on_bytes=on_bytes)
+            await AddToStoreNarResponse.from_reader(ReadContext.from_conn(conn, client=logs))
+
+    async def add_to_store_from_dump(
+        self,
+        name: str,
+        method_algo: str,
+        references: frozenset[str],
+        source: Source,
+        *,
+        repair: bool = False,
+        options: SetOptionsRequest | None = None,
+        root: Callable[[str], Awaitable[None]],
+        sign: Callable[[ValidPathInfo, Connection], Awaitable[ValidPathInfo]] | None = None,
+        on_bytes: Callable[[int], None] | None = None,
+    ) -> ValidPathInfo:
+        """AddToStore (op 7). *root* temp-roots the path as soon as the daemon names it.
+
+        *sign* runs over the same connection, idle once the response is read.
+        A second pooled connection without the client's options makes the
+        pool discard the idle one that carries them (`pool.py:196`), so every
+        AddToStore would pay a fresh handshake.
+        """
+        request = AddToStoreRequest(
+            path_name=name,
+            cam=ContentAddress(value=method_algo),
+            references={StorePath(path=ref) for ref in references},
+            repair=int(repair),
+        )
+        async with self.store.transfer_conn(options) as conn:
+            await conn.apply_options(options)
+            await request.to_writer(WriteContext.from_conn(conn))
+            await conn.w.drain()
+            await send_framed(source.read, conn.w, on_bytes=on_bytes)
+            response = await AddToStoreResponse.from_reader(ReadContext.from_conn(conn))
+            info = response.info
+            await root(str(info.path))
+            if sign is not None:
+                info = await sign(info, conn)
+        self.store.add_path_info(info)
+        return info
+
+    async def add_multiple_to_store(
+        self,
+        count: int,
+        paths: AsyncIterator[tuple[ValidPathInfo, Source]],
+        *,
+        repair: bool = False,
+        dont_check_sigs: bool = False,
+        options: SetOptionsRequest | None = None,
+    ) -> list[ValidPathInfo]:
+        """AddMultipleToStore (op 44): *count* paths in one stream, each NAR read to its end before the next path.
+
+        The daemon may answer before the stream ends, so its response is read beside the send.
+        """
+        request = AddMultipleToStoreRequest(repair=int(repair), dont_check_sigs=int(dont_check_sigs))
+        async with self.store.transfer_conn(options) as conn:
+            await conn.apply_options(options)
+            await request.to_writer(WriteContext.from_conn(conn))
+            await conn.w.drain()
+            # A task group hands back no result, so the child records it here.
+            responses: list[AddMultipleToStoreResponse] = []
+            infos: list[ValidPathInfo] = []
+
+            async def read_response() -> None:
+                responses.append(await AddMultipleToStoreResponse.from_reader(ReadContext.from_conn(conn)))
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(read_response)
+                framed = FramedWriter(conn.w)
+                framed.write_uint64(count)
+                async for info, nar in paths:
+                    # Per path as well as per chunk: a transfer of many small
+                    # paths spends its time here rather than in the byte loop
+                    # (tests/benchmark/test_bench_nar_profile.py).
+                    await checkpoint()
+                    infos.append(info)
+                    framed.write(await info.bytes_wire())
+                    await send_raw(nar.read, framed, info.info.nar_size)
+                await framed.finalize()
+            if not responses:
+                raise RuntimeError("the AddMultipleToStore reader task recorded no response")
+        self.store.add_path_infos([as_copied(info) for info in infos])
+        return infos

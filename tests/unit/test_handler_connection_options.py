@@ -46,8 +46,33 @@ def _transfer_conn_calls(path: Path) -> list[ast.Call]:
     ]
 
 
+_DAEMON_WRITES = _HANDLERS.parent / "store" / "daemon_writes.py"
+"""The handlers' writes to the daemon (`DaemonWrites`): the transfer connections are taken there."""
+
+
 def _handlers_using_a_transfer_connection() -> list[Path]:
-    return sorted(path for path in _HANDLERS.glob("*.py") if _transfer_conn_calls(path))
+    return [*sorted(path for path in _HANDLERS.glob("*.py") if _transfer_conn_calls(path)), _DAEMON_WRITES]
+
+
+def _daemon_writes_calls(path: Path) -> list[ast.Call]:
+    """Every `DaemonWrites(...).<method>(...)` call in the module at *path*."""
+    tree = ast.parse(path.read_text())
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Call)
+        and isinstance(node.func.value.func, ast.Name)
+        and node.func.value.func.id == "DaemonWrites"
+    ]
+
+
+def test_the_daemon_writes_take_the_options_they_are_given() -> None:
+    """Each transfer connection of `DaemonWrites` is asked for with the caller's options."""
+    calls = _transfer_conn_calls(_DAEMON_WRITES)
+    assert calls, "DaemonWrites takes no transfer connection: the scan found nothing"
+    assert all(call.args and ast.unparse(call.args[0]) == "options" for call in calls)
 
 
 def _store_execute_calls(path: Path) -> list[ast.Call]:
@@ -116,10 +141,15 @@ def test_the_reason_of_each_read_only_handler_is_written_down() -> None:
 
 @pytest.mark.parametrize("name", ["add_to_store.py", "add_to_store_nar.py", "add_multiple_to_store.py"])
 def test_the_three_handlers_that_add_a_path_are_covered(name: str) -> None:
-    """The three that `ca:signatures` measured, named so a rename cannot lose them."""
+    """The three that `ca:signatures` measured, named so a rename cannot lose them.
+
+    Each writes to the daemon through `DaemonWrites`, and names the client's options in every call.
+    """
     path = _HANDLERS / name
     assert path.is_file(), name
-    assert _transfer_conn_calls(path), name
+    calls = _daemon_writes_calls(path)
+    assert calls, name
+    assert all(any(keyword.arg == "options" for keyword in call.keywords) for call in calls), name
     assert name not in READ_ONLY_HANDLERS, name
 
 

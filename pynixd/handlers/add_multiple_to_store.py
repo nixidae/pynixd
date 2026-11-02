@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import replace
 from typing import TYPE_CHECKING, ClassVar
 
@@ -18,18 +19,21 @@ from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from .. import metrics
 from ..exceptions import ClosingError
 from ..serde.auth import Role
-from ..serde.context import ReadContext, WriteContext
+from ..serde.context import ReadContext
+from ..store.daemon_writes import DaemonWrites
 from ..store.local_db import LocalDBStore
-from ..store.source import Bounded
-from ..store.transfer import as_copied
-from ..wire import FramedReader, FramedWriter, NixReader, NixWriter, forward_raw
+from ..store.source import Bounded, Metered
+from ..wire import FramedReader
 from ..write_router import Write
 from ._base import Handler
 from ._import import check_path_signatures, forward_one_path
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from ..serde.context import RequestContext
     from ..store.add import ImportSettings
+    from ..store.source import Source
 
 logger = structlog.get_logger(__name__)
 
@@ -129,97 +133,45 @@ class AddMultipleToStoreHandler(Handler):
         await nar.finish()
 
     async def _forward(self, ctx: RequestContext, req: AddMultipleToStoreRequest) -> AddMultipleToStoreResponse:
-        # **The connection that adds the path carries the options of the
-        # client.** `LocalStore::addToStore` of Nix checks the signature of
-        # each path against `trusted-public-keys`, and that setting reaches
-        # the daemon through `SetOptions` alone. A transfer connection with no
-        # options made the daemon read its own keys, so `nix copy --from` with
-        # `--trusted-public-keys` was refused with "cannot add path ...
-        # because it lacks a signature by a trusted key" for a path the cache
-        # had signed correctly. `secret-key-files` travels the same way;
-        # `require-sigs` does not (`daemon.cc:489`). Issues
-        # nixidae/nixidae#236 and nixidae/nixidae#231.
-        options = ctx.proxy.client.options if ctx.proxy.client is not None else None
-        async with ctx.proxy.local_store.transfer_conn(options) as conn:
-            await conn.apply_options(options)
-            await req.to_writer(WriteContext.from_conn(conn))
-            await conn.w.drain()
-
-            # An anyio task group hands back no task object, so the child
-            # records its result in this list.
-            responses: list[AddMultipleToStoreResponse] = []
-            # A name the task group's body binds is not bound for certain after the block.
-            infos: list[ValidPathInfo] = []
-
-            async def _read_response() -> None:
-                responses.append(
-                    await AddMultipleToStoreResponse.from_reader(
-                        ReadContext.from_conn(conn),
-                    ),
-                )
-
-            async with anyio.create_task_group() as tg:
-                tg.start_soon(_read_response)
-                infos.extend(await self._forward_stream(ctx.proxy.r, conn.w, metered=ctx.proxy.metrics_enabled))
-
-            if not responses:
-                raise RuntimeError("the AddMultipleToStore reader task recorded no response")
-            resp = responses[0]
-
-            ctx.proxy.local_store.add_path_infos([as_copied(info) for info in infos])
-            # The session holds each path, as Nix's worker does for its
-            # client. nixidae/nixidae#1007.
-            for info in infos:
-                await ctx.proxy.add_temp_root(info.path)
-
-            return resp
-
-    async def _forward_stream(
-        self,
-        src: NixReader,
-        dst: NixWriter,
-        *,
-        metered: bool,
-    ) -> list[ValidPathInfo]:
-        """Forward AddMultipleToStore payload, snooping ValidPathInfos.
-
-        Payload structure after the header:
-            [count:uint64][path_info_bytes + nar_bytes]...[0-size terminator]
-        """
-        fsrc = FramedReader(src)
-        fdst = FramedWriter(dst)
-
-        expected = await fsrc.read_uint64()
-        fdst.write_uint64(expected)
-        logger.debug("add_multiple_forward_start", expected=expected)
-
-        meter = metrics.TransferMeter(
-            enabled=metered,
-            byte_counter=metrics.NAR_FORWARD_BYTES,
-            path_counter=metrics.NAR_FORWARD_PATHS,
-            duration=metrics.NAR_FORWARD_DURATION,
-        )
-        infos: list[ValidPathInfo] = []
-        for _ in range(expected):
-            # Per path as well as per chunk. A transfer of many small paths
-            # spends its time in this metadata read rather than in the byte
-            # loop below, and measured the worst loop stall of the three
-            # shapes in tests/benchmark/test_bench_nar_profile.py.
-            await checkpoint()
-            info = await ValidPathInfo.from_reader(ReadContext(reader=fsrc, version=1))
-            infos.append(info)
-            fdst.write(await info.bytes_wire())
-            # The same loop every other NAR path takes. `forward_raw` carries
-            # the drain and the checkpoint, and why each is needed.
-            await forward_raw(fsrc, fdst, info.info.nar_size, on_bytes=meter.on_bytes)
-            meter.finish()
-
-        await fdst.finalize()
+        frames = FramedReader(ctx.proxy.r)
+        count = await frames.read_uint64()
+        logger.debug("add_multiple_forward_start", expected=count)
         try:
-            with anyio.fail_after(10):
-                await fsrc.ensure_eof()
-        except TimeoutError:
-            if metered:
-                metrics.NAR_FORWARD_EOF_TIMEOUTS.inc()
-            logger.warning("add_multiple_forward_source_eof_timeout", count=len(infos))
-        return infos
+            async with contextlib.aclosing(_paths(frames, count, metered=ctx.proxy.metrics_enabled)) as paths:
+                infos = await DaemonWrites(ctx.proxy.local_store).add_multiple_to_store(
+                    count,
+                    paths,
+                    repair=bool(req.repair),
+                    dont_check_sigs=bool(req.dont_check_sigs),
+                    options=ctx.proxy.client.options if ctx.proxy.client is not None else None,
+                )
+        finally:
+            # The `FramedSource` destructor (`daemon.cc:507`): the rest of the
+            # stream, also after the daemon's error, so the session goes on.
+            try:
+                with anyio.fail_after(10):
+                    await frames.ensure_eof()
+            except TimeoutError:
+                if ctx.proxy.metrics_enabled:
+                    metrics.NAR_FORWARD_EOF_TIMEOUTS.inc()
+                logger.warning("add_multiple_forward_source_eof_timeout", count=count)
+        # The session holds each path, as Nix's worker does for its client. nixidae/nixidae#1007.
+        for info in infos:
+            await ctx.proxy.add_temp_root(info.path)
+        return AddMultipleToStoreResponse()
+
+
+async def _paths(frames: FramedReader, count: int, *, metered: bool) -> AsyncGenerator[tuple[ValidPathInfo, Source]]:
+    """The paths of a client's AddMultipleToStore stream, each NAR `Bounded` and read to its end before the next info."""
+    meter = metrics.TransferMeter(
+        enabled=metered,
+        byte_counter=metrics.NAR_FORWARD_BYTES,
+        path_counter=metrics.NAR_FORWARD_PATHS,
+        duration=metrics.NAR_FORWARD_DURATION,
+    )
+    for _ in range(count):
+        info = await ValidPathInfo.from_reader(ReadContext(reader=frames, version=1))
+        nar = Bounded(frames, info.info.nar_size)
+        yield info, Metered(nar, meter.on_bytes)
+        await nar.finish()
+        meter.finish()

@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from nix_daemon_protocol.add_to_store_nar import AddToStoreNarRequest, AddToStoreNarResponse
 from nix_daemon_protocol.logs import LogNext
 
-from ..serde.context import ReadContext, WriteContext
-from ..wire import FramedWriter, forward_raw
+from ..store.daemon_writes import DaemonWrites
+from ..store.source import Bounded
 
 if TYPE_CHECKING:
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
@@ -40,12 +39,12 @@ async def forward_one_path(
 
     The daemon's error raises here, after `startWork`, and its log lines reach the client as they come.
     """
-    options = ctx.proxy.client.options if ctx.proxy.client is not None else None
-    request = AddToStoreNarRequest(info=info, repair=0, dont_check_sigs=int(dont_check_sigs))
-    async with store.transfer_conn(options) as conn:
-        await conn.apply_options(options)
-        await request.to_writer(WriteContext.from_conn(conn))
-        framed = FramedWriter(conn.w)
-        await forward_raw(frames, framed, info.info.nar_size)
-        await framed.finalize()
-        await AddToStoreNarResponse.from_reader(ReadContext.from_conn(conn, client=ctx.proxy.client))
+    nar = Bounded(frames, info.info.nar_size)
+    await DaemonWrites(store).add_to_store(
+        info,
+        nar,
+        dont_check_sigs=dont_check_sigs,
+        options=ctx.proxy.client.options if ctx.proxy.client is not None else None,
+        logs=ctx.proxy.client,
+    )
+    await nar.finish()

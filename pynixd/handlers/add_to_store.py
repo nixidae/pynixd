@@ -15,10 +15,11 @@ from ..daemon_extensions.sign_path_info import SignPathInfoRequest
 from ..exceptions import ClosingError
 from ..serde import AddToStoreRequest, StorePath
 from ..serde.auth import Role
-from ..serde.context import ReadContext, WriteContext
+from ..serde.context import ReadContext
+from ..store.daemon_writes import DaemonWrites
 from ..store.local_db import LocalDBStore
 from ..store.source import Metered
-from ..wire import FramedReader, forward_framed
+from ..wire import FramedReader
 from ..write_router import Dump, Write
 from ._base import Handler
 
@@ -111,32 +112,26 @@ class AddToStoreHandler(Handler):
         return signed_info
 
     async def _forward(self, ctx: RequestContext, req: AddToStoreRequest) -> AddToStoreResponse:
-        # **The connection that adds the path carries the options of the
-        # client.** `LocalStore::addToStore` of Nix checks the signature of
-        # each path against `trusted-public-keys`, and that setting reaches
-        # the daemon through `SetOptions` alone. A transfer connection with no
-        # options made the daemon read its own keys, so `nix copy --from` with
-        # `--trusted-public-keys` was refused with "cannot add path ...
-        # because it lacks a signature by a trusted key" for a path the cache
-        # had signed correctly. `require-sigs` and `secret-key-files` travel
-        # the same way. Issues nixidae/nixidae#236 and nixidae/nixidae#231.
-        options = ctx.proxy.client.options if ctx.proxy.client is not None else None
-        async with ctx.proxy.local_store.transfer_conn(options) as conn:
-            await conn.apply_options(options)
-            await req.to_writer(WriteContext.from_conn(conn))
-            await conn.w.drain()
-            meter = self._meter(ctx)
-            await forward_framed(ctx.proxy.r, conn.w, on_bytes=meter.on_bytes)
-            meter.finish()
-            resp = await AddToStoreResponse.from_reader(ReadContext.from_conn(conn))
+        meter = self._meter(ctx)
+
+        async def root(path: str) -> None:
             # The session holds the path, as Nix's worker does for its client
             # (`local-store.cc:1264`). nixidae/nixidae#1007.
-            await ctx.proxy.add_temp_root(resp.info.path)
-            # The sign goes over this connection, idle now that the dump and
-            # the response crossed it. A sign through the store acquires a
-            # second pooled connection, and without the client's options the
-            # pool discards the idle connection that carries them
-            # (`pool.py:196`), so every AddToStore pays a fresh handshake.
-            resp.info = await self._sign(ctx, resp.info, conn)
-            ctx.proxy.local_store.add_path_info(resp.info)
-        return resp
+            await ctx.proxy.add_temp_root(path)
+
+        async def sign(info: ValidPathInfo, conn: Connection) -> ValidPathInfo:
+            return await self._sign(ctx, info, conn)
+
+        info = await DaemonWrites(ctx.proxy.local_store).add_to_store_from_dump(
+            req.path_name,
+            str(req.cam),
+            frozenset(str(ref) for ref in req.references),
+            FramedReader(ctx.proxy.r),
+            repair=bool(req.repair),
+            options=ctx.proxy.client.options if ctx.proxy.client is not None else None,
+            root=root,
+            sign=sign,
+            on_bytes=meter.on_bytes,
+        )
+        meter.finish()
+        return AddToStoreResponse(info=info)

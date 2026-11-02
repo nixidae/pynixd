@@ -41,7 +41,7 @@ from .constants import (
 from .serde.context import ReadContext
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Iterable
+    from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 
     import asyncssh
     from anyio.abc import SocketStream
@@ -737,6 +737,61 @@ async def forward_framed(
     await _flush()
     dst.write_uint64(0)
     await dst.drain()
+
+
+async def send_framed(
+    read: Callable[[int], Awaitable[bytes]],
+    dst: NixWriter,
+    chunk_size: int = _CHUNK_SIZE,
+    on_bytes: Callable[[int], None] | None = None,
+) -> None:
+    """`forward_framed` from a byte source: `read(n)` gives at most n bytes, and `b""` at the end.
+
+    The frames gather up to *chunk_size*, with the drain and the checkpoint
+    per frame, for the reasons `forward_framed` gives.
+    """
+    pending: list[bytes] = []
+    pending_size = 0
+    done = False
+    while not done:
+        data = await read(chunk_size - pending_size)
+        if data:
+            pending.append(data)
+            pending_size += len(data)
+        else:
+            done = True
+        if pending_size and (done or pending_size >= chunk_size):
+            dst.write_uint64(pending_size)
+            dst.write(pending[0] if len(pending) == 1 else b"".join(pending))
+            await dst.drain()
+            await checkpoint()
+            if on_bytes is not None:
+                on_bytes(pending_size)
+            pending.clear()
+            pending_size = 0
+    dst.write_uint64(0)
+    await dst.drain()
+
+
+async def send_raw(
+    read: Callable[[int], Awaitable[bytes]],
+    dst: NixWriter,
+    size: int,
+    chunk_size: int = _CHUNK_SIZE,
+    on_bytes: Callable[[int], None] | None = None,
+) -> None:
+    """`forward_raw` from a byte source: exactly *size* bytes, or `EOFError`."""
+    remaining = size
+    while remaining > 0:
+        chunk = await read(min(remaining, chunk_size))
+        if not chunk:
+            raise EOFError(f"the source ended, {remaining} of {size} bytes unsent")
+        dst.write(chunk)
+        await dst.drain()
+        await checkpoint()
+        remaining -= len(chunk)
+        if on_bytes is not None:
+            on_bytes(len(chunk))
 
 
 async def forward_raw(

@@ -38,13 +38,13 @@ from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
 from . import metrics
 from .serde import (
-    AddToStoreNarRequest,
     NarFromPathRequest,
     QueryPathFromHashPartRequest,
     QueryPathInfoRequest,
 )
-from .serde.context import ReadContext, WriteContext
+from .serde.context import WriteContext
 from .store import LocalDBStore
+from .store.daemon_writes import DaemonWrites
 from .store.source import Pieces
 from .store_path import StorePath
 from .wire import _CHUNK_SIZE
@@ -560,21 +560,8 @@ class PynixdHttpServer:
                 async with Pieces(_nar_pieces(nar_temp_path)) as nar:
                     await store.engine.import_nar(vinfo, nar, dont_check_sigs=False)
             else:
-                async with store.transfer_conn() as conn:
-                    req = AddToStoreNarRequest(info=vinfo, repair=0, dont_check_sigs=0)
-                    await req.to_writer(WriteContext.from_conn(conn))
-                    await conn.w.drain()
-                    framed = conn.w.framed()
-                    async with contextlib.aclosing(_nar_pieces(nar_temp_path)) as pieces:
-                        async for chunk in pieces:
-                            framed.write(chunk)
-                            # Backpressure. Without this the transport holds every
-                            # byte the daemon has not taken, which is the whole NAR
-                            # for an upload that outruns it. See `wire.forward_framed`.
-                            await framed.drain()
-                    await framed.finalize()
-                    await conn.w.drain()
-                    await req.response_type.from_reader(ReadContext.from_conn(conn))
+                async with Pieces(_nar_pieces(nar_temp_path)) as nar:
+                    await DaemonWrites(store).add_to_store(vinfo, nar)
         except Exception as e:
             log.exception("finalize_upload_failed", path=str(vinfo.path))
             return web.Response(

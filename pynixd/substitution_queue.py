@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -19,9 +18,10 @@ from . import metrics
 from .answer import Answer
 from .background import Background
 from .exceptions import NarGone, OpNotImplementedError, leaves
-from .serde import AddToStoreNarRequest, NarFromPathRequest, QueryPathInfoRequest, StorePath
-from .serde.context import ReadContext, WriteContext
+from .serde import NarFromPathRequest, QueryPathInfoRequest, StorePath
+from .serde.context import WriteContext
 from .store import DaemonStore, LocalDBStore, is_http_binary_cache
+from .store.daemon_writes import DaemonWrites
 from .store.source import Pieces
 from .write_router import pynixd_import
 
@@ -572,17 +572,8 @@ class SubstitutionQueue:
             async with Pieces(self._nar_pieces(path, candidate)) as nar:
                 await local.engine.import_nar(candidate.path_info, nar, dont_check_sigs=dont_check_sigs)
             return
-        async with local.transfer_conn() as conn:
-            request = AddToStoreNarRequest(info=candidate.path_info, repair=0, dont_check_sigs=int(dont_check_sigs))
-            await request.to_writer(WriteContext.from_conn(conn))
-            await conn.w.drain()
-            framed = conn.w.framed()
-            async with contextlib.aclosing(self._nar_pieces(path, candidate)) as pieces:
-                async for chunk in pieces:
-                    framed.write(chunk)
-                    await conn.w.drain()
-            await framed.finalize()
-            await request.response_type.from_reader(ReadContext.from_conn(conn))
+        async with Pieces(self._nar_pieces(path, candidate)) as nar:
+            await DaemonWrites(local).add_to_store(candidate.path_info, nar, dont_check_sigs=dont_check_sigs)
 
     async def _nar_pieces(self, path: StorePath, candidate: SubstitutionCandidate) -> AsyncGenerator[bytes]:
         """The NAR of *path* from *candidate*, piece by piece."""

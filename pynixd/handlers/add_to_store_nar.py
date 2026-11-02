@@ -14,10 +14,11 @@ from nix_daemon_protocol.add_to_store_nar import (
 from .. import metrics
 from ..exceptions import ClosingError
 from ..serde.auth import Role
-from ..serde.context import ReadContext, WriteContext
+from ..serde.context import ReadContext
+from ..store.daemon_writes import DaemonWrites
 from ..store.local_db import LocalDBStore
 from ..store.source import Metered
-from ..wire import FramedReader, forward_framed
+from ..wire import FramedReader
 from ..write_router import Write
 from ._base import Handler
 from ._import import check_path_signatures
@@ -90,30 +91,19 @@ class AddToStoreNarHandler(Handler):
         return AddToStoreNarResponse()
 
     async def _forward(self, ctx: RequestContext, req: AddToStoreNarRequest) -> AddToStoreNarResponse:
-        # **The connection that adds the path carries the options of the
-        # client.** `LocalStore::addToStore` of Nix checks the signature of
-        # each path against `trusted-public-keys`, and that setting reaches
-        # the daemon through `SetOptions` alone. A transfer connection with no
-        # options made the daemon read its own keys, so `nix copy --from` with
-        # `--trusted-public-keys` was refused with "cannot add path ...
-        # because it lacks a signature by a trusted key" for a path the cache
-        # had signed correctly. `secret-key-files` travels the same way;
-        # `require-sigs` does not, since the daemon builds its store config
-        # before a client connects (`daemon.cc:489`). Issues
-        # nixidae/nixidae#236 and nixidae/nixidae#231.
-        options = ctx.proxy.client.options if ctx.proxy.client is not None else None
-        async with ctx.proxy.local_store.transfer_conn(options) as conn:
-            await conn.apply_options(options)
-            await req.to_writer(WriteContext.from_conn(conn))
-            await conn.w.drain()
-            meter = metrics.TransferMeter(
-                enabled=ctx.proxy.metrics_enabled,
-                byte_counter=metrics.NAR_ADD_BYTES,
-                path_counter=metrics.NAR_ADD_PATHS,
-                duration=metrics.NAR_ADD_DURATION,
-            )
-            await forward_framed(ctx.proxy.r, conn.w, on_bytes=meter.on_bytes)
-            meter.finish()
-            return await AddToStoreNarResponse.from_reader(
-                ReadContext.from_conn(conn),
-            )
+        meter = metrics.TransferMeter(
+            enabled=ctx.proxy.metrics_enabled,
+            byte_counter=metrics.NAR_ADD_BYTES,
+            path_counter=metrics.NAR_ADD_PATHS,
+            duration=metrics.NAR_ADD_DURATION,
+        )
+        await DaemonWrites(ctx.proxy.local_store).add_to_store(
+            req.info,
+            FramedReader(ctx.proxy.r),
+            repair=bool(req.repair),
+            dont_check_sigs=bool(req.dont_check_sigs),
+            options=ctx.proxy.client.options if ctx.proxy.client is not None else None,
+            on_bytes=meter.on_bytes,
+        )
+        meter.finish()
+        return AddToStoreNarResponse()
