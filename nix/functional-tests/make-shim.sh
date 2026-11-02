@@ -107,6 +107,10 @@ socks=${WORK:?}/socks
 mkdir -p "$socks"
 upstream=$socks/$(printf '%s' "$work" | cksum | cut -d' ' -f1).socket
 
+# The trial routes put every write in pynixd's engine. `NIXFT_OP_ROUTES={}`
+# runs a deployment's defaults instead, where every write goes to the daemon.
+routes=${NIXFT_OP_ROUTES:-'{"NarFromPath": "shadow", "AddToStore": "pynixd", "AddToStoreNar": "pynixd", "AddMultipleToStore": "pynixd"}'}
+
 config=$work/pynixd-test-config.json
 cat > "$config" <<JSON
 {
@@ -121,7 +125,7 @@ cat > "$config" <<JSON
       "monitor": false,
       "probe": false,
       "pynixd_writes": true,
-      "op_routes": {"NarFromPath": "shadow", "AddToStore": "pynixd", "AddToStoreNar": "pynixd", "AddMultipleToStore": "pynixd"}
+      "op_routes": $routes
     }
   },
   "unix_path": "$NIX_DAEMON_SOCKET_PATH",
