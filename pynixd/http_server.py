@@ -44,19 +44,56 @@ from .serde import (
     QueryPathInfoRequest,
 )
 from .serde.context import ReadContext, WriteContext
+from .store import LocalDBStore
+from .store.add import import_nar_pieces
 from .store_path import StorePath
 from .wire import _CHUNK_SIZE
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterator
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
     from typing import Any
 
     from .health import HealthReport
     from .store import LocalStore
     from .substitution_queue import SubstitutionQueue
-    from .wire import NixWriter
 
 log = structlog.get_logger(__name__)
+
+
+def _decompressed(path: Path) -> Generator[bytes]:
+    """The NAR an upload holds, decompressed by its file name's extension."""
+    ctx: contextlib.AbstractContextManager[Any]
+    if path.name.endswith(".xz"):
+        ctx = lzma.open(path, "rb")  # noqa: SIM115 -- the `with ctx` below closes it
+    elif path.name.endswith(".bz2"):
+        ctx = bz2.open(path, "rb")  # noqa: SIM115 -- the `with ctx` below closes it
+    elif path.name.endswith(".gz"):
+        ctx = gzip.open(path, "rb")  # noqa: SIM115 -- the `with ctx` below closes it
+    elif path.name.endswith(".zst"):
+        ctx = zstd.ZstdDecompressor().stream_reader(path.open("rb"))
+    elif path.name.endswith(".lz4"):
+        ctx = lz4.frame.open(path, "rb")
+    elif path.name.endswith(".br"):
+        decompressor = brotli.Decompressor()
+        with path.open("rb") as file:
+            while chunk := file.read(1024 * 1024):
+                yield decompressor.process(chunk)
+        return
+    else:
+        ctx = path.open("rb")
+    with ctx as file:
+        while chunk := file.read(1024 * 1024):
+            yield chunk
+
+
+async def _nar_pieces(path: Path) -> AsyncGenerator[bytes]:
+    """`_decompressed`, each piece read on a worker thread so the event loop stays free."""
+    pieces = _decompressed(path)
+    try:
+        while (piece := await run_sync(next, pieces, None)) is not None:
+            yield piece
+    finally:
+        pieces.close()
 
 
 _FILE_FIELDS = ("URL:", "Compression:", "FileHash:", "FileSize:")
@@ -515,86 +552,30 @@ class PynixdHttpServer:
                 text=f"NAR {nar_hash_part} not found. Upload it first.\n",
             )
 
-        # Now add it to the store
-        async def provide_nar(writer: NixWriter) -> None:
-            log.debug("provide_nar_start", path=nar_temp_path)
-            # We need to wrap the raw NAR in Nix framing (framed NAR data)
-            framed = writer.framed()
-
-            def decompress_gen(path: Path) -> Iterator[bytes]:
-                ctx: contextlib.AbstractContextManager[Any]
-                if path.name.endswith(".xz"):
-                    ctx = lzma.open(path, "rb")  # noqa: SIM115 -- the `with ctx` below closes it
-                elif path.name.endswith(".bz2"):
-                    ctx = bz2.open(path, "rb")  # noqa: SIM115 -- the `with ctx` below closes it
-                elif path.name.endswith(".gz"):
-                    ctx = gzip.open(path, "rb")  # noqa: SIM115 -- the `with ctx` below closes it
-                elif path.name.endswith(".zst"):
-                    dctx = zstd.ZstdDecompressor()
-                    ctx = dctx.stream_reader(path.open("rb"))
-                elif path.name.endswith(".lz4"):
-                    ctx = lz4.frame.open(path, "rb")
-                elif path.name.endswith(".br"):
-                    d = brotli.Decompressor()
-                    with path.open("rb") as bf:
-                        while True:
-                            chunk = bf.read(1024 * 1024)
-                            if not chunk:
-                                break
-                            yield d.process(chunk)
-                    return
-                else:
-                    ctx = path.open("rb")
-
-                with ctx as f:
-                    while True:
-                        chunk = f.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        yield chunk
-
-            gen = decompress_gen(nar_temp_path)
-
-            def get_next_chunk(g: Iterator[bytes]) -> bytes | None:
-                try:
-                    return next(g)
-                except StopIteration:
-                    return None
-
-            sent_bytes = 0
-            while True:
-                # Get next chunk from generator in a thread to keep event loop free
-                chunk = await run_sync(get_next_chunk, gen)
-                if chunk is None:
-                    break
-
-                # Ensure chunk is bytes for type safety
-                if not isinstance(chunk, bytes):
-                    raise TypeError(f"Expected bytes, got {type(chunk)}")
-
-                framed.write(chunk)
-                # Backpressure. Without this the transport holds every byte the
-                # daemon has not taken, which is the whole NAR for an upload
-                # that outruns it. `run_sync` above suspends, so the loop does
-                # get scheduled -- the buffer was the fault here, not the
-                # yield. See `wire.forward_framed`.
-                await framed.drain()
-                sent_bytes += len(chunk)
-                log.debug("provide_nar_progress", sent_bytes=sent_bytes)
-
-            log.debug("provide_nar_finalizing", total_bytes=sent_bytes)
-            await framed.finalize()
-            log.debug("provide_nar_done")
-
         log.info("finalizing_upload_to_store", path=str(vinfo.path))
         try:
-            async with self.store.transfer_conn() as conn:
-                req = AddToStoreNarRequest(info=vinfo, repair=0, dont_check_sigs=0)
-                await req.to_writer(WriteContext.from_conn(conn))
-                await conn.w.drain()
-                await provide_nar(conn.w)
-                await conn.w.drain()
-                await req.response_type.from_reader(ReadContext.from_conn(conn))
+            store = self.store
+            reason: str | None = "the store has no database pynixd writes"
+            if isinstance(store, LocalDBStore):
+                reason = await store.why_the_daemon_imports_for_pynixd(vinfo)
+                if reason is None:
+                    await import_nar_pieces(store, vinfo, _nar_pieces(nar_temp_path), dont_check_sigs=False)
+            if reason is not None:
+                async with store.transfer_conn() as conn:
+                    req = AddToStoreNarRequest(info=vinfo, repair=0, dont_check_sigs=0)
+                    await req.to_writer(WriteContext.from_conn(conn))
+                    await conn.w.drain()
+                    framed = conn.w.framed()
+                    async with contextlib.aclosing(_nar_pieces(nar_temp_path)) as pieces:
+                        async for chunk in pieces:
+                            framed.write(chunk)
+                            # Backpressure. Without this the transport holds every
+                            # byte the daemon has not taken, which is the whole NAR
+                            # for an upload that outruns it. See `wire.forward_framed`.
+                            await framed.drain()
+                    await framed.finalize()
+                    await conn.w.drain()
+                    await req.response_type.from_reader(ReadContext.from_conn(conn))
         except Exception as e:
             log.exception("finalize_upload_failed", path=str(vinfo.path))
             return web.Response(

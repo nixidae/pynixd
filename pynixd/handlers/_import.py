@@ -7,10 +7,8 @@ from typing import TYPE_CHECKING
 from nix_daemon_protocol.add_to_store_nar import AddToStoreNarRequest, AddToStoreNarResponse
 from nix_daemon_protocol.logs import LogNext
 
-from ..hintfmt import magenta
 from ..serde.context import ReadContext, WriteContext
-from ..signing import check_signatures, key_settings, public_keys
-from ..store.add import AddError
+from ..store.add import check_import_signatures
 from ..wire import FramedWriter, forward_raw
 
 if TYPE_CHECKING:
@@ -27,20 +25,13 @@ async def check_path_signatures(
 ) -> None:
     """`pathInfoIsUntrusted` and its refusal (`local-store.cc:1048`), with the client's key overrides."""
     options = ctx.proxy.client.options if ctx.proxy.client is not None else None
-    trusted, secret_files = key_settings(
-        settings.trusted_public_keys,
-        settings.secret_key_files,
-        options.overrides if options is not None else {},
-    )
     warnings: list[str] = []
     try:
-        good = check_signatures(info, public_keys(trusted, secret_files), str(store.layout.store_dir), warnings.append)
-    except ValueError as error:
-        raise AddError(str(error)) from error
-    for warning in warnings:
-        await ctx.proxy.client.send(LogNext(text=f"{warning}\n"))
-    if not good:
-        raise AddError(f"cannot add path '{magenta(info.path)}' because it lacks a signature by a trusted key")
+        check_import_signatures(store, info, settings, options.overrides if options is not None else {}, warnings)
+    finally:
+        # Nix prints each warning as it checks, before any refusal.
+        for warning in warnings:
+            await ctx.proxy.client.send(LogNext(text=f"{warning}\n"))
 
 
 async def forward_one_path(

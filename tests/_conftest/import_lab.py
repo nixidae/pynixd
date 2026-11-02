@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager, closing
 from typing import TYPE_CHECKING, Any
 
 import anyio
+from aiohttp import web
 
 from nix_daemon_protocol.content_address import ContentAddress
 from nix_daemon_protocol.ids import StoreId
@@ -26,10 +27,11 @@ from nix_daemon_protocol.signature import Signature
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 from pynixd import Server
+from pynixd.config import HTTPBinaryCacheSpec
 from pynixd.connection import Connection
 from pynixd.nar_fs import dump_path
 from pynixd.serde import IsValidPathRequest, StorePath
-from pynixd.store import LocalDBStore
+from pynixd.store import LocalDBStore, Store
 from pynixd.unix_socket import open_unix_connection
 from pynixd.wire import UnixNixReader, UnixNixWriter
 from tests._conftest.nix_config import for_test_store
@@ -112,8 +114,10 @@ async def lab(tmp_path: Path) -> tuple[Path, list[str], str]:
 
 
 @asynccontextmanager
-async def server(root: Path, socket: Path, route: str, **config: Any) -> AsyncIterator[LocalDBStore]:
-    """A local store whose import ops take *route*."""
+async def server(
+    root: Path, socket: Path, route: str, *, upstream: str | None = None, **config: Any
+) -> AsyncIterator[LocalDBStore]:
+    """A local store whose import ops take *route*; *upstream* is a binary cache pynixd substitutes from."""
     spec = make_test_spec(
         store_id="local",
         store_path=root,
@@ -122,8 +126,28 @@ async def server(root: Path, socket: Path, route: str, **config: Any) -> AsyncIt
         op_routes=dict.fromkeys(IMPORT_OPS, route),
     )
     store = LocalDBStore(spec)
-    async with Server(stores={StoreId("local"): store}, unix_path=socket, ssh_port=None, http_port=None):
+    stores: dict[StoreId, Store] = {StoreId("local"): store}
+    if upstream is not None:
+        cache = HTTPBinaryCacheSpec(store_id=StoreId("upstream"), url=upstream, trusted=True)
+        stores[StoreId("upstream")] = cache.to_store("upstream")
+    async with Server(stores=stores, unix_path=socket, ssh_port=None, http_port=None):
         yield store
+
+
+@asynccontextmanager
+async def serve_directory(directory: Path) -> AsyncIterator[str]:
+    """Serve *directory* over HTTP, as a binary cache `nix copy --to file://` wrote, and give its URL."""
+    app = web.Application()
+    app.router.add_static("/", directory)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    try:
+        host, port = runner.addresses[0][:2]
+        yield f"http://{host}:{port}/"
+    finally:
+        await runner.cleanup()
 
 
 def files(root: Path, path: str) -> list[tuple[Any, ...]]:

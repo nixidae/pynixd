@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 import anyio
 import structlog
@@ -20,10 +21,11 @@ from .background import Background
 from .exceptions import NarGone, OpNotImplementedError, leaves
 from .serde import AddToStoreNarRequest, NarFromPathRequest, QueryPathInfoRequest, StorePath
 from .serde.context import ReadContext, WriteContext
-from .store import DaemonStore, is_http_binary_cache
+from .store import DaemonStore, LocalDBStore, is_http_binary_cache
+from .store.add import import_nar_pieces
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
     from contextlib import AbstractAsyncContextManager
 
     from anyio.abc import TaskStatus
@@ -563,49 +565,49 @@ class SubstitutionQueue:
             metrics.SUBSTITUTION_DURATION.observe(time.monotonic() - started)
 
     async def _import_nar(self, path: StorePath, candidate: SubstitutionCandidate) -> None:
-        async with self.ctx.local_store.transfer_conn() as conn:
-            request = AddToStoreNarRequest(
-                info=candidate.path_info,
-                repair=0,
-                dont_check_sigs=int(_trusted_source(candidate.store)),
-            )
+        dont_check_sigs = _trusted_source(candidate.store)
+        local = self.ctx.local_store
+        if isinstance(local, LocalDBStore):
+            reason = await local.why_the_daemon_imports_for_pynixd(candidate.path_info)
+            if reason is None:
+                pieces = self._nar_pieces(path, candidate)
+                await import_nar_pieces(local, candidate.path_info, pieces, dont_check_sigs=dont_check_sigs)
+                return
+            log.debug("substitution_import_by_daemon", path=str(path), reason=reason)
+        async with local.transfer_conn() as conn:
+            request = AddToStoreNarRequest(info=candidate.path_info, repair=0, dont_check_sigs=int(dont_check_sigs))
             await request.to_writer(WriteContext.from_conn(conn))
             await conn.w.drain()
-
             framed = conn.w.framed()
-            if is_http_binary_cache(candidate.store):
-                http_narinfo = candidate.http_narinfo
-                if http_narinfo is None:
-                    http_narinfo = await candidate.store.get_narinfo(path)
-                if http_narinfo is None:
-                    raise RuntimeError(f"substituter lost path while streaming: {path}")
-                async for chunk in candidate.store.stream_nar(http_narinfo):
+            async with contextlib.aclosing(self._nar_pieces(path, candidate)) as pieces:
+                async for chunk in pieces:
                     framed.write(chunk)
                     await conn.w.drain()
-            elif isinstance(candidate.store, DaemonStore):
-                await self._stream_from_daemon(path, candidate, framed, conn)
-            else:
-                raise TypeError(f"store {candidate.store.store_id} cannot stream NARs")
-
             await framed.finalize()
             await request.response_type.from_reader(ReadContext.from_conn(conn))
 
-    async def _stream_from_daemon(
-        self, path: StorePath, candidate: SubstitutionCandidate, framed: Any, destination_conn: Any
-    ) -> None:
-        if not isinstance(candidate.store, DaemonStore):
+    async def _nar_pieces(self, path: StorePath, candidate: SubstitutionCandidate) -> AsyncGenerator[bytes]:
+        """The NAR of *path* from *candidate*, piece by piece."""
+        if is_http_binary_cache(candidate.store):
+            http_narinfo = candidate.http_narinfo
+            if http_narinfo is None:
+                http_narinfo = await candidate.store.get_narinfo(path)
+            if http_narinfo is None:
+                raise RuntimeError(f"substituter lost path while streaming: {path}")
+            async for chunk in candidate.store.stream_nar(http_narinfo):
+                yield chunk
+        elif isinstance(candidate.store, DaemonStore):
+            async with candidate.store.transfer_conn() as source_conn:
+                await NarFromPathRequest(path=StorePath(path=str(path))).to_writer(WriteContext.from_conn(source_conn))
+                await source_conn.w.drain()
+                await source_conn.r.drain_stderr()
+                remaining = candidate.path_info.info.nar_size
+                while remaining > 0:
+                    chunk = await source_conn.r.readexactly(min(remaining, _NAR_CHUNK_SIZE))
+                    remaining -= len(chunk)
+                    yield chunk
+        else:
             raise TypeError(f"store {candidate.store.store_id} cannot stream NARs")
-        async with candidate.store.transfer_conn() as source_conn:
-            await NarFromPathRequest(path=StorePath(path=str(path))).to_writer(WriteContext.from_conn(source_conn))
-            await source_conn.w.drain()
-            await source_conn.r.drain_stderr()
-
-            remaining = candidate.path_info.info.nar_size
-            while remaining > 0:
-                chunk = await source_conn.r.readexactly(min(remaining, _NAR_CHUNK_SIZE))
-                framed.write(chunk)
-                await destination_conn.w.drain()
-                remaining -= len(chunk)
 
     def _best_candidate_from_cache(self, path: StorePath, stores: list[Store]) -> SubstitutionCandidate | None:
         positive = self.positive.get(path, {})

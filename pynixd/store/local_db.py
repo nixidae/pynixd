@@ -443,6 +443,18 @@ class LocalDBStore(LocalStore):
             return "a Git content address"
         return None
 
+    async def why_the_daemon_imports_for_pynixd(self, info: ValidPathInfo) -> str | None:
+        """Why the daemon imports a NAR pynixd itself fetched or received, or `None` when pynixd does.
+
+        These imports follow AddToStoreNar's route, so a deployment that keeps
+        that op on the daemon keeps them there too.
+        """
+        if self.routes.get(_OP_CODES["AddToStoreNar"]) is not OpRoute.pynixd:
+            return "AddToStoreNar takes the daemon route"
+        return await self.why_the_daemon_imports(repair=False, version=_FRAMED_NAR) or self.why_the_daemon_imports_path(
+            info
+        )
+
     @staticmethod
     def why_the_daemon_adds(name: str, method_algo: str, references: Iterable[str], *, version: int) -> str | None:
         """Why the daemon must add this AddToStore dump, known from its header.

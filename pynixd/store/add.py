@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 import anyio
 import anyio.from_thread
 import anyio.to_thread
+import structlog
 
 from nix_daemon_protocol.content_address import ContentAddress as WireContentAddress
 from nix_daemon_protocol.nar_hash import NARHash
@@ -40,14 +41,18 @@ from ..content_address import ContentAddress, Method, content_addressed_path, pa
 from ..exceptions import PynixdError
 from ..hintfmt import magenta
 from ..nar_fs import BadArchive, dump_path, restore_path
+from ..signing import check_signatures, key_settings, public_keys
+from ..temp_roots import TempRoots
 from ..utils import nix32_encode
 from .queries import IS_VALID_PATH
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Iterator, Mapping
     from pathlib import Path
 
     from .local_db import LocalDBStore
+
+log = structlog.get_logger(__name__)
 
 MTIME_STORE = 1
 """`mtimeStore`, `posix-fs-canonicalise.cc:13`."""
@@ -309,6 +314,26 @@ class FrameReader:
         return await self._next_chunk()
 
 
+def check_import_signatures(
+    store: LocalDBStore,
+    info: ValidPathInfo,
+    settings: ImportSettings,
+    overrides: Mapping[str, str],
+    warnings: list[str],
+) -> None:
+    """`pathInfoIsUntrusted` and its refusal (`local-store.cc:1048`); *warnings* gets what Nix prints on the way.
+
+    *overrides* are a client's `SetOptions`, which reach the keys (not `require-sigs`).
+    """
+    trusted, secret_files = key_settings(settings.trusted_public_keys, settings.secret_key_files, overrides)
+    try:
+        good = check_signatures(info, public_keys(trusted, secret_files), str(store.layout.store_dir), warnings.append)
+    except ValueError as error:
+        raise AddError(str(error)) from error
+    if not good:
+        raise AddError(f"cannot add path '{magenta(info.path)}' because it lacks a signature by a trusted key")
+
+
 def _sri(digest: bytes) -> str:
     return "sha256-" + base64.b64encode(digest).decode()
 
@@ -351,6 +376,42 @@ async def add_nar(
         delete_lock = True
     finally:
         lock.release(delete=delete_lock)
+
+
+async def import_nar_pieces(
+    store: LocalDBStore, info: ValidPathInfo, pieces: AsyncGenerator[bytes], *, dont_check_sigs: bool
+) -> None:
+    """AddToStoreNar for pynixd's own callers: the substitution queue and the HTTP cache's upload.
+
+    No client session holds the path, so the import holds its own temporary
+    root, as the daemon worker of a transfer connection did. *pieces* is
+    closed at the end, read or not: a daemon connection it streams from
+    leaves dirty mid-NAR, and the pool discards it (`Connection.__aexit__`).
+    """
+    settings = await store.import_settings()
+    if not dont_check_sigs and settings.require_sigs:
+        warnings: list[str] = []
+        try:
+            check_import_signatures(store, info, settings, {}, warnings)
+        finally:
+            for warning in warnings:
+                log.warning("import_signature_warning", path=str(info.path), warning=warning)
+    roots = TempRoots(store.layout.state_dir)
+    try:
+        if not await roots.add(info.path):
+            raise AddError(f"pynixd cannot write a temporary root for '{magenta(info.path)}'")
+        async with contextlib.aclosing(pieces) as stream:
+
+            async def next_chunk() -> bytes:
+                while (piece := await anext(stream, None)) is not None:
+                    if piece:
+                        return piece
+                return b""
+
+            await add_nar(store, info, FrameReader(next_chunk), repair=False, ignored_acls=settings.ignored_acls)
+    finally:
+        with anyio.CancelScope(shield=True):
+            await roots.close()
 
 
 async def _restore_into_place(
