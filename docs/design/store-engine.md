@@ -100,7 +100,12 @@ that nothing moved.
    names, and the two modules are their parts.)
 3. The router and its reason table. The five call sites call it. (Done:
    `REASONS` in `write_router.py`, first match wins.)
-4. The handlers of ops 7, 39 and 44 call one router method each.
+4. The handlers of ops 7, 39 and 44 call one router method each. (First
+   half done: `DaemonWrites`, `store/daemon_writes.py`, is the daemon
+   backend with the engine's names, and every write to the daemon goes
+   through it. The second half, the router methods, waits on step 5: op 7's
+   engine route answers with the path's info, which is a read the engine
+   does not own yet.)
 5. The read answers (`own_*`) move into the engine with plain types, and
    `LocalDBStore` stops being a subclass of `DaemonStore`.
 6. The package split.
