@@ -70,7 +70,7 @@ class ReverseInitiator:
         self._settings = settings
 
         store_id = settings.store_id or f"builder-{id(self):x}"
-        systems = settings.systems or sorted(self._ctx.local_store.systems or [])
+        systems = settings.systems or sorted(self._ctx.local_store.daemon_client.systems or [])
         system_features = settings.system_features
 
         self._registration_info: dict[str, object] = {

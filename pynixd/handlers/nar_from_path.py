@@ -84,7 +84,7 @@ class NarFromPathHandler(Handler):
         )
 
         # 2. Query path info to determine nar_size
-        store: DaemonStore = ctx.proxy.local_store
+        store: DaemonStore | LocalDBStore = ctx.proxy.local_store
         info_resp = await store.execute(QueryPathInfoRequest(path=req.path))
         if (not info_resp.valid or info_resp.info is None) and (
             mapped_store := ctx.proxy.store_for_output_path(str(req.path))

@@ -21,12 +21,12 @@ from tests.conftest import (
 if TYPE_CHECKING:
     from nix_daemon_protocol.query_all_valid_paths import QueryAllValidPathsResponse
     from pynixd import Server
-    from pynixd.store import DaemonStore
+    from pynixd.store import Store
 
 log = structlog.get_logger(__name__)
 
 
-async def _pick_random_path(store: DaemonStore) -> StorePath:
+async def _pick_random_path(store: Store) -> StorePath:
     """Pick an arbitrary valid path from the store."""
     resp: QueryAllValidPathsResponse = await store.execute(QueryAllValidPathsRequest())
     all_paths = list(resp.paths)

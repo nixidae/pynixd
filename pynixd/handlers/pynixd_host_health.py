@@ -69,7 +69,7 @@ class PynixdHostHealthStreamHandler(Handler):
         if ctx.role < Role.ADMIN:
             await ctx.proxy.send_error("Operation 'PynixdHostHealthStream' requires administrative privileges.")
             return None
-        local = ctx.proxy.local_store
+        local = ctx.proxy.local_store.daemon_client
         send, receive = anyio.create_memory_object_stream[SystemHealth](8)
 
         def listen(health: SystemHealth) -> None:

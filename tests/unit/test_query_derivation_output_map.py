@@ -90,8 +90,8 @@ async def _ask(
 ) -> dict[str, str] | None:
     """The map pynixd answers, as text; `None` where the daemon answers."""
     store = LocalDBStore(LocalSocketStoreSpec(store_id=StoreId("local"), store_path=root))
-    store._trust_policy = TrustPolicy(experimental_features=features)
-    store._features = {FEATURE_REALISATION_WITH_PATH} if reads_paths else set()
+    store.daemon_client._trust_policy = TrustPolicy(experimental_features=features)
+    store.daemon_client._features = {FEATURE_REALISATION_WITH_PATH} if reads_paths else set()
 
     async def read_derivation(_path: StorePath | str) -> Any:
         return parsed

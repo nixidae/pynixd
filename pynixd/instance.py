@@ -341,7 +341,7 @@ class Server:
             )
 
     @property
-    def local_store(self) -> LocalStore:
+    def local_store(self) -> LocalStore | LocalDBStore:
         """The primary local Nix daemon store."""
         return self.ctx.local_store
 

@@ -106,7 +106,7 @@ def test_collect_without_scheduler_reports_none() -> None:
 
 
 def test_collect_names_stores_and_sessions() -> None:
-    store = SimpleNamespace(is_healthy=True, feature_matrix={"x86_64-linux": {"kvm"}})
+    store = SimpleNamespace(is_healthy=True, feature_matrix={"x86_64-linux": {"kvm"}}, daemon_client=None)
     ctx = _ctx(stores={StoreId("builder-a"): store})
     report = state_collector.collect(cast("PynixdContext", ctx), ["stores", "sessions", "no-such-section"])
     assert report.stores == {"builder-a": StoreRow(healthy=True, systems=["x86_64-linux"])}
@@ -198,7 +198,7 @@ async def test_handler_refuses_an_untrusted_client() -> None:
 
 @pytest.mark.anyio
 async def test_handler_collects_local_sections() -> None:
-    store = SimpleNamespace(is_healthy=False, feature_matrix={})
+    store = SimpleNamespace(is_healthy=False, feature_matrix={}, daemon_client=None)
     ctx = _ctx(builds=[_build()], stores={StoreId("builder-a"): store})
     proxy = FakeProxy(await _body(["queue", "stores"], False), ctx, {})
     resp = await PynixdStateHandler().handle(FakeContext(proxy=proxy, role=Role.ADMIN))  # type: ignore[arg-type]  # fakes

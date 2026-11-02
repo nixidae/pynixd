@@ -34,7 +34,8 @@ class _Process:
 
 class _Ctx:
     class local_store:  # noqa: N801 - stands in for an attribute
-        systems: ClassVar[list[str]] = ["aarch64-darwin"]
+        class daemon_client:  # noqa: N801 - stands in for an attribute
+            systems: ClassVar[list[str]] = ["aarch64-darwin"]
 
 
 def _capture(seen: dict[str, Any]) -> Callable[..., Any]:

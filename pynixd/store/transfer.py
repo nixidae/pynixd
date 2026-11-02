@@ -24,6 +24,9 @@ if TYPE_CHECKING:
 
     from ..connection import Connection
     from .daemon import DaemonStore
+    from .local_db import LocalDBStore
+
+    type TransferEnd = DaemonStore | LocalDBStore
 
 
 log = structlog.get_logger(__name__)
@@ -83,8 +86,8 @@ def _referenced_first(infos: list[ValidPathInfo]) -> list[ValidPathInfo]:
 
 
 async def stream_paths_store_to_store(
-    src: DaemonStore,
-    dst: DaemonStore,
+    src: TransferEnd,
+    dst: TransferEnd,
     paths: Iterable[StorePath],
     cancel_event: anyio.Event | None = None,
     *,
@@ -180,8 +183,8 @@ async def stream_paths_store_to_store(
 
 
 async def _stream_checked(
-    src: DaemonStore,
-    dst: DaemonStore,
+    src: TransferEnd,
+    dst: TransferEnd,
     to_transfer: list[ValidPathInfo],
     cancel_event: anyio.Event | None,
     peer_store_id: str | None,

@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from .build_queue import BuildQueue
     from .context import PynixdContext
     from .scheduler import Scheduler
-    from .store import LocalStore, Store
+    from .store import LocalDBStore, LocalStore, Store
     from .wire import NixReader, NixWriter
 
 from .store import DaemonStore as DaemonStore
@@ -129,7 +129,7 @@ class DaemonProxy:
         self._op_metrics: dict[tuple[str, str], metrics.OpSeries] = {}
 
     @property
-    def local_store(self) -> LocalStore:
+    def local_store(self) -> LocalStore | LocalDBStore:
         """The local Nix store for direct store operations."""
         return self.ctx.local_store
 
@@ -156,7 +156,7 @@ class DaemonProxy:
         cosmetic, because `compareVersions` takes it and answers rubbish
         quietly.
         """
-        return self.local_store.nix_version or NIX_VERSION
+        return self.local_store.daemon_client.nix_version or NIX_VERSION
 
     @property
     def scheduler(self) -> Scheduler | None:

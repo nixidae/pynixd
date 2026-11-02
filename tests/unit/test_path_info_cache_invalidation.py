@@ -29,8 +29,10 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from nix_daemon_protocol.collect_garbage import CollectGarbageRequest, CollectGarbageResponse
+from nix_daemon_protocol.ids import StoreId
 from nix_daemon_protocol.protocol import GCAction
 from nix_daemon_protocol.signature import Signature
+from pynixd.config import LocalSocketStoreSpec
 from pynixd.serde import (
     AddSignaturesRequest,
     ContentAddress,
@@ -42,8 +44,11 @@ from pynixd.serde import (
     ValidPathInfo,
 )
 from pynixd.store.daemon import DaemonStore
+from pynixd.store.local_db import LocalDBStore
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from pynixd.connection import ClientConn
 
 PATH = "/nix/store/00000000000000000000000000000001-thing"
@@ -184,3 +189,18 @@ async def test_collect_garbage_forgets_only_what_it_deleted(store: RecordingStor
     assert store.sent == ["CollectGarbageRequest"], "it must still reach the daemon"
     assert store.get_path_info(PATH) is None
     assert store.get_path_info(other) is not None
+
+
+def test_an_engine_write_forgets_what_the_daemon_client_cached(tmp_path: Path) -> None:
+    """`LocalDBStore` and its daemon client hold one cache.
+
+    The engine forgets a path it wrote through `LocalDBStore`. The daemon
+    client answers `QueryPathInfo` on the daemon route from its own cache. Two
+    caches would let that route answer with the info from before the write.
+    """
+    store = LocalDBStore(LocalSocketStoreSpec(store_id=StoreId("local"), store_path=tmp_path))
+    store.daemon_client.add_path_info(_info("old"))
+
+    store.engine.invalidate_path_info_cache_for(PATH)
+
+    assert store.daemon_client.get_path_info(PATH) is None

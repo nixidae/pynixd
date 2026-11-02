@@ -21,6 +21,7 @@ from pynixd.proxy import NIX_VERSION, DaemonProxy
 class FakeStore:
     def __init__(self, nix_version: str) -> None:
         self.nix_version = nix_version
+        self.daemon_client = self
 
 
 def _version(nix_version: str) -> str:

@@ -1102,7 +1102,7 @@ class DaemonStore(Store):
     async def register_drv_output(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """RegisterDrvOutput (op 42) — carry the shape this store reads, then delegate."""
         return await self.call(
-            await self._request_in_the_shape_this_store_reads(request),
+            await self.request_in_the_shape_this_store_reads(request),
             client=client,
             suppress_last=suppress_last,
         )
@@ -1116,7 +1116,7 @@ class DaemonStore(Store):
         nixidae/nixidae#1006.
         """
         response = await self.call(
-            await self._request_in_the_shape_this_store_reads(request),
+            await self.request_in_the_shape_this_store_reads(request),
             client=client,
             suppress_last=suppress_last,
         )
@@ -1124,7 +1124,7 @@ class DaemonStore(Store):
             return response
         return answer_in_both_shapes(response, request)
 
-    async def _request_in_the_shape_this_store_reads(self, request: Any) -> Any:
+    async def request_in_the_shape_this_store_reads(self, request: Any) -> Any:
         """Fill the missing shape of op 42/43, or refuse.
 
         **Every hop negotiates apart, and a verbatim forward crosses one.**

@@ -9,12 +9,13 @@ reach it from the code of today.
 
 ## Where the code is today
 
-- `LocalDBStore` subclasses `LocalStore`, which subclasses `DaemonStore`.
-  pynixd's own answers live in a class whose base is a daemon client. Each
-  answer is an `own_*` method that takes a wire request model.
-- The write path is `StoreEngine` (`store/engine.py`, step 2 below). Its
-  parts are `store/add.py` and `store/register.py`. `LocalDBStore` holds one
-  engine, and still answers the reads itself.
+- `LocalDBStore` is a `Store` that holds the managed daemon client
+  (`LocalStore`), the engine and the router (step 5 below). The scheduler
+  builds on the client, through `Store.daemon_client`. Each answer is an
+  `own_*` method that takes a wire request model, checks the daemon facts
+  it needs, and asks the engine.
+- `StoreEngine` (`store/engine.py`, step 2 below) holds the writes and the
+  reads. Its parts are `store/add.py` and `store/register.py`.
 - `WriteRouter` (`write_router.py`, steps 3 and 4 below) chooses the engine
   or the daemon for the five call sites, and runs the write there: the
   handlers of ops 7, 39 and 44, the substitution queue, and the HTTP
@@ -106,9 +107,9 @@ that nothing moved.
    `add_multiple_to_store` and `import_nar` choose and run each write, and
    `WriteClient` is what a write needs of the session.)
 5. The read answers (`own_*`) move into the engine with plain types, and
-   `LocalDBStore` stops being a subclass of `DaemonStore`. (The reads are
-   done: each `own_*` method checks the daemon facts it needs, and the
-   engine answers. The subclass remains.)
+   `LocalDBStore` stops being a subclass of `DaemonStore`. (Done:
+   `LocalDBStore` holds its daemon client and forwards to it, and
+   `Store.daemon_client` names the client that builds for a store.)
 6. The package split.
 
 New operations go into the engine from step 2 on, not into `LocalDBStore`.

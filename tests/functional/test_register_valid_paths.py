@@ -238,7 +238,7 @@ async def test_a_pooled_worker_sees_a_registration_at_once(tmp_path: Path) -> No
         local = server.ctx.local_store
         assert isinstance(local, LocalDBStore)
         assert (await local.execute(asked, skip_probe=True)).valid is False
-        [(worker, _)] = local.transfer_pool.idle_conns
+        [(worker, _)] = local.daemon_client.transfer_pool.idle_conns
         assert "QueryPathInfo" in " ".join(worker.op_log), worker.op_log
         await local.register_valid_paths(plain)
         assert (await local.execute(asked, skip_probe=True)).valid is True

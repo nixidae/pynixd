@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from .store.base import Store
     from .store.daemon import DaemonStore
     from .store.local_daemon import LocalStore
+    from .store.local_db import LocalDBStore
 
 
 OUTPUT_LOCATIONS_KEPT = 100_000
@@ -94,7 +95,7 @@ class PynixdContext:
         return None if store is None else store.daemon_client
 
     @property
-    def local_store(self) -> LocalStore:
+    def local_store(self) -> LocalStore | LocalDBStore:
         """The primary local Nix daemon store for this context."""
         return self._stores[LOCAL_STORE_ID]  # type: ignore[return-value]
 

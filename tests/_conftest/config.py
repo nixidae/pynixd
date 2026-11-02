@@ -111,7 +111,7 @@ def ssh_user_uri(server: Server) -> str:
 def unix_session_uri(server: Server) -> str:
     """Return a Unix socket URI pointing to the session server."""
     socket_path = SESSION_STORE_PREFIX / "pynixd.sock"
-    local_path = server.local_store.store_path
+    local_path = server.local_store.daemon_client.store_path
     return f"unix://{socket_path}?root={local_path}"
 
 

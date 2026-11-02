@@ -164,7 +164,7 @@ async def _build_with_pynixd_fleet(
     builder_root: Path,
     drv_path: str,
     case: Case,
-    builder_class: type[LocalStore] = LocalDBStore,
+    builder_class: type[LocalStore | LocalDBStore] = LocalDBStore,
 ) -> Any:
     """Realise *drv_path* through pynixd, with the build placed on a second store.
 

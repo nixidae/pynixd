@@ -62,7 +62,7 @@ def _store(root: Path, **routes: OpRoute) -> tuple[LocalDBStore, list[Any]]:
             return IsValidPathResponse(valid=False)
         return QueryPathInfoResponse(valid=False)
 
-    store.call = call  # type: ignore[method-assign]  # the daemon of this test
+    store.daemon_client.call = call  # type: ignore[method-assign]  # the daemon of this test
     return store, asked
 
 

@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from .health import HealthReport
-    from .store import LocalStore
+    from .store import LocalDBStore, LocalStore
     from .substitution_queue import SubstitutionQueue
 
 log = structlog.get_logger(__name__)
@@ -126,7 +126,7 @@ class PynixdHttpServer:
 
     def __init__(
         self,
-        local_store: LocalStore,
+        local_store: LocalStore | LocalDBStore,
         *,
         enable_cache: bool = True,
         enable_metrics: bool = True,

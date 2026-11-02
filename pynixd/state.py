@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from .monitor import ResourceMonitor
     from .pressure import BuildLimit
     from .scheduler import Scheduler
+    from .store.base import Store
     from .store.pool import ConnectionPool
 
 KNOWN_SECTIONS: tuple[str, ...] = (
@@ -180,9 +181,10 @@ def upstream_in_flight(ctx: PynixdContext) -> list[UpstreamRow]:
     return sorted(rows, key=lambda row: -row.silent_s)
 
 
-def _pools_of(store: object) -> tuple[ConnectionPool, ...]:
-    """A daemon store's build and transfer pools; an HTTP cache has none."""
-    return getattr(store, "pools", ())
+def _pools_of(store: Store) -> tuple[ConnectionPool, ...]:
+    """A store's build and transfer pools; an HTTP cache has none."""
+    client = store.daemon_client
+    return () if client is None else client.pools
 
 
 def _stores_section(ctx: PynixdContext) -> dict[str, StoreRow]:
@@ -201,7 +203,7 @@ def _stores_section(ctx: PynixdContext) -> dict[str, StoreRow]:
                 )
                 for pool in _pools_of(store)
             },
-            limit=_limit_of(store, now),
+            limit=_limit_of(store.daemon_client, now),
         )
         for store_id, store in ctx.stores.items()
     }

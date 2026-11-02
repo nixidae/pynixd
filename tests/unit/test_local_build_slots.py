@@ -254,6 +254,7 @@ class _LocalStore:
         self.is_healthy = True
         self.draining = False
         self.in_flight = 0
+        self.daemon_client = self
 
     def supports_derivation(self, platform: str, features: set[str]) -> bool:
         del platform, features

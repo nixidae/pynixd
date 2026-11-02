@@ -215,12 +215,14 @@ class Scheduler:
         metrics.watch_waiting(lambda: state.pending_reasons(self))
         self.substitution_queue = SubstitutionQueue(ctx)
         self.local_store = ctx.local_store
+        self.local_builder = self.local_store.daemon_client
+        """The daemon client that builds for the local store; `local_store` answers its reads."""
         self._dynamic_feature_matrix: dict[str, set[str]] = {}
 
         self.ranker = TelemetryStoreRanker(ctx.settings)
         self.rng = random.Random()  # noqa: S311 -- placement, not cryptography
         """Draws for `explore_share`; a test seeds or replaces it."""
-        self.allocator = BuildAllocator(self.stores, self.local_store, self.ranker)
+        self.allocator = BuildAllocator(self.stores, self.local_builder, self.ranker)
         self.trigger_event = anyio.Event()
         self.running = False
         self._workers: TaskGroup | None = None
@@ -235,11 +237,9 @@ class Scheduler:
         """Writes nothing until `start` hands it the database, which the local store opens after this."""
         self.pass_id = 0
         self._weights = self.ranker.settings.model_dump_json()
-        for store in [*self.stores.values(), self.local_store]:
-            client = store.daemon_client
-            if client is not None:
-                client.on_capacity = self.trigger
-                client.sample_listeners.add(self.on_sample)
+        for client in [*self.stores.values(), self.local_builder]:
+            client.on_capacity = self.trigger
+            client.sample_listeners.add(self.on_sample)
 
     @property
     def stores(self) -> dict[StoreId, DaemonStore]:
@@ -605,7 +605,7 @@ class Scheduler:
         )
         notes.excluded = list(ranked.excluded) if isinstance(ranked, RankedStores) else []
 
-        local_store = self.local_store
+        local_store = self.local_store.daemon_client
         local_can_build = (
             local_store.is_healthy
             and not local_store.draining

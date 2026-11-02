@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import types
 from enum import Enum
@@ -18,21 +19,25 @@ from ..local_store_db import LocalStoreDB
 from ..op_routes import OpRoute, Owned
 from ..serde import StorePath
 from ..write_router import WriteRouter
+from .base import Store
 from .daemon_writes import DaemonWrites
 from .engine import StoreEngine
 from .local_daemon import LocalStore
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterable
+    from collections.abc import AsyncIterator, Iterable, Set as AbstractSet
+    from contextlib import AbstractAsyncContextManager
 
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
     from nix_daemon_protocol.wire_ops import WireRequest
 
     from ..config import LocalSocketStoreSpec
-    from ..connection import ClientConn
+    from ..connection import ClientConn, Connection
+    from ..drv_parser import Derivation
+    from ..serde import SetOptionsRequest
     from ..substitution_queue import SubstitutionQueue
+    from ..trust import TrustPolicy
     from .add import ImportSettings
-    from .daemon import DaemonStore
 
 log = structlog.get_logger(__name__)
 
@@ -146,13 +151,15 @@ def referenced_paths(request: object) -> set[str]:
     return found
 
 
-class LocalDBStore(LocalStore):
-    """LocalStore with SQLite database for fast-path query optimizations.
+class LocalDBStore(Store):
+    """pynixd's local store: the engine, the managed daemon, and the router between them.
 
-    Each executor method answers from SQLite when the database is open, and
-    returns `None` when it is not. `DaemonStore.execute` treats a falsy result
-    as "no fast path" and calls the wire, so a database pynixd cannot open
-    costs correctness nothing.
+    The daemon client (`LocalStore`) builds, and answers every operation the
+    engine does not. The scheduler builds on it through `daemon_client`.
+
+    Each `own_*` method answers from the engine when the database is open,
+    and returns `None` when it is not. `execute` then asks the daemon, so a
+    database pynixd cannot open costs correctness nothing.
 
     **The fast paths are valid for a plain local store only. A
     `local-overlay-store` must not use this class.** They read one database,
@@ -188,13 +195,34 @@ class LocalDBStore(LocalStore):
         43: Owned("own_query_realisation", default=OpRoute.pynixd),
     }
 
+    #: Operations of pynixd's own protocol extension that the engine answers.
+    #: They take no route: Nix has no such operation, and the daemon's
+    #: fallback for each asks one path at a time.
+    EXTENDED: ClassVar[dict[int, str]] = {
+        103: "query_path_infos",
+        104: "query_closure",
+        105: "query_closure_with_info",
+        106: "query_derivation_output_map_batch",
+    }
+
     def __init__(self, spec: LocalSocketStoreSpec) -> None:
         super().__init__(spec)
-        #: pynixd's own local store under this daemon client (`docs/design/store-engine.md`).
+        self._daemon = LocalStore(spec)
+        # One cache: an engine write forgets the entry that a daemon answer reads.
+        self.path_info_cache = self._daemon.path_info_cache
+        self.layout = self._daemon.layout
+        self.managed = self._daemon.managed
+        self.settings = self._daemon.settings
+        # The collector and the substituter list read these with `getattr` and a default, so a missing one is silent.
+        self.nix_config = spec.nix_config
+        self.gc_max_age = spec.gc_max_age
+        self.gc_target_usage = spec.gc_target_usage
+        self.gc_allow_execute = spec.gc_allow_execute
+        #: pynixd's own local store (`docs/design/store-engine.md`).
         self.engine = StoreEngine(
             self.layout,
             writes=spec.pynixd_writes,
-            read_config=self.read_nix_config,
+            read_config=self._daemon.read_nix_config,
             on_change=self.forget_path_info,
             name=str(self.store_id),
         )
@@ -219,7 +247,96 @@ class LocalDBStore(LocalStore):
             for op, owned in self.OWNED.items()
         }
         #: Who writes: the engine or the daemon (`write_router.py`).
-        self.router = WriteRouter(self.routes, self.engine, DaemonWrites(self), str(self.store_id), self.add_path_info)
+        self.router = WriteRouter(
+            self.routes, self.engine, DaemonWrites(self._daemon), str(self.store_id), self.add_path_info
+        )
+
+    # ── The daemon client ───────────────────────────────────────────
+
+    @property
+    def daemon_client(self) -> LocalStore:
+        return self._daemon
+
+    @property
+    def features(self) -> AbstractSet[str]:
+        return self._daemon.features
+
+    @property
+    def feature_matrix(self) -> dict[str, set[str]]:
+        return self._daemon.feature_matrix
+
+    @property
+    def is_healthy(self) -> bool:
+        return self._daemon.is_healthy
+
+    @property
+    def in_flight(self) -> int:
+        return self._daemon.in_flight
+
+    @property
+    def version(self) -> int:
+        return self._daemon.version
+
+    async def trust_policy(self) -> TrustPolicy:
+        return await self._daemon.trust_policy()
+
+    async def read_nix_config(self) -> dict[str, Any]:
+        return await self._daemon.read_nix_config()
+
+    async def probe(self) -> None:
+        await self._daemon.probe()
+
+    async def create_conn(self) -> Connection:
+        return await self._daemon.create_conn()
+
+    def transfer_conn(self, options: SetOptionsRequest | None = None) -> AbstractAsyncContextManager[Connection]:
+        return self._daemon.transfer_conn(options)
+
+    async def call(
+        self,
+        request: WireRequest,
+        client: ClientConn | None = None,
+        suppress_last: bool = False,
+        raise_on_error: bool = False,
+        skip_probe: bool = False,
+    ) -> Any:
+        return await self._daemon.call(
+            request, client=client, suppress_last=suppress_last, raise_on_error=raise_on_error, skip_probe=skip_probe
+        )
+
+    async def read_derivation(self, drv_store_path: StorePath | str) -> Derivation | None:
+        return await self._daemon.read_derivation(drv_store_path)
+
+    async def add_text_to_store(self, name: str, text: str, references: AbstractSet[str]) -> str:
+        return await self._daemon.add_text_to_store(name, text, references)
+
+    async def retire_idle_connections(self) -> int:
+        return await self._daemon.retire_idle_connections()
+
+    async def sign_path_info(
+        self, request: Any, client: Any = None, suppress_last: bool = False, conn: Connection | None = None
+    ) -> Any:
+        return await self._daemon.sign_path_info(request, client=client, suppress_last=suppress_last, conn=conn)
+
+    # The five operations `Store` declares abstract. `execute` never reaches
+    # them: it gives the daemon client every operation the engine does not answer.
+
+    async def is_valid_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        return await self._daemon.is_valid_path(request, client=client, suppress_last=suppress_last)
+
+    async def query_path_info(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        return await self._daemon.query_path_info(request, client=client, suppress_last=suppress_last)
+
+    async def query_path_from_hash_part(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        return await self._daemon.query_path_from_hash_part(request, client=client, suppress_last=suppress_last)
+
+    async def query_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        return await self._daemon.query_valid_paths(request, client=client, suppress_last=suppress_last)
+
+    async def nar_from_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        return await self._daemon.nar_from_path(request, client=client, suppress_last=suppress_last)
+
+    # ── The engine ──────────────────────────────────────────────────
 
     @property
     def db(self) -> LocalStoreDB:
@@ -256,7 +373,7 @@ class LocalDBStore(LocalStore):
         store reaches the daemon, because it is appended after those arguments
         and a later `--store` wins.
         """
-        overlay = next((arg for arg in self.extra_args if "local-overlay" in arg), None)
+        overlay = next((arg for arg in self._daemon.extra_args if "local-overlay" in arg), None)
         if overlay is not None:
             return (
                 f"the daemon is started with {overlay!r}, and the SQLite fast paths read one "
@@ -265,9 +382,14 @@ class LocalDBStore(LocalStore):
             )
         return None
 
+    @contextlib.asynccontextmanager
+    async def _run(self) -> AsyncIterator[None]:
+        """The daemon client's lifetime holds the engine's: the database opens after the daemon creates it."""
+        async with self._daemon, super()._run():
+            yield
+
     async def start(self, sync_paths: bool = True) -> None:
-        """Initialise the SQLite database and start the daemon store."""
-        await self.ensure_daemon()
+        """Open the SQLite database. The daemon client is running."""
         refusal = self._refuses_a_database()
         if refusal is not None:
             log.warning("local_store_db_refused", store_id=str(self.store_id), reason=refusal)
@@ -276,12 +398,10 @@ class LocalDBStore(LocalStore):
             self.db = await LocalStoreDB.open(self.layout)
         self._refuse_routes_without_a_database()
         self.db.start(self._background)
-        await super().start(sync_paths=sync_paths)
 
     async def close(self) -> None:
-        """Close the SQLite database and the daemon store."""
+        """Close the SQLite database."""
         await self.db.close()
-        await super().close()
 
     async def execute(
         self,
@@ -315,19 +435,26 @@ class LocalDBStore(LocalStore):
         """
         if mark:
             self.db.mark_paths(referenced_paths(request))
+        daemon = self._daemon
+        if (extended := self.EXTENDED.get(request.op)) is not None:
+            if not skip_probe:
+                await daemon.probe()
+            if answer := await getattr(self, extended)(request, client=client, suppress_last=suppress_last):
+                return answer
+            return await daemon.call(request, client=client, suppress_last=suppress_last)
         owned = self.OWNED.get(request.op)
         route = self.routes.get(request.op, OpRoute.daemon)
         if owned is None or route is OpRoute.daemon:
-            return await super().execute(request, client=client, suppress_last=suppress_last, skip_probe=skip_probe)
+            return await daemon.execute(request, client=client, suppress_last=suppress_last, skip_probe=skip_probe)
         if route is OpRoute.pynixd:
             if not skip_probe:
-                await self.probe()
+                await daemon.probe()
             answer = await self._own_answer(owned, request, client, suppress_last)
             if answer is not None:
                 return answer
             metrics.OP_FALLTHROUGH.labels(store_id=self.store_id, op=request.name).inc()
-            return await super().execute(request, client=client, suppress_last=suppress_last, skip_probe=True)
-        theirs = await super().execute(request, client=client, suppress_last=suppress_last, skip_probe=skip_probe)
+            return await daemon.execute(request, client=client, suppress_last=suppress_last, skip_probe=True)
+        theirs = await daemon.execute(request, client=client, suppress_last=suppress_last, skip_probe=skip_probe)
         await self._shadow(owned, request, client, theirs)
         return theirs
 
@@ -480,7 +607,7 @@ class LocalDBStore(LocalStore):
 
         if "ca-derivations" not in (await self.trust_policy()).experimental_features:
             return None
-        shaped = await self._request_in_the_shape_this_store_reads(request)
+        shaped = await self._daemon.request_in_the_shape_this_store_reads(request)
         by_path = FEATURE_REALISATION_WITH_PATH in self.features
         if by_path:
             keyed = shaped.keyed_drv_output
@@ -693,6 +820,11 @@ class LocalDBStore(LocalStore):
         return DerivationOutputMapBatchResponse(outputs=result)
 
 
-def write_router(store: DaemonStore) -> WriteRouter:
+def write_router(store: Store) -> WriteRouter:
     """Who writes *store*: its own router, or the daemon alone for a store pynixd does not write."""
-    return store.router if isinstance(store, LocalDBStore) else WriteRouter.daemon_only(store)
+    if isinstance(store, LocalDBStore):
+        return store.router
+    client = store.daemon_client
+    if client is None:
+        raise TypeError(f"store {store.store_id} has no daemon to write to")
+    return WriteRouter.daemon_only(client)

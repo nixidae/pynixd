@@ -73,7 +73,7 @@ def _store(monkeypatch: pytest.MonkeyPatch, features: set[str]) -> Any:
     # The real boundary logic, bound to the fake: `query_realisation` reaches
     # the helpers through `self`, and the fake holds no methods of its own.
     for name in (
-        "_request_in_the_shape_this_store_reads",
+        "request_in_the_shape_this_store_reads",
         "_old_drv_output_id",
         "_old_realisation",
     ):

@@ -34,7 +34,7 @@ from pynixd.serde import (
     QueryClosureWithInfoResponse,
     SetOptionsRequest,
 )
-from pynixd.store import LocalDBStore
+from pynixd.store import LocalDBStore, LocalStore
 from pynixd.store_layout import StoreLayout
 from pynixd.store_path import StorePath
 from tests.conftest import STORE_PREFIX, make_test_spec, rmtree_robust, serde_path
@@ -49,8 +49,12 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
-class StatsTestStore(LocalDBStore):
-    """A store that simulates builds with specific durations."""
+class StatsTestStore(LocalStore):
+    """A builder that simulates builds with specific durations.
+
+    A `LocalStore`, not a `LocalDBStore`: the scheduler builds on a store's
+    daemon client, so a fake `build_conn` belongs on the client.
+    """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)

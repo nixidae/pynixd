@@ -59,12 +59,13 @@ async def _ctx(local: Any, client: Client, interval_ms: int) -> Any:
 
 
 def _local(monitor: Any, tmp_path: Path) -> Any:
-    return SimpleNamespace(
+    client = SimpleNamespace(
         monitor=monitor,
         sample_listeners=set(),
         pressure_settings=PressureSettings(),
         layout=SimpleNamespace(real_store_dir=tmp_path),
     )
+    return SimpleNamespace(daemon_client=client)
 
 
 @pytest.mark.anyio
@@ -77,14 +78,14 @@ async def test_the_peer_forwards_each_sample_of_its_monitor(tmp_path: Path) -> N
         tg.start_soon(PynixdHostHealthStreamHandler().handle, ctx)
         with anyio.fail_after(5):
             await client.first.wait()
-            for listener in tuple(local.sample_listeners):
+            for listener in tuple(local.daemon_client.sample_listeners):
                 listener(SystemHealth(load1=0.7, disk=DiskSpace(free_bytes=5, total_bytes=9)))
             await client.done.wait()
         tg.cancel_scope.cancel()
 
     assert [sample.load1 for sample in client.samples] == [0.1, 0.7]
     assert client.samples[1].disk == DiskSpace(free_bytes=5, total_bytes=9)
-    assert local.sample_listeners == set(), "a closed session must stop listening"
+    assert local.daemon_client.sample_listeners == set(), "a closed session must stop listening"
 
 
 @pytest.mark.anyio
@@ -103,7 +104,7 @@ async def test_the_peer_samples_itself_when_its_monitor_cannot_serve(tmp_path: P
 
     assert client.samples[0].meminfo is not None
     assert client.samples[0].disk is not None
-    assert local.sample_listeners == set()
+    assert local.daemon_client.sample_listeners == set()
 
 
 class PeerReader:
