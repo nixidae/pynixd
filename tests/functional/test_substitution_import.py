@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from pynixd.store.add import import_nar_pieces
+from pynixd.store.add import import_nar
 from tests._conftest.import_lab import REFS, VALID_PATHS, files, lab, rows, run, serve_directory, server
 from tests.conftest import NIX_BIN
 
@@ -29,9 +29,9 @@ def imported(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
     async def counting(store: LocalDBStore, info: ValidPathInfo, *args: Any, **kwargs: Any) -> None:
         seen.append(str(info.path))
-        await import_nar_pieces(store, info, *args, **kwargs)
+        await import_nar(store, info, *args, **kwargs)
 
-    monkeypatch.setattr("pynixd.substitution_queue.import_nar_pieces", counting)
+    monkeypatch.setattr("pynixd.substitution_queue.import_nar", counting)
     return seen
 
 

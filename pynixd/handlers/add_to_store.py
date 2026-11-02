@@ -17,8 +17,9 @@ from ..op_routes import OpRoute
 from ..serde import AddToStoreRequest, StorePath
 from ..serde.auth import Role
 from ..serde.context import ReadContext, WriteContext
-from ..store.add import FrameReader, add_dump
+from ..store.add import add_dump
 from ..store.local_db import LocalDBStore
+from ..store.source import Metered
 from ..wire import FramedReader, forward_framed
 from ._base import Handler
 
@@ -72,13 +73,6 @@ class AddToStoreHandler(Handler):
         """`addToStoreFromDump` in pynixd. Every error comes after `startWork`, so the session goes on."""
         frames = FramedReader(ctx.proxy.r)
         meter = self._meter(ctx)
-        on_bytes = meter.on_bytes
-
-        async def next_chunk() -> bytes:
-            chunk = await frames.next_chunk()
-            if on_bytes is not None:
-                on_bytes(len(chunk))
-            return chunk
 
         async def root(path: str) -> None:
             # The session holds the path, as Nix's worker does for its client (`local-store.cc:1264`).
@@ -93,7 +87,7 @@ class AddToStoreHandler(Handler):
                 method,
                 algo,
                 frozenset(str(ref) for ref in req.references),
-                FrameReader(next_chunk),
+                Metered(frames, meter.on_bytes),
                 root=root,
                 ignored_acls=settings.ignored_acls,
             )

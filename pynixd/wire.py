@@ -834,6 +834,14 @@ class FramedReader(NixReader):
             return b""
         return await self._src.readexactly(size)
 
+    async def read(self, n: int) -> bytes:
+        """At most *n* bytes of the next frame, `b""` at the end: the store engine's `Source`."""
+        chunk = await self.next_chunk()
+        if len(chunk) > n:
+            self.unread(chunk[n:])
+            return chunk[:n]
+        return chunk
+
     def unread(self, data: bytes) -> None:
         """Put *data* back in front of the stream: what a reader took past the end of its own record."""
         if data:

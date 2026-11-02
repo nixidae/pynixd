@@ -18,9 +18,7 @@ reach it from the code of today.
   handlers of ops 7, 39 and 44, the substitution queue, and the HTTP cache's
   upload. Each one reads `routes` and calls one of three `why_the_daemon_*`
   methods.
-- The write path reads its bytes three ways: `FrameReader` over the client's
-  frames, an async generator from a cache or a daemon, and a decompressed
-  file.
+- The write path reads its bytes through one `Source` (step 1, below).
 
 Each of these works, and the suites prove it. Each one also makes the next
 operation more expensive, and none of them gives an experiment a clear place
@@ -61,10 +59,13 @@ method, encode. Every byte that goes to a client comes from here.
 ## One byte source
 
 The engine reads every dump and NAR through one async protocol, as Nix reads
-a `Source`. `read(n)` gives at most `n` bytes, and `b""` at the end. The
-three readers of today become adapters to it: the client's frames, an async
-iterator of pieces, and a file. The worker-thread bridge (`FrameReader`)
-moves inside the engine, where the synchronous unpacking runs.
+a `Source` (`store/source.py`). `read(n)` gives at most `n` bytes, and `b""`
+at the end. `FramedReader` is one directly: the client's frames. `Pieces`
+makes one of an async iterator: a cache, a daemon, or a decompressed upload
+read on a worker thread. `Bounded` is Nix's `EnsureRead` with a cap, for a
+NAR that shares its stream with the next record (op 44). `Metered` counts
+the bytes. The worker-thread bridge (`BlockingReader`) is inside the engine,
+where the synchronous unpacking runs.
 
 ## Experiments, and how Nix learns from them
 
@@ -91,7 +92,7 @@ Each step changes no wire byte, and lands with every suite green, Nix's
 functional suite included. Parity and the differential tests are the proof
 that nothing moved.
 
-1. The byte-source protocol and its three adapters. The write path takes it.
+1. The byte-source protocol and its adapters. The write path takes it. (Done.)
 2. The engine class over the code of today: it owns the layout, the
    database, the settings and the temporary roots, and `store/add.py` and
    `store/register.py` become its methods.

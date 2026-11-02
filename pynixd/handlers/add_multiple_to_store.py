@@ -19,8 +19,9 @@ from ..exceptions import ClosingError
 from ..op_routes import OpRoute
 from ..serde.auth import Role
 from ..serde.context import ReadContext, WriteContext
-from ..store.add import FrameReader, add_nar
+from ..store.add import add_nar
 from ..store.local_db import LocalDBStore
+from ..store.source import Bounded
 from ..store.transfer import as_copied
 from ..wire import FramedReader, FramedWriter, NixReader, NixWriter, forward_raw
 from ._base import Handler
@@ -119,14 +120,11 @@ class AddMultipleToStoreHandler(Handler):
             await check_path_signatures(ctx, store, info, settings)
         # The session holds the path, as `addToStore` roots it (`local-store.cc:1052`). nixidae/nixidae#1007.
         await ctx.proxy.add_temp_root(info.path)
-        read = FrameReader(frames.next_chunk)
-        try:
-            await add_nar(store, info, read, repair=False, ignored_acls=settings.ignored_acls)
-        finally:
-            # A frame holds the end of one NAR and the start of the next path's info.
-            frames.unread(read.leftover())
-        # `EnsureRead::finish` (`daemon.cc:518`): a valid path's NAR is skipped unread.
-        await frames.skip(info.info.nar_size - read.consumed)
+        # A frame holds the end of one NAR and the start of the next path's info.
+        nar = Bounded(frames, info.info.nar_size)
+        await add_nar(store, info, nar, repair=False, ignored_acls=settings.ignored_acls)
+        # `EnsureRead::finish` (`daemon.cc:564`): a valid path's NAR is skipped unread.
+        await nar.finish()
 
     async def _forward(self, ctx: RequestContext, req: AddMultipleToStoreRequest) -> AddMultipleToStoreResponse:
         # **The connection that adds the path carries the options of the

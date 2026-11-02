@@ -16,8 +16,9 @@ from ..exceptions import ClosingError
 from ..op_routes import OpRoute
 from ..serde.auth import Role
 from ..serde.context import ReadContext, WriteContext
-from ..store.add import FrameReader, add_nar
+from ..store.add import add_nar
 from ..store.local_db import LocalDBStore
+from ..store.source import Metered
 from ..wire import FramedReader, forward_framed
 from ._base import Handler
 from ._import import check_path_signatures
@@ -77,20 +78,16 @@ class AddToStoreNarHandler(Handler):
             duration=metrics.NAR_ADD_DURATION,
         )
 
-        on_bytes = meter.on_bytes
-
-        async def next_chunk() -> bytes:
-            chunk = await frames.next_chunk()
-            if on_bytes is not None:
-                on_bytes(len(chunk))
-            return chunk
-
         try:
             settings = await store.import_settings()
             if not req.dont_check_sigs and settings.require_sigs:
                 await check_path_signatures(ctx, store, req.info, settings)
             await add_nar(
-                store, req.info, FrameReader(next_chunk), repair=bool(req.repair), ignored_acls=settings.ignored_acls
+                store,
+                req.info,
+                Metered(frames, meter.on_bytes),
+                repair=bool(req.repair),
+                ignored_acls=settings.ignored_acls,
             )
         finally:
             # The `FramedSource` destructor (`daemon.cc:946`): the rest of the NAR, so the session goes on.

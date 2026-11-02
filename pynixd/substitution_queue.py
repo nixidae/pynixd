@@ -22,7 +22,8 @@ from .exceptions import NarGone, OpNotImplementedError, leaves
 from .serde import AddToStoreNarRequest, NarFromPathRequest, QueryPathInfoRequest, StorePath
 from .serde.context import ReadContext, WriteContext
 from .store import DaemonStore, LocalDBStore, is_http_binary_cache
-from .store.add import import_nar_pieces
+from .store.add import import_nar
+from .store.source import Pieces
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
@@ -570,8 +571,8 @@ class SubstitutionQueue:
         if isinstance(local, LocalDBStore):
             reason = await local.why_the_daemon_imports_for_pynixd(candidate.path_info)
             if reason is None:
-                pieces = self._nar_pieces(path, candidate)
-                await import_nar_pieces(local, candidate.path_info, pieces, dont_check_sigs=dont_check_sigs)
+                async with Pieces(self._nar_pieces(path, candidate)) as nar:
+                    await import_nar(local, candidate.path_info, nar, dont_check_sigs=dont_check_sigs)
                 return
             log.debug("substitution_import_by_daemon", path=str(path), reason=reason)
         async with local.transfer_conn() as conn:
