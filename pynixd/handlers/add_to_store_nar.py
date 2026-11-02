@@ -13,12 +13,12 @@ from nix_daemon_protocol.add_to_store_nar import (
 
 from .. import metrics
 from ..exceptions import ClosingError
-from ..op_routes import OpRoute
 from ..serde.auth import Role
 from ..serde.context import ReadContext, WriteContext
 from ..store.local_db import LocalDBStore
 from ..store.source import Metered
 from ..wire import FramedReader, forward_framed
+from ..write_router import Write
 from ._base import Handler
 from ._import import check_path_signatures
 
@@ -55,14 +55,9 @@ class AddToStoreNarHandler(Handler):
         await ctx.proxy.add_temp_root(req.info.path)
 
         store = ctx.proxy.local_store
-        if isinstance(store, LocalDBStore) and store.routes.get(self.op) is OpRoute.pynixd:
-            reason = await store.why_the_daemon_imports(
-                repair=bool(req.repair), version=ctx.proxy.version
-            ) or store.why_the_daemon_imports_path(req.info)
-            if reason is None:
-                return await self._import(ctx, store, req)
-            logger.info("add_to_store_nar_fallthrough", path=str(req.info.path), reason=reason)
-            metrics.OP_FALLTHROUGH.labels(store_id=store.store_id, op=req.name).inc()
+        write = Write(op=req.name, version=ctx.proxy.version, repair=bool(req.repair), info=req.info)
+        if isinstance(store, LocalDBStore) and await store.router.engine_takes(write):
+            return await self._import(ctx, store, req)
         return await self._forward(ctx, req)
 
     async def _import(

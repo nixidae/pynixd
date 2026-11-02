@@ -23,6 +23,7 @@ from .serde import AddToStoreNarRequest, NarFromPathRequest, QueryPathInfoReques
 from .serde.context import ReadContext, WriteContext
 from .store import DaemonStore, LocalDBStore, is_http_binary_cache
 from .store.source import Pieces
+from .write_router import pynixd_import
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
@@ -567,13 +568,10 @@ class SubstitutionQueue:
     async def _import_nar(self, path: StorePath, candidate: SubstitutionCandidate) -> None:
         dont_check_sigs = _trusted_source(candidate.store)
         local = self.ctx.local_store
-        if isinstance(local, LocalDBStore):
-            reason = await local.why_the_daemon_imports_for_pynixd(candidate.path_info)
-            if reason is None:
-                async with Pieces(self._nar_pieces(path, candidate)) as nar:
-                    await local.engine.import_nar(candidate.path_info, nar, dont_check_sigs=dont_check_sigs)
-                return
-            log.debug("substitution_import_by_daemon", path=str(path), reason=reason)
+        if isinstance(local, LocalDBStore) and await local.router.engine_takes(pynixd_import(candidate.path_info)):
+            async with Pieces(self._nar_pieces(path, candidate)) as nar:
+                await local.engine.import_nar(candidate.path_info, nar, dont_check_sigs=dont_check_sigs)
+            return
         async with local.transfer_conn() as conn:
             request = AddToStoreNarRequest(info=candidate.path_info, repair=0, dont_check_sigs=int(dont_check_sigs))
             await request.to_writer(WriteContext.from_conn(conn))

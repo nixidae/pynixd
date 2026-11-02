@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, ClassVar
 
 import anyio
@@ -16,13 +17,13 @@ from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
 from .. import metrics
 from ..exceptions import ClosingError
-from ..op_routes import OpRoute
 from ..serde.auth import Role
 from ..serde.context import ReadContext, WriteContext
 from ..store.local_db import LocalDBStore
 from ..store.source import Bounded
 from ..store.transfer import as_copied
 from ..wire import FramedReader, FramedWriter, NixReader, NixWriter, forward_raw
+from ..write_router import Write
 from ._base import Handler
 from ._import import check_path_signatures, forward_one_path
 
@@ -52,16 +53,13 @@ class AddMultipleToStoreHandler(Handler):
             req = req.model_copy(update={"dont_check_sigs": 0})
 
         store = ctx.proxy.local_store
-        if isinstance(store, LocalDBStore) and store.routes.get(self.op) is OpRoute.pynixd:
-            reason = await store.why_the_daemon_imports(repair=bool(req.repair), version=ctx.proxy.version)
-            if reason is None:
-                return await self._import(ctx, store, req)
-            logger.info("add_multiple_to_store_fallthrough", reason=reason)
-            metrics.OP_FALLTHROUGH.labels(store_id=store.store_id, op=req.name).inc()
+        write = Write(op=req.name, version=ctx.proxy.version, repair=bool(req.repair))
+        if isinstance(store, LocalDBStore) and await store.router.engine_takes(write):
+            return await self._import(ctx, store, req, write)
         return await self._forward(ctx, req)
 
     async def _import(
-        self, ctx: RequestContext, store: LocalDBStore, req: AddMultipleToStoreRequest
+        self, ctx: RequestContext, store: LocalDBStore, req: AddMultipleToStoreRequest, write: Write
     ) -> AddMultipleToStoreResponse:
         """The loop of `daemon.cc:505`: `addToStore` per path, in stream order.
 
@@ -86,7 +84,12 @@ class AddMultipleToStoreHandler(Handler):
                 info = info.model_copy(update={"info": info.info.model_copy(update={"ultimate": False})})
                 try:
                     await self._import_one(
-                        ctx, store, settings, info, frames, dont_check_sigs=bool(req.dont_check_sigs)
+                        ctx,
+                        store,
+                        settings,
+                        replace(write, info=info),
+                        frames,
+                        dont_check_sigs=bool(req.dont_check_sigs),
                     )
                 finally:
                     store.forget_path_info(info.path)
@@ -103,15 +106,15 @@ class AddMultipleToStoreHandler(Handler):
         ctx: RequestContext,
         store: LocalDBStore,
         settings: ImportSettings,
-        info: ValidPathInfo,
+        write: Write,
         frames: FramedReader,
         *,
         dont_check_sigs: bool,
     ) -> None:
-        reason = store.why_the_daemon_imports_path(info)
-        if reason is not None:
-            logger.info("add_multiple_to_store_path_fallthrough", path=str(info.path), reason=reason)
-            metrics.OP_FALLTHROUGH.labels(store_id=store.store_id, op="AddMultipleToStore").inc()
+        info = write.info
+        if info is None:
+            raise ValueError("a path of AddMultipleToStore carries its info")
+        if not await store.router.engine_takes(write):
             await ctx.proxy.add_temp_root(info.path)
             await forward_one_path(ctx, store, info, frames, dont_check_sigs=dont_check_sigs)
             return

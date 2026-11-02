@@ -15,10 +15,10 @@ reach it from the code of today.
 - The write path is `StoreEngine` (`store/engine.py`, step 2 below). Its
   parts are `store/add.py` and `store/register.py`. `LocalDBStore` holds one
   engine, and still answers the reads itself.
-- Five call sites choose between pynixd and the daemon by themselves: the
-  handlers of ops 7, 39 and 44, the substitution queue, and the HTTP cache's
-  upload. Each one reads `routes` and calls one of three `why_the_daemon_*`
-  methods.
+- `WriteRouter` (`write_router.py`, step 3 below) chooses the engine or the
+  daemon for the five call sites: the handlers of ops 7, 39 and 44, the
+  substitution queue, and the HTTP cache's upload. Each one asks it, then
+  calls the engine or forwards the bytes itself.
 - The write path reads its bytes through one `Source` (step 1, below).
 
 Each of these works, and the suites prove it. Each one also makes the next
@@ -98,7 +98,8 @@ that nothing moved.
    database, the settings and the temporary roots, and `store/add.py` and
    `store/register.py` become its methods. (Done: the methods have Nix's
    names, and the two modules are their parts.)
-3. The router and its reason table. The five call sites call it.
+3. The router and its reason table. The five call sites call it. (Done:
+   `REASONS` in `write_router.py`, first match wins.)
 4. The handlers of ops 7, 39 and 44 call one router method each.
 5. The read answers (`own_*`) move into the engine with plain types, and
    `LocalDBStore` stops being a subclass of `DaemonStore`.

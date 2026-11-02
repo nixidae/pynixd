@@ -48,6 +48,7 @@ from .store import LocalDBStore
 from .store.source import Pieces
 from .store_path import StorePath
 from .wire import _CHUNK_SIZE
+from .write_router import pynixd_import
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
@@ -555,13 +556,10 @@ class PynixdHttpServer:
         log.info("finalizing_upload_to_store", path=str(vinfo.path))
         try:
             store = self.store
-            reason: str | None = "the store has no database pynixd writes"
-            if isinstance(store, LocalDBStore):
-                reason = await store.why_the_daemon_imports_for_pynixd(vinfo)
-                if reason is None:
-                    async with Pieces(_nar_pieces(nar_temp_path)) as nar:
-                        await store.engine.import_nar(vinfo, nar, dont_check_sigs=False)
-            if reason is not None:
+            if isinstance(store, LocalDBStore) and await store.router.engine_takes(pynixd_import(vinfo)):
+                async with Pieces(_nar_pieces(nar_temp_path)) as nar:
+                    await store.engine.import_nar(vinfo, nar, dont_check_sigs=False)
+            else:
                 async with store.transfer_conn() as conn:
                     req = AddToStoreNarRequest(info=vinfo, repair=0, dont_check_sigs=0)
                     await req.to_writer(WriteContext.from_conn(conn))

@@ -15,12 +15,10 @@ from nix_daemon_protocol.operations import STANDARD_OPERATIONS
 from nix_daemon_protocol.store_dir import store_prefix
 
 from .. import metrics
-from ..constants import proto
-from ..content_address import ContentAddress, Method, content_addressed_path, parse_method_algo
-from ..derived_path import check_output_name
 from ..local_store_db import LocalStoreDB
 from ..op_routes import OpRoute, Owned
 from ..serde import StorePath
+from ..write_router import WriteRouter
 from .engine import StoreEngine
 from .local_daemon import LocalStore
 
@@ -40,10 +38,6 @@ log = structlog.get_logger(__name__)
 _OP_CODES = {op.name: op.code for op in STANDARD_OPERATIONS}
 _OP_NAMES = {op.code: op.name for op in STANDARD_OPERATIONS}
 _HASH_PART_LENGTH = 32  # `StorePath::HashLen`
-#: `daemon.cc:943`: from 1.23 the NAR of AddToStoreNar comes framed.
-_FRAMED_NAR = proto(1, 23)
-#: `daemon.cc:406`: from 1.25 AddToStore names its method and references, and frames the dump.
-_FRAMED_DUMP = proto(1, 25)
 
 #: The most of one value a shadow mismatch logs: `QueryAllValidPaths` answers the whole store.
 _LOGGED_CHARACTERS = 2000
@@ -257,6 +251,8 @@ class LocalDBStore(LocalStore):
             op: self.configured_routes.get(op, OpRoute.daemon if owned.writes else owned.default)
             for op, owned in self.OWNED.items()
         }
+        #: Who writes: the engine or the daemon (`write_router.py`).
+        self.router = WriteRouter(self.routes, self.engine, str(self.store_id))
 
     @property
     def db(self) -> LocalStoreDB:
@@ -429,63 +425,6 @@ class LocalDBStore(LocalStore):
     async def import_settings(self) -> ImportSettings:
         """What `addToStore` reads of this store's Nix settings. Read once, as the daemon reads them."""
         return await self.engine.settings()
-
-    async def why_the_daemon_imports(self, *, repair: bool, version: int) -> str | None:
-        """Why the daemon must import every NAR of this op on the `pynixd` route, or `None` when pynixd can.
-
-        Known from the op's header, before a byte of a NAR: a NAR has no replay.
-        """
-        settings = await self.import_settings()
-        if not self.engine.writable:
-            return "the store database is not writable"
-        if version < _FRAMED_NAR:
-            return "the client sends the NAR unframed"
-        if repair:
-            return "repair"
-        if settings.auto_optimise_store:
-            return "auto-optimise-store"
-        if settings.fsync_store_paths:
-            return "fsync-store-paths"
-        return None
-
-    @staticmethod
-    def why_the_daemon_imports_path(info: ValidPathInfo) -> str | None:
-        """Why the daemon must import this one path, known from its info alone."""
-        if str(info.info.ca).startswith("fixed:git:"):
-            return "a Git content address"
-        return None
-
-    async def why_the_daemon_imports_for_pynixd(self, info: ValidPathInfo) -> str | None:
-        """Why the daemon imports a NAR pynixd itself fetched or received, or `None` when pynixd does.
-
-        These imports follow AddToStoreNar's route, so a deployment that keeps
-        that op on the daemon keeps them there too.
-        """
-        if self.routes.get(_OP_CODES["AddToStoreNar"]) is not OpRoute.pynixd:
-            return "AddToStoreNar takes the daemon route"
-        return await self.why_the_daemon_imports(repair=False, version=_FRAMED_NAR) or self.why_the_daemon_imports_path(
-            info
-        )
-
-    @staticmethod
-    def why_the_daemon_adds(name: str, method_algo: str, references: Iterable[str], *, version: int) -> str | None:
-        """Why the daemon must add this AddToStore dump, known from its header.
-
-        Each is a form whose refusal or hash pynixd does not reproduce: Nix's
-        message comes after `startWork`, so only the daemon gives it.
-        """
-        if version < _FRAMED_DUMP:
-            return "the client sends the dump unframed"
-        try:
-            method, algo = parse_method_algo(method_algo)
-            check_output_name(name)
-            # The digest's value does not change whether Nix makes a path of it.
-            content_addressed_path(ContentAddress(method, algo, b""), name, references, "/nix/store")
-        except ValueError as error:
-            return str(error)
-        if method is Method.GIT:
-            return "a Git content address"
-        return None
 
     async def nar_pieces(self, path: StorePath) -> AsyncIterator[bytes]:
         """The NAR of *path*, dumped from the store's files (`Store::narFromPath`, `store-api.cc:385`).

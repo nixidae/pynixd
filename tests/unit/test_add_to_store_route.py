@@ -6,10 +6,12 @@ import pytest
 
 from pynixd.constants import proto
 from pynixd.content_address import Method, parse_method_algo
-from pynixd.store.local_db import LocalDBStore
+from pynixd.store.add import ImportSettings
+from pynixd.write_router import Dump, Facts, Write, first_reason
 
 NEW = proto(1, 38)
 REF = "/nix/store/" + "a" * 32 + "-ref"
+FACTS = Facts(writable=True, settings=ImportSettings())
 
 
 @pytest.mark.parametrize(
@@ -32,10 +34,15 @@ def test_parse_method_algo_refuses(text: str) -> None:
         parse_method_algo(text)
 
 
+def _why(name: str, method: str, refs: list[str], *, version: int) -> str | None:
+    dump = Dump(name, method, frozenset(refs))
+    return first_reason(Write(op="AddToStore", version=version, dump=dump), FACTS)
+
+
 def test_pynixd_adds_what_it_can_hash() -> None:
-    assert LocalDBStore.why_the_daemon_adds("drv.drv", "text:sha256", [REF], version=NEW) is None
-    assert LocalDBStore.why_the_daemon_adds("src", "fixed:r:sha256", [REF], version=NEW) is None
-    assert LocalDBStore.why_the_daemon_adds("f", "fixed:sha1", [], version=NEW) is None
+    assert _why("drv.drv", "text:sha256", [REF], version=NEW) is None
+    assert _why("src", "fixed:r:sha256", [REF], version=NEW) is None
+    assert _why("f", "fixed:sha1", [], version=NEW) is None
 
 
 @pytest.mark.parametrize(
@@ -53,6 +60,6 @@ def test_the_daemon_adds_what_pynixd_does_not_reproduce(
     name: str, method: str, refs: list[str], version: int, reason: str
 ) -> None:
     """Nix's refusal of each comes after `startWork`, and only the daemon gives its words."""
-    why = LocalDBStore.why_the_daemon_adds(name, method, refs, version=version)
+    why = _why(name, method, refs, version=version)
     assert why is not None
     assert reason in why

@@ -13,13 +13,13 @@ from .. import metrics
 from ..content_address import parse_method_algo
 from ..daemon_extensions.sign_path_info import SignPathInfoRequest
 from ..exceptions import ClosingError
-from ..op_routes import OpRoute
 from ..serde import AddToStoreRequest, StorePath
 from ..serde.auth import Role
 from ..serde.context import ReadContext, WriteContext
 from ..store.local_db import LocalDBStore
 from ..store.source import Metered
 from ..wire import FramedReader, forward_framed
+from ..write_router import Dump, Write
 from ._base import Handler
 
 if TYPE_CHECKING:
@@ -48,16 +48,10 @@ class AddToStoreHandler(Handler):
             raise ClosingError("you are not privileged to repair paths")
 
         store = ctx.proxy.local_store
-        if isinstance(store, LocalDBStore) and store.routes.get(self.op) is OpRoute.pynixd:
-            reason = await store.why_the_daemon_imports(
-                repair=bool(req.repair), version=ctx.proxy.version
-            ) or store.why_the_daemon_adds(
-                req.path_name, str(req.cam), {str(ref) for ref in req.references}, version=ctx.proxy.version
-            )
-            if reason is None:
-                return await self._add(ctx, store, req)
-            logger.info("add_to_store_fallthrough", name=req.path_name, reason=reason)
-            metrics.OP_FALLTHROUGH.labels(store_id=store.store_id, op=req.name).inc()
+        dump = Dump(req.path_name, str(req.cam), frozenset(str(ref) for ref in req.references))
+        write = Write(op=req.name, version=ctx.proxy.version, repair=bool(req.repair), dump=dump)
+        if isinstance(store, LocalDBStore) and await store.router.engine_takes(write):
+            return await self._add(ctx, store, req)
         return await self._forward(ctx, req)
 
     def _meter(self, ctx: RequestContext) -> metrics.TransferMeter:
