@@ -22,7 +22,6 @@ The resolution flow:
 
 from __future__ import annotations
 
-import base64
 import hashlib
 from typing import TYPE_CHECKING
 
@@ -30,10 +29,11 @@ import structlog
 
 from nix_daemon_protocol.store_dir import store_dir as current_store_dir
 
+from ..content_address import content_addressed_path, fixed_output_address
 from ..drv_parser import ChildMapNode, _aterm_escape, drv_bytes
 from ..serde import BasicDerivation, DerivationOutput, OutputKind
 from ..store_path import StorePath
-from ..utils import nix32_decode, nix32_encode
+from ..utils import nix32_encode
 
 if TYPE_CHECKING:
     from ..drv_parser import Derivation
@@ -133,21 +133,6 @@ def _make_store_path(
     return f"{store_dir}/{nix32_encode(compressed)}-{name}"
 
 
-_HASH_SIZES = {"md5": 16, "sha1": 20, "sha256": 32, "sha512": 64}
-_METHOD_PREFIXES = ("text:", "r:", "git:")
-
-
-def _digest_of(text: str, size: int) -> bytes:
-    """A hash in any form `Hash::parseNonSRIUnprefixed` reads: Base16, Nix32 or Base64, by length."""
-    if len(text) == 2 * size:
-        return bytes.fromhex(text)
-    if len(text) == (size * 8 - 1) // 5 + 1:
-        return nix32_decode(text)
-    if len(text) == 4 * ((size + 2) // 3):
-        return base64.b64decode(text)
-    raise ValueError(f"hash '{text}' has the wrong length for its algorithm")
-
-
 def canonical_derivation(drv: BasicDerivation, drv_name: str) -> BasicDerivation:
     """*drv* as Nix writes it for an untrusted client, or `ValueError` with Nix's reason.
 
@@ -173,20 +158,9 @@ def canonical_derivation(drv: BasicDerivation, drv_name: str) -> BasicDerivation
     if not fixed:
         return drv
     output = drv.outputs["out"]
-    prefix = next((p for p in _METHOD_PREFIXES if output.method.startswith(p)), "")
-    algo = output.method.removeprefix(prefix)
-    size = _HASH_SIZES.get(algo)
-    if size is None:
-        raise ValueError(f"unknown hash algorithm '{algo}'")
-    digest = _digest_of(output.hash_digest, size)
-    if prefix == "text:":
-        path = _make_store_path("text", digest, drv_name)
-    elif prefix == "r:" and algo == "sha256":
-        path = _make_store_path("source", digest, drv_name)
-    else:
-        inner = hashlib.sha256(f"fixed:out:{prefix}{algo}:{digest.hex()}:".encode()).digest()
-        path = _make_store_path("output:out", inner, drv_name)
-    canonical = output.model_copy(update={"path": path, "hash_digest": digest.hex()})
+    ca = fixed_output_address(output.method, output.hash_digest)
+    path = content_addressed_path(ca, drv_name, (), current_store_dir())
+    canonical = output.model_copy(update={"path": path, "hash_digest": ca.digest.hex()})
     return drv.model_copy(update={"outputs": {**drv.outputs, "out": canonical}})
 
 
