@@ -21,7 +21,7 @@ from nix_daemon_protocol.nar_hash import NARHash
 from pynixd.exceptions import BackendError
 from pynixd.hintfmt import magenta
 from pynixd.serde.context import ReadContext, WriteContext
-from pynixd.store.add import add_nar
+from pynixd.store.engine import StoreEngine
 from tests._conftest.import_lab import (
     IA,
     OUTPUTS,
@@ -45,21 +45,21 @@ if TYPE_CHECKING:
 
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
     from pynixd.connection import Connection
-    from pynixd.store import LocalDBStore
 
 _ROUTES = pytest.mark.parametrize("route", ["pynixd", "daemon"])
 
 
 @pytest.fixture
 def imported(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """The paths pynixd's `add_nar` imported for op 44."""
+    """The paths pynixd's engine imported for op 44."""
     seen: list[str] = []
+    add_to_store = StoreEngine.add_to_store
 
-    async def counting(store: LocalDBStore, info: ValidPathInfo, *args: Any, **kwargs: Any) -> None:
+    async def counting(engine: StoreEngine, info: ValidPathInfo, *args: Any, **kwargs: Any) -> None:
         seen.append(str(info.path))
-        await add_nar(store, info, *args, **kwargs)
+        await add_to_store(engine, info, *args, **kwargs)
 
-    monkeypatch.setattr("pynixd.handlers.add_multiple_to_store.add_nar", counting)
+    monkeypatch.setattr(StoreEngine, "add_to_store", counting)
     return seen
 
 

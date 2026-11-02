@@ -21,9 +21,8 @@ from ..derived_path import check_output_name
 from ..local_store_db import LocalStoreDB
 from ..op_routes import OpRoute, Owned
 from ..serde import StorePath
-from .add import ImportSettings
+from .engine import StoreEngine
 from .local_daemon import LocalStore
-from .register import prepare, register_valid_paths
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable
@@ -34,6 +33,7 @@ if TYPE_CHECKING:
     from ..config import LocalSocketStoreSpec
     from ..connection import ClientConn
     from ..substitution_queue import SubstitutionQueue
+    from .add import ImportSettings
 
 log = structlog.get_logger(__name__)
 
@@ -229,9 +229,14 @@ class LocalDBStore(LocalStore):
 
     def __init__(self, spec: LocalSocketStoreSpec) -> None:
         super().__init__(spec)
-        # `start` replaces it. A start that fails before then still reaches `close`.
-        self.db = LocalStoreDB.inactive(self.layout)
-        self._import_settings: ImportSettings | None = None
+        #: pynixd's own local store under this daemon client (`docs/design/store-engine.md`).
+        self.engine = StoreEngine(
+            self.layout,
+            writes=spec.pynixd_writes,
+            read_config=self.read_nix_config,
+            on_change=self.forget_path_info,
+            name=str(self.store_id),
+        )
         #: The scheduler's race over the substituters; the instance sets it at start.
         self.substitution_queue: SubstitutionQueue | None = None
         self.configured_routes = {_OP_CODES[name]: route for name, route in spec.op_routes.items()}
@@ -252,6 +257,15 @@ class LocalDBStore(LocalStore):
             op: self.configured_routes.get(op, OpRoute.daemon if owned.writes else owned.default)
             for op, owned in self.OWNED.items()
         }
+
+    @property
+    def db(self) -> LocalStoreDB:
+        """The engine's database. `start` replaces it; a start that fails before then still reaches `close`."""
+        return self.engine.db
+
+    @db.setter
+    def db(self, db: LocalStoreDB) -> None:
+        self.engine.db = db
 
     def _refuse_routes_without_a_database(self) -> None:
         """A route set by hand to an answer that reads SQLite needs SQLite.
@@ -414,9 +428,7 @@ class LocalDBStore(LocalStore):
 
     async def import_settings(self) -> ImportSettings:
         """What `addToStore` reads of this store's Nix settings. Read once, as the daemon reads them."""
-        if self._import_settings is None:
-            self._import_settings = ImportSettings.from_nix_config(await self.read_nix_config())
-        return self._import_settings
+        return await self.engine.settings()
 
     async def why_the_daemon_imports(self, *, repair: bool, version: int) -> str | None:
         """Why the daemon must import every NAR of this op on the `pynixd` route, or `None` when pynixd can.
@@ -424,7 +436,7 @@ class LocalDBStore(LocalStore):
         Known from the op's header, before a byte of a NAR: a NAR has no replay.
         """
         settings = await self.import_settings()
-        if not self.db.active or self.db.read_only:
+        if not self.engine.writable:
             return "the store database is not writable"
         if version < _FRAMED_NAR:
             return "the client sends the NAR unframed"
@@ -500,20 +512,9 @@ class LocalDBStore(LocalStore):
     async def register_valid_paths(self, infos: Iterable[ValidPathInfo]) -> None:
         """Make *infos* valid in Nix's own tables, as `LocalStore::registerValidPaths` does.
 
-        The files must already be in the store. Only a store with
-        `pynixd_writes` on may call this; `RegistrationError` carries Nix's
-        reason for a path Nix would refuse.
+        Only a store with `pynixd_writes` on may call this (`StoreEngine.register_valid_paths`).
         """
-        if not self.pynixd_writes:
-            raise RuntimeError(f"store {self.store_id}: pynixd_writes is off, so pynixd registers no path")
-        if not self.db.active or self.db.read_only:
-            raise RuntimeError(f"store {self.store_id}: pynixd cannot write the store database")
-        infos = list(infos)
-        registrations = [await prepare(info, self.layout) for info in infos]
-        async with self.db.acquire_conn() as conn:
-            await register_valid_paths(conn, registrations)
-        for info in infos:
-            self.forget_path_info(info.path)
+        await self.engine.register_valid_paths(infos)
 
     async def own_is_valid_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """IsValidPath — fast-path via SQLite lookup.

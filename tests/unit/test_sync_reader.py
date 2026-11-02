@@ -25,15 +25,32 @@ from cachetools import TTLCache
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from pynixd.local_store_db import LocalStoreDB, SyncReader
 from pynixd.serde import IsValidPathRequest, QueryPathInfoRequest, StorePath
+from pynixd.store.engine import StoreEngine
 from pynixd.store.local_db import LocalDBStore
 from pynixd.store_layout import StoreLayout
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from typing import Any
 
 HELLO = "/nix/store/00000000000000000000000000000001-hello"
 LIBC = "/nix/store/00000000000000000000000000000002-libc"
 GONE = "/nix/store/00000000000000000000000000000003-gone"
+
+
+async def _no_settings() -> dict[str, Any]:
+    raise AssertionError("a read answer reads no Nix setting")
+
+
+def _store(db: LocalStoreDB, root: Path) -> LocalDBStore:
+    """A store with what the read answers use, and no daemon: `__init__` would start one."""
+    store = LocalDBStore.__new__(LocalDBStore)
+    store.engine = StoreEngine(
+        StoreLayout.chroot(root), writes=False, read_config=_no_settings, on_change=lambda _: None, name="test"
+    )
+    store.db = db
+    store.path_info_cache = TTLCache[str, ValidPathInfo](maxsize=10000, ttl=300)
+    return store
 
 
 def _store_db(tmp_path: Path) -> Path:
@@ -112,9 +129,7 @@ class TestTheStoreUsesTheSessionReader:
     async def test_the_session_reader_answers_is_valid_path(self, tmp_path: Path) -> None:
         _store_db(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
-            store = LocalDBStore.__new__(LocalDBStore)
-            store.db = db
-            store.path_info_cache = TTLCache[str, ValidPathInfo](maxsize=10000, ttl=300)
+            store = _store(db, tmp_path)
 
             class Client:
                 sync_reader = db.sync_reader()
@@ -134,9 +149,7 @@ class TestTheStoreUsesTheSessionReader:
         """The pooled connection is the fallback, and it must stay correct."""
         _store_db(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
-            store = LocalDBStore.__new__(LocalDBStore)
-            store.db = db
-            store.path_info_cache = TTLCache[str, ValidPathInfo](maxsize=10000, ttl=300)
+            store = _store(db, tmp_path)
 
             held = await store.own_is_valid_path(IsValidPathRequest(path=StorePath(path=HELLO)), client=None)
             gone = await store.own_is_valid_path(IsValidPathRequest(path=StorePath(path=GONE)), client=None)
@@ -227,9 +240,7 @@ class TestTheStoreUsesTheReaderForPathInfo:
     async def test_the_session_reader_answers_query_path_info(self, tmp_path: Path) -> None:
         _store_db_with_info(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
-            store = LocalDBStore.__new__(LocalDBStore)
-            store.db = db
-            store.path_info_cache = TTLCache[str, ValidPathInfo](maxsize=10000, ttl=300)
+            store = _store(db, tmp_path)
 
             class Client:
                 sync_reader = db.sync_reader()
@@ -251,9 +262,7 @@ class TestTheStoreUsesTheReaderForPathInfo:
         """Both paths land in one builder, so their answers are identical."""
         _store_db_with_info(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
-            store = LocalDBStore.__new__(LocalDBStore)
-            store.db = db
-            store.path_info_cache = TTLCache[str, ValidPathInfo](maxsize=10000, ttl=300)
+            store = _store(db, tmp_path)
 
             class Client:
                 sync_reader = db.sync_reader()
@@ -274,9 +283,7 @@ class TestTheStoreUsesTheReaderForPathInfo:
         """The pooled connection is the fallback, and it must stay correct."""
         _store_db_with_info(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
-            store = LocalDBStore.__new__(LocalDBStore)
-            store.db = db
-            store.path_info_cache = TTLCache[str, ValidPathInfo](maxsize=10000, ttl=300)
+            store = _store(db, tmp_path)
 
             held = await store.own_query_path_info(QueryPathInfoRequest(path=StorePath(path=HELLO)), client=None)
             gone = await store.own_query_path_info(QueryPathInfoRequest(path=StorePath(path=GONE)), client=None)

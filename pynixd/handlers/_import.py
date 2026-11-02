@@ -8,7 +8,6 @@ from nix_daemon_protocol.add_to_store_nar import AddToStoreNarRequest, AddToStor
 from nix_daemon_protocol.logs import LogNext
 
 from ..serde.context import ReadContext, WriteContext
-from ..store.add import check_import_signatures
 from ..wire import FramedWriter, forward_raw
 
 if TYPE_CHECKING:
@@ -27,7 +26,7 @@ async def check_path_signatures(
     options = ctx.proxy.client.options if ctx.proxy.client is not None else None
     warnings: list[str] = []
     try:
-        check_import_signatures(store, info, settings, options.overrides if options is not None else {}, warnings)
+        store.engine.check_signatures(info, settings, options.overrides if options is not None else {}, warnings)
     finally:
         # Nix prints each warning as it checks, before any refusal.
         for warning in warnings:

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from pynixd.store.add import import_nar
+from pynixd.store.engine import StoreEngine
 from tests._conftest.import_lab import REFS, VALID_PATHS, files, lab, rows, run, serve_directory, server
 from tests.conftest import NIX_BIN
 
@@ -19,19 +19,19 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
-    from pynixd.store import LocalDBStore
 
 
 @pytest.fixture
 def imported(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """The paths the substitution queue imported in pynixd."""
     seen: list[str] = []
+    import_nar = StoreEngine.import_nar
 
-    async def counting(store: LocalDBStore, info: ValidPathInfo, *args: Any, **kwargs: Any) -> None:
+    async def counting(engine: StoreEngine, info: ValidPathInfo, *args: Any, **kwargs: Any) -> None:
         seen.append(str(info.path))
-        await import_nar(store, info, *args, **kwargs)
+        await import_nar(engine, info, *args, **kwargs)
 
-    monkeypatch.setattr("pynixd.substitution_queue.import_nar", counting)
+    monkeypatch.setattr(StoreEngine, "import_nar", counting)
     return seen
 
 

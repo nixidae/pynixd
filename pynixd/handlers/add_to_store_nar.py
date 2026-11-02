@@ -16,7 +16,6 @@ from ..exceptions import ClosingError
 from ..op_routes import OpRoute
 from ..serde.auth import Role
 from ..serde.context import ReadContext, WriteContext
-from ..store.add import add_nar
 from ..store.local_db import LocalDBStore
 from ..store.source import Metered
 from ..wire import FramedReader, forward_framed
@@ -82,8 +81,7 @@ class AddToStoreNarHandler(Handler):
             settings = await store.import_settings()
             if not req.dont_check_sigs and settings.require_sigs:
                 await check_path_signatures(ctx, store, req.info, settings)
-            await add_nar(
-                store,
+            await store.engine.add_to_store(
                 req.info,
                 Metered(frames, meter.on_bytes),
                 repair=bool(req.repair),

@@ -19,7 +19,6 @@ from ..exceptions import ClosingError
 from ..op_routes import OpRoute
 from ..serde.auth import Role
 from ..serde.context import ReadContext, WriteContext
-from ..store.add import add_nar
 from ..store.local_db import LocalDBStore
 from ..store.source import Bounded
 from ..store.transfer import as_copied
@@ -122,7 +121,7 @@ class AddMultipleToStoreHandler(Handler):
         await ctx.proxy.add_temp_root(info.path)
         # A frame holds the end of one NAR and the start of the next path's info.
         nar = Bounded(frames, info.info.nar_size)
-        await add_nar(store, info, nar, repair=False, ignored_acls=settings.ignored_acls)
+        await store.engine.add_to_store(info, nar, repair=False, ignored_acls=settings.ignored_acls)
         # `EnsureRead::finish` (`daemon.cc:564`): a valid path's NAR is skipped unread.
         await nar.finish()
 

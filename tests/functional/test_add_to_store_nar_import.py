@@ -19,7 +19,7 @@ from nix_daemon_protocol.nar_hash import NARHash
 from pynixd.exceptions import BackendError
 from pynixd.nar_fs import dump_path
 from pynixd.serde.context import ReadContext, WriteContext
-from pynixd.store.add import add_nar
+from pynixd.store.engine import StoreEngine
 from tests._conftest.import_lab import (
     IA,
     NIX_STORE,
@@ -44,7 +44,6 @@ if TYPE_CHECKING:
 
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
     from pynixd.connection import Connection
-    from pynixd.store import LocalDBStore
 
 
 async def _import(a: Path, root: Path, socket: Path, paths: list[str]) -> None:
@@ -59,11 +58,13 @@ async def test_pynixd_imports_as_the_daemon_does(tmp_path: Path, monkeypatch: py
     assert str(rows(a, f"select ca from ValidPaths where path = '{self_ca}'")[0][0]).startswith("fixed:r:sha256:")
     imported: list[str] = []
 
-    async def counting(store: LocalDBStore, info: ValidPathInfo, *args: Any, **kwargs: Any) -> None:
-        imported.append(str(info.path))
-        await add_nar(store, info, *args, **kwargs)
+    add_to_store = StoreEngine.add_to_store
 
-    monkeypatch.setattr("pynixd.handlers.add_to_store_nar.add_nar", counting)
+    async def counting(engine: StoreEngine, info: ValidPathInfo, *args: Any, **kwargs: Any) -> None:
+        imported.append(str(info.path))
+        await add_to_store(engine, info, *args, **kwargs)
+
+    monkeypatch.setattr(StoreEngine, "add_to_store", counting)
 
     b, c = tmp_path / "b", tmp_path / "c"
     async with server(b, tmp_path / "b.sock", "pynixd"):

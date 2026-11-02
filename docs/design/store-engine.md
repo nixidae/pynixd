@@ -12,8 +12,9 @@ reach it from the code of today.
 - `LocalDBStore` subclasses `LocalStore`, which subclasses `DaemonStore`.
   pynixd's own answers live in a class whose base is a daemon client. Each
   answer is an `own_*` method that takes a wire request model.
-- The write path is free functions in `store/add.py` and `store/register.py`.
-  They take a `LocalDBStore`, and read its layout, database and settings.
+- The write path is `StoreEngine` (`store/engine.py`, step 2 below). Its
+  parts are `store/add.py` and `store/register.py`. `LocalDBStore` holds one
+  engine, and still answers the reads itself.
 - Five call sites choose between pynixd and the daemon by themselves: the
   handlers of ops 7, 39 and 44, the substitution queue, and the HTTP cache's
   upload. Each one reads `routes` and calls one of three `why_the_daemon_*`
@@ -95,7 +96,8 @@ that nothing moved.
 1. The byte-source protocol and its adapters. The write path takes it. (Done.)
 2. The engine class over the code of today: it owns the layout, the
    database, the settings and the temporary roots, and `store/add.py` and
-   `store/register.py` become its methods.
+   `store/register.py` become its methods. (Done: the methods have Nix's
+   names, and the two modules are their parts.)
 3. The router and its reason table. The five call sites call it.
 4. The handlers of ops 7, 39 and 44 call one router method each.
 5. The read answers (`own_*`) move into the engine with plain types, and

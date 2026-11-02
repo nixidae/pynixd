@@ -45,7 +45,6 @@ from .serde import (
 )
 from .serde.context import ReadContext, WriteContext
 from .store import LocalDBStore
-from .store.add import import_nar
 from .store.source import Pieces
 from .store_path import StorePath
 from .wire import _CHUNK_SIZE
@@ -561,7 +560,7 @@ class PynixdHttpServer:
                 reason = await store.why_the_daemon_imports_for_pynixd(vinfo)
                 if reason is None:
                     async with Pieces(_nar_pieces(nar_temp_path)) as nar:
-                        await import_nar(store, vinfo, nar, dont_check_sigs=False)
+                        await store.engine.import_nar(vinfo, nar, dont_check_sigs=False)
             if reason is not None:
                 async with store.transfer_conn() as conn:
                     req = AddToStoreNarRequest(info=vinfo, repair=0, dont_check_sigs=0)

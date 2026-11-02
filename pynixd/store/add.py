@@ -41,16 +41,14 @@ from ..exceptions import PynixdError
 from ..hintfmt import magenta
 from ..nar_fs import BadArchive, dump_path, restore_path
 from ..signing import check_signatures, key_settings, public_keys
-from ..temp_roots import TempRoots
 from ..utils import nix32_encode
-from .queries import IS_VALID_PATH
 from .source import BlockingReader
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
     from pathlib import Path
 
-    from .local_db import LocalDBStore
+    from .engine import StoreEngine
     from .source import Source
 
 log = structlog.get_logger(__name__)
@@ -287,7 +285,7 @@ def canonicalise(path: Path, ignored_acls: frozenset[str] = IGNORED_ACLS) -> Non
 
 
 def check_import_signatures(
-    store: LocalDBStore,
+    engine: StoreEngine,
     info: ValidPathInfo,
     settings: ImportSettings,
     overrides: Mapping[str, str],
@@ -299,7 +297,7 @@ def check_import_signatures(
     """
     trusted, secret_files = key_settings(settings.trusted_public_keys, settings.secret_key_files, overrides)
     try:
-        good = check_signatures(info, public_keys(trusted, secret_files), str(store.layout.store_dir), warnings.append)
+        good = check_signatures(info, public_keys(trusted, secret_files), str(engine.layout.store_dir), warnings.append)
     except ValueError as error:
         raise AddError(str(error)) from error
     if not good:
@@ -310,14 +308,8 @@ def _sri(digest: bytes) -> str:
     return "sha256-" + base64.b64encode(digest).decode()
 
 
-async def _is_valid(store: LocalDBStore, path: str) -> bool:
-    """`isValidPathUncached`: the table itself, never the path-info cache."""
-    async with store.db.acquire_conn() as conn, conn.execute(IS_VALID_PATH, (path,)) as cursor:
-        return await cursor.fetchone() is not None
-
-
 async def add_nar(
-    store: LocalDBStore,
+    engine: StoreEngine,
     info: ValidPathInfo,
     source: Source,
     *,
@@ -332,57 +324,57 @@ async def add_nar(
     `daemon.cc:564`).
     """
     path = str(info.path)
-    real = store.layout.real_store_dir / path.rsplit("/", 1)[-1]
-    if not repair and await _is_valid(store, path):
+    real = engine.layout.real_store_dir / path.rsplit("/", 1)[-1]
+    if not repair and await engine.is_valid_path_uncached(path):
         return
     lock = PathLock(real)
     # Not cancellable: an abandoned `flock` would hold the lock with no owner to release it.
     await anyio.to_thread.run_sync(lock.acquire)
     delete_lock = False
     try:
-        if not repair and await _is_valid(store, path):
+        if not repair and await engine.is_valid_path_uncached(path):
             delete_lock = True
             return
-        await _restore_into_place(store, info, real, source, ignored_acls)
-        await store.register_valid_paths([info])
+        await _restore_into_place(engine, info, real, source, ignored_acls)
+        await engine.register_valid_paths([info])
         delete_lock = True
     finally:
         lock.release(delete=delete_lock)
 
 
-async def import_nar(store: LocalDBStore, info: ValidPathInfo, source: Source, *, dont_check_sigs: bool) -> None:
+async def import_nar(engine: StoreEngine, info: ValidPathInfo, source: Source, *, dont_check_sigs: bool) -> None:
     """AddToStoreNar for pynixd's own callers: the substitution queue and the HTTP cache's upload.
 
     No client session holds the path, so the import holds its own temporary
     root, as the daemon worker of a transfer connection did.
     """
-    settings = await store.import_settings()
+    settings = await engine.settings()
     if not dont_check_sigs and settings.require_sigs:
         warnings: list[str] = []
         try:
-            check_import_signatures(store, info, settings, {}, warnings)
+            check_import_signatures(engine, info, settings, {}, warnings)
         finally:
             for warning in warnings:
                 log.warning("import_signature_warning", path=str(info.path), warning=warning)
-    roots = TempRoots(store.layout.state_dir)
+    roots = engine.temp_roots()
     try:
         if not await roots.add(info.path):
             raise AddError(f"pynixd cannot write a temporary root for '{magenta(info.path)}'")
-        await add_nar(store, info, source, repair=False, ignored_acls=settings.ignored_acls)
+        await add_nar(engine, info, source, repair=False, ignored_acls=settings.ignored_acls)
     finally:
         with anyio.CancelScope(shield=True):
             await roots.close()
 
 
 async def _restore_into_place(
-    store: LocalDBStore,
+    engine: StoreEngine,
     info: ValidPathInfo,
     real: Path,
     source: Source,
     ignored_acls: frozenset[str],
 ) -> None:
     path = str(info.path)
-    temp = await anyio.to_thread.run_sync(TempDir.create, store.layout.real_store_dir)
+    temp = await anyio.to_thread.run_sync(TempDir.create, engine.layout.real_store_dir)
     try:
         staged = temp.path / "x"
         reader = HashingReader(BlockingReader(source))
@@ -437,7 +429,7 @@ def _nar_hash(path: Path) -> tuple[bytes, int]:
 
 
 async def add_dump(
-    store: LocalDBStore,
+    engine: StoreEngine,
     name: str,
     method: Method,
     algo: str,
@@ -455,7 +447,7 @@ async def add_dump(
     """
     if method is Method.GIT:
         raise ValueError("pynixd does not hash a Git dump")
-    temp = await anyio.to_thread.run_sync(TempDir.create, store.layout.real_store_dir)
+    temp = await anyio.to_thread.run_sync(TempDir.create, engine.layout.real_store_dir)
     try:
         staged = temp.path / "x"
         reader = HashingReader(BlockingReader(source), algo)
@@ -465,18 +457,18 @@ async def add_dump(
         except BadArchive as error:
             raise AddError(str(error)) from error
         ca = ContentAddress(method, algo, reader.hasher.digest())
-        store_dir = str(store.layout.store_dir)
+        store_dir = str(engine.layout.store_dir)
         path = content_addressed_path(ca, name, references, store_dir)
         await root(path)
-        if await _is_valid(store, path):
+        if await engine.is_valid_path_uncached(path):
             return path
-        real = store.layout.real_store_dir / path.rsplit("/", 1)[-1]
+        real = engine.layout.real_store_dir / path.rsplit("/", 1)[-1]
         lock = PathLock(real)
         # Not cancellable: an abandoned `flock` would hold the lock with no owner to release it.
         await anyio.to_thread.run_sync(lock.acquire)
         delete_lock = False
         try:
-            if not await _is_valid(store, path):
+            if not await engine.is_valid_path_uncached(path):
                 await anyio.to_thread.run_sync(_move_into_place, staged, real, ignored_acls)
                 # A NAR dump hashed with SHA-256 is the NAR hash already (`local-store.cc:1304`).
                 if method is Method.NAR and algo == "sha256":
@@ -495,7 +487,7 @@ async def add_dump(
                         ca=WireContentAddress(value=ca.render()),
                     ),
                 )
-                await store.register_valid_paths([info])
+                await engine.register_valid_paths([info])
             delete_lock = True
         finally:
             lock.release(delete=delete_lock)

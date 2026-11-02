@@ -17,7 +17,6 @@ from ..op_routes import OpRoute
 from ..serde import AddToStoreRequest, StorePath
 from ..serde.auth import Role
 from ..serde.context import ReadContext, WriteContext
-from ..store.add import add_dump
 from ..store.local_db import LocalDBStore
 from ..store.source import Metered
 from ..wire import FramedReader, forward_framed
@@ -81,8 +80,7 @@ class AddToStoreHandler(Handler):
         try:
             settings = await store.import_settings()
             method, algo = parse_method_algo(str(req.cam))
-            path = await add_dump(
-                store,
+            path = await store.engine.add_to_store_from_dump(
                 req.path_name,
                 method,
                 algo,

@@ -21,7 +21,7 @@ from nix_daemon_protocol.content_address import ContentAddress
 from pynixd.exceptions import BackendError
 from pynixd.nar_fs import dump_path
 from pynixd.serde.context import ReadContext, WriteContext
-from pynixd.store.add import add_dump
+from pynixd.store.engine import StoreEngine
 from tests._conftest.import_lab import (
     EXPR,
     OUTPUTS,
@@ -41,22 +41,22 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from pynixd.connection import Connection
-    from pynixd.store import LocalDBStore
 
 _ROUTES = pytest.mark.parametrize("route", ["pynixd", "daemon"])
 
 
 @pytest.fixture
 def added(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """The paths pynixd's `add_dump` added for op 7."""
+    """The paths pynixd's engine added for op 7."""
     seen: list[str] = []
+    add = StoreEngine.add_to_store_from_dump
 
-    async def counting(store: LocalDBStore, *args: Any, **kwargs: Any) -> str:
-        path = await add_dump(store, *args, **kwargs)
+    async def counting(engine: StoreEngine, *args: Any, **kwargs: Any) -> str:
+        path = await add(engine, *args, **kwargs)
         seen.append(path)
         return path
 
-    monkeypatch.setattr("pynixd.handlers.add_to_store.add_dump", counting)
+    monkeypatch.setattr(StoreEngine, "add_to_store_from_dump", counting)
     return seen
 
 
