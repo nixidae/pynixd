@@ -283,13 +283,21 @@ class FrameReader:
     def __init__(self, next_chunk: Callable[[], Awaitable[bytes]]) -> None:
         self._next_chunk = next_chunk
         self._buffer = memoryview(b"")
+        self.consumed = 0
 
     def __call__(self, n: int) -> bytes:
         if not self._buffer:
             self._buffer = memoryview(anyio.from_thread.run(self._chunk))
         out = bytes(self._buffer[:n])
         self._buffer = self._buffer[n:]
+        self.consumed += len(out)
         return out
+
+    def leftover(self) -> bytes:
+        """What the last chunk held past the bytes read: the next record of a shared stream."""
+        rest = bytes(self._buffer)
+        self._buffer = memoryview(b"")
+        return rest
 
     async def _chunk(self) -> bytes:
         return await self._next_chunk()
@@ -308,16 +316,17 @@ async def _is_valid(store: LocalDBStore, path: str) -> bool:
 async def add_nar(
     store: LocalDBStore,
     info: ValidPathInfo,
-    next_chunk: Callable[[], Awaitable[bytes]],
+    read: FrameReader,
     *,
     repair: bool,
     ignored_acls: frozenset[str] = IGNORED_ACLS,
 ) -> None:
     """`LocalStore::addToStore` after the signature check, for a path the client has temp-rooted.
 
-    It reads the NAR through *next_chunk* and stops at the end of the archive;
-    the caller drains what is left, on success and on error, as Nix's
-    `FramedSource` does when it goes out of scope (`daemon.cc:946`).
+    It reads the NAR through *read* and stops at the end of the archive, or
+    reads nothing when the path is valid. What is left is the caller's: the
+    rest of the frames (`FramedSource`, `daemon.cc:946`), or the skip to the
+    next path of a shared stream (`EnsureRead::finish`, `daemon.cc:518`).
     """
     path = str(info.path)
     real = store.layout.real_store_dir / path.rsplit("/", 1)[-1]
@@ -331,7 +340,7 @@ async def add_nar(
         if not repair and await _is_valid(store, path):
             delete_lock = True
             return
-        await _restore_into_place(store, info, real, next_chunk, ignored_acls)
+        await _restore_into_place(store, info, real, read, ignored_acls)
         await store.register_valid_paths([info])
         delete_lock = True
     finally:
@@ -342,14 +351,14 @@ async def _restore_into_place(
     store: LocalDBStore,
     info: ValidPathInfo,
     real: Path,
-    next_chunk: Callable[[], Awaitable[bytes]],
+    read: FrameReader,
     ignored_acls: frozenset[str],
 ) -> None:
     path = str(info.path)
     temp = await anyio.to_thread.run_sync(TempDir.create, store.layout.real_store_dir)
     try:
         staged = temp.path / "x"
-        reader = HashingReader(FrameReader(next_chunk))
+        reader = HashingReader(read)
         try:
             await anyio.to_thread.run_sync(restore_path, staged, reader)
         except BadArchive as error:

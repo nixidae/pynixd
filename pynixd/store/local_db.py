@@ -26,7 +26,6 @@ from .register import prepare, register_valid_paths
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable
 
-    from nix_daemon_protocol.add_to_store_nar import AddToStoreNarRequest
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
     from nix_daemon_protocol.wire_ops import WireRequest
 
@@ -216,6 +215,7 @@ class LocalDBStore(LocalStore):
         # The daemon in a deployment: the shadow reads every NAR twice. The test stores run it in shadow.
         38: Owned("own_nar_from_path"),
         39: Owned("own_add_to_store_nar", writes=True),
+        44: Owned("own_add_multiple_to_store", writes=True),
         32: Owned("own_query_substitutable_paths", default=OpRoute.pynixd),
         33: Owned("own_query_valid_derivers", default=OpRoute.pynixd),
         41: Owned("own_query_derivation_output_map", default=OpRoute.pynixd),
@@ -399,29 +399,38 @@ class LocalDBStore(LocalStore):
         """None: the NAR follows the request, and `AddToStoreNarHandler` imports it with `store/add.py`."""
         return None
 
+    async def own_add_multiple_to_store(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        """None: the paths follow the request, and `AddMultipleToStoreHandler` imports each with `store/add.py`."""
+        return None
+
     async def import_settings(self) -> ImportSettings:
         """What `addToStore` reads of this store's Nix settings. Read once, as the daemon reads them."""
         if self._import_settings is None:
             self._import_settings = ImportSettings.from_nix_config(await self.read_nix_config())
         return self._import_settings
 
-    async def why_the_daemon_imports(self, request: AddToStoreNarRequest, version: int) -> str | None:
-        """Why the daemon must import this NAR on the `pynixd` route, or `None` when pynixd can.
+    async def why_the_daemon_imports(self, *, repair: bool, version: int) -> str | None:
+        """Why the daemon must import every NAR of this op on the `pynixd` route, or `None` when pynixd can.
 
-        Known from the header, before a byte of the NAR: a NAR has no replay.
+        Known from the op's header, before a byte of a NAR: a NAR has no replay.
         """
         settings = await self.import_settings()
         if not self.db.active or self.db.read_only:
             return "the store database is not writable"
         if version < _FRAMED_NAR:
             return "the client sends the NAR unframed"
-        if request.repair:
+        if repair:
             return "repair"
         if settings.auto_optimise_store:
             return "auto-optimise-store"
         if settings.fsync_store_paths:
             return "fsync-store-paths"
-        if str(request.info.info.ca).startswith("fixed:git:"):
+        return None
+
+    @staticmethod
+    def why_the_daemon_imports_path(info: ValidPathInfo) -> str | None:
+        """Why the daemon must import this one path, known from its info alone."""
+        if str(info.info.ca).startswith("fixed:git:"):
             return "a Git content address"
         return None
 

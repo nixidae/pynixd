@@ -16,25 +16,119 @@ from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
 from .. import metrics
 from ..exceptions import ClosingError
+from ..op_routes import OpRoute
 from ..serde.auth import Role
 from ..serde.context import ReadContext, WriteContext
+from ..store.add import FrameReader, add_nar
+from ..store.local_db import LocalDBStore
 from ..store.transfer import as_copied
 from ..wire import FramedReader, FramedWriter, NixReader, NixWriter, forward_raw
 from ._base import Handler
+from ._import import check_path_signatures, forward_one_path
 
 if TYPE_CHECKING:
     from ..serde.context import RequestContext
+    from ..store.add import ImportSettings
 
 logger = structlog.get_logger(__name__)
 
 
 class AddMultipleToStoreHandler(Handler):
-    """Server handler for AddMultipleToStore — streaming with framed NAR forwarding."""
+    """Server handler for AddMultipleToStore: pynixd imports each path on its route, else the daemon does."""
 
     op: ClassVar[int] = 44
 
     async def handle(self, ctx: RequestContext) -> AddMultipleToStoreResponse | None:
-        """Decode AddMultipleToStore request, stream framed NAR payloads to daemon, cache path infos, return response."""
+        """Decode the header, apply the untrusted-client rules, and import or forward the framed paths."""
+        structlog.contextvars.bind_contextvars(operation=type(self).__name__)
+        req = await AddMultipleToStoreRequest.from_reader(
+            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
+        )
+        # `daemon.cc:500`, before `startWork`: repair is not atomic.
+        if req.repair and ctx.role < Role.ADMIN:
+            raise ClosingError("you are not privileged to repair store paths")
+        # `daemon.cc:502`. The connection is root's, so this is pynixd's to do.
+        if ctx.role < Role.ADMIN:
+            req = req.model_copy(update={"dont_check_sigs": 0})
+
+        store = ctx.proxy.local_store
+        if isinstance(store, LocalDBStore) and store.routes.get(self.op) is OpRoute.pynixd:
+            reason = await store.why_the_daemon_imports(repair=bool(req.repair), version=ctx.proxy.version)
+            if reason is None:
+                return await self._import(ctx, store, req)
+            logger.info("add_multiple_to_store_fallthrough", reason=reason)
+            metrics.OP_FALLTHROUGH.labels(store_id=store.store_id, op=req.name).inc()
+        return await self._forward(ctx, req)
+
+    async def _import(
+        self, ctx: RequestContext, store: LocalDBStore, req: AddMultipleToStoreRequest
+    ) -> AddMultipleToStoreResponse:
+        """The loop of `daemon.cc:505`: `addToStore` per path, in stream order.
+
+        The first error ends the op after `startWork`, so the session goes on,
+        and the paths before it stay valid.
+        """
+        frames = FramedReader(ctx.proxy.r)
+        meter = metrics.TransferMeter(
+            enabled=ctx.proxy.metrics_enabled,
+            byte_counter=metrics.NAR_ADD_BYTES,
+            path_counter=metrics.NAR_ADD_PATHS,
+            duration=metrics.NAR_ADD_DURATION,
+        )
+        on_bytes = meter.on_bytes
+        try:
+            settings = await store.import_settings()
+            expected = await frames.read_uint64()
+            for _ in range(expected):
+                await checkpoint()
+                info = await ValidPathInfo.from_reader(ReadContext(reader=frames, version=1))
+                # `daemon.cc:515`: for every client, not only an untrusted one.
+                info = info.model_copy(update={"info": info.info.model_copy(update={"ultimate": False})})
+                try:
+                    await self._import_one(
+                        ctx, store, settings, info, frames, dont_check_sigs=bool(req.dont_check_sigs)
+                    )
+                finally:
+                    store.forget_path_info(info.path)
+                if on_bytes is not None:
+                    on_bytes(info.info.nar_size)
+                meter.finish()
+        finally:
+            # The `FramedSource` destructor (`daemon.cc:507`): the rest of the stream, so the session goes on.
+            await frames.ensure_eof()
+        return AddMultipleToStoreResponse()
+
+    async def _import_one(
+        self,
+        ctx: RequestContext,
+        store: LocalDBStore,
+        settings: ImportSettings,
+        info: ValidPathInfo,
+        frames: FramedReader,
+        *,
+        dont_check_sigs: bool,
+    ) -> None:
+        reason = store.why_the_daemon_imports_path(info)
+        if reason is not None:
+            logger.info("add_multiple_to_store_path_fallthrough", path=str(info.path), reason=reason)
+            metrics.OP_FALLTHROUGH.labels(store_id=store.store_id, op="AddMultipleToStore").inc()
+            await ctx.proxy.add_temp_root(info.path)
+            await forward_one_path(ctx, store, info, frames, dont_check_sigs=dont_check_sigs)
+            return
+        if not dont_check_sigs and settings.require_sigs:
+            await check_path_signatures(ctx, store, info, settings)
+        # The session holds the path, as `addToStore` roots it (`local-store.cc:1052`). nixidae/nixidae#1007.
+        await ctx.proxy.add_temp_root(info.path)
+        read = FrameReader(frames.next_chunk)
+        try:
+            await add_nar(store, info, read, repair=False, ignored_acls=settings.ignored_acls)
+        finally:
+            # A frame holds the end of one NAR and the start of the next path's info.
+            frames.unread(read.leftover())
+        # `EnsureRead::finish` (`daemon.cc:518`): a valid path's NAR is skipped unread.
+        await frames.skip(info.info.nar_size - read.consumed)
+
+    async def _forward(self, ctx: RequestContext, req: AddMultipleToStoreRequest) -> AddMultipleToStoreResponse:
         # **The connection that adds the path carries the options of the
         # client.** `LocalStore::addToStore` of Nix checks the signature of
         # each path against `trusted-public-keys`, and that setting reaches
@@ -42,34 +136,19 @@ class AddMultipleToStoreHandler(Handler):
         # options made the daemon read its own keys, so `nix copy --from` with
         # `--trusted-public-keys` was refused with "cannot add path ...
         # because it lacks a signature by a trusted key" for a path the cache
-        # had signed correctly. `require-sigs` and `secret-key-files` travel
-        # the same way. Issues nixidae/nixidae#236 and nixidae/nixidae#231.
+        # had signed correctly. `secret-key-files` travels the same way;
+        # `require-sigs` does not (`daemon.cc:489`). Issues
+        # nixidae/nixidae#236 and nixidae/nixidae#231.
         options = ctx.proxy.client.options if ctx.proxy.client is not None else None
         async with ctx.proxy.local_store.transfer_conn(options) as conn:
             await conn.apply_options(options)
-            # 1. Read request header from client (serde)
-            req = await AddMultipleToStoreRequest.from_reader(
-                ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
-            )
-            # `daemon.cc:500`, before `startWork`: repair is not atomic.
-            if req.repair and ctx.role < Role.ADMIN:
-                raise ClosingError("you are not privileged to repair store paths")
-            # `daemon.cc:507`. The connection is root's, so this is pynixd's to do.
-            if ctx.role < Role.ADMIN:
-                req = req.model_copy(update={"dont_check_sigs": 0})
-
-            # 2. Write request header to daemon
             await req.to_writer(WriteContext.from_conn(conn))
             await conn.w.drain()
 
-            # 3. Concurrently: forward payload + read daemon response
             # An anyio task group hands back no task object, so the child
-            # records its result in this list. The group waits for the child
-            # on exit, which is what `await resp_task` did before.
+            # records its result in this list.
             responses: list[AddMultipleToStoreResponse] = []
-            # Same reason as `responses`: an anyio task group is typed as able
-            # to swallow what its body raised, so a name the body binds is not
-            # bound for certain after the block.
+            # A name the task group's body binds is not bound for certain after the block.
             infos: list[ValidPathInfo] = []
 
             async def _read_response() -> None:
@@ -87,7 +166,6 @@ class AddMultipleToStoreHandler(Handler):
                 raise RuntimeError("the AddMultipleToStore reader task recorded no response")
             resp = responses[0]
 
-            # Update path info cache
             ctx.proxy.local_store.add_path_infos([as_copied(info) for info in infos])
             # The session holds each path, as Nix's worker does for its
             # client. nixidae/nixidae#1007.

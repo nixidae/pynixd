@@ -834,6 +834,22 @@ class FramedReader(NixReader):
             return b""
         return await self._src.readexactly(size)
 
+    def unread(self, data: bytes) -> None:
+        """Put *data* back in front of the stream: what a reader took past the end of its own record."""
+        if data:
+            self._buf[: self._pos] = data
+            self._pos = 0
+
+    async def skip(self, n: int) -> None:
+        """Discard *n* bytes of the stream, a frame at a time."""
+        while n > 0:
+            chunk = await self.next_chunk()
+            if not chunk:
+                raise EOFError(f"Framed stream ended, need {n} more bytes")
+            if len(chunk) > n:
+                self.unread(chunk[n:])
+            n -= min(n, len(chunk))
+
     async def ensure_eof(self) -> None:
         """Read until the end of the framed stream (size=0).
 

@@ -10,18 +10,17 @@ from nix_daemon_protocol.add_to_store_nar import (
     AddToStoreNarRequest,
     AddToStoreNarResponse,
 )
-from nix_daemon_protocol.logs import LogNext
 
 from .. import metrics
 from ..exceptions import ClosingError
 from ..op_routes import OpRoute
 from ..serde.auth import Role
 from ..serde.context import ReadContext, WriteContext
-from ..signing import check_signatures, key_settings, public_keys
-from ..store.add import AddError, add_nar
+from ..store.add import FrameReader, add_nar
 from ..store.local_db import LocalDBStore
 from ..wire import FramedReader, forward_framed
 from ._base import Handler
+from ._import import check_path_signatures
 
 if TYPE_CHECKING:
     from ..serde.context import RequestContext
@@ -57,7 +56,9 @@ class AddToStoreNarHandler(Handler):
 
         store = ctx.proxy.local_store
         if isinstance(store, LocalDBStore) and store.routes.get(self.op) is OpRoute.pynixd:
-            reason = await store.why_the_daemon_imports(req, ctx.proxy.version)
+            reason = await store.why_the_daemon_imports(
+                repair=bool(req.repair), version=ctx.proxy.version
+            ) or store.why_the_daemon_imports_path(req.info)
             if reason is None:
                 return await self._import(ctx, store, req)
             logger.info("add_to_store_nar_fallthrough", path=str(req.info.path), reason=reason)
@@ -68,7 +69,6 @@ class AddToStoreNarHandler(Handler):
         self, ctx: RequestContext, store: LocalDBStore, req: AddToStoreNarRequest
     ) -> AddToStoreNarResponse:
         """`LocalStore::addToStore` in pynixd. Every error comes after `startWork`, so the session goes on."""
-        path = str(req.info.path)
         frames = FramedReader(ctx.proxy.r)
         meter = metrics.TransferMeter(
             enabled=ctx.proxy.metrics_enabled,
@@ -88,24 +88,10 @@ class AddToStoreNarHandler(Handler):
         try:
             settings = await store.import_settings()
             if not req.dont_check_sigs and settings.require_sigs:
-                options = ctx.proxy.client.options if ctx.proxy.client is not None else None
-                trusted, secret_files = key_settings(
-                    settings.trusted_public_keys,
-                    settings.secret_key_files,
-                    options.overrides if options is not None else {},
-                )
-                warnings: list[str] = []
-                try:
-                    good = check_signatures(
-                        req.info, public_keys(trusted, secret_files), str(store.layout.store_dir), warnings.append
-                    )
-                except ValueError as error:
-                    raise AddError(str(error)) from error
-                for warning in warnings:
-                    await ctx.proxy.client.send(LogNext(text=f"{warning}\n"))
-                if not good:
-                    raise AddError(f"cannot add path '{path}' because it lacks a signature by a trusted key")
-            await add_nar(store, req.info, next_chunk, repair=bool(req.repair), ignored_acls=settings.ignored_acls)
+                await check_path_signatures(ctx, store, req.info, settings)
+            await add_nar(
+                store, req.info, FrameReader(next_chunk), repair=bool(req.repair), ignored_acls=settings.ignored_acls
+            )
         finally:
             # The `FramedSource` destructor (`daemon.cc:946`): the rest of the NAR, so the session goes on.
             await frames.ensure_eof()
