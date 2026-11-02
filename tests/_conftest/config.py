@@ -35,7 +35,11 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-TEST_OP_ROUTES: dict[str, OpRoute] = {"NarFromPath": OpRoute.shadow, "AddToStoreNar": OpRoute.pynixd}
+TEST_OP_ROUTES: dict[str, OpRoute] = {
+    "NarFromPath": OpRoute.shadow,
+    "AddToStoreNar": OpRoute.pynixd,
+    "AddMultipleToStore": OpRoute.pynixd,
+}
 """Answers on trial: in every test store, and on the daemon in a deployment.
 
 An answer that writes has no shadow, so it takes the `pynixd` route here, in a
@@ -43,7 +47,7 @@ store with `pynixd_writes` on. `nix/functional-tests/make-shim.sh` and
 `tests/parity/test_wire_parity.py` write the same routes into their
 configurations."""
 
-_WRITES = frozenset({"AddToStoreNar"})
+_WRITES = frozenset({"AddToStoreNar", "AddMultipleToStore"})
 """The trial routes that a store with `pynixd_writes` off cannot take."""
 
 # ── Nix binary paths ─────────────────────────────────────────────

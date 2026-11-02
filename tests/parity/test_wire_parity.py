@@ -264,7 +264,11 @@ def _config(work: Path, root: Path) -> Path:
                         "monitor": False,
                         "probe": False,
                         "pynixd_writes": True,
-                        "op_routes": {"NarFromPath": "shadow", "AddToStoreNar": "pynixd"},
+                        "op_routes": {
+                            "NarFromPath": "shadow",
+                            "AddToStoreNar": "pynixd",
+                            "AddMultipleToStore": "pynixd",
+                        },
                     },
                 },
                 "unix_path": str(work / "inner.sock"),

@@ -121,7 +121,7 @@ cat > "$config" <<JSON
       "monitor": false,
       "probe": false,
       "pynixd_writes": true,
-      "op_routes": {"NarFromPath": "shadow", "AddToStoreNar": "pynixd"}
+      "op_routes": {"NarFromPath": "shadow", "AddToStoreNar": "pynixd", "AddMultipleToStore": "pynixd"}
     }
   },
   "unix_path": "$NIX_DAEMON_SOCKET_PATH",
