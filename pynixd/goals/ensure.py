@@ -14,6 +14,7 @@ from ..derived_path import DerivedPath, OutputsAll, OutputsNames
 from ..drv_hash import output_hashes
 from ..drv_parser import ChildMapNode, to_basic_derivation
 from ..exceptions import BackendError
+from ..hintfmt import ANSI_NORMAL as _ANSI_NORMAL, ANSI_RED as _ANSI_RED, magenta as _magenta
 from ..serde import (
     BuildDerivationRequest,
     BuildPathsRequest,
@@ -59,21 +60,6 @@ _ERROR_PREFIX = "\x1b[31;1merror:\x1b[0m "
 The daemon colours the word itself, and it does not ask whether the client
 wants colour. The wire parity run reads these bytes from `nix-daemon`.
 """
-
-_ANSI_NORMAL = "\x1b[0m"
-_ANSI_RED = "\x1b[31;1m"
-_ANSI_MAGENTA = "\x1b[35;1m"
-"""The three colours that a failure message of Nix carries.
-
-`ansicolor.hh` of Nix defines each one. A message of a goal carries the
-colour in the text, so the bytes reach the client and `_ERROR_PREFIX`
-above is not the only coloured part.
-"""
-
-
-def _magenta(text: str) -> str:
-    """Give *text* the colour that `Magenta` of Nix gives a store path."""
-    return _ANSI_MAGENTA + text + _ANSI_NORMAL
 
 
 def _show_known_outputs(parsed: Derivation) -> str:

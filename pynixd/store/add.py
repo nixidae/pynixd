@@ -30,6 +30,7 @@ import anyio.to_thread
 
 from ..content_address import ContentAddress, Method
 from ..exceptions import PynixdError
+from ..hintfmt import magenta
 from ..nar_fs import BadArchive, dump_path, restore_path
 from ..utils import nix32_encode
 from .queries import IS_VALID_PATH
@@ -229,7 +230,7 @@ def content_hash(ca: ContentAddress, path: Path, hash_part: str, dump: Callable[
             sink.update(piece)
     elif ca.method in (Method.FLAT, Method.TEXT):
         if not stat.S_ISREG(os.lstat(path).st_mode):
-            raise AddError(f"file '{path}' is not a regular file")
+            raise AddError(f"file '{magenta(path)}' is not a regular file")
         with open(path, "rb") as file:
             while piece := file.read(64 * 1024):
                 sink.update(piece)
@@ -251,7 +252,7 @@ def canonicalise(path: Path, ignored_acls: frozenset[str] = IGNORED_ACLS) -> Non
     for at in _walk(os.fspath(path)):
         st = os.lstat(at)
         if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode)):
-            raise AddError(f"file '{at}' has an unsupported type")
+            raise AddError(f"file '{magenta(at)}' has an unsupported type")
         try:
             names = os.listxattr(at, follow_symlinks=False)
         except OSError as error:
@@ -357,11 +358,13 @@ async def _restore_into_place(
         if got.hex() != str(info.info.nar_hash):
             specified = _sri(bytes.fromhex(str(info.info.nar_hash)))
             raise AddError(
-                f"hash mismatch importing path '{path}';\n  specified: {specified}\n  got:       {_sri(got)}"
+                f"hash mismatch importing path '{magenta(path)}';\n"
+                f"  specified: {magenta(specified)}\n  got:       {magenta(_sri(got))}"
             )
         if reader.size != info.info.nar_size:
             raise AddError(
-                f"size mismatch importing path '{path}';\n  specified: {info.info.nar_size}\n  got:       {reader.size}"
+                f"size mismatch importing path '{magenta(path)}';\n"
+                f"  specified: {magenta(info.info.nar_size)}\n  got:       {magenta(reader.size)}"
             )
         if info.info.ca:
             specified_ca = ContentAddress.parse(str(info.info.ca))
@@ -369,9 +372,9 @@ async def _restore_into_place(
             actual = await anyio.to_thread.run_sync(content_hash, specified_ca, staged, hash_part, dump_path)
             if actual != specified_ca.digest:
                 raise AddError(
-                    f"ca hash mismatch importing path '{path}';\n"
-                    f"  specified: {specified_ca.algo}:{nix32_encode(specified_ca.digest)}\n"
-                    f"  got:       {specified_ca.algo}:{nix32_encode(actual)}"
+                    f"ca hash mismatch importing path '{magenta(path)}';\n"
+                    f"  specified: {magenta(f'{specified_ca.algo}:{nix32_encode(specified_ca.digest)}')}\n"
+                    f"  got:       {magenta(f'{specified_ca.algo}:{nix32_encode(actual)}')}"
                 )
         await anyio.to_thread.run_sync(_move_into_place, staged, real, ignored_acls)
     finally:

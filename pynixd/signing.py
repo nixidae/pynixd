@@ -20,6 +20,7 @@ import nacl.exceptions
 import nacl.signing
 
 from .content_address import is_content_addressed
+from .hintfmt import magenta
 from .utils import nix32_encode
 
 if TYPE_CHECKING:
@@ -201,7 +202,7 @@ def decode_base64(text: str) -> bytes:
             continue
         digit = _BASE64_DIGITS.get(c)
         if digit is None:
-            raise ValueError(f"invalid character in Base64 string: '{c}'")
+            raise ValueError(f"invalid character in Base64 string: '{magenta(c)}'")
         acc = (acc << 6 | digit) & 0xFFFF
         bits += 6
         if bits >= 8:
@@ -214,10 +215,10 @@ def _parse_colon_base64(text: str, kind: str) -> tuple[str, bytes]:
     """`parseColonBase64` at `local-keys.cc:21`."""
     name, sep, data = text.partition(":")
     if not sep or not name:
-        raise ValueError(f"{kind} is corrupt")
+        raise ValueError(f"{magenta(kind)} is corrupt")
     raw = decode_base64(data)
     if not raw:
-        raise ValueError(f"{kind} is corrupt")
+        raise ValueError(f"{magenta(kind)} is corrupt")
     return name, raw
 
 
@@ -319,10 +320,11 @@ def check_signatures(
         if is_content_addressed(path, str(unkeyed.ca), references, store_dir):
             return MAX_SIGS
         if warn is not None:
+            # `printError` formats with plain `fmt`: no colour.
             warn(f"warning: path '{path}' claims to be content-addressed but isn't")
     if not unkeyed.sigs:
         return 0
     if unkeyed.nar_size == 0:
-        raise ValueError(f"cannot calculate fingerprint of path '{path}' because its size is not known")
+        raise ValueError(f"cannot calculate fingerprint of path '{magenta(path)}' because its size is not known")
     data = fingerprint(path, unkeyed.nar_hash, unkeyed.nar_size, references).encode()
     return sum(1 for sig in unkeyed.sigs if _verify_detached(data, sig, keys))

@@ -27,6 +27,7 @@ from ..drv_hash import output_hashes
 from ..drv_parser import read_drv_file
 from ..exceptions import PynixdError
 from ..goals.resolution import _make_output_path, _output_path_name
+from ..hintfmt import magenta
 from .queries import (
     ADD_DERIVATION_OUTPUT,
     ADD_REFERENCE,
@@ -83,14 +84,16 @@ async def prepare(info: ValidPathInfo, layout: StoreLayout) -> Registration:
     nar_hash = str(unkeyed.nar_hash)
     # `registerValidPaths` asserts SHA-256 (`local-store.cc:910`); the wire carries Base16 without the name.
     if len(nar_hash) != 64 or nar_hash.strip("0123456789abcdef"):
-        raise RegistrationError(f"path '{path}' has a NAR hash that is not Base16 SHA-256: {nar_hash}")
+        raise RegistrationError(
+            f"path '{magenta(path)}' has a NAR hash that is not Base16 SHA-256: {magenta(nar_hash)}"
+        )
     references = frozenset(str(ref) for ref in unkeyed.references)
 
     ca: str | None = None
     if unkeyed.ca:
         if not is_content_addressed(path, str(unkeyed.ca), references, store_dir):
             raise RegistrationError(
-                f"cannot add path '{path}' to the Nix store because it claims to be content-addressed but isn't"
+                f"cannot add path '{magenta(path)}' to the Nix store because it claims to be content-addressed but isn't"
             )
         ca = ContentAddress.parse(str(unkeyed.ca)).render()
 
@@ -140,13 +143,15 @@ async def _derivation_outputs(drv_path: str, layout: StoreLayout) -> dict[str, s
             if hashes is None:
                 hashes = await output_hashes(parsed, read)
                 if hashes is None:
-                    raise RegistrationError(f"cannot hash the inputs of derivation '{drv_path}'")
+                    raise RegistrationError(f"cannot hash the inputs of derivation '{magenta(drv_path)}'")
             digest = hashes.get(output.name)
             if digest is None:
-                raise RegistrationError(f"derivation produced no hash for output '{output.name}'")
+                raise RegistrationError(f"derivation produced no hash for output '{magenta(output.name)}'")
             expected = _make_output_path(output.name, bytes.fromhex(digest), drv_name, store_dir)
             if output.path != expected:
-                raise RegistrationError(f"derivation has incorrect output '{output.path}', should be '{expected}'")
+                raise RegistrationError(
+                    f"derivation has incorrect output '{magenta(output.path)}', should be '{magenta(expected)}'"
+                )
         elif kind is OutputKind.CA_FIXED:
             address = fixed_output_address(output.hash_algo, output.hash_value)
             expected = content_addressed_path(address, _output_path_name(drv_name, output.name), (), store_dir)
@@ -155,12 +160,13 @@ async def _derivation_outputs(drv_path: str, layout: StoreLayout) -> dict[str, s
         actual = parsed.env.get(output.name)
         if actual is None:
             raise RegistrationError(
-                f"derivation has missing environment variable '{output.name}', should be '{expected}' but is not present"
+                f"derivation has missing environment variable '{magenta(output.name)}', "
+                f"should be '{magenta(expected)}' but is not present"
             )
         if actual != expected:
             raise RegistrationError(
-                f"derivation has incorrect environment variable '{output.name}', "
-                f"should be '{expected}' but is actually '{actual}'"
+                f"derivation has incorrect environment variable '{magenta(output.name)}', "
+                f"should be '{magenta(expected)}' but is actually '{magenta(actual)}'"
             )
         outputs[output.name] = expected
     return outputs
@@ -252,11 +258,13 @@ async def register_valid_paths(conn: aiosqlite.Connection, registrations: Iterab
             for reference in sorted(rows[path].references, key=_base_name):
                 target = await _path_id(conn, reference)
                 if target is None:
-                    raise RegistrationError(f"path '{reference}' is not valid")
+                    raise RegistrationError(f"path '{magenta(reference)}' is not valid")
                 await conn.execute(ADD_REFERENCE, (referrer, target))
         cycle = _cycle(rows)
         if cycle is not None:
-            raise RegistrationError(f"cycle detected in the references of '{cycle[0]}' from '{cycle[1]}'")
+            raise RegistrationError(
+                f"cycle detected in the references of '{magenta(cycle[0])}' from '{magenta(cycle[1])}'"
+            )
         await conn.commit()
     except BaseException:
         with anyio.CancelScope(shield=True):

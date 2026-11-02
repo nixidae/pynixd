@@ -8,6 +8,7 @@ store add-file` of "hello\\n", `nix store sign`, then `nix path-info --json`
 from __future__ import annotations
 
 import base64
+import re
 from typing import TYPE_CHECKING
 
 import pytest
@@ -17,6 +18,7 @@ from nix_daemon_protocol.nar_hash import NARHash
 from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
 from nix_daemon_protocol.signature import Signature
 from nix_daemon_protocol.wire_time import Time
+from pynixd.hintfmt import magenta
 from pynixd.serde import ValidPathInfo
 from pynixd.signing import MAX_SIGS, PublicKey, check_signatures, decode_base64, key_settings, public_keys
 from pynixd.store_path import StorePath
@@ -106,7 +108,8 @@ def test_a_secret_key_file_gives_its_public_half(tmp_path: Path) -> None:
 def test_a_bad_public_key_is_refused() -> None:
     with pytest.raises(ValueError, match="public key is not valid"):
         PublicKey.parse("test-1:AAAA")
-    with pytest.raises(ValueError, match="key is corrupt"):
+    # `FormatError("%s is corrupt", typeName)` (`local-keys.cc:25`): `HintFmt` colours the argument.
+    with pytest.raises(ValueError, match=re.escape(f"{magenta('key')} is corrupt")):
         PublicKey.parse("no-colon")
 
 
@@ -114,7 +117,7 @@ def test_base64_is_nix_s() -> None:
     """`base64::decode` stops at `=` and skips a newline; `b64decode` would drop the `*` too."""
     assert decode_base64("aGk=garbage") == b"hi"
     assert decode_base64("aG\nk") == b"hi"
-    with pytest.raises(ValueError, match="invalid character in Base64 string: '\\*'"):
+    with pytest.raises(ValueError, match=re.escape(f"invalid character in Base64 string: '{magenta('*')}'")):
         decode_base64("aG*k")
 
 
