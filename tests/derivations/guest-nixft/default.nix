@@ -8,9 +8,10 @@
 # uplink; the per-test stores land in the upper layer and die with the
 # guest. Issue #45.
 #
-# UML by direction: the suite is daemons and builds, not clocks, and UML
-# needs no KVM. The backend is hardcoded, not a knob: this spec exists for
-# one run shape.
+# QEMU, because it is the backend that honours `vivarium.cpus`. UML has one
+# processor, and the suite ran there one test at a time: about 30 minutes for
+# each arm. Four at a time on QEMU: about 4.5 minutes. The backend is hardcoded, not a knob: this spec exists for one
+# run shape.
 {
   pkgs,
   lib ? pkgs.lib,
@@ -25,7 +26,7 @@ vivariumLib.mkTest (
   {
     name = "nixft";
 
-    backend = "uml";
+    backend = "qemu";
 
     /*
       What the scripts need that only Nix knows.
@@ -51,9 +52,11 @@ vivariumLib.mkTest (
     nodes = {
       nixft = {
         vivarium = {
-          # Two arms of per-test daemons and builds. The host pays touched
+          # `nixft.py` runs a test on every second processor.
+          cpus = 8;
+          # Per-test daemons and builds, four at once. The host pays touched
           # pages only, so the cap is generous and the cost follows use.
-          memory = "8192M";
+          memory = "16384M";
           # Both arms keep per-test stores under one work directory.
           # Sparse, so the host pays used blocks; the poweroff removes it.
           diskSize = 61440;
