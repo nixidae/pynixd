@@ -474,7 +474,6 @@ class LocalDBStore(LocalStore):
         from nix_daemon_protocol.constants import FEATURE_REALISATION_WITH_PATH
         from nix_daemon_protocol.query_realisation import QueryRealisationResponse
         from nix_daemon_protocol.realisation import Realisation
-        from nix_daemon_protocol.signature import Signature
         from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
 
         from .daemon import answer_in_both_shapes
@@ -482,17 +481,17 @@ class LocalDBStore(LocalStore):
         if "ca-derivations" not in (await self.trust_policy()).experimental_features:
             return None
         shaped = await self._request_in_the_shape_this_store_reads(request)
-        if FEATURE_REALISATION_WITH_PATH in self.features:
+        by_path = FEATURE_REALISATION_WITH_PATH in self.features
+        if by_path:
             keyed = shaped.keyed_drv_output
-            row = await self._realisation_row(keyed.drv_path.name, keyed.output_name)
+            found = await self.engine.query_realisation(keyed.drv_path.name, keyed.output_name, by_path=True)
         else:
-            row = await self._realisation_row(shaped.drv_output.drv_hash, shaped.drv_output.output_name)
-        if row is None:
+            drv_output = shaped.drv_output
+            found = await self.engine.query_realisation(drv_output.drv_hash, drv_output.output_name, by_path=False)
+        if found is None:
             return QueryRealisationResponse()
-        out_path = StorePath(path=row[0])
-        # Nix orders a `std::set<Signature>` by key name, then signature.
-        signatures = sorted((Signature(text) for text in (row[1] or "").split()), key=lambda s: (s.name, s.signature))
-        if FEATURE_REALISATION_WITH_PATH in self.features:
+        out_path, signatures = found
+        if by_path:
             response = QueryRealisationResponse(
                 present=1, realisation=UnkeyedRealisation(out_path=out_path, signatures=set(signatures))
             )
@@ -550,56 +549,18 @@ class LocalDBStore(LocalStore):
         daemon is pynixd's own child, and root sees everything; any other
         daemon may see more than pynixd, and it answers instead.
         """
-        import json
         import os
 
-        from anyio.to_thread import run_sync
-
         from nix_daemon_protocol.find_roots import FindRootsEntry, FindRootsResponse
-
-        from ..liveness import unlink_stale_auto_roots, walk_roots
-        from .queries import QUERY_VALID_PATHS
 
         if not self.managed and os.geteuid() != 0:
             return None
         # As on the daemon route (`find_roots` of `DaemonStore`): an idle pooled
         # worker holds a temporary root for each path it took, which no client holds.
         await self.retire_idle_connections()
-        state_dir, store_dir = self.layout.state_dir, str(self.layout.store_dir)
-        tidy = self.pynixd_writes
-
-        def walk() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-            # Nix tidies here; pynixd only with `pynixd_writes`. The answer is the same either way.
-            if tidy:
-                unlink_stale_auto_roots(state_dir, store_dir)
-            return walk_roots(state_dir, store_dir, reap=tidy)
-
-        checked, temporary = await run_sync(walk)
-        async with self.db.execute(QUERY_VALID_PATHS, (json.dumps(sorted(checked)),)) as cursor:
-            valid = {row[0] for row in await cursor.fetchall()}
-        entries = {(link, path) for path in valid for link in checked[path]}
-        entries |= {(link, path) for path, links in temporary.items() for link in links}
-        return FindRootsResponse.fast(
-            roots=[FindRootsEntry(link=link, target=path) for link, path in sorted(entries, key=lambda e: (e[1], e[0]))]
-        )
-
-    async def _realisation_row(self, drv: str, output_name: str) -> tuple[str, str | None] | None:
-        """`(output path, signatures)` of one realisation, or `None`.
-
-        *drv* is the key of the table this store's Nix reads: the hash of the
-        derivation (`sha256:<hex>`) without `realisation-with-path-not-hash`,
-        and the base name of the derivation with it.
-        """
-        from nix_daemon_protocol.constants import FEATURE_REALISATION_WITH_PATH
-
-        from .queries import QUERY_REALISATION_BY_HASH, QUERY_REALISATION_BY_PATH
-
-        query = (
-            QUERY_REALISATION_BY_PATH if FEATURE_REALISATION_WITH_PATH in self.features else QUERY_REALISATION_BY_HASH
-        )
-        async with self.db.execute(query, (drv, output_name)) as cursor:
-            row = await cursor.fetchone()
-        return None if row is None else (row[0], row[1])
+        # Nix tidies in the walk; pynixd only with `pynixd_writes`.
+        roots = await self.engine.find_roots(tidy=self.pynixd_writes)
+        return FindRootsResponse.fast(roots=[FindRootsEntry(link=link, target=path) for link, path in roots])
 
     async def own_query_derivation_output_map(
         self, request: Any, client: Any = None, suppress_last: bool = False
@@ -621,20 +582,18 @@ class LocalDBStore(LocalStore):
         from nix_daemon_protocol.query_derivation_output_map import QueryDerivationOutputMapResponse
 
         from ..drv_hash import output_hashes
-        from .queries import QUERY_DERIVATION_OUTPUTS
 
-        async with self.db.execute(QUERY_DERIVATION_OUTPUTS, (str(request.path),)) as cursor:
-            rows = await cursor.fetchall()
-        if not rows:
+        items = await self.engine.query_static_derivation_outputs(str(request.path))
+        if items is None:
             return None
-        items = {name: StorePath(path=path) for _drv, name, path in rows if name is not None}
         if "ca-derivations" not in (await self.trust_policy()).experimental_features:
             return QueryDerivationOutputMapResponse.fast(items=items)
 
         parsed = await self.read_derivation(request.path)
         if parsed is None:
             return None
-        if FEATURE_REALISATION_WITH_PATH in self.features:
+        by_path = FEATURE_REALISATION_WITH_PATH in self.features
+        if by_path:
             keys = {output.output_name: request.path.name for output in parsed.outputs}
         else:
             hashes = await output_hashes(parsed, self.read_derivation)
@@ -642,9 +601,9 @@ class LocalDBStore(LocalStore):
                 return None
             keys = {name: f"sha256:{digest}" for name, digest in hashes.items()}
         for name, drv in keys.items():
-            row = await self._realisation_row(drv, name)
-            if row is not None:
-                items[name] = StorePath(path=row[0])
+            found = await self.engine.query_realisation(drv, name, by_path=by_path)
+            if found is not None:
+                items[name] = found[0]
             else:
                 items.setdefault(name, StorePath())
         return QueryDerivationOutputMapResponse.fast(items=items)
@@ -713,29 +672,12 @@ class LocalDBStore(LocalStore):
     async def query_derivation_output_map_batch(
         self, request: Any, client: Any = None, suppress_last: bool = False
     ) -> Any:
-        """QueryDerivationOutputMapBatch — batch output map via SQLite, fallback to drv parse."""
+        """QueryDerivationOutputMapBatch: the engine's static outputs, else the outputs of the parsed derivation."""
+        from pynixd.daemon_extensions.query_derivation_output_map_batch import DerivationOutputMapBatchResponse
 
         if not request.drv_paths:
-            from pynixd.daemon_extensions.query_derivation_output_map_batch import DerivationOutputMapBatchResponse
-
             return DerivationOutputMapBatchResponse(outputs={})
-
-        import json
-
-        from pynixd.daemon_extensions.query_derivation_output_map_batch import DerivationOutputMapBatchResponse
-        from pynixd.serde import StorePath
-
-        from .queries import QUERY_DERIVATION_OUTPUT_MAP_BATCH
-
-        paths_json = json.dumps([str(p) for p in request.drv_paths])
-        async with self.db.execute(QUERY_DERIVATION_OUTPUT_MAP_BATCH, (paths_json,)) as cursor:
-            rows = await cursor.fetchall()
-
-        result: dict[StorePath, dict[str, StorePath]] = {}
-        # `DerivationOutputs.path` is NOT NULL in Nix's schema.
-        for drv_path, output_name, output_path in rows:
-            result.setdefault(StorePath(path=drv_path), {})[output_name] = StorePath(path=output_path)
-
+        result = await self.engine.query_derivation_output_maps(str(p) for p in request.drv_paths)
         for drv_path in request.drv_paths:
             sp = StorePath(path=str(drv_path))
             if sp in result:

@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+import anyio.to_thread
+
 from nix_daemon_protocol.content_address import ContentAddress
 from nix_daemon_protocol.nar_hash import NARHash
 from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
@@ -20,6 +22,7 @@ from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 
+from ..liveness import unlink_stale_auto_roots, walk_roots
 from ..local_store_db import LocalStoreDB
 from ..temp_roots import TempRoots
 from . import add, register
@@ -28,9 +31,13 @@ from .queries import (
     QUERY_ALL_VALID_PATHS,
     QUERY_CLOSURE,
     QUERY_CLOSURE_WITH_INFO,
+    QUERY_DERIVATION_OUTPUT_MAP_BATCH,
+    QUERY_DERIVATION_OUTPUTS,
     QUERY_PATH_FROM_HASH_PART,
     QUERY_PATH_INFO_WITH_REFS,
     QUERY_PATH_INFOS_BATCH,
+    QUERY_REALISATION_BY_HASH,
+    QUERY_REALISATION_BY_PATH,
     QUERY_REFERENCES_BATCH,
     QUERY_REFERRERS,
     QUERY_VALID_DERIVERS,
@@ -176,6 +183,61 @@ class StoreEngine:
         for referrer, reference in reference_rows:
             references.setdefault(referrer, set()).add(reference)
         return [path_info(tuple(row), references.get(row[0], ())) for row in rows]
+
+    async def query_realisation(
+        self, drv: str, output_name: str, *, by_path: bool
+    ) -> tuple[StorePath, list[Signature]] | None:
+        """One realisation: its output path, and its signatures in Nix's order.
+
+        *drv* keys the table this store's Nix reads: with *by_path*
+        (`realisation-with-path-not-hash`) the derivation's base name, else
+        the derivation's hash (`sha256:<hex>`).
+        """
+        query = QUERY_REALISATION_BY_PATH if by_path else QUERY_REALISATION_BY_HASH
+        async with self.db.execute(query, (drv, output_name)) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        # Nix orders a `std::set<Signature>` by key name, then signature.
+        signatures = sorted((Signature(text) for text in (row[1] or "").split()), key=lambda s: (s.name, s.signature))
+        return StorePath(path=row[0]), signatures
+
+    async def query_static_derivation_outputs(self, drv_path: str) -> dict[str, StorePath] | None:
+        """The outputs of a derivation whose path is known statically, or `None` when the derivation is not valid."""
+        async with self.db.execute(QUERY_DERIVATION_OUTPUTS, (drv_path,)) as cursor:
+            rows = await cursor.fetchall()
+        if not rows:
+            return None
+        return {name: StorePath(path=path) for _drv, name, path in rows if name is not None}
+
+    async def query_derivation_output_maps(self, drv_paths: Iterable[str]) -> dict[StorePath, dict[str, StorePath]]:
+        """The static outputs of each valid one of *drv_paths*."""
+        async with self.db.execute(QUERY_DERIVATION_OUTPUT_MAP_BATCH, (json.dumps(list(drv_paths)),)) as cursor:
+            rows = await cursor.fetchall()
+        maps: dict[StorePath, dict[str, StorePath]] = {}
+        # `DerivationOutputs.path` is NOT NULL in Nix's schema.
+        for drv_path, output_name, output_path in rows:
+            maps.setdefault(StorePath(path=drv_path), {})[output_name] = StorePath(path=output_path)
+        return maps
+
+    async def find_roots(self, *, tidy: bool) -> list[tuple[str, str]]:
+        """`LocalStore::findRoots` (`gc.cc:319`): each `(link, target)`, ordered by target, then link.
+
+        With *tidy*, the walk removes stale automatic roots and dead temporary
+        roots files, as Nix does. The answer is the same either way.
+        """
+        state_dir, store_dir = self.layout.state_dir, str(self.layout.store_dir)
+
+        def walk() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+            if tidy:
+                unlink_stale_auto_roots(state_dir, store_dir)
+            return walk_roots(state_dir, store_dir, reap=tidy)
+
+        checked, temporary = await anyio.to_thread.run_sync(walk)
+        valid = await self.query_valid_paths(sorted(checked))
+        entries = {(link, str(path)) for path in valid for link in checked[str(path)]}
+        entries |= {(link, path) for path, links in temporary.items() for link in links}
+        return sorted(entries, key=lambda entry: (entry[1], entry[0]))
 
     def invalidate_path_info_cache_for(self, path: StorePath | str) -> None:
         """`Store::invalidatePathInfoCacheFor`: the cache above the engine forgets *path*."""
