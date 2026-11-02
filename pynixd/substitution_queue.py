@@ -20,7 +20,7 @@ from .background import Background
 from .exceptions import NarGone, OpNotImplementedError, leaves
 from .serde import NarFromPathRequest, QueryPathInfoRequest, StorePath
 from .serde.context import WriteContext
-from .store import DaemonStore, is_http_binary_cache
+from .store import is_http_binary_cache
 from .store.local_db import write_router
 from .store.source import Pieces
 
@@ -581,8 +581,8 @@ class SubstitutionQueue:
                 raise RuntimeError(f"substituter lost path while streaming: {path}")
             async for chunk in candidate.store.stream_nar(http_narinfo):
                 yield chunk
-        elif isinstance(candidate.store, DaemonStore):
-            async with candidate.store.transfer_conn() as source_conn:
+        elif (client := candidate.store.daemon_client) is not None:
+            async with client.transfer_conn() as source_conn:
                 await NarFromPathRequest(path=StorePath(path=str(path))).to_writer(WriteContext.from_conn(source_conn))
                 await source_conn.w.drain()
                 await source_conn.r.drain_stderr()

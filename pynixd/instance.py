@@ -29,7 +29,7 @@ from .liveness_watch import DirtyFlag, StableRootsWatch
 from .scheduler import Scheduler
 from .serde.protocol import PynixdGCAction
 from .state import upstream_in_flight
-from .store import DaemonStore, ExternalUnixStore, LocalDBStore, LocalStore, Store, is_http_binary_cache
+from .store import ExternalUnixStore, LocalDBStore, LocalStore, Store, is_http_binary_cache
 from .store_layout import DEFAULT_STORE_DIR
 from .unix_server import UnixServer, start_unix_server
 
@@ -377,13 +377,16 @@ class Server:
         """
         # Wire reconnect callback before start so the loop is ready
         captured_dynamic = dynamic
+        client = store.daemon_client
 
-        async def _on_store_reconnect() -> None:
-            if self.scheduler and isinstance(store, DaemonStore) and not store.no_schedule:
-                self.scheduler.on_store_added(store, dynamic=captured_dynamic)
+        if client is not None and not client.no_schedule:
+            scheduled = client
 
-        if isinstance(store, DaemonStore) and not store.no_schedule:
-            store._on_reconnect = _on_store_reconnect
+            async def _on_store_reconnect() -> None:
+                if self.scheduler:
+                    self.scheduler.on_store_added(scheduled, dynamic=captured_dynamic)
+
+            scheduled._on_reconnect = _on_store_reconnect
 
         try:
             host = await self._background.start(self._host_store, store, dynamic, admit, False)
@@ -444,8 +447,9 @@ class Server:
         # Server is the primary owner and mutator of the stores collection
         self.ctx._stores[store.store_id] = store
 
-        if self.scheduler and isinstance(store, DaemonStore) and not store.no_schedule:
-            self.scheduler.on_store_added(store, dynamic=dynamic)
+        client = store.daemon_client
+        if self.scheduler and client is not None and not client.no_schedule:
+            self.scheduler.on_store_added(client, dynamic=dynamic)
 
     async def _forget_store(self, store_id: StoreId, drain_timeout: float) -> Store | None:
         if self.scheduler:

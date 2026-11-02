@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 
 from .sessions import ClientSessions
-from .store.daemon import DaemonStore
 from .trust import TrustPolicy
 
 if TYPE_CHECKING:
@@ -21,6 +20,7 @@ if TYPE_CHECKING:
     from .local_store_db import LocalStoreDB
     from .scheduler import Scheduler
     from .store.base import Store
+    from .store.daemon import DaemonStore
     from .store.local_daemon import LocalStore
 
 
@@ -91,9 +91,7 @@ class PynixdContext:
         if store_id is None:
             return None
         store = self._stores.get(store_id)
-        if not isinstance(store, DaemonStore):
-            return None
-        return store
+        return None if store is None else store.daemon_client
 
     @property
     def local_store(self) -> LocalStore:

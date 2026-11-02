@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from ..drv_parser import Derivation
     from ..signing import SecretKey
     from ..store_path import StorePath
+    from .daemon import DaemonStore
 
 
 log = structlog.get_logger(__name__)
@@ -113,6 +114,15 @@ class Store(ABC):
     @property
     def in_flight(self) -> int:
         return 0
+
+    @property
+    def daemon_client(self) -> DaemonStore | None:
+        """The worker-protocol client that builds and transfers for this store, or `None`.
+
+        The scheduler builds on it and the substitution queue streams a NAR
+        from it. An HTTP binary cache speaks no worker protocol and has none.
+        """
+        return None
 
     async def trust_policy(self) -> TrustPolicy:
         """Who may use this store and who is trusted. Nix's defaults here;

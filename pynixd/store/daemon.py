@@ -375,6 +375,10 @@ class DaemonStore(Store):
     # ── Daemon metadata ─────────────────────────────────────────────
 
     @property
+    def daemon_client(self) -> DaemonStore:
+        return self
+
+    @property
     def features(self) -> AbstractSet[str]:
         """Set of daemon-advertised protocol features."""
         return self._features

@@ -236,16 +236,17 @@ class Scheduler:
         self.pass_id = 0
         self._weights = self.ranker.settings.model_dump_json()
         for store in [*self.stores.values(), self.local_store]:
-            store.on_capacity = self.trigger
-            if isinstance(store, DaemonStore):
-                store.sample_listeners.add(self.on_sample)
+            client = store.daemon_client
+            if client is not None:
+                client.on_capacity = self.trigger
+                client.sample_listeners.add(self.on_sample)
 
     @property
     def stores(self) -> dict[StoreId, DaemonStore]:
         return {
-            store_id: store
+            store_id: client
             for store_id, store in self.ctx.stores.items()
-            if isinstance(store, DaemonStore) and not store.no_schedule
+            if (client := store.daemon_client) is not None and not client.no_schedule
         }
 
     @property
@@ -283,7 +284,7 @@ class Scheduler:
         to queue even after the store is removed.
         """
         log.info("store_added_to_scheduler", store_id=store.store_id, dynamic=dynamic)
-        if isinstance(store, DaemonStore) and not store.no_schedule:
+        if not store.no_schedule:
             self.allocator.add_store(store)
             store.on_capacity = self.trigger
             store.sample_listeners.add(self.on_sample)
@@ -304,8 +305,9 @@ class Scheduler:
 
     async def drain_store(self, store_id: StoreId, drain_timeout: float = 300.0) -> None:
         """Gracefully drain and stop using a store for new builds."""
-        store = self.ctx.stores.get(store_id)
-        if not isinstance(store, DaemonStore):
+        held = self.ctx.stores.get(store_id)
+        store = None if held is None else held.daemon_client
+        if store is None:
             return
 
         log.info(
@@ -1480,8 +1482,8 @@ class Scheduler:
                 await anyio.sleep(_PULL_BACKOFF_SECONDS * 2 ** (attempt - 1))
                 attempt += 1
                 current = self.ctx.stores.get(store.store_id)
-                if isinstance(current, DaemonStore):
-                    store = current
+                if current is not None and (client := current.daemon_client) is not None:
+                    store = client
 
     async def _record_observation(self, build: QueuedBuild, resp: BuildDerivationResponse) -> None:
         """Write what this build cost, for the next build of the same identity.

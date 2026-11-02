@@ -14,6 +14,7 @@ derived path.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -148,9 +149,9 @@ async def test_a_backend_that_left_the_fleet_is_not_a_location() -> None:
 
 
 def test_the_lookup_ignores_a_store_that_does_not_speak_the_wire() -> None:
-    """Only a `DaemonStore` can serve a mapped read, so only one counts."""
+    """Only a store with a daemon client can serve a mapped read, so only one counts."""
     ctx = _context(
-        {StoreId("cache"): cast("Store", object())},
+        {StoreId("cache"): cast("Store", SimpleNamespace(daemon_client=None))},
         {_OUTPUT: StoreId("cache")},
     )
     assert ctx.store_for_output_path(_OUTPUT) is None
