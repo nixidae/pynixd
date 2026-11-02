@@ -106,8 +106,9 @@ that nothing moved.
    `add_multiple_to_store` and `import_nar` choose and run each write, and
    `WriteClient` is what a write needs of the session.)
 5. The read answers (`own_*`) move into the engine with plain types, and
-   `LocalDBStore` stops being a subclass of `DaemonStore`. (Started:
-   `StoreEngine.query_path_info`.)
+   `LocalDBStore` stops being a subclass of `DaemonStore`. (The reads are
+   done: each `own_*` method checks the daemon facts it needs, and the
+   engine answers. The subclass remains.)
 6. The package split.
 
 New operations go into the engine from step 2 on, not into `LocalDBStore`.
