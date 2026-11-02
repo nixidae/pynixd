@@ -78,6 +78,26 @@ class ContentAddress:
         return f"{head}{self.algo}:{nix32_encode(self.digest)}"
 
 
+def parse_method_algo(text: str) -> tuple[Method, str]:
+    """`ContentAddressMethod::parseWithAlgo` (`content-address.cc:203`): `fixed:r:sha256` and the like.
+
+    `ValueError` for any form Nix refuses or pynixd cannot hash.
+    """
+    prefix, sep, rest = text.partition(":")
+    if not sep:
+        raise ValueError(f"not a content address method: {text}")
+    if prefix == "text":
+        method = Method.TEXT
+    elif prefix == "fixed":
+        method = next((m for m in (Method.NAR, Method.GIT) if rest.startswith(m)), Method.FLAT)
+        rest = rest.removeprefix(method)
+    else:
+        raise ValueError(f"content address prefix '{prefix}' is unrecognized")
+    if rest not in HASH_SIZES:
+        raise ValueError(f"unknown hash algorithm '{rest}'")
+    return method, rest
+
+
 def fixed_output_address(method: str, hash_text: str) -> ContentAddress:
     """The address a fixed output of a derivation names: `r:sha256` and its hash, say."""
     found = next((m for m in (Method.TEXT, Method.NAR, Method.GIT) if method.startswith(m)), Method.FLAT)

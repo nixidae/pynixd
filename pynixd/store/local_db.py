@@ -16,6 +16,8 @@ from nix_daemon_protocol.store_dir import store_prefix
 
 from .. import metrics
 from ..constants import proto
+from ..content_address import ContentAddress, Method, content_addressed_path, parse_method_algo
+from ..derived_path import check_output_name
 from ..local_store_db import LocalStoreDB
 from ..op_routes import OpRoute, Owned
 from ..serde import StorePath
@@ -40,6 +42,8 @@ _OP_NAMES = {op.code: op.name for op in STANDARD_OPERATIONS}
 _HASH_PART_LENGTH = 32  # `StorePath::HashLen`
 #: `daemon.cc:943`: from 1.23 the NAR of AddToStoreNar comes framed.
 _FRAMED_NAR = proto(1, 23)
+#: `daemon.cc:406`: from 1.25 AddToStore names its method and references, and frames the dump.
+_FRAMED_DUMP = proto(1, 25)
 
 #: The most of one value a shadow mismatch logs: `QueryAllValidPaths` answers the whole store.
 _LOGGED_CHARACTERS = 2000
@@ -214,6 +218,7 @@ class LocalDBStore(LocalStore):
         31: Owned("own_query_valid_paths", default=OpRoute.pynixd),
         # The daemon in a deployment: the shadow reads every NAR twice. The test stores run it in shadow.
         38: Owned("own_nar_from_path"),
+        7: Owned("own_add_to_store", writes=True),
         39: Owned("own_add_to_store_nar", writes=True),
         44: Owned("own_add_multiple_to_store", writes=True),
         32: Owned("own_query_substitutable_paths", default=OpRoute.pynixd),
@@ -395,6 +400,10 @@ class LocalDBStore(LocalStore):
         """None: a NAR is a stream, which `NarFromPathHandler` takes from `nar_pieces` on this route."""
         return None
 
+    async def own_add_to_store(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        """None: the dump follows the request, and `AddToStoreHandler` adds it with `store/add.py`."""
+        return None
+
     async def own_add_to_store_nar(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """None: the NAR follows the request, and `AddToStoreNarHandler` imports it with `store/add.py`."""
         return None
@@ -431,6 +440,26 @@ class LocalDBStore(LocalStore):
     def why_the_daemon_imports_path(info: ValidPathInfo) -> str | None:
         """Why the daemon must import this one path, known from its info alone."""
         if str(info.info.ca).startswith("fixed:git:"):
+            return "a Git content address"
+        return None
+
+    @staticmethod
+    def why_the_daemon_adds(name: str, method_algo: str, references: Iterable[str], *, version: int) -> str | None:
+        """Why the daemon must add this AddToStore dump, known from its header.
+
+        Each is a form whose refusal or hash pynixd does not reproduce: Nix's
+        message comes after `startWork`, so only the daemon gives it.
+        """
+        if version < _FRAMED_DUMP:
+            return "the client sends the dump unframed"
+        try:
+            method, algo = parse_method_algo(method_algo)
+            check_output_name(name)
+            # The digest's value does not change whether Nix makes a path of it.
+            content_addressed_path(ContentAddress(method, algo, b""), name, references, "/nix/store")
+        except ValueError as error:
+            return str(error)
+        if method is Method.GIT:
             return "a Git content address"
         return None
 

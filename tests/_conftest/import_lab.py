@@ -1,4 +1,4 @@
-"""Store A for the import tests of AddToStoreNar (op 39) and AddMultipleToStore (op 44), and a raw client.
+"""Store A for the import tests of AddToStore (op 7), AddToStoreNar (op 39) and AddMultipleToStore (op 44), and a raw client.
 
 Nix fills store A: a source tree, a flat file, derivations, an input-addressed
 path that refers to itself, and its content-addressed copy, whose address
@@ -45,18 +45,18 @@ REFS = (
     "order by a.path, b.path"
 )
 OUTPUTS = "select v.path, d.id, d.path from DerivationOutputs d join ValidPaths v on v.id = d.drv order by v.path, d.id"
-_EXPR = """
+EXPR = """
 let src = builtins.toFile "src" "hello"; in
 derivation { name = "base"; system = "x86_64-linux"; builder = "/bin/sh"; args = [ src ]; outputs = [ "out" "doc" ]; }
 """
 #: Its env holds `__json` and the outputs, and no `name`.
-_STRUCTURED = """
+STRUCTURED = """
 derivation { name = "structured"; system = "x86_64-linux"; builder = "/bin/sh"; __structuredAttrs = true; }
 """
 IA = "/nix/store/1111111111111111111111111111111a-ia"
 #: `--import` and `--register-validity` have no `nix` equivalent.
 NIX_STORE = str(NIX_BIN.with_name("nix-store"))
-IMPORT_OPS = ("AddToStoreNar", "AddMultipleToStore")
+IMPORT_OPS = ("AddToStore", "AddToStoreNar", "AddMultipleToStore")
 
 
 async def run(*args: str, stdin: bytes | None = None) -> str:
@@ -87,8 +87,8 @@ async def lab(tmp_path: Path) -> tuple[Path, list[str], str]:
     flat.write_bytes(b"flat\n")  # noqa: ASYNC240 -- test setup
     tree_path = await run(nix, "store", "add-path", "--store", str(a), str(tree))
     await run(nix, "store", "add-file", "--store", str(a), str(flat))
-    await run(nix, "eval", "--store", str(a), "--raw", "--expr", f"({_EXPR}).drvPath")
-    await run(nix, "eval", "--store", str(a), "--raw", "--expr", f"({_STRUCTURED}).drvPath")
+    await run(nix, "eval", "--store", str(a), "--raw", "--expr", f"({EXPR}).drvPath")
+    await run(nix, "eval", "--store", str(a), "--raw", "--expr", f"({STRUCTURED}).drvPath")
 
     # An input-addressed path that names itself and the tree, registered by hand.
     ia = real(a, IA)

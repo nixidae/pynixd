@@ -1,4 +1,5 @@
-"""A NAR into the store as `LocalStore::addToStore` (`local-store.cc:1046` of Nix 2.35) puts one there.
+"""A path into the store as `LocalStore::addToStore` (`local-store.cc:1046` of Nix 2.35) and
+`addToStoreFromDump` (`local-store.cc:1168`) put one there.
 
 The file system half is here and synchronous: the path lock, the temporary
 directory, the hash of the restored tree, and `canonicalisePathMetaData`. An
@@ -28,7 +29,14 @@ import anyio
 import anyio.from_thread
 import anyio.to_thread
 
-from ..content_address import ContentAddress, Method
+from nix_daemon_protocol.content_address import ContentAddress as WireContentAddress
+from nix_daemon_protocol.nar_hash import NARHash
+from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
+from nix_daemon_protocol.store_path import StorePath
+from nix_daemon_protocol.valid_path_info import ValidPathInfo
+from nix_daemon_protocol.wire_time import Time
+
+from ..content_address import ContentAddress, Method, content_addressed_path
 from ..exceptions import PynixdError
 from ..hintfmt import magenta
 from ..nar_fs import BadArchive, dump_path, restore_path
@@ -38,8 +46,6 @@ from .queries import IS_VALID_PATH
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
     from pathlib import Path
-
-    from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
     from .local_db import LocalDBStore
 
@@ -170,14 +176,14 @@ def delete_path(path: Path) -> None:
 class HashingReader:
     """The `TeeSource` into a `HashSink` of `addToStore`: what the restore reads, hashed and counted."""
 
-    def __init__(self, read: Callable[[int], bytes]) -> None:
+    def __init__(self, read: Callable[[int], bytes], algo: str = "sha256") -> None:
         self._read = read
-        self.sha256 = hashlib.sha256()
+        self.hasher = hashlib.new(algo)
         self.size = 0
 
     def __call__(self, n: int) -> bytes:
         data = self._read(n)
-        self.sha256.update(data)
+        self.hasher.update(data)
         self.size += len(data)
         return data
 
@@ -363,7 +369,7 @@ async def _restore_into_place(
             await anyio.to_thread.run_sync(restore_path, staged, reader)
         except BadArchive as error:
             raise AddError(str(error)) from error
-        got = reader.sha256.digest()
+        got = reader.hasher.digest()
         if got.hex() != str(info.info.nar_hash):
             specified = _sri(bytes.fromhex(str(info.info.nar_hash)))
             raise AddError(
@@ -386,6 +392,92 @@ async def _restore_into_place(
                     f"  got:       {magenta(f'{specified_ca.algo}:{nix32_encode(actual)}')}"
                 )
         await anyio.to_thread.run_sync(_move_into_place, staged, real, ignored_acls)
+    finally:
+        with anyio.CancelScope(shield=True):
+            await anyio.to_thread.run_sync(temp.remove)
+
+
+def _restore_flat(dest: Path, read: Callable[[int], bytes]) -> None:
+    """`restorePath` with `FileSerialisationMethod::Flat`: the bytes to one file, mode 0666, to the end."""
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o666)
+    with os.fdopen(fd, "wb") as file:
+        while piece := read(64 * 1024):
+            file.write(piece)
+
+
+def _nar_hash(path: Path) -> tuple[bytes, int]:
+    sha256 = hashlib.sha256()
+    size = 0
+    for piece in dump_path(path):
+        sha256.update(piece)
+        size += len(piece)
+    return sha256.digest(), size
+
+
+async def add_dump(
+    store: LocalDBStore,
+    name: str,
+    method: Method,
+    algo: str,
+    references: frozenset[str],
+    read: FrameReader,
+    *,
+    root: Callable[[str], Awaitable[None]],
+    ignored_acls: frozenset[str] = IGNORED_ACLS,
+) -> str:
+    """`LocalStore::addToStoreFromDump` (`local-store.cc:1168`) for a flat, text or NAR dump, without repair.
+
+    The path is known only once the dump is read, so the dump goes to a
+    temporary directory first, as Nix does with a dump past `narBufferSize`.
+    *root* temp-roots the path before the validity check.
+    """
+    if method is Method.GIT:
+        raise ValueError("pynixd does not hash a Git dump")
+    temp = await anyio.to_thread.run_sync(TempDir.create, store.layout.real_store_dir)
+    try:
+        staged = temp.path / "x"
+        reader = HashingReader(read, algo)
+        restore = restore_path if method is Method.NAR else _restore_flat
+        try:
+            await anyio.to_thread.run_sync(restore, staged, reader)
+        except BadArchive as error:
+            raise AddError(str(error)) from error
+        ca = ContentAddress(method, algo, reader.hasher.digest())
+        store_dir = str(store.layout.store_dir)
+        path = content_addressed_path(ca, name, references, store_dir)
+        await root(path)
+        if await _is_valid(store, path):
+            return path
+        real = store.layout.real_store_dir / path.rsplit("/", 1)[-1]
+        lock = PathLock(real)
+        # Not cancellable: an abandoned `flock` would hold the lock with no owner to release it.
+        await anyio.to_thread.run_sync(lock.acquire)
+        delete_lock = False
+        try:
+            if not await _is_valid(store, path):
+                await anyio.to_thread.run_sync(_move_into_place, staged, real, ignored_acls)
+                # A NAR dump hashed with SHA-256 is the NAR hash already (`local-store.cc:1304`).
+                if method is Method.NAR and algo == "sha256":
+                    nar_hash, nar_size = ca.digest, reader.size
+                else:
+                    nar_hash, nar_size = await anyio.to_thread.run_sync(_nar_hash, real)
+                info = ValidPathInfo(
+                    path=StorePath(path=path),
+                    info=UnkeyedValidPathInfo(
+                        nar_hash=NARHash(hash=nar_hash.hex()),
+                        references={StorePath(path=ref) for ref in references},
+                        registration_time=Time(ts=0),
+                        nar_size=nar_size,
+                        ultimate=False,
+                        sigs=set(),
+                        ca=WireContentAddress(value=ca.render()),
+                    ),
+                )
+                await store.register_valid_paths([info])
+            delete_lock = True
+        finally:
+            lock.release(delete=delete_lock)
+        return path
     finally:
         with anyio.CancelScope(shield=True):
             await anyio.to_thread.run_sync(temp.remove)
