@@ -43,12 +43,10 @@ from .serde import (
     QueryPathInfoRequest,
 )
 from .serde.context import WriteContext
-from .store import LocalDBStore
-from .store.daemon_writes import DaemonWrites
+from .store.local_db import write_router
 from .store.source import Pieces
 from .store_path import StorePath
 from .wire import _CHUNK_SIZE
-from .write_router import pynixd_import
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
@@ -555,13 +553,8 @@ class PynixdHttpServer:
 
         log.info("finalizing_upload_to_store", path=str(vinfo.path))
         try:
-            store = self.store
-            if isinstance(store, LocalDBStore) and await store.router.engine_takes(pynixd_import(vinfo)):
-                async with Pieces(_nar_pieces(nar_temp_path)) as nar:
-                    await store.engine.import_nar(vinfo, nar, dont_check_sigs=False)
-            else:
-                async with Pieces(_nar_pieces(nar_temp_path)) as nar:
-                    await DaemonWrites(store).add_to_store(vinfo, nar)
+            async with Pieces(_nar_pieces(nar_temp_path)) as nar:
+                await write_router(self.store).import_nar(vinfo, nar, dont_check_sigs=False)
         except Exception as e:
             log.exception("finalize_upload_failed", path=str(vinfo.path))
             return web.Response(

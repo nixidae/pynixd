@@ -10,11 +10,14 @@ table the router holds. `docs/design/store-engine.md`.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import contextlib
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 import structlog
+from anyio.lowlevel import checkpoint
 
+from nix_daemon_protocol.logs import LogNext
 from nix_daemon_protocol.operations import STANDARD_OPERATIONS
 
 from . import metrics
@@ -22,14 +25,21 @@ from .constants import proto
 from .content_address import ContentAddress, Method, content_addressed_path, parse_method_algo
 from .derived_path import check_output_name
 from .op_routes import OpRoute
+from .store.daemon_writes import DaemonWrites
+from .store.source import Metered
+from .store.transfer import as_copied
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping, Sequence
 
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
+    from .connection import ClientConn, Connection
+    from .serde import SetOptionsRequest
     from .store.add import ImportSettings
+    from .store.daemon import DaemonStore
     from .store.engine import StoreEngine
+    from .store.source import Source
 
 log = structlog.get_logger(__name__)
 
@@ -149,28 +159,78 @@ def first_reason(
     return None
 
 
+async def _no_root(path: str) -> None:
+    return None
+
+
+@dataclass(frozen=True)
+class WriteClient:
+    """What a write needs of the client session it serves."""
+
+    options: SetOptionsRequest | None = None
+    #: The session's connection: signature warnings and the daemon's log lines of op 44 go there.
+    conn: ClientConn | None = None
+    #: Holds a path for the session (`local-store.cc:1052`). nixidae/nixidae#1007.
+    root: Callable[[str], Awaitable[None]] = _no_root
+    metered: bool = False
+
+
+def _add_meter(client: WriteClient) -> metrics.TransferMeter:
+    return metrics.TransferMeter(
+        enabled=client.metered,
+        byte_counter=metrics.NAR_ADD_BYTES,
+        path_counter=metrics.NAR_ADD_PATHS,
+        duration=metrics.NAR_ADD_DURATION,
+    )
+
+
+async def _forward_metered(
+    paths: AsyncIterator[tuple[ValidPathInfo, Source]], metered: bool
+) -> AsyncGenerator[tuple[ValidPathInfo, Source]]:
+    meter = metrics.TransferMeter(
+        enabled=metered,
+        byte_counter=metrics.NAR_FORWARD_BYTES,
+        path_counter=metrics.NAR_FORWARD_PATHS,
+        duration=metrics.NAR_FORWARD_DURATION,
+    )
+    async for info, nar in paths:
+        yield info, Metered(nar, meter.on_bytes)
+        meter.finish()
+
+
 @dataclass
 class WriteRouter:
-    """Chooses the engine or the daemon for each write of one local store."""
+    """Chooses the engine or the daemon for each write of one local store, and runs the write there.
+
+    Each write method has Nix's name. A store with no *engine* sends every write to the daemon.
+    """
 
     routes: Mapping[int, OpRoute]
-    engine: StoreEngine
+    engine: StoreEngine | None
+    daemon: DaemonWrites
     store_id: str
+    #: The store's path-info cache, told of each path the engine adds.
+    remember: Callable[[ValidPathInfo], None]
     reasons: Sequence[Callable[[Write, Facts], str | None]] = field(default=REASONS)
+
+    @classmethod
+    def daemon_only(cls, store: DaemonStore) -> WriteRouter:
+        """The router of a store pynixd does not write itself: every write goes to its daemon."""
+        return cls({}, None, DaemonWrites(store), str(store.store_id), store.add_path_info)
 
     def route(self, op: str) -> OpRoute:
         return self.routes.get(_OP_CODES[op], OpRoute.daemon)
 
     async def why_the_daemon(self, write: Write) -> str | None:
         """Why the daemon takes *write*, or `None` when the engine does."""
-        if self.route(write.op) is not OpRoute.pynixd:
+        if self.engine is None or self.route(write.op) is not OpRoute.pynixd:
             return f"{write.op} takes the daemon route"
         facts = Facts(writable=self.engine.writable, settings=await self.engine.settings())
         return first_reason(write, facts, self.reasons)
 
     async def engine_takes(self, write: Write) -> bool:
         """Whether the engine takes *write*. A write on the `pynixd` route that falls through is logged and counted."""
-        if self.route(write.op) is not OpRoute.pynixd:
+        if self.engine is None or self.route(write.op) is not OpRoute.pynixd:
             return False
         reason = await self.why_the_daemon(write)
         if reason is None:
@@ -179,3 +239,175 @@ class WriteRouter:
         log.info("write_fallthrough", op=write.op, subject=subject, reason=reason)
         metrics.OP_FALLTHROUGH.labels(store_id=self.store_id, op=write.op).inc()
         return False
+
+    def _engine(self) -> StoreEngine:
+        if self.engine is None:
+            raise RuntimeError(f"store {self.store_id} has no engine")
+        return self.engine
+
+    async def _check_signatures(self, info: ValidPathInfo, settings: ImportSettings, client: WriteClient) -> None:
+        """`pathInfoIsUntrusted` and its refusal (`local-store.cc:1048`), with the client's key overrides."""
+        warnings: list[str] = []
+        try:
+            overrides = client.options.overrides if client.options is not None else {}
+            self._engine().check_signatures(info, settings, overrides, warnings)
+        finally:
+            # Nix prints each warning as it checks, before any refusal.
+            if client.conn is not None:
+                for warning in warnings:
+                    await client.conn.send(LogNext(text=f"{warning}\n"))
+
+    async def _engine_add(
+        self,
+        info: ValidPathInfo,
+        source: Source,
+        settings: ImportSettings,
+        *,
+        repair: bool,
+        dont_check_sigs: bool,
+        client: WriteClient,
+        root: bool,
+    ) -> None:
+        """`LocalStore::addToStore` (`local-store.cc:1046`): the signatures, then the root, then the NAR."""
+        engine = self._engine()
+        try:
+            if not dont_check_sigs and settings.require_sigs:
+                await self._check_signatures(info, settings, client)
+            if root:
+                await client.root(str(info.path))
+            await engine.add_to_store(info, source, repair=repair, ignored_acls=settings.ignored_acls)
+        finally:
+            engine.invalidate_path_info_cache_for(info.path)
+
+    async def add_to_store(self, write: Write, source: Source, *, dont_check_sigs: bool, client: WriteClient) -> None:
+        """AddToStoreNar (op 39): `Store::addToStore` with a NAR. The client holds the path already."""
+        info = write.info
+        if info is None:
+            raise ValueError("AddToStoreNar carries its info")
+        meter = _add_meter(client)
+        if await self.engine_takes(write):
+            settings = await self._engine().settings()
+            await self._engine_add(
+                info,
+                Metered(source, meter.on_bytes),
+                settings,
+                repair=write.repair,
+                dont_check_sigs=dont_check_sigs,
+                client=client,
+                root=False,
+            )
+        else:
+            # The daemon's log lines are dropped here, as before the router: nixidae/nixidae#1161.
+            await self.daemon.add_to_store(
+                info,
+                source,
+                repair=write.repair,
+                dont_check_sigs=dont_check_sigs,
+                options=client.options,
+                on_bytes=meter.on_bytes,
+            )
+        meter.finish()
+
+    async def add_to_store_from_dump(
+        self,
+        write: Write,
+        source: Source,
+        *,
+        client: WriteClient,
+        sign: Callable[[ValidPathInfo, Connection | None], Awaitable[ValidPathInfo]],
+    ) -> ValidPathInfo:
+        """AddToStore (op 7): `Store::addToStoreFromDump`, then *sign* over the daemon connection when there is one."""
+        dump = write.dump
+        if dump is None:
+            raise ValueError("AddToStore carries its dump")
+        meter = _add_meter(client)
+        if not await self.engine_takes(write):
+            info = await self.daemon.add_to_store_from_dump(
+                dump.name,
+                dump.method_algo,
+                dump.references,
+                source,
+                repair=write.repair,
+                options=client.options,
+                root=client.root,
+                sign=sign,
+                on_bytes=meter.on_bytes,
+            )
+            meter.finish()
+            return info
+        engine = self._engine()
+        settings = await engine.settings()
+        method, algo = parse_method_algo(dump.method_algo)
+        path = await engine.add_to_store_from_dump(
+            dump.name,
+            method,
+            algo,
+            dump.references,
+            Metered(source, meter.on_bytes),
+            root=client.root,
+            ignored_acls=settings.ignored_acls,
+        )
+        meter.finish()
+        # `invalidatePathInfoCacheFor`: a path valid before this op may hold a negative entry.
+        engine.invalidate_path_info_cache_for(path)
+        added = await engine.query_path_info(path)
+        if added is None:
+            raise RuntimeError(f"pynixd added '{path}', and the store database does not hold it")
+        added = await sign(added, None)
+        self.remember(added)
+        return added
+
+    async def add_multiple_to_store(
+        self,
+        write: Write,
+        count: int,
+        paths: AsyncIterator[tuple[ValidPathInfo, Source]],
+        *,
+        dont_check_sigs: bool,
+        client: WriteClient,
+    ) -> None:
+        """AddMultipleToStore (op 44). Each NAR of *paths* is read to its end before the next path.
+
+        On the engine route, the loop of `daemon.cc:505`: `addToStore` per
+        path, in stream order, and a path the engine does not take goes to the
+        daemon alone. The first error ends the op, and the paths before it
+        stay valid.
+        """
+        if not await self.engine_takes(write):
+            async with contextlib.aclosing(_forward_metered(paths, client.metered)) as metered:
+                infos = await self.daemon.add_multiple_to_store(
+                    count, metered, repair=write.repair, dont_check_sigs=dont_check_sigs, options=client.options
+                )
+            # The session holds each path, as Nix's worker does for its client. nixidae/nixidae#1007.
+            for info in infos:
+                await client.root(str(info.path))
+            return
+        engine = self._engine()
+        settings = await engine.settings()
+        meter = _add_meter(client)
+        async for info, nar in paths:
+            await checkpoint()
+            # `daemon.cc:515`: for every client, not only an untrusted one.
+            copied = as_copied(info)
+            if await self.engine_takes(replace(write, info=copied)):
+                await self._engine_add(
+                    copied, nar, settings, repair=False, dont_check_sigs=dont_check_sigs, client=client, root=True
+                )
+            else:
+                await client.root(str(copied.path))
+                try:
+                    await self.daemon.add_to_store(
+                        copied, nar, dont_check_sigs=dont_check_sigs, options=client.options, logs=client.conn
+                    )
+                finally:
+                    engine.invalidate_path_info_cache_for(copied.path)
+            if meter.on_bytes is not None:
+                meter.on_bytes(copied.info.nar_size)
+            meter.finish()
+
+    async def import_nar(self, info: ValidPathInfo, source: Source, *, dont_check_sigs: bool) -> None:
+        """A NAR pynixd itself fetched or received: a substitution, or the HTTP cache's upload."""
+        if await self.engine_takes(pynixd_import(info)):
+            await self._engine().import_nar(info, source, dont_check_sigs=dont_check_sigs)
+        else:
+            await self.daemon.add_to_store(info, source, dont_check_sigs=dont_check_sigs)

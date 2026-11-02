@@ -105,6 +105,10 @@ class StoreEngine:
             return None
         return path_info(rows[0][:8], {r[8] for r in rows if r[8] is not None})
 
+    def invalidate_path_info_cache_for(self, path: StorePath | str) -> None:
+        """`Store::invalidatePathInfoCacheFor`: the cache above the engine forgets *path*."""
+        self._on_change(StorePath(path=str(path)))
+
     def temp_roots(self) -> TempRoots:
         """A roots file of its own, for an import no client session holds."""
         return TempRoots(self.layout.state_dir)

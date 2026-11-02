@@ -11,17 +11,14 @@ from nix_daemon_protocol.add_to_store_nar import (
     AddToStoreNarResponse,
 )
 
-from .. import metrics
 from ..exceptions import ClosingError
 from ..serde.auth import Role
 from ..serde.context import ReadContext
-from ..store.daemon_writes import DaemonWrites
-from ..store.local_db import LocalDBStore
-from ..store.source import Metered
+from ..store.local_db import write_router
 from ..wire import FramedReader
 from ..write_router import Write
 from ._base import Handler
-from ._import import check_path_signatures
+from ._import import write_client
 
 if TYPE_CHECKING:
     from ..serde.context import RequestContext
@@ -55,55 +52,15 @@ class AddToStoreNarHandler(Handler):
         # nixidae/nixidae#1007.
         await ctx.proxy.add_temp_root(req.info.path)
 
-        store = ctx.proxy.local_store
-        write = Write(op=req.name, version=ctx.proxy.version, repair=bool(req.repair), info=req.info)
-        if isinstance(store, LocalDBStore) and await store.router.engine_takes(write):
-            return await self._import(ctx, store, req)
-        return await self._forward(ctx, req)
-
-    async def _import(
-        self, ctx: RequestContext, store: LocalDBStore, req: AddToStoreNarRequest
-    ) -> AddToStoreNarResponse:
-        """`LocalStore::addToStore` in pynixd. Every error comes after `startWork`, so the session goes on."""
         frames = FramedReader(ctx.proxy.r)
-        meter = metrics.TransferMeter(
-            enabled=ctx.proxy.metrics_enabled,
-            byte_counter=metrics.NAR_ADD_BYTES,
-            path_counter=metrics.NAR_ADD_PATHS,
-            duration=metrics.NAR_ADD_DURATION,
-        )
-
         try:
-            settings = await store.import_settings()
-            if not req.dont_check_sigs and settings.require_sigs:
-                await check_path_signatures(ctx, store, req.info, settings)
-            await store.engine.add_to_store(
-                req.info,
-                Metered(frames, meter.on_bytes),
-                repair=bool(req.repair),
-                ignored_acls=settings.ignored_acls,
+            await write_router(ctx.proxy.local_store).add_to_store(
+                Write(op=req.name, version=ctx.proxy.version, repair=bool(req.repair), info=req.info),
+                frames,
+                dont_check_sigs=bool(req.dont_check_sigs),
+                client=write_client(ctx),
             )
         finally:
             # The `FramedSource` destructor (`daemon.cc:946`): the rest of the NAR, so the session goes on.
             await frames.ensure_eof()
-            store.forget_path_info(req.info.path)
-        meter.finish()
-        return AddToStoreNarResponse()
-
-    async def _forward(self, ctx: RequestContext, req: AddToStoreNarRequest) -> AddToStoreNarResponse:
-        meter = metrics.TransferMeter(
-            enabled=ctx.proxy.metrics_enabled,
-            byte_counter=metrics.NAR_ADD_BYTES,
-            path_counter=metrics.NAR_ADD_PATHS,
-            duration=metrics.NAR_ADD_DURATION,
-        )
-        await DaemonWrites(ctx.proxy.local_store).add_to_store(
-            req.info,
-            FramedReader(ctx.proxy.r),
-            repair=bool(req.repair),
-            dont_check_sigs=bool(req.dont_check_sigs),
-            options=ctx.proxy.client.options if ctx.proxy.client is not None else None,
-            on_bytes=meter.on_bytes,
-        )
-        meter.finish()
         return AddToStoreNarResponse()

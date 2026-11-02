@@ -1,4 +1,4 @@
-"""Op 44's client stream as the daemon backend reads it, and the two senders to the daemon.
+"""Op 44's client stream as the router reads it, on either route, and the two senders to the daemon.
 
 The client's frames fall anywhere: one frame holds the end of a NAR and the
 start of the next path's info. `_paths` yields each NAR `Bounded` and skips
@@ -62,7 +62,7 @@ async def test_each_nar_ends_before_the_next_info(frame: int) -> None:
     count = await frames.read_uint64()
     out = BytesWriter()
     seen: list[str] = []
-    async with contextlib.aclosing(_paths(frames, count, metered=False)) as paths:
+    async with contextlib.aclosing(_paths(frames, count)) as paths:
         async for info, nar in paths:
             seen.append(str(info.path))
             await send_raw(nar.read, out, info.info.nar_size)
@@ -75,7 +75,7 @@ async def test_a_nar_left_unread_is_skipped() -> None:
     frames = FramedReader(BytesReader(_framed(await _stream(), 7)))
     count = await frames.read_uint64()
     seen: list[str] = []
-    async with contextlib.aclosing(_paths(frames, count, metered=False)) as paths:
+    async with contextlib.aclosing(_paths(frames, count)) as paths:
         async for info, _nar in paths:
             seen.append(str(info.path))
     assert seen == [A, B]

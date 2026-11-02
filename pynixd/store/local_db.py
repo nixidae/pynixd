@@ -19,6 +19,7 @@ from ..local_store_db import LocalStoreDB
 from ..op_routes import OpRoute, Owned
 from ..serde import StorePath
 from ..write_router import WriteRouter
+from .daemon_writes import DaemonWrites
 from .engine import StoreEngine, path_info
 from .local_daemon import LocalStore
 
@@ -32,6 +33,7 @@ if TYPE_CHECKING:
     from ..connection import ClientConn
     from ..substitution_queue import SubstitutionQueue
     from .add import ImportSettings
+    from .daemon import DaemonStore
 
 log = structlog.get_logger(__name__)
 
@@ -218,7 +220,7 @@ class LocalDBStore(LocalStore):
             for op, owned in self.OWNED.items()
         }
         #: Who writes: the engine or the daemon (`write_router.py`).
-        self.router = WriteRouter(self.routes, self.engine, str(self.store_id))
+        self.router = WriteRouter(self.routes, self.engine, DaemonWrites(self), str(self.store_id), self.add_path_info)
 
     @property
     def db(self) -> LocalStoreDB:
@@ -838,3 +840,8 @@ class LocalDBStore(LocalStore):
                 pass
 
         return DerivationOutputMapBatchResponse(outputs=result)
+
+
+def write_router(store: DaemonStore) -> WriteRouter:
+    """Who writes *store*: its own router, or the daemon alone for a store pynixd does not write."""
+    return store.router if isinstance(store, LocalDBStore) else WriteRouter.daemon_only(store)

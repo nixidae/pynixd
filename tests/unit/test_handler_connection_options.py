@@ -54,18 +54,62 @@ def _handlers_using_a_transfer_connection() -> list[Path]:
     return [*sorted(path for path in _HANDLERS.glob("*.py") if _transfer_conn_calls(path)), _DAEMON_WRITES]
 
 
-def _daemon_writes_calls(path: Path) -> list[ast.Call]:
-    """Every `DaemonWrites(...).<method>(...)` call in the module at *path*."""
+_WRITE_ROUTER = _HANDLERS.parent / "write_router.py"
+"""The handlers' writes go through the router, which calls `DaemonWrites` as `self.daemon`."""
+
+
+CLIENTLESS_ROUTER_METHODS = {
+    "import_nar": "A substitution or an HTTP upload: pynixd itself asked for the path, and no client session exists.",
+}
+"""Each router method whose daemon write may carry no client options, and why."""
+
+
+def _router_daemon_calls() -> list[tuple[str, ast.Call]]:
+    """Every `self.daemon.<method>(...)` call of the router, with the router method that makes it."""
+    tree = ast.parse(_WRITE_ROUTER.read_text())
+    return [
+        (method.name, node)
+        for method in ast.walk(tree)
+        if isinstance(method, ast.AsyncFunctionDef)
+        for node in ast.walk(method)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "daemon"
+    ]
+
+
+def _write_client_calls(path: Path) -> list[ast.Call]:
+    """Every router call in the module at *path* that passes `client=write_client(ctx)`."""
     tree = ast.parse(path.read_text())
     return [
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Call)
-        and isinstance(node.func.value.func, ast.Name)
-        and node.func.value.func.id == "DaemonWrites"
+        and any(
+            keyword.arg == "client"
+            and isinstance(keyword.value, ast.Call)
+            and isinstance(keyword.value.func, ast.Name)
+            and keyword.value.func.id == "write_client"
+            for keyword in node.keywords
+        )
     ]
+
+
+def test_the_router_gives_the_daemon_the_options_of_the_client() -> None:
+    """Each write of the router to the daemon names `client.options`, except where no client exists."""
+    calls = _router_daemon_calls()
+    assert {method for method, _ in calls} >= {"add_to_store", "add_to_store_from_dump", "add_multiple_to_store"}
+    bare = [
+        f"{method}:{call.lineno}"
+        for method, call in calls
+        if method not in CLIENTLESS_ROUTER_METHODS
+        and not any(
+            keyword.arg == "options" and ast.unparse(keyword.value) == "client.options" for keyword in call.keywords
+        )
+    ]
+    assert bare == [], f"router daemon writes without the client's options: {bare}. Issue nixidae/nixidae#236."
+    assert set(CLIENTLESS_ROUTER_METHODS) <= {method for method, _ in calls}
 
 
 def test_the_daemon_writes_take_the_options_they_are_given() -> None:
@@ -143,13 +187,11 @@ def test_the_reason_of_each_read_only_handler_is_written_down() -> None:
 def test_the_three_handlers_that_add_a_path_are_covered(name: str) -> None:
     """The three that `ca:signatures` measured, named so a rename cannot lose them.
 
-    Each writes to the daemon through `DaemonWrites`, and names the client's options in every call.
+    Each writes through the router, and gives it the client's session (`write_client`), options included.
     """
     path = _HANDLERS / name
     assert path.is_file(), name
-    calls = _daemon_writes_calls(path)
-    assert calls, name
-    assert all(any(keyword.arg == "options" for keyword in call.keywords) for call in calls), name
+    assert len(_write_client_calls(path)) == 1, name
     assert name not in READ_ONLY_HANDLERS, name
 
 
