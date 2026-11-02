@@ -123,12 +123,10 @@ async def _derivation_outputs(drv_path: str, layout: StoreLayout) -> dict[str, s
     """
     parsed = await read_drv_file(drv_path, layout)
     if parsed is None:
-        raise RegistrationError(f"getting status of '{drv_path}': No such file or directory")
+        raise RegistrationError(f"getting status of '{magenta(drv_path)}': No such file or directory")
+    # The name is the path's, never `env["name"]`: `parseDerivation` takes it from the path (`derivations.cc:444`),
+    # so the name check of `checkInvariants` cannot fail here. A structured-attrs derivation has no `env["name"]`.
     drv_name = store_path_name(drv_path).removesuffix(_DRV_EXTENSION)
-    if parsed.env.get("name") != drv_name:
-        raise RegistrationError(
-            f"derivation '{drv_path}' has name '{parsed.env.get('name', '')}' which does not match its path"
-        )
     store_dir = str(layout.store_dir)
     _check_output_types(parsed)
 
