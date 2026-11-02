@@ -36,7 +36,7 @@ from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 
-from ..content_address import ContentAddress, Method, content_addressed_path
+from ..content_address import ContentAddress, Method, content_addressed_path, parse_any_sha256
 from ..exceptions import PynixdError
 from ..hintfmt import magenta
 from ..nar_fs import BadArchive, dump_path, restore_path
@@ -370,8 +370,9 @@ async def _restore_into_place(
         except BadArchive as error:
             raise AddError(str(error)) from error
         got = reader.hasher.digest()
-        if got.hex() != str(info.info.nar_hash):
-            specified = _sri(bytes.fromhex(str(info.info.nar_hash)))
+        expected = parse_any_sha256(str(info.info.nar_hash))
+        if got != expected:
+            specified = _sri(expected)
             raise AddError(
                 f"hash mismatch importing path '{magenta(path)}';\n"
                 f"  specified: {magenta(specified)}\n  got:       {magenta(_sri(got))}"

@@ -78,6 +78,17 @@ class ContentAddress:
         return f"{head}{self.algo}:{nix32_encode(self.digest)}"
 
 
+def parse_any_sha256(text: str) -> bytes:
+    """`Hash::parseAny(text, SHA256)`: the forms a NAR hash takes on the wire.
+
+    Base16 from a daemon, Nix32 from a narinfo, Base64, each with or without
+    `sha256:`, or SRI. `ValueError` for anything else.
+    """
+    if text.startswith("sha256-"):
+        return base64.b64decode(text.removeprefix("sha256-"), validate=True)
+    return parse_digest(text.removeprefix("sha256:"), "sha256")
+
+
 def parse_method_algo(text: str) -> tuple[Method, str]:
     """`ContentAddressMethod::parseWithAlgo` (`content-address.cc:203`): `fixed:r:sha256` and the like.
 

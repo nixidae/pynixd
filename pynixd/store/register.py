@@ -21,6 +21,7 @@ from ..content_address import (
     content_addressed_path,
     fixed_output_address,
     is_content_addressed,
+    parse_any_sha256,
     store_path_name,
 )
 from ..drv_hash import output_hashes
@@ -81,12 +82,14 @@ async def prepare(info: ValidPathInfo, layout: StoreLayout) -> Registration:
     path = str(info.path)
     store_dir = str(layout.store_dir)
     unkeyed = info.info
-    nar_hash = str(unkeyed.nar_hash)
-    # `registerValidPaths` asserts SHA-256 (`local-store.cc:910`); the wire carries Base16 without the name.
-    if len(nar_hash) != 64 or nar_hash.strip("0123456789abcdef"):
+    # `registerValidPaths` asserts SHA-256 (`local-store.cc:910`) and writes Base16. A daemon's
+    # wire carries Base16 and a narinfo Nix32; `Hash::parseAny` reads both (`worker-protocol.cc:372`).
+    try:
+        nar_hash = parse_any_sha256(str(unkeyed.nar_hash)).hex()
+    except ValueError as error:
         raise RegistrationError(
-            f"path '{magenta(path)}' has a NAR hash that is not Base16 SHA-256: {magenta(nar_hash)}"
-        )
+            f"path '{magenta(path)}' has a NAR hash that is not SHA-256: {magenta(unkeyed.nar_hash)}"
+        ) from error
     references = frozenset(str(ref) for ref in unkeyed.references)
 
     ca: str | None = None
