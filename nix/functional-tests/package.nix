@@ -214,6 +214,21 @@ writeShellApplication {
     CONTROL_LOG=$WORK/control.testlog.json
     PYNIXD_LOG=$WORK/pynixd.testlog.json
 
+    # **The control arm does not read pynixd**, so `all` keeps its log and
+    # runs it again only when something it reads changes: the Nix package,
+    # the suite, the two scripts that run it, the user (root fails 11 tests
+    # more, nixidae/nixidae#1159) and the arguments to `meson test`. That is
+    # half of every run. An empty `NIXFT_CONTROL_CACHE` turns the cache off.
+    # A flaky test that failed in the kept log hides a regression of pynixd in
+    # that test until the log is dropped.
+    # A vivarium guest's test runs with no `HOME`.
+    if [ -n "''${HOME:-}" ]; then
+      cache_root=''${XDG_CACHE_HOME:-$HOME/.cache}
+    else
+      cache_root=/var/cache
+    fi
+    CONTROL_CACHE=''${NIXFT_CONTROL_CACHE-$cache_root/nanopynix-nixft/control}
+
     # The recordings of the `streams` mode. They sit outside `$WORK/tmp`,
     # because `run.sh` wipes that directory when the next run starts, and the
     # comparison needs the control recordings after the candidate run.
@@ -239,7 +254,7 @@ writeShellApplication {
       status             the totals of the run in \$WORK, while it goes on
       detail NAME [WHICH]  the whole output of one test. WHICH is
                          \`control\` (default) or \`pynixd\`.
-      all     [ARGS]     setup, control, pynixd, compare
+      all     [ARGS]     setup, control (kept between runs), pynixd, compare
 
     The stream mode. It reads the wire and not the verdict of each script:
 
@@ -255,6 +270,9 @@ writeShellApplication {
     Environment:
       NIXFT_WORK   the work directory. Default /tmp/nanopynix-nixft/$NIXFT_VERSION
       JOBS         tests at a time. Default 1.
+      NIXFT_CONTROL_CACHE  where \`all\` keeps the control log. Empty: off.
+                   Default \''${XDG_CACHE_HOME:-~/.cache}/nanopynix-nixft/control,
+                   or /var/cache/nanopynix-nixft/control with no HOME
 
     Paths of this build:
       nix       $NIX_PKG
@@ -293,6 +311,31 @@ writeShellApplication {
       echo "=== control: a plain nix daemon, $NIXFT_VERSION ==="
       WORK=$WORK NIX_DAEMON_PACKAGE=$NIX_PKG SAVE_LOG=$CONTROL_LOG \
         bash "$SCRIPTS/run.sh" "$@"
+    }
+
+    control_key() {
+      {
+        echo "$NIX_PKG" "$NIX_SRC" "$(id -u)" "$*"
+        cat "$SCRIPTS/setup.sh" "$SCRIPTS/run.sh"
+      } | sha256sum | cut -c1-32
+    }
+
+    do_control_kept() {
+      if [ -z "$CONTROL_CACHE" ]; then
+        do_control "$@"
+        return
+      fi
+      local kept
+      kept=$CONTROL_CACHE/$NIXFT_VERSION-$(control_key "$@").testlog.json
+      if [ -e "$kept" ]; then
+        echo "=== control: kept from $kept ==="
+        cp "$kept" "$CONTROL_LOG"
+        return
+      fi
+      do_control "$@"
+      mkdir -p "$CONTROL_CACHE"
+      cp "$CONTROL_LOG" "$kept.part"
+      mv "$kept.part" "$kept"
     }
 
     do_pynixd() {
@@ -486,7 +529,7 @@ writeShellApplication {
       detail)  do_detail "$@" ;;
       all)
         do_setup
-        do_control "$@"
+        do_control_kept "$@"
         do_pynixd "$@"
         do_compare
         ;;
