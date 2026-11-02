@@ -266,6 +266,7 @@ def _config(work: Path, root: Path) -> Path:
                         "pynixd_writes": True,
                         "op_routes": {
                             "NarFromPath": "shadow",
+                            "AddToStore": "pynixd",
                             "AddToStoreNar": "pynixd",
                             "AddMultipleToStore": "pynixd",
                         },

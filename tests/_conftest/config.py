@@ -37,6 +37,7 @@ log = structlog.get_logger(__name__)
 
 TEST_OP_ROUTES: dict[str, OpRoute] = {
     "NarFromPath": OpRoute.shadow,
+    "AddToStore": OpRoute.pynixd,
     "AddToStoreNar": OpRoute.pynixd,
     "AddMultipleToStore": OpRoute.pynixd,
 }
@@ -47,7 +48,7 @@ store with `pynixd_writes` on. `nix/functional-tests/make-shim.sh` and
 `tests/parity/test_wire_parity.py` write the same routes into their
 configurations."""
 
-_WRITES = frozenset({"AddToStoreNar", "AddMultipleToStore"})
+_WRITES = frozenset({"AddToStore", "AddToStoreNar", "AddMultipleToStore"})
 """The trial routes that a store with `pynixd_writes` off cannot take."""
 
 # ── Nix binary paths ─────────────────────────────────────────────
