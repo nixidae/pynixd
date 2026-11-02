@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, ClassVar
 import structlog
 
 from nix_daemon_protocol.add_to_store import AddToStoreResponse
-from nix_daemon_protocol.query_path_info import QueryPathInfoRequest
 
 from .. import metrics
 from ..content_address import parse_method_algo
@@ -92,10 +91,9 @@ class AddToStoreHandler(Handler):
         store_path = StorePath(path=path)
         # `invalidatePathInfoCacheFor`: a path valid before this op may hold a negative entry.
         store.forget_path_info(store_path)
-        answer = await store.own_query_path_info(QueryPathInfoRequest(path=store_path))
-        if answer.info is None:
+        info = await store.engine.query_path_info(path)
+        if info is None:
             raise RuntimeError(f"pynixd added '{path}', and the store database does not hold it")
-        info = answer.info.to_valid_path_info(store_path)
         info = await self._sign(ctx, info)
         store.add_path_info(info)
         return AddToStoreResponse(info=info)

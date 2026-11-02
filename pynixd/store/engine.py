@@ -11,21 +11,45 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from nix_daemon_protocol.content_address import ContentAddress
+from nix_daemon_protocol.nar_hash import NARHash
+from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
+from nix_daemon_protocol.signature import Signature
+from nix_daemon_protocol.store_path import StorePath
+from nix_daemon_protocol.valid_path_info import ValidPathInfo
+from nix_daemon_protocol.wire_time import Time
+
 from ..local_store_db import LocalStoreDB
 from ..temp_roots import TempRoots
 from . import add, register
-from .queries import IS_VALID_PATH
+from .queries import IS_VALID_PATH, QUERY_PATH_INFO_WITH_REFS
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping
     from typing import Any
 
-    from nix_daemon_protocol.store_path import StorePath
-    from nix_daemon_protocol.valid_path_info import ValidPathInfo
-
     from ..content_address import Method
+    from ..local_store_db import SyncReader
     from ..store_layout import StoreLayout
     from .source import Source
+
+
+def path_info(row: tuple[Any, ...], references: Iterable[str]) -> ValidPathInfo:
+    """A `ValidPaths` row and its references, as `LocalStore::queryPathInfoInternal` reads them (`local-store.cc:667`)."""
+    path, deriver, nar_hash, registration_time, nar_size, ultimate, sigs, ca = row
+    return ValidPathInfo(
+        path=StorePath(path=path),
+        info=UnkeyedValidPathInfo(
+            deriver=StorePath(path=deriver or ""),
+            nar_hash=NARHash(hash=nar_hash),
+            references={StorePath(path=reference) for reference in references},
+            registration_time=Time(ts=registration_time),
+            nar_size=nar_size or 0,
+            ultimate=bool(ultimate),
+            sigs={Signature(**Signature.from_str(sig)) for sig in (sigs or "").split()},
+            ca=ContentAddress(value=ca or ""),
+        ),
+    )
 
 
 class StoreEngine:
@@ -64,6 +88,22 @@ class StoreEngine:
         """`isValidPathUncached`: the table itself, never the path-info cache."""
         async with self.db.acquire_conn() as conn, conn.execute(IS_VALID_PATH, (path,)) as cursor:
             return await cursor.fetchone() is not None
+
+    async def query_path_info(self, path: str, *, reader: SyncReader | None = None) -> ValidPathInfo | None:
+        """`queryPathInfoUncached`: the info of a valid path, or `None`.
+
+        A session's *reader* answers first when it can. It skips a thread hop
+        per query, and a closure query sends thousands of these.
+        """
+        found = reader.query_path_info(path) if reader is not None else None
+        if found is not None:
+            row, references = found
+            return None if row is None else path_info(row, references)
+        async with self.db.execute(QUERY_PATH_INFO_WITH_REFS, (path,)) as cursor:
+            rows = [tuple(r) for r in await cursor.fetchall()]
+        if not rows:
+            return None
+        return path_info(rows[0][:8], {r[8] for r in rows if r[8] is not None})
 
     def temp_roots(self) -> TempRoots:
         """A roots file of its own, for an import no client session holds."""
