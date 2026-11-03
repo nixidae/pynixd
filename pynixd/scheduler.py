@@ -418,7 +418,7 @@ class Scheduler:
         """Run the scheduler loop. Its end cancels every build."""
         self.running = True
         log.info("scheduler_started")
-        self.trace.db = getattr(self.local_store, "db", None)
+        self.trace.db = self.local_store.db
         async with self.workers():
             if self._workers is not None and self.trace.db is not None:
                 self._workers.start_soon(self.trace.run)
@@ -1152,7 +1152,7 @@ class Scheduler:
         # Synchronous queueing only -- the flush expands and writes on
         # its own schedule -- so recording never slows the build start.
         # Issue #65.
-        db = getattr(self.local_store, "db", None)
+        db = self.local_store.db
         if db is not None:
             db.mark_paths(
                 build_decision_seeds(

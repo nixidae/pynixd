@@ -73,7 +73,7 @@ async def _ask(
     store = LocalDBStore(LocalSocketStoreSpec(store_id=StoreId("local"), store_path=root))
     store.daemon_client._trust_policy = TrustPolicy(experimental_features=features)
     store.daemon_client._features = {FEATURE_REALISATION_WITH_PATH} if reads_paths else set()
-    async with await LocalStoreDB.open(StoreLayout.chroot(root)) as store.db:
+    async with await LocalStoreDB.open(StoreLayout.chroot(root)) as store.engine.db:
         answer: QueryRealisationResponse | None = await store.own_query_realisation(request)
     return answer
 

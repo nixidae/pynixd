@@ -80,7 +80,7 @@ def test_disk_usage_reads_the_store_filesystem(monkeypatch: pytest.MonkeyPatch) 
         return SimpleNamespace(f_blocks=100, f_bfree=40, f_bavail=10, f_frsize=1)
 
     monkeypatch.setattr("os.statvfs", fake_statvfs)
-    local = SimpleNamespace(layout=SimpleNamespace(real_store_dir="/store"))
+    local = SimpleNamespace(layout=SimpleNamespace(real_store_dir="/store"), db=None)
     assert Collector._disk_usage(cast("Any", local)) == (90, 100)
     assert seen == ["/store"]
 

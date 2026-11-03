@@ -341,7 +341,7 @@ async def test_expected_build_ms_is_the_median_of_the_identity(tmp_path: Path) -
         make_test_spec(store_id="local", store_path=pynixd_local_path, no_probe=True),
     )
     async with await LocalStoreDB.open(StoreLayout.chroot(pynixd_local_path)) as db:
-        pynixd_local.db = db
+        pynixd_local.engine.db = db
 
         assert db.active
 

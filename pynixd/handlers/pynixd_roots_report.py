@@ -37,8 +37,8 @@ class PynixdRootsReportHandler(Handler):
             return None
 
         store = ctx.proxy.ctx.local_store
-        layout = getattr(store, "layout", None)
-        db = getattr(store, "db", None)
+        layout = store.layout
+        db = store.db
         if layout is None or db is None:
             return PynixdRootsReportResponse(rows=[])
         labeled = walk_labeled_roots(layout.state_dir, str(layout.store_dir))

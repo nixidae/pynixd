@@ -132,7 +132,7 @@ class TestTheRoutes:
     async def test_pynixd_answers_without_the_daemon(self, tmp_path: Path) -> None:
         _store_db(tmp_path)
         store, asked = _store(tmp_path)
-        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as store.db:
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as store.engine.db:
             answer = await store.execute(IsValidPathRequest(path=StorePath(path=HELLO)), skip_probe=True)
         assert answer.valid is True
         assert asked == []
@@ -140,7 +140,7 @@ class TestTheRoutes:
     async def test_daemon_asks_the_daemon_although_pynixd_could_answer(self, tmp_path: Path) -> None:
         _store_db(tmp_path)
         store, asked = _store(tmp_path, IsValidPath=OpRoute.daemon)
-        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as store.db:
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as store.engine.db:
             answer = await store.execute(IsValidPathRequest(path=StorePath(path=HELLO)), skip_probe=True)
         assert answer.valid is False
         assert len(asked) == 1
@@ -150,7 +150,7 @@ class TestTheRoutes:
         _store_db(tmp_path)
         store, asked = _store(tmp_path, IsValidPath=OpRoute.shadow)
         before = _count("pynixd_op_shadow_total", op="IsValidPath", outcome="mismatch")
-        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as store.db:
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as store.engine.db:
             answer = await store.execute(IsValidPathRequest(path=StorePath(path=HELLO)), skip_probe=True)
         assert answer.valid is False
         assert len(asked) == 1
@@ -161,7 +161,7 @@ class TestTheRoutes:
         store, _ = _store(tmp_path, IsValidPath=OpRoute.shadow)
         gone = StorePath(path="/nix/store/00000000000000000000000000000003-gone")
         before = _count("pynixd_op_shadow_total", op="IsValidPath", outcome="match")
-        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as store.db:
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as store.engine.db:
             await store.execute(IsValidPathRequest(path=gone), skip_probe=True)
         assert _count("pynixd_op_shadow_total", op="IsValidPath", outcome="match") == before + 1
 

@@ -12,6 +12,7 @@ nixidae/nixidae#998.
 from __future__ import annotations
 
 import contextlib
+from types import SimpleNamespace
 from typing import Any, ClassVar, cast
 
 import pytest
@@ -109,7 +110,7 @@ class FakeScheduler:
         self.steps: list[str] = []
         self.queue = FakeQueue(self.steps)
         self.ctx = FakeContext()
-        self.local_store = None
+        self.local_store = SimpleNamespace(db=None)
         self.pulled: set[StorePath] = set()
 
     def trigger(self) -> None:

@@ -47,7 +47,7 @@ def _store_db(root: Path) -> None:
 
 async def _referrers(root: Path, path: str) -> set[str]:
     store = LocalDBStore(LocalSocketStoreSpec(store_id=StoreId("local"), store_path=root))
-    async with await LocalStoreDB.open(StoreLayout.chroot(root)) as store.db:
+    async with await LocalStoreDB.open(StoreLayout.chroot(root)) as store.engine.db:
         answer = await store.own_query_referrers(QueryReferrersRequest(path=StorePath(path=path)))
     return {str(found) for found in answer.paths}
 

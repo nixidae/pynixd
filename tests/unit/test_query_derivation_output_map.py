@@ -97,7 +97,7 @@ async def _ask(
         return parsed
 
     store.read_derivation = read_derivation  # type: ignore[method-assign, assignment]  # a stand-in that holds only the output names
-    async with await LocalStoreDB.open(StoreLayout.chroot(root)) as store.db:
+    async with await LocalStoreDB.open(StoreLayout.chroot(root)) as store.engine.db:
         answer: QueryDerivationOutputMapResponse | None = await store.own_query_derivation_output_map(
             QueryDerivationOutputMapRequest(path=StorePath(path=drv))
         )

@@ -48,7 +48,7 @@ def _store(db: LocalStoreDB, root: Path) -> LocalDBStore:
     store.engine = StoreEngine(
         StoreLayout.chroot(root), writes=False, read_config=_no_settings, on_change=lambda _: None, name="test"
     )
-    store.db = db
+    store.engine.db = db
     store.path_info_cache = TTLCache[str, ValidPathInfo](maxsize=10000, ttl=300)
     return store
 

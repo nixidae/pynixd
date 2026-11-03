@@ -669,7 +669,7 @@ class DaemonProxy:
         if self._sync_reader_ready:
             return
         self._sync_reader_ready = True
-        db = getattr(self.local_store, "db", None)
+        db = self.local_store.db
         if db is None:
             return
         self.client.sync_reader = db.sync_reader()

@@ -145,7 +145,7 @@ class TestTheAnswer:
         (state / "gcroots" / "invalid").symlink_to(f"/nix/store/{B}")
         store = LocalDBStore(LocalSocketStoreSpec(store_id=StoreId("local"), store_path=tmp_path, managed=True))
         with live_temp_root(state, "4242", f"/nix/store/{C}\x00".encode()):
-            async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as store.db:
+            async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as store.engine.db:
                 answer = await store.own_find_roots(FindRootsRequest())
         assert {(entry.link, entry.target) for entry in answer.roots} == {
             (str(state / "gcroots" / "valid"), f"/nix/store/{A}"),
@@ -163,7 +163,7 @@ class TestTheAnswer:
         (state / "temproots" / "99").write_bytes(f"/nix/store/{A}\x00".encode())  # noqa: ASYNC240 -- test setup
         spec = LocalSocketStoreSpec(store_id=StoreId("local"), store_path=tmp_path, managed=True, pynixd_writes=writes)
         store = LocalDBStore(spec)
-        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as store.db:
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as store.engine.db:
             answer = await store.own_find_roots(FindRootsRequest())
         assert answer.roots == []
         assert (state / "gcroots" / "auto" / "stale").is_symlink() is not writes

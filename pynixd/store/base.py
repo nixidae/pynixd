@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
     from nix_daemon_protocol.wire_ops import WireRequest
     from pynixd_store.drv_parser import Derivation
+    from pynixd_store.local_store_db import LocalStoreDB
     from pynixd_store.signing import SecretKey
     from pynixd_store.store_path import StorePath
 
@@ -107,6 +108,11 @@ class Store(ABC):
         `no_schedule`, not by the absence of this property.
         """
         return frozenset()
+
+    @property
+    def db(self) -> LocalStoreDB | None:
+        """The store's own database, which pynixd reads directly. Only `LocalDBStore` has one."""
+        return None
 
     @property
     def is_healthy(self) -> bool:

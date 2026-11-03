@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -36,7 +37,7 @@ class SlotScheduler:
     def __init__(self) -> None:
         self.steps: list[str] = []
         self.ctx = FakeContext()
-        self.local_store = None
+        self.local_store = SimpleNamespace(db=None)
         self.queue = self
 
     async def complete(self, _build_id: str, _response: Any) -> None:

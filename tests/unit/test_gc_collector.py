@@ -99,6 +99,7 @@ class FakeConn:
 class FakeLocal:
     """The local store: it answers from `REFERENCES` and records the deletes."""
 
+    db: Any = None
     answers_closure: bool = True
     gc_defer: bool = False
     live: set[str] = field(default_factory=set)

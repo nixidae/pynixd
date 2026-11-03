@@ -575,7 +575,7 @@ class PynixdHttpServer:
     async def resolve_path(self, hash_part: str) -> StorePath | None:
         """Resolve a store hash or NAR hash to a full store path."""
         # 1. Try resolving as a NAR hash (SHA256, 64 chars) if we have a DB
-        if len(hash_part) == 64 and (db := getattr(self.store, "db", None)) is not None:
+        if len(hash_part) == 64 and (db := self.store.db) is not None:
             for prefix in ["sha256:", ""]:
                 full_hash = f"{prefix}{hash_part}"
                 async with db.execute(

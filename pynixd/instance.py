@@ -573,11 +573,10 @@ class Server:
 
     async def _checkpoint_wal(self) -> bool:
         """Shrink the store database's WAL, which Nix never does. Whether a checkpoint ran."""
-        checkpoint = getattr(getattr(self.ctx.local_store, "db", None), "checkpoint_wal", None)
-        if checkpoint is None:
+        db = self.ctx.local_store.db
+        if db is None:
             return False
-        ran: bool = await checkpoint()
-        return ran
+        return await db.checkpoint_wal()
 
     async def _gc_pass(self, reason: str) -> PynixdCollectGarbageResponse | None:
         """One EXECUTE pass, with the metrics the loop always reports.

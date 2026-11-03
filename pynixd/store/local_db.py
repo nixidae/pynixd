@@ -343,10 +343,6 @@ class LocalDBStore(Store):
         """The engine's database. `start` replaces it; a start that fails before then still reaches `close`."""
         return self.engine.db
 
-    @db.setter
-    def db(self, db: LocalStoreDB) -> None:
-        self.engine.db = db
-
     def _refuse_routes_without_a_database(self) -> None:
         """A route set by hand to an answer that reads SQLite needs SQLite.
 
@@ -393,9 +389,9 @@ class LocalDBStore(Store):
         refusal = self._refuses_a_database()
         if refusal is not None:
             log.warning("local_store_db_refused", store_id=str(self.store_id), reason=refusal)
-            self.db = LocalStoreDB.inactive(self.layout)
+            self.engine.db = LocalStoreDB.inactive(self.layout)
         else:
-            self.db = await LocalStoreDB.open(self.layout)
+            self.engine.db = await LocalStoreDB.open(self.layout)
         self._refuse_routes_without_a_database()
         self.db.start(self._background)
 

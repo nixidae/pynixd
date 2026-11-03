@@ -14,6 +14,7 @@ swallowed failure is the defect.
 from __future__ import annotations
 
 import contextlib
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -86,8 +87,8 @@ class FakeScheduler:
         self.queue = FakeQueue(self.steps)
         self.collection_fails = collection_fails
         self.triggers = 0
-        self.local_store = None
-        """No local store here: `execute_build` records nothing without one."""
+        self.local_store = SimpleNamespace(db=None)
+        """A local store without a database: `execute_build` records nothing."""
 
     def trigger(self) -> None:
         self.triggers += 1

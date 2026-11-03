@@ -12,6 +12,7 @@ dynhetz: "path '.../boehm-gc-8.2.12' is not valid", twice. Issues #889 and
 from __future__ import annotations
 
 import contextlib
+from types import SimpleNamespace
 from typing import Any, cast
 
 import asyncssh
@@ -64,7 +65,7 @@ class FakeScheduler:
     def __init__(self, raised: BaseException) -> None:
         self.queue = FakeQueue()
         self.raised = raised
-        self.local_store = None
+        self.local_store = SimpleNamespace(db=None)
 
     def trigger(self) -> None:
         return

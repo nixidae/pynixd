@@ -675,4 +675,4 @@ class Collector:
 
 def _planner_of(local: Store) -> GarbagePlanner:
     """The engine's view of *local*: a store served without its state has neither part."""
-    return GarbagePlanner(getattr(local, "layout", None), getattr(local, "db", None))
+    return GarbagePlanner(getattr(local, "layout", None), local.db)

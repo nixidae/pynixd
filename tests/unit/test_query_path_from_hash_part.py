@@ -47,7 +47,7 @@ def _store_db(root: Path) -> None:
 async def _ask(root: Path, hash_part: str) -> str | None:
     """The path pynixd answers, as text; `None` where the daemon answers."""
     store = LocalDBStore(LocalSocketStoreSpec(store_id=StoreId("local"), store_path=root))
-    async with await LocalStoreDB.open(StoreLayout.chroot(root)) as store.db:
+    async with await LocalStoreDB.open(StoreLayout.chroot(root)) as store.engine.db:
         answer: QueryPathFromHashPartResponse | None = await store.own_query_path_from_hash_part(
             QueryPathFromHashPartRequest(path=hash_part)
         )

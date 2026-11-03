@@ -110,7 +110,7 @@ def _copy_files(source: Path, dest: Path, infos: list[ValidPathInfo]) -> None:
 @asynccontextmanager
 async def _store(root: Path, **spec: Any) -> AsyncIterator[LocalDBStore]:
     store = LocalDBStore(make_test_spec(store_id="register", store_path=root, no_probe=True, **spec))
-    async with await LocalStoreDB.open(store.layout) as store.db:
+    async with await LocalStoreDB.open(store.layout) as store.engine.db:
         yield store
 
 
