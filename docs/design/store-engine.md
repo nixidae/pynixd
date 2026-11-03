@@ -46,7 +46,9 @@ flag. It imports no request or response model, no handler, no connection
 pool. It owns the file system, the database, the locks, the temporary roots
 and the settings it reads. `nar_fs`, `content_address`, `signing`, `add`,
 `register`, `local_store_db`, `temp_roots`, `liveness` and the collection's
-reads (`gc`, `gc_sql`) are its parts.
+reads (`gc`, `gc_sql`) are its parts. It reads its settings with `nix config
+show --json` (`nix_config`), which opens no store, so it needs no daemon for
+them.
 
 **The daemon backend** implements the same interface over a Nix daemon
 connection. It is `DaemonStore` with the method names above.

@@ -21,6 +21,7 @@ import anyio
 import structlog
 
 from nix_daemon_protocol.store_dir import on_disk
+from pynixd_store.nix_config import nix_environment, read_nix_config
 from pynixd_store.store_path import StorePath
 
 from ..agent import local_monitor
@@ -383,21 +384,7 @@ class LocalStore(DaemonStore):
     async def read_nix_config(self) -> dict[str, Any]:
         """`nix config show --json` in the daemon's environment, so includes,
         `extra-` settings and `NIX_CONFIG` resolve as they do for nix-daemon."""
-        env = os.environ.copy()
-        env.update(self.extra_env)
-        env.update(self.layout.daemon_environment())
-        result = await anyio.run_process(
-            [self.nix_bin, "--extra-experimental-features", "nix-command", "config", "show", "--json"],
-            stdin=subprocess.DEVNULL,
-            env=env,
-            check=False,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"`nix config show` failed with code {result.returncode}: {result.stderr.decode(errors='replace')}"
-            )
-        config: dict[str, Any] = json.loads(result.stdout)
-        return config
+        return await read_nix_config(self.nix_bin, nix_environment(self.layout, self.extra_env))
 
     def _recent_output_text(self) -> str:
         """The last lines the daemon wrote, for a start-up error message.

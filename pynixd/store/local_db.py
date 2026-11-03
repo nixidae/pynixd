@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from nix_daemon_protocol.operations import STANDARD_OPERATIONS
 from pynixd_store.engine import StoreEngine
 from pynixd_store.local_store_db import LocalStoreDB
+from pynixd_store.nix_config import nix_environment, read_nix_config
 
 from .. import metrics
 from ..op_routes import OpRoute, Owned
@@ -222,7 +223,7 @@ class LocalDBStore(Store):
         self.engine = StoreEngine(
             self.layout,
             writes=spec.pynixd_writes,
-            read_config=self._daemon.read_nix_config,
+            read_config=lambda: read_nix_config(spec.nix_bin, nix_environment(self.layout, spec.extra_env)),
             on_change=self.forget_path_info,
             name=str(self.store_id),
         )
