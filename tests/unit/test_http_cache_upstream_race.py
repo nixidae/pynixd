@@ -21,7 +21,8 @@ from aiohttp.test_utils import TestClient, TestServer
 from nix_daemon_protocol.ids import StoreId
 from pynixd.config import HTTPBinaryCacheSpec, PynixdSettings
 from pynixd.http_server import PynixdHttpServer, _uncompressed_narinfo
-from pynixd.store.http_binary_cache import HTTPBinaryCacheStore, _parse_narinfo
+from pynixd.store.binary_cache import parse_narinfo
+from pynixd.store.http_binary_cache import HTTPBinaryCacheStore
 from pynixd.substitution_queue import SubstitutionQueryResult, SubstitutionQueue
 from pynixd_store.store_path import StorePath
 
@@ -63,7 +64,7 @@ def _fetched(raw: str | None) -> tuple[str, Any] | None:
     """The `(raw, parsed)` answer `HTTPBinaryCacheStore.fetch_narinfo` gives."""
     if raw is None:
         return None
-    return raw, _parse_narinfo(raw, expected_path=None)
+    return raw, parse_narinfo(raw, expected_path=None)
 
 
 async def _wait_for(condition: Any, timeout: float = 5.0) -> None:

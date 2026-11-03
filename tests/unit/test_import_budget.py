@@ -167,8 +167,8 @@ def test_every_store_name_resolves_from_the_module_the_table_names() -> None:
         assert getattr(store, name) is getattr(module, name)
 
 
-def test_the_store_all_is_the_table_plus_the_one_predicate() -> None:
-    assert set(store.__all__) == set(store.ORIGIN) | {"is_http_binary_cache"}
+def test_the_store_all_is_the_table_plus_the_two_predicates() -> None:
+    assert set(store.__all__) == set(store.ORIGIN) | {"is_binary_cache", "is_http_binary_cache"}
 
 
 def test_an_unknown_store_name_raises_attribute_error() -> None:

@@ -2,8 +2,8 @@
 
 Every test store takes the `pynixd` route of EnsurePath (`TEST_OP_ROUTES`),
 so the goal engine fetches here and the daemon does not. A cache written by
-`nix copy` and served over HTTP stands for the substituter: a fake answer
-proves nothing about what a remote holds.
+`nix copy` stands for the substituter, served over HTTP and read as a
+`file://` directory: a fake answer proves nothing about what a remote holds.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from nix_daemon_protocol.ids import StoreId
 from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest
 from nix_daemon_protocol.store_path import StorePath
 from pynixd import Server
-from pynixd.config import HTTPBinaryCacheSpec
+from pynixd.config import HTTPBinaryCacheSpec, LocalBinaryCacheSpec
 from pynixd.connection import Connection
 from pynixd.exceptions import BackendError
 from pynixd.store import LocalDBStore, Store
@@ -45,6 +45,8 @@ MISSING = "/nix/store/00000000000000000000000000000000-pynixd-nobody-has-this"
 class _Lab:
     target: Path
     cache_dir: Path
+    transport: str
+    """`http`: the cache served by aiohttp; `file`: the directory itself."""
     socket: Path
     parent: str
     child: str
@@ -59,9 +61,13 @@ async def _valid(store_path: Path) -> set[str]:
     return {line.strip() for line in stdout.splitlines() if line.strip()}
 
 
-@pytest.fixture
-async def lab(tmp_path: Path) -> _Lab:
-    """A cache that holds `parent`, `child` and `unique`, and an empty store to fetch them into."""
+@pytest.fixture(params=["http", "file"])
+async def lab(tmp_path_factory: pytest.TempPathFactory, request: pytest.FixtureRequest) -> _Lab:
+    """A cache that holds `parent`, `child` and `unique`, and an empty store to fetch them into.
+
+    Not `tmp_path`: the parameter puts a `[` into its name, and Nix cannot parse that in a `file://` URL.
+    """
+    tmp_path = tmp_path_factory.mktemp(f"substitute-{request.param}")
     source, target, cache_dir = tmp_path / "source", tmp_path / "target", tmp_path / "cache"
     for directory in (source, target, cache_dir):
         directory.mkdir()
@@ -82,7 +88,13 @@ async def lab(tmp_path: Path) -> _Lab:
         [str(NIX_BIN), "copy", "--no-check-sigs", "--from", str(source), "--to", f"file://{cache_dir}", *sorted(held)]
     )
     return _Lab(
-        target=target, cache_dir=cache_dir, socket=tmp_path / "pynixd.sock", parent=parent, child=child, unique=unique
+        target=target,
+        cache_dir=cache_dir,
+        transport=request.param,
+        socket=tmp_path / "pynixd.sock",
+        parent=parent,
+        child=child,
+        unique=unique,
     )
 
 
@@ -96,12 +108,15 @@ async def _client(lab: _Lab) -> AsyncIterator[Connection]:
     site = web.TCPSite(runner, "127.0.0.1", 0)
     await site.start()
     host, port = runner.addresses[0][:2]
+    # Trusted: `nix copy` signs nothing, and the signature check is not what this tests.
+    upstream = (
+        HTTPBinaryCacheSpec(store_id=StoreId("upstream"), url=f"http://{host}:{port}/", trusted=True)
+        if lab.transport == "http"
+        else LocalBinaryCacheSpec(store_id=StoreId("upstream"), path=lab.cache_dir, trusted=True)
+    )
     stores: dict[StoreId, Store] = {
         StoreId("local"): LocalDBStore(make_test_spec(store_id="local", store_path=lab.target, no_probe=True)),
-        # Trusted: `nix copy` signs nothing, and the signature check is not what this tests.
-        StoreId("upstream"): HTTPBinaryCacheSpec(
-            store_id=StoreId("upstream"), url=f"http://{host}:{port}/", trusted=True
-        ).to_store("upstream"),
+        StoreId("upstream"): upstream.to_store("upstream"),
     }
     try:
         async with Server(stores=stores, unix_path=lab.socket, ssh_port=None, http_port=None):

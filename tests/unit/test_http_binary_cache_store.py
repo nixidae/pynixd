@@ -16,7 +16,8 @@ from aiohttp.test_utils import TestServer
 from nix_daemon_protocol.ids import StoreId
 from pynixd.config import HTTPBinaryCacheSpec
 from pynixd.serde import IsValidPathRequest, QueryPathInfoRequest, QueryValidPathsRequest
-from pynixd.store.http_binary_cache import _NAR_PIECE, HTTPBinaryCacheStore, _SocketReader
+from pynixd.store.binary_cache import NAR_PIECE
+from pynixd.store.http_binary_cache import HTTPBinaryCacheStore, _SocketReader
 from pynixd_store.store_path import StorePath
 
 if TYPE_CHECKING:
@@ -194,7 +195,7 @@ async def _stream(narinfo: str, nar: bytes) -> list[bytes]:
 
 
 async def test_http_binary_cache_bounds_each_decompressed_piece() -> None:
-    """64 MiB of zeros is 10 KB of xz; no piece holds more than `_NAR_PIECE`.
+    """64 MiB of zeros is 10 KB of xz; no piece holds more than `NAR_PIECE`.
 
     Nix pulls decompressed output through an 8 KiB buffer (`serialise.cc`
     `Source::drainInto`), so a high ratio never lands in memory at once.
@@ -202,7 +203,7 @@ async def test_http_binary_cache_bounds_each_decompressed_piece() -> None:
     raw = bytes(64 * 2**20)
     chunks = await _stream(_narinfo(compression="xz", url=f"nar/{_HASH}.nar.xz"), lzma.compress(raw))
     assert sum(map(len, chunks)) == len(raw)
-    assert max(map(len, chunks)) <= _NAR_PIECE
+    assert max(map(len, chunks)) <= NAR_PIECE
 
 
 async def test_http_binary_cache_reads_every_zstd_frame() -> None:

@@ -52,6 +52,7 @@ if TYPE_CHECKING:
         DaemonStore,
         ExternalUnixStore,
         HTTPBinaryCacheStore,
+        LocalBinaryCacheStore,
         LocalDBStore,
         LocalStore,
         SSHSocketStore,
@@ -765,15 +766,9 @@ class SSHSocketStoreSpec(StoreSpecBase):
         )
 
 
-class HTTPBinaryCacheSpec(StoreSpecBase):
-    """A remote binary cache accessed via HTTP (Nix binary cache protocol).
+class BinaryCacheSpecBase(StoreSpecBase):
+    """A read-only substitution source in Nix's binary cache layout, with health tracking."""
 
-    Read-only substitution source. Supports health tracking via configurable
-    concurrency limits and failure ratio thresholds.
-    """
-
-    type: Literal["http-binary-cache"] = "http-binary-cache"
-    url: str
     trusted: bool = False
     """Import its paths without checking signatures, as Nix's `?trusted=1`.
 
@@ -781,12 +776,19 @@ class HTTPBinaryCacheSpec(StoreSpecBase):
     `trusted-public-keys`, as Nix does for a substituter (`substitution-goal.cc:236`).
     A builder or peer store is always trusted: its outputs are unsigned.
     nixidae/nixidae#1008."""
-    max_concurrent: int | None = None
     max_fail_ratio: float = 0.5
     health_window: int = 10
     scheduleable: bool = False
     no_schedule: bool = True
     gc_enabled: bool = False
+
+
+class HTTPBinaryCacheSpec(BinaryCacheSpecBase):
+    """A remote binary cache accessed via HTTP, with a concurrency limit."""
+
+    type: Literal["http-binary-cache"] = "http-binary-cache"
+    url: str
+    max_concurrent: int | None = None
 
     def to_store(self, store_id: str) -> HTTPBinaryCacheStore:
         """Build an ``HTTPBinaryCacheStore`` from this spec."""
@@ -797,13 +799,29 @@ class HTTPBinaryCacheSpec(StoreSpecBase):
         )
 
 
+class LocalBinaryCacheSpec(BinaryCacheSpecBase):
+    """A binary cache in a directory, Nix's `file://` store."""
+
+    type: Literal["local-binary-cache"] = "local-binary-cache"
+    path: Path
+
+    def to_store(self, store_id: str) -> LocalBinaryCacheStore:
+        """Build a ``LocalBinaryCacheStore`` from this spec."""
+        from .store import LocalBinaryCacheStore
+
+        return LocalBinaryCacheStore(
+            self.model_copy(update={"store_id": StoreId(store_id)}),
+        )
+
+
 StoreSpec = Annotated[
     LocalSocketStoreSpec
     | ExternalUnixStoreSpec
     | SSHSubprocessStoreSpec
     | SSHSocketStoreSpec
     | ReverseStoreSpec
-    | HTTPBinaryCacheSpec,
+    | HTTPBinaryCacheSpec
+    | LocalBinaryCacheSpec,
     Field(discriminator="type"),
 ]
 

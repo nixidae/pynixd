@@ -5,7 +5,9 @@ from __future__ import annotations
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
+from urllib.parse import parse_qs, urlsplit
 
 import anyio
 import structlog
@@ -20,7 +22,7 @@ from . import metrics
 from .answer import Answer
 from .exceptions import NarGone, OpNotImplementedError, leaves
 from .serde import QueryPathInfoRequest, StorePath
-from .store import is_http_binary_cache
+from .store import is_binary_cache
 from .store.local_db import LocalDBStore, write_router
 from .store.nar_reader import NarReader
 
@@ -36,12 +38,38 @@ if TYPE_CHECKING:
     from .config import PynixdSettings
     from .context import PynixdContext
     from .store import Store
-    from .store.http_binary_cache import HTTPBinaryCacheStore, HTTPNarInfo
+    from .store.binary_cache import BinaryCacheStore, NarInfo
 
 log = structlog.get_logger(__name__)
 _NAR_CHUNK_SIZE = 1024 * 256
 _BACKEND_SCHEMES = ("http://", "https://", "unix://")
-"""The substituters `instance._add_substituter_stores` makes a backend for."""
+"""The substituters `instance._add_substituter_stores` makes a backend for by scheme alone."""
+
+
+@dataclass(frozen=True)
+class FileCache:
+    """A `file://` substituter: Nix's `LocalBinaryCacheStore` URL."""
+
+    path: Path
+    trusted: bool
+    priority: float | None
+
+
+def file_cache(url: str) -> FileCache | None:
+    """*url* as a `file://` cache, or `None` for another scheme or a relative path."""
+    split = urlsplit(url)
+    if split.scheme != "file":
+        return None
+    path = Path(split.netloc + split.path)
+    if not path.is_absolute():
+        return None
+    params = {key: values[-1] for key, values in parse_qs(split.query).items()}
+    priority = params.get("priority")
+    return FileCache(
+        path=path,
+        trusted=params.get("trusted") in {"1", "true"},
+        priority=float(priority) if priority else None,
+    )
 
 
 @dataclass(frozen=True)
@@ -96,7 +124,7 @@ def _trusted_source(store: Store) -> bool:
     trusted, by User's decision: its outputs carry no signature.
     nixidae/nixidae#1008.
     """
-    return not is_http_binary_cache(store) or store.trusted
+    return not is_binary_cache(store) or store.trusted
 
 
 @dataclass(frozen=True)
@@ -105,7 +133,7 @@ class SubstitutionCandidate:
 
     store: Store
     path_info: ValidPathInfo
-    http_narinfo: HTTPNarInfo | None = None
+    http_narinfo: NarInfo | None = None
     download_size: int = 0
     """The narinfo's `FileSize`, as `SubstitutionQueryResult.download_size`."""
 
@@ -133,7 +161,7 @@ class UpstreamNarinfo:
 
     raw: str
     store: Store
-    info: HTTPNarInfo
+    info: NarInfo
 
 
 @dataclass
@@ -208,11 +236,23 @@ class SubstitutionQueue:
         )
         """The path behind each hash `negative` holds, so a `.narinfo` request can find it."""
         self.uncovered: tuple[str, ...] = ()
-        """The daemon's substituters that no backend stands for: a `file://` cache, `s3://`, `ssh://`."""
+        """The daemon's substituters that no backend stands for: `s3://`, `ssh://`, a `file://` cache pynixd cannot read."""
 
     def note_daemon_substituters(self, substituters: Iterable[str]) -> None:
         """Remember which of the daemon's *substituters* the backends do not stand for."""
-        self.uncovered = tuple(url for url in substituters if not url.startswith(_BACKEND_SCHEMES))
+        caches = {
+            path
+            for store in self.substituter_stores()
+            if is_binary_cache(store) and isinstance(path := getattr(store, "path", None), Path)
+        }
+
+        def covered(url: str) -> bool:
+            if url.startswith(_BACKEND_SCHEMES):
+                return True
+            cache = file_cache(url)
+            return cache is not None and cache.path in caches
+
+        self.uncovered = tuple(url for url in substituters if not covered(url))
 
     def running(self) -> AbstractAsyncContextManager[None]:
         """Run the probes for the body of this block; a lookup outside it raises."""
@@ -330,12 +370,12 @@ class SubstitutionQueue:
         )
 
     def http_substituter_stores(self) -> list[Store]:
-        """HTTP substituters, the only ones a narinfo race can ask.
+        """Binary cache substituters, HTTP or a directory: the only ones a narinfo race can ask.
 
-        A daemon substituter answers the wire protocol, not `.narinfo`
-        over HTTP, so the race leaves it out. Issue #85.
+        A daemon substituter answers the wire protocol, not `.narinfo`,
+        so the race leaves it out. Issue #85.
         """
-        return [store for store in self.substituter_stores() if is_http_binary_cache(store)]
+        return [store for store in self.substituter_stores() if is_binary_cache(store)]
 
     async def race_http_narinfo(self, hash_part: str) -> UpstreamNarinfo | None:
         """Answer one `.narinfo` hash from the fastest HTTP substituter.
@@ -375,7 +415,7 @@ class SubstitutionQueue:
             self._http_hash_negative[hash_part] = None
         return race.winner
 
-    async def upstream_nar_source(self, hash_part: str) -> tuple[HTTPBinaryCacheStore, HTTPNarInfo] | None:
+    async def upstream_nar_source(self, hash_part: str) -> tuple[BinaryCacheStore, NarInfo] | None:
         """Highest-priority upstream holding one NAR hash, with its narinfo.
 
         The hash is a store-path hash from a `.narinfo` this cache served.
@@ -406,7 +446,7 @@ class SubstitutionQueue:
             key=lambda store: store.priority,
         )
         for store in ranked:
-            if not is_http_binary_cache(store):
+            if not is_binary_cache(store):
                 continue
             narinfo = await store.get_narinfo(path)
             if narinfo is not None:
@@ -423,7 +463,7 @@ class SubstitutionQueue:
             key=lambda store: store.priority,
         )
         for store in ranked:
-            if not is_http_binary_cache(store):
+            if not is_binary_cache(store):
                 continue
             try:
                 fetched = await store.fetch_narinfo(hash_part)
@@ -437,7 +477,7 @@ class SubstitutionQueue:
         return None
 
     async def _probe_http_narinfo(self, hash_part: str, store: Store, race: _UpstreamNarinfoRace) -> None:
-        if not is_http_binary_cache(store):
+        if not is_binary_cache(store):
             return
         started = time.monotonic()
         try:
@@ -514,7 +554,7 @@ class SubstitutionQueue:
 
         path_info = ValidPathInfo(path=StorePath(path=str(path)), info=response.info)
         download_size = 0
-        if is_http_binary_cache(store):
+        if is_binary_cache(store):
             narinfo = await store.get_narinfo(StorePath(path=str(path)))
             download_size = narinfo.file_size if narinfo is not None else 0
         return SubstitutionQueryResult(
@@ -588,7 +628,7 @@ class SubstitutionQueue:
 
     async def _nar_pieces(self, path: StorePath, candidate: SubstitutionCandidate) -> AsyncGenerator[bytes]:
         """The NAR of *path* from *candidate*, piece by piece."""
-        if is_http_binary_cache(candidate.store):
+        if is_binary_cache(candidate.store):
             http_narinfo = candidate.http_narinfo
             if http_narinfo is None:
                 http_narinfo = await candidate.store.get_narinfo(path)

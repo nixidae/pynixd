@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         Store as Store,
         get_current_system as get_current_system,
     )
+    from .binary_cache import BinaryCacheStore as BinaryCacheStore
     from .daemon import (
         DaemonStore as DaemonStore,
         ProbeState as ProbeState,
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
     from .external_unix import ExternalUnixStore as ExternalUnixStore
     from .http_binary_cache import HTTPBinaryCacheStore as HTTPBinaryCacheStore
     from .local import LocalSocketStore as LocalSocketStore
+    from .local_binary_cache import LocalBinaryCacheStore as LocalBinaryCacheStore
     from .local_daemon import LocalStore as LocalStore
     from .local_db import LocalDBStore as LocalDBStore
     from .reverse import ReverseStore as ReverseStore
@@ -42,9 +44,11 @@ if TYPE_CHECKING:
     )
 
 ORIGIN: dict[str, str] = {
+    "BinaryCacheStore": "binary_cache",
     "DaemonStore": "daemon",
     "ExternalUnixStore": "external_unix",
     "HTTPBinaryCacheStore": "http_binary_cache",
+    "LocalBinaryCacheStore": "local_binary_cache",
     "LocalDBStore": "local_db",
     "LocalSocketStore": "local",
     "LocalStore": "local_daemon",
@@ -58,9 +62,11 @@ ORIGIN: dict[str, str] = {
 """Each public name, and the submodule that defines it."""
 
 __all__ = [
+    "BinaryCacheStore",
     "DaemonStore",
     "ExternalUnixStore",
     "HTTPBinaryCacheStore",
+    "LocalBinaryCacheStore",
     "LocalDBStore",
     "LocalSocketStore",
     "LocalStore",
@@ -70,6 +76,7 @@ __all__ = [
     "SSHSubprocessStore",
     "Store",
     "get_current_system",
+    "is_binary_cache",
     "is_http_binary_cache",
 ]
 
@@ -82,6 +89,17 @@ def __getattr__(name: str) -> object:
     value = getattr(importlib.import_module(f".{origin}", __name__), name)
     globals()[name] = value
     return value
+
+
+def is_binary_cache(store: Store) -> TypeGuard[BinaryCacheStore]:
+    """Whether *store* is a `BinaryCacheStore`, HTTP or a directory, and never load one to ask.
+
+    `False` when nothing imported `binary_cache`, as `is_http_binary_cache` says.
+    """
+    module = sys.modules.get(f"{__name__}.binary_cache")
+    if module is None:
+        return False
+    return isinstance(store, module.BinaryCacheStore)
 
 
 def is_http_binary_cache(store: Store) -> TypeGuard[HTTPBinaryCacheStore]:

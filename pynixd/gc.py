@@ -54,7 +54,7 @@ from .daemon_extensions import (
     QueryPathInfosRequest,
 )
 from .exceptions import BackendError, GCNotPermittedError, PynixdError
-from .store import is_http_binary_cache
+from .store import is_binary_cache
 from .store.local_db import LocalDBStore
 
 if TYPE_CHECKING:
@@ -511,10 +511,10 @@ class Collector:
         that nobody configured to leave the cache alone, and `gc_defer` is an
         operator naming this store. `nix copy --to file://` writes `0` into
         every cache it makes, so honouring it here would make the flag useless
-        for a lab cache. `HTTPBinaryCacheStore.query_valid_paths` asks for one
+        for a lab cache. `BinaryCacheStore.query_valid_paths` asks for one
         narinfo at a time, so the sweep cannot flood a cache either way.
         """
-        if is_http_binary_cache(store) and store.cache_info.get("WantMassQuery") == "0":
+        if is_binary_cache(store) and store.cache_info.get("WantMassQuery") == "0":
             log.debug("gc_store_asked_despite_wantmassquery", store_id=str(store.store_id))
         try:
             valid: set[StorePath] = (await store.execute(QueryValidPathsRequest(paths=paths))).paths

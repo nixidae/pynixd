@@ -22,7 +22,13 @@ from pynixd_store.gc import LivenessWatch, pressure_usage
 from pynixd_store.store_layout import DEFAULT_STORE_DIR
 
 from . import _optional, metrics, wire
-from .config import ExternalUnixStoreSpec, HTTPBinaryCacheSpec, LocalSocketStoreSpec, PynixdSettings
+from .config import (
+    ExternalUnixStoreSpec,
+    HTTPBinaryCacheSpec,
+    LocalBinaryCacheSpec,
+    LocalSocketStoreSpec,
+    PynixdSettings,
+)
 from .context import PynixdContext
 from .exceptions import GCNotPermittedError
 from .gc import Collector
@@ -31,7 +37,8 @@ from .liveness_watch import DirtyFlag, StableRootsWatch
 from .scheduler import Scheduler
 from .serde.protocol import PynixdGCAction
 from .state import upstream_in_flight
-from .store import ExternalUnixStore, LocalDBStore, LocalStore, Store, is_http_binary_cache
+from .store import ExternalUnixStore, LocalDBStore, LocalStore, Store, is_binary_cache, is_http_binary_cache
+from .substitution_queue import file_cache
 from .unix_server import UnixServer, start_unix_server
 
 if TYPE_CHECKING:
@@ -187,6 +194,10 @@ def _http_store_id(url: str) -> str:
     return f"http-{host.rstrip('/').replace(':', '-')}"
 
 
+def _file_store_id(path: Path) -> str:
+    return f"file-{str(path).strip('/').replace('/', '-')}"[:120]
+
+
 def _unix_store_id(socket_path: Path, store_path: Path) -> str:
     payload = f"{socket_path}:{store_path}"
     safe = payload.strip("/").replace("/", "-").replace(":", "-")
@@ -196,9 +207,12 @@ def _unix_store_id(socket_path: Path, store_path: Path) -> str:
 def _add_substituter_stores(
     stores: dict[StoreId, Store], configured: Sequence[str], settings: PynixdSettings
 ) -> list[Store]:
-    """A store in `stores` for each HTTP and unix substituter of `configured` it lacks; returns the new ones.
+    """A store in `stores` for each HTTP, unix and `file://` substituter of `configured` it lacks; returns the new ones.
 
-    This pynixd's own HTTP cache is left out: `_is_own_cache`.
+    This pynixd's own HTTP cache is left out: `_is_own_cache`. So is a
+    `file://` directory pynixd cannot read, which the daemon may: it stays in
+    `SubstitutionQueue.uncovered`, so the daemon answers for it, and its
+    paths do not read as missing.
     """
     added: list[Store] = []
     existing_http_urls = {store.url.rstrip("/") for store in stores.values() if is_http_binary_cache(store)}
@@ -232,6 +246,26 @@ def _add_substituter_stores(
         stores[store_id] = unix_spec.to_store(str(store_id))
         added.append(stores[store_id])
         existing_unix.add((socket_path, store_path))
+
+    existing_dirs = {
+        path
+        for store in stores.values()
+        if is_binary_cache(store) and isinstance(path := getattr(store, "path", None), Path)
+    }
+    for url in configured:
+        cache = file_cache(url)
+        if cache is None or cache.path in existing_dirs:
+            continue
+        if not os.access(cache.path, os.R_OK | os.X_OK):
+            log.info("substituter_unreadable", url=url)
+            continue
+        store_id = StoreId(_file_store_id(cache.path))
+        file_spec = LocalBinaryCacheSpec(store_id=store_id, path=cache.path, trusted=cache.trusted)
+        if cache.priority is not None:
+            file_spec = file_spec.model_copy(update={"priority": cache.priority})
+        stores[store_id] = file_spec.to_store(str(store_id))
+        added.append(stores[store_id])
+        existing_dirs.add(cache.path)
     return added
 
 
