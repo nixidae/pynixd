@@ -19,6 +19,7 @@ from anyio.streams.buffered import BufferedByteReceiveStream
 from nix_daemon_protocol.protocol import GCAction, Verbosity
 
 from .errors import PynixdError
+from .hintfmt import magenta
 from .temp_roots import COLLECTOR_ACK
 from .utils import NIX32_CHARS
 
@@ -158,13 +159,16 @@ def delete_path(path: Path) -> int:
     A file counts its size when it has one or two links: two is an optimised
     file whose `.links` entry the sweep removes next. A directory gets
     `u+rwx` before the descent. A name that is already gone counts nothing.
-    The first failure to unlink is raised after the walk finishes.
+    The first failure to unlink is raised after the walk finishes; any other
+    failure at once. Each raises Nix's `SysError` text.
     """
     try:
         parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     except FileNotFoundError:
         return 0
-    failures: list[OSError] = []
+    except OSError as exc:
+        raise sys_error("opening directory", path.parent, exc) from exc
+    failures: list[DeleteError] = []
     try:
         return _delete_at(parent, path.name, path, failures)
     finally:
@@ -173,7 +177,7 @@ def delete_path(path: Path) -> int:
             raise failures[0]
 
 
-def _delete_at(parent: int, name: str, path: Path, failures: list[OSError]) -> int:
+def _delete_at(parent: int, name: str, path: Path, failures: list[DeleteError]) -> int:
     try:
         st = os.stat(name, dir_fd=parent, follow_symlinks=False)
     except FileNotFoundError:
@@ -185,8 +189,15 @@ def _delete_at(parent: int, name: str, path: Path, failures: list[OSError]) -> i
     if is_dir:
         mask = stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
         if st.st_mode & mask != mask:
-            os.chmod(name, st.st_mode | mask, dir_fd=parent, follow_symlinks=False)
-        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+            try:
+                os.chmod(name, st.st_mode | mask, dir_fd=parent, follow_symlinks=False)
+            except OSError as exc:
+                error = sys_error("fchmodat2", path, exc)
+                raise error.with_trace(f"while making directory {path_fmt(path)} accessible for deletion") from exc
+        try:
+            fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        except OSError as exc:
+            raise sys_error("opening directory", path, exc) from exc
         try:
             for child in os.listdir(fd):
                 freed += _delete_at(fd, child, path / child, failures)
@@ -200,8 +211,22 @@ def _delete_at(parent: int, name: str, path: Path, failures: list[OSError]) -> i
     except FileNotFoundError:
         pass
     except OSError as exc:
-        failures.append(OSError(exc.errno, f"cannot unlink {path}: {exc.strerror}"))
+        failures.append(sys_error("cannot unlink", path, exc))
     return freed
+
+
+class DeleteError(PynixdError):
+    """A `SysError` of `deletePath` (`unix/file-system.cc:155`), with Nix's text."""
+
+
+def path_fmt(path: Path | str) -> str:
+    """`PathFmt` inside `HintFmt`: the path in double quotes, in magenta."""
+    return magenta(f'"{path}"')
+
+
+def sys_error(what: str, path: Path, exc: OSError) -> DeleteError:
+    """`SysError("<what> %1%", PathFmt(path))` (`error.hh:321`): the hint, then the system's reason as an argument."""
+    return DeleteError(f"{what} {path_fmt(path)}: {magenta(exc.strerror)}")
 
 
 def topo_sort_paths(paths: set[str], references: Mapping[str, set[str]]) -> list[str]:

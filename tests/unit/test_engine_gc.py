@@ -19,9 +19,10 @@ import pytest
 
 from nix_daemon_protocol.protocol import GCAction, Verbosity
 from pynixd_store import verify
-from pynixd_store.collect import GCOptions, GCSettings
+from pynixd_store.collect import GCOptions, GCSettings, path_fmt
 from pynixd_store.engine import StoreEngine
 from pynixd_store.errors import PynixdError
+from pynixd_store.hintfmt import magenta
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.store_layout import StoreLayout
 from pynixd_store.temp_roots import TempRoots
@@ -73,6 +74,9 @@ class _Store:
         self.layout.real_store_dir.mkdir(parents=True)
         self.layout.links_dir.mkdir()
         self.layout.db_path.parent.mkdir(parents=True)
+        # `LocalStore` makes both at open (`local-store.cc:146`); a walk that cannot read one says so.
+        (self.layout.state_dir / "gcroots").mkdir()
+        (self.layout.state_dir / "profiles").mkdir()
         with closing(sqlite3.connect(self.layout.db_path)) as conn, conn:
             conn.executescript(_SCHEMA)
         self.ids: dict[str, int] = {}
@@ -100,9 +104,7 @@ class _Store:
             conn.execute("insert into DerivationOutputs (drv, id, path) values (?, ?, ?)", (self.ids[drv], name, path))
 
     def root(self, path: str, name: str = "root") -> None:
-        gcroots = self.layout.state_dir / "gcroots"
-        gcroots.mkdir(parents=True, exist_ok=True)
-        (gcroots / name).symlink_to(path)
+        (self.layout.state_dir / "gcroots" / name).symlink_to(path)
 
     def valid(self, path: str) -> bool:
         with closing(sqlite3.connect(self.layout.db_path)) as conn:
@@ -296,7 +298,6 @@ async def test_a_trusted_override_reaches_the_settings() -> None:
 
 async def test_a_held_gc_lock_is_reported_then_waited_for(tmp_path: Path) -> None:
     store = _Store(tmp_path)
-    store.layout.state_dir.mkdir(parents=True, exist_ok=True)
     holder = os.open(store.layout.state_dir / verify.GC_LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600)
     fcntl.flock(holder, fcntl.LOCK_SH)
     lines = _Lines()
@@ -330,3 +331,55 @@ async def test_a_locked_tmp_dir_survives(tmp_path: Path) -> None:
 
     assert paths == set()
     assert tmp.exists()
+
+
+async def test_the_walk_of_the_roots_says_what_it_skipped(tmp_path: Path) -> None:
+    """`findRoots` (`gc.cc:223`) and `findTempRoots` (`gc.cc:190`) print what they skip and reap."""
+    store = _Store(tmp_path)
+    gone = "/nix/store/00000000000000000000000000000009-gone"
+    store.root(gone, "dangling")
+    temproots = store.layout.state_dir / "temproots"
+    temproots.mkdir(parents=True)
+    (temproots / "12345").write_bytes(f"{gone}\0".encode())
+
+    lines = _Lines()
+    await _collect(store, GCOptions(GCAction.DELETE_DEAD), lines)
+
+    info = lines.at(Verbosity.INFO)
+    link = store.layout.state_dir / "gcroots" / "dangling"
+    assert f'skipping invalid root from "{link}" to "{gone}"' in info
+    assert f'removing stale temporary roots file "{temproots / "12345"}"' in info
+    assert info.index(f'skipping invalid root from "{link}" to "{gone}"') < info.index("deleting garbage...")
+    assert not (temproots / "12345").exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root unlinks in a read-only directory")
+async def test_an_unreadable_root_directory_is_named(tmp_path: Path) -> None:
+    store = _Store(tmp_path)
+    locked = store.layout.state_dir / "gcroots" / "locked"
+    locked.mkdir()
+    locked.chmod(0)
+    lines = _Lines()
+    try:
+        await _collect(store, GCOptions(GCAction.RETURN_DEAD), lines)
+    finally:
+        locked.chmod(0o755)
+
+    assert f'cannot read potential root "{locked}"' in lines.at(Verbosity.INFO)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root unlinks in a read-only directory")
+async def test_a_failed_delete_carries_nix_s_trace(tmp_path: Path) -> None:
+    """`deleteStorePath` adds `While deleting store path` to the `SysError` of `deletePath` (`local-store.cc:420`)."""
+    store = _Store(tmp_path)
+    store.add(A)
+    store.layout.real_store_dir.chmod(0o555)
+    try:
+        with pytest.raises(PynixdError) as error:
+            await _collect(store, GCOptions(GCAction.DELETE_DEAD), _Lines())
+    finally:
+        store.layout.real_store_dir.chmod(0o755)
+
+    real = store.real(A)
+    assert str(error.value) == f"cannot unlink {path_fmt(real)}: {magenta('Permission denied')}"
+    assert error.value.traces == (f"While deleting store path {path_fmt(real)}",)

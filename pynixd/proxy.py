@@ -14,6 +14,7 @@ import anyio
 import structlog
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId, StoreId
+from nix_daemon_protocol.logs import TraceLine
 from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.wire_ops import WIRE_REGISTRY, WireResponse
 from pynixd_store.temp_roots import TempRoots
@@ -23,7 +24,7 @@ from ._lazy import ssh_connection_lost
 from .config import ScheduleMode
 from .connection import ClientConn
 from .derived_path import DerivedPath
-from .exceptions import ClosingError, OpNotImplementedError, error_text
+from .exceptions import ClosingError, OpNotImplementedError, error_text, error_traces
 from .goals import GoalEngine
 from .handlers._base import HANDLER_REGISTRY
 from .protocol import DELEGATION_FEATURE, get_extension_features
@@ -45,7 +46,7 @@ from .serde.context import ReadContext, RequestContext as RequestContext, WriteC
 from .serde.protocol import OptTrusted, Verbosity
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping
+    from collections.abc import Awaitable, Callable, Mapping, Sequence
 
     from nix_daemon_protocol.wire_ops import WireRequest
 
@@ -464,7 +465,7 @@ class DaemonProxy:
                 result = "error"
                 log.exception("handle_op_error", name=op_name)
                 await self.client.flush()
-                await self.send_error(error_text(ex))
+                await self.send_error(error_text(ex), traces=error_traces(ex))
             finally:
                 self.current_op = None
                 elapsed = time.monotonic() - t0
@@ -709,8 +710,8 @@ class DaemonProxy:
 
     # ── Helpers ───────────────────────────────────────────────────────
 
-    async def send_error(self, msg: str) -> None:
-        """Send a STDERR_ERROR to the client."""
+    async def send_error(self, msg: str, traces: Sequence[str] = ()) -> None:
+        """Send a STDERR_ERROR to the client, with Nix's trace lines outermost first."""
         await self.client.send(
             LogError(
                 type="Error",
@@ -718,7 +719,7 @@ class DaemonProxy:
                 name="Error",
                 msg=msg,
                 have_pos=0,
-                traces=[],
+                traces=[TraceLine(pos=0, hint=hint) for hint in traces],
             )
         )
         await self.client.flush()

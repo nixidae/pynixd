@@ -136,12 +136,20 @@ def _walk_link(link: Path, target: Path, found: dict[str, tuple[str, str]], kind
         found[str(resolved)] = (store_path, kind)
 
 
-def _walk_tree(tree: Path, found: dict[str, tuple[str, str]], kind: str, store_dir: str) -> None:
-    """`findRoots` over one directory: links, indirect links, plain files."""
+def _walk_tree(
+    tree: Path, found: dict[str, tuple[str, str]], kind: str, store_dir: str, unreadable: list[str] | None = None
+) -> None:
+    """`findRoots` over one directory: links, indirect links, plain files.
+
+    *unreadable* gets each entry a permanent failure skipped, for Nix's
+    `cannot read potential root` line (`gc.cc:291`).
+    """
     try:
         entries = list(os.scandir(tree))
     except OSError as exc:
         if _suppressed(exc):
+            if unreadable is not None:
+                unreadable.append(str(tree))
             return
         raise
     for entry in entries:
@@ -151,13 +159,15 @@ def _walk_tree(tree: Path, found: dict[str, tuple[str, str]], kind: str, store_d
                 if target is not None:
                     _walk_link(Path(entry.path), target, found, kind, store_dir)
             elif entry.is_dir(follow_symlinks=False):
-                _walk_tree(Path(entry.path), found, kind, store_dir)
+                _walk_tree(Path(entry.path), found, kind, store_dir, unreadable)
             elif entry.is_file(follow_symlinks=False):
                 if _STORE_BASENAME.match(entry.name):
                     found[entry.path] = (f"{store_dir}/{entry.name}", kind)
         except OSError as exc:
             if not _suppressed(exc):
                 raise
+            if unreadable is not None:
+                unreadable.append(entry.path)
 
 
 type Labeled = dict[str, set[str]]
@@ -236,7 +246,7 @@ def _walk_runtime_roots(proc_dir: Path, roots: Labeled, store_dir: str) -> None:
 
 def _walk_temp_roots_grouped(
     state_dir: Path, *, every_name: bool = False, reap: bool = True
-) -> tuple[dict[str, set[str]], int]:
+) -> tuple[dict[str, set[str]], list[str]]:
     """Temporary roots by owning file, plus the files reaped.
 
     The same walk as `_walk_temp_roots`, kept per file: one file is one
@@ -251,10 +261,10 @@ def _walk_temp_roots_grouped(
         entries = list(os.scandir(state_dir / "temproots"))
     except OSError as exc:
         if _suppressed(exc):
-            return {}, 0
+            return {}, []
         raise
     grouped: dict[str, set[str]] = {}
-    reaped = 0
+    reaped: list[str] = []
     for entry in entries:
         # A process's file is named by its pid, and pynixd's own by
         # `pynixd-<pid>-<n>`, which holds its clients' roots. `findTempRoots`
@@ -276,12 +286,12 @@ def _walk_temp_roots_grouped(
         try:
             seeds: set[str] = set()
             if _seed_or_reap_temp_file(fd, entry.path, seeds, reap=ours and reap):
-                reaped += 1
+                reaped.append(entry.path)
             elif seeds:
                 grouped[entry.name] = seeds
         finally:
             os.close(fd)
-    TEMP_ROOTS_REAPED.value += reaped
+    TEMP_ROOTS_REAPED.value += len(reaped)
     return grouped, reaped
 
 
@@ -310,7 +320,7 @@ def _walk_temp_roots(state_dir: Path, roots: set[str]) -> int:
     grouped, reaped = _walk_temp_roots_grouped(state_dir)
     for seeds in grouped.values():
         roots.update(seeds)
-    return reaped
+    return len(reaped)
 
 
 def _seed_or_reap_temp_file(fd: int, path: str, roots: set[str], *, reap: bool = True) -> bool:
@@ -367,7 +377,7 @@ def _seed_or_reap_temp_file(fd: int, path: str, roots: set[str], *, reap: bool =
     return True
 
 
-def walk_stable(state_dir: Path, store_dir: str) -> dict[str, tuple[str, str]]:
+def walk_stable(state_dir: Path, store_dir: str, unreadable: list[str] | None = None) -> dict[str, tuple[str, str]]:
     """The deployment roots: `{link: (target, kind)}` under `gcroots` and `profiles`.
 
     Compared against the roots table on every pass; only a difference
@@ -376,7 +386,7 @@ def walk_stable(state_dir: Path, store_dir: str) -> dict[str, tuple[str, str]]:
     """
     found: dict[str, tuple[str, str]] = {}
     for name, kind in STABLE_TREES.items():
-        _walk_tree(state_dir / name, found, kind, store_dir)
+        _walk_tree(state_dir / name, found, kind, store_dir, unreadable)
     return found
 
 
@@ -468,6 +478,41 @@ def unlink_stale_auto_roots(state_dir: Path, store_dir: str, tree: Path | None =
     return removed
 
 
+@dataclass
+class RootWalk:
+    """What `findRoots` reads (`gc.cc:310`), kept apart for the collector's lines."""
+
+    #: Each link under `gcroots` and `profiles`, or the intermediate of an indirect root, and its store path.
+    stable: dict[str, str]
+    #: Each store path a running process names, with the files that name it.
+    runtime: Labeled
+    #: Each temporary root, labelled `{temp:<file name>}`.
+    temporary: Labeled
+    #: The temporary-roots files of dead processes, unlinked.
+    reaped: list[str]
+    #: What the walk of `gcroots` and `profiles` could not read.
+    unreadable: list[str]
+
+
+def walk_root_sources(state_dir: Path, store_dir: str, proc_dir: Path | None = None, *, reap: bool = True) -> RootWalk:
+    """`findRootsNoTemp` and `findTempRoots` (`gc.cc:310`, `:162`), with no validity check: the caller has the database."""
+    unreadable: list[str] = []
+    stable = {link: path for link, (path, _kind) in walk_stable(state_dir, store_dir, unreadable).items()}
+    labels: Labeled = {}
+    _walk_runtime_roots(proc_dir if proc_dir is not None else Path("/proc"), labels, store_dir)
+    runtime: Labeled = {}
+    for target, links in labels.items():
+        if (runtime_path := _store_path_of(target, store_dir)) is not None:
+            runtime.setdefault(runtime_path, set()).update(links)
+    temporary: Labeled = {}
+    grouped, reaped = _walk_temp_roots_grouped(state_dir, every_name=True, reap=reap)
+    for name, seeds in grouped.items():
+        for seed in seeds:
+            if _store_path_of(seed, store_dir) == seed:
+                temporary.setdefault(seed, set()).add(f"{{temp:{name}}}")
+    return RootWalk(stable, runtime, temporary, reaped, unreadable)
+
+
 def walk_roots(
     state_dir: Path, store_dir: str, proc_dir: Path | None = None, *, reap: bool = True
 ) -> tuple[Labeled, Labeled]:
@@ -479,21 +524,13 @@ def walk_roots(
     and is labelled `{temp:<file name>}`. `reap` unlinks a dead process's
     file, as Nix does; the answer is the same without it.
     """
+    walk = walk_root_sources(state_dir, store_dir, proc_dir, reap=reap)
     checked: Labeled = {}
-    for link, (path, _kind) in walk_stable(state_dir, store_dir).items():
+    for link, path in walk.stable.items():
         checked.setdefault(path, set()).add(link)
-    runtime: Labeled = {}
-    _walk_runtime_roots(proc_dir if proc_dir is not None else Path("/proc"), runtime, store_dir)
-    for target, links in runtime.items():
-        if (runtime_path := _store_path_of(target, store_dir)) is not None:
-            checked.setdefault(runtime_path, set()).update(links)
-    temporary: Labeled = {}
-    grouped, _reaped = _walk_temp_roots_grouped(state_dir, every_name=True, reap=reap)
-    for name, seeds in grouped.items():
-        for seed in seeds:
-            if _store_path_of(seed, store_dir) == seed:
-                temporary.setdefault(seed, set()).add(f"{{temp:{name}}}")
-    return checked, temporary
+    for path, links in walk.runtime.items():
+        checked.setdefault(path, set()).update(links)
+    return checked, walk.temporary
 
 
 QUERY_LIVE_SET = f"""

@@ -11,7 +11,7 @@ Refs nixidae/nixidae#214, nixidae/nixidae#227.
 from __future__ import annotations
 
 from nix_daemon_protocol.exceptions import DaemonProtocolError
-from pynixd.exceptions import BackendError, InfrastructureError, error_text
+from pynixd.exceptions import BackendError, InfrastructureError, error_text, error_traces
 
 
 def test_a_pynixd_error_sends_its_message_alone() -> None:
@@ -56,3 +56,17 @@ def test_a_nested_task_group_gives_the_reason_as_well() -> None:
     inner = ExceptionGroup("unhandled errors in a TaskGroup", [BackendError("the reason")])
     outer = ExceptionGroup("unhandled errors in a TaskGroup", [inner])
     assert error_text(outer) == "the reason"
+
+
+def test_the_traces_of_one_error_travel_with_it() -> None:
+    """`addTrace` lines go to the client with the error, outermost first, inside a group too."""
+    error = BackendError("cannot unlink").with_trace("inner").with_trace("outer")
+    assert error_traces(error) == ("outer", "inner")
+    assert error_traces(ExceptionGroup("unhandled errors in a TaskGroup", [error])) == ("outer", "inner")
+
+
+def test_two_errors_carry_no_trace() -> None:
+    """The traces of one would read as the traces of both."""
+    group = ExceptionGroup("g", [BackendError("a").with_trace("t"), BackendError("b")])
+    assert error_traces(group) == ()
+    assert error_traces(KeyError("out")) == ()

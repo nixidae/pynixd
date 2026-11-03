@@ -25,8 +25,8 @@ from nix_daemon_protocol.store_path import StorePath
 
 from . import collect, register
 from .errors import PynixdError
-from .hintfmt import magenta
-from .liveness import unlink_stale_auto_roots, walk_roots
+from .hintfmt import ANSI_NORMAL, ANSI_RED, magenta
+from .liveness import unlink_stale_auto_roots, walk_root_sources
 from .optimise import render_size
 
 if TYPE_CHECKING:
@@ -93,9 +93,23 @@ class Collection:
         state_dir, store_dir = layout.state_dir, str(layout.store_dir)
         for link, target in await anyio.to_thread.run_sync(partial(unlink_stale_auto_roots, state_dir, store_dir)):
             await self.report(Verbosity.INFO, f'removing stale link from "{link}" to "{target}"')
-        checked, temporary = await anyio.to_thread.run_sync(partial(walk_roots, state_dir, store_dir, reap=True))
-        self.roots = {path.path for path in await self.engine.query_valid_paths(checked)}
-        for path in temporary:
+        walk = await anyio.to_thread.run_sync(partial(walk_root_sources, state_dir, store_dir, reap=True))
+        for path in walk.unreadable:
+            await self.report(Verbosity.INFO, f'cannot read potential root "{path}"')
+        named = set(walk.stable.values()) | set(walk.runtime)
+        self.roots = {path.path for path in await self.engine.query_valid_paths(named)}
+        for link, path in sorted(walk.stable.items()):
+            # A plain file under `gcroots` that names an invalid path is skipped without a word (`gc.cc:280`).
+            if path not in self.roots and os.path.islink(link):
+                try:
+                    target = await anyio.to_thread.run_sync(os.readlink, link)
+                except OSError:
+                    # Gone since the walk read it: Nix read it once, and this line is all that is lost.
+                    continue
+                await self.report(Verbosity.INFO, f'skipping invalid root from "{link}" to "{target}"')
+        for reaped in walk.reaped:
+            await self.report(Verbosity.INFO, f'removing stale temporary roots file "{reaped}"')
+        for path in walk.temporary:
             self.server.temp_roots.add(_hash_part(path))
             self.roots.add(path)
 
@@ -227,7 +241,8 @@ class Collection:
                     await self._delete_from_store(_base_name(path), known=True)
                     self.referrers.pop(path, None)
                 except PathInUse as exc:
-                    await self.report(Verbosity.ERROR, f"BUG: {exc}")
+                    # `printError("BUG: %s", e.what())`: `what()` carries the `error:` prefix (`error.cc:276`).
+                    await self.report(Verbosity.ERROR, f"BUG: {ANSI_RED}error:{ANSI_NORMAL} {exc}")
             finally:
                 await self.server.release()
 
@@ -269,7 +284,7 @@ class Collection:
         referrers = {referrer.path for referrer in await self.engine.query_referrers(path)} - {path}
         if referrers:
             names = ", ".join(f"'{referrer}'" for referrer in sorted(referrers, key=_base_name))
-            raise PathInUse(f"cannot delete path '{path}' because it is in use by {names}")
+            raise PathInUse(f"cannot delete path '{magenta(path)}' because it is in use by {magenta(names)}")
         async with self.engine.db.acquire_conn() as conn:
             await register.invalidate_path(conn, path)
         self.engine.invalidate_path_info_cache_for(path)
@@ -290,9 +305,10 @@ class Collection:
             self.results.paths.add(path)
             try:
                 freed = await anyio.to_thread.run_sync(collect.delete_path, real_path)
-            except OSError as exc:
+            except collect.DeleteError as exc:
                 what = "store path" if known else "garbage in store directory"
-                raise PynixdError(f'{exc.strerror}\nWhile deleting {what} "{real_path}"') from exc
+                exc.with_trace(f"While deleting {what} {collect.path_fmt(real_path)}")
+                raise
         finally:
             if held is not None:
                 os.close(held)

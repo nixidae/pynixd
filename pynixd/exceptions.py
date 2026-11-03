@@ -50,6 +50,14 @@ def error_text(ex: BaseException) -> str:
     )
 
 
+def error_traces(ex: BaseException) -> tuple[str, ...]:
+    """The trace lines that `STDERR_ERROR` carries for *ex*: those of one `PynixdError`, else none."""
+    found = list(leaves(ex))
+    if len(found) == 1 and isinstance(found[0], PynixdError):
+        return found[0].traces
+    return ()
+
+
 class NarGone(PynixdError):
     """A narinfo names a NAR the cache no longer serves: Nix's `SubstituteGone`."""
 

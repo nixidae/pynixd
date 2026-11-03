@@ -49,7 +49,7 @@ class LoopProxy:
     async def _nothing(self) -> None:
         return None
 
-    async def send_error(self, text: str) -> None:
+    async def send_error(self, text: str, traces: Sequence[str] = ()) -> None:
         self.errors.append(text)
 
     async def dispatch(self, op_num: int) -> None:
