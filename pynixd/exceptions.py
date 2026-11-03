@@ -62,6 +62,10 @@ class NarGone(PynixdError):
     """A narinfo names a NAR the cache no longer serves: Nix's `SubstituteGone`."""
 
 
+class CacheFault(PynixdError):
+    """A binary cache file that exists but could not be read: a transport error, a bad status, a bad body."""
+
+
 class InfrastructureError(PynixdError):
     """Transport/connection failure (SSH down, EOF, timeout)."""
 

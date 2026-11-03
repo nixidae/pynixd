@@ -27,8 +27,10 @@ from nix_daemon_protocol.store_dir import store_dir
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from pynixd_store.store_path import StorePath
 
-from ..exceptions import OpNotImplementedError
+from .. import metrics
+from ..exceptions import CacheFault, OpNotImplementedError
 from ..serde import (
+    DrvOutput,
     IsValidPathRequest,
     IsValidPathResponse,
     NarFromPathResponse,
@@ -38,6 +40,7 @@ from ..serde import (
     QueryPathInfoResponse,
     QueryValidPathsRequest,
     QueryValidPathsResponse,
+    Realisation,
 )
 from .base import Store
 
@@ -95,8 +98,56 @@ class BinaryCacheStore(Store):
             self.priority = float(info["Priority"])
 
     @abstractmethod
+    async def _get_file(self, name: str) -> str | None:
+        """The text of the cache's file *name*, `None` when it has none; `CacheFault` when the read fails."""
+
     async def _get_narinfo_raw(self, hash_part: str) -> str | None:
         """The text of `<hash_part>.narinfo`, or `None` on a miss or a fault."""
+        try:
+            text = await self._get_file(f"{hash_part}.narinfo")
+        except CacheFault:
+            metrics.BINARY_CACHE_NARINFO.labels(store_id=self.store_id, result="error").inc()
+            log.debug("binary_cache_narinfo_failed", store_id=self.store_id, hash_part=hash_part, exc_info=True)
+            self._record_result(False)
+            return None
+        if text is None:
+            # A miss, and not a fault. Counted apart from an error because a
+            # cache that answers 404 for everything and one that cannot be
+            # reached look the same to a build and are a different thing to fix.
+            metrics.BINARY_CACHE_NARINFO.labels(store_id=self.store_id, result="miss").inc()
+            return None
+        metrics.BINARY_CACHE_NARINFO.labels(store_id=self.store_id, result="hit").inc()
+        self._record_result(True)
+        return text
+
+    async def query_realisation(
+        self, drv_output: DrvOutput, drv_path: StorePath, *, by_path: bool
+    ) -> Realisation | None:
+        """The realisation the cache holds for one derivation output, under *drv_output*.
+
+        `queryRealisationUncached` reads one `.doi` file, named as the local
+        store's Nix names it: `realisations/<drvOutput>.doi` in Nix 2.34
+        (`binary-cache-store.cc:515`), `build-trace-v2/<drv>/<output>.doi` in
+        2.35 (`binary-cache-store.cc:667`), which *by_path* selects. Each
+        version names its own prefix (`binary-cache-store.hh:95`, `:118`). A file
+        that fails to read or parse raises `CacheFault`, as Nix's read throws.
+        """
+        name = (
+            f"build-trace-v2/{drv_path.name}/{drv_output.output_name}.doi"
+            if by_path
+            else f"realisations/{drv_output}.doi"
+        )
+        text = await self._get_file(name)
+        log.debug("binary_cache_realisation", store_id=self.store_id, file=name, found=text is not None)
+        if text is None:
+            return None
+        try:
+            parsed = Realisation.model_validate_json(text)
+        except ValueError as ex:
+            raise CacheFault(f"while parsing file '{name}' as a realisation for key '{drv_output}'") from ex
+        if parsed.out_path is None:
+            raise CacheFault(f"realisation '{name}' of '{self.store_id}' names no output path")
+        return parsed.model_copy(update={"id": drv_output, "signatures": sorted(parsed.signatures)})
 
     @abstractmethod
     def stream_nar(self, narinfo: NarInfo) -> AsyncGenerator[bytes]:

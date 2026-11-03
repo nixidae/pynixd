@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import lzma
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -9,8 +10,9 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 
 from pynixd.config import LocalBinaryCacheSpec, PynixdSettings
-from pynixd.exceptions import NarGone
+from pynixd.exceptions import CacheFault, NarGone
 from pynixd.instance import _add_substituter_stores
+from pynixd.serde import DrvOutput
 from pynixd.store.local_binary_cache import LocalBinaryCacheStore
 from pynixd.substituters import file_cache
 from pynixd.substitution_queue import SubstitutionQueue
@@ -141,3 +143,39 @@ async def test_a_daemon_cache_ranks_by_its_nix_cache_info_unless_a_priority_is_g
     for store in (*added, configured):
         await store.start()
     assert [store.priority for store in (*added, configured)] == [30.0, 10.0, 5.0]
+
+
+DRV = StorePath("/nix/store/00000000000000000000000000000003-thing.drv")
+DRV_OUTPUT = DrvOutput(f"sha256:{'ab' * 32}!out")
+
+
+@pytest.mark.parametrize(
+    ("by_path", "name", "body"),
+    [
+        # Nix 2.34 writes the keyed form (`binary-cache-store.cc:554`); 2.35 the unkeyed one (`:711`).
+        (False, f"realisations/{DRV_OUTPUT}.doi", {"id": str(DRV_OUTPUT), "dependentRealisations": {}}),
+        (True, f"build-trace-v2/{DRV.name}/out.doi", {}),
+    ],
+)
+async def test_a_realisation_reads_from_the_layout_of_the_local_nix(
+    tmp_path: Path, by_path: bool, name: str, body: dict[str, Any]
+) -> None:
+    root = _cache(tmp_path / "cache")
+    doi = root / name
+    doi.parent.mkdir(parents=True, exist_ok=True)
+    doi.write_text(json.dumps({"outPath": PATH.name, "signatures": ["k:b", "k:a"], **body}))
+    store = await _store(root)
+    found = await store.query_realisation(DRV_OUTPUT, DRV, by_path=by_path)
+    assert found is not None
+    assert (found.id, str(found.out_path), found.signatures) == (DRV_OUTPUT, str(PATH), ["k:a", "k:b"])
+    assert await store.query_realisation(DRV_OUTPUT, DRV, by_path=not by_path) is None
+
+
+async def test_a_realisation_the_cache_cannot_parse_is_a_fault(tmp_path: Path) -> None:
+    """`binary-cache-store.cc:538` throws, and the goal counts the substituter as failed."""
+    root = _cache(tmp_path / "cache")
+    (root / "realisations").mkdir()
+    (root / f"realisations/{DRV_OUTPUT}.doi").write_text("{not json")
+    store = await _store(root)
+    with pytest.raises(CacheFault):
+        await store.query_realisation(DRV_OUTPUT, DRV, by_path=False)

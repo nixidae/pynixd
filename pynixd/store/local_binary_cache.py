@@ -14,8 +14,7 @@ from typing import TYPE_CHECKING
 import anyio
 import structlog
 
-from .. import metrics
-from ..exceptions import NarGone
+from ..exceptions import CacheFault, NarGone
 from .binary_cache import BinaryCacheStore, default_cache_info, open_codec, parse_cache_info, pull
 
 if TYPE_CHECKING:
@@ -62,20 +61,13 @@ class LocalBinaryCacheStore(BinaryCacheStore):
         async for piece in pull(open_codec(narinfo.compression, handle)):
             yield piece
 
-    async def _get_narinfo_raw(self, hash_part: str) -> str | None:
+    async def _get_file(self, name: str) -> str | None:
         try:
-            text = await anyio.Path(self.file(f"{hash_part}.narinfo")).read_text()
+            return await anyio.Path(self.file(name)).read_text()
         except FileNotFoundError:
-            metrics.BINARY_CACHE_NARINFO.labels(store_id=self.store_id, result="miss").inc()
             return None
-        except OSError:
-            metrics.BINARY_CACHE_NARINFO.labels(store_id=self.store_id, result="error").inc()
-            log.debug("local_cache_narinfo_failed", store_id=self.store_id, path=str(self.path), exc_info=True)
-            self._record_result(False)
-            return None
-        metrics.BINARY_CACHE_NARINFO.labels(store_id=self.store_id, result="hit").inc()
-        self._record_result(True)
-        return text
+        except OSError as ex:
+            raise CacheFault(f"binary cache '{self.path}': {ex}") from ex
 
 
 def _open(path: Path) -> io.BufferedReader:

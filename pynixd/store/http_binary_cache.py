@@ -10,8 +10,7 @@ import aiohttp
 import anyio
 import structlog
 
-from .. import metrics
-from ..exceptions import NarGone
+from ..exceptions import CacheFault, NarGone
 from .binary_cache import BinaryCacheStore, default_cache_info, open_codec, parse_cache_info, pull
 
 if TYPE_CHECKING:
@@ -102,34 +101,19 @@ class HTTPBinaryCacheStore(BinaryCacheStore):
             return default_cache_info(self.priority)
         return parse_cache_info(text, self.priority)
 
-    async def _get_narinfo_raw(self, hash_part: str) -> str | None:
+    async def _get_file(self, name: str) -> str | None:
         session = self._require_session()
-        url = urljoin(self.url, f"{hash_part}.narinfo")
+        url = urljoin(self.url, name)
         async with self._semaphore:
             try:
                 async with session.get(url, raise_for_status=False, timeout=aiohttp.ClientTimeout(total=5)) as response:
                     if response.status == 404:
-                        # A miss, and not a fault. Counted apart from an error
-                        # because a cache that answers 404 for everything and
-                        # one that cannot be reached look the same to a build
-                        # and are a different thing to fix.
-                        metrics.BINARY_CACHE_NARINFO.labels(store_id=self.store_id, result="miss").inc()
                         return None
                     if response.status != 200:
-                        metrics.BINARY_CACHE_NARINFO.labels(store_id=self.store_id, result="error").inc()
-                        log.debug("http_cache_narinfo_status", store_id=self.store_id, url=url, status=response.status)
-                        self._record_result(False)
-                        return None
-                    text = await response.text()
-            except (TimeoutError, aiohttp.ClientError, OSError):
-                metrics.BINARY_CACHE_NARINFO.labels(store_id=self.store_id, result="error").inc()
-                log.debug("http_cache_narinfo_failed", store_id=self.store_id, url=url, exc_info=True)
-                self._record_result(False)
-                return None
-
-        metrics.BINARY_CACHE_NARINFO.labels(store_id=self.store_id, result="hit").inc()
-        self._record_result(True)
-        return text
+                        raise CacheFault(f"{url}: HTTP {response.status}")
+                    return await response.text()
+            except (TimeoutError, aiohttp.ClientError, OSError) as ex:
+                raise CacheFault(f"{url}: {ex!r}") from ex
 
     def _require_session(self) -> aiohttp.ClientSession:
         if self._session is None:
