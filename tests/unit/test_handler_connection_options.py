@@ -65,6 +65,7 @@ OPTIONLESS_ROUTER_METHODS = {
     "add_signatures": "`LocalStore::addSignatures` reads no setting, so the client's options change nothing.",
     "add_build_log": "`LocalStore::addBuildLog` reads no setting, so the client's options change nothing.",
     "optimise_store": "`LocalStore::optimiseStore` reads no setting, so the client's options change nothing.",
+    "verify_store": "`LocalStore::verifyStore` reads no client setting; the repair gate is the handler's.",
 }
 """Each router method whose daemon write may carry no client options, and why."""
 

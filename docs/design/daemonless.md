@@ -60,7 +60,9 @@ and AddMultipleToStore call it on their `pynixd` routes. `register_drv_output`
 `Realisations` as `registerDrvOutput` does. `add_build_log`
 (`pynixd_store/build_log.py`) writes a derivation's log under `logDir`, as
 `addBuildLog` does. `optimise_store` (`pynixd_store/optimise.py`) hard-links
-identical files into `.links`, as `optimiseStore` does.
+identical files into `.links`, as `optimiseStore` does. `verify_store`
+(`pynixd_store/verify.py` and the engine) cross-checks the database and the
+store directory, as `verifyStore` does.
 
 | op | today | to own it |
 | --- | --- | --- |
@@ -88,8 +90,8 @@ identical files into `.links`, as `optimiseStore` does.
 | op | today | to own it |
 | --- | --- | --- |
 | 20 CollectGarbage | daemon deletes; pynixd plans its own (`gc.py`) and asks the daemon for the live set (`RETURN_LIVE`) | the live set (roots and temp roots) and deletion |
-| 34 OptimiseStore | on trial: the daemon in a deployment; route `pynixd` hard-links identical files into `.links` as `optimiseStore` does (`optimise-store.cc`): each regular file and symlink hashed over its NAR, the first of a hash linked as `.links/<Nix32 NAR hash>`, a later file replaced by a hard link through a temporary link and a rename. It holds a temporary root on each path, as Nix does, so the daemon's collector does not remove one mid-walk. Every client may run it (`daemon.cc:887`) | — |
-| 35 VerifyStore | daemon | re-hash every path |
+| 34 OptimiseStore | on trial: the daemon in a deployment; route `pynixd` hard-links identical files into `.links` as `optimiseStore` does (`optimise-store.cc`): each regular file and symlink hashed over its NAR, the first of a hash linked as `.links/<Nix32 NAR hash>`, a later file replaced by a hard link through a temporary link and a rename. It holds a temporary root on each path, as Nix does, so the daemon's collector does not remove one mid-walk. It reports the bytes it freed, as Nix's `printInfo` does (`optimise-store.cc:328`). Every client may run it (`daemon.cc:887`) | — |
+| 35 VerifyStore | on trial: the daemon in a deployment; route `pynixd` cross-checks the database and the store directory as `verifyStore` does (`local-store.cc:1380`), under the big garbage-collector lock held for reading: a valid path the directory lost is removed from the database when its referrers can go too; with `--check-contents` each `.links` entry and each valid path is re-hashed, a modified one is an error and a missing hash is filled. It sends each line Nix prints, at Nix's level, and drops a line above the client's verbosity as `TunnelLogger::log` does (`daemon.cc:89`). A `repair` request goes to the daemon, which has the builder `repairPath` needs; an untrusted repair is refused (`daemon.cc:896`) | — |
 | 19 SetOptions | owned (kept per session, sent per connection) | stops sending once nothing goes upstream |
 
 ## What the writes need first
@@ -171,6 +173,9 @@ sets that route reads the `.bz2` back from the store
 (`tests/functional/test_add_build_log_import.py`). `OptimiseStore` hard-links
 identical files on the `pynixd` route, and the test adds two paths with a
 shared file, optimises, and reads the inodes back
-(`tests/functional/test_optimise_store_dedup.py`). pynixd's own imports, a
+(`tests/functional/test_optimise_store_dedup.py`). `VerifyStore` walks the
+store on the `pynixd` route, and the test adds a path, deletes its files, and
+checks `nix-store --verify` invalidates it
+(`tests/functional/test_verify_store_invalidates.py`). pynixd's own imports, a
 substitution and the HTTP cache's upload, follow AddToStoreNar's route
 (`tests/functional/test_substitution_import.py`).

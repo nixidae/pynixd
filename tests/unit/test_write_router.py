@@ -3,20 +3,23 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from prometheus_client import REGISTRY
 
 from nix_daemon_protocol.content_address import ContentAddress
+from nix_daemon_protocol.logs import LogNext
 from nix_daemon_protocol.nar_hash import NARHash
 from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
+from nix_daemon_protocol.protocol import Verbosity
 from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 from pynixd.constants import proto
 from pynixd.op_routes import OpRoute
-from pynixd.write_router import FRAMED_NAR, Write, WriteClient, WriteRouter, pynixd_import
+from pynixd.write_router import FRAMED_NAR, Write, WriteClient, WriteRouter, _client_log, pynixd_import
 from pynixd_store.add import ImportSettings
 from pynixd_store.source import Source
 
@@ -176,3 +179,30 @@ async def test_add_multiple_sends_a_path_the_engine_refuses_to_the_daemon_alone(
     assert daemon.added == [(str(git.path), conn)]
     assert rooted == [str(git.path), str(plain.path)]
     assert sorted(engine.forgotten) == sorted([str(git.path), str(plain.path)])
+
+
+class _Client:
+    """A stand-in `ClientConn`: the options SetOptions left, and what was sent."""
+
+    def __init__(self, verbosity: Verbosity | None) -> None:
+        self.options = None if verbosity is None else SimpleNamespace(verbosity=verbosity)
+        self.sent: list[str] = []
+
+    async def send(self, message: LogNext) -> None:
+        self.sent.append(message.text)
+
+
+@pytest.mark.parametrize(
+    ("verbosity", "sent"),
+    [
+        (None, ["info\n"]),
+        (Verbosity.ERROR, []),
+        (Verbosity.TALKATIVE, ["info\n", "talkative\n"]),
+    ],
+)
+async def test_a_line_above_the_client_verbosity_is_dropped(verbosity: Verbosity | None, sent: list[str]) -> None:
+    """`TunnelLogger::log` (`daemon.cc:89`); before SetOptions the daemon's own `lvlInfo` (`logging.cc:161`)."""
+    client = _Client(verbosity)
+    await _client_log(client, Verbosity.INFO, "info")  # type: ignore[arg-type]  # a stand-in connection
+    await _client_log(client, Verbosity.TALKATIVE, "talkative")  # type: ignore[arg-type]  # a stand-in connection
+    assert client.sent == sent

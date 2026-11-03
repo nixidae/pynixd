@@ -276,6 +276,7 @@ def _config(work: Path, root: Path) -> Path:
                             "RegisterDrvOutput": "pynixd",
                             "AddBuildLog": "pynixd",
                             "OptimiseStore": "pynixd",
+                            "VerifyStore": "pynixd",
                         },
                     },
                 },

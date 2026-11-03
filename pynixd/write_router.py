@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass, field, replace
+from functools import partial
 from typing import TYPE_CHECKING
 
 import structlog
@@ -24,6 +25,8 @@ from nix_daemon_protocol.add_signatures import AddSignaturesResponse
 from nix_daemon_protocol.logs import LogNext
 from nix_daemon_protocol.operations import STANDARD_OPERATIONS
 from nix_daemon_protocol.optimise_store import OptimiseStoreResponse
+from nix_daemon_protocol.protocol import Verbosity
+from nix_daemon_protocol.verify_store import VerifyStoreResponse
 from pynixd_store.content_address import ContentAddress, Method, content_addressed_path, parse_method_algo
 from pynixd_store.source import Metered
 
@@ -163,6 +166,20 @@ def first_reason(
         if why is not None:
             return why
     return None
+
+
+async def _client_log(conn: ClientConn | None, level: Verbosity, text: str) -> None:
+    """A line Nix prints in the daemon, sent to the client.
+
+    `TunnelLogger::log` (`daemon.cc:89`) drops a line above the client's
+    verbosity. Before SetOptions the daemon has its own, `lvlInfo`
+    (`logging.cc:161`).
+    """
+    if conn is None:
+        return
+    verbosity = conn.options.verbosity if conn.options is not None else Verbosity.INFO
+    if level <= verbosity:
+        await conn.send(LogNext(text=f"{text}\n"))
 
 
 async def _no_root(path: str) -> None:
@@ -457,6 +474,26 @@ class WriteRouter:
             return await self.daemon.optimise_store()
         await engine.optimise_store(hold=hold)
         return OptimiseStoreResponse.fast(value=1)
+
+    async def verify_store(
+        self, *, check_contents: bool, repair: bool, conn: ClientConn | None = None
+    ) -> VerifyStoreResponse:
+        """VerifyStore (op 35): `LocalStore::verifyStore`. Returns whether it found errors.
+
+        A `repair` request goes to the daemon, which has the builder
+        `repairPath` (`buildPaths(bmRepair)`) needs; the engine never repairs.
+        The handler refuses an untrusted repair before this. On the engine
+        route pynixd sends the lines Nix prints; the parity suite's `_queries`
+        reads them.
+        """
+        engine = self._root_engine("VerifyStore")
+        if engine is None or repair:
+            if engine is not None:
+                log.info("write_fallthrough", op="VerifyStore", subject=None, reason="repair")
+                metrics.OP_FALLTHROUGH.labels(store_id=self.store_id, op="VerifyStore").inc()
+            return await self.daemon.verify_store(check_contents=check_contents, repair=repair)
+        errors = await engine.verify_store(check_contents=check_contents, report=partial(_client_log, conn))
+        return VerifyStoreResponse.fast(value=int(errors))
 
     async def import_nar(self, info: ValidPathInfo, source: Source, *, dont_check_sigs: bool) -> None:
         """A NAR pynixd itself fetched or received: a substitution, or the HTTP cache's upload."""

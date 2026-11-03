@@ -18,12 +18,13 @@ import anyio.to_thread
 from nix_daemon_protocol.content_address import ContentAddress
 from nix_daemon_protocol.nar_hash import NARHash
 from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
+from nix_daemon_protocol.protocol import Verbosity
 from nix_daemon_protocol.signature import Signature
 from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 
-from . import add, build_log, optimise, register, roots
+from . import add, build_log, optimise, register, roots, verify
 from .drv_parser import read_drv_file
 from .hintfmt import magenta
 from .liveness import unlink_stale_auto_roots, walk_roots
@@ -46,9 +47,11 @@ from .queries import (
     QUERY_VALID_PATHS,
 )
 from .temp_roots import TempRoots
+from .utils import nix32_encode
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping
+    from pathlib import Path
     from typing import Any
 
     from .content_address import Method
@@ -56,6 +59,8 @@ if TYPE_CHECKING:
     from .local_store_db import SyncReader
     from .source import Source
     from .store_layout import StoreLayout
+
+    Report = Callable[[Verbosity, str], Awaitable[None]]
 
 
 def path_info(row: tuple[Any, ...], references: Iterable[str]) -> ValidPathInfo:
@@ -398,3 +403,144 @@ class StoreEngine:
                 )
             )
         return stats
+
+    async def verify_store(self, *, check_contents: bool, report: Report) -> bool:
+        """`LocalStore::verifyStore` (`local-store.cc:1380`): cross-check the database and the store directory.
+
+        It holds the big garbage-collector lock for reading, so the collector
+        cannot remove a path mid-walk. A valid path the directory lost is
+        removed from the database when its referrers can go too. With
+        *check_contents* each `.links` entry and each valid path is re-hashed.
+        It returns whether it found an error. *report* gets each line Nix
+        prints, at Nix's level, in Nix's order.
+
+        It writes without *check_contents* (it invalidates a lost path), so it
+        needs a writable store. A `repair` request never reaches the engine;
+        the router sends it to the daemon, which has the builder `repairPath`
+        needs.
+        """
+        if not self.writes:
+            raise RuntimeError(f"store {self._name}: pynixd_writes is off, so pynixd verifies no store")
+        if not self.writable:
+            raise RuntimeError(f"store {self._name}: pynixd cannot write the store database")
+        real_store_dir = self.layout.real_store_dir
+        await report(Verbosity.INFO, "reading the Nix store...")
+        gc_lock = await anyio.to_thread.run_sync(verify.open_gc_lock, self.layout.state_dir)
+        try:
+            if not await anyio.to_thread.run_sync(verify.try_gc_lock_shared, gc_lock):
+                await report(Verbosity.INFO, "waiting for the big garbage collector lock...")
+                await anyio.to_thread.run_sync(verify.wait_gc_lock_shared, gc_lock)
+            in_dir = await anyio.to_thread.run_sync(verify.scan_store_dir, real_store_dir)
+            await report(Verbosity.INFO, "checking path existence...")
+            done: set[str] = set()
+            valid: set[str] = set()
+            errors = False
+            for path in await self.query_all_valid_paths():
+                errors = await self._verify_path(path, in_dir, done, valid, report) or errors
+            if check_contents:
+                errors = await self._check_link_hashes(report) or errors
+                errors = await self._check_store_hashes(real_store_dir, valid, report) or errors
+            return errors
+        finally:
+            await anyio.to_thread.run_sync(verify.release_gc_lock, gc_lock)
+
+    async def _verify_path(
+        self, path: StorePath, in_dir: set[str], done: set[str], valid: set[str], report: Report
+    ) -> bool:
+        """`LocalStore::verifyPath` (`local-store.cc:1518`): one path, its referrers first, then itself."""
+        key = path.path
+        if key in done:
+            return False
+        done.add(key)
+        if path.name in in_dir:
+            valid.add(key)
+            return False
+        # The path is gone from the directory. Invalidate it only when every
+        # referrer can go too; a valid referrer keeps it, and that is an error.
+        errors = False
+        can_invalidate = True
+        for referrer in await self.query_referrers(key):
+            if referrer.path == key:
+                continue
+            errors = await self._verify_path(referrer, in_dir, done, valid, report) or errors
+            if referrer.path in valid:
+                can_invalidate = False
+        if can_invalidate:
+            await report(Verbosity.INFO, f"path '{key}' disappeared, removing from database...")
+            await self._invalidate_path(key)
+            return errors
+        await report(Verbosity.ERROR, f"path '{key}' disappeared, but it still has valid referrers!")
+        return True
+
+    async def _check_link_hashes(self, report: Report) -> bool:
+        """The link-hash pass of `verifyStore` (`local-store.cc:1394`): a modified `.links` entry is an error.
+
+        Without repair the pass only reports; it removes nothing.
+        """
+        await report(Verbosity.INFO, "checking link hashes...")
+        links_dir = self.layout.links_dir
+        errors = False
+        for name in await anyio.to_thread.run_sync(verify.list_links, links_dir):
+            await report(Verbosity.TALKATIVE, f'checking contents of "{name}"')
+            got = await anyio.to_thread.run_sync(verify.link_hash, links_dir / name)
+            if got != name:
+                await report(
+                    Verbosity.ERROR, f"link \"{links_dir / name}\" was modified! expected hash {name}, got '{got}'"
+                )
+                errors = True
+        return errors
+
+    async def _invalidate_path(self, path: str) -> None:
+        async with self.db.acquire_conn() as conn:
+            await register.invalidate_path(conn, path)
+        self._on_change(StorePath(path=path))
+
+    async def _check_store_hashes(self, real_store_dir: Path, valid: set[str], report: Report) -> bool:
+        """The store-hash pass of `verifyStore` (`local-store.cc:1415`): a modified path is an error.
+
+        A path whose hash matches gets a missing hash or a zero size filled in,
+        as Nix does. A read that fails on a still-valid path is an error.
+        """
+        await report(Verbosity.INFO, "checking store hashes...")
+        errors = False
+        for key in valid:
+            name = StorePath(path=key).name
+            try:
+                info = await self.query_path_info(key)
+                if info is None:
+                    errors = True
+                    continue
+                await report(Verbosity.TALKATIVE, f"checking contents of '{key}'")
+                current_hex, current_size = await anyio.to_thread.run_sync(
+                    verify.nar_hash_and_size, real_store_dir / name
+                )
+            except OSError as exc:
+                # Nix logs its own `Error` here (`logError`); an OSError's text
+                # is not Nix's, so only the level and the prefix match.
+                if await self.is_valid_path_uncached(key):
+                    await report(Verbosity.ERROR, f"error: {exc}")
+                else:
+                    await report(Verbosity.WARN, f"warning: {exc}")
+                errors = True
+                continue
+            stored = str(info.info.nar_hash)
+            if stored != verify.NULL_SHA256_HEX and stored != current_hex:
+                expected, got = (f"sha256:{nix32_encode(bytes.fromhex(h))}" for h in (stored, current_hex))
+                await report(Verbosity.ERROR, f"path '{key}' was modified! expected hash '{expected}', got '{got}'")
+                errors = True
+                continue
+            final_hash, final_size = stored, info.info.nar_size
+            if stored == verify.NULL_SHA256_HEX:
+                await report(Verbosity.INFO, f"fixing missing hash on '{key}'")
+                final_hash = current_hex
+            if info.info.nar_size == 0:
+                await report(Verbosity.INFO, f"updating size field on '{key}' to {current_size}")
+                final_size = current_size
+            if (final_hash, final_size) != (stored, info.info.nar_size):
+                await self._fill_hashes(key, nar_hash=f"sha256:{final_hash}", nar_size=final_size)
+        return errors
+
+    async def _fill_hashes(self, path: str, *, nar_hash: str, nar_size: int) -> None:
+        async with self.db.acquire_conn() as conn:
+            await register.update_path_hashes(conn, path, nar_hash=nar_hash, nar_size=nar_size)
+        self._on_change(StorePath(path=path))

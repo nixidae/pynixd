@@ -29,6 +29,7 @@ from nix_daemon_protocol.add_to_store import AddToStoreResponse
 from nix_daemon_protocol.add_to_store_nar import AddToStoreNarRequest, AddToStoreNarResponse
 from nix_daemon_protocol.content_address import ContentAddress
 from nix_daemon_protocol.optimise_store import OptimiseStoreRequest, OptimiseStoreResponse
+from nix_daemon_protocol.verify_store import VerifyStoreRequest, VerifyStoreResponse
 
 from ..serde import AddToStoreRequest, StorePath
 from ..serde.context import ReadContext, WriteContext
@@ -68,6 +69,12 @@ class DaemonWrites:
     async def optimise_store(self) -> OptimiseStoreResponse:
         """OptimiseStore (op 34). No body, no option; the answer carries the daemon's log lines."""
         response: OptimiseStoreResponse = await self.store.call(OptimiseStoreRequest())
+        return response
+
+    async def verify_store(self, *, check_contents: bool, repair: bool) -> VerifyStoreResponse:
+        """VerifyStore (op 35). The daemon takes a repair request and the paths it rebuilds."""
+        request = VerifyStoreRequest(check_contents=int(check_contents), repair=int(repair))
+        response: VerifyStoreResponse = await self.store.call(request)
         return response
 
     async def add_signatures(self, path: str, sigs: Iterable[Signature]) -> AddSignaturesResponse:

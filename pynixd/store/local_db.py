@@ -199,6 +199,7 @@ class LocalDBStore(Store):
         42: Owned("own_register_drv_output", writes=True),
         45: Owned("own_add_build_log", writes=True),
         34: Owned("own_optimise_store", writes=True),
+        35: Owned("own_verify_store", writes=True),
         43: Owned("own_query_realisation", default=OpRoute.pynixd),
     }
 
@@ -541,6 +542,10 @@ class LocalDBStore(Store):
 
     async def own_optimise_store(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """None: `OptimiseStoreHandler` deduplicates the store through the write router, holding each path."""
+        return None
+
+    async def own_verify_store(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        """None: `VerifyStoreHandler` verifies the store through the write router, under the GC read lock."""
         return None
 
     async def import_settings(self) -> ImportSettings:
