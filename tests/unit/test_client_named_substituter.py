@@ -13,8 +13,9 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 
 from nix_daemon_protocol.exceptions import DaemonProtocolError
+from pynixd.config import PynixdSettings
 from pynixd.goals.engine import GoalEngine
-from pynixd.goals.query_missing import client_names_a_substituter
+from pynixd.goals.query_missing import client_names_a_substituter, daemon_substitutes
 from pynixd.serde import (
     ContentAddress,
     DerivedPath as SerdeDerivedPath,
@@ -32,7 +33,7 @@ from pynixd.serde import (
     TimeSpan,
     Verbosity,
 )
-from pynixd.substitution_queue import SubstitutionAvailability
+from pynixd.substitution_queue import SubstitutionAvailability, SubstitutionQueue
 
 if TYPE_CHECKING:
     from pynixd.connection import ClientConn
@@ -92,10 +93,24 @@ class FakeUpstream:
         return None
 
 
-async def _plan(store: FakeUpstream, client: ClientConn | None) -> QueryMissingResponse:
+class _Backends:
+    """pynixd's backends, which hold nothing, beside a daemon configured with *uncovered*."""
+
+    def __init__(self, *uncovered: str) -> None:
+        self.uncovered = uncovered
+
+    async def can_substitute(self, path: StorePath) -> SubstitutionAvailability:
+        del path
+        return SubstitutionAvailability.unavailable()
+
+
+async def _plan(
+    store: FakeUpstream, client: ClientConn | None, backends: _Backends | None = None
+) -> QueryMissingResponse:
+    scheduler = None if backends is None else SimpleNamespace(substitution_queue=backends)
     ctx = cast(
         "PynixdContext",
-        SimpleNamespace(local_store=store, scheduler=None),
+        SimpleNamespace(local_store=store, scheduler=scheduler),
     )
     derived_paths: set[Any] = {SerdeDerivedPath(value=PATH)}
     request = QueryMissingRequest(derived_paths=cast("set[SerdeDerivedPath]", derived_paths))
@@ -111,6 +126,41 @@ def test_a_client_that_names_no_substituter_is_recognised() -> None:
 @pytest.mark.parametrize("name", ["substituters", "extra-substituters", "trusted-substituters"])
 def test_each_substituter_option_counts(name: str) -> None:
     assert client_names_a_substituter(_client(_options(**{name: "file:///cache"})))
+
+
+def test_the_backends_stand_for_http_and_unix_substituters_only() -> None:
+    """`instance._add_substituter_stores` makes a backend for these two kinds and no other."""
+    queue = SubstitutionQueue(cast("PynixdContext", SimpleNamespace(settings=PynixdSettings(), stores={})))
+    queue.note_daemon_substituters(
+        [
+            "https://cache.example/",
+            "http://cache.local/",
+            "unix:///run/nix/socket",
+            "file:///cache",
+            "s3://bucket",
+            "daemon",
+        ]
+    )
+    assert queue.uncovered == ("file:///cache", "s3://bucket", "daemon")
+
+
+def test_a_substituter_only_the_daemon_reaches_sends_every_client_there() -> None:
+    assert daemon_substitutes(None, cast("SubstitutionQueue", _Backends("file:///cache")))
+    assert daemon_substitutes(_client(_options()), cast("SubstitutionQueue", _Backends("file:///cache")))
+    assert not daemon_substitutes(_client(_options()), cast("SubstitutionQueue", _Backends()))
+    assert not daemon_substitutes(_client(_options()), None)
+
+
+@pytest.mark.anyio
+async def test_the_plan_reads_a_substituter_of_the_daemon_that_pynixd_lacks() -> None:
+    """A `file://` cache in the daemon's nix.conf holds the path, and no backend of pynixd does."""
+    store = FakeUpstream(
+        infos=[SubstitutablePathInfo(path=StorePath(path=PATH), download_size=11, nar_size=22)],
+    )
+
+    response = await _plan(store, _client(_options()), _Backends("file:///cache"))
+
+    assert {str(path) for path in response.will_substitute} == {PATH}
 
 
 @pytest.mark.anyio

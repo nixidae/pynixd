@@ -151,6 +151,9 @@ class FakeContext:
 class FakeEngine:
     """Enough of `GoalEngine` for a derivation with no input derivation."""
 
+    substitution_queue = None
+    """No backend: the goal asks the daemon only for a client that names a substituter."""
+
     def __init__(self, valid: frozenset[str] = frozenset()) -> None:
         self.ctx = FakeContext(valid)
         self.build_goals: list[FakeBuildGoal] = []

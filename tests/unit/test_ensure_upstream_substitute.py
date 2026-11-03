@@ -80,7 +80,7 @@ class FakeLocalStore:
 
 
 def _goal(store: FakeLocalStore, client: ClientConn | None) -> EnsureDerivedPathGoal:
-    engine = SimpleNamespace(ctx=SimpleNamespace(local_store=store, settings=PynixdSettings()))
+    engine = SimpleNamespace(ctx=SimpleNamespace(local_store=store, settings=PynixdSettings()), substitution_queue=None)
     goal = EnsureDerivedPathGoal(
         engine=cast("GoalEngine", engine),
         derived_path=DerivedPath(f"{_DRV}!out"),

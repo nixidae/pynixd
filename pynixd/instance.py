@@ -777,7 +777,11 @@ class Server:
             added = _add_substituter_stores(self.ctx._stores, self.ctx.trust.substituters, self.ctx.settings)
             log.info("substituters_from_nix_conf", stores=[str(store.store_id) for store in added])
         if self.ctx.scheduler:
-            self.ctx.scheduler.substitution_queue.set_import_slots(self.ctx.trust.max_substitution_jobs)
+            queue = self.ctx.scheduler.substitution_queue
+            queue.set_import_slots(self.ctx.trust.max_substitution_jobs)
+            queue.note_daemon_substituters(self.ctx.trust.substituters)
+            if queue.uncovered:
+                log.info("substituters_only_the_daemon_reaches", substituters=queue.uncovered)
 
         if isinstance(local_store, LocalDBStore):
             if self.ctx.scheduler:

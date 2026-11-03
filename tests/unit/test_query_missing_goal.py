@@ -62,6 +62,8 @@ class FakeLocalStore:
 
 
 class FakeSubstitutionQueue:
+    uncovered: tuple[str, ...] = ()
+
     def __init__(self, substitutable: dict[str, SubstitutionAvailability]) -> None:
         self.substitutable = substitutable
         self.queries: list[str] = []
@@ -72,6 +74,8 @@ class FakeSubstitutionQueue:
 
 
 class BlockingSubstitutionQueue:
+    uncovered: tuple[str, ...] = ()
+
     def __init__(self, blocked_path: str, releasing_path: str) -> None:
         self.blocked_path = blocked_path
         self.releasing_path = releasing_path

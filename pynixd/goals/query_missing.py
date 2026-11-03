@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from pynixd_store.drv_parser import ChildMapNode, Derivation
 
     from ..connection import ClientConn
+    from ..substitution_queue import SubstitutionQueue
     from .engine import GoalEngine
 
 log = structlog.get_logger(__name__)
@@ -67,6 +68,17 @@ def client_names_a_substituter(client: ClientConn | None) -> bool:
     if options is None:
         return False
     return any(name in options.overrides for name in _SUBSTITUTER_OPTIONS)
+
+
+def daemon_substitutes(client: ClientConn | None, queue: SubstitutionQueue | None) -> bool:
+    """True when the daemon behind pynixd, and not pynixd's backends, answers a substitution question.
+
+    It does when the client names a substituter, and when the daemon's own
+    configuration names one that no backend stands for
+    (`SubstitutionQueue.uncovered`). Asked of the backends alone, a path in
+    that substituter reads as missing.
+    """
+    return client_names_a_substituter(client) or (queue is not None and bool(queue.uncovered))
 
 
 @dataclass
@@ -342,7 +354,7 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         for a client that named no substituter, for an upstream error, and
         for an upstream plan that agrees the derivation must be built.
         """
-        if not client_names_a_substituter(self.client):
+        if not daemon_substitutes(self.client, self.engine.substitution_queue):
             return False
         wire_path = SerdeDerivedPath(value=str(derived_path))
         try:
@@ -449,7 +461,7 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         other operation, which reads every substituter and also answers the
         two sizes that the plan reports.
         """
-        if not client_names_a_substituter(self.client):
+        if not daemon_substitutes(self.client, self.engine.substitution_queue):
             return SubstitutionAvailability.unavailable()
         wire_path = StorePath(path=str(path))
         response = await self.engine.ctx.local_store.execute(

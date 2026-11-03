@@ -32,9 +32,10 @@ MISSING = StorePath(path="/nix/store/00000000000000000000000000000003-missing")
 class _Queue:
     """Holds `HELD` and `SLOW`; `SLOW` answers late, so the paths are asked at once or the test times out."""
 
-    def __init__(self) -> None:
+    def __init__(self, *uncovered: str) -> None:
         self.asked: list[StorePath] = []
         self.both_asked = anyio.Event()
+        self.uncovered = uncovered
 
     async def can_substitute(self, path: StorePath) -> SubstitutionAvailability:
         self.asked.append(path)
@@ -78,6 +79,11 @@ class TestQuerySubstitutablePaths:
         queue = _Queue()
         client = _client(substituters="file:///tmp/cache")
         assert await _ask(_store(tmp_path, queue), client) is None
+        assert queue.asked == []
+
+    async def test_a_daemon_substituter_no_backend_stands_for_gets_the_daemon(self, tmp_path: Path) -> None:
+        queue = _Queue("file:///tmp/cache")
+        assert await _ask(_store(tmp_path, queue), _client()) is None
         assert queue.asked == []
 
     async def test_no_queue_gets_the_daemon(self, tmp_path: Path) -> None:

@@ -53,6 +53,8 @@ class Store:
 
 
 class Queue:
+    uncovered: tuple[str, ...] = ()
+
     def __init__(self, known: dict[str, SubstitutionAvailability]) -> None:
         self.known = known
 

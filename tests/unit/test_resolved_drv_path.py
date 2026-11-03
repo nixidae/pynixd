@@ -172,6 +172,9 @@ class FakeSubstituteGoal:
 
 
 class FakeEngine:
+    substitution_queue = None
+    """No backend: the goal asks the daemon only for a client that names a substituter."""
+
     def __init__(self, *, takes_text: bool = True) -> None:
         self.local_store = FakeLocalStore(takes_text=takes_text)
         self.ctx = cast("Any", _Ctx(self.local_store))

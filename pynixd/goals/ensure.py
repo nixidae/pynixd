@@ -33,7 +33,7 @@ from ..serde import (
 )
 from .dependencies import DependencyGroupGoal
 from .goal import Goal, GoalHolder
-from .query_missing import client_names_a_substituter
+from .query_missing import daemon_substitutes
 from .realisations import realisations_of
 from .resolution import _nix_drv_name, resolve_derivation, resolve_dynamic_derivation, unparse_basic_derivation
 from .results import GoalResult, goal_failure, goal_success, result_succeeded
@@ -742,7 +742,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             return local
 
         client = next((c for c in self._watchers if c.options is not None), None)
-        if not client_names_a_substituter(client):
+        if not daemon_substitutes(client, self.engine.substitution_queue):
             return None
 
         # **Build the derived path, and do not spell it.** `^` is the syntax a
@@ -843,7 +843,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         if any(str(paths_of_drv.get(name, "")) for name in wanted):
             return None
         client = next((c for c in self._watchers if c.options is not None), None)
-        if not client_names_a_substituter(client):
+        if not daemon_substitutes(client, self.engine.substitution_queue):
             return None
 
         request = BuildPathsRequest(
@@ -1429,7 +1429,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
 
         `Store::ensurePath` makes a substitution goal and nothing else, so
         this never starts a build. It runs only for a client that names a
-        substituter; `client_names_a_substituter` in `goals/query_missing.py`
+        substituter; `daemon_substitutes` in `goals/query_missing.py`
         states that rule, and the same rule keeps the plan and the work in
         agreement. Issue nixidae/nixidae#226.
 
@@ -1446,7 +1446,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         rule for a build. Issue nixidae/nixidae#231 holds the question.
         """
         client = next((c for c in self._watchers if c.options is not None), None)
-        if not client_names_a_substituter(client):
+        if not daemon_substitutes(client, self.engine.substitution_queue):
             return None
         wire_path = StorePath(path=str(path))
         try:

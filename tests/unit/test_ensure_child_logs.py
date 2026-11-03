@@ -179,6 +179,9 @@ class FakeContext:
 
 
 class FakeEngine:
+    substitution_queue = None
+    """No backend: the goal asks the daemon only for a client that names a substituter."""
+
     def __init__(self) -> None:
         self.ctx = FakeContext()
         self.child_goals: list[FakeChildGoal] = []

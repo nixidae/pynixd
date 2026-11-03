@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from ..derived_path import DerivedPath
     from ..serde import BuildPathsWithResultsResponse
     from ..store import Store
+    from ..substitution_queue import SubstitutionQueue
     from .goal import Goal
 
     Hold = Callable[[StorePath], Awaitable[None]]
@@ -105,6 +106,12 @@ class GoalEngine:
         self._goals: dict[Any, Goal[Any]] = {}
         self._background: Background | None = None
         self.substitution_import_limiter = anyio.Semaphore(4)
+
+    @property
+    def substitution_queue(self) -> SubstitutionQueue | None:
+        """The scheduler's race over pynixd's substituter backends, or `None` without a scheduler."""
+        scheduler = self.ctx.scheduler
+        return scheduler.substitution_queue if scheduler is not None else None
 
     @property
     def goal_group(self) -> Background:

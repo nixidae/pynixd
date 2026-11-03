@@ -40,6 +40,8 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 _NAR_CHUNK_SIZE = 1024 * 256
+_BACKEND_SCHEMES = ("http://", "https://", "unix://")
+"""The substituters `instance._add_substituter_stores` makes a backend for."""
 
 
 @dataclass(frozen=True)
@@ -203,6 +205,12 @@ class SubstitutionQueue:
             TTLCache(maxsize=settings.substitution_cache_maxsize, ttl=settings.substitution_negative_ttl),
         )
         """The path behind each hash `negative` holds, so a `.narinfo` request can find it."""
+        self.uncovered: tuple[str, ...] = ()
+        """The daemon's substituters that no backend stands for: a `file://` cache, `s3://`, `ssh://`."""
+
+    def note_daemon_substituters(self, substituters: Iterable[str]) -> None:
+        """Remember which of the daemon's *substituters* the backends do not stand for."""
+        self.uncovered = tuple(url for url in substituters if not url.startswith(_BACKEND_SCHEMES))
 
     def running(self) -> AbstractAsyncContextManager[None]:
         """Run the probes for the body of this block; a lookup outside it raises."""

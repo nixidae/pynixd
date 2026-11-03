@@ -715,15 +715,16 @@ class LocalDBStore(Store):
         To reverse it, measure that against the time of the sequential walk.
 
         A client that names its own substituters gets the daemon's answer:
-        those are not pynixd's backends. Without `substitute`, nothing is
-        substitutable (`store-api.cc:506`).
+        those are not pynixd's backends. So does every client of a daemon
+        configured with a substituter no backend stands for. Without
+        `substitute`, nothing is substitutable (`store-api.cc:506`).
         """
         from nix_daemon_protocol.query_substitutable_paths import QuerySubstitutablePathsResponse
 
-        from ..goals.query_missing import client_names_a_substituter
+        from ..goals.query_missing import daemon_substitutes
 
         queue = self.substitution_queue
-        if queue is None or client_names_a_substituter(client):
+        if queue is None or daemon_substitutes(client, queue):
             return None
         options = client.options if client is not None else None
         if options is not None and not options.use_substitutes:
