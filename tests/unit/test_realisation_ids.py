@@ -16,6 +16,7 @@ the oracle for the hash itself. Issue nixidae/nixidae#221.
 from __future__ import annotations
 
 import dataclasses
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -128,9 +129,13 @@ class FakeLocalStore:
         self.layout = StoreLayout.chroot(None)
         self.valid: set[str] = {BASE_OUT}
         self.registered: list[Realisation] = []
+        self.registered_under: list[str] = []
         self.added: list[tuple[str, str, set[str]]] = []
 
     async def read_derivation(self, drv_path: str) -> Derivation | None:
+        for name, text, _ in self.added:
+            if drv_path == f"/nix/store/{'9' * 32}-{name}":
+                return parse_drv(text)
         return await _read_drv(drv_path)
 
     async def add_text_to_store(self, name: str, text: str, references: Any) -> str:
@@ -142,7 +147,10 @@ class FakeLocalStore:
         if isinstance(request, RegisterDrvOutputRequest):
             if request.realisation is None:
                 raise AssertionError("RegisterDrvOutput carries a realisation in the 2.34 shape")
+            if request.keyed_drv_output is None:
+                raise AssertionError("RegisterDrvOutput carries the derivation path in the 2.35 shape")
             self.registered.append(request.realisation)
+            self.registered_under.append(str(request.keyed_drv_output.drv_path))
             return IsValidPathResponse(valid=True)
         if isinstance(request, QueryRealisationRequest):
             # No output is realised yet, so every derivation here is built.
@@ -185,6 +193,22 @@ class FakeSubstituteGoal:
         return SubstituteAttempt(found=False, result=goal_success())
 
 
+class FoundSubstituteGoal:
+    """A substituter holds the path, and the substitution makes it valid."""
+
+    may_reach_a_root_goal = False
+
+    def __init__(self, store: FakeLocalStore, path: StorePath) -> None:
+        self.store = store
+        self.path = path
+
+    async def result(self) -> SubstituteAttempt:
+        self.store.valid.add(str(self.path))
+        result = goal_success()
+        result.produced_paths.add(self.path)
+        return SubstituteAttempt(found=True, result=result)
+
+
 class FakeEngine:
     substitution_queue = None
     """No backend: the goal asks the daemon only for a client that names a substituter."""
@@ -208,6 +232,7 @@ class FakeEngine:
 class _Ctx:
     def __init__(self, local_store: FakeLocalStore) -> None:
         self.local_store = local_store
+        self.trust = SimpleNamespace(experimental_features=frozenset({"ca-derivations"}))
 
 
 def _outputs(result: BuildResult) -> dict[str, Realisation]:
@@ -402,3 +427,32 @@ async def test_a_daemon_that_answers_no_realisation_registers_nothing() -> None:
     )
 
     assert engine.local_store.registered == []
+
+
+@pytest.mark.anyio
+async def test_a_substituted_resolved_output_is_recorded_under_the_resolved_derivation() -> None:
+    """`ca/build-cache.sh` with `dependentNonCA`: the output comes from a cache, and nothing builds.
+
+    Nix builds a deferred derivation as its resolved one, and that goal's
+    `checkPathValidity` registers `{resolved, out}` once the path is valid
+    (`derivation-goal.cc:402`). The 2.35 client reads the output there
+    (`outputs-query.cc:171`), and `nix-build.cc:729` aborts without it.
+    """
+    engine = FakeEngine(BuildResult(status=BuildResultStatus.BUILT, built_outputs={}))
+
+    async def found(path: StorePath, substituter_ids: tuple[str, ...]) -> FoundSubstituteGoal:
+        del substituter_ids
+        return FoundSubstituteGoal(engine.local_store, path)
+
+    engine.get_substitute_path_goal = found  # type: ignore[method-assign]  # this engine's substituters hold every path
+    goal = EnsureDerivedPathGoal(
+        engine=cast("GoalEngine", engine),
+        derived_path=DerivedPath(f"{DEFER_PATH}!out"),
+        build_mode=BuildMode.NORMAL,
+        substituter_ids=(),
+    )
+    await result_of(goal)
+
+    resolved = f"/nix/store/{'9' * 32}-drv-hash-defer.drv"
+    assert engine.build_goals == []
+    assert resolved in engine.local_store.registered_under
