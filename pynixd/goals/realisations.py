@@ -21,6 +21,7 @@ Issue nixidae/nixidae#214.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import structlog
@@ -85,6 +86,21 @@ async def realisations_of(
     return answer
 
 
+@dataclass(frozen=True, slots=True)
+class RealisationSearch:
+    """What the substituters answered for the wanted outputs.
+
+    *found* is `None` when an output has no realisation. *substituter_failed*
+    says that a substituter failed while no other one held that output: Nix's
+    `DrvOutputSubstitutionGoal` then ends `ecFailed`, not `ecNoSubstituters`
+    (`drv-output-substitution-goal.cc:61`), and the derivation goal fails
+    without `--fallback` (`derivation-goal.cc:124`).
+    """
+
+    found: dict[str, Realisation] | None
+    substituter_failed: bool = False
+
+
 async def substitutable_realisations(
     parsed: Derivation,
     wanted: Iterable[str],
@@ -93,46 +109,48 @@ async def substitutable_realisations(
     drv_path: StorePath,
     *,
     by_path: bool,
-) -> dict[str, Realisation] | None:
+) -> RealisationSearch:
     """The realisation of each wanted output, from the first of *substituters* that holds it.
 
     `DrvOutputSubstitutionGoal::init` (`drv-output-substitution-goal.cc:30`)
     and `queryMissing` (`misc.cc:250`) ask the substituters in priority order
     and take the first answer; a tie keeps the listed order. A substituter
     that fails is skipped, as Nix prints the error and goes on. The ids are
-    those `realisations_of` gives, and `None` means an output has none.
+    those `realisations_of` gives.
     *by_path* is the layout of the local store's Nix (`BinaryCacheStore.query_realisation`).
     """
     names = sorted(wanted)
     if not names:
-        return None
+        return RealisationSearch(None)
     hashes = await output_hashes(parsed, local.read_derivation)
     if hashes is None:
-        return None
+        return RealisationSearch(None)
     ordered = sorted(substituters, key=lambda store: store.priority)
     answer: dict[str, Realisation] = {}
     for output_name in names:
         digest = hashes.get(output_name)
         if digest is None:
-            return None
+            return RealisationSearch(None)
         key = DrvOutput(f"sha256:{digest}!{output_name}")
-        realisation = await _first_holding(ordered, key, drv_path, by_path=by_path)
+        realisation, failed = await _first_holding(ordered, key, drv_path, by_path=by_path)
         if realisation is None:
             log.debug(
                 "substitutable_realisation_missing",
                 drv_output=str(key),
                 drv_path=str(drv_path),
                 by_path=by_path,
+                substituter_failed=failed,
                 substituters=[str(store.store_id) for store in ordered],
             )
-            return None
+            return RealisationSearch(None, substituter_failed=failed)
         answer[str(key)] = realisation
-    return answer
+    return RealisationSearch(answer)
 
 
 async def _first_holding(
     substituters: Iterable[Store], key: DrvOutput, drv_path: StorePath, *, by_path: bool
-) -> Realisation | None:
+) -> tuple[Realisation | None, bool]:
+    failed = False
     for store in substituters:
         try:
             if is_binary_cache(store):
@@ -143,10 +161,11 @@ async def _first_holding(
             log.warning(
                 "substituter_realisation_failed", store_id=str(store.store_id), drv_output=str(key), exc_info=True
             )
+            failed = True
             continue
         if found is not None:
-            return found
-    return None
+            return found, False
+    return None, failed
 
 
 async def _query_one(store: Store, key: DrvOutput, drv_path: StorePath) -> Realisation | None:

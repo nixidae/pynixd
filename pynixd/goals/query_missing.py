@@ -348,9 +348,11 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         if stores is None:
             return None
         local = self.engine.ctx.local_store
-        found = await substitutable_realisations(
-            parsed, unnamed, stores, local, drv_path, by_path=FEATURE_REALISATION_WITH_PATH in local.features
-        )
+        found = (
+            await substitutable_realisations(
+                parsed, unnamed, stores, local, drv_path, by_path=FEATURE_REALISATION_WITH_PATH in local.features
+            )
+        ).found
         if found is None:
             return None
         return {

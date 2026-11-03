@@ -745,7 +745,10 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
 
         client = next((c for c in self._watchers if c.options is not None), None)
         if not await daemon_substitutes(client, self.engine.substitution_queue):
-            if not await self._substitute_realisations(resolved, wanted, build_drv_path, client):
+            outcome = await self._substitute_realisations(resolved, wanted, build_drv_path, client)
+            if isinstance(outcome, GoalResult):
+                return outcome
+            if not outcome:
                 return None
             return await self._valid_realisations(resolved, wanted, build_drv_path)
 
@@ -846,7 +849,10 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             return None
         client = next((c for c in self._watchers if c.options is not None), None)
         if not await daemon_substitutes(client, self.engine.substitution_queue):
-            if not await self._substitute_realisations(parsed, wanted, drv_path, client):
+            outcome = await self._substitute_realisations(parsed, wanted, drv_path, client)
+            if isinstance(outcome, GoalResult):
+                return outcome
+            if not outcome:
                 return None
             return await self._already_realised(parsed, wanted)
 
@@ -929,7 +935,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
 
     async def _substitute_realisations(
         self, parsed: Derivation, wanted: set[str], drv_path: StorePath, client: ClientConn | None
-    ) -> bool:
+    ) -> GoalResult | bool:
         """Fetch each wanted output by the realisation a substituter of the goal holds, and record it.
 
         `DerivationGoal::haveDerivation` (`derivation-goal.cc:105`): a
@@ -937,13 +943,14 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         fetches the path it names, and the store records the realisation
         with no signature check (the one-argument `registerDrvOutput`); the
         path substitution checks the path. False when an output has no
-        realisation or its path does not arrive, and the caller builds.
+        realisation or no substituter holds its path, and the caller builds.
+        A substituter that failed gives the failure of `_substitutes_failed`.
         """
         queue = self.engine.substitution_queue
         if queue is None or not substitutes_allowed(parsed, client):
             return False
         local = self.engine.ctx.local_store
-        found = await substitutable_realisations(
+        search = await substitutable_realisations(
             parsed,
             wanted,
             queue.stores_with_ids(self.substituter_ids),
@@ -951,14 +958,19 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             drv_path,
             by_path=FEATURE_REALISATION_WITH_PATH in local.features,
         )
-        if found is None:
-            return False
-        for realisation in found.values():
+        if search.found is None:
+            failure = self._substitutes_failed() if search.substituter_failed else None
+            return failure if failure is not None else False
+        for realisation in search.found.values():
             fetched = await self._try_substitute_path(StorePath(str(realisation.out_path)))
-            if fetched is None or not result_succeeded(fetched.result):
+            if fetched is None:
                 log.debug("realisation_path_not_substituted", drv_output=str(realisation.id))
                 return False
-        await self._register_realisations(found.values(), drv_path=drv_path)
+            if not result_succeeded(fetched.result):
+                log.debug("realisation_path_substitution_failed", drv_output=str(realisation.id))
+                failure = self._substitutes_failed()
+                return failure if failure is not None else False
+        await self._register_realisations(search.found.values(), drv_path=drv_path)
         return True
 
     async def _under_the_original_id(self, result: GoalResult, parsed: Derivation) -> GoalResult:
@@ -1415,16 +1427,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             if substituted is None:
                 return None
             if not result_succeeded(substituted.result):
-                # `derivation-goal.cc:124`: a failed copy builds the derivation
-                # with `--fallback`, and fails it with this text without.
-                client = next((c for c in self._watchers if c.options is not None), None)
-                if client is not None and client.options is not None and client.options.try_fallback:
-                    return None
-                return goal_failure(
-                    f"some substitutes for the outputs of derivation '{self.derived_path.drv_path}' failed"
-                    " (usually happens due to networking issues); try '--fallback' to build derivation from source ",
-                    BuildResultStatus.TRANSIENT_FAILURE,
-                )
+                return self._substitutes_failed()
             results[output_name] = substituted.with_single_output(output_name, path)
 
         merged = goal_success()
@@ -1432,6 +1435,17 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             merged.resolved_outputs[output_name] = selected[output_name]
             merged.produced_paths.update(result.produced_paths)
         return merged
+
+    def _substitutes_failed(self) -> GoalResult | None:
+        """`derivation-goal.cc:124`: a failed substitution fails the goal, and `None` builds it under `--fallback`."""
+        client = next((c for c in self._watchers if c.options is not None), None)
+        if client is not None and client.options is not None and client.options.try_fallback:
+            return None
+        return goal_failure(
+            f"some substitutes for the outputs of derivation '{self.derived_path.drv_path}' failed"
+            " (usually happens due to networking issues); try '--fallback' to build derivation from source ",
+            BuildResultStatus.TRANSIENT_FAILURE,
+        )
 
     async def _say_what_it_produced(
         self,

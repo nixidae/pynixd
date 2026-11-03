@@ -3,7 +3,7 @@
 `DrvOutputSubstitutionGoal::init` (`drv-output-substitution-goal.cc:30`) and
 `queryMissing` (`misc.cc:250`) ask the substituters in turn and take the
 first answer. A substituter that fails is skipped: Nix prints the error and
-goes on.
+goes on, and the goal fails when no other one holds the realisation.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import pytest
 
 from pynixd.config import LocalBinaryCacheSpec
 from pynixd.goals import realisations
-from pynixd.goals.realisations import substitutable_realisations
+from pynixd.goals.realisations import RealisationSearch, substitutable_realisations
 from pynixd_store.store_path import StorePath
 
 if TYPE_CHECKING:
@@ -51,8 +51,8 @@ async def _cache(root: Path, priority: float, out_path: str | None, *, broken: b
     return store
 
 
-async def _first(stores: list[Store]) -> str | None:
-    found = await substitutable_realisations(
+async def _search(stores: list[Store]) -> RealisationSearch:
+    return await substitutable_realisations(
         cast("Derivation", None),
         ["out"],
         stores,
@@ -60,6 +60,10 @@ async def _first(stores: list[Store]) -> str | None:
         DRV,
         by_path=False,
     )
+
+
+async def _first(stores: list[Store]) -> str | None:
+    found = (await _search(stores)).found
     if found is None:
         return None
     (realisation,) = found.values()
@@ -87,4 +91,17 @@ async def test_a_miss_and_a_fault_fall_through(tmp_path: Path) -> None:
 
 
 async def test_no_holder_is_none(tmp_path: Path) -> None:
-    assert await _first([await _cache(tmp_path / "empty", 1, None)]) is None
+    assert await _search([await _cache(tmp_path / "empty", 1, None)]) == RealisationSearch(None)
+
+
+async def test_a_fault_with_no_holder_says_a_substituter_failed(tmp_path: Path) -> None:
+    """`drv-output-substitution-goal.cc:61`: `ecFailed`, not `ecNoSubstituters`. nixidae/nixidae#1171."""
+    empty = await _cache(tmp_path / "empty", 1, None)
+    broken = await _cache(tmp_path / "broken", 2, None, broken=True)
+    assert await _search([empty, broken]) == RealisationSearch(None, substituter_failed=True)
+
+
+async def test_a_holder_after_a_fault_is_no_failure(tmp_path: Path) -> None:
+    broken = await _cache(tmp_path / "broken", 1, None, broken=True)
+    holder = await _cache(tmp_path / "holder", 2, SECOND)
+    assert not (await _search([broken, holder])).substituter_failed

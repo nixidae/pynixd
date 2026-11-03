@@ -27,7 +27,9 @@ from test_drv_hash import (  # type: ignore[import-not-found]  # pytest puts tes
 )
 
 from pynixd.derived_path import DerivedPath
+from pynixd.goals import ensure
 from pynixd.goals.ensure import EnsureDerivedPathGoal
+from pynixd.goals.realisations import RealisationSearch
 from pynixd.goals.results import GoalResult, goal_success
 from pynixd.goals.substitute import SubstituteAttempt
 from pynixd.serde import (
@@ -40,7 +42,10 @@ from pynixd.serde import (
     QueryRealisationResponse,
     Realisation,
     RegisterDrvOutputRequest,
+    SetOptionsRequest,
     Signature,
+    TimeSpan,
+    Verbosity,
 )
 from pynixd_store.drv_hash import output_hashes
 from pynixd_store.drv_parser import parse_drv
@@ -124,6 +129,8 @@ def _flattened_hash() -> str:
 
 class FakeLocalStore:
     """A store that holds the output of the input derivation, and no other."""
+
+    features: frozenset[str] = frozenset()
 
     def __init__(self) -> None:
         self.layout = StoreLayout.chroot(None)
@@ -456,3 +463,76 @@ async def test_a_substituted_resolved_output_is_recorded_under_the_resolved_deri
     resolved = f"/nix/store/{'9' * 32}-drv-hash-defer.drv"
     assert engine.build_goals == []
     assert resolved in engine.local_store.registered_under
+
+
+class _Backends:
+    """pynixd's backends stand for every substituter of the client, so the goal asks them itself."""
+
+    async def substituters_for(self, client: object) -> tuple[object, ...]:
+        del client
+        return (self,)
+
+    def stores_with_ids(self, ids: object) -> tuple[object, ...]:
+        del ids
+        return ()
+
+
+def _client(*, try_fallback: bool) -> Any:
+    async def send(message: object) -> None:
+        del message
+
+    return SimpleNamespace(
+        send=send,
+        options=SetOptionsRequest(
+            keep_failed=False,
+            keep_going=False,
+            try_fallback=try_fallback,
+            verbosity=Verbosity.ERROR,
+            max_build_jobs=1,
+            max_silent_time=TimeSpan(0),
+            obsolete_use_build_hook=True,
+            build_verbosity=Verbosity.ERROR,
+            obsolete_log_type=0,
+            obsolete_print_build_trace=0,
+            build_cores=1,
+            use_substitutes=True,
+            overrides={},
+        ),
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("try_fallback", [False, True])
+async def test_a_failed_realisation_substituter_fails_the_goal_without_fallback(
+    monkeypatch: pytest.MonkeyPatch, *, try_fallback: bool
+) -> None:
+    """`DrvOutputSubstitutionGoal` ends `ecFailed` when a substituter threw and none held the realisation.
+
+    `drv-output-substitution-goal.cc:61`, then `derivation-goal.cc:124`: the
+    goal fails with the `--fallback` hint, and builds only with `--fallback`.
+    nixidae/nixidae#1171.
+    """
+
+    async def failed(*args: object, **kwargs: object) -> RealisationSearch:
+        del args, kwargs
+        return RealisationSearch(None, substituter_failed=True)
+
+    monkeypatch.setattr(ensure, "substitutable_realisations", failed)
+    engine = FakeEngine(_response(f"sha256:{'11' * 32}!out", FLOAT_OUT))
+    engine.substitution_queue = _Backends()  # type: ignore[assignment]  # the class default is None
+    goal = EnsureDerivedPathGoal(
+        engine=cast("GoalEngine", engine),
+        derived_path=DerivedPath(f"{FLOAT_PATH}!out"),
+        build_mode=BuildMode.NORMAL,
+        substituter_ids=(),
+    )
+    await goal.subscribe(_client(try_fallback=try_fallback))
+    result = await result_of(goal)
+
+    if try_fallback:
+        assert len(engine.build_goals) == 1
+        assert result.result.status == BuildResultStatus.BUILT
+    else:
+        assert engine.build_goals == []
+        assert result.result.status == BuildResultStatus.TRANSIENT_FAILURE
+        assert "try '--fallback' to build derivation from source" in result.result.error_msg
