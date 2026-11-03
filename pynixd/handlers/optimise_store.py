@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from ..serde import OptimiseStoreRequest
 from ..serde.context import ReadContext
+from ..store.local_db import write_router
 from ._base import Handler
 
 if TYPE_CHECKING:
@@ -13,15 +14,14 @@ if TYPE_CHECKING:
 
 
 class OptimiseStoreHandler(Handler):
-    """Server handler for OptimiseStore. Nix allows it to every client, `daemon.cc:860`."""
+    """Server handler for OptimiseStore. Nix allows it to every client, `daemon.cc:887`."""
 
     op: ClassVar[int] = 34
 
     async def handle(self, ctx: RequestContext) -> object | None:
-        """Decode the request and forward it to the daemon."""
-        req = await OptimiseStoreRequest.from_reader(
+        """Decode the request; the store's write router deduplicates the store, holding each path."""
+        # The request carries no body past the op code; read it for symmetry.
+        await OptimiseStoreRequest.from_reader(
             ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
         )
-
-        response: object | None = await ctx.proxy.local_store.call(req)
-        return response
+        return await write_router(ctx.proxy.local_store).optimise_store(hold=ctx.proxy.add_temp_root)

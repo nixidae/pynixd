@@ -275,6 +275,7 @@ def _config(work: Path, root: Path) -> Path:
                             "AddSignatures": "pynixd",
                             "RegisterDrvOutput": "pynixd",
                             "AddBuildLog": "pynixd",
+                            "OptimiseStore": "pynixd",
                         },
                     },
                 },

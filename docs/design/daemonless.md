@@ -59,7 +59,8 @@ and AddMultipleToStore call it on their `pynixd` routes. `register_drv_output`
 (`pynixd_store/register.py`) writes the build trace, in `BuildTraceV3` or
 `Realisations` as `registerDrvOutput` does. `add_build_log`
 (`pynixd_store/build_log.py`) writes a derivation's log under `logDir`, as
-`addBuildLog` does.
+`addBuildLog` does. `optimise_store` (`pynixd_store/optimise.py`) hard-links
+identical files into `.links`, as `optimiseStore` does.
 
 | op | today | to own it |
 | --- | --- | --- |
@@ -87,7 +88,7 @@ and AddMultipleToStore call it on their `pynixd` routes. `register_drv_output`
 | op | today | to own it |
 | --- | --- | --- |
 | 20 CollectGarbage | daemon deletes; pynixd plans its own (`gc.py`) and asks the daemon for the live set (`RETURN_LIVE`) | the live set (roots and temp roots) and deletion |
-| 34 OptimiseStore | daemon | hard-link identical files (`.links`) |
+| 34 OptimiseStore | on trial: the daemon in a deployment; route `pynixd` hard-links identical files into `.links` as `optimiseStore` does (`optimise-store.cc`): each regular file and symlink hashed over its NAR, the first of a hash linked as `.links/<Nix32 NAR hash>`, a later file replaced by a hard link through a temporary link and a rename. It holds a temporary root on each path, as Nix does, so the daemon's collector does not remove one mid-walk. Every client may run it (`daemon.cc:887`) | — |
 | 35 VerifyStore | daemon | re-hash every path |
 | 19 SetOptions | owned (kept per session, sent per connection) | stops sending once nothing goes upstream |
 
@@ -167,6 +168,9 @@ the daemon's import (`tests/functional/test_add_to_store_nar_import.py`).
 for an evaluation's derivations (`tests/functional/test_add_to_store_import.py`).
 `AddBuildLog` records the log itself on the `pynixd` route, and the test that
 sets that route reads the `.bz2` back from the store
-(`tests/functional/test_add_build_log_import.py`). pynixd's own imports, a
+(`tests/functional/test_add_build_log_import.py`). `OptimiseStore` hard-links
+identical files on the `pynixd` route, and the test adds two paths with a
+shared file, optimises, and reads the inodes back
+(`tests/functional/test_optimise_store_dedup.py`). pynixd's own imports, a
 substitution and the HTTP cache's upload, follow AddToStoreNar's route
 (`tests/functional/test_substitution_import.py`).

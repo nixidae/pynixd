@@ -28,6 +28,7 @@ from nix_daemon_protocol.add_signatures import AddSignaturesRequest, AddSignatur
 from nix_daemon_protocol.add_to_store import AddToStoreResponse
 from nix_daemon_protocol.add_to_store_nar import AddToStoreNarRequest, AddToStoreNarResponse
 from nix_daemon_protocol.content_address import ContentAddress
+from nix_daemon_protocol.optimise_store import OptimiseStoreRequest, OptimiseStoreResponse
 
 from ..serde import AddToStoreRequest, StorePath
 from ..serde.context import ReadContext, WriteContext
@@ -62,6 +63,11 @@ class DaemonWrites:
         response: AddPermRootResponse = await self.store.call(
             AddPermRootRequest(store_path=store_path, gc_root=gc_root)
         )
+        return response
+
+    async def optimise_store(self) -> OptimiseStoreResponse:
+        """OptimiseStore (op 34). No body, no option; the answer carries the daemon's log lines."""
+        response: OptimiseStoreResponse = await self.store.call(OptimiseStoreRequest())
         return response
 
     async def add_signatures(self, path: str, sigs: Iterable[Signature]) -> AddSignaturesResponse:

@@ -23,6 +23,7 @@ from nix_daemon_protocol.add_perm_root import AddPermRootResponse
 from nix_daemon_protocol.add_signatures import AddSignaturesResponse
 from nix_daemon_protocol.logs import LogNext
 from nix_daemon_protocol.operations import STANDARD_OPERATIONS
+from nix_daemon_protocol.optimise_store import OptimiseStoreResponse
 from pynixd_store.content_address import ContentAddress, Method, content_addressed_path, parse_method_algo
 from pynixd_store.source import Metered
 
@@ -448,6 +449,14 @@ class WriteRouter:
             return await self.daemon.add_build_log(path, log)
         await engine.add_build_log(path, log)
         return AddBuildLogResponse.fast(value=1)
+
+    async def optimise_store(self, *, hold: Callable[[str], Awaitable[None]]) -> OptimiseStoreResponse:
+        """OptimiseStore (op 34): `LocalStore::optimiseStore`. *hold* is the session's temporary root."""
+        engine = self._root_engine("OptimiseStore")
+        if engine is None:
+            return await self.daemon.optimise_store()
+        await engine.optimise_store(hold=hold)
+        return OptimiseStoreResponse.fast(value=1)
 
     async def import_nar(self, info: ValidPathInfo, source: Source, *, dont_check_sigs: bool) -> None:
         """A NAR pynixd itself fetched or received: a substitution, or the HTTP cache's upload."""

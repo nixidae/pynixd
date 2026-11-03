@@ -198,6 +198,7 @@ class LocalDBStore(Store):
         41: Owned("own_query_derivation_output_map", default=OpRoute.pynixd),
         42: Owned("own_register_drv_output", writes=True),
         45: Owned("own_add_build_log", writes=True),
+        34: Owned("own_optimise_store", writes=True),
         43: Owned("own_query_realisation", default=OpRoute.pynixd),
     }
 
@@ -536,6 +537,10 @@ class LocalDBStore(Store):
 
     async def own_add_build_log(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """None: `AddBuildLogHandler` records the log through the write router, after the framed body."""
+        return None
+
+    async def own_optimise_store(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        """None: `OptimiseStoreHandler` deduplicates the store through the write router, holding each path."""
         return None
 
     async def import_settings(self) -> ImportSettings:

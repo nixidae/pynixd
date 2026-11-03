@@ -10,6 +10,7 @@ above it (a path that changed) come in as callables.
 from __future__ import annotations
 
 import json
+from functools import partial
 from typing import TYPE_CHECKING
 
 import anyio.to_thread
@@ -22,7 +23,7 @@ from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 
-from . import add, build_log, register, roots
+from . import add, build_log, optimise, register, roots
 from .drv_parser import read_drv_file
 from .hintfmt import magenta
 from .liveness import unlink_stale_auto_roots, walk_roots
@@ -364,3 +365,36 @@ class StoreEngine:
         the file system, and the router gates the route.
         """
         await anyio.to_thread.run_sync(build_log.add_build_log, self.layout.log_dir, drv, log)
+
+    async def optimise_store(self, *, hold: Callable[[str], Awaitable[None]]) -> optimise.OptimiseStats:
+        """`LocalStore::optimiseStore` (`optimise-store.cc`): hard-link identical store files into `.links`.
+
+        *hold* is the session's `addTempRoot`. Nix takes a temporary root on
+        each path before it reads it, so a concurrent collector does not remove
+        a path mid-walk. The daemon's collector (op 20) reads the same temproots
+        files, so the hold protects against it too.
+        """
+        if not self.writes:
+            raise RuntimeError(f"store {self._name}: pynixd_writes is off, so pynixd optimises no store")
+        if not self.writable:
+            raise RuntimeError(f"store {self._name}: pynixd cannot write the store")
+        real_store_dir, links_dir = self.layout.real_store_dir, self.layout.links_dir
+        # `LocalStore`'s constructor makes `.links`; a bare chroot store has none yet.
+        await anyio.to_thread.run_sync(lambda: links_dir.mkdir(parents=True, exist_ok=True))
+        stats = optimise.OptimiseStats()
+        inode_hash = await anyio.to_thread.run_sync(optimise.load_inode_hash, links_dir)
+        for path in await self.query_all_valid_paths():
+            await hold(path.path)
+            if not await self.is_valid_path_uncached(path.path):
+                continue  # a collector took the path before the hold landed
+            await anyio.to_thread.run_sync(
+                partial(
+                    optimise.optimise_path,
+                    real_store_dir / path.name,
+                    inode_hash,
+                    real_store_dir=real_store_dir,
+                    links_dir=links_dir,
+                    stats=stats,
+                )
+            )
+        return stats

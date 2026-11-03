@@ -45,6 +45,7 @@ TEST_OP_ROUTES: dict[str, OpRoute] = {
     "AddSignatures": OpRoute.pynixd,
     "RegisterDrvOutput": OpRoute.pynixd,
     "AddBuildLog": OpRoute.pynixd,
+    "OptimiseStore": OpRoute.pynixd,
 }
 """Answers on trial: in every test store, and on the daemon in a deployment.
 
@@ -63,6 +64,7 @@ _WRITES = frozenset(
         "AddSignatures",
         "RegisterDrvOutput",
         "AddBuildLog",
+        "OptimiseStore",
     }
 )
 """The trial routes that a store with `pynixd_writes` off cannot take."""
