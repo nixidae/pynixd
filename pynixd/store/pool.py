@@ -400,7 +400,7 @@ class ConnectionPool:
         now = time.monotonic()
         retired = self._too_old(conn, now)
         # A closed store runs no sweep, so an idle connection would never expire.
-        if conn.dirty or retired or not self.reuse or not self._background.open:
+        if conn.dirty or conn.holds_roots or retired or not self.reuse or not self._background.open:
             if conn.dirty:
                 log.warning(
                     "store_discarding_dirty_connection",

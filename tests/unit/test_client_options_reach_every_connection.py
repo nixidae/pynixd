@@ -299,6 +299,7 @@ class PooledConnection:
     def __init__(self, conn_id: str, options: SetOptionsRequest | None) -> None:
         self.id = conn_id
         self.dirty = False
+        self.holds_roots = False
         self.op_log: list[str] = []
         self.opened_at = 0.0
         self.closed = False

@@ -61,6 +61,7 @@ class MockConnection:
         self.features: set[str] = set()
         self.connected = True
         self.dirty = False
+        self.holds_roots = False
         self.op_log: list[str] = []
         # `ConnectionPool._too_old` reads this on every `acquire`, so a stand-in
         # for `Connection` has to carry it. `Connection.__init__` sets it from

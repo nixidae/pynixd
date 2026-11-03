@@ -151,9 +151,10 @@ def output_paths(build: QueuedBuild, resp: BuildDerivationResponse) -> StorePath
 
 
 async def add_temp_roots(conn: Connection, paths: StorePathSet) -> None:
-    """Root *paths* on *conn*'s daemon for the connection's life."""
+    """Root *paths* on *conn*'s daemon for the connection's life. The pool closes *conn* when it comes back."""
     if not paths:
         return
+    conn.holds_roots = True
     if FEATURE_ADD_TEMP_ROOTS in conn.standard_features:
         await conn.call(AddTempRootsRequest(paths=paths), raise_on_error=True)
         return

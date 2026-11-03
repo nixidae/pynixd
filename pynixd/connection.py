@@ -216,6 +216,15 @@ class Connection:
         connection that has lived long enough, which retires those roots with
         it. Issue #20.
         """
+        self.holds_roots: bool = False
+        """Whether pynixd rooted paths on this connection's worker for one holder.
+
+        `scheduler.add_temp_roots` sets it. Such a root is for the holder
+        alone, so the pool closes the connection when the holder gives it
+        back. Reused, the worker keeps the roots for the next client, and a
+        `nix store delete` of a path nothing roots fails with "still alive".
+        `multiple-outputs.sh` of the Nix functional tests found it.
+        """
         self.applied_options: SetOptionsRequest | None = None
         """The option set that this connection carries now.
 

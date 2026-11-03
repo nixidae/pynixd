@@ -112,6 +112,24 @@ async def test_the_pool_does_not_hand_out_a_connection_past_its_lifetime() -> No
 
 
 @pytest.mark.anyio
+async def test_a_connection_that_holds_roots_closes_when_given_back() -> None:
+    """The roots are for the holder alone; a reused worker would keep them for the next client."""
+    pool = make_pool(300.0)
+    rooted, plain = FakeConnection("rooted"), FakeConnection("plain")
+    rooted.holds_roots = True
+    pool.all_conns.extend([rooted, plain])
+
+    async with pool._background.running():
+        await pool._give_back(rooted)
+        await pool._give_back(plain)
+
+        assert rooted.closed
+        assert rooted not in pool.all_conns
+        assert [conn for conn, _ in pool.idle_conns] == [plain]
+        assert not plain.closed
+
+
+@pytest.mark.anyio
 async def test_the_pool_reuses_a_connection_inside_its_lifetime() -> None:
     pool = make_pool(300.0)
     now = time.monotonic()
