@@ -4,14 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import anyio
 import pytest
 
-from pynixd.gc import LivenessWatch
 from pynixd.instance import Server
 from pynixd.liveness_watch import DirtyFlag
+from pynixd_store.gc import LivenessWatch
 from pynixd_store.store_layout import StoreLayout
 
 A = "/nix/store/00000000000000000000000000000000-a"
@@ -40,11 +39,11 @@ async def test_refresh_never_asks_nix() -> None:
     assert tracker.refreshed == 1
 
 
-def test_from_local_needs_a_layout() -> None:
-    assert LivenessWatch.from_local(object()) is None  # type: ignore[arg-type]  # no layout
+def test_from_layout_needs_a_layout() -> None:
+    assert LivenessWatch.from_layout(None) is None
 
 
-def test_from_local_mirrors_the_served_store(tmp_path: Path) -> None:
+def test_from_layout_mirrors_the_served_store(tmp_path: Path) -> None:
     """The tracker reads the layout's state and names its path prefix."""
     layout = StoreLayout(
         store_dir=Path("/nix/store"),
@@ -53,14 +52,7 @@ def test_from_local_mirrors_the_served_store(tmp_path: Path) -> None:
         relocated=False,
     )
 
-    @dataclass
-    class LaidOut:
-        layout: StoreLayout
-
-        async def call(self, request: Any, **_kwargs: Any) -> Any:
-            raise AssertionError("no call on construction")
-
-    watch = LivenessWatch.from_local(LaidOut(layout=layout))  # type: ignore[arg-type]  # layout only
+    watch = LivenessWatch.from_layout(layout)
 
     assert watch is not None
     assert watch.tracker.state_dir == layout.state_dir

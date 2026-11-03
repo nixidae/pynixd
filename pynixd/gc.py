@@ -39,15 +39,13 @@ from nix_daemon_protocol import (
     StorePath,
 )
 from pynixd_store.gc import (
+    GarbagePlanner,
     by_weight,
     over_target,
     physical_batch_total,
-    pressure_usage,
     take_until_below_target,
 )
 from pynixd_store.gc_sql import Bound, SqlPlan, referrer_first
-from pynixd_store.liveness import RootsTracker, walk_volatile
-from pynixd_store.local_store_db import LocalStoreDB, resolve_db_path
 
 from .daemon_extensions import (
     PynixdCollectGarbageResponse,
@@ -104,7 +102,7 @@ class _MemoryPlan:
     async def weighed(
         self, *, pressure: float, now: int, bound: Bound | None, limit: int | None
     ) -> list[tuple[str, int, int]] | None:
-        weights = await self._collector._weigh({StorePath(path) for path in self._planned - self._vetoed})
+        weights = await self._collector.planner().weigh(self._planned - self._vetoed)
         if weights is None:
             return None
         self._weights = weights
@@ -124,7 +122,7 @@ class _MemoryPlan:
         return {path: self._weights[path] for path in paths if path in self._weights}
 
     async def close_batch(self, batch: list[str]) -> list[str]:
-        return await self._collector._close_batch(self._collector.ctx.local_store, batch, self._planned)
+        return await self._collector.planner().close_batch(batch, self._planned)
 
     async def order_batch(self, batch: list[str]) -> list[str]:
         return await self._collector._order_batch(self._collector.ctx.local_store, batch)
@@ -135,6 +133,10 @@ class Collector:
 
     def __init__(self, ctx: PynixdContext) -> None:
         self.ctx = ctx
+
+    def planner(self) -> GarbagePlanner:
+        """The reads of the local store's roots, database and disk."""
+        return _planner_of(self.ctx.local_store)
 
     async def run(
         self,
@@ -205,7 +207,7 @@ class Collector:
             if client is not None:
                 await client.send(line)
             return self._answered(PynixdCollectGarbageResponse(store_paths=set(), bytes=0), lines)
-        volatile = await run_sync(self._volatile_seeds)
+        volatile = await run_sync(self.planner().volatile_roots)
         vetoed = await self._veto_closure(volatile)
         if usage is None:
             # Unknown reads as half full: with no information neither axis
@@ -288,18 +290,12 @@ class Collector:
         """
         local = self.ctx.local_store
         max_age = getattr(local, "gc_max_age", None)
-        db = getattr(local, "db", None)
-        if (
-            max_age is None
-            or not isinstance(db, LocalStoreDB)
-            or not db.active
-            or not db.schema.usable
-            or db.db_path is None
-        ):
+        db_path = self.planner().sql_db_path()
+        if max_age is None or db_path is None:
             yield _MemoryPlan(self, {str(path) for path in await self.plan(pressed=pressed)}, vetoed)
             return
         live = await self._live_paths(local)
-        async with SqlPlan.open(db.db_path) as plan:
+        async with SqlPlan.open(db_path) as plan:
             counts = await plan.plan(live=live, vetoed=vetoed, cutoff=None if pressed else int(time.time()) - max_age)
             log.info(
                 "gc_plan_lru",
@@ -314,7 +310,7 @@ class Collector:
 
     async def _live_paths(self, local: Store) -> set[str]:
         """The mirror's live set, refreshed just now, or Nix's when there is no mirror."""
-        mirror = await self._mirror_live(local)
+        mirror = await self.planner().live()
         if mirror is not None:
             return mirror
         return {str(path) for path in (await local.call(_request(GCAction.RETURN_LIVE, set()))).paths_deleted}
@@ -325,18 +321,6 @@ class Collector:
         for line in lines:
             response.logs.add(line)
         return response
-
-    def _volatile_seeds(self) -> set[str]:
-        """The living roots, read synchronously for a worker thread.
-
-        `/proc` and `temproots` move constantly and no watch covers them,
-        so every pass reads them fresh just before planning. A store
-        without a layout has no state to read, and vetoes nothing.
-        """
-        layout = getattr(self.ctx.local_store, "layout", None)
-        if layout is None:
-            return set()
-        return walk_volatile(layout.state_dir, str(layout.store_dir))
 
     async def _veto_closure(self, volatile: set[str]) -> set[str]:
         """*volatile* plus what it references: the paths no pass may name.
@@ -366,32 +350,6 @@ class Collector:
         # replace it: on sg1 every pass had such a seed, and the fallback to
         # the seeds alone dropped 404 of 705 paths from the veto. #1098.
         return closed | volatile
-
-    async def _weigh(self, paths: set[StorePath]) -> dict[str, tuple[int, int]] | None:
-        """`(nar_size, age_seconds)` per planned path, or `None` when unknown.
-
-        Sizes come from `ValidPaths`, ages from the access table; a path
-        with no date weighs age zero, which deprioritises it without
-        excluding it. `None` fails the pass closed: a pass that cannot see
-        the whole state deletes nothing, and shows nothing either.
-        """
-        if not paths:
-            return {}
-        # A database read, not a store request: it marks nothing, so weighing
-        # never freshens the judged, and it loads no references.
-        query = getattr(getattr(self.ctx.local_store, "db", None), "query_weights", None)
-        if query is None:
-            log.warning("gc_no_access_tracking")
-            return None
-        try:
-            rows = await query({str(path) for path in paths})
-        except Exception:
-            log.warning("gc_weigh_failed", exc_info=True)
-            return None
-        if rows is None:
-            return None
-        now = time.time()
-        return {path: (size, 0 if seen is None else max(0, int(now - seen))) for path, (size, seen) in rows.items()}
 
     def _log_top(
         self, ordered: list[str], weights: dict[str, tuple[int, int]], pressure: float, count: int = 10
@@ -432,25 +390,6 @@ class Collector:
             return await self._plan_deferred(local)
         return await self._plan_lru(local, None if pressed else max_age)
 
-    async def _mirror_live(self, local: Store) -> set[str] | None:
-        """The tracker's live set, refreshed just now, or `None` with no mirror.
-
-        The tracker reads roots and SQLite in a worker thread.
-        Missing state or a failed refresh returns `None`; callers then ask Nix.
-        """
-        try:
-            layout = getattr(local, "layout", None)
-            if layout is None:
-                return None
-            db_path = resolve_db_path(layout)
-            if db_path is None:
-                return None
-            tracker = RootsTracker(layout.state_dir, str(layout.store_dir), db_path)
-            return await run_sync(tracker.refresh)
-        except Exception:
-            log.warning("gc_mirror_refresh_failed", exc_info=True)
-            return None
-
     async def _plan_deferred(self, local: Store) -> set[StorePath]:
         """The paths that may leave the store.
 
@@ -489,7 +428,7 @@ class Collector:
             log.error("gc_closure_incomplete", asked=len(unheld), answered=len(keep))
             return set()
 
-        mirror = await self._mirror_live(local)
+        mirror = await self.planner().live()
         if mirror is None:
             live: set[StorePath] = (await local.call(_request(GCAction.RETURN_LIVE, set()))).paths_deleted
         else:
@@ -512,7 +451,7 @@ class Collector:
         if not all_paths:
             return set()
 
-        live_paths = await self._mirror_live(local)
+        live_paths = await self.planner().live()
         if live_paths is None:
             live = {str(path) for path in (await local.call(_request(GCAction.RETURN_LIVE, set()))).paths_deleted}
         else:
@@ -522,13 +461,13 @@ class Collector:
         if max_age is None:
             stale = dead
         else:
-            found = await self._stale_since(local, max_age)
+            found = await self.planner().stale_since(max_age)
             if found is None:
                 return set()
             stale = found
         seeds = dead & stale
 
-        closed = await self._close_under_referrers(local, seeds)
+        closed = await self.planner().referrer_closure(seeds)
         if closed is None:
             return set()
         droppable = {path for path in closed if path in dead}
@@ -541,68 +480,6 @@ class Collector:
             droppable=len(droppable),
         )
         return {StorePath(path) for path in droppable}
-
-    async def _stale_since(self, local: Store, max_age: int) -> set[str] | None:
-        """The paths unreferenced for `max_age` seconds, or `None` when unknown."""
-        query = getattr(getattr(local, "db", None), "query_paths_not_referenced_since", None)
-        if query is None:
-            log.warning("gc_no_access_tracking")
-            return None
-        try:
-            result = await query(max_age)
-        except Exception:
-            log.warning("gc_stale_query_failed", exc_info=True)
-            return None
-        if result is None:
-            return None
-        return {str(path) for path in result}
-
-    async def _close_under_referrers(self, local: Store, seeds: set[str]) -> set[str] | None:
-        """`seeds` plus everything that references them, transitively."""
-        query = getattr(getattr(local, "db", None), "query_referrer_closure", None)
-        if query is None:
-            log.warning("gc_no_referrer_closure")
-            return None
-        try:
-            closure: set[str] | None = await query(seeds)
-            return closure
-        except Exception:
-            log.warning("gc_referrer_query_failed", exc_info=True)
-            return None
-
-    async def _close_batch(self, local: Store, batch: list[str], planned: set[str]) -> list[str]:
-        """The batch closed under referrers again, against the plan.
-
-        Each seed brings its transitive referrers; a seed whose closure
-        escapes the plan cannot be deleted now, so it drops instead of
-        poisoning the request. Membership in the plan is the liveness
-        answer: the planners closed the plan, so every referrer the
-        database knows is either planned or live. Seeds first in batch
-        order, joined referrers after. An unanswerable database plans
-        nothing rather than half a batch.
-        """
-        query = getattr(getattr(local, "db", None), "query_referrer_closure", None)
-        if query is None:
-            log.warning("gc_batch_close_unavailable")
-            return []
-        kept: dict[str, None] = {}
-        for seed in batch:
-            try:
-                closed = await query({seed})
-            except Exception:
-                log.warning("gc_batch_close_failed", exc_info=True)
-                return []
-            if closed is None:
-                log.warning("gc_batch_close_unavailable")
-                return []
-            outside = {path for path in closed if path not in planned}
-            if outside:
-                log.info("gc_batch_seed_dropped", seed=seed, live_referrers=len(outside))
-                continue
-            for path in closed:
-                kept.setdefault(path)
-        order = {path: index for index, path in enumerate(batch)}
-        return sorted(kept, key=lambda path: (0, order[path]) if path in order else (1, path))
 
     async def _order_batch(self, local: Store, batch: list[str]) -> list[str]:
         """Resolve the whole graph in Python before dividing it into delete groups."""
@@ -658,7 +535,7 @@ class Collector:
         if not batch:
             return self._answered(PynixdCollectGarbageResponse(store_paths=set(), bytes=0), lines)
 
-        directory = getattr(getattr(local, "layout", None), "real_store_dir", None)
+        directory = self.planner().real_store_dir
         physical = await run_sync(physical_batch_total, batch, directory)
         deleted: set[str] = set()
         recovered: set[str] = set()
@@ -793,42 +670,9 @@ class Collector:
     @staticmethod
     def _disk_usage(local: Store) -> tuple[int, int] | None:
         """`(used, total)` bytes of pressure on the filesystem holding the store."""
-        try:
-            directory = getattr(getattr(local, "layout", None), "real_store_dir", None)
-            if directory is None:
-                return None
-            return pressure_usage(directory)
-        except Exception:
-            log.warning("gc_disk_usage_failed", exc_info=True)
-            return None
+        return _planner_of(local).disk_usage()
 
 
-class LivenessWatch:
-    """Refresh Python liveness without taking the daemon GC lock."""
-
-    def __init__(self, tracker: RootsTracker) -> None:
-        self.tracker = tracker
-
-    @classmethod
-    def from_local(cls, local: Store) -> LivenessWatch | None:
-        """A watch over *local*, or `None` when it cannot host a mirror.
-
-        The mirror lives in the store's own database beside Nix's tables,
-        and reads the store's own roots directories: without a layout there
-        is neither. `None` is not an error -- a store served without its
-        state simply gathers no evidence.
-        """
-        layout = getattr(local, "layout", None)
-        if layout is None:
-            return None
-        db_path = resolve_db_path(layout)
-        if db_path is None:
-            return None
-        return cls(RootsTracker(layout.state_dir, str(layout.store_dir), db_path))
-
-    async def refresh(self) -> set[str]:
-        """Refresh the mirror without asking Nix anything.
-
-        Stable-root changes and the configured interval trigger refreshes.
-        """
-        return await run_sync(self.tracker.refresh)
+def _planner_of(local: Store) -> GarbagePlanner:
+    """The engine's view of *local*: a store served without its state has neither part."""
+    return GarbagePlanner(getattr(local, "layout", None), getattr(local, "db", None))

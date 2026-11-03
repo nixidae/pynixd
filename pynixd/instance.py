@@ -18,14 +18,14 @@ import structlog
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from nix_daemon_protocol.store_dir import set_real_store_dir, set_store_dir
 from pynixd_store.background import Background
-from pynixd_store.gc import pressure_usage
+from pynixd_store.gc import LivenessWatch, pressure_usage
 from pynixd_store.store_layout import DEFAULT_STORE_DIR
 
 from . import _optional, metrics, wire
 from .config import ExternalUnixStoreSpec, HTTPBinaryCacheSpec, LocalSocketStoreSpec, PynixdSettings
 from .context import PynixdContext
 from .exceptions import GCNotPermittedError
-from .gc import Collector, LivenessWatch
+from .gc import Collector
 from .health import HealthReport, LoopLagMonitor, StallWatchdog
 from .liveness_watch import DirtyFlag, StableRootsWatch
 from .scheduler import Scheduler
@@ -828,7 +828,7 @@ class Server:
             self._spawn(self._gc_tick)
             liveness_interval = self.ctx.settings.gc_liveness_interval
             if liveness_interval is not None:
-                watch = LivenessWatch.from_local(self.ctx.local_store)
+                watch = LivenessWatch.from_layout(getattr(self.ctx.local_store, "layout", None))
                 if watch is None:
                     log.warning("gc_liveness_watch_unavailable")
                 else:

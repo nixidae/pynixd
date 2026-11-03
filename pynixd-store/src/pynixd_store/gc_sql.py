@@ -266,7 +266,7 @@ class SqlPlan:
     async def close_batch(self, batch: list[str]) -> list[str]:
         """The batch closed under referrers again, against the plan.
 
-        `Collector._close_batch` asks one recursive query per seed. Here a
+        `GarbagePlanner.close_batch` asks one recursive query per seed. Here a
         seed escapes when an outside referrer reaches it, found in one walk
         down from the escaped referrers, and the survivors close in one walk
         up. Seeds first in batch order, joined referrers after, by path.
