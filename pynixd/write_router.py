@@ -22,11 +22,14 @@ from nix_daemon_protocol.add_build_log import AddBuildLogResponse
 from nix_daemon_protocol.add_indirect_root import AddIndirectRootResponse
 from nix_daemon_protocol.add_perm_root import AddPermRootResponse
 from nix_daemon_protocol.add_signatures import AddSignaturesResponse
+from nix_daemon_protocol.collect_garbage import CollectGarbageResponse
 from nix_daemon_protocol.logs import LogNext
 from nix_daemon_protocol.operations import STANDARD_OPERATIONS
 from nix_daemon_protocol.optimise_store import OptimiseStoreResponse
-from nix_daemon_protocol.protocol import Verbosity
+from nix_daemon_protocol.protocol import GCAction, Verbosity
+from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.verify_store import VerifyStoreResponse
+from pynixd_store.collect import GCOptions
 from pynixd_store.content_address import ContentAddress, Method, content_addressed_path, parse_method_algo
 from pynixd_store.optimise import render_size
 from pynixd_store.source import Metered
@@ -41,6 +44,7 @@ from .store.transfer import as_copied
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 
+    from nix_daemon_protocol.collect_garbage import CollectGarbageRequest
     from nix_daemon_protocol.signature import Signature
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
     from pynixd_store.add import ImportSettings
@@ -504,6 +508,33 @@ class WriteRouter:
             return await self.daemon.verify_store(check_contents=check_contents, repair=repair)
         errors = await engine.verify_store(check_contents=check_contents, report=partial(_client_log, conn))
         return VerifyStoreResponse.fast(value=int(errors))
+
+    async def collect_garbage(
+        self, request: CollectGarbageRequest, *, conn: ClientConn | None = None
+    ) -> CollectGarbageResponse:
+        """CollectGarbage (op 20): `LocalStore::collectGarbage`. The handler has refused what Nix refuses.
+
+        On the engine route pynixd sends the lines Nix prints, and the
+        session's overrides reach `keep-outputs` and `keep-derivations`.
+        """
+        engine = self._root_engine("CollectGarbage")
+        if engine is None:
+            return await self.daemon.collect_garbage(request, client=conn)
+        gc_paths = request.with_both_shapes().gc_paths
+        named = None if gc_paths is None or gc_paths.whole_store else gc_paths
+        options = GCOptions(
+            action=GCAction(request.action),
+            paths=None if named is None else frozenset(path.path for path in named.paths),
+            delete_referrers=named is not None and bool(named.delete_referrers),
+            max_freed=request.max_freed,
+        )
+        overrides = conn.options.overrides if conn is not None and conn.options is not None else {}
+        results = await engine.collect_garbage(
+            options, settings=await engine.gc_settings(overrides), report=partial(_client_log, conn)
+        )
+        return CollectGarbageResponse.fast(
+            paths_deleted={StorePath(path=path) for path in results.paths}, bytes_freed=results.bytes_freed, obsolete=0
+        )
 
     async def import_nar(self, info: ValidPathInfo, source: Source, *, dont_check_sigs: bool) -> None:
         """A NAR pynixd itself fetched or received: a substitution, or the HTTP cache's upload."""

@@ -39,6 +39,7 @@ from .transfer import as_copied
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 
+    from nix_daemon_protocol.collect_garbage import CollectGarbageRequest, CollectGarbageResponse
     from nix_daemon_protocol.signature import Signature
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
     from pynixd_store.source import Source
@@ -69,6 +70,18 @@ class DaemonWrites:
     async def optimise_store(self) -> OptimiseStoreResponse:
         """OptimiseStore (op 34). No body, no option; the answer carries the daemon's log lines."""
         response: OptimiseStoreResponse = await self.store.call(OptimiseStoreRequest())
+        return response
+
+    async def collect_garbage(
+        self, request: CollectGarbageRequest, *, client: ClientConn | None
+    ) -> CollectGarbageResponse:
+        """CollectGarbage (op 20). The client's connection carries its options and takes the daemon's lines as they come.
+
+        `execute`, not `call`: `DaemonStore.collect_garbage` forgets the
+        cached info of each deleted path, as `invalidatePath` does
+        (`local-store.cc:1016`). nixidae/nixidae#1007.
+        """
+        response: CollectGarbageResponse = await self.store.execute(request, client=client)
         return response
 
     async def verify_store(self, *, check_contents: bool, repair: bool) -> VerifyStoreResponse:

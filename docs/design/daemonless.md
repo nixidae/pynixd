@@ -62,7 +62,9 @@ and AddMultipleToStore call it on their `pynixd` routes. `register_drv_output`
 `addBuildLog` does. `optimise_store` (`pynixd_store/optimise.py`) hard-links
 identical files into `.links`, as `optimiseStore` does. `verify_store`
 (`pynixd_store/verify.py` and the engine) cross-checks the database and the
-store directory, as `verifyStore` does.
+store directory, as `verifyStore` does. `collect_garbage`
+(`pynixd_store/collect.py` and `collector.py`) deletes what no root keeps, as
+`collectGarbage` does.
 
 | op | today | to own it |
 | --- | --- | --- |
@@ -89,7 +91,7 @@ store directory, as `verifyStore` does.
 
 | op | today | to own it |
 | --- | --- | --- |
-| 20 CollectGarbage | daemon deletes; pynixd plans its own (`gc.py`) and asks the daemon for the live set (`RETURN_LIVE`) | the live set (roots and temp roots) and deletion |
+| 20 CollectGarbage | on trial: the daemon in a deployment; route `pynixd` collects as Nix 2.35's `collectGarbage` does (`gc.cc:356`): the big lock held for writing, the roots socket served for the whole walk (a process that adds a temporary root meanwhile sends it there, and its answer waits while that path is deleted), then from each candidate a walk through its referrers that keeps the closure when it reaches a root, a temporary root or a live path, and otherwise deletes it referrers first. `keep-outputs` and `keep-derivations` widen the walk of the whole store only, as in 2.35. It sends each line Nix prints. `ignore-liveness` is refused for every client (`daemon.cc:774`). pynixd's own collector (op 101, `gc.py`) still deletes through the daemon | — |
 | 34 OptimiseStore | on trial: the daemon in a deployment; route `pynixd` hard-links identical files into `.links` as `optimiseStore` does (`optimise-store.cc`): each regular file and symlink hashed over its NAR, the first of a hash linked as `.links/<Nix32 NAR hash>`, a later file replaced by a hard link through a temporary link and a rename. It holds a temporary root on each path, as Nix does, so the daemon's collector does not remove one mid-walk. It reports the bytes it freed, as Nix's `printInfo` does (`optimise-store.cc:328`). Every client may run it (`daemon.cc:887`) | — |
 | 35 VerifyStore | on trial: the daemon in a deployment; route `pynixd` cross-checks the database and the store directory as `verifyStore` does (`local-store.cc:1380`), under the big garbage-collector lock held for reading: a valid path the directory lost is removed from the database when its referrers can go too; with `--check-contents` each `.links` entry and each valid path is re-hashed, a modified one is an error and a missing hash is filled. It sends each line Nix prints, at Nix's level, and drops a line above the client's verbosity as `TunnelLogger::log` does (`daemon.cc:89`). A `repair` request goes to the daemon, which has the builder `repairPath` needs; an untrusted repair is refused (`daemon.cc:896`) | — |
 | 19 SetOptions | owned (kept per session, sent per connection) | stops sending once nothing goes upstream |
@@ -176,6 +178,9 @@ shared file, optimises, and reads the inodes back
 (`tests/functional/test_optimise_store_dedup.py`). `VerifyStore` walks the
 store on the `pynixd` route, and the test adds a path, deletes its files, and
 checks `nix-store --verify` invalidates it
-(`tests/functional/test_verify_store_invalidates.py`). pynixd's own imports, a
+(`tests/functional/test_verify_store_invalidates.py`). `CollectGarbage` collects
+on the `pynixd` route, and the test adds two paths, roots one, collects, and
+reads validity and the disk back (`tests/functional/test_collect_garbage_engine.py`).
+pynixd's own imports, a
 substitution and the HTTP cache's upload, follow AddToStoreNar's route
 (`tests/functional/test_substitution_import.py`).

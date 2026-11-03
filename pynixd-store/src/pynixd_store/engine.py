@@ -18,13 +18,14 @@ import anyio.to_thread
 from nix_daemon_protocol.content_address import ContentAddress
 from nix_daemon_protocol.nar_hash import NARHash
 from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
-from nix_daemon_protocol.protocol import Verbosity
+from nix_daemon_protocol.protocol import GCAction, Verbosity
 from nix_daemon_protocol.signature import Signature
 from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 
-from . import add, build_log, optimise, register, roots, verify
+from . import add, build_log, collect, optimise, register, roots, verify
+from .collector import Collection
 from .drv_parser import read_drv_file
 from .hintfmt import magenta
 from .liveness import unlink_stale_auto_roots, walk_roots
@@ -46,7 +47,7 @@ from .queries import (
     QUERY_VALID_DERIVERS,
     QUERY_VALID_PATHS,
 )
-from .temp_roots import TempRoots
+from .temp_roots import GC_SOCKET_PATH, TempRoots
 from .utils import nix32_encode
 
 if TYPE_CHECKING:
@@ -108,6 +109,10 @@ class StoreEngine:
         if self._settings is None:
             self._settings = add.ImportSettings.from_nix_config(await self._read_config())
         return self._settings
+
+    async def gc_settings(self, overrides: Mapping[str, str]) -> collect.GCSettings:
+        """What `collectGarbage` reads of the settings, the session's overrides applied. Read per call: a collection is rare."""
+        return collect.GCSettings.from_nix_config(await self._read_config(), overrides)
 
     @property
     def writable(self) -> bool:
@@ -441,6 +446,45 @@ class StoreEngine:
                 errors = await self._check_link_hashes(report) or errors
                 errors = await self._check_store_hashes(real_store_dir, valid, report) or errors
             return errors
+        finally:
+            await anyio.to_thread.run_sync(verify.release_gc_lock, gc_lock)
+
+    async def collect_garbage(
+        self, options: collect.GCOptions, *, settings: collect.GCSettings, report: Report
+    ) -> collect.GCResults:
+        """`LocalStore::collectGarbage` (`gc.cc:356`): the lock, the roots socket, then the walk.
+
+        A process that adds a temporary root while the lock is held gives it
+        to the socket, pynixd's own sessions included, so the socket serves
+        for the whole walk. *report* gets each line Nix prints.
+        """
+        if not self.writes:
+            raise RuntimeError(f"store {self._name}: pynixd_writes is off, so pynixd collects no garbage")
+        if not self.writable:
+            raise RuntimeError(f"store {self._name}: pynixd cannot write the store database")
+        if options.paths is not None and not options.paths:
+            return collect.GCResults()
+        state_dir = self.layout.state_dir
+        if options.action in {GCAction.DELETE_DEAD, GCAction.DELETE_SPECIFIC}:
+            await anyio.to_thread.run_sync(collect.delete_path, state_dir / "db" / "reserved")
+        gc_lock = await anyio.to_thread.run_sync(verify.open_gc_lock, state_dir)
+        try:
+            if not await anyio.to_thread.run_sync(collect.try_gc_lock_exclusive, gc_lock):
+                await report(Verbosity.INFO, "waiting for the big garbage collector lock...")
+                await anyio.to_thread.run_sync(collect.wait_gc_lock_exclusive, gc_lock)
+            server = collect.RootsServer(str(self.layout.store_dir), report)
+            outcome: collect.GCResults | Exception
+            async with anyio.create_task_group() as tg:
+                await tg.start(server.serve, state_dir / GC_SOCKET_PATH)
+                try:
+                    outcome = await Collection(self, options, settings, server, report).run()
+                # Raised outside the group, so a caller sees Nix's error and not a group around it.
+                except Exception as exc:  # noqa: BLE001 -- re-raised below
+                    outcome = exc
+                tg.cancel_scope.cancel()
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
         finally:
             await anyio.to_thread.run_sync(verify.release_gc_lock, gc_lock)
 

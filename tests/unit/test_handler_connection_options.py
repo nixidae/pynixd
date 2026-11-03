@@ -66,6 +66,7 @@ OPTIONLESS_ROUTER_METHODS = {
     "add_build_log": "`LocalStore::addBuildLog` reads no setting, so the client's options change nothing.",
     "optimise_store": "`LocalStore::optimiseStore` reads no setting, so the client's options change nothing.",
     "verify_store": "`LocalStore::verifyStore` reads no client setting; the repair gate is the handler's.",
+    "collect_garbage": "The daemon route runs through `Store.execute` with the client's connection, which carries its options.",
 }
 """Each router method whose daemon write may carry no client options, and why."""
 

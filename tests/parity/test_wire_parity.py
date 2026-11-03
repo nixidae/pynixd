@@ -277,6 +277,7 @@ def _config(work: Path, root: Path) -> Path:
                             "AddBuildLog": "pynixd",
                             "OptimiseStore": "pynixd",
                             "VerifyStore": "pynixd",
+                            "CollectGarbage": "pynixd",
                         },
                     },
                 },

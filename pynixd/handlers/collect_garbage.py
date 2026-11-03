@@ -8,6 +8,7 @@ from ..constants import FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS
 from ..exceptions import ClosingError
 from ..serde import CollectGarbageRequest
 from ..serde.context import ReadContext
+from ..store.local_db import write_router
 from ._base import Handler
 
 if TYPE_CHECKING:
@@ -20,7 +21,7 @@ class CollectGarbageHandler(Handler):
     op: ClassVar[int] = 20
 
     async def handle(self, ctx: RequestContext) -> object | None:
-        """Decode the request and forward it to the daemon."""
+        """Decode the request, refuse what Nix refuses, then route it."""
         req = await CollectGarbageRequest.from_reader(
             ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
         )
@@ -42,8 +43,8 @@ class CollectGarbageHandler(Handler):
         # collector reads those roots and frees nothing. `nix-daemon` has no
         # such connection, because the client that made the root is gone.
         await ctx.proxy.local_store.retire_idle_connections()
-        # `execute`, not `call`: `DaemonStore.collect_garbage` forgets the
-        # cached info of each deleted path, as `invalidatePath` does
-        # (`local-store.cc:1016`). nixidae/nixidae#1007.
-        response: object | None = await ctx.proxy.local_store.execute(req, client=ctx.proxy.client)
-        return response
+        # `daemon.cc:774`: after `startWork`, for every client.
+        if req.ignore_liveness:
+            await ctx.proxy.send_error("you are not allowed to ignore liveness")
+            return None
+        return await write_router(ctx.proxy.local_store).collect_garbage(req, conn=ctx.proxy.client)

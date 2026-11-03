@@ -98,6 +98,12 @@ class FakeStore:
 
     def __init__(self) -> None:
         self.calls: list[str] = []
+        # `write_router` takes a store that pynixd does not write as its own daemon.
+        self.daemon_client = self
+        self.store_id = "fake"
+
+    def add_path_info(self, _info: Any) -> None:
+        return
 
     async def retire_idle_connections(self) -> int:
         self.calls.append("retire")

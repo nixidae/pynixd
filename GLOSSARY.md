@@ -61,6 +61,17 @@ The collector rechecks validity directly with the daemon, then splits the remain
 Refused paths get one final retry after later groups release their references.
 Timed-out groups receive no further deletion requests during that run.
 
+### GC Roots Socket
+The socket at `<state>/gc-socket/socket` that a collector serves while it holds the big lock.
+A process that adds a temporary root during the collection cannot write it where the collector already read.
+It sends the path to the socket and waits for one byte.
+The engine serves it on the `pynixd` route of CollectGarbage (`pynixd_store.collect.RootsServer`).
+
+### Pending Path
+The path the collector deletes at this moment, by hash part.
+The roots socket holds its answer to a client that roots that path until the deletion ends.
+So no client re-creates a path while the collector deletes it.
+
 ### Three-Tier Execution
 The pattern used to separate protocol IO from logic:
 1. **Server Dispatch** (`handle`): Entry point that decodes from the client wire.
