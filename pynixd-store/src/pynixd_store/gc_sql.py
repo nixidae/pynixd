@@ -76,11 +76,11 @@ SELECT
     (SELECT count(*) FROM gc_planned WHERE id IN (SELECT id FROM gc_veto))
 """
 
-# The weight `_by_weight` computes, in the same operations and the same
+# The weight `by_weight` computes, in the same operations and the same
 # order, so the two agree to the bit: size and age each normalised against
 # the candidates, blended by pressure, path string breaking ties. `before`
 # is what the rows ahead of this one free, which is what
-# `_take_until_below_target` tests before it takes a row.
+# `take_until_below_target` tests before it takes a row.
 _WEIGHED = """
 WITH w AS (
     SELECT d.path, d.size, CASE WHEN d.seen IS NULL THEN 0 ELSE max(0, :now - d.seen) END AS age

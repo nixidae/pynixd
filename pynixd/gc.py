@@ -19,13 +19,10 @@ pass by pressure instead of emptying the plan at once.
 
 from __future__ import annotations
 
-import os
-import stat
 import time
 from collections import deque
 from contextlib import asynccontextmanager
 from itertools import batched
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import aiosqlite
@@ -41,6 +38,13 @@ from nix_daemon_protocol import (
     QueryValidPathsRequest,
     StorePath,
 )
+from pynixd_store.gc import (
+    by_weight,
+    over_target,
+    physical_batch_total,
+    pressure_usage,
+    take_until_below_target,
+)
 from pynixd_store.gc_sql import Bound, SqlPlan, referrer_first
 from pynixd_store.liveness import RootsTracker, walk_volatile
 from pynixd_store.local_store_db import LocalStoreDB, resolve_db_path
@@ -55,7 +59,7 @@ from .exceptions import BackendError, GCNotPermittedError
 from .store import is_http_binary_cache
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
+    from collections.abc import AsyncIterator, Sequence
 
     from .connection import ClientConn, Connection
     from .context import PynixdContext
@@ -70,50 +74,6 @@ _DELETE_TIMEOUT_S = 60
 """Bound each delete and recovery query; cancelled connections are discarded."""
 
 
-def _physical_batch_total(top_paths: Iterable[str], store_dir: Path | None) -> int | None:
-    """Block bytes the batch holds, hardlinks counted once, or `None`.
-
-    The daemon counts `st.st_size` per deleted file (`deletePath` in
-    `file-system.cc`), so sparse files count their holes and two-link
-    files count twice -- the number `nix store gc` prints has the same
-    fiction. An operator deciding by `df` needs blocks, so this walks
-    the batch with `lstat` (never following symlinks), dedupes by
-    `(st_dev, st_ino)`, and sums `st_blocks * 512`. `None` on anything
-    unmeasurable -- no layout, a path that vanished, an unreadable
-    directory -- and the caller falls back to the daemon number.
-    """
-    if store_dir is None:
-        return None
-    total = 0
-    seen: set[tuple[int, int]] = set()
-    queue: deque[Path] = deque()
-    for top in top_paths:
-        if store_dir != Path("/nix/store") and top.startswith("/nix/store/"):
-            queue.append(store_dir / Path(top).relative_to("/nix/store"))
-        else:
-            queue.append(Path(top))
-    try:
-        while queue:
-            current = queue.popleft()
-            try:
-                info = current.lstat()
-            except OSError:
-                return None
-            key = (info.st_dev, info.st_ino)
-            if key in seen:
-                continue
-            seen.add(key)
-            total += info.st_blocks * 512
-            if stat.S_ISDIR(info.st_mode):
-                try:
-                    queue.extend(current.iterdir())
-                except OSError:
-                    return None
-    except OSError:
-        return None
-    return total
-
-
 def _request(action: GCAction, paths: set[StorePath]) -> CollectGarbageRequest:
     return CollectGarbageRequest(
         action=action,
@@ -124,53 +84,6 @@ def _request(action: GCAction, paths: set[StorePath]) -> CollectGarbageRequest:
         obsolete2=0,
         obsolete3=0,
     )
-
-
-def _by_weight(weights: Mapping[str, tuple[int, int]], pressure: float) -> list[str]:
-    """The paths in delete order: size matters more the fuller the disk is.
-
-    Pure, so the order a pass deletes in is asserted without a daemon.
-    `weights` maps the path string to `(nar_size, age_seconds)`; `pressure`
-    is the disk usage fraction. Both axes normalise against the candidate
-    set, and the score blends them by pressure:
-
-        score = pressure * size_norm + (1 - pressure) * age_norm
-
-    An empty disk collects oldest first, a full disk biggest first, and
-    every pressure between moves continuously: no threshold flips the order
-    between two passes. Descending score, path string breaking ties so the
-    order is stable run to run.
-    """
-    sizes = {path: size for path, (size, _) in weights.items()}
-    ages = {path: age for path, (_, age) in weights.items()}
-    biggest = max(sizes.values(), default=0)
-    oldest = max(ages.values(), default=0)
-    scored = {
-        path: (
-            pressure * (size / biggest if biggest else 0.0)
-            + (1.0 - pressure) * (ages[path] / oldest if oldest else 0.0)
-        )
-        for path, size in sizes.items()
-    }
-    return [path for path, _ in sorted(scored.items(), key=lambda item: (-item[1], item[0]))]
-
-
-def _take_until_below_target(ordered: Sequence[tuple[str, int]], used: int, total: int, target: float) -> list[str]:
-    """The leading paths whose removal projects usage under `target`.
-
-    Pure, for the same reason. `ordered` is `(path, size)` heaviest first;
-    the walk stops at the first prefix whose freed bytes bring `used / total`
-    to or under the fraction. A target already met takes nothing; a target
-    no prefix meets takes everything.
-    """
-    batch: list[str] = []
-    freed = 0
-    for path, size in ordered:
-        if (used - freed) / total <= target:
-            break
-        batch.append(path)
-        freed += size
-    return batch
 
 
 class _MemoryPlan:
@@ -195,9 +108,9 @@ class _MemoryPlan:
         if weights is None:
             return None
         self._weights = weights
-        ordered = _by_weight(weights, pressure)
+        ordered = by_weight(weights, pressure)
         if bound is not None:
-            ordered = _take_until_below_target(
+            ordered = take_until_below_target(
                 [(path, weights[path][0]) for path in ordered], bound.used, bound.total, bound.target
             )
         if limit is not None:
@@ -279,7 +192,7 @@ class Collector:
             action == PynixdGCAction.EXECUTE
             and target is not None
             and usage is not None
-            and not _over_target(usage, target)
+            and not over_target(usage, target)
         ):
             # The bound takes nothing from a disk already at its target, so
             # planning first is all cost: on dynhetz, a 150k-path plan every
@@ -316,7 +229,7 @@ class Collector:
         )
         empty = PynixdCollectGarbageResponse(store_paths=set(), bytes=0)
         try:
-            async with self._open_plan(pressed=_over_target(usage, target), vetoed=vetoed) as plan:
+            async with self._open_plan(pressed=over_target(usage, target), vetoed=vetoed) as plan:
                 veto = LogNext(
                     text=f"volatile veto: rechecked {len(volatile)} living roots, spared {plan.spared} planned paths"
                 )
@@ -746,7 +659,7 @@ class Collector:
             return self._answered(PynixdCollectGarbageResponse(store_paths=set(), bytes=0), lines)
 
         directory = getattr(getattr(local, "layout", None), "real_store_dir", None)
-        physical = await run_sync(_physical_batch_total, batch, directory)
+        physical = await run_sync(physical_batch_total, batch, directory)
         deleted: set[str] = set()
         recovered: set[str] = set()
         spared: set[str] = set()
@@ -850,7 +763,7 @@ class Collector:
         if physical is not None and deleted == set(batch):
             freed = physical
         elif physical is not None and recovered:
-            remaining_bytes = await run_sync(_physical_batch_total, set(batch) - deleted, directory)
+            remaining_bytes = await run_sync(physical_batch_total, set(batch) - deleted, directory)
             if remaining_bytes is not None:
                 freed = max(0, physical - remaining_bytes)
             else:
@@ -884,33 +797,10 @@ class Collector:
             directory = getattr(getattr(local, "layout", None), "real_store_dir", None)
             if directory is None:
                 return None
-            return _pressure_usage(directory)
+            return pressure_usage(directory)
         except Exception:
             log.warning("gc_disk_usage_failed", exc_info=True)
             return None
-
-
-def _over_target(usage: tuple[int, int] | None, target: float | None) -> bool:
-    """Whether the disk holds more than the pass's target allows: the age rule yields then."""
-    if target is None or usage is None:
-        return False
-    used, total = usage
-    return total > 0 and used / total > target
-
-
-def _pressure_usage(directory: str | Path) -> tuple[int, int]:
-    """`(used, total)` bytes with pressure measured the way `df` measures it.
-
-    `shutil.disk_usage` counts `bfree` (blocks free to anyone, root
-    included) as free, but a writer that is not root can only spend
-    `bavail`. On btrfs the two diverge by tens of percent of the disk,
-    so a `bfree` gauge reads relief long before `df` -- and kubelet --
-    agree. Read `statvfs` directly and count everything but `bavail` as
-    used. Issue nixidae/nixidae#11.
-    """
-    stat = os.statvfs(directory)
-    total = stat.f_blocks * stat.f_frsize
-    return ((stat.f_blocks - stat.f_bavail) * stat.f_frsize, total)
 
 
 class LivenessWatch:

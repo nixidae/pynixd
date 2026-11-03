@@ -27,8 +27,9 @@ from nix_daemon_protocol import (
 )
 from nix_daemon_protocol.store_path import StorePath
 from pynixd.exceptions import BackendError
-from pynixd.gc import Collector, _over_target
+from pynixd.gc import Collector
 from pynixd_store.db_migrations import LIVENESS_ROOT_TABLE, apply_migrations
+from pynixd_store.gc import over_target
 from pynixd_store.store_layout import StoreLayout
 
 HASH_A = "00000000000000000000000000000000"
@@ -167,11 +168,11 @@ async def test_pressure_plans_a_fresh_dead_path(tmp_path: Path) -> None:
 
 def test_pressure_is_usage_over_the_target() -> None:
     """No target or no reading is no pressure."""
-    assert _over_target((80, 100), 0.5)
-    assert not _over_target((40, 100), 0.5)
-    assert not _over_target((80, 100), None)
-    assert not _over_target(None, 0.5)
-    assert not _over_target((0, 0), 0.5)
+    assert over_target((80, 100), 0.5)
+    assert not over_target((40, 100), 0.5)
+    assert not over_target((80, 100), None)
+    assert not over_target(None, 0.5)
+    assert not over_target((0, 0), 0.5)
 
 
 @pytest.mark.anyio

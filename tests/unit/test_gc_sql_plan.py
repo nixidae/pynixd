@@ -17,8 +17,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from pynixd.gc import _by_weight, _take_until_below_target
 from pynixd_store.db_migrations import PATH_ACCESS_TABLE, apply_migrations
+from pynixd_store.gc import by_weight, take_until_below_target
 from pynixd_store.gc_sql import Bound, SqlPlan, referrer_first
 
 if TYPE_CHECKING:
@@ -136,7 +136,7 @@ async def test_the_plan_and_its_order_match_python(tmp_path: Path, seed: int, pr
 
     assert counts.planned == len(planned)
     assert counts.spared == len(planned & store.vetoed)
-    assert [path for path, _, _ in rows] == _by_weight(weights, pressure)
+    assert [path for path, _, _ in rows] == by_weight(weights, pressure)
     assert {path: (size, age) for path, size, age in rows} == weights
 
 
@@ -146,7 +146,7 @@ async def test_the_bound_takes_what_python_took(tmp_path: Path, seed: int) -> No
     store = await _store(tmp_path, seed)
     planned = _python_plan(store, None)
     weights = {path: (store.size[path], max(0, NOW - store.seen[path])) for path in planned - store.vetoed}
-    ordered = _by_weight(weights, 0.8)
+    ordered = by_weight(weights, 0.8)
     total = 10**11
     freeable = sum(size for size, _ in weights.values())
     bound = Bound(used=int(total * 0.8), total=total, target=0.8 - freeable / total / 2)
@@ -156,7 +156,7 @@ async def test_the_bound_takes_what_python_took(tmp_path: Path, seed: int) -> No
         rows = await plan.weighed(pressure=0.8, now=NOW, bound=bound, limit=None)
         limited = await plan.weighed(pressure=0.8, now=NOW, bound=bound, limit=3)
 
-    expected = _take_until_below_target(
+    expected = take_until_below_target(
         [(path, weights[path][0]) for path in ordered], bound.used, bound.total, bound.target
     )
     assert [path for path, _, _ in rows] == expected
@@ -169,7 +169,7 @@ async def test_a_cut_batch_recloses_and_orders_as_python_did(tmp_path: Path, see
     store = await _store(tmp_path, seed)
     planned = _python_plan(store, None)
     weights = {path: (store.size[path], max(0, NOW - store.seen[path])) for path in planned - store.vetoed}
-    head = _by_weight(weights, 0.5)[: max(1, len(weights) // 3)]
+    head = by_weight(weights, 0.5)[: max(1, len(weights) // 3)]
 
     async with SqlPlan.open(store.db) as plan:
         await plan.plan(live=store.live, vetoed=store.vetoed, cutoff=None)

@@ -274,7 +274,7 @@ async def test_real_daemon_deletes_205_paths_in_three_requests(tmp_path: Path, m
 
 async def test_execute_orders_cross_group_referrers_before_deletion(lab: _Lab, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("pynixd.gc._DELETE_BATCH_SIZE", 1)
-    monkeypatch.setattr("pynixd.gc._by_weight", lambda weights, pressure: [lab.child, lab.parent])
+    monkeypatch.setattr("pynixd.gc.by_weight", lambda weights, pressure: [lab.child, lab.parent])
     calls: list[set[str]] = []
     original = Connection.call
 

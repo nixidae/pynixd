@@ -7,8 +7,9 @@ from typing import Any, cast
 
 import pytest
 
-from pynixd.gc import Collector, _pressure_usage
+from pynixd.gc import Collector
 from pynixd.instance import Server
+from pynixd_store.gc import pressure_usage
 
 
 class FakeDrive:
@@ -66,7 +67,7 @@ def test_pressure_counts_only_bavail_as_free(monkeypatch: pytest.MonkeyPatch) ->
         "os.statvfs",
         lambda _path: SimpleNamespace(f_blocks=100, f_bfree=40, f_bavail=10, f_frsize=1024),
     )
-    used, total = _pressure_usage("/store")
+    used, total = pressure_usage("/store")
     assert (used, total) == (90 * 1024, 100 * 1024)
 
 

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from pynixd.gc import _physical_batch_total
+from pynixd_store.gc import physical_batch_total
 
 
 def _write(path: Path, size: int) -> None:
@@ -24,7 +24,7 @@ async def test_sparse_file_counts_blocks_not_holes(tmp_path: Path) -> None:
     logical = sparse.stat().st_size
     assert logical == 8 * 1024 * 1024 + 1
 
-    total = _physical_batch_total([str(sparse)], tmp_path)
+    total = physical_batch_total([str(sparse)], tmp_path)
 
     assert total is not None
     assert total < logical
@@ -41,8 +41,8 @@ async def test_hardlink_counts_once_across_top_paths(tmp_path: Path) -> None:
     _write(first / "data", 4096)
     os.link(first / "data", second / "data")
 
-    total = _physical_batch_total([str(first), str(second)], tmp_path)
-    single = _physical_batch_total([str(first)], tmp_path)
+    total = physical_batch_total([str(first), str(second)], tmp_path)
+    single = physical_batch_total([str(first)], tmp_path)
 
     assert total is not None
     assert single is not None
@@ -54,8 +54,8 @@ async def test_hardlink_counts_once_across_top_paths(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_unmeasurable_answers_none(tmp_path: Path) -> None:
     """No layout, or a path that vanished: the caller falls back."""
-    assert _physical_batch_total([str(tmp_path / "x")], None) is None
-    assert _physical_batch_total([str(tmp_path / "gone")], tmp_path) is None
+    assert physical_batch_total([str(tmp_path / "x")], None) is None
+    assert physical_batch_total([str(tmp_path / "gone")], tmp_path) is None
 
 
 @pytest.mark.anyio
@@ -65,7 +65,7 @@ async def test_chroot_paths_remap_under_the_store_dir(tmp_path: Path) -> None:
     (store / "hash-name").mkdir(parents=True)
     _write(store / "hash-name" / "f", 4096)
 
-    total = _physical_batch_total(["/nix/store/hash-name"], store)
+    total = physical_batch_total(["/nix/store/hash-name"], store)
 
     assert total is not None
     assert total > 0
