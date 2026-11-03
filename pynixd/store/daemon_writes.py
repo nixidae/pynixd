@@ -20,7 +20,9 @@ from typing import TYPE_CHECKING
 import anyio
 from anyio.lowlevel import checkpoint
 
+from nix_daemon_protocol.add_indirect_root import AddIndirectRootRequest, AddIndirectRootResponse
 from nix_daemon_protocol.add_multiple_to_store import AddMultipleToStoreRequest, AddMultipleToStoreResponse
+from nix_daemon_protocol.add_perm_root import AddPermRootRequest, AddPermRootResponse
 from nix_daemon_protocol.add_to_store import AddToStoreResponse
 from nix_daemon_protocol.add_to_store_nar import AddToStoreNarRequest, AddToStoreNarResponse
 from nix_daemon_protocol.content_address import ContentAddress
@@ -46,6 +48,18 @@ class DaemonWrites:
 
     def __init__(self, store: DaemonStore) -> None:
         self.store = store
+
+    async def add_indirect_root(self, path: str) -> AddIndirectRootResponse:
+        """AddIndirectRoot (op 12). The answer carries the daemon's log lines."""
+        response: AddIndirectRootResponse = await self.store.call(AddIndirectRootRequest(path=path))
+        return response
+
+    async def add_perm_root(self, store_path: str, gc_root: str) -> AddPermRootResponse:
+        """AddPermRoot (op 47). The answer carries the daemon's log lines."""
+        response: AddPermRootResponse = await self.store.call(
+            AddPermRootRequest(store_path=store_path, gc_root=gc_root)
+        )
+        return response
 
     async def add_to_store(
         self,

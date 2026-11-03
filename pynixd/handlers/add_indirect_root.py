@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from ..serde import AddIndirectRootRequest
 from ..serde.context import ReadContext
+from ..store.local_db import write_router
 from ._base import Handler
 
 if TYPE_CHECKING:
@@ -18,9 +19,8 @@ class AddIndirectRootHandler(Handler):
     op: ClassVar[int] = 12
 
     async def handle(self, ctx: RequestContext) -> object | None:
-        """Decode the request and forward it to the daemon."""
+        """Decode the request; the store's write router adds the root."""
         req = await AddIndirectRootRequest.from_reader(
             ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
         )
-        response: object | None = await ctx.proxy.local_store.call(req)
-        return response
+        return await write_router(ctx.proxy.local_store).add_indirect_root(req.path)

@@ -190,6 +190,8 @@ class LocalDBStore(Store):
         7: Owned("own_add_to_store", writes=True),
         39: Owned("own_add_to_store_nar", writes=True),
         44: Owned("own_add_multiple_to_store", writes=True),
+        12: Owned("own_add_indirect_root", writes=True),
+        47: Owned("own_add_perm_root", writes=True),
         32: Owned("own_query_substitutable_paths", default=OpRoute.pynixd),
         33: Owned("own_query_valid_derivers", default=OpRoute.pynixd),
         41: Owned("own_query_derivation_output_map", default=OpRoute.pynixd),
@@ -515,6 +517,14 @@ class LocalDBStore(Store):
 
     async def own_add_multiple_to_store(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """None: the paths follow the request, and `AddMultipleToStoreHandler` imports each with `store/add.py`."""
+        return None
+
+    async def own_add_indirect_root(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        """None: `AddIndirectRootHandler` adds the root through the write router."""
+        return None
+
+    async def own_add_perm_root(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        """None: `AddPermRootHandler` adds the root through the write router, with the session's temporary root."""
         return None
 
     async def import_settings(self) -> ImportSettings:

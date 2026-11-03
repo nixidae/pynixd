@@ -66,8 +66,8 @@ and AddMultipleToStore call it on their `pynixd` routes. `Realisations` has no w
 | 42 RegisterDrvOutput | daemon | insert into `Realisations` |
 | 45 AddBuildLog | handler forwards | write `var/log/nix/drvs/..` |
 | 11, 49 AddTempRoot(s) | owned where pynixd can write `temproots`; else the daemon (a `NIX-DEVIATION`) | run where pynixd owns the state directory |
-| 12 AddIndirectRoot | handler forwards | a symlink in `gcroots/auto` |
-| 47 AddPermRoot | handler forwards | the symlink, plus the indirect root |
+| 12 AddIndirectRoot | on trial: the daemon in a deployment; route `pynixd` links `gcroots/auto/<SHA-1 of the path>` to the client's path (`pynixd_store/roots.py`) | — |
+| 47 AddPermRoot | on trial: the daemon in a deployment; route `pynixd` takes the session's temporary root, links the root to the store path, then adds the indirect root. It refuses a root in the store and a file that is not a link into the store, with Nix's messages | — |
 | 38 NarFromPath | on trial: the daemon in a deployment; shadow in every test store, where the client gets the daemon's NAR, compared with `nar_fs.dump_path` of the store's files by SHA-256 and size; route `pynixd` streams the dump | — |
 
 ### Builds and substitution

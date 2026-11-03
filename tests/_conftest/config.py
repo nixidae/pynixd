@@ -40,6 +40,8 @@ TEST_OP_ROUTES: dict[str, OpRoute] = {
     "AddToStore": OpRoute.pynixd,
     "AddToStoreNar": OpRoute.pynixd,
     "AddMultipleToStore": OpRoute.pynixd,
+    "AddIndirectRoot": OpRoute.pynixd,
+    "AddPermRoot": OpRoute.pynixd,
 }
 """Answers on trial: in every test store, and on the daemon in a deployment.
 
@@ -48,7 +50,7 @@ store with `pynixd_writes` on. `nix/functional-tests/make-shim.sh` and
 `tests/parity/test_wire_parity.py` write the same routes into their
 configurations."""
 
-_WRITES = frozenset({"AddToStore", "AddToStoreNar", "AddMultipleToStore"})
+_WRITES = frozenset({"AddToStore", "AddToStoreNar", "AddMultipleToStore", "AddIndirectRoot", "AddPermRoot"})
 """The trial routes that a store with `pynixd_writes` off cannot take."""
 
 # ── Nix binary paths ─────────────────────────────────────────────

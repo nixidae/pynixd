@@ -58,8 +58,10 @@ _WRITE_ROUTER = _HANDLERS.parent / "write_router.py"
 """The handlers' writes go through the router, which calls `DaemonWrites` as `self.daemon`."""
 
 
-CLIENTLESS_ROUTER_METHODS = {
+OPTIONLESS_ROUTER_METHODS = {
     "import_nar": "A substitution or an HTTP upload: pynixd itself asked for the path, and no client session exists.",
+    "add_indirect_root": "`LocalStore::addIndirectRoot` reads no setting, so the client's options change nothing.",
+    "add_perm_root": "`IndirectRootStore::addPermRoot` reads no setting, so the client's options change nothing.",
 }
 """Each router method whose daemon write may carry no client options, and why."""
 
@@ -103,13 +105,13 @@ def test_the_router_gives_the_daemon_the_options_of_the_client() -> None:
     bare = [
         f"{method}:{call.lineno}"
         for method, call in calls
-        if method not in CLIENTLESS_ROUTER_METHODS
+        if method not in OPTIONLESS_ROUTER_METHODS
         and not any(
             keyword.arg == "options" and ast.unparse(keyword.value) == "client.options" for keyword in call.keywords
         )
     ]
     assert bare == [], f"router daemon writes without the client's options: {bare}. Issue nixidae/nixidae#236."
-    assert set(CLIENTLESS_ROUTER_METHODS) <= {method for method, _ in calls}
+    assert set(OPTIONLESS_ROUTER_METHODS) <= {method for method, _ in calls}
 
 
 def test_the_daemon_writes_take_the_options_they_are_given() -> None:

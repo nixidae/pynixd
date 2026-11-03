@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING
 import structlog
 from anyio.lowlevel import checkpoint
 
+from nix_daemon_protocol.add_indirect_root import AddIndirectRootResponse
+from nix_daemon_protocol.add_perm_root import AddPermRootResponse
 from nix_daemon_protocol.logs import LogNext
 from nix_daemon_protocol.operations import STANDARD_OPERATIONS
 from pynixd_store.content_address import ContentAddress, Method, content_addressed_path, parse_method_algo
@@ -404,6 +406,29 @@ class WriteRouter:
             if meter.on_bytes is not None:
                 meter.on_bytes(copied.info.nar_size)
             meter.finish()
+
+    def _root_engine(self, op: str) -> StoreEngine | None:
+        """The engine when *op* takes the `pynixd` route. A root writes no database row, so no reason sends it back."""
+        if self.engine is None or self.route(op) is not OpRoute.pynixd:
+            return None
+        return self.engine
+
+    async def add_indirect_root(self, path: str) -> AddIndirectRootResponse:
+        """AddIndirectRoot (op 12): `LocalStore::addIndirectRoot`."""
+        engine = self._root_engine("AddIndirectRoot")
+        if engine is None:
+            return await self.daemon.add_indirect_root(path)
+        await engine.add_indirect_root(path)
+        return AddIndirectRootResponse.fast(value=1)
+
+    async def add_perm_root(
+        self, store_path: str, gc_root: str, *, hold: Callable[[str], Awaitable[None]]
+    ) -> AddPermRootResponse:
+        """AddPermRoot (op 47): `IndirectRootStore::addPermRoot`. *hold* is the session's temporary root."""
+        engine = self._root_engine("AddPermRoot")
+        if engine is None:
+            return await self.daemon.add_perm_root(store_path, gc_root)
+        return AddPermRootResponse.fast(gc_root=await engine.add_perm_root(store_path, gc_root, hold=hold))
 
     async def import_nar(self, info: ValidPathInfo, source: Source, *, dont_check_sigs: bool) -> None:
         """A NAR pynixd itself fetched or received: a substitution, or the HTTP cache's upload."""

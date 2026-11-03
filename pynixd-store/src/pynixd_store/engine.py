@@ -22,7 +22,7 @@ from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 
-from . import add, register
+from . import add, register, roots
 from .drv_parser import read_drv_file
 from .liveness import unlink_stale_auto_roots, walk_roots
 from .local_store_db import LocalStoreDB
@@ -248,6 +248,23 @@ class StoreEngine:
     def invalidate_path_info_cache_for(self, path: StorePath | str) -> None:
         """`Store::invalidatePathInfoCacheFor`: the cache above the engine forgets *path*."""
         self._on_change(StorePath(path=str(path)))
+
+    async def add_indirect_root(self, path: str) -> None:
+        """`LocalStore::addIndirectRoot` of the client's path, as `daemon.cc` passes it through `absPath`."""
+        await anyio.to_thread.run_sync(roots.add_indirect_root, self.layout.state_dir, roots.abs_path(path))
+
+    async def add_perm_root(self, store_path: str, gc_root: str, *, hold: Callable[[str], Awaitable[None]]) -> str:
+        """`IndirectRootStore::addPermRoot`: link *gc_root* to *store_path*, and answer the root it made.
+
+        *hold* is the session's `addTempRoot`, which Nix takes before it links.
+        """
+        root = roots.abs_path(gc_root)
+        roots.check_perm_root(root, self.layout.store_dir)
+        await hold(store_path)
+        await anyio.to_thread.run_sync(
+            roots.add_perm_root, store_path, root, self.layout.store_dir, self.layout.state_dir
+        )
+        return root
 
     def temp_roots(self) -> TempRoots:
         """A roots file of its own, for an import no client session holds."""
