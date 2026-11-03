@@ -32,6 +32,7 @@ from nix_daemon_protocol.derivation_output import DerivationOutput, OutputKind
 from nix_daemon_protocol.store_dir import store_dir as current_store_dir
 
 from ..content_address import content_addressed_path, fixed_output_address
+from ..drv_hash import make_output_path, output_path_name
 from ..drv_parser import ChildMapNode, _aterm_escape, drv_bytes
 from ..store_path import StorePath
 from ..utils import nix32_encode
@@ -40,13 +41,6 @@ if TYPE_CHECKING:
     from ..drv_parser import Derivation
 
 log = structlog.get_logger(__name__)
-
-
-def _output_path_name(drv_name: str, output_name: str) -> str:
-    """Return the store path basename for a derivation output."""
-    if output_name == "out":
-        return drv_name
-    return f"{drv_name}-{output_name}"
 
 
 def _nix_store_path_name(store_path_str: str) -> str:
@@ -70,7 +64,7 @@ def downstream_placeholder(drv_path: StorePath, output_name: str) -> str:
     """Compute the DownstreamPlaceholder hash for a given derivation output."""
     hash_part = str(drv_path).rsplit("/", 1)[-1].split("-", 1)[0]
     drv_name = _nix_drv_name(drv_path)
-    clear_text = f"nix-upstream-output:{hash_part}:{_output_path_name(drv_name, output_name)}"
+    clear_text = f"nix-upstream-output:{hash_part}:{output_path_name(drv_name, output_name)}"
     h = hashlib.sha256(clear_text.encode()).digest()
     return "/" + nix32_encode(h)
 
@@ -113,27 +107,6 @@ def _compress_hash(data: bytes, new_size: int) -> bytes:
     return bytes(result)
 
 
-def _make_store_path(
-    type_str: str,
-    hash_modulo: bytes,
-    name: str,
-    store_dir: str = "",
-) -> str:
-    """Build a store path string from a type prefix, content hash, and name (Nix makeStorePath).
-
-    The store directory is a part of the text that Nix hashes, so a wrong one
-    gives a wrong path. `current_store_dir()` reads the value of this process,
-    and a default argument cannot: Python evaluates a default once, at import,
-    and the daemon sets the directory after that.
-    """
-    store_dir = store_dir or current_store_dir()
-    hash_str = "sha256:" + hash_modulo.hex()
-    s = f"{type_str}:{hash_str}:{store_dir}:{name}"
-    digest = hashlib.sha256(s.encode()).digest()
-    compressed = _compress_hash(digest, 20)
-    return f"{store_dir}/{nix32_encode(compressed)}-{name}"
-
-
 def canonical_derivation(drv: BasicDerivation, drv_name: str) -> BasicDerivation:
     """*drv* as Nix writes it for an untrusted client, or `ValueError` with Nix's reason.
 
@@ -163,17 +136,6 @@ def canonical_derivation(drv: BasicDerivation, drv_name: str) -> BasicDerivation
     path = content_addressed_path(ca, drv_name, (), current_store_dir())
     canonical = output.model_copy(update={"path": path, "hash_digest": ca.digest.hex()})
     return drv.model_copy(update={"outputs": {**drv.outputs, "out": canonical}})
-
-
-def _make_output_path(
-    output_id: str,
-    hash_modulo: bytes,
-    drv_name: str,
-    store_dir: str = "",
-) -> str:
-    """Derive an output store path for a given output ID (Nix makeOutputPath)."""
-    name = _output_path_name(drv_name, output_id)
-    return _make_store_path(f"output:{output_id}", hash_modulo, name, store_dir)
 
 
 def unparse_basic_derivation(drv: BasicDerivation) -> str:
@@ -310,7 +272,7 @@ def _resolve_deferred_outputs(
     for name, o in resolved.outputs.items():
         if _is_deferred(o):
             h = hash_modulo[name]
-            out_path = _make_output_path(name, h, drv_name)
+            out_path = make_output_path(name, h, drv_name)
             new_outputs[name] = DerivationOutput(
                 path=out_path,
                 method="",
@@ -406,7 +368,7 @@ def _resolve_dynamic_node(
         # Compute this level's hash and placeholder
         if parent_hash is None:
             # Level 1: unknownCaOutput placeholder
-            clear = f"nix-upstream-output:{hash_part}:{_output_path_name(dyn_drv_name, child_name)}"
+            clear = f"nix-upstream-output:{hash_part}:{output_path_name(dyn_drv_name, child_name)}"
             this_hash = hashlib.sha256(clear.encode()).digest()
         else:
             # Level 2+: unknownDerivation placeholder

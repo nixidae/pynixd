@@ -24,10 +24,9 @@ from ..content_address import (
     parse_any_sha256,
     store_path_name,
 )
-from ..drv_hash import output_hashes
+from ..drv_hash import make_output_path, output_hashes, output_path_name
 from ..drv_parser import read_drv_file
 from ..exceptions import PynixdError
-from ..goals.resolution import _make_output_path, _output_path_name
 from ..hintfmt import magenta
 from .queries import (
     ADD_DERIVATION_OUTPUT,
@@ -148,14 +147,14 @@ async def _derivation_outputs(drv_path: str, layout: StoreLayout) -> dict[str, s
             digest = hashes.get(output.name)
             if digest is None:
                 raise RegistrationError(f"derivation produced no hash for output '{magenta(output.name)}'")
-            expected = _make_output_path(output.name, bytes.fromhex(digest), drv_name, store_dir)
+            expected = make_output_path(output.name, bytes.fromhex(digest), drv_name, store_dir)
             if output.path != expected:
                 raise RegistrationError(
                     f"derivation has incorrect output '{magenta(output.path)}', should be '{magenta(expected)}'"
                 )
         elif kind is OutputKind.CA_FIXED:
             address = fixed_output_address(output.hash_algo, output.hash_value)
-            expected = content_addressed_path(address, _output_path_name(drv_name, output.name), (), store_dir)
+            expected = content_addressed_path(address, output_path_name(drv_name, output.name), (), store_dir)
         else:
             continue
         actual = parsed.env.get(output.name)

@@ -14,9 +14,8 @@ import binascii
 import pytest
 
 from nix_daemon_protocol.constants import PROTOCOL_VERSION
-from pynixd.drv_hash import output_hashes
+from pynixd.drv_hash import make_output_path, output_hashes
 from pynixd.drv_parser import drv_bytes, drv_text, parse_drv
-from pynixd.goals.resolution import _make_output_path
 from pynixd.serde import BasicDerivation, BuildDerivationRequest, BuildMode, StorePath
 from pynixd.serde.context import ReadContext, WriteContext
 from pynixd.wire import BytesReader, BytesWriter
@@ -48,7 +47,7 @@ async def test_the_hash_names_the_path_nix_wrote() -> None:
     hashes = await output_hashes(parse_drv(drv_text(DRV)), _nothing, cache={})
 
     assert hashes is not None
-    assert _make_output_path("out", binascii.unhexlify(hashes["out"]), "non-utf8") == OUT
+    assert make_output_path("out", binascii.unhexlify(hashes["out"]), "non-utf8") == OUT
 
 
 @pytest.mark.anyio

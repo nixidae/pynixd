@@ -18,9 +18,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from pynixd.drv_hash import output_hashes
+from pynixd.drv_hash import make_output_path, output_hashes
 from pynixd.drv_parser import parse_drv
-from pynixd.goals.resolution import _make_output_path
 
 if TYPE_CHECKING:
     from pynixd.drv_parser import Derivation
@@ -55,7 +54,7 @@ async def _read_nothing(drv_path: str) -> None:
 
 
 def _rebuild(name: str, digest: str, drv_name: str) -> str:
-    return _make_output_path(name, binascii.unhexlify(digest), drv_name)
+    return make_output_path(name, binascii.unhexlify(digest), drv_name)
 
 
 @pytest.mark.anyio

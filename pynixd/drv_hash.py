@@ -27,6 +27,10 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from nix_daemon_protocol.store_dir import store_dir as current_store_dir
+
+from .content_address import make_store_path
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -135,3 +139,22 @@ async def _input_hashes(
                 return None
             inputs.setdefault(digest, set()).add(output_name)
     return {digest: sorted(names) for digest, names in inputs.items()}
+
+
+def output_path_name(drv_name: str, output_name: str) -> str:
+    """`outputPathName` at `derivations.cc`: the name of an output's store path."""
+    if output_name == "out":
+        return drv_name
+    return f"{drv_name}-{output_name}"
+
+
+def make_output_path(output_id: str, hash_modulo: bytes, drv_name: str, store_dir: str = "") -> str:
+    """`makeOutputPath`: the path of an input-addressed output.
+
+    The store directory is a part of the hashed text. `current_store_dir()`
+    reads the value of this process, and a default argument cannot: Python
+    evaluates a default once, at import, and the daemon sets the directory
+    after that.
+    """
+    name = output_path_name(drv_name, output_id)
+    return make_store_path(f"output:{output_id}", "sha256", hash_modulo, name, store_dir or current_store_dir())
