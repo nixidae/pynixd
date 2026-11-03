@@ -20,6 +20,7 @@ from cachetools import TTLCache
 from pynixd_store.background import Background
 
 from ..trust import TrustPolicy
+from .realisation_query import query_realisation_over_wire
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Mapping, Set as AbstractSet
@@ -35,7 +36,9 @@ if TYPE_CHECKING:
 
     from ..config import StoreSpecBase
     from ..connection import ClientConn, Connection
+    from ..serde import DrvOutput, Realisation
     from .daemon import DaemonStore
+    from .local_db import LocalDBStore
 
 
 log = structlog.get_logger(__name__)
@@ -72,6 +75,8 @@ class Store(ABC):
         self.store_id: StoreId = spec.store_id
         self.priority = spec.priority
         self.trusted = spec.trusted
+        self.want_mass_query = False
+        """Nix's `want-mass-query`: false on every store, and a binary cache reads it from `nix-cache-info`."""
         self.no_schedule = spec.no_schedule
         self.reference_key: object | None = spec.reference_key()
         """The key of the substituter URL this store stands for: `StoreSpecBase.reference_key`."""
@@ -217,6 +222,26 @@ class Store(ABC):
     ) -> Any:
         """Execute an operation on this store."""
         ...
+
+    async def download_size(self, path: StorePath) -> int:
+        """The bytes a substitute of *path* downloads, 0 when unknown (`misc.cc:139`)."""
+        return 0
+
+    async def read_nar(self, path: StorePath, nar_size: int) -> AsyncIterator[bytes]:
+        """The NAR of *path*, piece by piece: Nix's `narFromPath`. A worker-protocol store reads it over a transfer connection."""
+        if self.daemon_client is None:
+            raise TypeError(f"store {self.store_id} cannot stream NARs")
+        # Imported here: `nar_reader` imports `local_db`, which imports this module.
+        from .nar_reader import NarReader  # noqa: PLC0415 -- the import cycle above
+
+        async with NarReader(cast("DaemonStore | LocalDBStore", self)) as nars:
+            async for chunk in nars.read(path, nar_size):
+                yield chunk
+
+    async def find_realisation(self, key: DrvOutput, drv_path: StorePath, *, by_path: bool) -> Realisation | None:
+        """The realisation of *key* this store holds: Nix's `queryRealisation`. *by_path* names a binary cache's file layout."""
+        del by_path
+        return await query_realisation_over_wire(self, key, drv_path)
 
     @abstractmethod
     async def read_derivation(self, drv_store_path: StorePath | str) -> Derivation | None:

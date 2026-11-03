@@ -174,10 +174,10 @@ async def test_a_realisation_reads_from_the_layout_of_the_local_nix(
     doi.parent.mkdir(parents=True, exist_ok=True)
     doi.write_text(json.dumps({"outPath": PATH.name, "signatures": ["k:b", "k:a"], **body}))
     store = await _store(root)
-    found = await store.query_realisation(DRV_OUTPUT, DRV, by_path=by_path)
+    found = await store.find_realisation(DRV_OUTPUT, DRV, by_path=by_path)
     assert found is not None
     assert (found.id, str(found.out_path), found.signatures) == (DRV_OUTPUT, str(PATH), ["k:a", "k:b"])
-    assert await store.query_realisation(DRV_OUTPUT, DRV, by_path=not by_path) is None
+    assert await store.find_realisation(DRV_OUTPUT, DRV, by_path=not by_path) is None
 
 
 async def test_a_realisation_the_cache_cannot_parse_is_a_fault(tmp_path: Path) -> None:
@@ -187,4 +187,4 @@ async def test_a_realisation_the_cache_cannot_parse_is_a_fault(tmp_path: Path) -
     (root / f"realisations/{DRV_OUTPUT}.doi").write_text("{not json")
     store = await _store(root)
     with pytest.raises(CacheFault):
-        await store.query_realisation(DRV_OUTPUT, DRV, by_path=False)
+        await store.find_realisation(DRV_OUTPUT, DRV, by_path=False)

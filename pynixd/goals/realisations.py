@@ -30,8 +30,8 @@ from nix_daemon_protocol.exceptions import DaemonProtocolError
 from pynixd_store.drv_hash import output_hashes
 
 from ..exceptions import BackendError, CacheFault
-from ..serde import DrvOutput, KeyedDrvOutput, QueryRealisationRequest, Realisation, StorePath
-from ..store import is_binary_cache
+from ..serde import DrvOutput, Realisation, StorePath
+from ..store.realisation_query import query_realisation_over_wire
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -39,7 +39,6 @@ if TYPE_CHECKING:
     from pynixd_store.drv_parser import Derivation
     from pynixd_store.store_path import StorePath
 
-    from ..serde import QueryRealisationResponse
     from ..store.base import Store
 
 log = structlog.get_logger(__name__)
@@ -79,7 +78,7 @@ async def realisations_of(
         if digest is None:
             return None
         key = f"sha256:{digest}!{output_name}"
-        realisation = await _query_one(store, DrvOutput(key), drv_path)
+        realisation = await query_realisation_over_wire(store, DrvOutput(key), drv_path)
         if realisation is None:
             return None
         answer[key] = realisation
@@ -153,10 +152,7 @@ async def _first_holding(
     failed = False
     for store in substituters:
         try:
-            if is_binary_cache(store):
-                found = await store.query_realisation(key, drv_path, by_path=by_path)
-            else:
-                found = await _query_one(store, key, drv_path)
+            found = await store.find_realisation(key, drv_path, by_path=by_path)
         except (CacheFault, BackendError, DaemonProtocolError, OSError, EOFError):
             log.warning(
                 "substituter_realisation_failed", store_id=str(store.store_id), drv_output=str(key), exc_info=True
@@ -166,55 +162,3 @@ async def _first_holding(
         if found is not None:
             return found, False
     return None, failed
-
-
-async def _query_one(store: Store, key: DrvOutput, drv_path: StorePath) -> Realisation | None:
-    # **Both shapes go in, and the codec writes the one the peers agreed
-    # on.** `realisation-with-path-not-hash` decides whether the wire
-    # carries `"<drvHash>!<output>"` as one string or a derivation path
-    # and an output name as two. This code does not know which connection
-    # it will take, and it does not have to: `needs_features` and
-    # `unless_features` on the fields of the request pick one and drop the
-    # other. Issue #14.
-    response = await store.execute(
-        QueryRealisationRequest(
-            drv_output=key,
-            keyed_drv_output=KeyedDrvOutput(drv_path=StorePath(str(drv_path)), output_name=key.output_name),
-        ),
-    )
-    realisation = _the_realisation(response, key)
-    if realisation is None or realisation.out_path is None:
-        # One line that says which shape answered and what it held, so a
-        # run states whether the query missed or the codec did. Issue #14.
-        log.debug(
-            "realisation_missing",
-            drv_output=str(key),
-            drv_path=str(drv_path),
-            present=response.present,
-            old_shape_count=len(response.realisations),
-        )
-        return None
-    return realisation
-
-
-def _the_realisation(response: QueryRealisationResponse, drv_output: DrvOutput) -> Realisation | None:
-    """The one realisation of the answer, whichever shape carried it.
-
-    Nix 2.34 answers a set, and the master branch answers an
-    `optional<UnkeyedRealisation>`: a tag, and the body when the tag is 1
-    (`daemon.cc:1024`). The caller asked about one output either way.
-
-    **The feature shape carries no id, and this puts *drv_output* back.** The
-    request already named the output, so the answer does not name it again.
-    A `Realisation` of pynixd carries its own id, and `_register_realisations`
-    reads `id.output_name`, so an answer with an empty id would register the
-    output under no name at all. The caller built that id to ask the
-    question, so it is the right one to give back. Issue #14.
-    """
-    if response.realisation is not None:
-        return Realisation(
-            id=drv_output,
-            out_path=response.realisation.out_path,
-            signatures=sorted(response.realisation.signatures),
-        )
-    return next(iter(response.realisations), None)

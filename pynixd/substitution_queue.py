@@ -21,8 +21,7 @@ from .answer import Answer
 from .exceptions import NarGone, OpNotImplementedError, leaves
 from .serde import QueryPathInfoRequest, StorePath
 from .store import is_binary_cache
-from .store.local_db import LocalDBStore, write_router
-from .store.nar_reader import NarReader
+from .store.local_db import write_router
 from .store_url import is_own_cache, reference_key
 from .substituters import ClientSubstituters
 
@@ -93,7 +92,6 @@ class SubstitutionCandidate:
 
     store: Store
     path_info: ValidPathInfo
-    http_narinfo: NarInfo | None = None
     download_size: int = 0
     """The narinfo's `FileSize`, as `SubstitutionQueryResult.download_size`."""
 
@@ -547,10 +545,7 @@ class SubstitutionQueue:
         counted("hit")
 
         path_info = ValidPathInfo(path=StorePath(path=str(path)), info=response.info)
-        download_size = 0
-        if is_binary_cache(store):
-            narinfo = await store.get_narinfo(StorePath(path=str(path)))
-            download_size = narinfo.file_size if narinfo is not None else 0
+        download_size = await store.download_size(StorePath(path=str(path)))
         return SubstitutionQueryResult(
             store_id=store.store_id, path_info=path_info, query_succeeded=True, download_size=download_size
         )
@@ -628,21 +623,8 @@ class SubstitutionQueue:
 
     async def _nar_pieces(self, path: StorePath, candidate: SubstitutionCandidate) -> AsyncGenerator[bytes]:
         """The NAR of *path* from *candidate*, piece by piece."""
-        if is_binary_cache(candidate.store):
-            http_narinfo = candidate.http_narinfo
-            if http_narinfo is None:
-                http_narinfo = await candidate.store.get_narinfo(path)
-            if http_narinfo is None:
-                raise RuntimeError(f"substituter lost path while streaming: {path}")
-            async for chunk in candidate.store.stream_nar(http_narinfo):
-                yield chunk
-        elif (client := candidate.store.daemon_client) is not None:
-            source = candidate.store if isinstance(candidate.store, LocalDBStore) else client
-            async with NarReader(source) as nars:
-                async for chunk in nars.read(StorePath(path=str(path)), candidate.path_info.info.nar_size):
-                    yield chunk
-        else:
-            raise TypeError(f"store {candidate.store.store_id} cannot stream NARs")
+        async for chunk in candidate.store.read_nar(StorePath(path=str(path)), candidate.path_info.info.nar_size):
+            yield chunk
 
     def _best_candidate_from_cache(self, path: StorePath, stores: list[Store]) -> SubstitutionCandidate | None:
         positive = self.positive.get(path, {})

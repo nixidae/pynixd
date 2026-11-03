@@ -46,7 +46,7 @@ from .base import Store
 
 if TYPE_CHECKING:
     import io
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, AsyncIterator
 
     from nix_daemon_protocol.wire_ops import WireRequest
     from pynixd_store.drv_parser import Derivation
@@ -93,6 +93,7 @@ class BinaryCacheStore(Store):
         `nix-cache-info` only sets the default priority; `?priority=` wins (`binary-cache-store.cc:67`).
         """
         self.cache_info = info
+        self.want_mass_query = info.get("WantMassQuery") == "1"
         if not self._priority_given:
             self.priority = float(info["Priority"])
 
@@ -119,7 +120,7 @@ class BinaryCacheStore(Store):
         self._record_result(True)
         return text
 
-    async def query_realisation(
+    async def find_realisation(
         self, drv_output: DrvOutput, drv_path: StorePath, *, by_path: bool
     ) -> Realisation | None:
         """The realisation the cache holds for one derivation output, under *drv_output*.
@@ -242,6 +243,20 @@ class BinaryCacheStore(Store):
 
     async def nar_from_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> NarFromPathResponse:
         raise OpNotImplementedError(f"{type(self).__name__} streams NARs through stream_nar()")
+
+    async def download_size(self, path: StorePath) -> int:
+        """The narinfo's `FileSize`."""
+        narinfo = await self.get_narinfo(path)
+        return narinfo.file_size if narinfo is not None else 0
+
+    async def read_nar(self, path: StorePath, nar_size: int) -> AsyncIterator[bytes]:
+        """The NAR that the narinfo of *path* names, decompressed."""
+        del nar_size
+        narinfo = await self.get_narinfo(path)
+        if narinfo is None:
+            raise RuntimeError(f"substituter lost path while streaming: {path}")
+        async for chunk in self.stream_nar(narinfo):
+            yield chunk
 
     async def get_narinfo(self, path: StorePath) -> NarInfo | None:
         """The `.narinfo` of *path*, or `None` when the cache has another path under its hash."""

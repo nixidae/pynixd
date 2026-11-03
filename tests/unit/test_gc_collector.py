@@ -171,6 +171,7 @@ class FakeCache:
     reachable: bool = True
     gc_defer: bool = True
     store_id: str = "upstream"
+    want_mass_query: bool = False
 
     async def execute(self, request: Any, **_kwargs: Any) -> Any:
         if not self.reachable:

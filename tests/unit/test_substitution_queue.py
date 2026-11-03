@@ -68,6 +68,10 @@ class FakeSubstituter:
             ),
         )
 
+    async def download_size(self, path: StorePath) -> int:
+        del path
+        return 0
+
 
 def test_new_substitution_health_log_is_healthy_until_minimum_fill() -> None:
     settings = PynixdSettings(

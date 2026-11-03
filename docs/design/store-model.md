@@ -47,20 +47,22 @@ implemented yet. It prepares `ssh-ng://` substituters for nixidae/nixidae#1155
    `_trusted_source` becomes `store.trusted`.
    This changes one answer. Today pynixd trusts a `unix://` substituter
    without `?trusted=1`. After the change it checks signatures, as Nix does.
-3. **A read Protocol, not a base class.** `Substituter` has three methods:
-   `path_info(path)` (with the download size, 0 when unknown), `nar(path)` and
-   `realisation(key, drv_path)`. `DaemonStore` and `BinaryCacheStore` both
-   implement it. Nix's mixins become Protocols in the same way when one is
-   needed; no multiple inheritance.
+3. **Three read methods on `Store`, as Nix's virtual methods.** A path's info
+   is already op 26 on every store. `download_size(path)` (0 when unknown),
+   `read_nar(path, nar_size)` and `find_realisation(key, drv_path, by_path=)`
+   are new. The base reads over the worker protocol, so `DaemonStore` and
+   `LocalDBStore` need no override; `BinaryCacheStore` overrides all three.
+   No new base class: `Store` is Nix's `Store`. Nix's mixins (`GcStore`,
+   `LogStore`) become Protocols when one is needed; no multiple inheritance.
 
 Each `is_binary_cache` site, and what it becomes:
 
 | site | use | becomes |
 | --- | --- | --- |
 | `substitution_queue.py:101` | trust | `store.trusted` |
-| `substitution_queue.py:562` | download size | `Substituter.path_info` |
-| `substitution_queue.py:636` | NAR stream | `Substituter.nar` |
-| `goals/realisations.py:156` | realisation | `Substituter.realisation` |
+| `substitution_queue.py:562` | download size | `Store.download_size` |
+| `substitution_queue.py:636` | NAR stream | `Store.read_nar` |
+| `goals/realisations.py:156` | realisation | `Store.find_realisation` |
 | `gc.py:517` | `WantMassQuery` | `store.want_mass_query`, every store |
 | `substituters.py:133`, `:135` | dedup key | the registry key |
 | `instance.py:198`, `:230` | dedup key | the registry key |
@@ -94,6 +96,6 @@ Nix ranks it the same way.
 
 1. The registry, for `http`, `https`, `file` and `unix`. No answer changes.
 2. `trusted` and `priority` on every spec; `_trusted_source` reads `trusted`.
-3. The `Substituter` Protocol, and the five sites it replaces.
+3. The three read methods on `Store`, and `want_mass_query`.
 4. The `ssh-ng` scheme.
 5. A functional test with an `sshd` in the guest.

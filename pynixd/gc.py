@@ -54,7 +54,6 @@ from .daemon_extensions import (
     QueryPathInfosRequest,
 )
 from .exceptions import BackendError, GCNotPermittedError, PynixdError
-from .store import is_binary_cache
 from .store.local_db import LocalDBStore
 
 if TYPE_CHECKING:
@@ -514,7 +513,7 @@ class Collector:
         for a lab cache. `BinaryCacheStore.query_valid_paths` asks for one
         narinfo at a time, so the sweep cannot flood a cache either way.
         """
-        if is_binary_cache(store) and store.cache_info.get("WantMassQuery") == "0":
+        if not store.want_mass_query:
             log.debug("gc_store_asked_despite_wantmassquery", store_id=str(store.store_id))
         try:
             valid: set[StorePath] = (await store.execute(QueryValidPathsRequest(paths=paths))).paths

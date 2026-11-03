@@ -84,12 +84,9 @@ class FakeSubstitutionQueue:
         self.queries.append(str(path))
         return self.substitutable.get(str(path), SubstitutionAvailability.unavailable())
 
-    async def execute(self, request: Any, **kwargs: Any) -> Any:
+    async def find_realisation(self, key: Any, drv_path: Any, *, by_path: bool) -> None:
         """As one of pynixd's backends, this fake holds no realisation."""
-        del kwargs
-        if isinstance(request, QueryRealisationRequest):
-            return QueryRealisationResponse(realisations=[])
-        raise NotImplementedError(type(request).__name__)
+        del key, drv_path, by_path
 
 
 class BlockingSubstitutionQueue:
@@ -110,12 +107,9 @@ class BlockingSubstitutionQueue:
             return ()
         return None if client_names_a_substituter(client) or self.uncovered else (self,)
 
-    async def execute(self, request: Any, **kwargs: Any) -> Any:
+    async def find_realisation(self, key: Any, drv_path: Any, *, by_path: bool) -> None:
         """As one of pynixd's backends, this fake holds no realisation."""
-        del kwargs
-        if isinstance(request, QueryRealisationRequest):
-            return QueryRealisationResponse(realisations=[])
-        raise NotImplementedError(type(request).__name__)
+        del key, drv_path, by_path
 
     async def can_substitute(self, path: StorePath, stores: object = None) -> SubstitutionAvailability:
         path_str = str(path)
