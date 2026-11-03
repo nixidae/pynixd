@@ -105,6 +105,23 @@ async def test_race_returns_first_responder_and_keeps_the_stragglers() -> None:
         assert queue.positive[path][slow.store_id].found
 
 
+async def test_a_race_hit_keeps_the_download_size() -> None:
+    """QueryMissing sums the narinfo's `FileSize`, as `misc.cc:139` reads it."""
+    store = _store("cache", "https://cache.example/")
+
+    async def fetch(hash_part: str) -> tuple[str, Any] | None:
+        return _fetched(_NARINFO)
+
+    store.fetch_narinfo = fetch  # type: ignore[method-assign]
+    queue = _queue(store)
+
+    async with queue.running():
+        winner = await queue.race_http_narinfo(_HASH)
+        assert winner is not None
+        assert queue.positive[winner.info.path][store.store_id].download_size == 123
+        assert (await queue.can_substitute(winner.info.path)).download_size == 123
+
+
 async def test_race_total_miss_is_remembered_briefly() -> None:
     """A hash no store has races once, then answers from the miss cache."""
     calls = 0

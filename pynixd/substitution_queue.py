@@ -452,7 +452,12 @@ class SubstitutionQueue:
                 path_info = ValidPathInfo(path=StorePath(path=str(info.path)), info=info.valid_path_info.info)
                 self.record_query_result(
                     info.path,
-                    SubstitutionQueryResult(store_id=store.store_id, path_info=path_info, query_succeeded=True),
+                    SubstitutionQueryResult(
+                        store_id=store.store_id,
+                        path_info=path_info,
+                        query_succeeded=True,
+                        download_size=info.file_size,
+                    ),
                 )
                 async with race.lock:
                     if race.winner is None:
