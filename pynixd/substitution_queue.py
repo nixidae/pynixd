@@ -5,9 +5,7 @@ from __future__ import annotations
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING, cast
-from urllib.parse import parse_qs, urlsplit
 
 import anyio
 import structlog
@@ -25,6 +23,7 @@ from .serde import QueryPathInfoRequest, StorePath
 from .store import is_binary_cache
 from .store.local_db import LocalDBStore, write_router
 from .store.nar_reader import NarReader
+from .substituters import ClientSubstituters, store_key, substituter_key
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
@@ -36,6 +35,7 @@ if TYPE_CHECKING:
     from pynixd_store.store_path import StorePath
 
     from .config import PynixdSettings
+    from .connection import ClientConn
     from .context import PynixdContext
     from .store import Store
     from .store.binary_cache import BinaryCacheStore, NarInfo
@@ -44,32 +44,6 @@ log = structlog.get_logger(__name__)
 _NAR_CHUNK_SIZE = 1024 * 256
 _BACKEND_SCHEMES = ("http://", "https://", "unix://")
 """The substituters `instance._add_substituter_stores` makes a backend for by scheme alone."""
-
-
-@dataclass(frozen=True)
-class FileCache:
-    """A `file://` substituter: Nix's `LocalBinaryCacheStore` URL."""
-
-    path: Path
-    trusted: bool
-    priority: float | None
-
-
-def file_cache(url: str) -> FileCache | None:
-    """*url* as a `file://` cache, or `None` for another scheme or a relative path."""
-    split = urlsplit(url)
-    if split.scheme != "file":
-        return None
-    path = Path(split.netloc + split.path)
-    if not path.is_absolute():
-        return None
-    params = {key: values[-1] for key, values in parse_qs(split.query).items()}
-    priority = params.get("priority")
-    return FileCache(
-        path=path,
-        trusted=params.get("trusted") in {"1", "true"},
-        priority=float(priority) if priority else None,
-    )
 
 
 @dataclass(frozen=True)
@@ -217,7 +191,8 @@ class SubstitutionQueue:
         self.health: dict[StoreId, SubstitutionHealthLog] = {}
         self._probes = Background("SubstitutionQueue")
         """The probes that outlive their lookup: the stragglers of a race, and the unhealthy stores."""
-        self._active_imports: dict[StorePath, Answer[SubstitutionImportResult]] = {}
+        self._active_imports: dict[tuple[StorePath, tuple[StoreId, ...]], Answer[SubstitutionImportResult]] = {}
+        """One import for each path and substituter set: a client must not join an import from another's set."""
         # Created on first use: a limiter needs the running loop.
         self._import_limit: anyio.CapacityLimiter | None = None
         self._import_slots = 16
@@ -237,22 +212,33 @@ class SubstitutionQueue:
         """The path behind each hash `negative` holds, so a `.narinfo` request can find it."""
         self.uncovered: tuple[str, ...] = ()
         """The daemon's substituters that no backend stands for: `s3://`, `ssh://`, a `file://` cache pynixd cannot read."""
+        self.client_substituters = ClientSubstituters(settings)
 
     def note_daemon_substituters(self, substituters: Iterable[str]) -> None:
         """Remember which of the daemon's *substituters* the backends do not stand for."""
-        caches = {
-            path
-            for store in self.substituter_stores()
-            if is_binary_cache(store) and isinstance(path := getattr(store, "path", None), Path)
-        }
+        keys = {store_key(store) for store in self.substituter_stores()}
 
         def covered(url: str) -> bool:
-            if url.startswith(_BACKEND_SCHEMES):
-                return True
-            cache = file_cache(url)
-            return cache is not None and cache.path in caches
+            return url.startswith(_BACKEND_SCHEMES) or substituter_key(url) in keys
 
         self.uncovered = tuple(url for url in substituters if not covered(url))
+
+    async def substituters_for(self, client: ClientConn | None) -> tuple[Store, ...] | None:
+        """The backends that stand for the substituters *client* reaches, in its order; `None` when only the daemon reaches them.
+
+        A client's `substituters` replaces the daemon's list (`substituters.py`).
+        Without one, the daemon's list holds, and the daemon answers while a
+        backend is missing for any of it (`uncovered`). `use-substitutes` off
+        leaves none (`worker.cc:32`).
+        """
+        options = client.options if client is not None else None
+        if options is not None and not options.use_substitutes:
+            return ()
+        overrides = options.overrides if options is not None else {}
+        named = overrides.get("substituters", overrides.get("binary-caches"))
+        if named is None:
+            return None if self.uncovered else tuple(self.substituter_stores())
+        return await self.client_substituters.resolve(named.split(), self.ctx.stores.items())
 
     def running(self) -> AbstractAsyncContextManager[None]:
         """Run the probes for the body of this block; a lookup outside it raises."""
@@ -266,13 +252,15 @@ class SubstitutionQueue:
 
     async def close(self) -> None:
         await self._probes.aclose()
+        await self.client_substituters.close()
 
-    async def can_substitute(self, path: StorePath) -> SubstitutionAvailability:
-        cached = self._cached_positive(path)
+    async def can_substitute(self, path: StorePath, stores: Iterable[Store] | None = None) -> SubstitutionAvailability:
+        """Whether one of *stores*, the daemon's list without it, holds *path*: the first to say so wins."""
+        stores = list(self.substituter_stores() if stores is None else stores)
+        cached = self._cached_positive(path, stores)
         if cached is not None:
             return SubstitutionAvailability.from_query_result(cached)
 
-        stores = list(self.substituter_stores())
         if not stores:
             return SubstitutionAvailability.unavailable()
 
@@ -308,8 +296,11 @@ class SubstitutionQueue:
             return SubstitutionAvailability.from_query_result(first_positive)
         return SubstitutionAvailability.unavailable()
 
-    async def get_substituter(self, path: StorePath) -> SubstitutionCandidate | None:
-        stores = list(self.substituter_stores())
+    async def get_substituter(
+        self, path: StorePath, stores: Iterable[Store] | None = None
+    ) -> SubstitutionCandidate | None:
+        """The highest-priority of *stores*, the daemon's list without it, that holds *path*; the first listed wins a tie."""
+        stores = list(self.substituter_stores() if stores is None else stores)
         if not stores:
             return None
 
@@ -319,26 +310,34 @@ class SubstitutionQueue:
 
         return self._best_candidate_from_cache(path, stores)
 
-    async def substitute(self, path: StorePath) -> SubstitutionImportResult:
-        """Import *path*, once for every caller that asks while it runs.
+    async def substitute(self, path: StorePath, stores: Iterable[Store] | None = None) -> SubstitutionImportResult:
+        """Import *path* from *stores*, the daemon's list without it, once for every caller that asks while it runs.
 
         The import runs in the queue's task group, so a caller that leaves cancels its own wait and not the
         import of the others.
         """
-        answer = self._active_imports.get(path)
+        chosen = tuple(self.substituter_stores() if stores is None else stores)
+        key = (path, tuple(store.store_id for store in chosen))
+        answer = self._active_imports.get(key)
         if answer is None:
             answer = Answer()
-            self._probes.spawn(self._answer_the_import, path, answer)
-            self._active_imports[path] = answer
+            self._probes.spawn(self._answer_the_import, path, chosen, key, answer)
+            self._active_imports[key] = answer
         return await answer.wait()
 
-    async def _answer_the_import(self, path: StorePath, answer: Answer[SubstitutionImportResult]) -> None:
+    async def _answer_the_import(
+        self,
+        path: StorePath,
+        stores: tuple[Store, ...],
+        key: tuple[StorePath, tuple[StoreId, ...]],
+        answer: Answer[SubstitutionImportResult],
+    ) -> None:
         try:
-            answer.set(await self._substitute_uncached(path))
+            answer.set(await self._substitute_uncached(path, stores))
         except Exception as e:
             answer.set_exception(e)
         finally:
-            self._active_imports.pop(path, None)
+            self._active_imports.pop(key, None)
             if not answer.done():
                 answer.set_exception(RuntimeError("the substitution queue closed during the import"))
 
@@ -368,6 +367,12 @@ class SubstitutionQueue:
             for store_id, store in sorted(self.ctx.stores.items(), key=lambda item: str(item[0]))
             if store_id != LOCAL_STORE_ID and store.no_schedule
         )
+
+    def stores_with_ids(self, ids: Iterable[str]) -> tuple[Store, ...]:
+        """The substituter backends with *ids*, in that order: the daemon's and the ones clients named."""
+        known = {str(store.store_id): store for store in self.substituter_stores()}
+        known |= {str(store.store_id): store for store in self.client_substituters.stores()}
+        return tuple(known[store_id] for store_id in ids if store_id in known)
 
     def http_substituter_stores(self) -> list[Store]:
         """Binary cache substituters, HTTP or a directory: the only ones a narinfo race can ask.
@@ -588,9 +593,9 @@ class SubstitutionQueue:
         if self._import_limit is not None:
             self._import_limit.total_tokens = self._import_slots
 
-    async def _substitute_uncached(self, path: StorePath) -> SubstitutionImportResult:
+    async def _substitute_uncached(self, path: StorePath, stores: tuple[Store, ...]) -> SubstitutionImportResult:
         started = time.monotonic()
-        candidate = await self.get_substituter(path)
+        candidate = await self.get_substituter(path, stores)
         if candidate is None:
             metrics.SUBSTITUTIONS.labels(result="no_candidate").inc()
             metrics.SUBSTITUTION_DURATION.observe(time.monotonic() - started)
@@ -655,9 +660,11 @@ class SubstitutionQueue:
             return None
         return min(candidates, key=lambda candidate: candidate.store.priority)
 
-    def _cached_positive(self, path: StorePath) -> SubstitutionQueryResult | None:
-        for result in self.positive.get(path, {}).values():
-            if result.found:
+    def _cached_positive(self, path: StorePath, stores: list[Store]) -> SubstitutionQueryResult | None:
+        positive = self.positive.get(path, {})
+        for store in stores:
+            result = positive.get(store.store_id)
+            if result is not None and result.found:
                 return result
         return None
 

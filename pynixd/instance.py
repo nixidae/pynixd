@@ -9,7 +9,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
 
 import anyio
@@ -38,7 +38,7 @@ from .scheduler import Scheduler
 from .serde.protocol import PynixdGCAction
 from .state import upstream_in_flight
 from .store import ExternalUnixStore, LocalDBStore, LocalStore, Store, is_binary_cache, is_http_binary_cache
-from .substitution_queue import file_cache
+from .substituters import file_cache, is_own_cache
 from .unix_server import UnixServer, start_unix_server
 
 if TYPE_CHECKING:
@@ -79,8 +79,6 @@ def _trigger_due(now: float, last_trigger: float, cooldown: float) -> bool:
 SILENT_UPSTREAM_WARN = 600.0
 """Seconds of silence after which an upstream operation is logged once."""
 SILENT_UPSTREAM_CHECK = 60.0
-
-_LOOPBACK_HOSTS: Final = frozenset({"127.0.0.1", "::1", "localhost"})
 
 _SUN_PATH_LIMIT = {"linux": 108, "darwin": 104}
 _SUN_PATH_LIMIT_DEFAULT = 104
@@ -172,22 +170,6 @@ def _default_unix_substituters(configured: Sequence[str]) -> list[tuple[Path, Pa
     return result
 
 
-def _is_own_cache(url: str, settings: PynixdSettings) -> bool:
-    """Whether *url* is this pynixd's own HTTP cache.
-
-    A node's nix.conf can list it, for Nix. As a substituter of pynixd, a
-    narinfo miss there asks pynixd itself, joins the race it is part of, and
-    waits out `substitution_query_timeout`: 2 s on every new local build on
-    dynhetz, 675 timeouts in 30 minutes (nixidae/nixidae#1125).
-    """
-    split = urlsplit(url)
-    port = settings.http_port if split.scheme == "http" else settings.https_port
-    if port is None or split.port != port:
-        return False
-    host = split.hostname or ""
-    return host in _LOOPBACK_HOSTS or (bool(settings.http_host) and host == settings.http_host)
-
-
 def _http_store_id(url: str) -> str:
     split = urlsplit(url)
     host = split.netloc or split.path
@@ -209,7 +191,7 @@ def _add_substituter_stores(
 ) -> list[Store]:
     """A store in `stores` for each HTTP, unix and `file://` substituter of `configured` it lacks; returns the new ones.
 
-    This pynixd's own HTTP cache is left out: `_is_own_cache`. So is a
+    This pynixd's own HTTP cache is left out: `is_own_cache`. So is a
     `file://` directory pynixd cannot read, which the daemon may: it stays in
     `SubstitutionQueue.uncovered`, so the daemon answers for it, and its
     paths do not read as missing.
@@ -219,7 +201,7 @@ def _add_substituter_stores(
     for url in _default_http_substituter_urls(configured):
         if url.rstrip("/") in existing_http_urls:
             continue
-        if _is_own_cache(url, settings):
+        if is_own_cache(url, settings):
             log.info("substituter_is_own_cache", url=url)
             continue
         store_id = StoreId(_http_store_id(url))

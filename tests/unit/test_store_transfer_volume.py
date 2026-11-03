@@ -212,7 +212,7 @@ async def test_substitution_import_counts_in_for_its_store(monkeypatch: pytest.M
         )
     )
 
-    async def _candidate(path: object) -> SubstitutionCandidate:
+    async def _candidate(path: object, stores: object = None) -> SubstitutionCandidate:
         return candidate
 
     async def _import(path: object, cand: object) -> None:
@@ -222,7 +222,7 @@ async def test_substitution_import_counts_in_for_its_store(monkeypatch: pytest.M
     monkeypatch.setattr(queue, "get_substituter", _candidate)
     monkeypatch.setattr(queue, "_import_nar", _import)
     before = _delta("vol-cache")
-    result = await queue._substitute_uncached(info.path)
+    result = await queue._substitute_uncached(info.path, ())
     assert result.substituted
     after = _delta("vol-cache")
     assert after["bytes_in"] - before["bytes_in"] == 300

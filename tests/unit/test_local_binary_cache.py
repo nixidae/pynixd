@@ -12,7 +12,8 @@ from pynixd.config import LocalBinaryCacheSpec, PynixdSettings
 from pynixd.exceptions import NarGone
 from pynixd.instance import _add_substituter_stores
 from pynixd.store.local_binary_cache import LocalBinaryCacheStore
-from pynixd.substitution_queue import SubstitutionQueue, file_cache
+from pynixd.substituters import file_cache
+from pynixd.substitution_queue import SubstitutionQueue
 from pynixd_store.store_path import StorePath
 
 if TYPE_CHECKING:
