@@ -5,11 +5,11 @@ from __future__ import annotations
 from nix_daemon_protocol.ids import StoreId
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from pynixd.config import HTTPBinaryCacheSpec
+from pynixd.store.copied import as_copied
 from pynixd.store.http_binary_cache import (  # noqa: PLC2701 -- the parser is the unit
     HTTPBinaryCacheStore,
     _parse_narinfo,
 )
-from pynixd.store.transfer import as_copied
 
 NARINFO = """StorePath: /nix/store/00000000000000000000000000000001-hello
 URL: nar/abc.nar.bz2

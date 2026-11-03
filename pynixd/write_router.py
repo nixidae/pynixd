@@ -38,8 +38,8 @@ from . import metrics
 from .constants import proto
 from .derived_path import check_output_name
 from .op_routes import OpRoute
+from .store.copied import as_copied
 from .store.daemon_writes import DaemonWrites
-from .store.transfer import as_copied
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence

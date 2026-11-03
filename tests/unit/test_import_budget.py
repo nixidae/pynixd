@@ -49,10 +49,11 @@ from pynixd.config import HTTPBinaryCacheSpec
 #: Measured at 703 when issue #30 made both stacks lazy and dropped
 #: `environs`, down from 925. 743 with the engine's collector (op 20):
 #: `pynixd_store.collect`, `pynixd_store.collector` and `anyio.streams.buffered`.
+#: 746 with `NarReader`: `pynixd.store.nar_reader` and `pynixd.store.copied`.
 #: The headroom is small on purpose. A legitimate new dependency raises this
 #: number in the commit that adds it, and a reader sees the cost. Raise it with
 #: a measurement in the commit message, and never to make a red run green.
-MODULE_BUDGET = 745
+MODULE_BUDGET = 748
 
 #: The libraries that only an SSH or an HTTP configuration may load.
 #:

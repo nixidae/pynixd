@@ -34,7 +34,7 @@ from nix_daemon_protocol.verify_store import VerifyStoreRequest, VerifyStoreResp
 from ..serde import AddToStoreRequest, StorePath
 from ..serde.context import ReadContext, WriteContext
 from ..wire import FramedWriter, send_framed, send_raw
-from .transfer import as_copied
+from .copied import as_copied
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Iterable

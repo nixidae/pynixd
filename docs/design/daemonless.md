@@ -77,7 +77,7 @@ store directory, as `verifyStore` does. `collect_garbage`
 | 11, 49 AddTempRoot(s) | owned where pynixd can write `temproots`; else the daemon (a `NIX-DEVIATION`) | run where pynixd owns the state directory |
 | 12 AddIndirectRoot | on trial: the daemon in a deployment; route `pynixd` links `gcroots/auto/<SHA-1 of the path>` to the client's path (`pynixd_store/roots.py`) | — |
 | 47 AddPermRoot | on trial: the daemon in a deployment; route `pynixd` takes the session's temporary root, links the root to the store path, then adds the indirect root. It refuses a root in the store and a file that is not a link into the store, with Nix's messages | — |
-| 38 NarFromPath | on trial: the daemon in a deployment; shadow in every test store, where the client gets the daemon's NAR, compared with `nar_fs.dump_path` of the store's files by SHA-256 and size; route `pynixd` streams the dump | — |
+| 38 NarFromPath | on trial: the daemon in a deployment; shadow in every test store, where the client gets the daemon's NAR, compared with `nar_fs.dump_path` of the store's files by SHA-256 and size; route `pynixd` streams the dump. pynixd's own reads (the HTTP cache, a copy out of the store, a substitution from a local store) take the same route through `NarReader` (`pynixd/store/nar_reader.py`); a dump of another size than the path info's fails | — |
 
 ### Builds and substitution
 
@@ -121,9 +121,9 @@ Reads first, writes second, builds last.
    QueryDerivationOutputMap (done), QueryRealisation (done), and the QueryPathFromHashPart
    miss (done). No privilege, no lock, and the parity run compares each answer with
    the daemon's.
-2. NarFromPath (done for a client; the cache proxy, `transfer.py` and the
-   substitution queue still read the daemon's dump): a read of the file
-   system, and every copy out of the store uses it. `nar_fs.restore_path`
+2. NarFromPath (done: a client, the HTTP cache, `transfer.py` and the
+   substitution queue): a read of the file system, and every copy out of
+   the store uses it. `nar_fs.restore_path`
    unpacks a NAR for the write path.
 3. The registration routine (done: a differential against Nix's own rows in
    `tests/functional/test_register_valid_paths.py`), then the write ops on

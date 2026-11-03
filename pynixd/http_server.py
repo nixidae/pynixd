@@ -40,13 +40,11 @@ from pynixd_store.store_path import StorePath
 
 from . import metrics
 from .serde import (
-    NarFromPathRequest,
     QueryPathFromHashPartRequest,
     QueryPathInfoRequest,
 )
-from .serde.context import WriteContext
 from .store.local_db import write_router
-from .wire import _CHUNK_SIZE
+from .store.nar_reader import NarReader
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
@@ -384,13 +382,8 @@ class PynixdHttpServer:
         await response.prepare(request)
 
         try:
-            async with self.store.transfer_conn() as conn:
-                await NarFromPathRequest(path=StorePath(path=str(path))).to_writer(WriteContext.from_conn(conn))
-                await conn.w.drain()
-                await conn.r.drain_stderr()
-                remaining = vinfo.info.nar_size
-                while remaining > 0:
-                    chunk = await conn.r.readexactly(min(remaining, _CHUNK_SIZE))
+            async with NarReader(self.store) as nars:
+                async for chunk in nars.read(StorePath(path=str(path)), vinfo.info.nar_size):
                     await response.write(chunk)
                     # aiohttp's `write` awaits its payload writer, so this loop
                     # has backpressure. It still needs a guaranteed suspension:
@@ -398,7 +391,6 @@ class PynixdHttpServer:
                     # returns below the high-water mark, so neither reaches the
                     # event loop. See `wire.forward_raw`.
                     await checkpoint()
-                    remaining -= len(chunk)
                     metrics.HTTP_NAR_BYTES_SENT.inc(len(chunk))
         except Exception:
             log.exception("nar_from_path_streaming_failed", path=path)

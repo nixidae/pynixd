@@ -19,10 +19,10 @@ from pynixd_store.source import Pieces
 from . import metrics
 from .answer import Answer
 from .exceptions import NarGone, OpNotImplementedError, leaves
-from .serde import NarFromPathRequest, QueryPathInfoRequest, StorePath
-from .serde.context import WriteContext
+from .serde import QueryPathInfoRequest, StorePath
 from .store import is_http_binary_cache
-from .store.local_db import write_router
+from .store.local_db import LocalDBStore, write_router
+from .store.nar_reader import NarReader
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
@@ -597,14 +597,9 @@ class SubstitutionQueue:
             async for chunk in candidate.store.stream_nar(http_narinfo):
                 yield chunk
         elif (client := candidate.store.daemon_client) is not None:
-            async with client.transfer_conn() as source_conn:
-                await NarFromPathRequest(path=StorePath(path=str(path))).to_writer(WriteContext.from_conn(source_conn))
-                await source_conn.w.drain()
-                await source_conn.r.drain_stderr()
-                remaining = candidate.path_info.info.nar_size
-                while remaining > 0:
-                    chunk = await source_conn.r.readexactly(min(remaining, _NAR_CHUNK_SIZE))
-                    remaining -= len(chunk)
+            source = candidate.store if isinstance(candidate.store, LocalDBStore) else client
+            async with NarReader(source) as nars:
+                async for chunk in nars.read(StorePath(path=str(path)), candidate.path_info.info.nar_size):
                     yield chunk
         else:
             raise TypeError(f"store {candidate.store.store_id} cannot stream NARs")

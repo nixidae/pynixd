@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from typing import TYPE_CHECKING, ClassVar
 
 import anyio
@@ -17,6 +16,7 @@ from ..op_routes import OpRoute
 from ..serde import QueryPathInfoRequest
 from ..serde.context import ReadContext, WriteContext
 from ..store.local_db import LocalDBStore
+from ..store.nar_reader import NarShadow, nar_route
 from ._base import Handler
 
 if TYPE_CHECKING:
@@ -24,51 +24,6 @@ if TYPE_CHECKING:
     from ..store.daemon import DaemonStore
 
 logger = structlog.get_logger(__name__)
-
-
-class _Shadow:
-    """pynixd's dump of a path, beside the daemon's NAR of it, compared by SHA-256 and size.
-
-    The client gets the daemon's bytes, whatever the comparison says. The
-    dump reads the same files at the same time, and a failure in it counts
-    as `error` and touches nothing else.
-    """
-
-    def __init__(self, store: LocalDBStore, req: NarFromPathRequest) -> None:
-        self.store = store
-        self.req = req
-        self.theirs = hashlib.sha256()
-        self.ours = hashlib.sha256()
-        self.our_size = 0
-        self.error: Exception | None = None
-        self.done = False
-
-    async def dump(self) -> None:
-        try:
-            async for piece in self.store.nar_pieces(self.req.path):
-                self.ours.update(piece)
-                self.our_size += len(piece)
-        except Exception as exc:
-            self.error = exc
-        self.done = True
-
-    def compare(self, their_size: int) -> None:
-        counter = metrics.OP_SHADOW.labels(store_id=self.store.store_id, op="NarFromPath", outcome="error")
-        if self.error is not None or not self.done:
-            logger.warning("op_shadow_error", op="NarFromPath", path=str(self.req.path), error=repr(self.error))
-            counter.inc()
-            return
-        same = self.our_size == their_size and self.ours.digest() == self.theirs.digest()
-        outcome = "match" if same else "mismatch"
-        metrics.OP_SHADOW.labels(store_id=self.store.store_id, op="NarFromPath", outcome=outcome).inc()
-        if not same:
-            logger.warning(
-                "op_shadow_mismatch",
-                op="NarFromPath",
-                path=str(self.req.path),
-                pynixd=(self.our_size, self.ours.hexdigest()),
-                daemon=(their_size, self.theirs.hexdigest()),
-            )
 
 
 class NarFromPathHandler(Handler):
@@ -110,11 +65,11 @@ class NarFromPathHandler(Handler):
             path_counter=metrics.NAR_SERVE_PATHS,
             duration=metrics.NAR_SERVE_DURATION,
         )
-        route = store.routes.get(self.op) if isinstance(store, LocalDBStore) else OpRoute.daemon
+        route = nar_route(store)
         if isinstance(store, LocalDBStore) and route is OpRoute.pynixd:
             await self._dump(ctx, store, req, meter)
             return
-        shadow = _Shadow(store, req) if isinstance(store, LocalDBStore) and route is OpRoute.shadow else None
+        shadow = NarShadow(store, req.path) if isinstance(store, LocalDBStore) and route is OpRoute.shadow else None
 
         # 3. Forward request to daemon (serde), stream NAR to client
         failure: Exception | None = None

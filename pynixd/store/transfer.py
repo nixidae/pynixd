@@ -7,15 +7,17 @@ from typing import TYPE_CHECKING, Final, Literal
 
 import anyio
 import structlog
+from anyio.lowlevel import checkpoint
 
 from nix_daemon_protocol.add_multiple_to_store import AddMultipleToStoreRequest, AddMultipleToStoreResponse
-from nix_daemon_protocol.nar_from_path import NarFromPathRequest
 from pynixd_store.store_path import StorePath
 
-from .. import metrics, wire
+from .. import metrics
 from ..daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from ..exceptions import BackendError, leaves
 from ..serde.context import ReadContext, WriteContext
+from .copied import as_copied
+from .nar_reader import NarReader
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -212,12 +214,12 @@ async def _stream_checked(
 
     # 3. Stream the missing paths
     log.debug("stream_paths_acquire_src", src=src.store_id, dst=dst.store_id)
-    async with src.transfer_conn() as src_conn:
-        log.debug("stream_paths_acquired_src", src=src.store_id, dst=dst.store_id, conn_id=src_conn.id)
+    async with NarReader(src) as nars:
+        log.debug("stream_paths_acquired_src", src=src.store_id, dst=dst.store_id, route=nars.route)
         log.debug("stream_paths_acquire_dst", src=src.store_id, dst=dst.store_id)
         async with dst.transfer_conn() as dst_conn:
             log.debug("stream_paths_acquired_dst", src=src.store_id, dst=dst.store_id, conn_id=dst_conn.id)
-            await _stream_paths_over_conns(src_conn, dst_conn, to_transfer, cancel_event)
+            await _stream_paths_over_conns(nars, dst_conn, to_transfer, cancel_event)
 
     moved = sum(info.info.nar_size for info in to_transfer)
     if peer_store_id is not None and direction is not None:
@@ -229,20 +231,13 @@ async def _stream_checked(
     return moved
 
 
-def as_copied(info: ValidPathInfo) -> ValidPathInfo:
-    """*info* as a destination registers a copy: `ultimate` cleared (`daemon.cc:516`)."""
-    if not info.info.ultimate:
-        return info
-    return info.model_copy(update={"info": info.info.model_copy(update={"ultimate": False})})
-
-
 async def _stream_paths_over_conns(
-    src_conn: Connection,
+    nars: NarReader,
     dst_conn: Connection,
     to_transfer: list[ValidPathInfo],
     cancel_event: anyio.Event | None,
 ) -> None:
-    """Stream already-selected path infos over established source/destination connections."""
+    """Stream already-selected path infos from *nars* over an established destination connection."""
     dst_conn.op_log.append("AddMultipleToStore (stream_paths_to)")
     req = AddMultipleToStoreRequest(
         repair=0,
@@ -272,7 +267,6 @@ async def _stream_paths_over_conns(
             path = info.path
             log.debug(
                 "stream_paths_path_start",
-                src_conn=src_conn.id,
                 dst_conn=dst_conn.id,
                 path=str(path),
                 nar_size=info.info.nar_size,
@@ -281,21 +275,13 @@ async def _stream_paths_over_conns(
 
             fw.write(await info.bytes_wire())
 
-            # Request NAR from source
-            await NarFromPathRequest(path=path).to_writer(WriteContext.from_conn(src_conn))
-            await src_conn.w.drain()
-
-            # Source will send stderr logs followed by STDERR_LAST before NAR data
-            await src_conn.r.drain_stderr()
-
-            # Pipe raw NAR data from source into the destination's framed stream
-            await wire.forward_raw(
-                src_conn.r,
-                fw,
-                info.info.nar_size,
-            )
+            async for chunk in nars.read(path, info.info.nar_size):
+                fw.write(chunk)
+                await fw.drain()
+                # See `wire.forward_raw`: neither end reaches the event loop on its own.
+                await checkpoint()
             await dst_conn.w.drain()
-            log.debug("stream_paths_path_sent", src_conn=src_conn.id, dst_conn=dst_conn.id, path=str(path))
+            log.debug("stream_paths_path_sent", dst_conn=dst_conn.id, path=str(path))
 
         await fw.finalize()
         await dst_conn.w.drain()

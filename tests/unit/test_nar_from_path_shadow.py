@@ -14,12 +14,11 @@ import pytest
 from prometheus_client import REGISTRY
 
 from nix_daemon_protocol.ids import StoreId
-from nix_daemon_protocol.nar_from_path import NarFromPathRequest
 from pynixd.config import LocalSocketStoreSpec
-from pynixd.handlers.nar_from_path import _Shadow
 from pynixd.nar import NarRegular, write_nar
 from pynixd.serde import StorePath
 from pynixd.store.local_db import LocalDBStore
+from pynixd.store.nar_reader import NarShadow
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -38,7 +37,7 @@ async def _shadow(root: Path, theirs: bytes, *, present: bool = True) -> None:
         (root / "nix" / "store").mkdir(parents=True)
         (root / "nix" / "store" / NAME).write_bytes(b"hello")  # noqa: ASYNC240 -- test setup
     store = LocalDBStore(LocalSocketStoreSpec(store_id=STORE, store_path=root))
-    shadow = _Shadow(store, NarFromPathRequest(path=StorePath(path=f"/nix/store/{NAME}")))
+    shadow = NarShadow(store, StorePath(path=f"/nix/store/{NAME}"))
     await shadow.dump()
     shadow.theirs.update(theirs)
     shadow.compare(len(theirs))
