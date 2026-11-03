@@ -21,11 +21,11 @@ from nix_daemon_protocol.keyed_drv_output import KeyedDrvOutput
 from nix_daemon_protocol.query_realisation import QueryRealisationRequest
 from pynixd.config import LocalSocketStoreSpec
 from pynixd.exceptions import BackendError
-from pynixd.local_store_db import LocalStoreDB
 from pynixd.serde import StorePath
 from pynixd.store.local_db import LocalDBStore
-from pynixd.store_layout import StoreLayout
 from pynixd.trust import TrustPolicy
+from pynixd_store.local_store_db import LocalStoreDB
+from pynixd_store.store_layout import StoreLayout
 
 if TYPE_CHECKING:
     from pathlib import Path

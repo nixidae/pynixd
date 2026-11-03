@@ -11,8 +11,8 @@ import hashlib
 
 import pytest
 
-from pynixd.content_address import parse_any_sha256
-from pynixd.utils import nix32_encode
+from pynixd_store.content_address import parse_any_sha256
+from pynixd_store.utils import nix32_encode
 
 DIGEST = hashlib.sha256(b"a NAR").digest()
 

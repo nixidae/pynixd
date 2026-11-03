@@ -21,13 +21,13 @@ import anyio
 import structlog
 
 from nix_daemon_protocol.store_dir import on_disk
+from pynixd_store.store_path import StorePath
 
 from ..agent import local_monitor
 from ..config import LocalSocketStoreSpec, PynixdSettings
 from ..connection import Connection
 from ..line_reader import LineReader
 from ..monitor import DummyResourceMonitor, local_disk
-from ..store_path import StorePath
 from ..trust import TrustPolicy
 from ..unix_socket import _SUN_PATH_MAX, open_unix_connection
 from ..wire import UnixNixReader, UnixNixWriter
@@ -37,9 +37,10 @@ from .daemon import DaemonStore
 if TYPE_CHECKING:
     from anyio.abc import ByteReceiveStream, Process
 
-    from ..drv_parser import Derivation
+    from pynixd_store.drv_parser import Derivation
+    from pynixd_store.store_layout import StoreLayout
+
     from ..monitor import ResourceMonitor
-    from ..store_layout import StoreLayout
 
 log = structlog.get_logger(__name__)
 
@@ -496,7 +497,7 @@ class LocalStore(DaemonStore):
 
     async def read_derivation(self, drv_store_path: StorePath | str) -> Derivation | None:
         """Fast-path: read .drv file directly from the filesystem."""
-        from ..drv_parser import parse_drv_bytes
+        from pynixd_store.drv_parser import parse_drv_bytes
 
         # `on_disk` and not `self.store_path / "nix" / "store" / ...`.
         # `real_store_dir()` is where the files of the store are, and a chroot

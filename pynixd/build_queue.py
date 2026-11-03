@@ -14,6 +14,7 @@ import structlog
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, BuildId, RequestId, StoreId
 from nix_daemon_protocol.logs import LogStartActivity, LogStopActivity
 from nix_daemon_protocol.protocol import ActivityType, Verbosity
+from pynixd_store.store_path import StorePath
 
 from . import metrics, wire
 from .answer import Answer
@@ -21,14 +22,13 @@ from .exceptions import DelegationLoopError
 from .serde import BuildDerivationResponse, BuildMode, BuildResult, BuildResultStatus
 from .serde.context import WriteContext
 from .state_models import QueueCounts
-from .store_path import StorePath
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from nix_daemon_protocol.logs import LogMessage
+    from pynixd_store.build_stats import BuildObservation, StoreEstimate
 
-    from .build_stats import BuildObservation, StoreEstimate
     from .connection import ClientConn
     from .derived_path import DerivedPath
     from .placement_trace import PlacementDecision

@@ -18,10 +18,10 @@ from nix_daemon_protocol.nar_hash import NARHash
 from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
 from nix_daemon_protocol.signature import Signature
 from nix_daemon_protocol.wire_time import Time
-from pynixd.hintfmt import magenta
 from pynixd.serde import ValidPathInfo
-from pynixd.signing import MAX_SIGS, PublicKey, check_signatures, decode_base64, key_settings, public_keys
-from pynixd.store_path import StorePath
+from pynixd_store.hintfmt import magenta
+from pynixd_store.signing import MAX_SIGS, PublicKey, check_signatures, decode_base64, key_settings, public_keys
+from pynixd_store.store_path import StorePath
 
 if TYPE_CHECKING:
     from pathlib import Path

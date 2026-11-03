@@ -16,7 +16,7 @@ class AddTempRootHandler(Handler):
     """Server handler for AddTempRoot — pynixd writes the root itself.
 
     The root belongs to the client session, and it goes away when that
-    session does. `DaemonProxy.add_temp_root` and `pynixd.temp_roots` hold
+    session does. `DaemonProxy.add_temp_root` and `pynixd_store.temp_roots` hold
     the mechanism, and issue #20 gives the defect that they correct.
 
     The role of the client makes no difference now. The operation used to

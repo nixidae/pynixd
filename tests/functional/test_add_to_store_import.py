@@ -19,9 +19,9 @@ import pytest
 from nix_daemon_protocol.add_to_store import AddToStoreRequest, AddToStoreResponse
 from nix_daemon_protocol.content_address import ContentAddress
 from pynixd.exceptions import BackendError
-from pynixd.nar_fs import dump_path
 from pynixd.serde.context import ReadContext, WriteContext
-from pynixd.store.engine import StoreEngine
+from pynixd_store.engine import StoreEngine
+from pynixd_store.nar_fs import dump_path
 from tests._conftest.import_lab import (
     EXPR,
     OUTPUTS,

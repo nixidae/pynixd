@@ -9,6 +9,7 @@ import anyio
 import structlog
 
 from nix_daemon_protocol.exceptions import DaemonProtocolError
+from pynixd_store.store_path import StorePath
 
 from ..derived_path import DerivedPath
 from ..exceptions import BackendError
@@ -21,7 +22,6 @@ from ..serde import (
     QueryMissingResponse,
     QuerySubstitutablePathInfosRequest,
 )
-from ..store_path import StorePath
 from ..substitution_queue import SubstitutionAvailability
 from .goal import ExecutionGoal
 from .realisations import realisations_of
@@ -29,8 +29,9 @@ from .realisations import realisations_of
 if TYPE_CHECKING:
     from anyio.abc import TaskGroup
 
+    from pynixd_store.drv_parser import ChildMapNode, Derivation
+
     from ..connection import ClientConn
-    from ..drv_parser import ChildMapNode, Derivation
     from .engine import GoalEngine
 
 log = structlog.get_logger(__name__)

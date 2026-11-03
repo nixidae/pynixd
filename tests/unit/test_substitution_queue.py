@@ -15,13 +15,13 @@ from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 from pynixd.config import PynixdSettings
 from pynixd.serde import QueryPathInfoResponse
-from pynixd.store_path import StorePath
 from pynixd.substitution_queue import (
     SubstitutionHealthLog,
     SubstitutionImportResult,
     SubstitutionQueryResult,
     SubstitutionQueue,
 )
+from pynixd_store.store_path import StorePath
 from tests._conftest.all_of import all_of
 
 if TYPE_CHECKING:

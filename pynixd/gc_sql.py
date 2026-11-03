@@ -26,7 +26,7 @@ import aiosqlite
 import anyio
 import structlog
 
-from .db_migrations import PATH_ACCESS_TABLE
+from pynixd_store.db_migrations import PATH_ACCESS_TABLE
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Mapping, Sequence

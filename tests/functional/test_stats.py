@@ -17,8 +17,6 @@ from nix_daemon_protocol.ids import BuildId, StoreId
 from pynixd import Server
 from pynixd.answer import Answer
 from pynixd.build_queue import QueuedBuild
-from pynixd.build_stats import BuildObservation, identity_of
-from pynixd.local_store_db import LocalStoreDB
 from pynixd.psi import CpuUtil
 from pynixd.serde import (
     BasicDerivation,
@@ -35,8 +33,10 @@ from pynixd.serde import (
     SetOptionsRequest,
 )
 from pynixd.store import LocalDBStore, LocalStore
-from pynixd.store_layout import StoreLayout
-from pynixd.store_path import StorePath
+from pynixd_store.build_stats import BuildObservation, identity_of
+from pynixd_store.local_store_db import LocalStoreDB
+from pynixd_store.store_layout import StoreLayout
+from pynixd_store.store_path import StorePath
 from tests.conftest import STORE_PREFIX, make_test_spec, rmtree_robust, serde_path
 
 if TYPE_CHECKING:

@@ -1,4 +1,4 @@
-"""Unit tests for pynixd.signing — Ed25519 path signing.
+"""Unit tests for pynixd_store.signing — Ed25519 path signing.
 
 Tests SecretKey parsing, fingerprint construction, and signing roundtrips.
 Uses deterministic test keys — no I/O or env dependencies.
@@ -16,8 +16,8 @@ from nix_daemon_protocol.nar_hash import NARHash
 from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 from pynixd.serde import ValidPathInfo
-from pynixd.signing import SecretKey, fingerprint, get_default_signing_key, sign_path_info
-from pynixd.store_path import StorePath
+from pynixd_store.signing import SecretKey, fingerprint, get_default_signing_key, sign_path_info
+from pynixd_store.store_path import StorePath
 
 _SEED_32 = b"\x00" * 32
 _SEED_32_B64 = base64.b64encode(_SEED_32).decode()

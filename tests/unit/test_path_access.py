@@ -32,8 +32,6 @@ import aiosqlite
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from pynixd.db_migrations import PATH_ACCESS_TABLE
-from pynixd.local_store_db import LocalStoreDB
 from pynixd.serde import (
     IsValidPathRequest,
     QueryAllValidPathsRequest,
@@ -41,7 +39,9 @@ from pynixd.serde import (
     StorePath,
 )
 from pynixd.store.local_db import _path_field_names, referenced_paths
-from pynixd.store_layout import StoreLayout
+from pynixd_store.db_migrations import PATH_ACCESS_TABLE
+from pynixd_store.local_store_db import LocalStoreDB
+from pynixd_store.store_layout import StoreLayout
 
 if TYPE_CHECKING:
     from pathlib import Path

@@ -20,8 +20,8 @@ from pynixd.serde import (
     LogNext,
     WireLogs,
 )
-from pynixd.store_path import StorePath
 from pynixd.wire import BytesWriter
+from pynixd_store.store_path import StorePath
 from tests.conftest import serde_path
 from tests.functional.mock_store import MockStore
 

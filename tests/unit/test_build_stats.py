@@ -9,8 +9,8 @@ import json
 
 import pytest
 
-from pynixd.build_stats import identity_of, name_without_version
 from pynixd.serde import BasicDerivation
+from pynixd_store.build_stats import identity_of, name_without_version
 
 
 def _drv(env: dict[str, str], platform: str = "x86_64-linux") -> BasicDerivation:

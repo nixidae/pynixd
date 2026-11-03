@@ -11,11 +11,11 @@ from typing import TYPE_CHECKING
 import anyio
 
 from pynixd.agent import AGENT_HELLO, AgentMonitor, agent_args, agent_for, local_monitor, read_agent_frame
-from pynixd.background import Background
 from pynixd.config import PressureSettings
 from pynixd.line_reader import LineReader
 from pynixd.monitor import SAMPLED_FILES, GenericResourcePoller, ResourceMonitor, health_from_files
 from pynixd.psi import DiskSpace
+from pynixd_store.background import Background
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator

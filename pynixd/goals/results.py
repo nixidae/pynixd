@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from ..serde import BuildResult, BuildResultStatus
 
 if TYPE_CHECKING:
-    from ..store_path import StorePath
+    from pynixd_store.store_path import StorePath
 
 
 type DynamicPathMap = dict[tuple["StorePath | str", ...], "StorePath"]

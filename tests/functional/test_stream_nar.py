@@ -10,7 +10,7 @@ from pynixd import metrics
 from pynixd.serde import IsValidPathRequest
 from pynixd.store import LocalSocketStore
 from pynixd.store.transfer import stream_paths_store_to_store
-from pynixd.store_path import StorePath
+from pynixd_store.store_path import StorePath
 from tests._conftest.constants import HELLO
 from tests.conftest import (
     CLIENT_BIN,

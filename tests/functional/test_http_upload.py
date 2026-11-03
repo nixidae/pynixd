@@ -11,7 +11,7 @@ import structlog
 
 from pynixd.serde import QueryPathInfoRequest
 from pynixd.store import LocalSocketStore
-from pynixd.store_path import StorePath
+from pynixd_store.store_path import StorePath
 from tests._conftest.constants import HELLO
 from tests.conftest import (
     CLIENT_BIN,

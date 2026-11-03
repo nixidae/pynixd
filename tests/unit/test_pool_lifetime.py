@@ -14,9 +14,9 @@ from typing import Any, cast
 
 import pytest
 
-from pynixd.background import Background
 from pynixd.connection import Connection
 from pynixd.store.pool import ConnectionPool
+from pynixd_store.background import Background
 
 
 class FakeReader:

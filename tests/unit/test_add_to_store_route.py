@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 
 from pynixd.constants import proto
-from pynixd.content_address import Method, parse_method_algo
-from pynixd.store.add import ImportSettings
 from pynixd.write_router import Dump, Facts, Write, first_reason
+from pynixd_store.add import ImportSettings
+from pynixd_store.content_address import Method, parse_method_algo
 
 NEW = proto(1, 38)
 REF = "/nix/store/" + "a" * 32 + "-ref"

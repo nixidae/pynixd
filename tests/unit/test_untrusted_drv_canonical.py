@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import pytest
 
-from pynixd.drv_parser import _Parser  # noqa: PLC2701 -- the string reader is the unit
 from pynixd.goals.resolution import canonical_derivation
 from pynixd.serde import BasicDerivation, DerivationOutput
-from pynixd.utils import nix32_decode, nix32_encode
+from pynixd_store.drv_parser import _Parser  # noqa: PLC2701 -- the string reader is the unit
+from pynixd_store.utils import nix32_decode, nix32_encode
 
 NIX32 = "15sqg1j6gq6081nk0v5c6npadlswb9238l336wb2g9bmmrry779c"
 HEX = "2c9de373ae75a5271637635034445a5cd3a6ae35ac6c306d40c0e06764785897"

@@ -20,8 +20,8 @@ from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 from pynixd.handlers.add_multiple_to_store import _paths
-from pynixd.store.source import Pieces
 from pynixd.wire import BytesReader, BytesWriter, FramedReader, send_framed, send_raw
+from pynixd_store.source import Pieces
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator

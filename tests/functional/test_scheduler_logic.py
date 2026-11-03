@@ -13,7 +13,7 @@ from pynixd.serde import (
     BuildResult,
     BuildResultStatus,
 )
-from pynixd.store_path import StorePath
+from pynixd_store.store_path import StorePath
 from tests.conftest import serde_path
 from tests.functional.mock_store import MockStore
 

@@ -35,6 +35,8 @@ from passlib.apache import HtpasswdFile
 
 from nix_daemon_protocol.store_dir import store_dir
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
+from pynixd_store.source import Pieces
+from pynixd_store.store_path import StorePath
 
 from . import metrics
 from .serde import (
@@ -44,8 +46,6 @@ from .serde import (
 )
 from .serde.context import WriteContext
 from .store.local_db import write_router
-from .store.source import Pieces
-from .store_path import StorePath
 from .wire import _CHUNK_SIZE
 
 if TYPE_CHECKING:

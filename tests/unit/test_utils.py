@@ -1,4 +1,4 @@
-"""Unit tests for pynixd.utils — nix32_encode and friends.
+"""Unit tests for pynixd_store.utils — nix32_encode and friends.
 
 Tests the custom Nix base-32 encoding at the bit level.
 All tests are pure — no I/O.
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 
-from pynixd.utils import NIX32_CHARS, nix32_encode
+from pynixd_store.utils import NIX32_CHARS, nix32_encode
 
 
 class TestNix32Encode:

@@ -8,8 +8,9 @@ from typing import TYPE_CHECKING, ClassVar
 
 import structlog
 
+from pynixd_store.store_path import StorePath
+
 from ..serde import BuildResultStatus, IsValidPathRequest
-from ..store_path import StorePath
 from .goal import ExecutionGoal
 from .results import GoalResult, goal_failure, goal_success
 

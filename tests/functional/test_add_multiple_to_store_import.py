@@ -19,9 +19,9 @@ import pytest
 from nix_daemon_protocol.add_multiple_to_store import AddMultipleToStoreRequest, AddMultipleToStoreResponse
 from nix_daemon_protocol.nar_hash import NARHash
 from pynixd.exceptions import BackendError
-from pynixd.hintfmt import magenta
 from pynixd.serde.context import ReadContext, WriteContext
-from pynixd.store.engine import StoreEngine
+from pynixd_store.engine import StoreEngine
+from pynixd_store.hintfmt import magenta
 from tests._conftest.import_lab import (
     IA,
     OUTPUTS,

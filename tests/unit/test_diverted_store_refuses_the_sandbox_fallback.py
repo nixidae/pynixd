@@ -18,7 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from pynixd.store.local_daemon import _sandbox_fallback_arguments
-from pynixd.store_layout import StoreLayout
+from pynixd_store.store_layout import StoreLayout
 
 
 def test_a_diverted_store_turns_the_fallback_off() -> None:

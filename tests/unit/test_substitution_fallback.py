@@ -20,7 +20,7 @@ from pynixd.goals.ensure import EnsureDerivedPathGoal
 from pynixd.goals.results import goal_failure
 from pynixd.goals.substitute import UNSIGNED_REFUSAL
 from pynixd.serde import BuildMode, BuildResultStatus, IsValidPathRequest, IsValidPathResponse
-from pynixd.store_path import StorePath
+from pynixd_store.store_path import StorePath
 
 if TYPE_CHECKING:
     from pynixd.goals.engine import GoalEngine

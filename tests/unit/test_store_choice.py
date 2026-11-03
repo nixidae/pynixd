@@ -22,12 +22,12 @@ from pynixd.allocator import (
     score_store,
 )
 from pynixd.build_queue import BuildQueue
-from pynixd.build_stats import ExpectedBytes, StoreEstimate, StoreLink, slot_wait_seconds, transfer_seconds
 from pynixd.config import PlacementTraceSettings, StoreRankingSettings
 from pynixd.placement_trace import PlacementTrace
 from pynixd.psi import SystemHealth
 from pynixd.scheduler import Scheduler
 from pynixd.serde import BasicDerivation, BuildDerivationRequest, BuildMode, StorePath
+from pynixd_store.build_stats import ExpectedBytes, StoreEstimate, StoreLink, slot_wait_seconds, transfer_seconds
 
 if TYPE_CHECKING:
     from pynixd.build_queue import QueuedBuild

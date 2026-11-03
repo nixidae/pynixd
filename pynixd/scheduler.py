@@ -23,6 +23,17 @@ import anyio
 import structlog
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID
+from pynixd_store.build_stats import (
+    BuildEstimateSource,
+    BuildObservation,
+    ExpectedBytes,
+    StoreEstimate,
+    StoreLink,
+    identity_of,
+    slot_wait_seconds,
+    transfer_seconds,
+)
+from pynixd_store.store_path import StorePath
 
 from . import metrics, state
 from ._lazy import ssh_errors
@@ -37,16 +48,6 @@ from .allocator import (
     pick_store,
 )
 from .build_queue import BuildQueue, QueuedBuild
-from .build_stats import (
-    BuildEstimateSource,
-    BuildObservation,
-    ExpectedBytes,
-    StoreEstimate,
-    StoreLink,
-    identity_of,
-    slot_wait_seconds,
-    transfer_seconds,
-)
 from .config import NoLocalJobs
 from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from .exceptions import BackendError, InfrastructureError, error_text, leaves
@@ -55,7 +56,6 @@ from .placement_trace import CandidateTrace, Outcome, PlacementDecision, Placeme
 from .serde import AddTempRootRequest, AddTempRootsRequest, BuildResultStatus, LogNext, QueryValidPathsRequest
 from .store import DaemonStore, LocalDBStore
 from .store.transfer import stream_paths_store_to_store
-from .store_path import StorePath
 from .substitution_queue import SubstitutionQueue
 from .system_features import BUILTIN_SYSTEM, effective_required_features
 from .wire import FEATURE_ADD_TEMP_ROOTS

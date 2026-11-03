@@ -7,12 +7,13 @@ from typing import TYPE_CHECKING, ClassVar
 import anyio
 import structlog
 
+from pynixd_store.store_path import StorePath
+
 from ..exceptions import DelegationLoopError
 from ..goals.resolution import _nix_drv_name, canonical_derivation, unparse_basic_derivation
 from ..serde import BuildDerivationRequest, BuildDerivationResponse
 from ..serde.auth import Role
 from ..serde.context import ReadContext
-from ..store_path import StorePath
 from ._base import Handler
 
 if TYPE_CHECKING:

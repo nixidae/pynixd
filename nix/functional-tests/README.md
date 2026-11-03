@@ -867,7 +867,7 @@ changed the tests to fit pynixd**, and it was the one patch of the five that
 worked around pynixd rather than around the harness. It is gone, with the two
 script rewrites under it.
 
-`pynixd/store_layout.py` holds both shapes now, and `tests/unit/test_store_layout.py`
+`pynixd_store/store_layout.py` holds both shapes now, and `tests/unit/test_store_layout.py`
 states the difference.
 
 ## The safety limit

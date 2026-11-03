@@ -22,8 +22,8 @@ from nix_daemon_protocol.ids import StoreId
 from pynixd.config import HTTPBinaryCacheSpec, PynixdSettings
 from pynixd.http_server import PynixdHttpServer, _uncompressed_narinfo
 from pynixd.store.http_binary_cache import HTTPBinaryCacheStore, _parse_narinfo
-from pynixd.store_path import StorePath
 from pynixd.substitution_queue import SubstitutionQueryResult, SubstitutionQueue
+from pynixd_store.store_path import StorePath
 
 if TYPE_CHECKING:
     from pynixd.context import PynixdContext

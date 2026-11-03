@@ -18,8 +18,8 @@ from pathlib import Path
 import anyio
 import pytest
 
-from pynixd.local_store_db import LocalStoreDB
-from pynixd.store_layout import StoreLayout
+from pynixd_store.local_store_db import LocalStoreDB
+from pynixd_store.store_layout import StoreLayout
 
 
 @pytest.mark.anyio

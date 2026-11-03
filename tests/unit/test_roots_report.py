@@ -25,11 +25,11 @@ from pynixd.daemon_extensions.pynixd_roots_report import (
     RootsReportRow,
 )
 from pynixd.handlers.pynixd_roots_report import PynixdRootsReportHandler
-from pynixd.local_store_db import LocalStoreDB
 from pynixd.serde.auth import Role
 from pynixd.serde.context import ReadContext, WriteContext
-from pynixd.store_layout import StoreLayout
 from pynixd.wire import BytesReader, BytesWriter
+from pynixd_store.local_store_db import LocalStoreDB
+from pynixd_store.store_layout import StoreLayout
 
 if TYPE_CHECKING:
     from pathlib import Path

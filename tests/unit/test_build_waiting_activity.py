@@ -28,7 +28,7 @@ from nix_daemon_protocol.ids import BuildId
 from nix_daemon_protocol.protocol import ActivityType, Verbosity
 from pynixd.answer import Answer
 from pynixd.build_queue import QueuedBuild, _next_activity_id
-from pynixd.store_path import StorePath
+from pynixd_store.store_path import StorePath
 
 if TYPE_CHECKING:
     from pynixd.connection import ClientConn

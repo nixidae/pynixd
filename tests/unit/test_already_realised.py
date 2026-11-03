@@ -27,8 +27,6 @@ from test_drv_hash import (  # type: ignore[import-not-found]  # pytest puts tes
 )
 
 from pynixd.derived_path import DerivedPath
-from pynixd.drv_hash import output_hashes
-from pynixd.drv_parser import parse_drv
 from pynixd.goals.ensure import EnsureDerivedPathGoal
 from pynixd.goals.results import GoalResult, goal_success
 from pynixd.goals.substitute import SubstituteAttempt
@@ -41,14 +39,16 @@ from pynixd.serde import (
     QueryRealisationResponse,
     Realisation,
 )
-from pynixd.store_layout import StoreLayout
-from pynixd.store_path import StorePath
+from pynixd_store.drv_hash import output_hashes
+from pynixd_store.drv_parser import parse_drv
+from pynixd_store.store_layout import StoreLayout
+from pynixd_store.store_path import StorePath
 from tests.goal_group import result_of
 
 if TYPE_CHECKING:
-    from pynixd.drv_parser import Derivation
     from pynixd.goals.engine import GoalEngine
     from pynixd.serde import BuildDerivationRequest
+    from pynixd_store.drv_parser import Derivation
 
 FLOAT_PATH = "/nix/store/00000000000000000000000000000005-float.drv"
 FLOAT_TEXT = (

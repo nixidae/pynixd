@@ -25,12 +25,12 @@ from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 from pynixd import Server
-from pynixd.drv_parser import parse_drv
-from pynixd.local_store_db import LocalStoreDB
-from pynixd.nar_fs import dump_path, restore_path
 from pynixd.serde import QueryPathInfoRequest, StorePath
 from pynixd.store import LocalDBStore, Store
-from pynixd.store.register import RegistrationError
+from pynixd_store.drv_parser import parse_drv
+from pynixd_store.local_store_db import LocalStoreDB
+from pynixd_store.nar_fs import dump_path, restore_path
+from pynixd_store.register import RegistrationError
 from tests.conftest import NIX_BIN, make_test_spec
 
 if TYPE_CHECKING:

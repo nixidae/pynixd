@@ -9,7 +9,7 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from pynixd.build_queue import BuildQueue
 from pynixd.exceptions import DelegationLoopError
 from pynixd.serde import BasicDerivation, BuildDerivationRequest, BuildMode
-from pynixd.store_path import StorePath
+from pynixd_store.store_path import StorePath
 
 DRV = "/nix/store/00000000000000000000000000000001-probe.drv"
 

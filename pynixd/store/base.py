@@ -17,7 +17,8 @@ import anyio
 import structlog
 from cachetools import TTLCache
 
-from ..background import Background
+from pynixd_store.background import Background
+
 from ..trust import TrustPolicy
 
 if TYPE_CHECKING:
@@ -27,12 +28,12 @@ if TYPE_CHECKING:
     from nix_daemon_protocol.ids import StoreId
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
     from nix_daemon_protocol.wire_ops import WireRequest
+    from pynixd_store.drv_parser import Derivation
+    from pynixd_store.signing import SecretKey
+    from pynixd_store.store_path import StorePath
 
     from ..config import StoreSpecBase
     from ..connection import ClientConn, Connection
-    from ..drv_parser import Derivation
-    from ..signing import SecretKey
-    from ..store_path import StorePath
     from .daemon import DaemonStore
 
 

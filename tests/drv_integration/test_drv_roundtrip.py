@@ -1,4 +1,4 @@
-"""Integration tests for pynixd.drv_parser against real .drv files in the Nix store.
+"""Integration tests for pynixd_store.drv_parser against real .drv files in the Nix store.
 
 These tests are skipped during normal collection; run them explicitly with:
     pytest tests/drv_integration/ -v
@@ -12,9 +12,9 @@ import anyio
 import pytest
 import structlog
 
-from pynixd.drv_parser import parse_drv
 from pynixd.serde import QueryAllValidPathsRequest
 from pynixd.store import LocalSocketStore
+from pynixd_store.drv_parser import parse_drv
 from tests.conftest import make_test_spec
 
 log = structlog.get_logger(__name__)

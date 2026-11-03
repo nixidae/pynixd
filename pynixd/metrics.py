@@ -35,8 +35,8 @@ from prometheus_client import (
 from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily
 
 from nix_daemon_protocol.store_dir import real_store_dir
+from pynixd_store.liveness import TEMP_ROOTS_REAPED
 
-from .liveness import TEMP_ROOTS_REAPED
 from .state_models import WaitReason
 
 if TYPE_CHECKING:

@@ -27,7 +27,7 @@ from pynixd.goals.ensure import EnsureDerivedPathGoal
 from pynixd.goals.results import result_succeeded
 from pynixd.serde import BuildMode, IsValidPathResponse
 from pynixd.store.daemon import DaemonStore
-from pynixd.store_path import StorePath
+from pynixd_store.store_path import StorePath
 from tests.goal_group import result_of
 
 if TYPE_CHECKING:

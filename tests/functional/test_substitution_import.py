@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from pynixd.store.engine import StoreEngine
+from pynixd_store.engine import StoreEngine
 from tests._conftest.import_lab import REFS, VALID_PATHS, files, lab, rows, run, serve_directory, server
 from tests.conftest import NIX_BIN
 

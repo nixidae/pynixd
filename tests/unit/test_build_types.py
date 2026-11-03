@@ -14,7 +14,7 @@ from pynixd.serde import BuildMode, BuildResult, BuildResultStatus, BuiltOutput,
 if TYPE_CHECKING:
     import pytest
 
-# This repository holds two classes named `StorePath`. `pynixd.store_path`
+# This repository holds two classes named `StorePath`. `pynixd_store.store_path`
 # holds the domain one, which strips the `/nix/store/` prefix and keeps an
 # `extrainfo` field. `pynixd.serde` re-exports the wire one, which is the
 # string that goes on the daemon socket. Neither compares equal to the other.

@@ -21,14 +21,14 @@ import anyio
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from pynixd.drv_parser import read_drv_file, to_basic_derivation
 from pynixd.goals.resolution import _unparse_basic_derivation
 from pynixd.serde import (
     QueryDerivationOutputMapRequest,
     QueryRealisationRequest,
 )
 from pynixd.store import LocalSocketStore
-from pynixd.store_path import DrvOutput, StorePath
+from pynixd_store.drv_parser import read_drv_file, to_basic_derivation
+from pynixd_store.store_path import DrvOutput, StorePath
 from tests._conftest.nix_config import for_dynamic_derivations
 from tests.conftest import (
     NIX_BIN,

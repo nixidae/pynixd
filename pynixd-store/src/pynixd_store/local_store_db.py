@@ -50,7 +50,7 @@ from .db_migrations import (
     SchemaState,
     apply_migrations,
 )
-from .store.queries import IS_VALID_PATH, QUERY_PATH_INFO_WITH_REFS
+from .queries import IS_VALID_PATH, QUERY_PATH_INFO_WITH_REFS
 from .store_layout import StoreLayout
 from .store_path import StorePath
 
@@ -437,7 +437,7 @@ class LocalStoreDB:
         queueing stays an in-memory set insert no matter the burst size.
 
         Plain strings, because two `StorePath` classes reach this set and
-        the SQL statement wants the text. `pynixd.store_path.StorePath`
+        the SQL statement wants the text. `pynixd_store.store_path.StorePath`
         keeps the path without the `/nix/store/` prefix and adds it back
         in `__str__`, and the wire `StorePath` is a `str` of the whole path.
         """

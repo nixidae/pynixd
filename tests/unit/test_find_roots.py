@@ -20,10 +20,10 @@ import pytest
 from nix_daemon_protocol.find_roots import FindRootsRequest
 from nix_daemon_protocol.ids import StoreId
 from pynixd.config import LocalSocketStoreSpec
-from pynixd.liveness import unlink_stale_auto_roots, walk_roots
-from pynixd.local_store_db import LocalStoreDB
 from pynixd.store.local_db import LocalDBStore
-from pynixd.store_layout import StoreLayout
+from pynixd_store.liveness import unlink_stale_auto_roots, walk_roots
+from pynixd_store.local_store_db import LocalStoreDB
+from pynixd_store.store_layout import StoreLayout
 from tests.unit.temp_root_owner import live_temp_root
 
 if TYPE_CHECKING:

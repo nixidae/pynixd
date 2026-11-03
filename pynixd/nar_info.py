@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from .store_path import StorePath
+from pynixd_store.store_path import StorePath
 
 if TYPE_CHECKING:
     from nix_daemon_protocol.aliases import StorePathSet

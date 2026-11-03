@@ -17,8 +17,8 @@ from nix_daemon_protocol.collect_garbage import CollectGarbageRequest
 from nix_daemon_protocol.ids import StoreId
 from nix_daemon_protocol.protocol import GCAction
 from pynixd import Server
-from pynixd.liveness import RootsTracker
 from pynixd.store import LocalDBStore, Store
+from pynixd_store.liveness import RootsTracker
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
 if TYPE_CHECKING:

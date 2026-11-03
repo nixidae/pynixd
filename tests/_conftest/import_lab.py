@@ -29,11 +29,11 @@ from nix_daemon_protocol.wire_time import Time
 from pynixd import Server
 from pynixd.config import HTTPBinaryCacheSpec
 from pynixd.connection import Connection
-from pynixd.nar_fs import dump_path
 from pynixd.serde import IsValidPathRequest, StorePath
 from pynixd.store import LocalDBStore, Store
 from pynixd.unix_socket import open_unix_connection
 from pynixd.wire import UnixNixReader, UnixNixWriter
+from pynixd_store.nar_fs import dump_path
 from tests._conftest.nix_config import for_test_store
 from tests.conftest import NIX_BIN, make_test_spec
 

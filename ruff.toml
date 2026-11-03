@@ -19,6 +19,7 @@ extend = "nix/shared/ruff-anyio.toml"
 #
 # - `nix_daemon_protocol` lives at `nix-daemon-protocol/src/nix_daemon_protocol`,
 #   so no directory of that name sits beside this file for ruff to find.
+#   `pynixd_store` lives at `pynixd-store/src/pynixd_store` for the same reason.
 # - `tests` is this project's suite. It has no `src/` layout either, and its
 #   modules import each other as `tests.something`.
 # - `pynixd` is beside this file, and ruff still sorted `pynixd.serde.ids`
@@ -28,6 +29,7 @@ extend = "nix/shared/ruff-anyio.toml"
 known-first-party = [
     "nix_daemon_protocol",
     "pynixd",
+    "pynixd_store",
     "tests",
 ]
 

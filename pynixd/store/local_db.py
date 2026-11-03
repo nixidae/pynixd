@@ -13,15 +13,15 @@ import structlog
 from pydantic import BaseModel
 
 from nix_daemon_protocol.operations import STANDARD_OPERATIONS
+from pynixd_store.engine import StoreEngine
+from pynixd_store.local_store_db import LocalStoreDB
 
 from .. import metrics
-from ..local_store_db import LocalStoreDB
 from ..op_routes import OpRoute, Owned
 from ..serde import StorePath
 from ..write_router import WriteRouter
 from .base import Store
 from .daemon_writes import DaemonWrites
-from .engine import StoreEngine
 from .local_daemon import LocalStore
 
 if TYPE_CHECKING:
@@ -30,14 +30,14 @@ if TYPE_CHECKING:
 
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
     from nix_daemon_protocol.wire_ops import WireRequest
+    from pynixd_store.add import ImportSettings
+    from pynixd_store.drv_parser import Derivation
 
     from ..config import LocalSocketStoreSpec
     from ..connection import ClientConn, Connection
-    from ..drv_parser import Derivation
     from ..serde import SetOptionsRequest
     from ..substitution_queue import SubstitutionQueue
     from ..trust import TrustPolicy
-    from .add import ImportSettings
 
 log = structlog.get_logger(__name__)
 
@@ -533,7 +533,7 @@ class LocalDBStore(Store):
         """
         from anyio.to_thread import run_sync
 
-        from ..nar_fs import dump_path
+        from pynixd_store.nar_fs import dump_path
 
         pieces = dump_path(self.layout.real_store_dir / path.name)
         try:
@@ -707,8 +707,7 @@ class LocalDBStore(Store):
         """
         from nix_daemon_protocol.constants import FEATURE_REALISATION_WITH_PATH
         from nix_daemon_protocol.query_derivation_output_map import QueryDerivationOutputMapResponse
-
-        from ..drv_hash import output_hashes
+        from pynixd_store.drv_hash import output_hashes
 
         items = await self.engine.query_static_derivation_outputs(str(request.path))
         if items is None:

@@ -46,8 +46,8 @@ from pynixd.serde.context import WriteContext
 from pynixd.serde.protocol import GCAction
 from pynixd.store.base import Store
 from pynixd.store.daemon import DaemonStore
-from pynixd.store_path import StorePath
 from pynixd.wire import BytesReader, BytesWriter
+from pynixd_store.store_path import StorePath
 
 VERSION = 0x126
 

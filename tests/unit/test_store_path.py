@@ -1,4 +1,4 @@
-"""Unit tests for pynixd.store_path — StorePath and DrvOutput.
+"""Unit tests for pynixd_store.store_path — StorePath and DrvOutput.
 
 Tests str subclass behavior, property extraction, and wire format helpers.
 All tests are pure — no I/O, no mocking.
@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from nix_daemon_protocol.store_dir import reset_store_dir, set_store_dir, store_dir
-from pynixd.store_path import DrvOutput, StorePath
+from pynixd_store.store_path import DrvOutput, StorePath
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

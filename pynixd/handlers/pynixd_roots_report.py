@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar
 
+from pynixd_store.liveness import walk_labeled_roots
+
 from ..daemon_extensions.pynixd_roots_report import (
     PynixdRootsReportRequest,
     PynixdRootsReportResponse,
     RootsReportRow,
 )
-from ..liveness import walk_labeled_roots
 from ..serde.auth import Role
 from ..serde.context import ReadContext
 from ._base import Handler

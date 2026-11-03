@@ -17,9 +17,10 @@ import structlog
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from nix_daemon_protocol.store_dir import set_real_store_dir, set_store_dir
+from pynixd_store.background import Background
+from pynixd_store.store_layout import DEFAULT_STORE_DIR
 
 from . import _optional, metrics, wire
-from .background import Background
 from .config import ExternalUnixStoreSpec, HTTPBinaryCacheSpec, LocalSocketStoreSpec, PynixdSettings
 from .context import PynixdContext
 from .exceptions import GCNotPermittedError
@@ -30,7 +31,6 @@ from .scheduler import Scheduler
 from .serde.protocol import PynixdGCAction
 from .state import upstream_in_flight
 from .store import ExternalUnixStore, LocalDBStore, LocalStore, Store, is_http_binary_cache
-from .store_layout import DEFAULT_STORE_DIR
 from .unix_server import UnixServer, start_unix_server
 
 if TYPE_CHECKING:

@@ -28,7 +28,7 @@ from pynixd.serde import (
     BuildResult,
     BuildResultStatus,
 )
-from pynixd.store_path import StorePath
+from pynixd_store.store_path import StorePath
 
 PRODUCED_DRV = "/nix/store/d72wk730icpqmcjzfrxfpn22g2riadjd-kubecove.drv"
 SUCCESSES_THAT_BUILT_NOTHING = [BuildResultStatus.ALREADY_VALID, BuildResultStatus.SUBSTITUTED]

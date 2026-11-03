@@ -13,9 +13,9 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from pynixd.allocator import BuildAllocator
-from pynixd.build_stats import identity_of
 from pynixd.serde import BasicDerivation
 from pynixd.system_features import effective_required_features
+from pynixd_store.build_stats import identity_of
 
 
 def _structured(**attrs: Any) -> BasicDerivation:

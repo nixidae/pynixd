@@ -1,4 +1,4 @@
-"""Unit tests for pynixd.drv_parser — ATerm .drv file parser.
+"""Unit tests for pynixd_store.drv_parser — ATerm .drv file parser.
 
 Tests are split into two categories:
 1. **Live probes**: Evaluate ``tests/nix/drv-probes.nix`` once per session via
@@ -19,11 +19,11 @@ from typing import TYPE_CHECKING, Any
 import anyio
 import pytest
 
-from pynixd import drv_parser
-from pynixd.drv_parser import Derivation, parse_drv, to_basic_derivation
 from pynixd.serde import OutputKind
-from pynixd.store_layout import StoreLayout
-from pynixd.store_path import DrvOutput, StorePath
+from pynixd_store import drv_parser
+from pynixd_store.drv_parser import Derivation, parse_drv, to_basic_derivation
+from pynixd_store.store_layout import StoreLayout
+from pynixd_store.store_path import DrvOutput, StorePath
 from tests.conftest import NIX_BIN
 
 if TYPE_CHECKING:
@@ -383,7 +383,7 @@ class TestDrvWithVersion:
         assert StorePath("/nix/store/dep.drv") in parsed.dynamic_input_drvs
         assert StorePath("/nix/store/simple.drv") in parsed.input_drvs
         assert parsed.input_drvs[StorePath("/nix/store/simple.drv")] == ["out"]
-        from pynixd.drv_parser import ChildMapNode
+        from pynixd_store.drv_parser import ChildMapNode
 
         assert parsed.dynamic_input_drvs[StorePath("/nix/store/dep.drv")] == ChildMapNode()
 

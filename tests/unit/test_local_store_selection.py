@@ -17,10 +17,10 @@ import pytest
 
 from nix_daemon_protocol.ids import StoreId
 from pynixd.config import LocalSocketStoreSpec, PynixdSettings
-from pynixd.local_store_db import LocalStoreDB, resolve_db_path
 from pynixd.store.local_daemon import LocalStore
 from pynixd.store.local_db import LocalDBStore
-from pynixd.store_layout import StoreLayout
+from pynixd_store.local_store_db import LocalStoreDB, resolve_db_path
+from pynixd_store.store_layout import StoreLayout
 
 
 def test_the_implicit_local_store_uses_the_database() -> None:

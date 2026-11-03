@@ -16,6 +16,8 @@ import structlog
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId, StoreId
 from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.wire_ops import WIRE_REGISTRY, WireResponse
+from pynixd_store.store_layout import StoreLayout
+from pynixd_store.temp_roots import TempRoots
 
 from . import metrics, wire
 from ._lazy import ssh_connection_lost
@@ -42,8 +44,6 @@ from .serde import (
 from .serde.auth import Role
 from .serde.context import ReadContext, RequestContext as RequestContext, WriteContext
 from .serde.protocol import OptTrusted, Verbosity
-from .store_layout import StoreLayout
-from .temp_roots import TempRoots
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping

@@ -9,8 +9,8 @@ from __future__ import annotations
 import pytest
 
 from pynixd.serde import BasicDerivation, DerivationOutput, OutputKind
-from pynixd.store_path import StorePath
 from pynixd.system_features import effective_required_features
+from pynixd_store.store_path import StorePath
 
 
 class TestOutputKind:

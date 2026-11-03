@@ -24,7 +24,6 @@ import anyio
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from pynixd.drv_parser import Derivation, read_drv_file
 from pynixd.serde import (
     BasicDerivation,
     BuildDerivationRequest,
@@ -35,7 +34,8 @@ from pynixd.serde import (
 )
 from pynixd.store import LocalSocketStore
 from pynixd.store.transfer import stream_paths_store_to_store
-from pynixd.store_path import StorePath
+from pynixd_store.drv_parser import Derivation, read_drv_file
+from pynixd_store.store_path import StorePath
 from tests._conftest.nix_config import for_ca_derivations
 from tests.conftest import (
     NIX_BIN,

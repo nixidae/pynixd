@@ -1,4 +1,4 @@
-"""The store engine's byte source (`pynixd/store/source.py`) and `FramedReader.read`.
+"""The store engine's byte source (`pynixd_store/source.py`) and `FramedReader.read`.
 
 The case that matters is op 44: one framed stream holds a path's NAR and the
 next path's info, often in the same frame. `BlockingReader` reads ahead, and
@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING
 import anyio.to_thread
 import pytest
 
-from pynixd.store.source import BlockingReader, Bounded, Metered, Pieces
 from pynixd.wire import BytesReader, FramedReader
+from pynixd_store.source import BlockingReader, Bounded, Metered, Pieces
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator

@@ -17,7 +17,7 @@ from nix_daemon_protocol.ids import StoreId
 from pynixd.config import HTTPBinaryCacheSpec
 from pynixd.serde import IsValidPathRequest, QueryPathInfoRequest, QueryValidPathsRequest
 from pynixd.store.http_binary_cache import _NAR_PIECE, HTTPBinaryCacheStore, _SocketReader
-from pynixd.store_path import StorePath
+from pynixd_store.store_path import StorePath
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Buffer

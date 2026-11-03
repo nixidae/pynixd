@@ -43,9 +43,9 @@ from pynixd.serde import (
 )
 from pynixd.serde.auth import Role
 from pynixd.ssh_server import start_ssh_server
-from pynixd.store_path import StorePath
 from pynixd.unix_socket import link_socket
 from pynixd.wire import SSHNixReader, SSHNixWriter, UnixNixReader, UnixNixWriter
+from pynixd_store.store_path import StorePath
 from tests._conftest.ssh_keys import make_ssh_test_keys
 from tests.conftest import serde_path
 from tests.functional.mock_store import MockStore

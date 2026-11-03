@@ -35,9 +35,9 @@ from pynixd.store.daemon import DaemonStore
 if TYPE_CHECKING:
     from nix_daemon_protocol.wire_ops import WireRequest
     from pynixd.connection import ClientConn, Connection
-    from pynixd.drv_parser import Derivation
-    from pynixd.store_path import StorePath
     from pynixd.wire import NixReader, NixWriter
+    from pynixd_store.drv_parser import Derivation
+    from pynixd_store.store_path import StorePath
 
 
 log = structlog.get_logger(__name__)
@@ -252,7 +252,7 @@ class MockStore(DaemonStore):
 
     async def read_derivation(self, drv_store_path: StorePath | str) -> Derivation | None:
         """Read a .drv file from the mock filesystem."""
-        from pynixd.drv_parser import read_drv_file
+        from pynixd_store.drv_parser import read_drv_file
 
         return await read_drv_file(drv_store_path, self.layout)
 

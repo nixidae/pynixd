@@ -21,9 +21,9 @@ from nix_daemon_protocol.ids import StoreId
 from nix_daemon_protocol.store_dir import reset_store_dir, set_real_store_dir
 from pynixd.config import LocalSocketStoreSpec
 from pynixd.nar import NarDirectory, NarDirectoryEntry, NarRegular, NarSymlink, write_nar
-from pynixd.nar_fs import MAX_DEPTH, BadArchive, dump_path, restore_path
 from pynixd.serde import StorePath
 from pynixd.store.local_db import LocalDBStore
+from pynixd_store.nar_fs import MAX_DEPTH, BadArchive, dump_path, restore_path
 
 if TYPE_CHECKING:
     from pathlib import Path

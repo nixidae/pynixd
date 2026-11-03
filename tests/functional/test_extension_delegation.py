@@ -12,7 +12,7 @@ from pynixd.config import SSHSubprocessStoreSpec
 from pynixd.daemon_extensions.query_path_infos import QueryPathInfosRequest
 from pynixd.serde import QueryAllValidPathsRequest
 from pynixd.store import LocalSocketStore, SSHSubprocessStore
-from pynixd.store_path import StorePath
+from pynixd_store.store_path import StorePath
 from tests._conftest.ssh_keys import SESSION_SSH_KEYS
 from tests.conftest import (
     NIX_BIN,

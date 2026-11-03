@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from nix_daemon_protocol.exceptions import DaemonProtocolError
+from pynixd_store.errors import PynixdError as PynixdError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -47,10 +48,6 @@ def error_text(ex: BaseException) -> str:
         str(leaf) if isinstance(leaf, PynixdError | DaemonProtocolError) else f"{type(leaf).__name__}: {leaf}"
         for leaf in leaves(ex)
     )
-
-
-class PynixdError(Exception):
-    """Base for all pynixd errors."""
 
 
 class NarGone(PynixdError):

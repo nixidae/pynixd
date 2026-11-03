@@ -26,7 +26,7 @@ import anyio
 import pytest
 
 from nix_daemon_protocol.nar_hash import NARHash
-from pynixd.signing import SecretKey, fingerprint
+from pynixd_store.signing import SecretKey, fingerprint
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator

@@ -29,7 +29,6 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 
 from pynixd.derived_path import DerivedPath
-from pynixd.drv_parser import ChildMapNode, Derivation
 from pynixd.goals.ensure import EnsureDerivedPathGoal
 from pynixd.goals.resolution import (
     downstream_placeholder,
@@ -39,9 +38,10 @@ from pynixd.goals.resolution import (
 from pynixd.goals.results import GoalResult, goal_success
 from pynixd.goals.substitute import SubstituteAttempt
 from pynixd.serde import BuildMode, IsValidPathResponse, QueryRealisationRequest, QueryRealisationResponse
-from pynixd.store_layout import StoreLayout
-from pynixd.store_path import DrvOutput, StorePath
 from pynixd.trust import TrustPolicy
+from pynixd_store.drv_parser import ChildMapNode, Derivation
+from pynixd_store.store_layout import StoreLayout
+from pynixd_store.store_path import DrvOutput, StorePath
 from tests.goal_group import result_of
 
 if TYPE_CHECKING:

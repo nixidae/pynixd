@@ -46,7 +46,8 @@ from .serde.context import WriteContext
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine, Mapping
 
-    from .background import Background
+    from pynixd_store.background import Background
+
     from .config import PressureSettings
 
 log = structlog.get_logger(__name__)

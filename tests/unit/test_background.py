@@ -5,7 +5,7 @@ from __future__ import annotations
 import anyio
 import pytest
 
-from pynixd.background import Background
+from pynixd_store.background import Background
 from tests.functional.mock_store import MockStore
 
 

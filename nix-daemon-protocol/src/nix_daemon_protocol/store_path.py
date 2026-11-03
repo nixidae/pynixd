@@ -11,10 +11,10 @@ The store directory is not part of the value. It belongs to the store, at
 `StoreDirConfig::storeDir`, and `printStorePath` is what puts it in front.
 
 This module used to hold a second, different `StorePath`: a `WireScalar`, so
-a `str`, holding the whole path -- while `pynixd.store_path` held the one
+a `str`, holding the whole path -- while `pynixd_store.store_path` held the one
 below. The two were not `==`, did not hash alike, and a dict keyed by one
 never answered the other. Issue #3 holds the measurement. There is one class
-now, and `pynixd.store_path` re-exports it.
+now, and `pynixd_store.store_path` re-exports it.
 
 **It is not a `str`.** Measured before the change: no call site depended on
 the `str`-ness. Every str method called on a store path in the repository was

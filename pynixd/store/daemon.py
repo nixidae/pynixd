@@ -24,13 +24,15 @@ from nix_daemon_protocol.protocol import ResultType
 from nix_daemon_protocol.store_dir import store_prefix
 from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
 from nix_daemon_protocol.wire_ops import WireRequest
+from pynixd_store.drv_hash import output_hashes
+from pynixd_store.drv_parser import drv_bytes, parse_drv_bytes
+from pynixd_store.store_layout import StoreLayout
+from pynixd_store.utils import random_nix32_hash
 
 from .. import metrics, wire
 from .._lazy import ssh_errors
 from ..config import PressureSettings
 from ..constants import FEATURE_REALISATION_WITH_PATH
-from ..drv_hash import output_hashes
-from ..drv_parser import drv_bytes, parse_drv_bytes
 from ..exceptions import BackendError
 from ..monitor import ResourceMonitor
 from ..pressure import BuildLimit
@@ -48,9 +50,7 @@ from ..serde import (
     StorePath,
 )
 from ..serde.context import WriteContext
-from ..store_layout import StoreLayout
 from ..system_features import BUILTIN_SYSTEM, KNOWN_FEATURES, PROBE_SYSTEMS
-from ..utils import random_nix32_hash
 from .base import Store
 from .pool import ConnectionPool
 
@@ -58,12 +58,13 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Set as AbstractSet
     from contextlib import AbstractAsyncContextManager
 
+    from pynixd_store.drv_parser import Derivation
+    from pynixd_store.store_path import StorePath
+
     from ..config import StoreSpecBase
     from ..connection import ClientConn, Connection
-    from ..drv_parser import Derivation
     from ..psi import CpuUtil, MemInfo, SystemHealth
     from ..serde import SetOptionsRequest
-    from ..store_path import StorePath
 
 log = structlog.get_logger(__name__)
 
@@ -1362,8 +1363,7 @@ class DaemonStore(Store):
         from nix_daemon_protocol.add_signatures import AddSignaturesRequest
         from nix_daemon_protocol.signature import Signature
         from pynixd.daemon_extensions.sign_path_info import SignPathInfoResponse
-
-        from ..signing import fingerprint
+        from pynixd_store.signing import fingerprint
 
         info = request.info
         refs = {str(r) for r in info.info.references}

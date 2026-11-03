@@ -17,7 +17,8 @@ from .. import metrics
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
-    from ..background import Background
+    from pynixd_store.background import Background
+
     from ..connection import Connection
     from ..serde import SetOptionsRequest
 

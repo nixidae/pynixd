@@ -16,8 +16,9 @@ from .trust import TrustPolicy
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from pynixd_store.local_store_db import LocalStoreDB
+
     from .config import PynixdSettings
-    from .local_store_db import LocalStoreDB
     from .scheduler import Scheduler
     from .store.base import Store
     from .store.daemon import DaemonStore

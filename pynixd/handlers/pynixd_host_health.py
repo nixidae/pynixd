@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING, ClassVar
 
 import anyio
 
-from ..background import Background
+from pynixd_store.background import Background
+
 from ..daemon_extensions.pynixd_host_health import (
     HEALTH_JSON,
     PynixdHostHealthRequest,

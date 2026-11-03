@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pynixd.goals.results import GoalResult, goal_success
-from pynixd.store_path import StorePath
+from pynixd_store.store_path import StorePath
 
 
 def test_with_dynamic_outputs_does_not_mutate_source_result() -> None:

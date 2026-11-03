@@ -14,11 +14,11 @@ import binascii
 import pytest
 
 from nix_daemon_protocol.constants import PROTOCOL_VERSION
-from pynixd.drv_hash import make_output_path, output_hashes
-from pynixd.drv_parser import drv_bytes, drv_text, parse_drv
 from pynixd.serde import BasicDerivation, BuildDerivationRequest, BuildMode, StorePath
 from pynixd.serde.context import ReadContext, WriteContext
 from pynixd.wire import BytesReader, BytesWriter
+from pynixd_store.drv_hash import make_output_path, output_hashes
+from pynixd_store.drv_parser import drv_bytes, drv_text, parse_drv
 
 DRV_PATH = "/nix/store/6fza8wr7ydvdgcmgnwh4pa6w4dhw809r-non-utf8.drv"
 OUT = "/nix/store/0mf91qf95w6blv7m6f2mx6f86shilqzw-non-utf8"

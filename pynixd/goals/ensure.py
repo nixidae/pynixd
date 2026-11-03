@@ -9,12 +9,13 @@ import anyio
 import structlog
 
 from nix_daemon_protocol.exceptions import DaemonProtocolError
+from pynixd_store.drv_hash import output_hashes
+from pynixd_store.drv_parser import ChildMapNode, to_basic_derivation
+from pynixd_store.hintfmt import ANSI_NORMAL as _ANSI_NORMAL, ANSI_RED as _ANSI_RED, magenta as _magenta
+from pynixd_store.store_path import StorePath
 
 from ..derived_path import DerivedPath, OutputsAll, OutputsNames
-from ..drv_hash import output_hashes
-from ..drv_parser import ChildMapNode, to_basic_derivation
 from ..exceptions import BackendError
-from ..hintfmt import ANSI_NORMAL as _ANSI_NORMAL, ANSI_RED as _ANSI_RED, magenta as _magenta
 from ..serde import (
     BuildDerivationRequest,
     BuildPathsRequest,
@@ -30,7 +31,6 @@ from ..serde import (
     RegisterDrvOutputRequest,
     UnkeyedRealisation,
 )
-from ..store_path import StorePath
 from .dependencies import DependencyGroupGoal
 from .goal import Goal, GoalHolder
 from .query_missing import client_names_a_substituter
@@ -41,8 +41,9 @@ from .results import GoalResult, goal_failure, goal_success, result_succeeded
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
+    from pynixd_store.drv_parser import Derivation
+
     from ..connection import ClientConn
-    from ..drv_parser import Derivation
     from ..serde import BasicDerivation
     from .build_derivation import BuildDerivationGoal
     from .dispatch_order import DispatchTurn

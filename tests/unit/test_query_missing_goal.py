@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any, cast
 import anyio
 import pytest
 
-from pynixd.drv_parser import ChildMapNode, Derivation
 from pynixd.goals.engine import GoalEngine
 from pynixd.serde import (
     DerivedPath as SerdeDerivedPath,
@@ -21,12 +20,13 @@ from pynixd.serde import (
     Realisation,
     StorePath,
 )
-from pynixd.store_path import DrvOutput
 from pynixd.substitution_queue import SubstitutionAvailability
+from pynixd_store.drv_parser import ChildMapNode, Derivation
+from pynixd_store.store_path import DrvOutput
 
 if TYPE_CHECKING:
     from pynixd.context import PynixdContext
-    from pynixd.store_path import StorePath
+    from pynixd_store.store_path import StorePath
 
 
 class FakeLocalStore:

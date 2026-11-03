@@ -26,7 +26,7 @@ from pynixd.serde import (
     DerivedPath,
     KeyedBuildResult,
 )
-from pynixd.store_path import StorePath
+from pynixd_store.store_path import StorePath
 
 OUT = "/nix/store/00000000000000000000000000000001-out"
 OPAQUE = "/nix/store/00000000000000000000000000000002-opaque"

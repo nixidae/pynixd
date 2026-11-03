@@ -5,7 +5,7 @@ puts the files under a root and moves no store path. A relocated store moves
 the store path itself. pynixd served the first alone until issue nixidae/nixidae#215, and
 four readers had the chroot layout written into them.
 
-`pynixd/store_layout.py` states the difference, and these tests state it too.
+`pynixd_store/store_layout.py` states the difference, and these tests state it too.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import pytest
 from pydantic import ValidationError
 
 from pynixd.config import LocalSocketStoreSpec
-from pynixd.store_layout import DEFAULT_STATE_DIR, DEFAULT_STORE_DIR, StoreLayout
+from pynixd_store.store_layout import DEFAULT_STATE_DIR, DEFAULT_STORE_DIR, StoreLayout
 
 ROOT = Path("/srv/chroot")
 STORE = Path("/srv/relocated/store")

@@ -19,6 +19,7 @@ import zstandard as zstd
 
 from nix_daemon_protocol.store_dir import store_dir
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
+from pynixd_store.store_path import StorePath
 
 from .. import metrics
 from ..exceptions import NarGone, OpNotImplementedError
@@ -33,17 +34,16 @@ from ..serde import (
     QueryValidPathsRequest,
     QueryValidPathsResponse,
 )
-from ..store_path import StorePath
 from .base import Store
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Buffer
 
     from nix_daemon_protocol.wire_ops import WireRequest
+    from pynixd_store.drv_parser import Derivation
 
     from ..config import HTTPBinaryCacheSpec
     from ..connection import ClientConn, Connection
-    from ..drv_parser import Derivation
 
 log = structlog.get_logger(__name__)
 

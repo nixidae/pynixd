@@ -23,11 +23,11 @@ import pytest
 from cachetools import TTLCache
 
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
-from pynixd.local_store_db import LocalStoreDB, SyncReader
 from pynixd.serde import IsValidPathRequest, QueryPathInfoRequest, StorePath
-from pynixd.store.engine import StoreEngine
 from pynixd.store.local_db import LocalDBStore
-from pynixd.store_layout import StoreLayout
+from pynixd_store.engine import StoreEngine
+from pynixd_store.local_store_db import LocalStoreDB, SyncReader
+from pynixd_store.store_layout import StoreLayout
 
 if TYPE_CHECKING:
     from pathlib import Path

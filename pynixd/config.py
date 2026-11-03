@@ -15,11 +15,11 @@ from pydantic_settings import (
 )
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
+from pynixd_store.store_layout import StoreLayout
 
 from .constants import STALL_TRACEBACK_MAX_BYTES
 from .nix_config import NixConfig
 from .op_routes import OPERATION_NAMES, OpRoute
-from .store_layout import StoreLayout
 
 
 class ScheduleMode(StrEnum):
@@ -417,7 +417,7 @@ class LocalSocketStoreSpec(StoreSpecBase):
     moved, rather than one that `--store <root>` moved. The two shapes differ:
     a chroot store keeps `builtins.storeDir` at `/nix/store` and puts the
     files under the root, and a relocated store moves the store path itself.
-    `pynixd/store_layout.py` states both. Issue nixidae/nixidae#215.
+    `pynixd_store/store_layout.py` states both. Issue nixidae/nixidae#215.
     """
 
     state_dir: Path | None = None

@@ -68,7 +68,7 @@ async def test_nar_roundtrip_via_streaming(store_path_str: str) -> None:
     """For a single store path: get NAR, stream through NarForwarder,
     parse/serialize, and assert all bytes match.
     """
-    from pynixd.store_path import StorePath
+    from pynixd_store.store_path import StorePath
 
     spath = StorePath(store_path_str)
 
@@ -116,7 +116,7 @@ async def test_nar_roundtrip_via_streaming(store_path_str: str) -> None:
 
 async def test_nar_forwarder_convenience(store_path_str: str) -> None:
     """Verify forward_nar() works end-to-end with a single real store path."""
-    from pynixd.store_path import StorePath
+    from pynixd_store.store_path import StorePath
 
     spath = StorePath(store_path_str)
 

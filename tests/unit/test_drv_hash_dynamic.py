@@ -26,8 +26,8 @@ from __future__ import annotations
 import pytest
 
 from nix_daemon_protocol.store_dir import reset_store_dir, set_store_dir
-from pynixd.drv_hash import output_hashes
-from pynixd.drv_parser import Derivation, parse_drv
+from pynixd_store.drv_hash import output_hashes
+from pynixd_store.drv_parser import Derivation, parse_drv
 
 STORE = "/private/tmp/dynprobe/store-root/store"
 

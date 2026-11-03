@@ -12,8 +12,9 @@ import anyio
 import structlog
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId
+from pynixd_store.background import Background
+from pynixd_store.store_path import StorePath
 
-from ..background import Background
 from ..exceptions import BackendError
 from ..serde import (
     BuildDerivationRequest,
@@ -24,7 +25,6 @@ from ..serde import (
     QueryMissingRequest,
     QueryMissingResponse,
 )
-from ..store_path import StorePath
 from .build_derivation import BuildDerivationGoal
 from .ensure import EnsureDerivedPathGoal
 from .keys import BuildDerivationKey, EnsureDerivedPathKey, SubstitutePathKey

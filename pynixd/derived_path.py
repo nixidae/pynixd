@@ -27,7 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Self
 
-from .store_path import StorePath
+from pynixd_store.store_path import StorePath
 
 # ── OutputsSpec ─────────────────────────────────────────────────────
 

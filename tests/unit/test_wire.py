@@ -6,13 +6,13 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from pynixd.store_path import StorePath
 from pynixd.wire import (
     BytesReader,
     BytesWriter,
     FramedReader,
     FramedWriter,
 )
+from pynixd_store.store_path import StorePath
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable

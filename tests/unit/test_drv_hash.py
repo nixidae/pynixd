@@ -8,7 +8,7 @@ be known to see it.
 
 `nix-instantiate` wrote both texts below. `drv-hash-top` has two outputs and
 one input derivation, so the walk has to reach `drv-hash-base` and use its
-hash. See `pynixd/drv_hash.py` for the two rules that the walk follows.
+hash. See `pynixd_store/drv_hash.py` for the two rules that the walk follows.
 """
 
 from __future__ import annotations
@@ -18,11 +18,11 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from pynixd.drv_hash import make_output_path, output_hashes
-from pynixd.drv_parser import parse_drv
+from pynixd_store.drv_hash import make_output_path, output_hashes
+from pynixd_store.drv_parser import parse_drv
 
 if TYPE_CHECKING:
-    from pynixd.drv_parser import Derivation
+    from pynixd_store.drv_parser import Derivation
 
 BASE_PATH = "/nix/store/434i66dyibz4zshbfhsl8vvwykravahs-drv-hash-base.drv"
 BASE_TEXT = (

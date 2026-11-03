@@ -17,11 +17,11 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from pynixd import metrics
-from pynixd.background import Background
 from pynixd.connection import Connection
 from pynixd.metrics import StoreTrafficCollector
 from pynixd.store.pool import ConnectionPool
 from pynixd.wire import SSHNixReader, SSHNixWriter, UnixNixReader, UnixNixWriter
+from pynixd_store.background import Background
 from tests._conftest.socket_pair import socket_pair
 
 

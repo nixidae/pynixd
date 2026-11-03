@@ -25,9 +25,9 @@ import aiosqlite
 from nix_daemon_protocol.ids import StoreId
 from pynixd import Server
 from pynixd.daemon_extensions import PynixdGCAction
-from pynixd.db_migrations import PATH_ACCESS_TABLE
 from pynixd.gc import Collector
 from pynixd.store import LocalDBStore, Store
+from pynixd_store.db_migrations import PATH_ACCESS_TABLE
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
 if TYPE_CHECKING:

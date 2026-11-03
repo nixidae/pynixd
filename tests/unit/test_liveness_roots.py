@@ -19,8 +19,8 @@ import sqlite3
 from contextlib import closing
 from typing import TYPE_CHECKING
 
-from pynixd.db_migrations import LIVENESS_ROOT_TABLE, LIVENESS_TABLE
-from pynixd.liveness import (
+from pynixd_store.db_migrations import LIVENESS_ROOT_TABLE, LIVENESS_TABLE
+from pynixd_store.liveness import (
     _seed_or_reap_temp_file,
     _walk_temp_roots,
     query_live_set,

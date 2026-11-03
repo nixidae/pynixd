@@ -25,7 +25,7 @@ import pytest
 from pynixd.derived_path import DerivedPath
 from pynixd.goals.ensure import EnsureDerivedPathGoal
 from pynixd.serde import BuildMode, IsValidPathRequest, IsValidPathResponse
-from pynixd.store_path import StorePath
+from pynixd_store.store_path import StorePath
 
 if TYPE_CHECKING:
     from pynixd.goals.engine import GoalEngine

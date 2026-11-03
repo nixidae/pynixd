@@ -17,7 +17,7 @@ import pytest
 
 from pynixd.goals.ensure import EnsureDerivedPathGoal
 from pynixd.store import DaemonStore
-from pynixd.store_path import StorePath
+from pynixd_store.store_path import StorePath
 
 MISSING = StorePath("/nix/store/00000000000000000000000000000001-probe")
 

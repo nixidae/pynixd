@@ -20,13 +20,13 @@ import pytest
 from nix_daemon_protocol.constants import FEATURE_REALISATION_WITH_PATH
 from nix_daemon_protocol.ids import StoreId
 from nix_daemon_protocol.query_derivation_output_map import QueryDerivationOutputMapRequest
-from pynixd import drv_hash
 from pynixd.config import LocalSocketStoreSpec
-from pynixd.local_store_db import LocalStoreDB
 from pynixd.serde import StorePath
 from pynixd.store.local_db import LocalDBStore
-from pynixd.store_layout import StoreLayout
 from pynixd.trust import TrustPolicy
+from pynixd_store import drv_hash
+from pynixd_store.local_store_db import LocalStoreDB
+from pynixd_store.store_layout import StoreLayout
 
 if TYPE_CHECKING:
     from pathlib import Path

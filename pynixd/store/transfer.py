@@ -10,12 +10,12 @@ import structlog
 
 from nix_daemon_protocol.add_multiple_to_store import AddMultipleToStoreRequest, AddMultipleToStoreResponse
 from nix_daemon_protocol.nar_from_path import NarFromPathRequest
+from pynixd_store.store_path import StorePath
 
 from .. import metrics, wire
 from ..daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from ..exceptions import BackendError, leaves
 from ..serde.context import ReadContext, WriteContext
-from ..store_path import StorePath
 
 if TYPE_CHECKING:
     from collections.abc import Iterable

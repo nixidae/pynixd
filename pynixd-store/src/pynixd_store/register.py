@@ -16,7 +16,7 @@ import anyio
 
 from nix_daemon_protocol.derivation_output import DerivationOutput, OutputKind
 
-from ..content_address import (
+from .content_address import (
     ContentAddress,
     content_addressed_path,
     fixed_output_address,
@@ -24,10 +24,10 @@ from ..content_address import (
     parse_any_sha256,
     store_path_name,
 )
-from ..drv_hash import make_output_path, output_hashes, output_path_name
-from ..drv_parser import read_drv_file
-from ..exceptions import PynixdError
-from ..hintfmt import magenta
+from .drv_hash import make_output_path, output_hashes, output_path_name
+from .drv_parser import read_drv_file
+from .errors import PynixdError
+from .hintfmt import magenta
 from .queries import (
     ADD_DERIVATION_OUTPUT,
     ADD_REFERENCE,
@@ -44,8 +44,8 @@ if TYPE_CHECKING:
     from nix_daemon_protocol.signature import Signature
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
-    from ..drv_parser import Derivation
-    from ..store_layout import StoreLayout
+    from .drv_parser import Derivation
+    from .store_layout import StoreLayout
 
 _DRV_EXTENSION = ".drv"
 

@@ -14,7 +14,7 @@ from pynixd.derived_path import (
     parse_derived_path,
     parse_derived_path_legacy,
 )
-from pynixd.store_path import StorePath
+from pynixd_store.store_path import StorePath
 
 
 class TestOutputsSpec:

@@ -24,9 +24,9 @@ import aiosqlite
 import anyio
 import pytest
 
-from pynixd.background import Background
-from pynixd.db_migrations import PATH_ACCESS_TABLE, apply_migrations
-from pynixd.local_store_db import LocalStoreDB
+from pynixd_store.background import Background
+from pynixd_store.db_migrations import PATH_ACCESS_TABLE, apply_migrations
+from pynixd_store.local_store_db import LocalStoreDB
 
 if TYPE_CHECKING:
     from pathlib import Path

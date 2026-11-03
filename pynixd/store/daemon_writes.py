@@ -34,11 +34,11 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
+    from pynixd_store.source import Source
 
     from ..connection import ClientConn, Connection
     from ..serde import SetOptionsRequest
     from .daemon import DaemonStore
-    from .source import Source
 
 
 class DaemonWrites:

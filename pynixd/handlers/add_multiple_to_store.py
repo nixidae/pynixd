@@ -13,13 +13,13 @@ from nix_daemon_protocol.add_multiple_to_store import (
     AddMultipleToStoreResponse,
 )
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
+from pynixd_store.source import Bounded
 
 from .. import metrics
 from ..exceptions import ClosingError
 from ..serde.auth import Role
 from ..serde.context import ReadContext
 from ..store.local_db import write_router
-from ..store.source import Bounded
 from ..wire import FramedReader
 from ..write_router import Write
 from ._base import Handler
@@ -28,8 +28,9 @@ from ._import import write_client
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+    from pynixd_store.source import Source
+
     from ..serde.context import RequestContext
-    from ..store.source import Source
 
 logger = structlog.get_logger(__name__)
 

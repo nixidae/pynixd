@@ -48,7 +48,7 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler, FileSystemM
 from watchdog.observers import Observer
 from watchdog.observers.api import ObservedWatch
 
-from .liveness import STABLE_TREES
+from pynixd_store.liveness import STABLE_TREES
 
 log = structlog.get_logger(__name__)
 

@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 
 import anyio
 
-from pynixd.background import Background
+from pynixd_store.background import Background
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator

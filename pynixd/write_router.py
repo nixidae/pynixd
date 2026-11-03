@@ -19,27 +19,27 @@ from anyio.lowlevel import checkpoint
 
 from nix_daemon_protocol.logs import LogNext
 from nix_daemon_protocol.operations import STANDARD_OPERATIONS
+from pynixd_store.content_address import ContentAddress, Method, content_addressed_path, parse_method_algo
+from pynixd_store.source import Metered
 
 from . import metrics
 from .constants import proto
-from .content_address import ContentAddress, Method, content_addressed_path, parse_method_algo
 from .derived_path import check_output_name
 from .op_routes import OpRoute
 from .store.daemon_writes import DaemonWrites
-from .store.source import Metered
 from .store.transfer import as_copied
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping, Sequence
 
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
+    from pynixd_store.add import ImportSettings
+    from pynixd_store.engine import StoreEngine
+    from pynixd_store.source import Source
 
     from .connection import ClientConn, Connection
     from .serde import SetOptionsRequest
-    from .store.add import ImportSettings
     from .store.daemon import DaemonStore
-    from .store.engine import StoreEngine
-    from .store.source import Source
 
 log = structlog.get_logger(__name__)
 

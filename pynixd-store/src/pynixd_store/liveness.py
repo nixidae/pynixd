@@ -44,8 +44,8 @@ from pathlib import Path
 
 import structlog
 
-from pynixd.db_migrations import LIVENESS_ROOT_TABLE, LIVENESS_STREAK_TABLE, LIVENESS_TABLE
-from pynixd.temp_roots import PYNIXD_TEMP_ROOTS_PREFIX
+from .db_migrations import LIVENESS_ROOT_TABLE, LIVENESS_STREAK_TABLE, LIVENESS_TABLE
+from .temp_roots import PYNIXD_TEMP_ROOTS_PREFIX
 
 log = structlog.get_logger(__name__)
 

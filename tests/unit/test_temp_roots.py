@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from nix_daemon_protocol.store_path import StorePath
-from pynixd.temp_roots import TempRoots
+from pynixd_store.temp_roots import TempRoots
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

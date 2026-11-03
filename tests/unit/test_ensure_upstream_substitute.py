@@ -30,7 +30,7 @@ from pynixd.serde import (
     TimeSpan,
     Verbosity,
 )
-from pynixd.store_path import StorePath
+from pynixd_store.store_path import StorePath
 
 if TYPE_CHECKING:
     from pynixd.connection import ClientConn

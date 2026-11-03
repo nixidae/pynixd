@@ -26,10 +26,10 @@ from nix_daemon_protocol import (
     QueryValidPathsResponse,
 )
 from nix_daemon_protocol.store_path import StorePath
-from pynixd.db_migrations import LIVENESS_ROOT_TABLE, apply_migrations
 from pynixd.exceptions import BackendError
 from pynixd.gc import Collector, _over_target
-from pynixd.store_layout import StoreLayout
+from pynixd_store.db_migrations import LIVENESS_ROOT_TABLE, apply_migrations
+from pynixd_store.store_layout import StoreLayout
 
 HASH_A = "00000000000000000000000000000000"
 HASH_B = "11111111111111111111111111111111"

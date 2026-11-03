@@ -113,7 +113,7 @@ def test_with_store_prefix_keeps_the_whole_base_name() -> None:
     """It used `hash_part()`, so the name after the hash was dropped.
 
     `StorePath("abc123-foo").with_store_prefix()` gave `/nix/store/abc123`,
-    which names no file. Only `pynixd.store_path.StorePath` had callers, so
+    which names no file. Only `pynixd_store.store_path.StorePath` had callers, so
     nothing shipped took it; merging the two classes (#4) would have.
     """
     assert str(StorePath("abc123-foo").with_store_prefix()) == "/nix/store/abc123-foo"

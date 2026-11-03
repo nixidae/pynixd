@@ -31,11 +31,11 @@ import asyncssh
 import pytest
 
 from nix_daemon_protocol.ids import StoreId
-from pynixd.background import Background
 from pynixd.config import SSHSubprocessStoreSpec
 from pynixd.constants import SSH_KEEPALIVE_COUNT_MAX, SSH_KEEPALIVE_INTERVAL
 from pynixd.store.pool import ConnectionPool
 from pynixd.store.ssh import SSHStore, SSHSubprocessStore
+from pynixd_store.background import Background
 
 
 class RecordingSSHStore(SSHStore):

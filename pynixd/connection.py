@@ -35,8 +35,8 @@ if TYPE_CHECKING:
 
     from nix_daemon_protocol.wire_message import WireModel
     from nix_daemon_protocol.wire_ops import WireRequest
+    from pynixd_store.local_store_db import SyncReader
 
-    from .local_store_db import SyncReader
     from .serde import SetOptionsRequest
     from .wire import (
         NixReader,

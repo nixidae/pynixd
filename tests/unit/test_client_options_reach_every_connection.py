@@ -23,7 +23,6 @@ import pytest
 
 from nix_daemon_protocol.ids import BuildId, RequestId
 from pynixd.answer import Answer
-from pynixd.background import Background
 from pynixd.connection import ClientConn, Connection
 from pynixd.goals.build_derivation import BuildDerivationGoal
 from pynixd.handlers.set_options import SetOptionsHandler
@@ -44,6 +43,7 @@ from pynixd.serde.context import WriteContext
 from pynixd.store.pool import ConnectionPool
 from pynixd.trust import TrustPolicy
 from pynixd.wire import PROTOCOL_VERSION, STDERR_LAST, BytesReader, BytesWriter
+from pynixd_store.background import Background
 from tests.goal_group import goals_running
 
 if TYPE_CHECKING:

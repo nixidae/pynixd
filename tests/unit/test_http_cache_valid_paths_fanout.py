@@ -20,7 +20,7 @@ from nix_daemon_protocol.ids import StoreId
 from pynixd.config import HTTPBinaryCacheSpec
 from pynixd.serde import QueryValidPathsRequest
 from pynixd.store.http_binary_cache import HTTPBinaryCacheStore
-from pynixd.store_path import StorePath
+from pynixd_store.store_path import StorePath
 
 
 def _cache_store() -> HTTPBinaryCacheStore:

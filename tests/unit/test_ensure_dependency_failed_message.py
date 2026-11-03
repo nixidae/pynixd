@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 
 from pynixd.derived_path import DerivedPath
-from pynixd.drv_parser import Derivation
 from pynixd.goals.ensure import (
     EnsureDerivedPathGoal,
     _as_an_error,  # noqa: PLC2701 -- the exact bytes are the unit under test
@@ -30,7 +29,8 @@ from pynixd.goals.ensure import (
 )
 from pynixd.goals.results import goal_failure, goal_success
 from pynixd.serde import BuildMode, BuildResultStatus, StorePath
-from pynixd.store_path import DrvOutput
+from pynixd_store.drv_parser import Derivation
+from pynixd_store.store_path import DrvOutput
 
 if TYPE_CHECKING:
     from pynixd.goals.engine import GoalEngine

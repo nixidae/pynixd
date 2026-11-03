@@ -17,7 +17,7 @@ from pynixd.serde import (
     TimeSpan,
     Verbosity,
 )
-from pynixd.store_path import StorePath
+from pynixd_store.store_path import StorePath
 
 
 def _build_request(

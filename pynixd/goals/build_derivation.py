@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, ClassVar
 import anyio
 import structlog
 
+from pynixd_store.store_path import StorePath
+
 from ..exceptions import DelegationLoopError
 from ..serde import (
     BuildDerivationRequest,
@@ -17,7 +19,6 @@ from ..serde import (
     BuildResultStatus,
     IsValidPathRequest,
 )
-from ..store_path import StorePath
 from .goal import ExecutionGoal
 from .results import GoalResult, goal_failure, result_succeeded
 

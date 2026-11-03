@@ -16,9 +16,9 @@ from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 from pynixd.constants import proto
 from pynixd.op_routes import OpRoute
-from pynixd.store.add import ImportSettings
-from pynixd.store.source import Source
 from pynixd.write_router import FRAMED_NAR, Write, WriteClient, WriteRouter, pynixd_import
+from pynixd_store.add import ImportSettings
+from pynixd_store.source import Source
 
 STORE = "router-test"
 NEW = proto(1, 38)

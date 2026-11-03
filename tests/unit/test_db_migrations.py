@@ -1,6 +1,6 @@
 """pynixd versions the tables it adds to a Nix store database.
 
-Before `pynixd.db_migrations`, the answer to every schema question was `DROP
+Before `pynixd_store.db_migrations`, the answer to every schema question was `DROP
 TABLE IF EXISTS DerivationStats`, on each start. It is a migration that always
 works and always loses the data, and the data was the point: the scheduler
 asks `expected_build_ms` how long a derivation took before, so a
@@ -19,9 +19,9 @@ from typing import TYPE_CHECKING
 import aiosqlite
 import pytest
 
-from pynixd import db_migrations
-from pynixd.build_stats import BuildObservation, DerivationIdentity
-from pynixd.db_migrations import (
+from pynixd_store import db_migrations
+from pynixd_store.build_stats import BuildObservation, DerivationIdentity
+from pynixd_store.db_migrations import (
     BUILD_OBSERVATION_TABLE,
     SCHEMA_TABLE,
     TABLE_PREFIX,
@@ -30,8 +30,8 @@ from pynixd.db_migrations import (
     apply_migrations,
     expected_tables,
 )
-from pynixd.local_store_db import LocalStoreDB
-from pynixd.store_layout import StoreLayout
+from pynixd_store.local_store_db import LocalStoreDB
+from pynixd_store.store_layout import StoreLayout
 
 if TYPE_CHECKING:
     from pathlib import Path

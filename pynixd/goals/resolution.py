@@ -30,15 +30,14 @@ import structlog
 from nix_daemon_protocol.basic_derivation import BasicDerivation
 from nix_daemon_protocol.derivation_output import DerivationOutput, OutputKind
 from nix_daemon_protocol.store_dir import store_dir as current_store_dir
-
-from ..content_address import content_addressed_path, fixed_output_address
-from ..drv_hash import make_output_path, output_path_name
-from ..drv_parser import ChildMapNode, _aterm_escape, drv_bytes
-from ..store_path import StorePath
-from ..utils import nix32_encode
+from pynixd_store.content_address import content_addressed_path, fixed_output_address
+from pynixd_store.drv_hash import make_output_path, output_path_name
+from pynixd_store.drv_parser import ChildMapNode, _aterm_escape, drv_bytes
+from pynixd_store.store_path import StorePath
+from pynixd_store.utils import nix32_encode
 
 if TYPE_CHECKING:
-    from ..drv_parser import Derivation
+    from pynixd_store.drv_parser import Derivation
 
 log = structlog.get_logger(__name__)
 

@@ -12,7 +12,7 @@ import pytest
 from pynixd.gc import LivenessWatch
 from pynixd.instance import Server
 from pynixd.liveness_watch import DirtyFlag
-from pynixd.store_layout import StoreLayout
+from pynixd_store.store_layout import StoreLayout
 
 A = "/nix/store/00000000000000000000000000000000-a"
 B = "/nix/store/11111111111111111111111111111111-b"

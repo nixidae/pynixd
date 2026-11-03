@@ -16,12 +16,12 @@ import pytest
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from pynixd.allocator import BuildAllocator, TelemetryStoreRanker, score_store
-from pynixd.build_stats import BuildEstimateSource, BuildObservation, DerivationIdentity, StoreEstimate, StoreLink
 from pynixd.config import PlacementTraceSettings, PynixdSettings, StoreRankingSettings
-from pynixd.db_migrations import PLACEMENT_CANDIDATE_TABLE, PLACEMENT_DECISION_TABLE
-from pynixd.local_store_db import LocalStoreDB
 from pynixd.placement_trace import CandidateTrace, Outcome, PlacementDecision, PlacementTrace
-from pynixd.store_layout import StoreLayout
+from pynixd_store.build_stats import BuildEstimateSource, BuildObservation, DerivationIdentity, StoreEstimate, StoreLink
+from pynixd_store.db_migrations import PLACEMENT_CANDIDATE_TABLE, PLACEMENT_DECISION_TABLE
+from pynixd_store.local_store_db import LocalStoreDB
+from pynixd_store.store_layout import StoreLayout
 from tests.unit.test_store_choice import REMOTE, FakeBuild, FakeStore
 
 if TYPE_CHECKING:

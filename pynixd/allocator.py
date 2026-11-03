@@ -16,9 +16,9 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
 
     from nix_daemon_protocol.ids import StoreId
+    from pynixd_store.build_stats import StoreEstimate
 
     from .build_queue import QueuedBuild
-    from .build_stats import StoreEstimate
     from .config import PynixdSettings
     from .store import DaemonStore
 

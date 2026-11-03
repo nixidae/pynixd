@@ -17,9 +17,9 @@ import pytest
 from nix_daemon_protocol.ids import StoreId
 from nix_daemon_protocol.query_path_from_hash_part import QueryPathFromHashPartRequest
 from pynixd.config import LocalSocketStoreSpec
-from pynixd.local_store_db import LocalStoreDB
 from pynixd.store.local_db import LocalDBStore
-from pynixd.store_layout import StoreLayout
+from pynixd_store.local_store_db import LocalStoreDB
+from pynixd_store.store_layout import StoreLayout
 
 if TYPE_CHECKING:
     from pathlib import Path

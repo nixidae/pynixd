@@ -6,17 +6,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from nix_daemon_protocol.store_dir import on_disk
+from pynixd_store.drv_parser import parse_drv_bytes
+from pynixd_store.store_path import StorePath
 
 from ..connection import Connection
-from ..drv_parser import parse_drv_bytes
-from ..store_path import StorePath
 from ..unix_socket import open_unix_connection
 from ..wire import UnixNixReader, UnixNixWriter
 from .daemon import DaemonStore
 
 if TYPE_CHECKING:
+    from pynixd_store.drv_parser import Derivation
+
     from ..config import ExternalUnixStoreSpec
-    from ..drv_parser import Derivation
 
 
 class ExternalUnixStore(DaemonStore):

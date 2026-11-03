@@ -25,16 +25,18 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from ..drv_hash import output_hashes
+from pynixd_store.drv_hash import output_hashes
+
 from ..serde import DrvOutput, KeyedDrvOutput, QueryRealisationRequest, Realisation, StorePath
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from ..drv_parser import Derivation
+    from pynixd_store.drv_parser import Derivation
+    from pynixd_store.store_path import StorePath
+
     from ..serde import QueryRealisationResponse
     from ..store.base import Store
-    from ..store_path import StorePath
 
 log = structlog.get_logger(__name__)
 

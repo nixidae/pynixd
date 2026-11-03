@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 
 from pynixd.derived_path import DerivedPath
-from pynixd.drv_parser import Derivation
 from pynixd.goals.ensure import (
     _ERROR_PREFIX,  # noqa: PLC2701 -- the exact bytes are the unit under test
     EnsureDerivedPathGoal,
@@ -37,8 +36,9 @@ from pynixd.serde import (
     QueryRealisationRequest,
     QueryRealisationResponse,
 )
-from pynixd.store_layout import StoreLayout
-from pynixd.store_path import DrvOutput, StorePath
+from pynixd_store.drv_parser import Derivation
+from pynixd_store.store_layout import StoreLayout
+from pynixd_store.store_path import DrvOutput, StorePath
 from tests.goal_group import result_of
 
 if TYPE_CHECKING:

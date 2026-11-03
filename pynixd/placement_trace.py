@@ -24,13 +24,14 @@ import aiosqlite
 import anyio
 import structlog
 
-from .db_migrations import PLACEMENT_CANDIDATE_TABLE, PLACEMENT_DECISION_TABLE
+from pynixd_store.db_migrations import PLACEMENT_CANDIDATE_TABLE, PLACEMENT_DECISION_TABLE
 
 if TYPE_CHECKING:
+    from pynixd_store.build_stats import StoreEstimate
+    from pynixd_store.local_store_db import LocalStoreDB
+
     from .allocator import ScoreBreakdown
-    from .build_stats import StoreEstimate
     from .config import PlacementTraceSettings
-    from .local_store_db import LocalStoreDB
 
 log = structlog.get_logger(__name__)
 

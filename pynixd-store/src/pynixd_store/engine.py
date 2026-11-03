@@ -22,10 +22,9 @@ from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 
-from ..liveness import unlink_stale_auto_roots, walk_roots
-from ..local_store_db import LocalStoreDB
-from ..temp_roots import TempRoots
 from . import add, register
+from .liveness import unlink_stale_auto_roots, walk_roots
+from .local_store_db import LocalStoreDB
 from .queries import (
     IS_VALID_PATH,
     QUERY_ALL_VALID_PATHS,
@@ -43,15 +42,16 @@ from .queries import (
     QUERY_VALID_DERIVERS,
     QUERY_VALID_PATHS,
 )
+from .temp_roots import TempRoots
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping
     from typing import Any
 
-    from ..content_address import Method
-    from ..local_store_db import SyncReader
-    from ..store_layout import StoreLayout
+    from .content_address import Method
+    from .local_store_db import SyncReader
     from .source import Source
+    from .store_layout import StoreLayout
 
 
 def path_info(row: tuple[Any, ...], references: Iterable[str]) -> ValidPathInfo:

@@ -13,16 +13,16 @@ from cachetools import TTLCache
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
+from pynixd_store.background import Background
+from pynixd_store.source import Pieces
 
 from . import metrics
 from .answer import Answer
-from .background import Background
 from .exceptions import NarGone, OpNotImplementedError, leaves
 from .serde import NarFromPathRequest, QueryPathInfoRequest, StorePath
 from .serde.context import WriteContext
 from .store import is_http_binary_cache
 from .store.local_db import write_router
-from .store.source import Pieces
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
@@ -31,12 +31,12 @@ if TYPE_CHECKING:
     from anyio.abc import TaskStatus
 
     from nix_daemon_protocol.ids import StoreId
+    from pynixd_store.store_path import StorePath
 
     from .config import PynixdSettings
     from .context import PynixdContext
     from .store import Store
     from .store.http_binary_cache import HTTPBinaryCacheStore, HTTPNarInfo
-    from .store_path import StorePath
 
 log = structlog.get_logger(__name__)
 _NAR_CHUNK_SIZE = 1024 * 256
