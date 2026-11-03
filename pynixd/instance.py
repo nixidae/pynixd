@@ -24,8 +24,6 @@ from pynixd_store.store_layout import DEFAULT_STORE_DIR
 from . import _optional, metrics, wire
 from .config import (
     ExternalUnixStoreSpec,
-    HTTPBinaryCacheSpec,
-    LocalBinaryCacheSpec,
     LocalSocketStoreSpec,
     PynixdSettings,
 )
@@ -38,7 +36,7 @@ from .scheduler import Scheduler
 from .serde.protocol import PynixdGCAction
 from .state import upstream_in_flight
 from .store import ExternalUnixStore, LocalDBStore, LocalStore, Store, is_binary_cache, is_http_binary_cache
-from .substituters import file_cache, is_own_cache
+from .substituters import file_cache, file_spec, http_cache, http_spec, is_own_cache
 from .unix_server import UnixServer, start_unix_server
 
 if TYPE_CHECKING:
@@ -199,19 +197,16 @@ def _add_substituter_stores(
     added: list[Store] = []
     existing_http_urls = {store.url.rstrip("/") for store in stores.values() if is_http_binary_cache(store)}
     for url in _default_http_substituter_urls(configured):
-        if url.rstrip("/") in existing_http_urls:
+        http = http_cache(url)
+        if http is None or http.url.rstrip("/") in existing_http_urls:
             continue
         if is_own_cache(url, settings):
             log.info("substituter_is_own_cache", url=url)
             continue
         store_id = StoreId(_http_store_id(url))
-        cache_spec = HTTPBinaryCacheSpec(
-            store_id=store_id,
-            url=url,
-        )
-        stores[store_id] = cache_spec.to_store(str(store_id))
+        stores[store_id] = http_spec(http, store_id).to_store(str(store_id))
         added.append(stores[store_id])
-        existing_http_urls.add(url.rstrip("/"))
+        existing_http_urls.add(http.url.rstrip("/"))
 
     existing_unix = {
         (store.socket_path, store.store_path) for store in stores.values() if isinstance(store, ExternalUnixStore)
@@ -242,10 +237,7 @@ def _add_substituter_stores(
             log.info("substituter_unreadable", url=url)
             continue
         store_id = StoreId(_file_store_id(cache.path))
-        file_spec = LocalBinaryCacheSpec(store_id=store_id, path=cache.path, trusted=cache.trusted)
-        if cache.priority is not None:
-            file_spec = file_spec.model_copy(update={"priority": cache.priority})
-        stores[store_id] = file_spec.to_store(str(store_id))
+        stores[store_id] = file_spec(cache, store_id).to_store(str(store_id))
         added.append(stores[store_id])
         existing_dirs.add(cache.path)
     return added

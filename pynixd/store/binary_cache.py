@@ -82,7 +82,17 @@ class BinaryCacheStore(Store):
         self.trusted = spec.trusted
         self.max_fail_ratio = spec.max_fail_ratio
         self.cache_info: dict[str, str] = {}
+        self._priority_given = "priority" in spec.model_fields_set
         self._recent_results: deque[bool] = deque(maxlen=spec.health_window)
+
+    def _take_cache_info(self, info: dict[str, str]) -> None:
+        """Keep *info*, and rank by its `Priority` unless the spec names one.
+
+        `nix-cache-info` only sets the default priority; `?priority=` wins (`binary-cache-store.cc:67`).
+        """
+        self.cache_info = info
+        if not self._priority_given:
+            self.priority = float(info["Priority"])
 
     @abstractmethod
     async def _get_narinfo_raw(self, hash_part: str) -> str | None:

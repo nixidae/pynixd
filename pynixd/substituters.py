@@ -78,6 +78,23 @@ def http_cache(url: str) -> HttpCache | None:
     return HttpCache(url=split._replace(query="", fragment="").geturl(), trusted=trusted, priority=priority)
 
 
+def _priority(priority: float | None) -> dict[str, float]:
+    # Unset, not 1.0: a spec that names no priority takes the one in the cache's `nix-cache-info`.
+    return {} if priority is None else {"priority": priority}
+
+
+def http_spec(cache: HttpCache, store_id: StoreId) -> HTTPBinaryCacheSpec:
+    """The spec of a backend for *cache*, its URL parameters applied."""
+    spec = HTTPBinaryCacheSpec(store_id=store_id, url=cache.url, trusted=cache.trusted)
+    return spec.model_copy(update=_priority(cache.priority))
+
+
+def file_spec(cache: FileCache, store_id: StoreId) -> LocalBinaryCacheSpec:
+    """The spec of a backend for *cache*, its URL parameters applied."""
+    spec = LocalBinaryCacheSpec(store_id=store_id, path=cache.path, trusted=cache.trusted)
+    return spec.model_copy(update=_priority(cache.priority))
+
+
 def is_own_cache(url: str, settings: PynixdSettings) -> bool:
     """Whether *url* is this pynixd's own HTTP cache.
 
@@ -169,35 +186,28 @@ class ClientSubstituters:
         async with self._lock:
             if (store := self._made.get(key)) is not None:
                 return store
-            made = self._make(url)
-            if made is None:
+            store = self._make(url)
+            if store is None:
                 return None
-            store, priority = made
             await store.start()
-            # Nix ranks by `?priority=`, else by the cache's `nix-cache-info` (`binary-cache-store.cc:67`).
-            store.priority = priority if priority is not None else float(store.cache_info["Priority"])
             self._made[key] = store
             return store
 
-    def _make(self, url: str) -> tuple[BinaryCacheStore, float | None] | None:
+    def _make(self, url: str) -> BinaryCacheStore | None:
+        cache: HttpCache | FileCache
         if (http := http_cache(url)) is not None:
-            store_id = StoreId(f"client-{http.url.split('://', 1)[1].rstrip('/').replace('/', '-').replace(':', '-')}")
-            spec: HTTPBinaryCacheSpec | LocalBinaryCacheSpec = HTTPBinaryCacheSpec(
-                store_id=store_id, url=http.url, trusted=http.trusted
-            )
-            priority = http.priority
+            cache, name = http, f"client-{http.url.split('://', 1)[1].rstrip('/').replace('/', '-').replace(':', '-')}"
         elif (local := file_cache(url)) is not None:
             if not os.access(local.path, os.R_OK | os.X_OK):
                 return None
-            store_id = StoreId(f"client-file-{str(local.path).strip('/').replace('/', '-')}"[:120])
-            spec = LocalBinaryCacheSpec(store_id=store_id, path=local.path, trusted=local.trusted)
-            priority = local.priority
+            cache, name = local, f"client-file-{str(local.path).strip('/').replace('/', '-')}"[:120]
         else:
             return None
-        if spec.trusted:
-            # One id per key: the queue's caches and health are keyed by id.
-            store_id = StoreId(f"{store_id}-trusted")
-        return spec.to_store(str(store_id)), priority
+        # One id per key: the queue's caches and health are keyed by id.
+        store_id = StoreId(f"{name}-trusted" if cache.trusted else name)
+        if isinstance(cache, HttpCache):
+            return http_spec(cache, store_id).to_store(str(store_id))
+        return file_spec(cache, store_id).to_store(str(store_id))
 
     def stores(self) -> tuple[Store, ...]:
         return tuple(self._made.values())

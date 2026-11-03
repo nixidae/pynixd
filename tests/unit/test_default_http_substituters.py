@@ -66,3 +66,13 @@ def test_another_port_on_loopback_is_a_substituter() -> None:
     settings = PynixdSettings(http_port=8080)
     added = _add_substituter_stores({}, ["http://127.0.0.1:5000"], settings)
     assert [store.url.rstrip("/") for store in added if is_http_binary_cache(store)] == ["http://127.0.0.1:5000"]
+
+
+def test_url_parameters_reach_the_backend() -> None:
+    """Nix reads `?trusted=1` and `?priority=` off a substituter's URL; the cache's own URL has no query."""
+    stores: dict[Any, Any] = {}
+    added = _add_substituter_stores(stores, [f"{LOCAL}/?trusted=1&priority=10"], PynixdSettings())
+    caches = [store for store in added if is_http_binary_cache(store)]
+    assert [(store.url.rstrip("/"), store.trusted, store.priority) for store in caches] == [(LOCAL, True, 10.0)]
+    assert len(added) == 1
+    assert _add_substituter_stores(stores, [LOCAL], PynixdSettings()) == []

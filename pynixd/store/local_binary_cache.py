@@ -41,9 +41,9 @@ class LocalBinaryCacheStore(BinaryCacheStore):
         try:
             text = await anyio.Path(self.path / "nix-cache-info").read_text()
         except FileNotFoundError:
-            self.cache_info = default_cache_info(self.priority)
+            self._take_cache_info(default_cache_info(self.priority))
         else:
-            self.cache_info = parse_cache_info(text, self.priority)
+            self._take_cache_info(parse_cache_info(text, self.priority))
         self._started = True
 
     async def close(self) -> None:

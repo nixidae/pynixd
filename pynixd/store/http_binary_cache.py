@@ -44,7 +44,7 @@ class HTTPBinaryCacheStore(BinaryCacheStore):
             connector=aiohttp.TCPConnector(limit=100, force_close=False),
             timeout=aiohttp.ClientTimeout(total=30),
         )
-        self.cache_info = await self._load_cache_info()
+        self._take_cache_info(await self._load_cache_info())
         concurrency = self.max_concurrent
         if concurrency is None:
             concurrency = 100

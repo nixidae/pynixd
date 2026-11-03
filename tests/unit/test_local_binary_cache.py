@@ -131,3 +131,13 @@ def test_a_directory_with_a_backend_is_covered(tmp_path: Path) -> None:
     queue = SubstitutionQueue(cast("PynixdContext", SimpleNamespace(settings=PynixdSettings(), stores=stores)))
     queue.note_daemon_substituters([f"file://{root}", "file:///elsewhere"])
     assert queue.uncovered == ("file:///elsewhere",)
+
+
+async def test_a_daemon_cache_ranks_by_its_nix_cache_info_unless_a_priority_is_given(tmp_path: Path) -> None:
+    """`binary-cache-store.cc:67`: `Priority:` sets the default; `?priority=` or the spec wins."""
+    plain, named = _cache(tmp_path / "plain"), _cache(tmp_path / "named")
+    added = _add_substituter_stores({}, [f"file://{plain}", f"file://{named}?priority=10"], PynixdSettings())
+    configured = LocalBinaryCacheSpec(path=_cache(tmp_path / "configured"), priority=5).to_store("configured")
+    for store in (*added, configured):
+        await store.start()
+    assert [store.priority for store in (*added, configured)] == [30.0, 10.0, 5.0]
