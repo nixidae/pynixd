@@ -80,8 +80,9 @@ class TestTheConfig:
             LocalSocketStoreSpec(use_db=False, op_routes={"IsValidPath": OpRoute.pynixd})
 
     def test_a_route_to_an_operation_pynixd_cannot_answer_is_refused(self, tmp_path: Path) -> None:
-        with pytest.raises(ValueError, match="no answer to OptimiseStore"):
-            _store(tmp_path, OptimiseStore=OpRoute.pynixd)
+        # The builds stay the daemon's longest (`docs/design/daemonless.md`).
+        with pytest.raises(ValueError, match="no answer to BuildPaths"):
+            _store(tmp_path, BuildPaths=OpRoute.pynixd)
 
     def test_an_answer_that_writes_has_no_shadow(self, tmp_path: Path) -> None:
         class Writes(LocalDBStore):

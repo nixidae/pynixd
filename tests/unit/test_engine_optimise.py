@@ -160,12 +160,15 @@ def test_a_nested_file_links_and_its_parent_is_restored_read_only(tmp_path: Path
         (directory / "foo").write_bytes(HELLO)
         (directory / "foo").chmod(0o444)
         directory.chmod(0o555)
+    before = {directory: (directory / "foo").stat().st_ino for directory in (first_dir, second_dir)}
 
     _optimise(store_dir, links_dir)
 
     assert (first_dir / "foo").stat().st_ino == (second_dir / "foo").stat().st_ino
-    # The replaced file's directory is back to read-only, with the store mtime.
-    restored = second_dir.stat()
+    # The directory order decides which file is replaced (tmpfs and ext4 differ),
+    # so find it by its new inode. Its directory is read-only again, with the store mtime.
+    [replaced] = [directory for directory, ino in before.items() if (directory / "foo").stat().st_ino != ino]
+    restored = replaced.stat()
     assert oct(restored.st_mode & 0o777) == oct(0o555)
     assert int(restored.st_mtime) == 1
 

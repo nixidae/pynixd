@@ -117,11 +117,32 @@ def test_the_router_gives_the_daemon_the_options_of_the_client() -> None:
     assert set(OPTIONLESS_ROUTER_METHODS) <= {method for method, _ in calls}
 
 
+def _daemon_writes_transfer_calls() -> list[tuple[str, ast.Call]]:
+    """Each `transfer_conn(...)` call of `DaemonWrites`, with the method that makes it."""
+    tree = ast.parse(_DAEMON_WRITES.read_text())
+    return [
+        (method.name, call)
+        for method in ast.walk(tree)
+        if isinstance(method, ast.AsyncFunctionDef)
+        for call in ast.walk(method)
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "transfer_conn"
+    ]
+
+
 def test_the_daemon_writes_take_the_options_they_are_given() -> None:
-    """Each transfer connection of `DaemonWrites` is asked for with the caller's options."""
-    calls = _transfer_conn_calls(_DAEMON_WRITES)
+    """Each transfer connection of `DaemonWrites` is asked for with the caller's options.
+
+    A method in `OPTIONLESS_ROUTER_METHODS` reads no setting, so it asks for
+    none, and says so with `None`.
+    """
+    calls = _daemon_writes_transfer_calls()
     assert calls, "DaemonWrites takes no transfer connection: the scan found nothing"
-    assert all(call.args and ast.unparse(call.args[0]) == "options" for call in calls)
+    wrong = [
+        f"{method}:{call.lineno}"
+        for method, call in calls
+        if not call.args or ast.unparse(call.args[0]) != ("None" if method in OPTIONLESS_ROUTER_METHODS else "options")
+    ]
+    assert wrong == [], f"transfer connections with the wrong options: {wrong}"
 
 
 def _store_execute_calls(path: Path) -> list[ast.Call]:

@@ -39,6 +39,12 @@ class Upstream:
         self.w = BytesWriter("to-upstream")
         self.version = PROTOCOL_VERSION
         self.standard_features: frozenset[str] = frozenset()
+        # `write_router` takes a store that pynixd does not write as its own daemon.
+        self.daemon_client = self
+        self.store_id = "upstream"
+
+    def add_path_info(self, _info: Any) -> None:
+        return
 
     async def apply_options(self, _options: Any) -> None:
         return
