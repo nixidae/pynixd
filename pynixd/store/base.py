@@ -71,6 +71,7 @@ class Store(ABC):
             raise RuntimeError("store_id must be set on the spec before Store construction")
         self.store_id: StoreId = spec.store_id
         self.priority = spec.priority
+        self.trusted = spec.trusted
         self.no_schedule = spec.no_schedule
         self.reference_key: object | None = spec.reference_key()
         """The key of the substituter URL this store stands for: `StoreSpecBase.reference_key`."""

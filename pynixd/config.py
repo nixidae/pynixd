@@ -307,6 +307,14 @@ class StoreSpecBase(BaseModel):
     """
     scheduleable: bool = True
     priority: float = 1.0
+    trusted: bool = True
+    """Import a substitute from this store without checking its signatures, as Nix's `?trusted=1`.
+
+    A store in the configuration is a builder or a peer, and its outputs are
+    unsigned, so it is trusted by default (User's decision, nixidae/nixidae#1008).
+    A binary cache is not. A store that a substituter URL opens takes the
+    URL's `trusted`, false when absent, as in Nix (`store_url`).
+    """
     score_penalty: int = 0
     last_resort: bool = False
     """Build here only what no other store can: capability, never offload.
@@ -552,8 +560,8 @@ class ExternalUnixStoreSpec(StoreSpecBase):
     gc_enabled: bool = False
 
     def reference_key(self) -> object | None:
-        """`unix://<socket_path>?root=<store_path>`."""
-        return ("unix", self.socket_path, self.store_path)
+        """`unix://<socket_path>?root=<store_path>`, and the trust."""
+        return ("unix", self.socket_path, self.store_path, self.trusted)
 
     def to_store(self, store_id: str) -> ExternalUnixStore:
         """Build an ``ExternalUnixStore`` from this spec."""
@@ -782,12 +790,8 @@ class BinaryCacheSpecBase(StoreSpecBase):
     """A read-only substitution source in Nix's binary cache layout, with health tracking."""
 
     trusted: bool = False
-    """Import its paths without checking signatures, as Nix's `?trusted=1`.
-
-    `False` lets the local daemon check each path against its own
-    `trusted-public-keys`, as Nix does for a substituter (`substitution-goal.cc:236`).
-    A builder or peer store is always trusted: its outputs are unsigned.
-    nixidae/nixidae#1008."""
+    """`False` lets the local daemon check each path against its own
+    `trusted-public-keys`, as Nix does for a substituter (`substitution-goal.cc:236`)."""
     max_fail_ratio: float = 0.5
     health_window: int = 10
     scheduleable: bool = False

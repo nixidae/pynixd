@@ -82,7 +82,6 @@ class BinaryCacheStore(Store):
 
     def __init__(self, spec: HTTPBinaryCacheSpec | LocalBinaryCacheSpec) -> None:
         super().__init__(spec)
-        self.trusted = spec.trusted
         self.max_fail_ratio = spec.max_fail_ratio
         self.cache_info: dict[str, str] = {}
         self._priority_given = "priority" in spec.model_fields_set

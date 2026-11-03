@@ -63,7 +63,7 @@ def _substituter_settings(ref: StoreReference, known: frozenset[str]) -> dict[st
     if trusted is None:
         return None
     settings: dict[str, object] = {"trusted": trusted}
-    # Unset, not the spec's default: a cache takes its `nix-cache-info` priority then.
+    # Unset here: a cache takes its `nix-cache-info` priority, any other store Nix's 0 (`store-api.hh:286`).
     if (priority := ref.params.get("priority")) is not None:
         try:
             settings["priority"] = float(priority)
@@ -99,9 +99,9 @@ def _unix(ref: StoreReference) -> StoreSpecBase | None:
     settings = _substituter_settings(ref, frozenset({"root"}))
     if settings is None or not ref.path:
         return None
-    del settings["trusted"]
+    settings.setdefault("priority", 0.0)
     socket_path, store_path = Path(ref.path), Path(ref.params.get("root", "/"))
-    name = _name("unix", str(socket_path), str(store_path))
+    name = _name("unix", str(socket_path), str(store_path), "trusted" if settings["trusted"] else "")
     return ExternalUnixStoreSpec.model_validate(
         {"store_id": StoreId(name), "socket_path": socket_path, "store_path": store_path, **settings}
     )

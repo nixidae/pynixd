@@ -87,19 +87,6 @@ class SubstitutionAvailability:
         )
 
 
-def _trusted_source(store: Store) -> bool:
-    """Whether a substitute from *store* skips the signature check.
-
-    NIX-DEVIATION (#27): `substitution-goal.cc:116` skips an unsigned
-    substitute before the download; pynixd learns it from the daemon's
-    refusal after the download. The cost is that download; reverse it once
-    pynixd reads `trusted-public-keys` itself. A builder or peer store is
-    trusted, by User's decision: its outputs carry no signature.
-    nixidae/nixidae#1008.
-    """
-    return not is_binary_cache(store) or store.trusted
-
-
 @dataclass(frozen=True)
 class SubstitutionCandidate:
     """Selected substituter source for one path."""
@@ -627,10 +614,16 @@ class SubstitutionQueue:
             metrics.SUBSTITUTION_DURATION.observe(time.monotonic() - started)
 
     async def _import_nar(self, path: StorePath, candidate: SubstitutionCandidate) -> None:
-        dont_check_sigs = _trusted_source(candidate.store)
+        """Import *path* from *candidate*, checking its signatures unless the store is trusted.
+
+        NIX-DEVIATION (#27): `substitution-goal.cc:116` skips an unsigned
+        substitute before the download; pynixd learns it from the daemon's
+        refusal after the download. The cost is that download; reverse it once
+        pynixd reads `trusted-public-keys` itself. nixidae/nixidae#1008.
+        """
         async with Pieces(self._nar_pieces(path, candidate)) as nar:
             await write_router(self.ctx.local_store).import_nar(
-                candidate.path_info, nar, dont_check_sigs=dont_check_sigs
+                candidate.path_info, nar, dont_check_sigs=candidate.store.trusted
             )
 
     async def _nar_pieces(self, path: StorePath, candidate: SubstitutionCandidate) -> AsyncGenerator[bytes]:
