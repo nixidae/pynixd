@@ -40,10 +40,9 @@ if TYPE_CHECKING:
 
     from .build_queue import QueuedBuild
     from .context import PynixdContext
-    from .monitor import ResourceMonitor
-    from .pressure import BuildLimit
     from .scheduler import Scheduler
     from .store.base import Store
+    from .store.daemon import DaemonStore
     from .store.pool import ConnectionPool
 
 KNOWN_SECTIONS: tuple[str, ...] = (
@@ -209,12 +208,12 @@ def _stores_section(ctx: PynixdContext) -> dict[str, StoreRow]:
     }
 
 
-def _limit_of(store: object, now: float) -> LimitRow | None:
+def _limit_of(store: DaemonStore | None, now: float) -> LimitRow | None:
     """A daemon store's build limit and its last sample; an HTTP cache has none."""
-    limit: BuildLimit | None = getattr(store, "build_limit", None)
-    if limit is None:
+    if store is None:
         return None
-    monitor: ResourceMonitor | None = getattr(store, "monitor", None)
+    limit = store.build_limit
+    monitor = store.monitor
     health = monitor.health if monitor is not None and limit.sampled_at is not None else None
     psi = health.psi if health else None
     mem = health.meminfo if health and health.meminfo and health.meminfo.mem_total else None

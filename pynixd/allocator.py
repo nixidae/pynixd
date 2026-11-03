@@ -308,12 +308,12 @@ def short_of_disk(store: DaemonStore, settings: StoreRankingSettings, now: float
     reports none is held back for a while after a build failed there with
     "No space left on device".
     """
-    monitor = getattr(store, "monitor", None)
+    monitor = store.monitor
     disk = monitor.health.disk if monitor is not None else None
     if disk is not None:
         enough: bool = disk.free_bytes < settings.min_free_bytes
         return enough
-    return now < getattr(store, "disk_full_until", 0.0)
+    return now < store.disk_full_until
 
 
 def incapable_reason(store: DaemonStore, build: QueuedBuild, features: set[str]) -> str | None:
@@ -388,13 +388,13 @@ class BuildAllocator:
                 excluded.append(ExcludedStore(store.store_id, reason))
         # A last-resort store is a candidate only when no other store can
         # build this at all; load and disk do not count. nixidae/nixidae#1018.
-        if any(not getattr(store, "last_resort", False) for store in capable):
+        if any(not store.last_resort for store in capable):
             excluded += [
                 ExcludedStore(store.store_id, "last resort, and another store can build it")
                 for store in capable
-                if getattr(store, "last_resort", False)
+                if store.last_resort
             ]
-            capable = [store for store in capable if not getattr(store, "last_resort", False)]
+            capable = [store for store in capable if not store.last_resort]
         now = time.monotonic()
         candidates: list[DaemonStore] = []
         for store in capable:

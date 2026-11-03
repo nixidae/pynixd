@@ -48,6 +48,8 @@ class FakeStore:
         self.is_healthy = True
         self.draining = False
         self.no_schedule = False
+        self.last_resort = False
+        self.disk_full_until = 0.0
         self.daemon_client = self
 
     def supports_derivation(self, platform: str, features: set[str]) -> bool:

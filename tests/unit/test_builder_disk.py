@@ -72,6 +72,7 @@ def _candidate(store_id: str, free: int | None) -> Any:
         is_healthy=True,
         draining=False,
         no_schedule=False,
+        last_resort=False,
         supports_derivation=lambda *_a: True,
     )
     return store
