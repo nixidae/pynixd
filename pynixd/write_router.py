@@ -19,6 +19,7 @@ from anyio.lowlevel import checkpoint
 
 from nix_daemon_protocol.add_indirect_root import AddIndirectRootResponse
 from nix_daemon_protocol.add_perm_root import AddPermRootResponse
+from nix_daemon_protocol.add_signatures import AddSignaturesResponse
 from nix_daemon_protocol.logs import LogNext
 from nix_daemon_protocol.operations import STANDARD_OPERATIONS
 from pynixd_store.content_address import ContentAddress, Method, content_addressed_path, parse_method_algo
@@ -32,8 +33,9 @@ from .store.daemon_writes import DaemonWrites
 from .store.transfer import as_copied
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping, Sequence
+    from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 
+    from nix_daemon_protocol.signature import Signature
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
     from pynixd_store.add import ImportSettings
     from pynixd_store.engine import StoreEngine
@@ -408,7 +410,7 @@ class WriteRouter:
             meter.finish()
 
     def _root_engine(self, op: str) -> StoreEngine | None:
-        """The engine when *op* takes the `pynixd` route. A root writes no database row, so no reason sends it back."""
+        """The engine when *op* takes the `pynixd` route. These ops read no import setting, so no reason sends it back."""
         if self.engine is None or self.route(op) is not OpRoute.pynixd:
             return None
         return self.engine
@@ -429,6 +431,14 @@ class WriteRouter:
         if engine is None:
             return await self.daemon.add_perm_root(store_path, gc_root)
         return AddPermRootResponse.fast(gc_root=await engine.add_perm_root(store_path, gc_root, hold=hold))
+
+    async def add_signatures(self, path: str, sigs: Iterable[Signature]) -> AddSignaturesResponse:
+        """AddSignatures (op 37): `LocalStore::addSignatures`. The engine forgets the path's cached info itself."""
+        engine = self._root_engine("AddSignatures")
+        if engine is None:
+            return await self.daemon.add_signatures(path, sigs)
+        await engine.add_signatures(path, sigs)
+        return AddSignaturesResponse.fast(value=1)
 
     async def import_nar(self, info: ValidPathInfo, source: Source, *, dont_check_sigs: bool) -> None:
         """A NAR pynixd itself fetched or received: a substitution, or the HTTP cache's upload."""

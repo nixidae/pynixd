@@ -191,6 +191,7 @@ class LocalDBStore(Store):
         39: Owned("own_add_to_store_nar", writes=True),
         44: Owned("own_add_multiple_to_store", writes=True),
         12: Owned("own_add_indirect_root", writes=True),
+        37: Owned("own_add_signatures", writes=True),
         47: Owned("own_add_perm_root", writes=True),
         32: Owned("own_query_substitutable_paths", default=OpRoute.pynixd),
         33: Owned("own_query_valid_derivers", default=OpRoute.pynixd),
@@ -521,6 +522,10 @@ class LocalDBStore(Store):
 
     async def own_add_indirect_root(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """None: `AddIndirectRootHandler` adds the root through the write router."""
+        return None
+
+    async def own_add_signatures(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        """None: `AddSignaturesHandler` merges the signatures through the write router."""
         return None
 
     async def own_add_perm_root(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:

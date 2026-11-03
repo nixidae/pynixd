@@ -271,6 +271,7 @@ def _config(work: Path, root: Path) -> Path:
                             "AddMultipleToStore": "pynixd",
                             "AddIndirectRoot": "pynixd",
                             "AddPermRoot": "pynixd",
+                            "AddSignatures": "pynixd",
                         },
                     },
                 },

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 import anyio
 
 from nix_daemon_protocol.derivation_output import DerivationOutput, OutputKind
+from nix_daemon_protocol.signature import Signature
 
 from .content_address import (
     ContentAddress,
@@ -31,6 +32,7 @@ from .hintfmt import magenta
 from .queries import (
     ADD_DERIVATION_OUTPUT,
     ADD_REFERENCE,
+    QUERY_PATH_INFO_FOR_UPDATE,
     QUERY_VALID_PATH_ID,
     REGISTER_VALID_PATH,
     UPDATE_PATH_INFO,
@@ -41,7 +43,6 @@ if TYPE_CHECKING:
 
     import aiosqlite
 
-    from nix_daemon_protocol.signature import Signature
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
     from .drv_parser import Derivation
@@ -270,3 +271,29 @@ async def register_valid_paths(conn: aiosqlite.Connection, registrations: Iterab
         with anyio.CancelScope(shield=True):
             await conn.rollback()
         raise
+
+
+async def add_signatures(conn: aiosqlite.Connection, path: str, sigs: Iterable[Signature]) -> bool:
+    """Merge *sigs* into the signature set of *path*, as `LocalStore::addSignatures` (`local-store.cc:1583`) does.
+
+    Return `False` for a path that is not valid, where Nix dereferences a null
+    pointer. The caller decides what to answer. `_signatures` reorders the
+    union the way `Signature::toStrings` of Nix's `std::set` does, so the
+    stored string is the byte Nix would write.
+    """
+    await conn.execute("BEGIN IMMEDIATE")
+    try:
+        async with conn.execute(QUERY_PATH_INFO_FOR_UPDATE, (path,)) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            await conn.rollback()
+            return False
+        nar_size, nar_hash, ultimate, existing, ca = row
+        merged = {Signature(sig) for sig in (existing or "").split()} | set(sigs)
+        await conn.execute(UPDATE_PATH_INFO, (nar_size, nar_hash, ultimate, _signatures(merged), ca, path))
+        await conn.commit()
+    except BaseException:
+        with anyio.CancelScope(shield=True):
+            await conn.rollback()
+        raise
+    return True

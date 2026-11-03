@@ -24,6 +24,7 @@ from nix_daemon_protocol.wire_time import Time
 
 from . import add, register, roots
 from .drv_parser import read_drv_file
+from .hintfmt import magenta
 from .liveness import unlink_stale_auto_roots, walk_roots
 from .local_store_db import LocalStoreDB
 from .queries import (
@@ -316,3 +317,24 @@ class StoreEngine:
             await register.register_valid_paths(conn, registrations)
         for info in infos:
             self._on_change(info.path)
+
+    async def add_signatures(self, path: str, sigs: Iterable[Signature]) -> None:
+        """`LocalStore::addSignatures` (`local-store.cc:1583`): merge *sigs* into the path's signature set.
+
+        NIX-DEFECT (#23): Nix reads the path with `queryPathInfoInternal`, which
+        returns a null pointer for an invalid path (`local-store.cc:772`), and
+        `addSignatures` dereferences it at `local-store.cc:1592`. The daemon
+        worker segfaults and the connection dies with no error. pynixd raises
+        `RegistrationError` instead; Lillecarl/nix holds the report.
+        """
+        if not self.writes:
+            raise RuntimeError(f"store {self._name}: pynixd_writes is off, so pynixd signs no path")
+        if not self.writable:
+            raise RuntimeError(f"store {self._name}: pynixd cannot write the store database")
+        async with self.db.acquire_conn() as conn:
+            valid = await register.add_signatures(conn, path, sigs)
+        if not valid:
+            raise register.RegistrationError(
+                f"cannot add signatures to '{magenta(path)}': it is not a valid store path"
+            )
+        self._on_change(StorePath(path=path))

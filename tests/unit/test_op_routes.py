@@ -80,8 +80,8 @@ class TestTheConfig:
             LocalSocketStoreSpec(use_db=False, op_routes={"IsValidPath": OpRoute.pynixd})
 
     def test_a_route_to_an_operation_pynixd_cannot_answer_is_refused(self, tmp_path: Path) -> None:
-        with pytest.raises(ValueError, match="no answer to AddSignatures"):
-            _store(tmp_path, AddSignatures=OpRoute.pynixd)
+        with pytest.raises(ValueError, match="no answer to OptimiseStore"):
+            _store(tmp_path, OptimiseStore=OpRoute.pynixd)
 
     def test_an_answer_that_writes_has_no_shadow(self, tmp_path: Path) -> None:
         class Writes(LocalDBStore):
@@ -122,6 +122,7 @@ class TestTheConfig:
             **pynixd,
             7: OpRoute.daemon,
             12: OpRoute.daemon,
+            37: OpRoute.daemon,
             38: OpRoute.daemon,
             39: OpRoute.daemon,
             44: OpRoute.daemon,

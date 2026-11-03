@@ -23,6 +23,7 @@ from anyio.lowlevel import checkpoint
 from nix_daemon_protocol.add_indirect_root import AddIndirectRootRequest, AddIndirectRootResponse
 from nix_daemon_protocol.add_multiple_to_store import AddMultipleToStoreRequest, AddMultipleToStoreResponse
 from nix_daemon_protocol.add_perm_root import AddPermRootRequest, AddPermRootResponse
+from nix_daemon_protocol.add_signatures import AddSignaturesRequest, AddSignaturesResponse
 from nix_daemon_protocol.add_to_store import AddToStoreResponse
 from nix_daemon_protocol.add_to_store_nar import AddToStoreNarRequest, AddToStoreNarResponse
 from nix_daemon_protocol.content_address import ContentAddress
@@ -33,8 +34,9 @@ from ..wire import FramedWriter, send_framed, send_raw
 from .transfer import as_copied
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 
+    from nix_daemon_protocol.signature import Signature
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
     from pynixd_store.source import Source
 
@@ -59,6 +61,14 @@ class DaemonWrites:
         response: AddPermRootResponse = await self.store.call(
             AddPermRootRequest(store_path=store_path, gc_root=gc_root)
         )
+        return response
+
+    async def add_signatures(self, path: str, sigs: Iterable[Signature]) -> AddSignaturesResponse:
+        """AddSignatures (op 37). Forget the path's cached info: the daemon changed its signatures."""
+        response: AddSignaturesResponse = await self.store.call(
+            AddSignaturesRequest(path=StorePath(path=path), sigs=set(sigs))
+        )
+        self.store.forget_path_info(path)
         return response
 
     async def add_to_store(

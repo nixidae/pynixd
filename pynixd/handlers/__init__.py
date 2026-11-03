@@ -12,6 +12,7 @@ from . import (
     add_indirect_root,  # noqa: F401
     add_multiple_to_store,  # noqa: F401
     add_perm_root,  # noqa: F401
+    add_signatures,  # noqa: F401
     add_temp_root,  # noqa: F401
     add_temp_roots,  # noqa: F401
     add_to_store,  # noqa: F401
