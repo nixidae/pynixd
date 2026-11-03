@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pynixd-store"
+version = "0.1.0"
+description = "A local Nix store in Python: the file system, the database, the roots"
+readme = "README.md"
+requires-python = ">=3.13"
+# PEP 639. The file is a copy of the one at the root of the repository: the
+# source root of this project is this directory, and a path above it is not
+# in the sdist.
+license = "Apache-2.0"
+license-files = [ "LICENSE" ]
+dependencies = [
+    "aiosqlite",
+    "anyio",
+    "nix-daemon-protocol>=0.1.0",
+    "pynacl",
+    "structlog",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pynixd_store"]

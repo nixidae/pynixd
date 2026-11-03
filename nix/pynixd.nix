@@ -27,6 +27,7 @@
   anyio,
   uvloop,
   nix-daemon-protocol,
+  pynixd-store,
   # System to `pynixd-agent` build (nix/agent.nix).
   agents ? { },
 }:
@@ -83,6 +84,7 @@ pythonBuilder (finalAttrs: {
     uvloop
     watchdog
     nix-daemon-protocol
+    pynixd-store
   ];
 
   nativeCheckInputs = [

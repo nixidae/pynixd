@@ -16,6 +16,10 @@ let
   daemon-protocol = pkgs.python3Packages.callPackage ./nix/nix-daemon-protocol.nix {
     pythonBuilder = pkgs.python3Packages.buildPythonPackage;
   };
+  store = pkgs.python3Packages.callPackage ./nix/pynixd-store.nix {
+    pythonBuilder = pkgs.python3Packages.buildPythonPackage;
+    nix-daemon-protocol = daemon-protocol;
+  };
 
   # Not pkgsCross.musl64: that is x86_64 on every host, and the agent is
   # filed under the host's own system below (#1056).
@@ -24,11 +28,13 @@ let
   package = pkgs.python3Packages.callPackage ./nix/pynixd.nix {
     pythonBuilder = pkgs.python3Packages.buildPythonApplication;
     nix-daemon-protocol = daemon-protocol;
+    pynixd-store = store;
     agents.${pkgs.stdenv.hostPlatform.system} = agent;
   };
   library = pkgs.python3Packages.callPackage ./nix/pynixd.nix {
     pythonBuilder = pkgs.python3Packages.buildPythonPackage;
     nix-daemon-protocol = daemon-protocol;
+    pynixd-store = store;
   };
 
   mkTests =
@@ -112,11 +118,13 @@ let
       projectRoots = [
         ./.
         ./nix-daemon-protocol
+        ./pynixd-store
         vivariumLib.runnerSource
       ];
       overlay = pySelf: _pyPrev: {
         pynixd = pySelf.callPackage (own "pynixd" ./.) { };
         nix-daemon-protocol = pySelf.callPackage (own "nix-daemon-protocol" ./nix-daemon-protocol) { };
+        pynixd-store = pySelf.callPackage (own "pynixd-store" ./pynixd-store) { };
         vivarium-runner = pySelf.callPackage (mkProject "vivarium-runner" vivariumLib.runnerSource) { };
       };
     };
@@ -360,10 +368,10 @@ let
   checks = {
     format = mkCheck "format" [ pkgs.ruff ] "ruff format --check .";
     lint = mkCheck "lint" [ pkgs.ruff ] "ruff check .";
-    # One zuban run for each `mypy.ini`: nix-daemon-protocol is its own
-    # distribution, with its own `src/` and `tests/`.
+    # One zuban run for each `mypy.ini`: nix-daemon-protocol and pynixd-store
+    # are distributions of their own, each with its own `src/`.
     types = mkCheck "types" [ pkgs.zuban ] ''
-      for project in . nix-daemon-protocol; do
+      for project in . nix-daemon-protocol pynixd-store; do
         (cd "$project" && env -u PYTHONPATH zuban mypy --python-executable ${pyinstance}/lib/venv/bin/python)
       done
     '';
@@ -510,6 +518,7 @@ in
     pynixd-lib = library;
     pynixd-agent = agent;
     nix-daemon-protocol = daemon-protocol;
+    pynixd-store = store;
   };
   lib = { };
   nixosModules.default = ./nix/nixos;

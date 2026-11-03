@@ -28,6 +28,7 @@ dependencies = [
     "uvloop",
     "anyio",
     "nix-daemon-protocol>=0.1.0",
+    "pynixd-store>=0.1.0",
     # The six below were imported and not declared, and issue #131 found them.
     # A shell built from `shell.nix` supplied each one, so no import failed in
     # the repository this project came from. An install of the distribution
