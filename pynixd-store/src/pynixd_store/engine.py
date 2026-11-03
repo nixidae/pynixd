@@ -23,6 +23,7 @@ from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 
 from . import add, register
+from .drv_parser import read_drv_file
 from .liveness import unlink_stale_auto_roots, walk_roots
 from .local_store_db import LocalStoreDB
 from .queries import (
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from .content_address import Method
+    from .drv_parser import Derivation
     from .local_store_db import SyncReader
     from .source import Source
     from .store_layout import StoreLayout
@@ -124,6 +126,10 @@ class StoreEngine:
         if not rows:
             return None
         return path_info(rows[0][:8], {r[8] for r in rows if r[8] is not None})
+
+    async def read_derivation(self, drv_path: str) -> Derivation | None:
+        """`Store::readDerivation`: the parsed `.drv` file, or `None` when it is not on disk."""
+        return await read_drv_file(drv_path, self.layout)
 
     async def is_valid_path(self, path: str, *, reader: SyncReader | None = None) -> bool:
         """`isValidPathUncached`, through a session's *reader* when it can answer."""

@@ -307,6 +307,9 @@ class LocalDBStore(Store):
         )
 
     async def read_derivation(self, drv_store_path: StorePath | str) -> Derivation | None:
+        parsed = await self.engine.read_derivation(str(drv_store_path))
+        if parsed is not None:
+            return parsed
         return await self._daemon.read_derivation(drv_store_path)
 
     async def add_text_to_store(self, name: str, text: str, references: AbstractSet[str]) -> str:
