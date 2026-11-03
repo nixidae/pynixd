@@ -24,4 +24,6 @@ class OptimiseStoreHandler(Handler):
         await OptimiseStoreRequest.from_reader(
             ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
         )
-        return await write_router(ctx.proxy.local_store).optimise_store(hold=ctx.proxy.add_temp_root)
+        return await write_router(ctx.proxy.local_store).optimise_store(
+            hold=ctx.proxy.add_temp_root, conn=ctx.proxy.client
+        )

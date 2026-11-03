@@ -28,6 +28,7 @@ from nix_daemon_protocol.optimise_store import OptimiseStoreResponse
 from nix_daemon_protocol.protocol import Verbosity
 from nix_daemon_protocol.verify_store import VerifyStoreResponse
 from pynixd_store.content_address import ContentAddress, Method, content_addressed_path, parse_method_algo
+from pynixd_store.optimise import render_size
 from pynixd_store.source import Metered
 
 from . import metrics
@@ -467,12 +468,21 @@ class WriteRouter:
         await engine.add_build_log(path, log)
         return AddBuildLogResponse.fast(value=1)
 
-    async def optimise_store(self, *, hold: Callable[[str], Awaitable[None]]) -> OptimiseStoreResponse:
-        """OptimiseStore (op 34): `LocalStore::optimiseStore`. *hold* is the session's temporary root."""
+    async def optimise_store(
+        self, *, hold: Callable[[str], Awaitable[None]], conn: ClientConn | None = None
+    ) -> OptimiseStoreResponse:
+        """OptimiseStore (op 34): `LocalStore::optimiseStore`. *hold* is the session's temporary root.
+
+        On the daemon route the daemon's own summary line travels in the answer.
+        On the engine route pynixd sends it, as Nix's `printInfo` does
+        (`optimise-store.cc:328`); the parity suite's `_builds` reads it.
+        """
         engine = self._root_engine("OptimiseStore")
         if engine is None:
             return await self.daemon.optimise_store()
-        await engine.optimise_store(hold=hold)
+        stats = await engine.optimise_store(hold=hold)
+        freed = render_size(stats.bytes_freed)
+        await _client_log(conn, Verbosity.INFO, f"{freed} freed by hard-linking {stats.files_linked} files")
         return OptimiseStoreResponse.fast(value=1)
 
     async def verify_store(

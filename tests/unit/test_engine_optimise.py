@@ -62,6 +62,15 @@ def _optimise(store_dir: Path, links_dir: Path) -> optimise.OptimiseStats:
     return stats
 
 
+@pytest.mark.parametrize(
+    ("value", "text"),
+    [(0, "0.0 KiB"), (100, "0.1 KiB"), (2048, "2.0 KiB"), (1536 * 1024, "1.5 MiB")],
+)
+def test_render_size_matches_nix(value: int, text: str) -> None:
+    """`renderSize`: the summary line reads at least kibibytes, `%.1f` of the unit."""
+    assert optimise.render_size(value) == text
+
+
 def test_two_files_of_one_content_share_an_inode(tmp_path: Path) -> None:
     store_dir, links_dir = _store(tmp_path)
     first = _write(store_dir, "aaa-one", HELLO)

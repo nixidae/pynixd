@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import contextlib
 import errno
-import hashlib
 import os
 import random
 import stat
@@ -26,7 +25,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from .add import MTIME_STORE
-from .nar_fs import dump_path
+from .nar_fs import nar_sha256
 from .utils import nix32_encode
 
 if TYPE_CHECKING:
@@ -41,6 +40,27 @@ class OptimiseStats:
 
     files_linked: int = 0
     bytes_freed: int = 0
+
+
+# `SizeUnit` suffixes (`util.hh:130`): `Base` and `Kilo` both render as `K`.
+_SIZE_SUFFIXES = "KKMGTPEZY"
+
+
+def render_size(value: int) -> str:
+    """`renderSize` (`util.cc:193`): a byte count as Nix's `printInfo` prints it, e.g. `0` -> `0.0 KiB`.
+
+    Nix shows at least kibibytes (`renderSizeWithoutUnit` clamps the power to 1),
+    so every value reads as `%.1f` of a unit from KiB up. `optimiseStore` prints
+    it in its summary line (`optimise-store.cc:328`).
+    """
+    magnitude = abs(value)
+    unit = 0
+    # `getSizeUnit`: climb units while the integer value is over 1024.
+    while magnitude > 1024 and unit < len(_SIZE_SUFFIXES) - 1:
+        unit += 1
+        magnitude //= 1024
+    result = value / (1024 ** max(1, unit))
+    return f"{result:.1f} {_SIZE_SUFFIXES[unit]}iB"
 
 
 def load_inode_hash(links_dir: Path) -> set[int]:
@@ -68,10 +88,7 @@ def _read_directory_ignoring_inodes(path: Path, inode_hash: set[int]) -> list[st
 
 def _nar_hash_32(path: Path) -> str:
     """The NAR hash of one file, in Nix32 without a prefix: the name of its `.links` entry."""
-    digest = hashlib.sha256()
-    for piece in dump_path(path):
-        digest.update(piece)
-    return nix32_encode(digest.digest())
+    return nix32_encode(nar_sha256(path).digest())
 
 
 def _make_writable(path: Path) -> None:
