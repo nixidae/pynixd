@@ -27,11 +27,12 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from nix_daemon_protocol.basic_derivation import BasicDerivation
+from nix_daemon_protocol.derivation_output import DerivationOutput, OutputKind
 from nix_daemon_protocol.store_dir import store_dir as current_store_dir
 
 from ..content_address import content_addressed_path, fixed_output_address
 from ..drv_parser import ChildMapNode, _aterm_escape, drv_bytes
-from ..serde import BasicDerivation, DerivationOutput, OutputKind
 from ..store_path import StorePath
 from ..utils import nix32_encode
 

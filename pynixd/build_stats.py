@@ -22,7 +22,7 @@ from nix_daemon_protocol.basic_derivation import structured_attrs
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from .serde import BasicDerivation
+    from nix_daemon_protocol.basic_derivation import BasicDerivation
 
 SHAPE_HEX_DIGITS = 16
 """64 bits of the SHA-256: no two shapes of one store meet by chance."""

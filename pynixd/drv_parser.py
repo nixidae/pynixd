@@ -40,9 +40,9 @@ from typing import TYPE_CHECKING, Any, TypedDict, overload
 
 import anyio
 
-from nix_daemon_protocol.basic_derivation import bool_attr, required_features_of
+from nix_daemon_protocol.basic_derivation import BasicDerivation, bool_attr, required_features_of
+from nix_daemon_protocol.derivation_output import DerivationOutput, OutputKind
 
-from .serde import BasicDerivation, DerivationOutput, OutputKind
 from .store_path import DrvOutput, StorePath
 from .utils import compress_hash, nix32_encode
 
