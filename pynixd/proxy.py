@@ -16,7 +16,6 @@ import structlog
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId, StoreId
 from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.wire_ops import WIRE_REGISTRY, WireResponse
-from pynixd_store.store_layout import StoreLayout
 from pynixd_store.temp_roots import TempRoots
 
 from . import metrics, wire
@@ -695,7 +694,7 @@ class DaemonProxy:
             # The state directory of the store that pynixd serves, which is
             # `<root>/nix/var/nix` for a chroot store and `NIX_STATE_DIR` for
             # a relocated one. `StoreLayout` answers both. Issue nixidae/nixidae#215.
-            layout = getattr(self.local_store, "layout", None) or StoreLayout.chroot(None)
+            layout = self.local_store.layout
             self._temp_roots = TempRoots(layout.state_dir)
         if await self._temp_roots.add(path):
             return

@@ -103,5 +103,7 @@ async def test_drive_continues_below_watermark_until_target(monkeypatch: pytest.
 
 
 def test_drive_without_a_target_uses_the_watermark() -> None:
-    fake = SimpleNamespace(ctx=SimpleNamespace(local_store=object()), _over_watermark=lambda: True)
+    fake = SimpleNamespace(
+        ctx=SimpleNamespace(local_store=SimpleNamespace(gc_target_usage=None)), _over_watermark=lambda: True
+    )
     assert Server._over_gc_target(cast(Server, fake))

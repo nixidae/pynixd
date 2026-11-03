@@ -79,6 +79,9 @@ class FakeDeleteConn:
 class FakeLocal:
     """A local store with one droppable path and an unset permit."""
 
+    layout: Any = None
+    gc_max_age: int | None = None
+    gc_target_usage: float | None = None
     gc_allow_execute: bool = False
     gc_defer: bool = False
     live: set[str] = field(default_factory=set)

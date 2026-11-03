@@ -549,7 +549,7 @@ class Server:
     def _over_gc_target(self) -> bool:
         """Continue an active drive until the local store reaches its target."""
         local = self.ctx.local_store
-        target = getattr(local, "gc_target_usage", None)
+        target = local.gc_target_usage
         if target is None:
             return self._over_watermark()
         usage = Collector._disk_usage(local)
@@ -827,7 +827,7 @@ class Server:
             self._spawn(self._gc_tick)
             liveness_interval = self.ctx.settings.gc_liveness_interval
             if liveness_interval is not None:
-                watch = LivenessWatch.from_layout(getattr(self.ctx.local_store, "layout", None))
+                watch = LivenessWatch.from_layout(self.ctx.local_store.layout)
                 if watch is None:
                     log.warning("gc_liveness_watch_unavailable")
                 else:

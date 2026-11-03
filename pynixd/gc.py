@@ -62,6 +62,8 @@ if TYPE_CHECKING:
     from .connection import ClientConn, Connection
     from .context import PynixdContext
     from .store.base import Store
+    from .store.local_daemon import LocalStore
+    from .store.local_db import LocalDBStore
 
 log = structlog.get_logger(__name__)
 
@@ -189,7 +191,7 @@ class Collector:
         lines: list[LogNext] = []
         local = self.ctx.local_store
         usage = self._disk_usage(local)
-        target = target_usage if target_usage is not None else getattr(local, "gc_target_usage", None)
+        target = target_usage if target_usage is not None else local.gc_target_usage
         if (
             action == PynixdGCAction.EXECUTE
             and target is not None
@@ -289,7 +291,7 @@ class Collector:
         access dates to plan by.
         """
         local = self.ctx.local_store
-        max_age = getattr(local, "gc_max_age", None)
+        max_age = local.gc_max_age
         db_path = self.planner().sql_db_path()
         if max_age is None or db_path is None:
             yield _MemoryPlan(self, {str(path) for path in await self.plan(pressed=pressed)}, vetoed)
@@ -385,7 +387,7 @@ class Collector:
         Both rules refresh Python liveness, falling back to Nix only when unavailable.
         """
         local = self.ctx.local_store
-        max_age = getattr(local, "gc_max_age", None)
+        max_age = local.gc_max_age
         if max_age is None:
             return await self._plan_deferred(local)
         return await self._plan_lru(local, None if pressed else max_age)
@@ -668,11 +670,11 @@ class Collector:
         )
 
     @staticmethod
-    def _disk_usage(local: Store) -> tuple[int, int] | None:
+    def _disk_usage(local: LocalStore | LocalDBStore) -> tuple[int, int] | None:
         """`(used, total)` bytes of pressure on the filesystem holding the store."""
         return _planner_of(local).disk_usage()
 
 
-def _planner_of(local: Store) -> GarbagePlanner:
-    """The engine's view of *local*: a store served without its state has neither part."""
-    return GarbagePlanner(getattr(local, "layout", None), local.db)
+def _planner_of(local: LocalStore | LocalDBStore) -> GarbagePlanner:
+    """The engine's view of *local*: its layout, and its database when it has one."""
+    return GarbagePlanner(local.layout, local.db)

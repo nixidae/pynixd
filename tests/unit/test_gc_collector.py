@@ -100,6 +100,8 @@ class FakeLocal:
     """The local store: it answers from `REFERENCES` and records the deletes."""
 
     db: Any = None
+    layout: Any = None
+    gc_max_age: int | None = None
     answers_closure: bool = True
     gc_defer: bool = False
     live: set[str] = field(default_factory=set)

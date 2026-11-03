@@ -40,6 +40,8 @@ B = "/nix/store/11111111111111111111111111111111-b"
 class FakeLocal:
     """A local store with one droppable path and a target above usage."""
 
+    layout: Any = None
+    gc_max_age: int | None = None
     gc_allow_execute: bool = False
     gc_defer: bool = False
     gc_target_usage: float | None = 0.7

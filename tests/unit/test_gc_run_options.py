@@ -96,6 +96,7 @@ class FakeLocal:
     """A local store with two droppable paths and an open permit."""
 
     layout: FakeLayout | None = None
+    gc_max_age: int | None = None
     gc_allow_execute: bool = True
     gc_defer: bool = False
     gc_target_usage: float | None = None
