@@ -197,6 +197,7 @@ class LocalDBStore(Store):
         33: Owned("own_query_valid_derivers", default=OpRoute.pynixd),
         41: Owned("own_query_derivation_output_map", default=OpRoute.pynixd),
         42: Owned("own_register_drv_output", writes=True),
+        45: Owned("own_add_build_log", writes=True),
         43: Owned("own_query_realisation", default=OpRoute.pynixd),
     }
 
@@ -531,6 +532,10 @@ class LocalDBStore(Store):
 
     async def own_add_perm_root(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """None: `AddPermRootHandler` adds the root through the write router, with the session's temporary root."""
+        return None
+
+    async def own_add_build_log(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        """None: `AddBuildLogHandler` records the log through the write router, after the framed body."""
         return None
 
     async def import_settings(self) -> ImportSettings:

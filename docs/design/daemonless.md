@@ -57,7 +57,9 @@ or both. `LocalDBStore.register_valid_paths` (`pynixd_store/register.py`) writes
 Nix's statements, and only with `pynixd_writes` on. AddToStore, AddToStoreNar
 and AddMultipleToStore call it on their `pynixd` routes. `register_drv_output`
 (`pynixd_store/register.py`) writes the build trace, in `BuildTraceV3` or
-`Realisations` as `registerDrvOutput` does.
+`Realisations` as `registerDrvOutput` does. `add_build_log`
+(`pynixd_store/build_log.py`) writes a derivation's log under `logDir`, as
+`addBuildLog` does.
 
 | op | today | to own it |
 | --- | --- | --- |
@@ -66,7 +68,7 @@ and AddMultipleToStore call it on their `pynixd` routes. `register_drv_output`
 | 44 AddMultipleToStore | on trial: the daemon in a deployment; route `pynixd` imports each path as AddToStoreNar does, in stream order, one registration per path (`daemon.cc:505`). The first error ends the op and keeps the paths before it. A Git address goes to the daemon as AddToStoreNar for that path; repair, `auto-optimise-store` and `fsync-store-paths` send the whole op there | — |
 | 37 AddSignatures | on trial: the daemon in a deployment; route `pynixd` merges the signatures into `ValidPaths.sigs` as `addSignatures` does (`local-store.cc:1583`), in Nix's set order. A path that is not valid raises, where Nix dereferences a null pointer and the worker segfaults (`NIX-DEFECT`) | — |
 | 42 RegisterDrvOutput | on trial: the daemon in a deployment; route `pynixd` records the realisation as `registerDrvOutput` does (`local-store.cc:664`), in `BuildTraceV3` by the derivation's base name (Nix 2.35) or `Realisations` by its hash (Nix 2.34), in Nix's signature order. An id already present with another output path raises Nix's message. The scheduler's own registration runs the same route (`goals/ensure.py`). Without `ca-derivations` the daemon answers | — |
-| 45 AddBuildLog | handler forwards | write `var/log/nix/drvs/..` |
+| 45 AddBuildLog | on trial: the daemon in a deployment; route `pynixd` writes the log as `addBuildLog` does (`local-store.cc:1645`), `<logDir>/drvs/<name[:2]>/<name[2:]>.bz2`, bzip2, a temporary file and a rename, and keeps a log already there. Admin only (`daemon.cc:1015`). The log is read whole, as Nix drains it. `logDir` is a sibling of the state, so the layout carries it (`NIX_LOG_DIR`) | — |
 | 11, 49 AddTempRoot(s) | owned where pynixd can write `temproots`; else the daemon (a `NIX-DEVIATION`) | run where pynixd owns the state directory |
 | 12 AddIndirectRoot | on trial: the daemon in a deployment; route `pynixd` links `gcroots/auto/<SHA-1 of the path>` to the client's path (`pynixd_store/roots.py`) | — |
 | 47 AddPermRoot | on trial: the daemon in a deployment; route `pynixd` takes the session's temporary root, links the root to the store path, then adds the indirect root. It refuses a root in the store and a file that is not a link into the store, with Nix's messages | — |
@@ -163,6 +165,8 @@ the daemon's import (`tests/functional/test_add_to_store_nar_import.py`).
 `AddMultipleToStore` does the same for `nix copy`
 (`tests/functional/test_add_multiple_to_store_import.py`), and `AddToStore`
 for an evaluation's derivations (`tests/functional/test_add_to_store_import.py`).
-`AddBuildLog` has none yet. pynixd's own imports, a substitution and the HTTP
-cache's upload, follow AddToStoreNar's route
+`AddBuildLog` records the log itself on the `pynixd` route, and the test that
+sets that route reads the `.bz2` back from the store
+(`tests/functional/test_add_build_log_import.py`). pynixd's own imports, a
+substitution and the HTTP cache's upload, follow AddToStoreNar's route
 (`tests/functional/test_substitution_import.py`).

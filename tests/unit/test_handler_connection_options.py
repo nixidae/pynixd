@@ -63,6 +63,7 @@ OPTIONLESS_ROUTER_METHODS = {
     "add_indirect_root": "`LocalStore::addIndirectRoot` reads no setting, so the client's options change nothing.",
     "add_perm_root": "`IndirectRootStore::addPermRoot` reads no setting, so the client's options change nothing.",
     "add_signatures": "`LocalStore::addSignatures` reads no setting, so the client's options change nothing.",
+    "add_build_log": "`LocalStore::addBuildLog` reads no setting, so the client's options change nothing.",
 }
 """Each router method whose daemon write may carry no client options, and why."""
 

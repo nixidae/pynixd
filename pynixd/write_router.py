@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 import structlog
 from anyio.lowlevel import checkpoint
 
+from nix_daemon_protocol.add_build_log import AddBuildLogResponse
 from nix_daemon_protocol.add_indirect_root import AddIndirectRootResponse
 from nix_daemon_protocol.add_perm_root import AddPermRootResponse
 from nix_daemon_protocol.add_signatures import AddSignaturesResponse
@@ -439,6 +440,14 @@ class WriteRouter:
             return await self.daemon.add_signatures(path, sigs)
         await engine.add_signatures(path, sigs)
         return AddSignaturesResponse.fast(value=1)
+
+    async def add_build_log(self, path: str, log: bytes) -> AddBuildLogResponse:
+        """AddBuildLog (op 45): `LocalStore::addBuildLog`. The log is read whole, as Nix drains it before writing."""
+        engine = self._root_engine("AddBuildLog")
+        if engine is None:
+            return await self.daemon.add_build_log(path, log)
+        await engine.add_build_log(path, log)
+        return AddBuildLogResponse.fast(value=1)
 
     async def import_nar(self, info: ValidPathInfo, source: Source, *, dont_check_sigs: bool) -> None:
         """A NAR pynixd itself fetched or received: a substitution, or the HTTP cache's upload."""

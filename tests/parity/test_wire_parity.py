@@ -274,6 +274,7 @@ def _config(work: Path, root: Path) -> Path:
                             "AddPermRoot": "pynixd",
                             "AddSignatures": "pynixd",
                             "RegisterDrvOutput": "pynixd",
+                            "AddBuildLog": "pynixd",
                         },
                     },
                 },

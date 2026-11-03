@@ -44,6 +44,7 @@ TEST_OP_ROUTES: dict[str, OpRoute] = {
     "AddPermRoot": OpRoute.pynixd,
     "AddSignatures": OpRoute.pynixd,
     "RegisterDrvOutput": OpRoute.pynixd,
+    "AddBuildLog": OpRoute.pynixd,
 }
 """Answers on trial: in every test store, and on the daemon in a deployment.
 
@@ -61,6 +62,7 @@ _WRITES = frozenset(
         "AddPermRoot",
         "AddSignatures",
         "RegisterDrvOutput",
+        "AddBuildLog",
     }
 )
 """The trial routes that a store with `pynixd_writes` off cannot take."""

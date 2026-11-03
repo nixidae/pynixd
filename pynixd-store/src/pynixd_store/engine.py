@@ -22,7 +22,7 @@ from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 
-from . import add, register, roots
+from . import add, build_log, register, roots
 from .drv_parser import read_drv_file
 from .hintfmt import magenta
 from .liveness import unlink_stale_auto_roots, walk_roots
@@ -355,3 +355,12 @@ class StoreEngine:
             raise RuntimeError(f"store {self._name}: pynixd cannot write the store database")
         async with self.db.acquire_conn() as conn:
             await register.register_drv_output(conn, drv, output_name, out_path, sigs, by_path=by_path)
+
+    async def add_build_log(self, drv: str, log: bytes) -> None:
+        """`LocalStore::addBuildLog` (`local-store.cc:1645`): record *drv*'s build log under `logDir`.
+
+        *drv* is the derivation's base name, as the wire carries it. The write
+        touches no database, so it reads no `writable`: like a root, it needs
+        the file system, and the router gates the route.
+        """
+        await anyio.to_thread.run_sync(build_log.add_build_log, self.layout.log_dir, drv, log)

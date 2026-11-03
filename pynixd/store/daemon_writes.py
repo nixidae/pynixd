@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 import anyio
 from anyio.lowlevel import checkpoint
 
+from nix_daemon_protocol.add_build_log import AddBuildLogRequest, AddBuildLogResponse
 from nix_daemon_protocol.add_indirect_root import AddIndirectRootRequest, AddIndirectRootResponse
 from nix_daemon_protocol.add_multiple_to_store import AddMultipleToStoreRequest, AddMultipleToStoreResponse
 from nix_daemon_protocol.add_perm_root import AddPermRootRequest, AddPermRootResponse
@@ -69,6 +70,28 @@ class DaemonWrites:
             AddSignaturesRequest(path=StorePath(path=path), sigs=set(sigs))
         )
         self.store.forget_path_info(path)
+        return response
+
+    async def add_build_log(self, path: str, log: bytes) -> AddBuildLogResponse:
+        """AddBuildLog (op 45). The log follows the header framed; `addBuildLog` reads no option.
+
+        No client options travel: `LocalStore::addBuildLog` reads no setting,
+        as `addSignatures` does not (`OPTIONLESS_ROUTER_METHODS`).
+        """
+        view = memoryview(log)
+        offset = 0
+
+        async def read(n: int) -> bytes:
+            nonlocal offset
+            chunk = bytes(view[offset : offset + n])
+            offset += len(chunk)
+            return chunk
+
+        async with self.store.transfer_conn(None) as conn:
+            await AddBuildLogRequest(path=path).to_writer(WriteContext.from_conn(conn))
+            await conn.w.drain()
+            await send_framed(read, conn.w)
+            response: AddBuildLogResponse = await AddBuildLogResponse.from_reader(ReadContext.from_conn(conn))
         return response
 
     async def add_to_store(
