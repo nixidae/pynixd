@@ -16,6 +16,7 @@ from nix_daemon_protocol.exceptions import DaemonProtocolError
 from pynixd.config import PynixdSettings
 from pynixd.goals.engine import GoalEngine
 from pynixd.goals.query_missing import client_names_a_substituter, daemon_substitutes
+from pynixd.instance import _add_substituter_stores
 from pynixd.serde import (
     ContentAddress,
     DerivedPath as SerdeDerivedPath,
@@ -135,20 +136,27 @@ def test_each_substituter_option_counts(name: str) -> None:
     assert client_names_a_substituter(_client(_options(**{name: "file:///cache"})))
 
 
-def test_http_and_unix_substituters_are_covered_by_scheme() -> None:
-    """`instance._add_substituter_stores` makes a backend for these two kinds by scheme; a `file://` cache needs its own."""
-    queue = SubstitutionQueue(cast("PynixdContext", SimpleNamespace(settings=PynixdSettings(), stores={})))
-    queue.note_daemon_substituters(
-        [
-            "https://cache.example/",
-            "http://cache.local/",
-            "unix:///run/nix/socket",
-            "file:///cache",
-            "s3://bucket",
-            "daemon",
-        ]
-    )
-    assert queue.uncovered == ("file:///cache", "s3://bucket", "daemon")
+def test_a_substituter_is_covered_by_the_backend_the_registry_made() -> None:
+    """A URL is covered when `instance._add_substituter_stores` made a backend with its key.
+
+    A parameter the registry does not read leaves the URL to the daemon, and
+    so does a `file://` directory pynixd cannot read.
+    """
+    urls = [
+        "https://cache.example/",
+        "http://cache.local/",
+        "unix:///run/nix/socket",
+        "https://cache.other/?want-mass-query=1",
+        "file:///cache",
+        "s3://bucket",
+        "daemon",
+    ]
+    settings = PynixdSettings()
+    stores: dict[Any, Any] = {}
+    _add_substituter_stores(stores, urls, settings)
+    queue = SubstitutionQueue(cast("PynixdContext", SimpleNamespace(settings=settings, stores=stores)))
+    queue.note_daemon_substituters(urls)
+    assert queue.uncovered == ("https://cache.other/?want-mass-query=1", "file:///cache", "s3://bucket", "daemon")
 
 
 async def test_a_substituter_only_the_daemon_reaches_sends_every_client_there() -> None:

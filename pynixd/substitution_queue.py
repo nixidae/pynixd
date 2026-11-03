@@ -23,7 +23,8 @@ from .serde import QueryPathInfoRequest, StorePath
 from .store import is_binary_cache
 from .store.local_db import LocalDBStore, write_router
 from .store.nar_reader import NarReader
-from .substituters import ClientSubstituters, store_key, substituter_key
+from .store_url import is_own_cache, reference_key
+from .substituters import ClientSubstituters
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
@@ -42,8 +43,6 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 _NAR_CHUNK_SIZE = 1024 * 256
-_BACKEND_SCHEMES = ("http://", "https://", "unix://")
-"""The substituters `instance._add_substituter_stores` makes a backend for by scheme alone."""
 
 
 @dataclass(frozen=True)
@@ -215,11 +214,14 @@ class SubstitutionQueue:
         self.client_substituters = ClientSubstituters(settings)
 
     def note_daemon_substituters(self, substituters: Iterable[str]) -> None:
-        """Remember which of the daemon's *substituters* the backends do not stand for."""
-        keys = {store_key(store) for store in self.substituter_stores()}
+        """Remember which of the daemon's *substituters* the backends do not stand for.
+
+        This pynixd's own cache needs no backend: pynixd answers for it.
+        """
+        keys = {store.reference_key for store in self.substituter_stores()}
 
         def covered(url: str) -> bool:
-            return url.startswith(_BACKEND_SCHEMES) or substituter_key(url) in keys
+            return is_own_cache(url, self.ctx.settings) or ((key := reference_key(url)) is not None and key in keys)
 
         self.uncovered = tuple(url for url in substituters if not covered(url))
 

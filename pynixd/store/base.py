@@ -72,6 +72,8 @@ class Store(ABC):
         self.store_id: StoreId = spec.store_id
         self.priority = spec.priority
         self.no_schedule = spec.no_schedule
+        self.reference_key: object | None = spec.reference_key()
+        """The key of the substituter URL this store stands for: `StoreSpecBase.reference_key`."""
         self.gc_defer = spec.gc_defer
         """Here and not in `DaemonStore`: an HTTP binary cache is the store
         this flag exists for, and it speaks no worker protocol."""

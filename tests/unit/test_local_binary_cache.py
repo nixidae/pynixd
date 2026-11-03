@@ -14,7 +14,7 @@ from pynixd.exceptions import CacheFault, NarGone
 from pynixd.instance import _add_substituter_stores
 from pynixd.serde import DrvOutput
 from pynixd.store.local_binary_cache import LocalBinaryCacheStore
-from pynixd.substituters import file_cache
+from pynixd.store_url import spec_for
 from pynixd.substitution_queue import SubstitutionQueue
 from pynixd_store.store_path import StorePath
 
@@ -93,13 +93,12 @@ async def test_a_missing_nar_is_gone(tmp_path: Path) -> None:
 
 
 def test_a_file_url_names_its_directory_and_parameters() -> None:
-    cache = file_cache("file:///srv/cache?trusted=1&priority=10")
-    assert cache is not None
-    assert str(cache.path) == "/srv/cache"
-    assert cache.trusted
-    assert cache.priority == 10
-    assert file_cache("https://cache.example/") is None
-    assert file_cache("file://relative") is None
+    spec = spec_for("file:///srv/cache?trusted=1&priority=10")
+    assert isinstance(spec, LocalBinaryCacheSpec)
+    assert str(spec.path) == "/srv/cache"
+    assert spec.trusted
+    assert spec.priority == 10
+    assert spec_for("file://relative") is None
 
 
 def test_a_readable_directory_gets_a_backend(tmp_path: Path) -> None:
@@ -109,7 +108,17 @@ def test_a_readable_directory_gets_a_backend(tmp_path: Path) -> None:
     caches = [store for store in added if isinstance(store, LocalBinaryCacheStore)]
     assert [store.path for store in caches] == [root]
     assert caches[0].trusted
-    assert _add_substituter_stores(stores, [f"file://{root}"], PynixdSettings()) == []
+    assert _add_substituter_stores(stores, [f"file://{root}/?trusted=1"], PynixdSettings()) == []
+
+
+def test_another_trust_is_another_store(tmp_path: Path) -> None:
+    """Nix opens one store per URL and its parameters (`StoreConfig::getReference`)."""
+    root = _cache(tmp_path / "cache")
+    stores: dict[Any, Any] = {}
+    _add_substituter_stores(stores, [f"file://{root}?trusted=1"], PynixdSettings())
+    (added,) = _add_substituter_stores(stores, [f"file://{root}"], PynixdSettings())
+    assert isinstance(added, LocalBinaryCacheStore)
+    assert not added.trusted
 
 
 def test_an_unreadable_directory_is_left_to_the_daemon(tmp_path: Path) -> None:

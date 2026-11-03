@@ -397,6 +397,14 @@ class StoreSpecBase(BaseModel):
             return self.feature_matrix
         return _feature_matrix_from_config(self.systems, self.system_features)
 
+    def reference_key(self) -> object | None:
+        """What makes two substituter URLs one store, or `None` when no URL names this kind.
+
+        Nix's `StoreConfig::getReference`: another `?trusted=` is another store.
+        `pynixd.store_url` compares a URL's spec with every running store by it.
+        """
+        return None
+
     def to_store(self, store_id: str) -> Store:
         raise NotImplementedError(f"{type(self).__name__} must implement to_store()")
 
@@ -542,6 +550,10 @@ class ExternalUnixStoreSpec(StoreSpecBase):
     scheduleable: bool = False
     no_schedule: bool = True
     gc_enabled: bool = False
+
+    def reference_key(self) -> object | None:
+        """`unix://<socket_path>?root=<store_path>`."""
+        return ("unix", self.socket_path, self.store_path)
 
     def to_store(self, store_id: str) -> ExternalUnixStore:
         """Build an ``ExternalUnixStore`` from this spec."""
@@ -790,6 +802,10 @@ class HTTPBinaryCacheSpec(BinaryCacheSpecBase):
     url: str
     max_concurrent: int | None = None
 
+    def reference_key(self) -> object | None:
+        """The URL with no trailing slash, and the trust."""
+        return ("http", self.url.rstrip("/"), self.trusted)
+
     def to_store(self, store_id: str) -> HTTPBinaryCacheStore:
         """Build an ``HTTPBinaryCacheStore`` from this spec."""
         from .store import HTTPBinaryCacheStore
@@ -804,6 +820,10 @@ class LocalBinaryCacheSpec(BinaryCacheSpecBase):
 
     type: Literal["local-binary-cache"] = "local-binary-cache"
     path: Path
+
+    def reference_key(self) -> object | None:
+        """The directory, and the trust."""
+        return ("file", self.path, self.trusted)
 
     def to_store(self, store_id: str) -> LocalBinaryCacheStore:
         """Build a ``LocalBinaryCacheStore`` from this spec."""

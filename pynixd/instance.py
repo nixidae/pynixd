@@ -10,7 +10,6 @@ import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qs, urlsplit
 
 import anyio
 import structlog
@@ -23,7 +22,6 @@ from pynixd_store.store_layout import DEFAULT_STORE_DIR
 
 from . import _optional, metrics, wire
 from .config import (
-    ExternalUnixStoreSpec,
     LocalSocketStoreSpec,
     PynixdSettings,
 )
@@ -35,8 +33,8 @@ from .liveness_watch import DirtyFlag, StableRootsWatch
 from .scheduler import Scheduler
 from .serde.protocol import PynixdGCAction
 from .state import upstream_in_flight
-from .store import ExternalUnixStore, LocalDBStore, LocalStore, Store, is_binary_cache, is_http_binary_cache
-from .substituters import file_cache, file_spec, http_cache, http_spec, is_own_cache
+from .store import LocalDBStore, LocalStore, Store
+from .store_url import reference_key, substituter_spec
 from .unix_server import UnixServer, start_unix_server
 
 if TYPE_CHECKING:
@@ -127,119 +125,29 @@ def _configured_substituters(local_store: Store) -> Sequence[str] | None:
     return ["https://cache.nixos.org/"] if configured is None else configured
 
 
-def _default_http_substituter_urls(configured: Sequence[str]) -> list[str]:
-    """The HTTP substituters of `configured`, each once.
-
-    A `substituters` set to nothing means no substituter, as it does to Nix.
-    Adding cache.nixos.org to a list that leaves it out costs a node without
-    a network a DNS timeout on every miss.
-    """
-    urls = [url for url in configured if url.startswith(("http://", "https://"))]
-
-    seen: set[str] = set()
-    result: list[str] = []
-    for url in urls:
-        key = url.rstrip("/")
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(url)
-    return result
-
-
-def _default_unix_substituters(configured: Sequence[str]) -> list[tuple[Path, Path]]:
-    urls: list[tuple[Path, Path]] = []
-    for url in configured:
-        split = urlsplit(url)
-        if split.scheme != "unix":
-            continue
-        socket_path = Path(split.path)
-        roots = parse_qs(split.query).get("root")
-        store_path = Path(roots[0]) if roots else Path("/")
-        urls.append((socket_path, store_path))
-
-    seen: set[tuple[Path, Path]] = set()
-    result: list[tuple[Path, Path]] = []
-    for item in urls:
-        if item in seen:
-            continue
-        seen.add(item)
-        result.append(item)
-    return result
-
-
-def _http_store_id(url: str) -> str:
-    split = urlsplit(url)
-    host = split.netloc or split.path
-    return f"http-{host.rstrip('/').replace(':', '-')}"
-
-
-def _file_store_id(path: Path) -> str:
-    return f"file-{str(path).strip('/').replace('/', '-')}"[:120]
-
-
-def _unix_store_id(socket_path: Path, store_path: Path) -> str:
-    payload = f"{socket_path}:{store_path}"
-    safe = payload.strip("/").replace("/", "-").replace(":", "-")
-    return f"unix-{safe}"[:120]
-
-
 def _add_substituter_stores(
     stores: dict[StoreId, Store], configured: Sequence[str], settings: PynixdSettings
 ) -> list[Store]:
-    """A store in `stores` for each HTTP, unix and `file://` substituter of `configured` it lacks; returns the new ones.
+    """A store in `stores` for each substituter of `configured` the registry opens and `stores` lacks; returns the new ones.
 
-    This pynixd's own HTTP cache is left out: `is_own_cache`. So is a
-    `file://` directory pynixd cannot read, which the daemon may: it stays in
-    `SubstitutionQueue.uncovered`, so the daemon answers for it, and its
+    `store_url.substituter_spec` leaves out this pynixd's own HTTP cache, and
+    a `file://` directory pynixd cannot read, which the daemon may: it stays
+    in `SubstitutionQueue.uncovered`, so the daemon answers for it, and its
     paths do not read as missing.
     """
     added: list[Store] = []
-    existing_http_urls = {store.url.rstrip("/") for store in stores.values() if is_http_binary_cache(store)}
-    for url in _default_http_substituter_urls(configured):
-        http = http_cache(url)
-        if http is None or http.url.rstrip("/") in existing_http_urls:
-            continue
-        if is_own_cache(url, settings):
-            log.info("substituter_is_own_cache", url=url)
-            continue
-        store_id = StoreId(_http_store_id(url))
-        stores[store_id] = http_spec(http, store_id).to_store(str(store_id))
-        added.append(stores[store_id])
-        existing_http_urls.add(http.url.rstrip("/"))
-
-    existing_unix = {
-        (store.socket_path, store.store_path) for store in stores.values() if isinstance(store, ExternalUnixStore)
-    }
-    for socket_path, store_path in _default_unix_substituters(configured):
-        if (socket_path, store_path) in existing_unix:
-            continue
-        store_id = StoreId(_unix_store_id(socket_path, store_path))
-        unix_spec = ExternalUnixStoreSpec(
-            store_id=store_id,
-            socket_path=socket_path,
-            store_path=store_path,
-        )
-        stores[store_id] = unix_spec.to_store(str(store_id))
-        added.append(stores[store_id])
-        existing_unix.add((socket_path, store_path))
-
-    existing_dirs = {
-        path
-        for store in stores.values()
-        if is_binary_cache(store) and isinstance(path := getattr(store, "path", None), Path)
-    }
+    keys = {store.reference_key for store in stores.values()} - {None}
     for url in configured:
-        cache = file_cache(url)
-        if cache is None or cache.path in existing_dirs:
+        key = reference_key(url)
+        if key is None or key in keys:
             continue
-        if not os.access(cache.path, os.R_OK | os.X_OK):
-            log.info("substituter_unreadable", url=url)
+        spec = substituter_spec(url, settings)
+        if spec is None:
             continue
-        store_id = StoreId(_file_store_id(cache.path))
-        stores[store_id] = file_spec(cache, store_id).to_store(str(store_id))
+        store_id = StoreId(str(spec.store_id))
+        stores[store_id] = spec.to_store(str(store_id))
         added.append(stores[store_id])
-        existing_dirs.add(cache.path)
+        keys.add(key)
     return added
 
 
