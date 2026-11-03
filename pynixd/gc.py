@@ -53,17 +53,19 @@ from .daemon_extensions import (
     QueryClosureRequest,
     QueryPathInfosRequest,
 )
-from .exceptions import BackendError, GCNotPermittedError
+from .exceptions import BackendError, GCNotPermittedError, PynixdError
 from .store import is_http_binary_cache
+from .store.local_db import LocalDBStore
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
+
+    from nix_daemon_protocol.collect_garbage import CollectGarbageResponse
 
     from .connection import ClientConn, Connection
     from .context import PynixdContext
     from .store.base import Store
     from .store.local_daemon import LocalStore
-    from .store.local_db import LocalDBStore
 
 log = structlog.get_logger(__name__)
 
@@ -568,6 +570,16 @@ class Collector:
             return [path for path in paths if path in valid]
 
         await local.probe()
+        engine = local.router if isinstance(local, LocalDBStore) and local.router.engine_collects() else None
+
+        async def delete(conn: Connection, group: list[str]) -> CollectGarbageResponse:
+            request = _request(GCAction.DELETE_SPECIFIC, {StorePath(path) for path in group})
+            with anyio.fail_after(_DELETE_TIMEOUT_S):
+                if engine is not None:
+                    return await engine.collect_garbage(request)
+                response: CollectGarbageResponse = await conn.call(request, raise_on_error=True)
+                return response
+
         pending = list(dict.fromkeys(batch))
         for lap in (1, 2):
             if not pending:
@@ -582,12 +594,9 @@ class Collector:
                         group = queue.popleft()
                         await say(f"deleting '{group[0]}'" if len(group) == 1 else f"deleting {len(group)} paths")
                         try:
-                            with anyio.fail_after(_DELETE_TIMEOUT_S):
-                                response = await conn.call(
-                                    _request(GCAction.DELETE_SPECIFIC, {StorePath(path) for path in group}),
-                                    raise_on_error=True,
-                                )
-                        except BackendError as exc:
+                            response = await delete(conn, group)
+                        except PynixdError as exc:
+                            # The daemon refuses with `BackendError`, the engine with `PathInUse`.
                             log.warning("gc_chunk_refused", paths=len(group), reason=str(exc))
                             try:
                                 remaining = await recheck(conn, group)

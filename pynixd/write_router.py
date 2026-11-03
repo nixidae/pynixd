@@ -433,6 +433,10 @@ class WriteRouter:
                 meter.on_bytes(copied.info.nar_size)
             meter.finish()
 
+    def engine_collects(self) -> bool:
+        """Whether CollectGarbage (op 20) takes the engine, which pynixd's own collector (op 101) follows."""
+        return self._root_engine("CollectGarbage") is not None
+
     def _root_engine(self, op: str) -> StoreEngine | None:
         """The engine when *op* takes the `pynixd` route. These ops read no import setting, so no reason sends it back."""
         if self.engine is None or self.route(op) is not OpRoute.pynixd:

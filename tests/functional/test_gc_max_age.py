@@ -18,16 +18,19 @@ from __future__ import annotations
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import aiosqlite
+import pytest
 
 from nix_daemon_protocol.ids import StoreId
 from pynixd import Server
 from pynixd.daemon_extensions import PynixdGCAction
 from pynixd.gc import Collector
+from pynixd.op_routes import OpRoute
 from pynixd.store import LocalDBStore, Store
 from pynixd_store.db_migrations import PATH_ACCESS_TABLE
+from pynixd_store.engine import StoreEngine
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
 if TYPE_CHECKING:
@@ -105,7 +108,7 @@ async def _backdate(store_path: Path, paths: set[str], age: int) -> None:
 
 
 @asynccontextmanager
-async def _pynixd(lab: _Lab) -> AsyncIterator[Server]:
+async def _pynixd(lab: _Lab, op_routes: dict[str, OpRoute] | None = None) -> AsyncIterator[Server]:
     """A server over the lab store, with the age rule set and no substituter.
 
     No `gc_defer` store: the point under test is that the age rule needs
@@ -120,6 +123,7 @@ async def _pynixd(lab: _Lab) -> AsyncIterator[Server]:
         gc_max_age=MAX_AGE,
         # The tests below run EXECUTE: the permit is this lab run's opt-in.
         gc_allow_execute=True,
+        op_routes=op_routes or {},
     )
     stores: dict[StoreId, Store] = {StoreId("local"): LocalDBStore(spec)}
     async with Server(stores=stores, ssh_port=None, http_port=None) as server:
@@ -212,3 +216,30 @@ async def test_execute_deletes_what_the_plan_named(tmp_path: Path) -> None:
 
     assert {str(path) for path in resp.store_paths} == {str(path) for path in planned.store_paths}
     assert await _valid(lab.store_path) == {lab.fresh, lab.rooted}
+
+
+@pytest.mark.parametrize("route", [OpRoute.pynixd, OpRoute.daemon])
+async def test_execute_deletes_on_the_route_of_collect_garbage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: OpRoute
+) -> None:
+    """Op 101 deletes as op 20 does: on the engine on `pynixd`, through the daemon on `daemon`.
+
+    Both delete the same set, so only the engine's own count tells them apart.
+    """
+    calls: list[object] = []
+    real = StoreEngine.collect_garbage
+
+    async def counted(self: StoreEngine, *args: Any, **kwargs: Any) -> Any:
+        calls.append(args)
+        return await real(self, *args, **kwargs)
+
+    monkeypatch.setattr(StoreEngine, "collect_garbage", counted)
+    lab = await _lab(tmp_path)
+    async with _pynixd(lab, op_routes={"CollectGarbage": route}) as server:
+        await _backdate(lab.store_path, {lab.stale, lab.parent, lab.child, lab.rooted}, STALE_AGE)
+        await _backdate(lab.store_path, {lab.fresh}, 0)
+        resp = await Collector(server.ctx).run(PynixdGCAction.EXECUTE)
+
+    assert {str(path) for path in resp.store_paths} == {lab.stale, lab.parent, lab.child}
+    assert await _valid(lab.store_path) == {lab.fresh, lab.rooted}
+    assert bool(calls) is (route is OpRoute.pynixd)

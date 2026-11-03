@@ -24,11 +24,13 @@ from pynixd.config import HTTPBinaryCacheSpec
 from pynixd.connection import Connection
 from pynixd.daemon_extensions import PynixdGCAction
 from pynixd.gc import Collector
+from pynixd.op_routes import OpRoute
 from pynixd.store import LocalDBStore, Store
+from pynixd.write_router import WriteRouter
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Callable
     from pathlib import Path
 
 
@@ -93,7 +95,9 @@ async def _push(lab: _Lab, paths: set[str]) -> None:
 
 
 @asynccontextmanager
-async def _pynixd(lab: _Lab, url: str | None, gc_defer: bool = True) -> AsyncIterator[Server]:
+async def _pynixd(
+    lab: _Lab, url: str | None, gc_defer: bool = True, op_routes: dict[str, OpRoute] | None = None
+) -> AsyncIterator[Server]:
     """A server over the lab store, with *url* as the only deferred substituter."""
     # `no_probe`: the capability probe adds `probe-feature-*` paths to the
     # store, and the pass would then be measured against a store that grew
@@ -104,6 +108,7 @@ async def _pynixd(lab: _Lab, url: str | None, gc_defer: bool = True) -> AsyncIte
         no_probe=True,
         # The tests below run EXECUTE: the permit is this lab run's opt-in.
         gc_allow_execute=True,
+        op_routes=op_routes or {},
     )
     stores: dict[StoreId, Store] = {StoreId("local"): LocalDBStore(spec)}
     if url is not None:
@@ -242,7 +247,27 @@ async def test_chunk_refusals_keep_roots_and_release_cross_chunk_references(
     assert response.bytes > 0
 
 
-async def test_real_daemon_deletes_205_paths_in_three_requests(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _record_deletes(monkeypatch: pytest.MonkeyPatch, record: Callable[[CollectGarbageRequest], None]) -> None:
+    """See each delete request on either route of op 20: the daemon's connection, or the engine's router."""
+    call, collect = Connection.call, WriteRouter.collect_garbage
+
+    async def on_wire(self: Connection, request: WireRequest, **kwargs: Any) -> Any:
+        if isinstance(request, CollectGarbageRequest):
+            record(request)
+        return await call(self, request, **kwargs)
+
+    async def on_engine(self: WriteRouter, request: CollectGarbageRequest, **kwargs: Any) -> Any:
+        record(request)
+        return await collect(self, request, **kwargs)
+
+    monkeypatch.setattr(Connection, "call", on_wire)
+    monkeypatch.setattr(WriteRouter, "collect_garbage", on_engine)
+
+
+@pytest.mark.parametrize("route", [OpRoute.pynixd, OpRoute.daemon])
+async def test_a_real_store_deletes_205_paths_in_three_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: OpRoute
+) -> None:
     store_path = tmp_path / "chunk-store"
     store_path.mkdir()  # noqa: ASYNC240 -- test setup
     paths = []
@@ -257,34 +282,23 @@ async def test_real_daemon_deletes_205_paths_in_three_requests(tmp_path: Path, m
     assert len(paths) == 205
     lab = _Lab(store_path, tmp_path / "cache", "", "", "", "")
     calls: list[int] = []
-    original = Connection.call
-
-    async def record(self: Connection, request: WireRequest, **kwargs: Any) -> Any:
-        if isinstance(request, CollectGarbageRequest):
-            calls.append(len(request.paths_to_delete))
-        return await original(self, request, **kwargs)
-
-    monkeypatch.setattr(Connection, "call", record)
-    async with _pynixd(lab, None) as server:
+    _record_deletes(monkeypatch, lambda request: calls.append(len(request.paths_to_delete)))
+    async with _pynixd(lab, None, op_routes={"CollectGarbage": route}) as server:
         response = await Collector(server.ctx)._delete(paths, {}, [], None)
     assert {str(path) for path in response.store_paths} == set(paths)
     assert calls == [100, 100, 5]
     assert await _valid(store_path) == set()
 
 
-async def test_execute_orders_cross_group_referrers_before_deletion(lab: _Lab, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("route", [OpRoute.pynixd, OpRoute.daemon])
+async def test_execute_orders_cross_group_referrers_before_deletion(
+    lab: _Lab, monkeypatch: pytest.MonkeyPatch, route: OpRoute
+) -> None:
     monkeypatch.setattr("pynixd.gc._DELETE_BATCH_SIZE", 1)
     monkeypatch.setattr("pynixd.gc.by_weight", lambda weights, pressure: [lab.child, lab.parent])
     calls: list[set[str]] = []
-    original = Connection.call
-
-    async def record(self: Connection, request: WireRequest, **kwargs: Any) -> Any:
-        if isinstance(request, CollectGarbageRequest):
-            calls.append({str(path) for path in request.paths_to_delete})
-        return await original(self, request, **kwargs)
-
-    monkeypatch.setattr(Connection, "call", record)
-    async with _pynixd(lab, None) as server:
+    _record_deletes(monkeypatch, lambda request: calls.append({str(path) for path in request.paths_to_delete}))
+    async with _pynixd(lab, None, op_routes={"CollectGarbage": route}) as server:
         collector = Collector(server.ctx)
         monkeypatch.setattr(collector, "plan", AsyncMock(return_value={StorePath(lab.child), StorePath(lab.parent)}))
         response = await collector.run(PynixdGCAction.EXECUTE)
