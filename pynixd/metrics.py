@@ -36,6 +36,7 @@ from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily
 
 from nix_daemon_protocol.store_dir import real_store_dir
 
+from .liveness import TEMP_ROOTS_REAPED
 from .state_models import WaitReason
 
 if TYPE_CHECKING:
@@ -561,13 +562,23 @@ GC_LIVENESS_STREAK = Gauge(
     "Consecutive liveness checks where the mirror agreed with Nix",
 )
 
+
 # Stale temporary-roots files the mirror unlinked. Nix removes these on
 # its own traces (`gc.cc:193`); the mirror does the same on every wake, so
 # a dead owner's file stops seeding within minutes instead of lingering.
-GC_TEMPROOTS_REAPED = Counter(
-    "pynixd_gc_temproots_reaped_total",
-    "Stale temporary roots files the mirror has unlinked",
-)
+class TempRootsReapedCollector:
+    """The store counts the reaps in `liveness.TEMP_ROOTS_REAPED`; this exports the count."""
+
+    def collect(self) -> Iterable[Metric]:
+        """Yield the one counter."""
+        yield CounterMetricFamily(
+            "pynixd_gc_temproots_reaped",
+            "Stale temporary roots files the mirror has unlinked",
+            value=TEMP_ROOTS_REAPED.value,
+        )
+
+
+REGISTRY.register(TempRootsReapedCollector())
 
 # --- HTTP binary cache ---
 

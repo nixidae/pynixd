@@ -45,10 +45,20 @@ from pathlib import Path
 import structlog
 
 from pynixd.db_migrations import LIVENESS_ROOT_TABLE, LIVENESS_STREAK_TABLE, LIVENESS_TABLE
-from pynixd.metrics import GC_TEMPROOTS_REAPED
 from pynixd.temp_roots import PYNIXD_TEMP_ROOTS_PREFIX
 
 log = structlog.get_logger(__name__)
+
+
+@dataclass
+class Tally:
+    """A count that only grows. The store reports it, and the daemon exports it as a metric."""
+
+    value: int = 0
+
+
+TEMP_ROOTS_REAPED = Tally()
+"""Stale temporary roots files that a walk unlinked, over the life of the process."""
 
 _STORE_BASENAME = re.compile(r"^[0-9a-z]{32}-")
 _MAPS_PATH = re.compile(r"^\s*\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(/\S+)\s*$")
@@ -271,7 +281,7 @@ def _walk_temp_roots_grouped(
                 grouped[entry.name] = seeds
         finally:
             os.close(fd)
-    GC_TEMPROOTS_REAPED.inc(reaped)
+    TEMP_ROOTS_REAPED.value += reaped
     return grouped, reaped
 
 
