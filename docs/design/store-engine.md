@@ -45,8 +45,8 @@ arguments are plain types: a store path, a `ValidPathInfo`, a byte source, a
 flag. It imports no request or response model, no handler, no connection
 pool. It owns the file system, the database, the locks, the temporary roots
 and the settings it reads. `nar_fs`, `content_address`, `signing`, `add`,
-`register`, `local_store_db`, `temp_roots` and `liveness` are its parts, and
-the collection of `gc` becomes one (step 7).
+`register`, `local_store_db`, `temp_roots`, `liveness` and the collection's
+reads (`gc`, `gc_sql`) are its parts.
 
 **The daemon backend** implements the same interface over a Nix daemon
 connection. It is `DaemonStore` with the method names above.
@@ -119,11 +119,15 @@ that nothing moved.
    `LocalDBStore` stops being a subclass of `DaemonStore`. (Done:
    `LocalDBStore` holds its daemon client and forwards to it, and
    `Store.daemon_client` names the client that builds for a store.)
-6. The package split. (Done: `pynixd-store` holds the engine and its parts.
-   `gc.py` stays in pynixd, because it streams to a client and asks the
-   other stores.)
+6. The package split. (Done: `pynixd-store` holds the engine and its parts.)
 7. The collector splits. The collection over the database and the roots
-   moves into the engine as `collect_garbage`; the client stream and the
-   other stores stay in pynixd.
+   moves into the engine; the client stream and the other stores stay in
+   pynixd. (Done: `pynixd_store/gc.py` holds the weights, the disk
+   pressure and `GarbagePlanner`, which reads the roots, the mirror and
+   the database. `pynixd_store/gc_sql.py` holds the age rule's plan. The
+   collector in `pynixd/gc.py` chooses the rule, asks the substituters,
+   streams to the client and deletes. The delete is a write, so it stays
+   on the daemon. The engine gets `collect_garbage` when the writes move
+   to it.)
 
 New operations go into the engine from step 2 on, not into `LocalDBStore`.
