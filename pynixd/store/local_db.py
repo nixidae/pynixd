@@ -214,7 +214,8 @@ class LocalDBStore(Store):
         self.layout = self._daemon.layout
         self.managed = self._daemon.managed
         self.settings = self._daemon.settings
-        # The collector and the substituter list read these with `getattr` and a default, so a missing one is silent.
+        # The substituter list reads `nix_config` with `getattr`, because it takes any store.
+        # The collector reads `gc_allow_execute` the same way, and a missing one denies.
         self.nix_config = spec.nix_config
         self.gc_max_age = spec.gc_max_age
         self.gc_target_usage = spec.gc_target_usage
