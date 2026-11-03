@@ -429,24 +429,26 @@ def walk_labeled_roots(state_dir: Path, store_dir: str, proc_dir: Path | None = 
     return labeled
 
 
-def unlink_stale_auto_roots(state_dir: Path, store_dir: str, tree: Path | None = None) -> None:
+def unlink_stale_auto_roots(state_dir: Path, store_dir: str, tree: Path | None = None) -> list[tuple[str, str]]:
     """Unlink each link under `gcroots/auto` whose target is gone, as `findRoots` does (`gc.cc:268`).
 
     A link into the store stays whatever it names. Any other target is made
     absolute against the link, and the link goes when nothing is there:
     `pathExists` is an `lstat`, so a dangling intermediate still counts.
+    Returns each `(link, target)` it removed, for Nix's `removing stale link` line.
     """
     tree = tree if tree is not None else state_dir / "gcroots" / "auto"
+    removed: list[tuple[str, str]] = []
     try:
         entries = list(os.scandir(tree))
     except OSError as exc:
         if _suppressed(exc):
-            return
+            return removed
         raise
     for entry in entries:
         link = Path(entry.path)
         if entry.is_dir(follow_symlinks=False):
-            unlink_stale_auto_roots(state_dir, store_dir, link)
+            removed += unlink_stale_auto_roots(state_dir, store_dir, link)
             continue
         if not entry.is_symlink():
             continue
@@ -462,6 +464,8 @@ def unlink_stale_auto_roots(state_dir: Path, store_dir: str, tree: Path | None =
         except OSError as exc:
             if not _suppressed(exc):
                 raise
+        removed.append((str(link), resolved))
+    return removed
 
 
 def walk_roots(
