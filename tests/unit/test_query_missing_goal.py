@@ -31,6 +31,8 @@ if TYPE_CHECKING:
 
 
 class FakeLocalStore:
+    features: frozenset[str] = frozenset()
+
     def __init__(
         self,
         valid_paths: set[str],
@@ -64,6 +66,8 @@ class FakeLocalStore:
 
 class FakeSubstitutionQueue:
     uncovered: tuple[str, ...] = ()
+    store_id = "fake-backend"
+    priority = 1.0
 
     def __init__(self, substitutable: dict[str, SubstitutionAvailability]) -> None:
         self.substitutable = substitutable
@@ -80,9 +84,18 @@ class FakeSubstitutionQueue:
         self.queries.append(str(path))
         return self.substitutable.get(str(path), SubstitutionAvailability.unavailable())
 
+    async def execute(self, request: Any, **kwargs: Any) -> Any:
+        """As one of pynixd's backends, this fake holds no realisation."""
+        del kwargs
+        if isinstance(request, QueryRealisationRequest):
+            return QueryRealisationResponse(realisations=[])
+        raise NotImplementedError(type(request).__name__)
+
 
 class BlockingSubstitutionQueue:
     uncovered: tuple[str, ...] = ()
+    store_id = "fake-backend"
+    priority = 1.0
 
     def __init__(self, blocked_path: str, releasing_path: str) -> None:
         self.blocked_path = blocked_path
@@ -96,6 +109,13 @@ class BlockingSubstitutionQueue:
         if options is not None and not options.use_substitutes:
             return ()
         return None if client_names_a_substituter(client) or self.uncovered else (self,)
+
+    async def execute(self, request: Any, **kwargs: Any) -> Any:
+        """As one of pynixd's backends, this fake holds no realisation."""
+        del kwargs
+        if isinstance(request, QueryRealisationRequest):
+            return QueryRealisationResponse(realisations=[])
+        raise NotImplementedError(type(request).__name__)
 
     async def can_substitute(self, path: StorePath, stores: object = None) -> SubstitutionAvailability:
         path_str = str(path)

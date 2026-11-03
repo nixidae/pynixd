@@ -25,9 +25,12 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from nix_daemon_protocol.exceptions import DaemonProtocolError
 from pynixd_store.drv_hash import output_hashes
 
+from ..exceptions import BackendError, CacheFault
 from ..serde import DrvOutput, KeyedDrvOutput, QueryRealisationRequest, Realisation, StorePath
+from ..store import is_binary_cache
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -75,33 +78,104 @@ async def realisations_of(
         if digest is None:
             return None
         key = f"sha256:{digest}!{output_name}"
-        # **Both shapes go in, and the codec writes the one the peers agreed
-        # on.** `realisation-with-path-not-hash` decides whether the wire
-        # carries `"<drvHash>!<output>"` as one string or a derivation path
-        # and an output name as two. This code does not know which connection
-        # it will take, and it does not have to: `needs_features` and
-        # `unless_features` on the fields of the request pick one and drop the
-        # other. Issue #14.
-        response = await store.execute(
-            QueryRealisationRequest(
-                drv_output=DrvOutput(key),
-                keyed_drv_output=KeyedDrvOutput(drv_path=StorePath(str(drv_path)), output_name=output_name),
-            ),
-        )
-        realisation = _the_realisation(response, DrvOutput(key))
-        if realisation is None or realisation.out_path is None:
-            # One line that says which shape answered and what it held, so a
-            # run states whether the query missed or the codec did. Issue #14.
-            log.debug(
-                "realisation_missing",
-                drv_output=key,
-                drv_path=str(drv_path),
-                present=response.present,
-                old_shape_count=len(response.realisations),
-            )
+        realisation = await _query_one(store, DrvOutput(key), drv_path)
+        if realisation is None:
             return None
         answer[key] = realisation
     return answer
+
+
+async def substitutable_realisations(
+    parsed: Derivation,
+    wanted: Iterable[str],
+    substituters: Iterable[Store],
+    local: Store,
+    drv_path: StorePath,
+    *,
+    by_path: bool,
+) -> dict[str, Realisation] | None:
+    """The realisation of each wanted output, from the first of *substituters* that holds it.
+
+    `DrvOutputSubstitutionGoal::init` (`drv-output-substitution-goal.cc:30`)
+    and `queryMissing` (`misc.cc:250`) ask the substituters in priority order
+    and take the first answer; a tie keeps the listed order. A substituter
+    that fails is skipped, as Nix prints the error and goes on. The ids are
+    those `realisations_of` gives, and `None` means an output has none.
+    *by_path* is the layout of the local store's Nix (`BinaryCacheStore.query_realisation`).
+    """
+    names = sorted(wanted)
+    if not names:
+        return None
+    hashes = await output_hashes(parsed, local.read_derivation)
+    if hashes is None:
+        return None
+    ordered = sorted(substituters, key=lambda store: store.priority)
+    answer: dict[str, Realisation] = {}
+    for output_name in names:
+        digest = hashes.get(output_name)
+        if digest is None:
+            return None
+        key = DrvOutput(f"sha256:{digest}!{output_name}")
+        realisation = await _first_holding(ordered, key, drv_path, by_path=by_path)
+        if realisation is None:
+            log.debug(
+                "substitutable_realisation_missing",
+                drv_output=str(key),
+                drv_path=str(drv_path),
+                by_path=by_path,
+                substituters=[str(store.store_id) for store in ordered],
+            )
+            return None
+        answer[str(key)] = realisation
+    return answer
+
+
+async def _first_holding(
+    substituters: Iterable[Store], key: DrvOutput, drv_path: StorePath, *, by_path: bool
+) -> Realisation | None:
+    for store in substituters:
+        try:
+            if is_binary_cache(store):
+                found = await store.query_realisation(key, drv_path, by_path=by_path)
+            else:
+                found = await _query_one(store, key, drv_path)
+        except (CacheFault, BackendError, DaemonProtocolError, OSError, EOFError):
+            log.warning(
+                "substituter_realisation_failed", store_id=str(store.store_id), drv_output=str(key), exc_info=True
+            )
+            continue
+        if found is not None:
+            return found
+    return None
+
+
+async def _query_one(store: Store, key: DrvOutput, drv_path: StorePath) -> Realisation | None:
+    # **Both shapes go in, and the codec writes the one the peers agreed
+    # on.** `realisation-with-path-not-hash` decides whether the wire
+    # carries `"<drvHash>!<output>"` as one string or a derivation path
+    # and an output name as two. This code does not know which connection
+    # it will take, and it does not have to: `needs_features` and
+    # `unless_features` on the fields of the request pick one and drop the
+    # other. Issue #14.
+    response = await store.execute(
+        QueryRealisationRequest(
+            drv_output=key,
+            keyed_drv_output=KeyedDrvOutput(drv_path=StorePath(str(drv_path)), output_name=key.output_name),
+        ),
+    )
+    realisation = _the_realisation(response, key)
+    if realisation is None or realisation.out_path is None:
+        # One line that says which shape answered and what it held, so a
+        # run states whether the query missed or the codec did. Issue #14.
+        log.debug(
+            "realisation_missing",
+            drv_output=str(key),
+            drv_path=str(drv_path),
+            present=response.present,
+            old_shape_count=len(response.realisations),
+        )
+        return None
+    return realisation
 
 
 def _the_realisation(response: QueryRealisationResponse, drv_output: DrvOutput) -> Realisation | None:

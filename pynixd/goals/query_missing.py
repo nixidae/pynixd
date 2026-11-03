@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import anyio
 import structlog
 
+from nix_daemon_protocol.constants import FEATURE_REALISATION_WITH_PATH
 from nix_daemon_protocol.exceptions import DaemonProtocolError
 from pynixd_store.store_path import StorePath
 
@@ -24,7 +25,7 @@ from ..serde import (
 )
 from ..substitution_queue import SubstitutionAvailability
 from .goal import ExecutionGoal
-from .realisations import realisations_of
+from .realisations import realisations_of, substitutable_realisations
 
 if TYPE_CHECKING:
     from anyio.abc import TaskGroup
@@ -70,16 +71,15 @@ def client_names_a_substituter(client: ClientConn | None) -> bool:
     return any(name in options.overrides for name in _SUBSTITUTER_OPTIONS)
 
 
-def daemon_reads_realisations(client: ClientConn | None, queue: SubstitutionQueue | None) -> bool:
-    """True when the daemon behind pynixd, and not pynixd, answers whether a substituter holds a realisation.
-
-    pynixd's backends read no realisation: Nix's `DrvOutputSubstitutionGoal`
-    has no counterpart here. So a client that names a substituter, or a
-    daemon with one no backend stands for, asks the daemon. `ca:build-cache`
-    and `ca:issue-13247` of Nix's functional suite fail without it.
-    nixidae/nixidae#1169.
-    """
-    return client_names_a_substituter(client) or (queue is not None and bool(queue.uncovered))
+def substitutes_allowed(parsed: Derivation, client: ClientConn | None) -> bool:
+    """`useSubstitutes && substitutesAllowed()` (`misc.cc:240`, `derivation-options.cc:373`)."""
+    options = client.options if client is not None else None
+    if options is None:
+        return parsed.allow_substitutes
+    if not options.use_substitutes:
+        return False
+    always = options.overrides.get("always-allow-substitutes") == "true"
+    return always or parsed.allow_substitutes
 
 
 async def daemon_substitutes(client: ClientConn | None, queue: SubstitutionQueue | None) -> bool:
@@ -299,11 +299,13 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
             )
             return
 
-        substitutes_allowed = self._substitutes_allowed(parsed)
+        allowed = substitutes_allowed(parsed, self.client)
         unnamed = [name for name, path in output_paths.items() if not str(path)]
         realised = await self._realised_paths(parsed, unnamed, drv_path) if unnamed else {}
+        if realised is None and allowed:
+            realised = await self._substitutable_paths(parsed, unnamed, drv_path)
         if realised is None:
-            if substitutes_allowed and await self._substituter_holds_a_realisation(derived_path, walk):
+            if allowed and await self._substituter_holds_a_realisation(derived_path, walk):
                 return
             self._must_build(drv_path, parsed, walk)
             return
@@ -319,7 +321,7 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         # wanted output must be substitutable, or the derivation builds and
         # no output of it counts as fetched. A substitutable output then goes
         # on as an opaque path, which counts it and walks its closure.
-        if not substitutes_allowed:
+        if not allowed:
             self._must_build(drv_path, parsed, walk)
             return
         for path in invalid:
@@ -329,15 +331,33 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         for path in invalid:
             self._enqueue(walk, str(path))
 
-    def _substitutes_allowed(self, parsed: Derivation) -> bool:
-        """`useSubstitutes && substitutesAllowed()` (`misc.cc:240`, `derivation-options.cc:373`)."""
-        options = self.client.options if self.client is not None else None
-        if options is None:
-            return parsed.allow_substitutes
-        if not options.use_substitutes:
-            return False
-        always = options.overrides.get("always-allow-substitutes") == "true"
-        return always or parsed.allow_substitutes
+    async def _substitutable_paths(
+        self, parsed: Derivation, unnamed: list[str], drv_path: StorePath
+    ) -> dict[str, StorePath] | None:
+        """The path of each unnamed output, from the realisation the client's substituters hold.
+
+        `misc.cc:240-265`: each output takes the first substituter that answers,
+        and one output with no answer builds the derivation. The caller then
+        reads each path as it reads a path the derivation names. `None` also
+        for a client whose substituters only the daemon reaches.
+        """
+        queue = self.engine.substitution_queue
+        if queue is None:
+            return None
+        stores = await queue.substituters_for(self.client)
+        if stores is None:
+            return None
+        local = self.engine.ctx.local_store
+        found = await substitutable_realisations(
+            parsed, unnamed, stores, local, drv_path, by_path=FEATURE_REALISATION_WITH_PATH in local.features
+        )
+        if found is None:
+            return None
+        return {
+            realisation.id.output_name: StorePath(str(realisation.out_path))
+            for realisation in found.values()
+            if realisation.out_path is not None
+        }
 
     async def _substituter_holds_a_realisation(self, derived_path: DerivedPath, walk: _Walk) -> bool:
         """Ask the daemon behind pynixd whether a substituter can realise this.
@@ -350,10 +370,10 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         substitution road; when one does not, the derivation is
         `mustBuildDrv`.
 
-        pynixd has no substituter of its own, so it cannot run that loop. The
-        daemon behind it has them all, and `QueryMissing` upstream with the
-        option set of the client makes that daemon run the loop over the
-        substituters that the client named.
+        `_substitutable_paths` runs that loop over pynixd's backends. This
+        runs it on the daemon behind pynixd, for a client with a substituter
+        no backend stands for: `QueryMissing` upstream with the option set of
+        the client makes that daemon run the loop.
 
         **The plan and the work have to give the same answer.**
         `_try_realise_upstream` of `goals/ensure.py` now substitutes such an
@@ -365,10 +385,10 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
 
         Answers True when the upstream plan does not name this derivation as
         one to build, and it then merges what that plan says. Answers False
-        for a client that named no substituter, for an upstream error, and
+        for a client whose substituters pynixd's backends cover, for an upstream error, and
         for an upstream plan that agrees the derivation must be built.
         """
-        if not daemon_reads_realisations(self.client, self.engine.substitution_queue):
+        if not await daemon_substitutes(self.client, self.engine.substitution_queue):
             return False
         wire_path = SerdeDerivedPath(value=str(derived_path))
         try:

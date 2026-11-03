@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 import anyio
 import structlog
 
+from nix_daemon_protocol.constants import FEATURE_REALISATION_WITH_PATH
 from nix_daemon_protocol.exceptions import DaemonProtocolError
 from pynixd_store.drv_hash import output_hashes
 from pynixd_store.drv_parser import ChildMapNode, to_basic_derivation
@@ -33,8 +34,8 @@ from ..serde import (
 )
 from .dependencies import DependencyGroupGoal
 from .goal import Goal, GoalHolder
-from .query_missing import daemon_reads_realisations, daemon_substitutes
-from .realisations import realisations_of
+from .query_missing import daemon_substitutes, substitutes_allowed
+from .realisations import realisations_of, substitutable_realisations
 from .resolution import _nix_drv_name, resolve_derivation, resolve_dynamic_derivation, unparse_basic_derivation
 from .results import GoalResult, goal_failure, goal_success, result_succeeded
 
@@ -511,6 +512,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         substituted = await self._try_substitute_known_outputs(selected_paths)
         if substituted is not None:
             log.debug("ensure_derivation_substituted", drv_path=str(drv_path), outputs=sorted(selected_outputs))
+            await self._record_under_the_resolved_one(parsed, basic, drv_path, selected_paths)
             substituted = await self._say_what_it_produced(substituted, parsed, selected_outputs)
             return substituted.with_dynamic_outputs(self.derived_path.base_store_path())
 
@@ -742,8 +744,10 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             return local
 
         client = next((c for c in self._watchers if c.options is not None), None)
-        if not daemon_reads_realisations(client, self.engine.substitution_queue):
-            return None
+        if not await daemon_substitutes(client, self.engine.substitution_queue):
+            if not await self._substitute_realisations(resolved, wanted, build_drv_path, client):
+                return None
+            return await self._valid_realisations(resolved, wanted, build_drv_path)
 
         # **Build the derived path, and do not spell it.** `^` is the syntax a
         # person types, and `!` is what the wire carries. A hand-made string
@@ -821,16 +825,14 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         This is the road that was missing. `BuildPaths` for the derived path
         goes to the daemon behind pynixd, with the option set of the client,
         so that daemon applies `substituters`, `max-jobs` and
-        `require-sigs` and runs its own `DrvOutputSubstitutionGoal`. That
-        goal is the one thing that reads a realisation out of a substituter,
-        and pynixd has no such client of its own. `_try_substitute_upstream`
-        takes the same decision for a path that is already known, and states
-        the same reason. Issues nixidae/nixidae#226, nixidae/nixidae#234 and nixidae/nixidae#237.
+        `require-sigs` and runs its own `DrvOutputSubstitutionGoal`.
+        `_try_substitute_upstream` takes the same decision for a path that is
+        already known. Issues nixidae/nixidae#226, nixidae/nixidae#234 and nixidae/nixidae#237.
 
-        It runs only for a client that named a substituter, and only for a
-        derivation whose wanted outputs name no path. A derivation that names
-        its paths has the older road, and a client that named no substituter
-        gains nothing from asking.
+        It runs only for a derivation whose wanted outputs name no path. When
+        pynixd's backends cover every substituter of the client
+        (`daemon_substitutes`), `_substitute_realisations` does the same work
+        on them, and the daemon is not asked. nixidae/nixidae#1169.
 
         **A failure here is not a failure of the goal.** The daemon answers an
         error when no substituter holds the realisation, and that is the
@@ -843,8 +845,10 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         if any(str(paths_of_drv.get(name, "")) for name in wanted):
             return None
         client = next((c for c in self._watchers if c.options is not None), None)
-        if not daemon_reads_realisations(client, self.engine.substitution_queue):
-            return None
+        if not await daemon_substitutes(client, self.engine.substitution_queue):
+            if not await self._substitute_realisations(parsed, wanted, drv_path, client):
+                return None
+            return await self._already_realised(parsed, wanted)
 
         request = BuildPathsRequest(
             derived_paths=[SerdeDerivedPath(value=str(self.derived_path))],
@@ -884,6 +888,78 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         answer = await self._already_realised(parsed, wanted)
         log.debug("upstream_realise_answered", drv_path=str(drv_path), realised=answer is not None)
         return answer
+
+    async def _record_under_the_resolved_one(
+        self,
+        parsed: Derivation,
+        basic: BasicDerivation,
+        drv_path: StorePath,
+        outputs: Mapping[str, StorePath | None],
+    ) -> None:
+        """Record each substituted output under the resolved derivation, as its goal's `checkPathValidity` does.
+
+        Nix builds a derivation that resolves as its resolved one, and that
+        goal registers `{resolved, output}` once the path is valid
+        (`derivation-goal.cc:402`). The client of Nix 2.35 reads the output
+        there: `deepQueryPartialDerivationOutput` resolves the derivation and
+        asks for that id (`outputs-query.cc:171`), and a missing one aborts
+        `nix-build` (`nix-build.cc:729`). `ca:build-cache` measures it with
+        `dependentNonCA`.
+        """
+        if "ca-derivations" not in self.engine.ctx.trust.experimental_features:
+            return
+        if not parsed.should_resolve(ca_derivations=parsed.is_fixed_output):
+            return
+        resolved_path = await self._path_of_what_it_builds(basic, drv_path)
+        if str(resolved_path) == str(drv_path):
+            return
+        local = self.engine.ctx.local_store
+        resolved = await local.read_derivation(str(resolved_path))
+        hashes = None if resolved is None else await output_hashes(resolved, local.read_derivation)
+        if hashes is None:
+            return
+        await self._register_realisations(
+            (
+                Realisation(id=DrvOutput(f"sha256:{hashes[name]}!{name}"), out_path=StorePath(path))
+                for name, path in outputs.items()
+                if name in hashes and path is not None and path.base()
+            ),
+            drv_path=resolved_path,
+        )
+
+    async def _substitute_realisations(
+        self, parsed: Derivation, wanted: set[str], drv_path: StorePath, client: ClientConn | None
+    ) -> bool:
+        """Fetch each wanted output by the realisation a substituter of the goal holds, and record it.
+
+        `DerivationGoal::haveDerivation` (`derivation-goal.cc:105`): a
+        `DrvOutputSubstitutionGoal` reads the realisation, a path substitution
+        fetches the path it names, and the store records the realisation
+        with no signature check (the one-argument `registerDrvOutput`); the
+        path substitution checks the path. False when an output has no
+        realisation or its path does not arrive, and the caller builds.
+        """
+        queue = self.engine.substitution_queue
+        if queue is None or not substitutes_allowed(parsed, client):
+            return False
+        local = self.engine.ctx.local_store
+        found = await substitutable_realisations(
+            parsed,
+            wanted,
+            queue.stores_with_ids(self.substituter_ids),
+            local,
+            drv_path,
+            by_path=FEATURE_REALISATION_WITH_PATH in local.features,
+        )
+        if found is None:
+            return False
+        for realisation in found.values():
+            fetched = await self._try_substitute_path(StorePath(str(realisation.out_path)))
+            if fetched is None or not result_succeeded(fetched.result):
+                log.debug("realisation_path_not_substituted", drv_output=str(realisation.id))
+                return False
+        await self._register_realisations(found.values(), drv_path=drv_path)
+        return True
 
     async def _under_the_original_id(self, result: GoalResult, parsed: Derivation) -> GoalResult:
         """Give each realisation the id that the original derivation makes, and register it.
@@ -978,8 +1054,11 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             result.result = result.result.model_copy(update={"built_outputs": answer})
         return result
 
-    async def _register_realisations(self, realisations: Iterable[Realisation]) -> None:
-        """Put each realisation in the local store, under the id it now carries."""
+    async def _register_realisations(
+        self, realisations: Iterable[Realisation], drv_path: StorePath | None = None
+    ) -> None:
+        """Put each realisation in the local store, under the id it now carries, keyed by *drv_path* or the goal's."""
+        keyed_drv = drv_path or self.derived_path.base_store_path()
         for realisation in realisations:
             if realisation.out_path is None:
                 continue
@@ -1005,7 +1084,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
                     RegisterDrvOutputRequest(
                         realisation=realisation,
                         keyed_drv_output=KeyedDrvOutput(
-                            drv_path=StorePath(path=str(self.derived_path.base_store_path())),
+                            drv_path=StorePath(path=str(keyed_drv)),
                             output_name=realisation.id.output_name,
                         ),
                         unkeyed_realisation=UnkeyedRealisation(
