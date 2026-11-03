@@ -123,6 +123,9 @@ REGISTER_VALID_PATH = "insert into ValidPaths (path, hash, registrationTime, der
 UPDATE_PATH_INFO = "update ValidPaths set narSize = ?, hash = ?, ultimate = ?, sigs = ?, ca = ? where path = ?;"
 # The fields `updatePathInfo` writes back, read for `addSignatures`: it changes only `sigs` and keeps the rest.
 QUERY_PATH_INFO_FOR_UPDATE = "select narSize, hash, ultimate, sigs, ca from ValidPaths where path = ?;"
+# `LocalStore::invalidatePath` (`local-store.cc:1016`). The `Refs` foreign keys
+# cascade the referrer's entries away, so the connection must enforce them.
+INVALIDATE_PATH = "delete from ValidPaths where path = ?;"
 ADD_REFERENCE = "insert or replace into Refs (referrer, reference) values (?, ?);"
 ADD_DERIVATION_OUTPUT = "insert or replace into DerivationOutputs (drv, id, path) values (?, ?, ?);"
 QUERY_VALID_PATH_ID = "select id from ValidPaths where path = ?;"

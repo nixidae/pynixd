@@ -13,6 +13,7 @@ them on a worker thread. `nar.py` holds the in-memory tree, for test NARs.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import stat
 import struct
@@ -93,6 +94,19 @@ def dump_path(path: Path) -> Generator[bytes]:
 
     yield from node(os.fsencode(path), 0)
     yield from flush()
+
+
+def nar_sha256(path: Path) -> hashlib._Hash:
+    """The SHA-256 of *path*'s NAR, as `hashPath(..., NixArchive, SHA256)` of Nix computes it.
+
+    `optimiseStore` reads it in Nix32 (`.links` entry names) and `verifyStore`
+    in Base16 (the `narHash` column), so the caller takes the digest in the
+    form it needs.
+    """
+    digest = hashlib.sha256()
+    for piece in dump_path(path):
+        digest.update(piece)
+    return digest
 
 
 class _Source:

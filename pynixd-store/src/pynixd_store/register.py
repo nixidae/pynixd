@@ -32,6 +32,7 @@ from .hintfmt import magenta
 from .queries import (
     ADD_DERIVATION_OUTPUT,
     ADD_REFERENCE,
+    INVALIDATE_PATH,
     QUERY_PATH_INFO_FOR_UPDATE,
     QUERY_REALISATION_BY_HASH,
     QUERY_REALISATION_BY_PATH,
@@ -303,6 +304,49 @@ async def add_signatures(conn: aiosqlite.Connection, path: str, sigs: Iterable[S
             await conn.rollback()
         raise
     return True
+
+
+async def invalidate_path(conn: aiosqlite.Connection, path: str) -> None:
+    """`LocalStore::invalidatePath` (`local-store.cc:1016`): remove *path* from the valid-paths table.
+
+    `verifyStore` calls it for a path the store directory no longer holds and
+    whose referrers it can invalidate too. The `Refs` foreign keys cascade the
+    path's referrer entries away, so the connection enforces them, as Nix's
+    `openDB` does and a pooled connection does not.
+    """
+    await conn.execute("PRAGMA foreign_keys = 1")
+    await conn.execute("BEGIN IMMEDIATE")
+    try:
+        await conn.execute(INVALIDATE_PATH, (path,))
+        await conn.commit()
+    except BaseException:
+        with anyio.CancelScope(shield=True):
+            await conn.rollback()
+        raise
+
+
+async def update_path_hashes(conn: aiosqlite.Connection, path: str, *, nar_hash: str, nar_size: int) -> None:
+    """`verifyStore`'s fix-up of a missing hash or size (`local-store.cc:1444`): write them, keep the rest.
+
+    Nix calls `updatePathInfo` with the whole record after it fills a null
+    `narHash` or a zero `narSize`. This reads the stored row for update, as
+    `addSignatures` does, so the signatures, the content address and the
+    ultimate flag stay the bytes Nix wrote.
+    """
+    await conn.execute("BEGIN IMMEDIATE")
+    try:
+        async with conn.execute(QUERY_PATH_INFO_FOR_UPDATE, (path,)) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            await conn.rollback()
+            return
+        _nar_size, _hash, ultimate, sigs, ca = row
+        await conn.execute(UPDATE_PATH_INFO, (nar_size, nar_hash, ultimate, sigs, ca, path))
+        await conn.commit()
+    except BaseException:
+        with anyio.CancelScope(shield=True):
+            await conn.rollback()
+        raise
 
 
 async def register_drv_output(
