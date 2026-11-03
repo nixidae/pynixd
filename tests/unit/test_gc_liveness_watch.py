@@ -49,6 +49,7 @@ def test_from_layout_mirrors_the_served_store(tmp_path: Path) -> None:
         store_dir=Path("/nix/store"),
         real_store_dir=Path("/nix/store"),
         state_dir=tmp_path / "state",
+        log_dir=tmp_path / "log",
         relocated=False,
     )
 

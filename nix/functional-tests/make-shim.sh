@@ -71,8 +71,8 @@ if [[ "$is_daemon" != true ]] || [[ "$wants_version" == true ]]; then
     exec "$REAL_NIX" "$@"
 fi
 
-if [[ -z "${NIX_STORE_DIR:-}" || -z "${NIX_STATE_DIR:-}" || -z "${NIX_DAEMON_SOCKET_PATH:-}" ]]; then
-    echo "shim: NIX_STORE_DIR, NIX_STATE_DIR and NIX_DAEMON_SOCKET_PATH must be set" >&2
+if [[ -z "${NIX_STORE_DIR:-}" || -z "${NIX_STATE_DIR:-}" || -z "${NIX_LOG_DIR:-}" || -z "${NIX_DAEMON_SOCKET_PATH:-}" ]]; then
+    echo "shim: NIX_STORE_DIR, NIX_STATE_DIR, NIX_LOG_DIR and NIX_DAEMON_SOCKET_PATH must be set" >&2
     exit 2
 fi
 
@@ -88,6 +88,11 @@ fi
 # NIX_STORE_DIR for the same reason.
 store_dir=$(readlink -f "$NIX_STORE_DIR")
 state_dir=$(readlink -f "$NIX_STATE_DIR")
+
+# `NIX_LOG_DIR` is independent of the state in Nix, so pynixd must hear it to
+# write a build trace where the suite reads it. `vars.sh` sets it to
+# `$TEST_ROOT/var/log/nix` and `init.sh` makes `$NIX_LOG_DIR/drvs`.
+log_dir=$(readlink -f "$NIX_LOG_DIR")
 
 # The work of pynixd goes beside the test, and not in the store of the test.
 # `TEST_ROOT` is what `vars.sh` builds both directories from.
@@ -119,6 +124,7 @@ cat > "$config" <<JSON
       "type": "local-socket",
       "store_dir": "$store_dir",
       "state_dir": "$state_dir",
+      "log_dir": "$log_dir",
       "socket_path": "$upstream",
       "nix_bin": "$REAL_NIX",
       "use_db": true,

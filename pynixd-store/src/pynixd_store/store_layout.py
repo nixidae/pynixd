@@ -30,6 +30,8 @@ from pathlib import Path
 
 DEFAULT_STORE_DIR = Path("/nix/store")
 DEFAULT_STATE_DIR = Path("/nix/var/nix")
+DEFAULT_LOG_DIR = Path("/nix/var/log/nix")
+"""Nix's compiled `logDir` fallback (`store-api.cc:1271`), for a relocated store with no `NIX_LOG_DIR`."""
 
 
 @dataclass(frozen=True)
@@ -44,6 +46,14 @@ class StoreLayout:
 
     state_dir: Path
     """The directory that holds `db/`, `temproots/` and `gc.lock`."""
+
+    log_dir: Path
+    """Nix's `logDir`: where `addBuildLog` writes `drvs/`. A sibling of the state, not under it.
+
+    `local-fs-store.hh:54` sets it to `<root>/nix/var/log/nix` for a chroot
+    store. A relocated store reads `NIX_LOG_DIR`, independent of the state, so
+    the spec carries it (`store-api.cc:1271`).
+    """
 
     relocated: bool
     """True when `NIX_STORE_DIR` moved the store, and not `--store <root>`.
@@ -67,6 +77,7 @@ class StoreLayout:
                 store_dir=DEFAULT_STORE_DIR,
                 real_store_dir=DEFAULT_STORE_DIR,
                 state_dir=DEFAULT_STATE_DIR,
+                log_dir=DEFAULT_LOG_DIR,
                 relocated=False,
             )
         root = Path(root)
@@ -74,24 +85,28 @@ class StoreLayout:
             store_dir=DEFAULT_STORE_DIR,
             real_store_dir=root / "nix" / "store",
             state_dir=root / "nix" / "var" / "nix",
+            log_dir=root / "nix" / "var" / "log" / "nix",
             relocated=False,
         )
 
     @classmethod
-    def relocated_store(cls, store_dir: Path, state_dir: Path) -> StoreLayout:
-        """The layout of `NIX_STORE_DIR=<dir> NIX_STATE_DIR=<state>`.
+    def relocated_store(cls, store_dir: Path, state_dir: Path, log_dir: Path | None = None) -> StoreLayout:
+        """The layout of `NIX_STORE_DIR=<dir> NIX_STATE_DIR=<state> NIX_LOG_DIR=<log>`.
 
-        The two directories are independent in Nix, and neither one gives the
-        other. So this takes both, and `LocalSocketStoreSpec` refuses a
-        relocated store that names one of the two alone. A default of
-        `/nix/var/nix` for the state would put the temporary roots and the
-        database of a test store in the store of the machine.
+        The three directories are independent in Nix, and none gives another.
+        So this takes all of them, and `LocalSocketStoreSpec` refuses a
+        relocated store that names the store alone. A default of `/nix/var/nix`
+        for the state would put the temporary roots and the database of a test
+        store in the store of the machine. *log_dir* left out is Nix's compiled
+        `logDir` fallback, which the config never relies on: it carries the
+        store's `NIX_LOG_DIR`.
         """
         store_dir = Path(store_dir)
         return cls(
             store_dir=store_dir,
             real_store_dir=store_dir,
             state_dir=Path(state_dir),
+            log_dir=Path(log_dir) if log_dir is not None else DEFAULT_LOG_DIR,
             relocated=True,
         )
 
@@ -139,6 +154,9 @@ class StoreLayout:
         return {
             "NIX_STORE_DIR": str(self.store_dir),
             "NIX_STATE_DIR": str(self.state_dir),
+            # `logDir` is independent of the state, so the daemon that writes a
+            # build trace beside pynixd must hear it too, or the two disagree.
+            "NIX_LOG_DIR": str(self.log_dir),
         }
 
     def chroot_root(self) -> Path:

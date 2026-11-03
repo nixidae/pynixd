@@ -427,6 +427,14 @@ class LocalSocketStoreSpec(StoreSpecBase):
     independent, so neither one gives the other.
     """
 
+    log_dir: Path | None = None
+    """Nix's `logDir`, where `addBuildLog` writes `drvs/`, for a relocated store.
+
+    Required with `store_dir`, and refused without it. Nix reads it from
+    `NIX_LOG_DIR` independent of the state (`store-api.cc:1271`), so neither
+    directory gives it. A chroot store takes it from the root instead.
+    """
+
     socket_path: Path = Path("pynixd-nix")
     """Where the managed daemon listens.
 
@@ -498,12 +506,16 @@ class LocalSocketStoreSpec(StoreSpecBase):
             raise ValueError("state_dir needs store_dir: it describes a relocated store")
         if self.store_dir is not None and self.state_dir is None:
             raise ValueError("store_dir needs state_dir: Nix keeps the two independent")
+        if self.store_dir is None and self.log_dir is not None:
+            raise ValueError("log_dir needs store_dir: it describes a relocated store")
+        if self.store_dir is not None and self.log_dir is None:
+            raise ValueError("store_dir needs log_dir: Nix reads NIX_LOG_DIR independent of the state")
         return self
 
     def layout(self) -> StoreLayout:
         """The three directories of the store that this spec names."""
         if self.store_dir is not None and self.state_dir is not None:
-            return StoreLayout.relocated_store(self.store_dir, self.state_dir)
+            return StoreLayout.relocated_store(self.store_dir, self.state_dir, self.log_dir)
         return StoreLayout.chroot(self.store_path)
 
     def to_store(self, store_id: str) -> LocalStore | LocalDBStore:

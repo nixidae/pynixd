@@ -258,6 +258,7 @@ def _config(work: Path, root: Path) -> Path:
                         "type": "local-socket",
                         "store_dir": str(root / "store"),
                         "state_dir": str(root / "var/nix"),
+                        "log_dir": str(root / "var/log/nix"),
                         "socket_path": str(work / "up.sock"),
                         "nix_bin": NIX,
                         "use_db": True,
