@@ -726,26 +726,27 @@ class LocalDBStore(Store):
         `want-mass-query` holds, which Nix leaves out and pynixd includes.
         To reverse it, measure that against the time of the sequential walk.
 
-        A client that names its own substituters gets the daemon's answer:
-        those are not pynixd's backends. So does every client of a daemon
-        configured with a substituter no backend stands for. Without
-        `substitute`, nothing is substitutable (`store-api.cc:506`).
+        A client that names its own substituters is asked of backends for
+        those (`SubstitutionQueue.substituters_for`). A substituter no backend
+        stands for, the client's or the daemon's, sends the question to the
+        daemon. Without `substitute`, nothing is substitutable
+        (`store-api.cc:506`).
         """
         from nix_daemon_protocol.query_substitutable_paths import QuerySubstitutablePathsResponse
 
-        from ..goals.query_missing import daemon_substitutes
-
         queue = self.substitution_queue
-        if queue is None or daemon_substitutes(client, queue):
+        if queue is None:
             return None
-        options = client.options if client is not None else None
-        if options is not None and not options.use_substitutes:
+        stores = await queue.substituters_for(client)
+        if stores is None:
+            return None
+        if not stores:
             return QuerySubstitutablePathsResponse.fast(paths=set())
 
         found: set[StorePath] = set()
 
         async def ask(path: StorePath) -> None:
-            if (await queue.can_substitute(path)).available:
+            if (await queue.can_substitute(path, stores)).available:
                 found.add(path)
 
         async with anyio.create_task_group() as tg:
@@ -813,19 +814,19 @@ class LocalDBStore(Store):
         """
         from nix_daemon_protocol.query_substitutable_path_infos import SubstitutablePathInfo
 
-        from ..goals.query_missing import daemon_substitutes
-
         queue = self.substitution_queue
-        if queue is None or daemon_substitutes(client, queue):
+        if queue is None:
             return None
-        options = client.options if client is not None else None
-        if options is not None and not options.use_substitutes:
+        stores = await queue.substituters_for(client)
+        if stores is None:
+            return None
+        if not stores:
             return []
 
         found: list[SubstitutablePathInfo] = []
 
         async def ask(path: StorePath) -> None:
-            candidate = await queue.get_substituter(path)
+            candidate = await queue.get_substituter(path, stores)
             if candidate is None:
                 return
             info = candidate.path_info.info

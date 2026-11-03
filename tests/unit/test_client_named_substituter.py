@@ -99,7 +99,14 @@ class _Backends:
     def __init__(self, *uncovered: str) -> None:
         self.uncovered = uncovered
 
-    async def can_substitute(self, path: StorePath) -> SubstitutionAvailability:
+    async def substituters_for(self, client: Any) -> tuple[object, ...] | None:
+        """The daemon for a client naming no backend's substituter or an uncovered one; else this fake, as pynixd's backends."""
+        options = getattr(client, "options", None)
+        if options is not None and not options.use_substitutes:
+            return ()
+        return None if client_names_a_substituter(client) or self.uncovered else (self,)
+
+    async def can_substitute(self, path: StorePath, stores: object = None) -> SubstitutionAvailability:
         del path
         return SubstitutionAvailability.unavailable()
 
@@ -128,8 +135,8 @@ def test_each_substituter_option_counts(name: str) -> None:
     assert client_names_a_substituter(_client(_options(**{name: "file:///cache"})))
 
 
-def test_the_backends_stand_for_http_and_unix_substituters_only() -> None:
-    """`instance._add_substituter_stores` makes a backend for these two kinds and no other."""
+def test_http_and_unix_substituters_are_covered_by_scheme() -> None:
+    """`instance._add_substituter_stores` makes a backend for these two kinds by scheme; a `file://` cache needs its own."""
     queue = SubstitutionQueue(cast("PynixdContext", SimpleNamespace(settings=PynixdSettings(), stores={})))
     queue.note_daemon_substituters(
         [
@@ -144,11 +151,11 @@ def test_the_backends_stand_for_http_and_unix_substituters_only() -> None:
     assert queue.uncovered == ("file:///cache", "s3://bucket", "daemon")
 
 
-def test_a_substituter_only_the_daemon_reaches_sends_every_client_there() -> None:
-    assert daemon_substitutes(None, cast("SubstitutionQueue", _Backends("file:///cache")))
-    assert daemon_substitutes(_client(_options()), cast("SubstitutionQueue", _Backends("file:///cache")))
-    assert not daemon_substitutes(_client(_options()), cast("SubstitutionQueue", _Backends()))
-    assert not daemon_substitutes(_client(_options()), None)
+async def test_a_substituter_only_the_daemon_reaches_sends_every_client_there() -> None:
+    assert await daemon_substitutes(None, cast("SubstitutionQueue", _Backends("file:///cache")))
+    assert await daemon_substitutes(_client(_options()), cast("SubstitutionQueue", _Backends("file:///cache")))
+    assert not await daemon_substitutes(_client(_options()), cast("SubstitutionQueue", _Backends()))
+    assert not await daemon_substitutes(_client(_options()), None)
 
 
 @pytest.mark.anyio

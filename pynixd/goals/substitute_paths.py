@@ -44,7 +44,7 @@ log = structlog.get_logger(__name__)
 ENSURE_PATH_OP = EnsurePathRequest.op
 
 
-def pynixd_substitutes(store: Store, client: ClientConn | None, queue: SubstitutionQueue | None) -> bool:
+async def pynixd_substitutes(store: Store, client: ClientConn | None, queue: SubstitutionQueue | None) -> bool:
     """Whether pynixd, and not the daemon, substitutes into *store* for *client*.
 
     The route of EnsurePath must be `pynixd`, and pynixd's backends must
@@ -52,7 +52,7 @@ def pynixd_substitutes(store: Store, client: ClientConn | None, queue: Substitut
     """
     if not isinstance(store, LocalDBStore) or store.routes.get(ENSURE_PATH_OP) is not OpRoute.pynixd:
         return False
-    return queue is not None and not daemon_substitutes(client, queue)
+    return queue is not None and not await daemon_substitutes(client, queue)
 
 
 def no_substituter(path: object) -> str:
@@ -106,7 +106,8 @@ async def substitute(
     """
     options = client.options if client is not None else None
     substitutes = options is None or bool(options.use_substitutes)
-    attempts = await engine.substitute_paths(paths, hold=hold, substitutes=substitutes)
+    ids = await engine.substituter_ids_for(client)
+    attempts = await engine.substitute_paths(paths, hold=hold, substitutes=substitutes, ids=ids)
     for path, attempt in attempts.items():
         if not _missed_or_done(attempt):
             log.info("substitute_failed", path=str(path), reason=attempt.result.result.error_msg)

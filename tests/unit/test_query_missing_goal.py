@@ -9,6 +9,7 @@ import anyio
 import pytest
 
 from pynixd.goals.engine import GoalEngine
+from pynixd.goals.query_missing import client_names_a_substituter
 from pynixd.serde import (
     DerivedPath as SerdeDerivedPath,
     DrvOutput as SerdeDrvOutput,
@@ -68,7 +69,14 @@ class FakeSubstitutionQueue:
         self.substitutable = substitutable
         self.queries: list[str] = []
 
-    async def can_substitute(self, path: StorePath) -> SubstitutionAvailability:
+    async def substituters_for(self, client: Any) -> tuple[object, ...] | None:
+        """The daemon for a client naming no backend's substituter or an uncovered one; else this fake, as pynixd's backends."""
+        options = getattr(client, "options", None)
+        if options is not None and not options.use_substitutes:
+            return ()
+        return None if client_names_a_substituter(client) or self.uncovered else (self,)
+
+    async def can_substitute(self, path: StorePath, stores: object = None) -> SubstitutionAvailability:
         self.queries.append(str(path))
         return self.substitutable.get(str(path), SubstitutionAvailability.unavailable())
 
@@ -82,7 +90,14 @@ class BlockingSubstitutionQueue:
         self.releasing_path_queried = anyio.Event()
         self.queries: list[str] = []
 
-    async def can_substitute(self, path: StorePath) -> SubstitutionAvailability:
+    async def substituters_for(self, client: Any) -> tuple[object, ...] | None:
+        """The daemon for a client naming no backend's substituter or an uncovered one; else this fake, as pynixd's backends."""
+        options = getattr(client, "options", None)
+        if options is not None and not options.use_substitutes:
+            return ()
+        return None if client_names_a_substituter(client) or self.uncovered else (self,)
+
+    async def can_substitute(self, path: StorePath, stores: object = None) -> SubstitutionAvailability:
         path_str = str(path)
         self.queries.append(path_str)
         if path_str == self.releasing_path:

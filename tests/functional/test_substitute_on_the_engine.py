@@ -3,7 +3,8 @@
 Every test store takes the `pynixd` route of EnsurePath (`TEST_OP_ROUTES`),
 so the goal engine fetches here and the daemon does not. A cache written by
 `nix copy` stands for the substituter, served over HTTP and read as a
-`file://` directory: a fake answer proves nothing about what a remote holds.
+`file://` directory, configured in pynixd or named by the client: a fake
+answer proves nothing about what a remote holds.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from pynixd import Server
 from pynixd.config import HTTPBinaryCacheSpec, LocalBinaryCacheSpec
 from pynixd.connection import Connection
 from pynixd.exceptions import BackendError
+from pynixd.serde import SetOptionsRequest, TimeSpan, Verbosity
 from pynixd.store import LocalDBStore, Store
 from pynixd.unix_socket import open_unix_connection
 from pynixd.wire import UnixNixReader, UnixNixWriter
@@ -31,6 +33,8 @@ from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
     from pathlib import Path
+
+    from pynixd.substitution_queue import SubstitutionQueue
 
 _PARENT = (
     'with import <nixpkgs> {}; runCommand "pynixd-substitute-parent" {} '
@@ -46,12 +50,17 @@ class _Lab:
     target: Path
     cache_dir: Path
     transport: str
-    """`http`: the cache served by aiohttp; `file`: the directory itself."""
+    """`http`: the cache served by aiohttp; `file`: the directory itself.
+
+    `client-http` and `client-file`: the same, named by the client's
+    `substituters`, with no backend configured in pynixd.
+    """
     socket: Path
     parent: str
     child: str
     unique: str
     """A path in the cache that nothing references."""
+    queue: SubstitutionQueue | None = None
 
 
 async def _valid(store_path: Path) -> set[str]:
@@ -61,7 +70,7 @@ async def _valid(store_path: Path) -> set[str]:
     return {line.strip() for line in stdout.splitlines() if line.strip()}
 
 
-@pytest.fixture(params=["http", "file"])
+@pytest.fixture(params=["http", "file", "client-http", "client-file"])
 async def lab(tmp_path_factory: pytest.TempPathFactory, request: pytest.FixtureRequest) -> _Lab:
     """A cache that holds `parent`, `child` and `unique`, and an empty store to fetch them into.
 
@@ -98,6 +107,25 @@ async def lab(tmp_path_factory: pytest.TempPathFactory, request: pytest.FixtureR
     )
 
 
+def _options(**overrides: str) -> SetOptionsRequest:
+    """A `SetOptions` request with every field, because no field has a default."""
+    return SetOptionsRequest(
+        keep_failed=False,
+        keep_going=False,
+        try_fallback=False,
+        verbosity=Verbosity.ERROR,
+        max_build_jobs=1,
+        max_silent_time=TimeSpan(0),
+        obsolete_use_build_hook=True,
+        build_verbosity=Verbosity.ERROR,
+        obsolete_log_type=0,
+        obsolete_print_build_trace=0,
+        build_cores=1,
+        use_substitutes=True,
+        overrides=overrides,
+    )
+
+
 @asynccontextmanager
 async def _client(lab: _Lab) -> AsyncIterator[Connection]:
     """A client of pynixd over the empty store, with the served cache as its one substituter."""
@@ -109,20 +137,22 @@ async def _client(lab: _Lab) -> AsyncIterator[Connection]:
     await site.start()
     host, port = runner.addresses[0][:2]
     # Trusted: `nix copy` signs nothing, and the signature check is not what this tests.
-    upstream = (
-        HTTPBinaryCacheSpec(store_id=StoreId("upstream"), url=f"http://{host}:{port}/", trusted=True)
-        if lab.transport == "http"
-        else LocalBinaryCacheSpec(store_id=StoreId("upstream"), path=lab.cache_dir, trusted=True)
-    )
+    url = f"http://{host}:{port}/" if lab.transport.endswith("http") else f"file://{lab.cache_dir}"
     stores: dict[StoreId, Store] = {
         StoreId("local"): LocalDBStore(make_test_spec(store_id="local", store_path=lab.target, no_probe=True)),
-        StoreId("upstream"): upstream.to_store("upstream"),
     }
+    if lab.transport == "http":
+        stores[StoreId("upstream")] = HTTPBinaryCacheSpec(url=url, trusted=True).to_store("upstream")
+    elif lab.transport == "file":
+        stores[StoreId("upstream")] = LocalBinaryCacheSpec(path=lab.cache_dir, trusted=True).to_store("upstream")
     try:
-        async with Server(stores=stores, unix_path=lab.socket, ssh_port=None, http_port=None):
+        async with Server(stores=stores, unix_path=lab.socket, ssh_port=None, http_port=None) as server:
             link = await open_unix_connection(lab.socket)
             conn = Connection(UnixNixReader(link, identifier="t"), UnixNixWriter(link, identifier="t"), "t")
             await conn.connect()
+            if lab.transport.startswith("client"):
+                await conn.call(_options(substituters=f"{url}?trusted=1"), raise_on_error=True)
+            lab.queue = server.ctx.scheduler.substitution_queue if server.ctx.scheduler is not None else None
             try:
                 yield conn
             finally:
@@ -132,9 +162,16 @@ async def _client(lab: _Lab) -> AsyncIterator[Connection]:
 
 
 async def test_ensure_path_fetches_the_closure(lab: _Lab) -> None:
-    """`Store::ensurePath` (`build/entry-points.cc:99`): the path and everything it names become valid."""
+    """`Store::ensurePath` (`build/entry-points.cc:99`): the path and everything it names become valid.
+
+    A client-named cache gets a backend of pynixd's; the daemon would fetch it
+    too, so the backend is what proves pynixd did.
+    """
     async with _client(lab) as conn:
         response = await conn.call(EnsurePathRequest(path=StorePath(path=lab.parent)), raise_on_error=True)
+        if lab.transport.startswith("client"):
+            assert lab.queue is not None
+            assert len(lab.queue.client_substituters.stores()) == 1
     assert response.value == 1
     assert await _valid(lab.target) == {lab.parent, lab.child}
 

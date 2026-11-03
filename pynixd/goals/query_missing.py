@@ -70,15 +70,29 @@ def client_names_a_substituter(client: ClientConn | None) -> bool:
     return any(name in options.overrides for name in _SUBSTITUTER_OPTIONS)
 
 
-def daemon_substitutes(client: ClientConn | None, queue: SubstitutionQueue | None) -> bool:
-    """True when the daemon behind pynixd, and not pynixd's backends, answers a substitution question.
+def daemon_reads_realisations(client: ClientConn | None, queue: SubstitutionQueue | None) -> bool:
+    """True when the daemon behind pynixd, and not pynixd, answers whether a substituter holds a realisation.
 
-    It does when the client names a substituter, and when the daemon's own
-    configuration names one that no backend stands for
-    (`SubstitutionQueue.uncovered`). Asked of the backends alone, a path in
-    that substituter reads as missing.
+    pynixd's backends read no realisation: Nix's `DrvOutputSubstitutionGoal`
+    has no counterpart here. So a client that names a substituter, or a
+    daemon with one no backend stands for, asks the daemon. `ca:build-cache`
+    and `ca:issue-13247` of Nix's functional suite fail without it.
+    nixidae/nixidae#1169.
     """
     return client_names_a_substituter(client) or (queue is not None and bool(queue.uncovered))
+
+
+async def daemon_substitutes(client: ClientConn | None, queue: SubstitutionQueue | None) -> bool:
+    """True when the daemon behind pynixd, and not pynixd's backends, answers a substitution question.
+
+    It does when a substituter the client reaches has no backend: one the
+    client names, or one of the daemon's own configuration
+    (`SubstitutionQueue.substituters_for`). Asked of the backends alone, a
+    path in that substituter reads as missing.
+    """
+    if queue is None:
+        return client_names_a_substituter(client)
+    return await queue.substituters_for(client) is None
 
 
 @dataclass
@@ -354,7 +368,7 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         for a client that named no substituter, for an upstream error, and
         for an upstream plan that agrees the derivation must be built.
         """
-        if not daemon_substitutes(self.client, self.engine.substitution_queue):
+        if not daemon_reads_realisations(self.client, self.engine.substitution_queue):
             return False
         wire_path = SerdeDerivedPath(value=str(derived_path))
         try:
@@ -436,8 +450,10 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
             return SubstitutionAvailability.unavailable()
         scheduler = self.engine.ctx.scheduler
         if scheduler is not None:
-            availability = await scheduler.substitution_queue.can_substitute(path)
-            if availability.available:
+            queue = scheduler.substitution_queue
+            stores = await queue.substituters_for(self.client)
+            availability = await queue.can_substitute(path, stores)
+            if availability.available or stores is not None:
                 return availability
         return await self._can_substitute_upstream(path)
 
@@ -461,7 +477,7 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         other operation, which reads every substituter and also answers the
         two sizes that the plan reports.
         """
-        if not daemon_substitutes(self.client, self.engine.substitution_queue):
+        if not await daemon_substitutes(self.client, self.engine.substitution_queue):
             return SubstitutionAvailability.unavailable()
         wire_path = StorePath(path=str(path))
         response = await self.engine.ctx.local_store.execute(

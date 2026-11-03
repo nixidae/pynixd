@@ -45,7 +45,7 @@ some cases and sends the rest to the daemon.
 | 41 QueryDerivationOutputMap | owned (SQLite; with `ca-derivations`, the derivation file and each output's realisation) | a drv that is not valid, or whose file or closure hashes pynixd cannot read | — |
 | 43 QueryRealisation | owned with `ca-derivations` (SQLite: `Realisations` by hash, or `BuildTraceV3` by path; both wire shapes) | without `ca-derivations` | — |
 | 14 FindRoots | owned (the walk of `liveness.py`, validity from SQLite), censored by the handler | a daemon pynixd did not start, while pynixd is not root: that daemon may see more of `/proc` | — |
-| 32 QuerySubstitutablePaths | owned: the scheduler's race over pynixd's substituter backends (a `NIX-DEVIATION`): HTTP caches, `unix://` stores, and `file://` caches pynixd can read (`LocalBinaryCacheStore`) | a client that names its own substituters, or a daemon substituter no backend stands for (`s3://`, `ssh://`, a `file://` directory pynixd cannot read) | — |
+| 32 QuerySubstitutablePaths | owned: the scheduler's race over pynixd's substituter backends (a `NIX-DEVIATION`): HTTP caches, `unix://` stores, and `file://` caches pynixd can read (`LocalBinaryCacheStore`). A client's `substituters` replaces the daemon's list, and each one gets a backend on first use (`pynixd/substituters.py`) | a substituter, the client's or the daemon's, that no backend stands for: `s3://`, `ssh://`, a `file://` directory pynixd cannot read, a `unix://` store pynixd does not run | — |
 | 21, 30 QuerySubstitutablePathInfo(s) | on trial: the daemon in a deployment, shadow in every test store; route `pynixd` answers what the highest-priority backend holding each path knows (`misc.cc:90`), from the same race | as op 32, and a path named with a content address | — |
 | 40 QueryMissing | owned by the goal engine: validity from SQLite, availability from the race | as op 32: it then asks op 30 of the daemon | — |
 
@@ -85,7 +85,7 @@ store directory, as `verifyStore` does. `collect_garbage`
 | --- | --- | --- |
 | 36 BuildDerivation | scheduler sends it to a store; for the local store, the daemon builds | a builder: sandbox, user, environment, output registration |
 | 9, 46 BuildPaths(WithResults) | goal engine; leaves are ops 36 and 10; repair and check modes go to the daemon whole (`engine.py:267`) | the leaves; repair and check can stay unsupported |
-| 10 EnsurePath | on trial: the daemon in a deployment, `pynixd` in every test store; there `SubstitutePathGoal` fetches from the race and imports through the route of op 39. A client that names a substituter, or a daemon substituter no backend stands for, gets the daemon | those two cases |
+| 10 EnsurePath | on trial: the daemon in a deployment, `pynixd` in every test store; there `SubstitutePathGoal` fetches from the race and imports through the route of op 39. A client's own substituters take part as in op 32. A substituter no backend stands for sends the path to the daemon | that case |
 
 ### Maintenance
 

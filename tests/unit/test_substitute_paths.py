@@ -21,6 +21,7 @@ from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest
 from pynixd.config import LocalSocketStoreSpec
 from pynixd.exceptions import BackendError
 from pynixd.goals.engine import GoalEngine
+from pynixd.goals.query_missing import client_names_a_substituter
 from pynixd.goals.results import goal_failure, goal_success
 from pynixd.goals.substitute import SubstituteAttempt
 from pynixd.goals.substitute_paths import ensure_path, no_substituter, pynixd_substitutes, substitute_paths
@@ -58,8 +59,16 @@ class _Engine:
         self.asked: list[StorePath] = []
         self.substitutes: list[bool] = []
 
+    async def substituter_ids_for(self, client: object) -> tuple[str, ...]:
+        return ()
+
     async def substitute_paths(
-        self, paths: Iterable[StorePath], hold: Any = None, *, substitutes: bool = True
+        self,
+        paths: Iterable[StorePath],
+        hold: Any = None,
+        *,
+        substitutes: bool = True,
+        ids: tuple[str, ...] | None = None,
     ) -> dict[StorePath, SubstituteAttempt]:
         self.substitutes.append(substitutes)
         attempts = {path: _attempt(path) for path in paths}
@@ -170,27 +179,34 @@ class _Queue:
     def __init__(self, *uncovered: str) -> None:
         self.uncovered = uncovered
 
+    async def substituters_for(self, client: Any) -> tuple[object, ...] | None:
+        """The daemon for a client naming no backend's substituter or an uncovered one; else this fake, as pynixd's backends."""
+        options = getattr(client, "options", None)
+        if options is not None and not options.use_substitutes:
+            return ()
+        return None if client_names_a_substituter(client) or self.uncovered else (self,)
+
 
 class TestWhoSubstitutes:
-    def test_the_daemon_by_default(self, tmp_path: Path) -> None:
-        assert not pynixd_substitutes(_local(tmp_path), _Client(), _Queue())  # type: ignore[arg-type]  # fakes
+    async def test_the_daemon_by_default(self, tmp_path: Path) -> None:
+        assert not await pynixd_substitutes(_local(tmp_path), _Client(), _Queue())  # type: ignore[arg-type]  # fakes
 
-    def test_pynixd_on_the_pynixd_route_of_ensure_path(self, tmp_path: Path) -> None:
+    async def test_pynixd_on_the_pynixd_route_of_ensure_path(self, tmp_path: Path) -> None:
         store = _local(tmp_path, EnsurePath=OpRoute.pynixd)
-        assert pynixd_substitutes(store, _Client(), _Queue())  # type: ignore[arg-type]  # fakes
+        assert await pynixd_substitutes(store, _Client(), _Queue())  # type: ignore[arg-type]  # fakes
 
-    def test_the_daemon_without_a_queue(self, tmp_path: Path) -> None:
+    async def test_the_daemon_without_a_queue(self, tmp_path: Path) -> None:
         store = _local(tmp_path, EnsurePath=OpRoute.pynixd)
-        assert not pynixd_substitutes(store, _Client(), None)  # type: ignore[arg-type]  # fakes
+        assert not await pynixd_substitutes(store, _Client(), None)  # type: ignore[arg-type]  # fakes
 
-    def test_the_daemon_for_a_client_that_names_a_substituter(self, tmp_path: Path) -> None:
+    async def test_the_daemon_for_a_client_that_names_a_substituter(self, tmp_path: Path) -> None:
         store = _local(tmp_path, EnsurePath=OpRoute.pynixd)
         client = _Client(substituters="file:///tmp/cache")
-        assert not pynixd_substitutes(store, client, _Queue())  # type: ignore[arg-type]  # fakes
+        assert not await pynixd_substitutes(store, client, _Queue())  # type: ignore[arg-type]  # fakes
 
-    def test_the_daemon_for_a_substituter_no_backend_stands_for(self, tmp_path: Path) -> None:
+    async def test_the_daemon_for_a_substituter_no_backend_stands_for(self, tmp_path: Path) -> None:
         store = _local(tmp_path, EnsurePath=OpRoute.pynixd)
-        assert not pynixd_substitutes(store, _Client(), _Queue("s3://cache"))  # type: ignore[arg-type]  # fakes
+        assert not await pynixd_substitutes(store, _Client(), _Queue("s3://cache"))  # type: ignore[arg-type]  # fakes
 
     def test_the_route_needs_pynixd_writes(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="writes the store"):

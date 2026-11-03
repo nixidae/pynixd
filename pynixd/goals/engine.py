@@ -332,7 +332,12 @@ class GoalEngine:
             return goal
 
     async def substitute_paths(
-        self, paths: Iterable[StorePath], hold: Hold | None = None, *, substitutes: bool = True
+        self,
+        paths: Iterable[StorePath],
+        hold: Hold | None = None,
+        *,
+        substitutes: bool = True,
+        ids: tuple[str, ...] | None = None,
     ) -> dict[StorePath, SubstituteAttempt]:
         """Substitute each path with its closure, all at once: one goal for each, as `Store::buildPaths` makes.
 
@@ -345,7 +350,8 @@ class GoalEngine:
         """
         if not substitutes:
             return await self._valid_or_missed(paths, hold)
-        ids = self.substituter_ids()
+        if ids is None:
+            ids = self.substituter_ids()
         async with self.running():
             try:
                 goals = {path: await self.get_substitute_path_goal(path, ids) for path in paths}
@@ -382,6 +388,16 @@ class GoalEngine:
                     found=False, result=goal_failure(f"pynixd: substitution is off for {path}")
                 )
         return attempts
+
+    async def substituter_ids_for(self, client: ClientConn | None) -> tuple[str, ...]:
+        """The ids of the backends that stand for *client*'s substituters; the daemon's list where only the daemon reaches them.
+
+        In that case the goals still ask pynixd's backends first, then the
+        daemon (`daemon_substitutes`).
+        """
+        queue = self.substitution_queue
+        stores = await queue.substituters_for(client) if queue is not None else None
+        return self.substituter_ids() if stores is None else tuple(str(store.store_id) for store in stores)
 
     def substituter_ids(self) -> tuple[str, ...]:
         """Return the store IDs of all configured substituter stores (skipping local)."""

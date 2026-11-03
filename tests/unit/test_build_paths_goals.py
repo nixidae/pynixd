@@ -87,6 +87,9 @@ class FakeEngine:
     def substituter_ids(self) -> tuple[str, ...]:
         return ()
 
+    async def substituter_ids_for(self, client: object) -> tuple[str, ...]:
+        return self.substituter_ids()
+
     async def get_ensure_derived_path_goal(
         self,
         path: DerivedPath,

@@ -524,12 +524,12 @@ class DaemonProxy:
             finally:
                 self.request_id = None
 
-        if isinstance(request, EnsurePathRequest) and self._pynixd_substitutes():
+        if isinstance(request, EnsurePathRequest) and await self._pynixd_substitutes():
             return await ensure_path(self.goal_engine, request, self.client, self.add_temp_root)
 
         if isinstance(request, QueryValidPathsRequest):
             self._force_substitute_on_destination(request)
-            if request.substitute and self._pynixd_substitutes():
+            if request.substitute and await self._pynixd_substitutes():
                 request = await substitute_paths(self.goal_engine, request, self.client, self.add_temp_root)
 
         local_resp: WireResponse | None = None
@@ -607,11 +607,11 @@ class DaemonProxy:
 
         return None
 
-    def _pynixd_substitutes(self) -> bool:
+    async def _pynixd_substitutes(self) -> bool:
         """Whether pynixd's goals, and not the daemon, substitute for this client (`goals/substitute_paths.py`)."""
         scheduler = self.ctx.scheduler
         queue = scheduler.substitution_queue if scheduler is not None else None
-        return pynixd_substitutes(self.local_store, self.client, queue)
+        return await pynixd_substitutes(self.local_store, self.client, queue)
 
     def store_for_output_path(self, path: str) -> DaemonStore | None:
         """Look up the DaemonStore that produced a given output path."""

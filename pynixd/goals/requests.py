@@ -115,7 +115,7 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
 
     async def _run(self) -> BuildPathsWithResultsResponse:
         """Fan out to one EnsureDerivedPathGoal per derived path and collect results."""
-        substituter_ids = self.engine.substituter_ids()
+        substituter_ids = await self.engine.substituter_ids_for(self.client)
         # **In the order the client asked, and not sorted.** `nix build --json`
         # reads the answers by position, and `build.sh:8` of the functional
         # suite states which entry is which derivation. `Store::buildPaths` of

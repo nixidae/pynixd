@@ -66,7 +66,9 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
                 ),
             )
 
-        candidate = await scheduler.substitution_queue.get_substituter(self.path)
+        queue = scheduler.substitution_queue
+        stores = queue.stores_with_ids(self.substituter_ids)
+        candidate = await queue.get_substituter(self.path, stores)
         if candidate is None:
             log.info("substitute_path_miss", path=str(self.path))
             return SubstituteAttempt(
@@ -106,7 +108,7 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
                 return SubstituteAttempt(found=True, result=reference_result.result)
 
         log.info("substitute_path_import_start", path=str(self.path), store_id=candidate.store.store_id)
-        import_result = await scheduler.substitution_queue.substitute(self.path)
+        import_result = await queue.substitute(self.path, stores)
         if not import_result.substituted:
             # A substitute the daemon refused for its signature is one Nix
             # never takes (`substitution-goal.cc:116`): no substituter, not a

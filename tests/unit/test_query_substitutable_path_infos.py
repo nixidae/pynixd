@@ -21,6 +21,7 @@ from nix_daemon_protocol.query_substitutable_path_info import QuerySubstitutable
 from nix_daemon_protocol.query_substitutable_path_infos import QuerySubstitutablePathInfosRequest
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from pynixd.config import LocalSocketStoreSpec
+from pynixd.goals.query_missing import client_names_a_substituter
 from pynixd.serde import ContentAddress, NARHash, StorePath, Time
 from pynixd.store.local_db import LocalDBStore
 from pynixd.substitution_queue import SubstitutionCandidate
@@ -61,7 +62,14 @@ class _Queue:
         self.uncovered = uncovered
         self.expected = 3
 
-    async def get_substituter(self, path: StorePath) -> SubstitutionCandidate | None:
+    async def substituters_for(self, client: Any) -> tuple[object, ...] | None:
+        """The daemon for a client naming no backend's substituter or an uncovered one; else this fake, as pynixd's backends."""
+        options = getattr(client, "options", None)
+        if options is not None and not options.use_substitutes:
+            return ()
+        return None if client_names_a_substituter(client) or self.uncovered else (self,)
+
+    async def get_substituter(self, path: StorePath, stores: object = None) -> SubstitutionCandidate | None:
         self.asked.append(path)
         if len(self.asked) == self.expected:
             self.all_asked.set()
