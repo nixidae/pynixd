@@ -115,6 +115,17 @@ class StoreLayout:
         """The `db.sqlite` of this store."""
         return self.state_dir / "db" / "db.sqlite"
 
+    @property
+    def links_dir(self) -> Path:
+        """Where `optimiseStore` keeps one hard link per unique file content.
+
+        `local-store.cc:128`: `realStoreDir / ".links"`, a sibling of the store
+        paths on the same file system, so a hard link into it is possible. It
+        follows `real_store_dir`, which a chroot store moves while `store_dir`
+        stays `/nix/store`.
+        """
+        return self.real_store_dir / ".links"
+
     def socket_path(self, name: str) -> Path:
         """Where a managed daemon of this store puts its socket.
 

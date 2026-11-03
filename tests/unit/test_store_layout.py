@@ -104,6 +104,12 @@ def test_the_build_directory_follows_the_state() -> None:
     assert StoreLayout.relocated_store(STORE, STATE, LOG).build_dir == STATE / "builds"
 
 
+def test_the_links_directory_follows_the_real_store() -> None:
+    """`.links` sits beside the store files, which a chroot store moves."""
+    assert StoreLayout.chroot(ROOT).links_dir == ROOT / "nix" / "store" / ".links"
+    assert StoreLayout.relocated_store(STORE, STATE, LOG).links_dir == STORE / ".links"
+
+
 def test_the_socket_follows_the_state() -> None:
     """The path that pynixd used before it had a layout, for a chroot store."""
     chroot = StoreLayout.chroot(ROOT).socket_path("pynixd-nix")
