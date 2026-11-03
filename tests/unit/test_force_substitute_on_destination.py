@@ -52,6 +52,7 @@ def _proxy(force: bool) -> tuple[Any, _RecordingStore]:
     proxy.ctx = SimpleNamespace(
         settings=PynixdSettings(force_substitute_on_destination=force),
         local_store=store,
+        scheduler=None,
         store_for_output_path=lambda _path: None,
     )
     proxy.client = None

@@ -122,6 +122,7 @@ class TestTheConfig:
         assert store.routes == {
             **pynixd,
             7: OpRoute.daemon,
+            10: OpRoute.daemon,
             12: OpRoute.daemon,
             20: OpRoute.daemon,
             21: OpRoute.daemon,

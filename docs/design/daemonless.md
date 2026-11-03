@@ -39,7 +39,7 @@ some cases and sends the rest to the daemon.
 | 26 QueryPathInfo | owned (cache, then SQLite) | none while the database is active | as above |
 | 23 QueryAllValidPaths | owned (SQLite) | none | — |
 | 29 QueryPathFromHashPart | owned (SQLite, hit and miss) | a hash part that is not 32 characters, which Nix refuses | — |
-| 31 QueryValidPaths | partly: `substitute=true` falls through | substitutes, then queries (`daemon.cc:377`) | substitution (below) |
+| 31 QueryValidPaths | owned; `substitute=true` follows the route of op 10: on `pynixd` the goal engine substitutes each missing path that is not a derivation, then SQLite answers | `substitute=true` on the daemon route of op 10 | as op 10 |
 | 6 QueryReferrers | owned (SQLite, Nix's own statement) | none while the database is active | — |
 | 33 QueryValidDerivers | owned (SQLite, Nix's own statement) | none while the database is active | — |
 | 41 QueryDerivationOutputMap | owned (SQLite; with `ca-derivations`, the derivation file and each output's realisation) | a drv that is not valid, or whose file or closure hashes pynixd cannot read | — |
@@ -85,7 +85,7 @@ store directory, as `verifyStore` does. `collect_garbage`
 | --- | --- | --- |
 | 36 BuildDerivation | scheduler sends it to a store; for the local store, the daemon builds | a builder: sandbox, user, environment, output registration |
 | 9, 46 BuildPaths(WithResults) | goal engine; leaves are ops 36 and 10; repair and check modes go to the daemon whole (`engine.py:267`) | the leaves; repair and check can stay unsupported |
-| 10 EnsurePath | daemon substitutes | fetch from `HTTPBinaryCacheStore`, then the write path above |
+| 10 EnsurePath | on trial: the daemon in a deployment, `pynixd` in every test store; there `SubstitutePathGoal` fetches from the race and imports through the route of op 39. A client that names a substituter, or a daemon substituter no backend stands for, gets the daemon | those two cases |
 
 ### Maintenance
 

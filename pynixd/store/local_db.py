@@ -187,6 +187,8 @@ class LocalDBStore(Store):
         31: Owned("own_query_valid_paths", default=OpRoute.pynixd),
         # The daemon in a deployment: the shadow reads every NAR twice. The test stores run it in shadow.
         38: Owned("own_nar_from_path"),
+        # It writes through the route of AddToStoreNar; `writes` keeps it off the shadow and off by default.
+        10: Owned("own_ensure_path", writes=True),
         7: Owned("own_add_to_store", writes=True),
         39: Owned("own_add_to_store_nar", writes=True),
         44: Owned("own_add_multiple_to_store", writes=True),
@@ -510,6 +512,14 @@ class LocalDBStore(Store):
         )
 
     # ── pynixd's answers, by route ─────────────────────────────────
+
+    async def own_ensure_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        """None: `DaemonProxy._substitute` runs the goals on this route (`goals/substitute_paths.py`).
+
+        It stays None: the goal engine sends EnsurePath here to reach the
+        daemon's substituters (`EnsureDerivedPathGoal._try_substitute_upstream`).
+        """
+        return None
 
     async def own_nar_from_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """None: a NAR is a stream, which `NarFromPathHandler` takes from `nar_pieces` on this route."""

@@ -280,6 +280,7 @@ def _config(work: Path, root: Path) -> Path:
                             "OptimiseStore": "pynixd",
                             "VerifyStore": "pynixd",
                             "CollectGarbage": "pynixd",
+                            "EnsurePath": "pynixd",
                         },
                     },
                 },

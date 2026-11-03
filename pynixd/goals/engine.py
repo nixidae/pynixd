@@ -22,6 +22,7 @@ from ..serde import (
     BuildPathsRequest,
     BuildPathsResponse,
     BuildPathsWithResultsRequest,
+    IsValidPathRequest,
     QueryMissingRequest,
     QueryMissingResponse,
 )
@@ -30,8 +31,8 @@ from .ensure import EnsureDerivedPathGoal
 from .keys import BuildDerivationKey, EnsureDerivedPathKey, SubstitutePathKey
 from .query_missing import QueryMissingPlanGoal
 from .requests import BuildPathsWithResultsGoal
-from .results import result_succeeded
-from .substitute import SubstitutePathGoal, substituter_fingerprint
+from .results import goal_failure, goal_success, result_succeeded
+from .substitute import SubstituteAttempt, SubstitutePathGoal, substituter_fingerprint
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
@@ -329,6 +330,58 @@ class GoalEngine:
             if not isinstance(goal, SubstitutePathGoal):
                 raise TypeError(f"goal key collision for {key}")
             return goal
+
+    async def substitute_paths(
+        self, paths: Iterable[StorePath], hold: Hold | None = None, *, substitutes: bool = True
+    ) -> dict[StorePath, SubstituteAttempt]:
+        """Substitute each path with its closure, all at once: one goal for each, as `Store::buildPaths` makes.
+
+        *hold* roots each path the goals made valid for the client's session,
+        as the substitution goal of Nix does (`substitution-goal.cc:33`).
+        nixidae/nixidae#1007. Without *substitutes* a valid path still
+        succeeds: the goal asks the store before any substituter
+        (`substitution-goal.cc:36`), and `use-substitutes` off leaves it none
+        (`worker.cc:32`).
+        """
+        if not substitutes:
+            return await self._valid_or_missed(paths, hold)
+        ids = self.substituter_ids()
+        async with self.running():
+            try:
+                goals = {path: await self.get_substitute_path_goal(path, ids) for path in paths}
+                attempts: dict[StorePath, SubstituteAttempt] = {}
+
+                async def run_one(path: StorePath, goal: SubstitutePathGoal) -> None:
+                    attempts[path] = await goal.result()
+
+                async with anyio.create_task_group() as tg:
+                    for path, goal in goals.items():
+                        tg.start_soon(run_one, path, goal)
+                if hold is not None:
+                    for attempt in attempts.values():
+                        for produced in attempt.result.produced_paths:
+                            await hold(produced)
+                return attempts
+            finally:
+                self.reap()
+
+    async def _valid_or_missed(
+        self, paths: Iterable[StorePath], hold: Hold | None
+    ) -> dict[StorePath, SubstituteAttempt]:
+        attempts: dict[StorePath, SubstituteAttempt] = {}
+        for path in paths:
+            response = await self.ctx.local_store.execute(IsValidPathRequest(path=StorePath(str(path))), mark=False)
+            if response.valid:
+                if hold is not None:
+                    await hold(path)
+                result = goal_success()
+                result.produced_paths.add(path)
+                attempts[path] = SubstituteAttempt(found=True, result=result)
+            else:
+                attempts[path] = SubstituteAttempt(
+                    found=False, result=goal_failure(f"pynixd: substitution is off for {path}")
+                )
+        return attempts
 
     def substituter_ids(self) -> tuple[str, ...]:
         """Return the store IDs of all configured substituter stores (skipping local)."""

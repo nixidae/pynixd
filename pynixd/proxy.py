@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, cast
 import anyio
 import structlog
 
+from nix_daemon_protocol.ensure_path import EnsurePathRequest
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId, StoreId
 from nix_daemon_protocol.logs import TraceLine
 from nix_daemon_protocol.store_path import StorePath
@@ -26,6 +27,7 @@ from .connection import ClientConn
 from .derived_path import DerivedPath
 from .exceptions import ClosingError, OpNotImplementedError, error_text, error_traces
 from .goals import GoalEngine
+from .goals.substitute_paths import ensure_path, pynixd_substitutes, substitute_paths
 from .handlers._base import HANDLER_REGISTRY
 from .protocol import DELEGATION_FEATURE, get_extension_features
 from .serde import (
@@ -522,8 +524,13 @@ class DaemonProxy:
             finally:
                 self.request_id = None
 
+        if isinstance(request, EnsurePathRequest) and self._pynixd_substitutes():
+            return await ensure_path(self.goal_engine, request, self.client, self.add_temp_root)
+
         if isinstance(request, QueryValidPathsRequest):
             self._force_substitute_on_destination(request)
+            if request.substitute and self._pynixd_substitutes():
+                request = await substitute_paths(self.goal_engine, request, self.client, self.add_temp_root)
 
         local_resp: WireResponse | None = None
         try:
@@ -599,6 +606,12 @@ class DaemonProxy:
             return QueryValidPathsResponse(paths=paths)
 
         return None
+
+    def _pynixd_substitutes(self) -> bool:
+        """Whether pynixd's goals, and not the daemon, substitute for this client (`goals/substitute_paths.py`)."""
+        scheduler = self.ctx.scheduler
+        queue = scheduler.substitution_queue if scheduler is not None else None
+        return pynixd_substitutes(self.local_store, self.client, queue)
 
     def store_for_output_path(self, path: str) -> DaemonStore | None:
         """Look up the DaemonStore that produced a given output path."""
