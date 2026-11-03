@@ -43,6 +43,7 @@ TEST_OP_ROUTES: dict[str, OpRoute] = {
     "AddIndirectRoot": OpRoute.pynixd,
     "AddPermRoot": OpRoute.pynixd,
     "AddSignatures": OpRoute.pynixd,
+    "RegisterDrvOutput": OpRoute.pynixd,
 }
 """Answers on trial: in every test store, and on the daemon in a deployment.
 
@@ -52,7 +53,15 @@ store with `pynixd_writes` on. `nix/functional-tests/make-shim.sh` and
 configurations."""
 
 _WRITES = frozenset(
-    {"AddToStore", "AddToStoreNar", "AddMultipleToStore", "AddIndirectRoot", "AddPermRoot", "AddSignatures"}
+    {
+        "AddToStore",
+        "AddToStoreNar",
+        "AddMultipleToStore",
+        "AddIndirectRoot",
+        "AddPermRoot",
+        "AddSignatures",
+        "RegisterDrvOutput",
+    }
 )
 """The trial routes that a store with `pynixd_writes` off cannot take."""
 

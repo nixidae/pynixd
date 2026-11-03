@@ -338,3 +338,20 @@ class StoreEngine:
                 f"cannot add signatures to '{magenta(path)}': it is not a valid store path"
             )
         self._on_change(StorePath(path=path))
+
+    async def register_drv_output(
+        self, drv: str, output_name: str, out_path: str, sigs: Iterable[Signature], *, by_path: bool
+    ) -> None:
+        """`LocalStore::registerDrvOutput` (`local-store.cc:664`): record one build-trace entry.
+
+        *drv* keys the table this store's Nix reads: with *by_path* the
+        derivation's base name in `BuildTraceV3`, else the derivation's hash in
+        `Realisations`. An id already present with another output path raises,
+        as Nix does. A realisation carries no path info, so nothing is forgotten.
+        """
+        if not self.writes:
+            raise RuntimeError(f"store {self._name}: pynixd_writes is off, so pynixd registers no realisation")
+        if not self.writable:
+            raise RuntimeError(f"store {self._name}: pynixd cannot write the store database")
+        async with self.db.acquire_conn() as conn:
+            await register.register_drv_output(conn, drv, output_name, out_path, sigs, by_path=by_path)

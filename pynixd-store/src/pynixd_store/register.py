@@ -33,9 +33,15 @@ from .queries import (
     ADD_DERIVATION_OUTPUT,
     ADD_REFERENCE,
     QUERY_PATH_INFO_FOR_UPDATE,
+    QUERY_REALISATION_BY_HASH,
+    QUERY_REALISATION_BY_PATH,
     QUERY_VALID_PATH_ID,
+    REGISTER_BUILD_TRACE_BY_PATH,
+    REGISTER_REALISATION_BY_HASH,
     REGISTER_VALID_PATH,
+    UPDATE_BUILD_TRACE_BY_PATH,
     UPDATE_PATH_INFO,
+    UPDATE_REALISATION_BY_HASH,
 )
 
 if TYPE_CHECKING:
@@ -297,3 +303,48 @@ async def add_signatures(conn: aiosqlite.Connection, path: str, sigs: Iterable[S
             await conn.rollback()
         raise
     return True
+
+
+async def register_drv_output(
+    conn: aiosqlite.Connection,
+    drv_key: str,
+    output_name: str,
+    out_path: str,
+    sigs: Iterable[Signature],
+    *,
+    by_path: bool,
+) -> None:
+    """Record one build-trace entry, as `LocalStore::registerDrvOutput` (`local-store.cc:664`) does.
+
+    *drv_key* keys the table this store's Nix reads: with *by_path* the
+    derivation's base name in `BuildTraceV3`, else the derivation's hash
+    (`sha256:<hex>`) in `Realisations`. An id already present with the same
+    output path merges the signatures in Nix's set order; one with another
+    output path raises Nix's own message. `_signatures` orders the set the way
+    `Signature::toStrings` does; the empty set writes `""`, not NULL.
+    """
+    select = QUERY_REALISATION_BY_PATH if by_path else QUERY_REALISATION_BY_HASH
+    update = UPDATE_BUILD_TRACE_BY_PATH if by_path else UPDATE_REALISATION_BY_HASH
+    insert = REGISTER_BUILD_TRACE_BY_PATH if by_path else REGISTER_REALISATION_BY_HASH
+    await conn.execute("BEGIN IMMEDIATE")
+    try:
+        async with conn.execute(select, (drv_key, output_name)) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            await conn.execute(insert, (drv_key, output_name, out_path, _signatures(sigs) or ""))
+        elif row[0] != out_path:
+            separator = "^" if by_path else "!"
+            raise RegistrationError(
+                f"Trying to register a realisation of '{magenta(f'{drv_key}{separator}{output_name}')}', "
+                "but we already have another one locally.\n"
+                f"Local:  {magenta(row[0])}\n"
+                f"Remote: {magenta(out_path)}"
+            )
+        else:
+            merged = {Signature(sig) for sig in (row[1] or "").split()} | set(sigs)
+            await conn.execute(update, (_signatures(merged) or "", drv_key, output_name))
+        await conn.commit()
+    except BaseException:
+        with anyio.CancelScope(shield=True):
+            await conn.rollback()
+        raise

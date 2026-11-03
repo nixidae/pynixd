@@ -196,6 +196,7 @@ class LocalDBStore(Store):
         32: Owned("own_query_substitutable_paths", default=OpRoute.pynixd),
         33: Owned("own_query_valid_derivers", default=OpRoute.pynixd),
         41: Owned("own_query_derivation_output_map", default=OpRoute.pynixd),
+        42: Owned("own_register_drv_output", writes=True),
         43: Owned("own_query_realisation", default=OpRoute.pynixd),
     }
 
@@ -643,6 +644,41 @@ class LocalDBStore(Store):
                 realisations=[Realisation(id=shaped.drv_output, out_path=out_path, signatures=signatures)]
             )
         return answer_in_both_shapes(response, request)
+
+    async def own_register_drv_output(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        """RegisterDrvOutput: record one build-trace entry, as `LocalStore::registerDrvOutput` does.
+
+        The table and its key follow the shape this store's daemon reads, the
+        way `register_drv_output` of `DaemonStore` turns the request. Without
+        `ca-derivations` the daemon answers, which raises Nix's own
+        `experimental-feature` error. This op runs through `execute` on both
+        the client wire and the scheduler's own registration (`goals/ensure.py`).
+        """
+        from nix_daemon_protocol.constants import FEATURE_REALISATION_WITH_PATH
+        from nix_daemon_protocol.register_drv_output import RegisterDrvOutputResponse
+
+        if "ca-derivations" not in (await self.trust_policy()).experimental_features:
+            return None
+        shaped = await self._daemon.request_in_the_shape_this_store_reads(request)
+        by_path = FEATURE_REALISATION_WITH_PATH in self.features
+        if by_path:
+            keyed, unkeyed = shaped.keyed_drv_output, shaped.unkeyed_realisation
+            drv_key, output_name, out_path, sigs = (
+                keyed.drv_path.name,
+                keyed.output_name,
+                str(unkeyed.out_path),
+                unkeyed.signatures,
+            )
+        else:
+            realisation = shaped.realisation
+            drv_key, output_name, out_path, sigs = (
+                realisation.id.drv_hash,
+                realisation.id.output_name,
+                str(realisation.out_path),
+                realisation.signatures,
+            )
+        await self.engine.register_drv_output(drv_key, output_name, out_path, sigs, by_path=by_path)
+        return RegisterDrvOutputResponse()
 
     async def own_query_substitutable_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QuerySubstitutablePaths: the paths some substituter holds, from the scheduler's race.

@@ -125,6 +125,7 @@ class TestTheConfig:
             37: OpRoute.daemon,
             38: OpRoute.daemon,
             39: OpRoute.daemon,
+            42: OpRoute.daemon,
             44: OpRoute.daemon,
             47: OpRoute.daemon,
         }

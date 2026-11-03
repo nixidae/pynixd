@@ -55,7 +55,9 @@ Each of these registers a path in `db.sqlite`, writes the store file system,
 or both. `LocalDBStore.register_valid_paths` (`pynixd_store/register.py`) writes
 `ValidPaths`, `Refs` and `DerivationOutputs` as `registerValidPaths` does, with
 Nix's statements, and only with `pynixd_writes` on. AddToStore, AddToStoreNar
-and AddMultipleToStore call it on their `pynixd` routes. `Realisations` has no writer in pynixd.
+and AddMultipleToStore call it on their `pynixd` routes. `register_drv_output`
+(`pynixd_store/register.py`) writes the build trace, in `BuildTraceV3` or
+`Realisations` as `registerDrvOutput` does.
 
 | op | today | to own it |
 | --- | --- | --- |
@@ -63,7 +65,7 @@ and AddMultipleToStore call it on their `pynixd` routes. `Realisations` has no w
 | 39 AddToStoreNar | on trial: the daemon in a deployment; route `pynixd` imports it (`pynixd_store/add.py`): signatures, path lock, restore into a locked `tmp-*` directory, NAR and content hash, canonical metadata, registration. Repair, a Git address, `auto-optimise-store` and `fsync-store-paths` go to the daemon | — |
 | 44 AddMultipleToStore | on trial: the daemon in a deployment; route `pynixd` imports each path as AddToStoreNar does, in stream order, one registration per path (`daemon.cc:505`). The first error ends the op and keeps the paths before it. A Git address goes to the daemon as AddToStoreNar for that path; repair, `auto-optimise-store` and `fsync-store-paths` send the whole op there | — |
 | 37 AddSignatures | on trial: the daemon in a deployment; route `pynixd` merges the signatures into `ValidPaths.sigs` as `addSignatures` does (`local-store.cc:1583`), in Nix's set order. A path that is not valid raises, where Nix dereferences a null pointer and the worker segfaults (`NIX-DEFECT`) | — |
-| 42 RegisterDrvOutput | daemon | insert into `Realisations` |
+| 42 RegisterDrvOutput | on trial: the daemon in a deployment; route `pynixd` records the realisation as `registerDrvOutput` does (`local-store.cc:664`), in `BuildTraceV3` by the derivation's base name (Nix 2.35) or `Realisations` by its hash (Nix 2.34), in Nix's signature order. An id already present with another output path raises Nix's message. The scheduler's own registration runs the same route (`goals/ensure.py`). Without `ca-derivations` the daemon answers | — |
 | 45 AddBuildLog | handler forwards | write `var/log/nix/drvs/..` |
 | 11, 49 AddTempRoot(s) | owned where pynixd can write `temproots`; else the daemon (a `NIX-DEVIATION`) | run where pynixd owns the state directory |
 | 12 AddIndirectRoot | on trial: the daemon in a deployment; route `pynixd` links `gcroots/auto/<SHA-1 of the path>` to the client's path (`pynixd_store/roots.py`) | — |

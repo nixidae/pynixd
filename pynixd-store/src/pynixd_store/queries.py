@@ -41,6 +41,21 @@ QUERY_REALISATION_BY_HASH = (
 )
 QUERY_REALISATION_BY_PATH = "select outputPath, signatures from BuildTraceV3 where drvPath = ? and outputName = ?"
 
+# `registerDrvOutput` (`local-store.cc:664`). The feature picks the table, as
+# the reads above do. `BuildTraceV3.outputPath` is the whole path as text; Nix
+# 2.34's `Realisations.outputPath` is a `ValidPaths` id, filled by the
+# subquery (`local-store.cc:358`). Both bind the signatures as a space-joined
+# string, empty when there are none (no NULL flag, unlike `ValidPaths.sigs`).
+REGISTER_BUILD_TRACE_BY_PATH = (
+    "insert into BuildTraceV3 (drvPath, outputName, outputPath, signatures) values (?, ?, ?, ?)"
+)
+UPDATE_BUILD_TRACE_BY_PATH = "update BuildTraceV3 set signatures = ? where drvPath = ? and outputName = ?"
+REGISTER_REALISATION_BY_HASH = (
+    "insert into Realisations (drvPath, outputName, outputPath, signatures) "
+    "values (?, ?, (select id from ValidPaths where path = ?), ?)"
+)
+UPDATE_REALISATION_BY_HASH = "update Realisations set signatures = ? where drvPath = ? and outputName = ?"
+
 QUERY_VALID_PATHS = """
 SELECT path FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
 """
