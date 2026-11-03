@@ -55,9 +55,21 @@ create table Realisations (
 """
 
 
+_OPENED: list[aiosqlite.Connection] = []
+
+
+@pytest.fixture(autouse=True)
+async def _close_opened() -> AsyncIterator[None]:
+    """Close what `_db` opened: an open aiosqlite connection keeps a thread that stops the interpreter from exiting."""
+    yield
+    while _OPENED:
+        await _OPENED.pop().close()
+
+
 async def _db(tmp_path: Path) -> aiosqlite.Connection:
     """A store database whose two output paths are valid."""
     conn = await aiosqlite.connect(tmp_path / "db.sqlite")
+    _OPENED.append(conn)
     await conn.executescript(_SCHEMA)
     await conn.executemany("insert into ValidPaths (path) values (?)", [(OUT,), (OTHER,)])
     await conn.commit()

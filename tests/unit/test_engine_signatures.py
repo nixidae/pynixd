@@ -42,9 +42,21 @@ create table ValidPaths (
 """
 
 
+_OPENED: list[aiosqlite.Connection] = []
+
+
+@pytest.fixture(autouse=True)
+async def _close_opened() -> AsyncIterator[None]:
+    """Close what `_db` opened: an open aiosqlite connection keeps a thread that stops the interpreter from exiting."""
+    yield
+    while _OPENED:
+        await _OPENED.pop().close()
+
+
 async def _db(tmp_path: Path, *, sigs: str | None = None) -> aiosqlite.Connection:
     """A store database with one valid path, which carries *sigs*."""
     conn = await aiosqlite.connect(tmp_path / "db.sqlite")
+    _OPENED.append(conn)
     await conn.executescript(_SCHEMA)
     await conn.execute(
         "insert into ValidPaths (path, hash, registrationTime, narSize, sigs) values (?, 'sha256:abc', 1, 10, ?)",
