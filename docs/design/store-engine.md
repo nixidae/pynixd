@@ -14,8 +14,10 @@ reach it from the code of today.
   builds on the client, through `Store.daemon_client`. Each answer is an
   `own_*` method that takes a wire request model, checks the daemon facts
   it needs, and asks the engine.
-- `StoreEngine` (`store/engine.py`, step 2 below) holds the writes and the
-  reads. Its parts are `store/add.py` and `store/register.py`.
+- `StoreEngine` (`pynixd_store/engine.py`, step 2 below) holds the writes
+  and the reads. Its parts are `pynixd_store/add.py` and
+  `pynixd_store/register.py`. The engine is the package `pynixd-store`
+  (step 6 below).
 - `WriteRouter` (`write_router.py`, steps 3 and 4 below) chooses the engine
   or the daemon for the five call sites, and runs the write there: the
   handlers of ops 7, 39 and 44, the substitution queue, and the HTTP
@@ -40,10 +42,11 @@ Nix has three layers, and pynixd takes the same three.
 `add_to_store`, `add_to_store_from_dump`, `register_valid_paths`,
 `nar_from_path`, `query_path_info`, `add_temp_root`, `collect_garbage`. Its
 arguments are plain types: a store path, a `ValidPathInfo`, a byte source, a
-flag. It imports no wire model, no handler, no connection pool. It owns the
-file system, the database, the locks, the temporary roots and the
-settings it reads. `nar_fs`, `content_address`, `signing`, `store/add`,
-`store/register`, `local_store_db`, `temp_roots` and `gc` become its parts.
+flag. It imports no request or response model, no handler, no connection
+pool. It owns the file system, the database, the locks, the temporary roots
+and the settings it reads. `nar_fs`, `content_address`, `signing`, `add`,
+`register`, `local_store_db`, `temp_roots` and `liveness` are its parts, and
+the collection of `gc` becomes one (step 7).
 
 **The daemon backend** implements the same interface over a Nix daemon
 connection. It is `DaemonStore` with the method names above.
@@ -61,7 +64,7 @@ method, encode. Every byte that goes to a client comes from here.
 ## One byte source
 
 The engine reads every dump and NAR through one async protocol, as Nix reads
-a `Source` (`store/source.py`). `read(n)` gives at most `n` bytes, and `b""`
+a `Source` (`pynixd_store/source.py`). `read(n)` gives at most `n` bytes, and `b""`
 at the end. `FramedReader` is one directly: the client's frames. `Pieces`
 makes one of an async iterator: a cache, a daemon, or a decompressed upload
 read on a worker thread. `Bounded` is Nix's `EnsureRead` with a cap, for a
@@ -82,11 +85,17 @@ does today. That ledger is the list to propose to Nix.
 
 ## The package boundary
 
-The engine is a package of its own once the move below is done:
-`pynixd-store` (working name). It depends on no part of the daemon protocol
-frontend. pynixd keeps the handlers, the router, the backends for the daemon,
-HTTP caches and builders, and the scheduler. This is the boundary of the
+The engine is a package of its own: `pynixd-store`
+(`pynixd-store/src/pynixd_store`). It imports no module of `pynixd`. pynixd
+keeps the handlers, the router, the backends for the daemon, HTTP caches and
+builders, the scheduler and the collector. This is the boundary of the
 standing permission to split pynixd (2026-11-02).
+
+The engine takes its data types from the library `nix-daemon-protocol`: a
+store path, a `ValidPathInfo`, a `BasicDerivation`. These are the types of
+the store, and Nix's daemon sends the same ones. It takes no request or
+response model. A second set of plain types would change no answer, and
+every call site would convert.
 
 ## The steps
 
@@ -110,6 +119,11 @@ that nothing moved.
    `LocalDBStore` stops being a subclass of `DaemonStore`. (Done:
    `LocalDBStore` holds its daemon client and forwards to it, and
    `Store.daemon_client` names the client that builds for a store.)
-6. The package split.
+6. The package split. (Done: `pynixd-store` holds the engine and its parts.
+   `gc.py` stays in pynixd, because it streams to a client and asks the
+   other stores.)
+7. The collector splits. The collection over the database and the roots
+   moves into the engine as `collect_garbage`; the client stream and the
+   other stores stay in pynixd.
 
 New operations go into the engine from step 2 on, not into `LocalDBStore`.
