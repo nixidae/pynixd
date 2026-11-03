@@ -37,6 +37,8 @@ log = structlog.get_logger(__name__)
 
 TEST_OP_ROUTES: dict[str, OpRoute] = {
     "NarFromPath": OpRoute.shadow,
+    "QuerySubstitutablePathInfo": OpRoute.shadow,
+    "QuerySubstitutablePathInfos": OpRoute.shadow,
     "AddToStore": OpRoute.pynixd,
     "AddToStoreNar": OpRoute.pynixd,
     "AddMultipleToStore": OpRoute.pynixd,

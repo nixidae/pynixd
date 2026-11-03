@@ -194,6 +194,8 @@ class LocalDBStore(Store):
         37: Owned("own_add_signatures", writes=True),
         47: Owned("own_add_perm_root", writes=True),
         32: Owned("own_query_substitutable_paths", default=OpRoute.pynixd),
+        21: Owned("own_query_substitutable_path_info"),
+        30: Owned("own_query_substitutable_path_infos"),
         33: Owned("own_query_valid_derivers", default=OpRoute.pynixd),
         41: Owned("own_query_derivation_output_map", default=OpRoute.pynixd),
         42: Owned("own_register_drv_output", writes=True),
@@ -740,6 +742,97 @@ class LocalDBStore(Store):
             for path in request.paths:
                 tg.start_soon(ask, path)
         return QuerySubstitutablePathsResponse.fast(paths=found)
+
+    async def own_query_substitutable_path_info(
+        self, request: Any, client: Any = None, suppress_last: bool = False
+    ) -> Any:
+        """QuerySubstitutablePathInfo (`daemon.cc:819`): op 30 for one path, with no path in the answer."""
+        from nix_daemon_protocol.query_substitutable_path_info import (
+            QuerySubstitutablePathInfoResponse,
+            UnkeyedSubstitutablePathInfo,
+        )
+
+        found = await self._substitutable_path_infos([request.path], client)
+        if found is None:
+            return None
+        if not found:
+            return QuerySubstitutablePathInfoResponse.fast(found=False)
+        (info,) = found
+        return QuerySubstitutablePathInfoResponse.fast(
+            found=True,
+            info=UnkeyedSubstitutablePathInfo(
+                deriver=info.deriver,
+                references=info.references,
+                download_size=info.download_size,
+                nar_size=info.nar_size,
+            ),
+        )
+
+    async def own_query_substitutable_path_infos(
+        self, request: Any, client: Any = None, suppress_last: bool = False
+    ) -> Any:
+        """QuerySubstitutablePathInfos (`daemon.cc:837`): what a substituter knows of each path it holds.
+
+        A path that names a content address goes to the daemon: Nix then
+        makes the path again for each substituter's store directory
+        (`misc.cc:106`), and pynixd's backends know no store directory.
+        """
+        from nix_daemon_protocol.query_substitutable_path_infos import QuerySubstitutablePathInfosResponse
+
+        if any(str(ca) for ca in request.paths.values()):
+            return None
+        found = await self._substitutable_path_infos(list(request.paths), client)
+        if found is None:
+            return None
+        return QuerySubstitutablePathInfosResponse.fast(infos=found)
+
+    async def _substitutable_path_infos(self, paths: list[StorePath], client: Any) -> list[Any] | None:
+        """What the highest-priority backend holding each path knows of it, in Nix's map order.
+
+        `querySubstitutablePathInfos` (`misc.cc:90`) walks the substituters
+        in priority order and takes the first that holds the path, which is
+        the one `SubstitutionQueue.get_substituter` picks. Without
+        `substitute` nothing is substitutable (`misc.cc:92`). `None` where
+        the daemon answers, as `own_query_substitutable_paths` decides.
+
+        NIX-DEVIATION (#27): a substituter whose query fails reads as one
+        that lacks the path. With `fallback` off Nix raises that error
+        (`misc.cc:151`). pynixd's race counts the failure against the
+        store's health instead, so one unreachable cache does not fail every
+        plan. To reverse it, measure how often a plan fails that way on Nix.
+        """
+        from nix_daemon_protocol.query_substitutable_path_infos import SubstitutablePathInfo
+
+        from ..goals.query_missing import daemon_substitutes
+
+        queue = self.substitution_queue
+        if queue is None or daemon_substitutes(client, queue):
+            return None
+        options = client.options if client is not None else None
+        if options is not None and not options.use_substitutes:
+            return []
+
+        found: list[SubstitutablePathInfo] = []
+
+        async def ask(path: StorePath) -> None:
+            candidate = await queue.get_substituter(path)
+            if candidate is None:
+                return
+            info = candidate.path_info.info
+            found.append(
+                SubstitutablePathInfo(
+                    path=path,
+                    deriver=info.deriver,
+                    references=set(info.references),
+                    download_size=candidate.download_size,
+                    nar_size=info.nar_size,
+                )
+            )
+
+        async with anyio.create_task_group() as tg:
+            for path in paths:
+                tg.start_soon(ask, path)
+        return sorted(found, key=lambda info: info.path.name)
 
     async def own_find_roots(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """FindRoots: every root and the links that name it, uncensored (`gc.cc:319`).

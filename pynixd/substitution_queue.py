@@ -106,6 +106,8 @@ class SubstitutionCandidate:
     store: Store
     path_info: ValidPathInfo
     http_narinfo: HTTPNarInfo | None = None
+    download_size: int = 0
+    """The narinfo's `FileSize`, as `SubstitutionQueryResult.download_size`."""
 
 
 @dataclass(frozen=True)
@@ -610,7 +612,7 @@ class SubstitutionQueue:
     def _best_candidate_from_cache(self, path: StorePath, stores: list[Store]) -> SubstitutionCandidate | None:
         positive = self.positive.get(path, {})
         candidates = [
-            SubstitutionCandidate(store=store, path_info=result.path_info)
+            SubstitutionCandidate(store=store, path_info=result.path_info, download_size=result.download_size)
             for store in stores
             if (result := positive.get(store.store_id)) is not None and result.path_info is not None
         ]
