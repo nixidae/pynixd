@@ -41,6 +41,7 @@ from nix_daemon_protocol import (
     QueryValidPathsRequest,
     StorePath,
 )
+from pynixd_store.gc_sql import Bound, SqlPlan, referrer_first
 from pynixd_store.liveness import RootsTracker, walk_volatile
 from pynixd_store.local_store_db import LocalStoreDB, resolve_db_path
 
@@ -51,7 +52,6 @@ from .daemon_extensions import (
     QueryPathInfosRequest,
 )
 from .exceptions import BackendError, GCNotPermittedError
-from .gc_sql import Bound, SqlPlan, referrer_first
 from .store import is_http_binary_cache
 
 if TYPE_CHECKING:

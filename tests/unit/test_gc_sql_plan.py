@@ -18,8 +18,8 @@ from typing import TYPE_CHECKING
 import pytest
 
 from pynixd.gc import _by_weight, _take_until_below_target
-from pynixd.gc_sql import Bound, SqlPlan, referrer_first
 from pynixd_store.db_migrations import PATH_ACCESS_TABLE, apply_migrations
+from pynixd_store.gc_sql import Bound, SqlPlan, referrer_first
 
 if TYPE_CHECKING:
     from pathlib import Path

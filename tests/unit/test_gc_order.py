@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from pynixd.gc import Collector
-from pynixd.gc_sql import referrer_first
+from pynixd_store.gc_sql import referrer_first
 from tests.unit.test_gc_collector import FakeContext, FakeLocal
 
 
