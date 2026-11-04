@@ -38,6 +38,7 @@ class SlotScheduler:
         self.steps: list[str] = []
         self.ctx = FakeContext()
         self.local_store = SimpleNamespace(db=None)
+        self.local_builder = None
         self.queue = self
 
     async def complete(self, _build_id: str, _response: Any) -> None:

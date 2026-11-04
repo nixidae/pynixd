@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     from nix_daemon_protocol.aliases import StorePathSet
     from nix_daemon_protocol.ids import BuildId, RequestId, StoreId
     from nix_daemon_protocol.logs import LogMessage
+    from pynixd_store.builder.settings import BuildSettings
 
     from .answer import Answer
     from .connection import ClientConn, Connection
@@ -1165,6 +1166,11 @@ class Scheduler:
         build_resp: BuildDerivationResponse | None = None
         completed = False
         try:
+            if store is self.local_builder and isinstance(self.local_store, LocalDBStore):
+                settings = await self.local_store.local_build_settings(build.request, build.options)
+                if settings is not None:
+                    await self._build_here(build, store, self.local_store, settings)
+                    return
             async with contextlib.AsyncExitStack() as held:
                 async with store.build_conn(build.options) as conn:
                     observation = build.observation = BuildObservation(
@@ -1187,20 +1193,8 @@ class Scheduler:
                     if result_succeeded(build_resp.result):
                         await self._hold_outputs(held, build, store, build_resp)
                     elif (fault := self._retryable_elsewhere(build, store, build_resp)) is not None:
-                        # The builder's machine failed, not the derivation: try
-                        # another store, the local one included, as a crashed
-                        # connection already does.
-                        # nixidae/nixidae#1015.
-                        log.warning(
-                            "build_failed_on_the_machine", build_id=build.build_id, store_id=store.store_id, fault=fault
-                        )
-                        self._note_disk_full(store, str(build_resp.result.error_msg))
-                        await build.post_log_and_fanout(
-                            LogNext(text=f"pynixd: build failed on {store.store_id} ({fault}), retrying elsewhere\n")
-                        )
-                        build.reset_for_retry(store.store_id, str(build_resp.result.error_msg) or fault)
+                        await self._retry_elsewhere(build, store, build_resp, fault)
                         build_resp = None
-                        self.trigger()
                 # The build connection goes back before the pull, so the slot
                 # takes the next build while this one pulls. A pull took 92 s
                 # against a build of 40 s for t3code, with the slot idle for
@@ -1249,6 +1243,58 @@ class Scheduler:
         if build_resp is not None and not completed:
             await self.queue.complete(build.build_id, build_resp)
             self.trigger()
+
+    async def _build_here(
+        self, build: QueuedBuild, store: DaemonStore, local: LocalDBStore, settings: BuildSettings
+    ) -> None:
+        """pynixd's own sandbox builds it (`docs/design/builder.md`).
+
+        The outputs register in the local store itself, so nothing is pulled
+        and no worker of the daemon holds a root. The log is fanned out after
+        the build, as `_execute` does.
+        """
+        observation = build.observation = BuildObservation(
+            store_id=str(store.store_id), status=-1, queued_ms=_ms_since(build.enqueued_at)
+        )
+        await self._say_where_it_builds(build, store)
+        build.started_at = build.last_output_at = time.monotonic()
+        if build.wait_time is not None:
+            metrics.QUEUE_WAIT_DURATION.observe(build.wait_time)
+        messages: list[LogMessage] = []
+
+        async def keep(message: LogMessage) -> None:
+            build.last_output_at = time.monotonic()
+            messages.append(message)
+
+        resp = await local.build_here(build.request, settings, keep)
+        observation.build_ms = _ms_since(build.started_at)
+        for message in messages:
+            await build.post_log_and_fanout(message)
+        if result_succeeded(resp.result):
+            await self._record_observation(build, resp)
+            for path in output_paths(build, resp):
+                self.ctx.output_locations[str(path)] = store.store_id
+        elif (fault := self._retryable_elsewhere(build, store, resp)) is not None:
+            await self._retry_elsewhere(build, store, resp, fault)
+            return
+        await self.queue.complete(build.build_id, resp)
+        self.trigger()
+
+    async def _retry_elsewhere(
+        self, build: QueuedBuild, store: DaemonStore, resp: BuildDerivationResponse, fault: str
+    ) -> None:
+        """The builder's machine failed, not the derivation: try another store.
+
+        The local one is included, as a crashed connection already does.
+        nixidae/nixidae#1015.
+        """
+        log.warning("build_failed_on_the_machine", build_id=build.build_id, store_id=store.store_id, fault=fault)
+        self._note_disk_full(store, str(resp.result.error_msg))
+        await build.post_log_and_fanout(
+            LogNext(text=f"pynixd: build failed on {store.store_id} ({fault}), retrying elsewhere\n")
+        )
+        build.reset_for_retry(store.store_id, str(resp.result.error_msg) or fault)
+        self.trigger()
 
     def _note_disk_full(self, store: DaemonStore, message: str) -> None:
         """Hold *store* back from builds when it ran out of disk. nixidae/nixidae#1013."""

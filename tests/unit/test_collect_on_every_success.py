@@ -111,6 +111,7 @@ class FakeScheduler:
         self.queue = FakeQueue(self.steps)
         self.ctx = FakeContext()
         self.local_store = SimpleNamespace(db=None)
+        self.local_builder = None
         self.pulled: set[StorePath] = set()
 
     def trigger(self) -> None:

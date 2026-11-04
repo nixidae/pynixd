@@ -12,23 +12,38 @@ import anyio
 import structlog
 from pydantic import BaseModel
 
+from nix_daemon_protocol.logs import ActivityField, LogResult, LogStartActivity, LogStopActivity
 from nix_daemon_protocol.operations import STANDARD_OPERATIONS
+from nix_daemon_protocol.protocol import ActivityType, FieldType, ResultType, Verbosity
+from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
+from pynixd_store.builder import local as local_builder
+from pynixd_store.builder.buildlog import BuildLog
+from pynixd_store.builder.settings import BuildSettings
 from pynixd_store.engine import StoreEngine
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.nix_config import nix_environment, read_nix_config
 
 from .. import metrics
+from ..activity import next_activity_id
 from ..op_routes import OpRoute, Owned
-from ..serde import StorePath
+from ..serde import (
+    BuildDerivationRequest,
+    BuildDerivationResponse,
+    BuildMode,
+    BuildResult,
+    BuildResultStatus,
+    StorePath,
+)
 from ..write_router import WriteRouter
 from .base import Store
 from .daemon_writes import DaemonWrites
 from .local_daemon import LocalStore
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterable, Set as AbstractSet
+    from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Set as AbstractSet
     from contextlib import AbstractAsyncContextManager
 
+    from nix_daemon_protocol.logs import LogMessage
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
     from nix_daemon_protocol.wire_ops import WireRequest
     from pynixd_store.add import ImportSettings
@@ -206,6 +221,8 @@ class LocalDBStore(Store):
         35: Owned("own_verify_store", writes=True),
         20: Owned("own_collect_garbage", writes=True),
         43: Owned("own_query_realisation", default=OpRoute.pynixd),
+        # The scheduler calls `local_build_settings` and `build_here` itself, for its own log fan-out.
+        36: Owned("own_build_derivation", writes=True),
     }
 
     #: Operations of pynixd's own protocol extension that the engine answers.
@@ -564,6 +581,100 @@ class LocalDBStore(Store):
     async def own_collect_garbage(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """None: `CollectGarbageHandler` collects through the write router, under the GC write lock."""
         return None
+
+    async def own_build_derivation(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        """pynixd's sandbox builds it (`docs/design/builder.md`), or `None` and the daemon does."""
+        options = client.options if client is not None else None
+        settings = await self.local_build_settings(request, options)
+        if settings is None:
+            return None
+
+        async def send(message: LogMessage) -> None:
+            if client is not None:
+                await client.send(message)
+
+        return await self.build_here(request, settings, send)
+
+    async def local_build_settings(
+        self, request: BuildDerivationRequest, options: SetOptionsRequest | None
+    ) -> BuildSettings | None:
+        """The settings pynixd's sandbox builds *request* with, or `None` when the daemon builds it.
+
+        Repair and check stay on the daemon, and so does what `unsupported` names.
+        """
+        if self.routes.get(BuildDerivationRequest.op) is not OpRoute.pynixd or not self.engine.writable:
+            return None
+        reason = "repair or check" if request.build_mode != BuildMode.NORMAL else None
+        settings = BuildSettings.from_nix_config(await self.engine.nix_config(), _build_overrides(options))
+        reason = reason or local_builder.unsupported(request.derivation, settings)
+        if reason is None:
+            return settings
+        log.info("build_left_to_the_daemon", drv=str(request.drv_path), reason=reason)
+        metrics.OP_FALLTHROUGH.labels(store_id=self.store_id, op=request.name).inc()
+        return None
+
+    async def build_here(
+        self,
+        request: BuildDerivationRequest,
+        settings: BuildSettings,
+        on_log: Callable[[LogMessage], Awaitable[None]],
+    ) -> BuildDerivationResponse:
+        """Build *request* in pynixd's sandbox and register its outputs in this store.
+
+        *on_log* gets Nix's `actBuild` activity: its start, one
+        `resBuildLogLine` for each line, and its stop
+        (`derivation-building-goal.cc:884`, `build/build-log.cc:46`).
+        """
+        drv_path = str(request.drv_path)
+        act_id = next_activity_id()
+        await on_log(
+            LogStartActivity(
+                act_id=act_id,
+                level=Verbosity.INFO,
+                type=ActivityType.BUILD,
+                text=f"building '{drv_path}'",
+                fields=[
+                    ActivityField(type=FieldType.STRING, valstr=drv_path),
+                    ActivityField(type=FieldType.STRING, valstr=""),
+                    ActivityField(type=FieldType.INT, valint=1),
+                    ActivityField(type=FieldType.INT, valint=1),
+                ],
+            )
+        )
+        lines = BuildLog()
+
+        async def emit(texts: list[str]) -> None:
+            for text in texts:
+                field = ActivityField(type=FieldType.STRING, valstr=text)
+                await on_log(LogResult(act_id=act_id, result_type=ResultType.BUILD_LOG_LINE, fields=[field]))
+
+        async def piece(data: bytes) -> None:
+            await emit(lines.feed(data))
+
+        try:
+            built = await local_builder.build(self.engine, drv_path, request.derivation, settings, on_log=piece)
+            await emit(lines.flush())
+        finally:
+            with anyio.CancelScope(shield=True):
+                await on_log(LogStopActivity(act_id=act_id))
+        # `--print-out-paths` prints these; `GoalEngine` keys them by `DrvOutput`.
+        by_name = (
+            {name: UnkeyedRealisation(out_path=StorePath(o.path)) for name, o in request.derivation.outputs.items()}
+            if built.status.is_success
+            else {}
+        )
+        return BuildDerivationResponse(
+            result=BuildResult(
+                status=int(built.status),
+                error_msg=built.error_msg,
+                times_built=1 if built.status is BuildResultStatus.BUILT else 0,
+                is_non_deterministic=0,
+                start_time=built.start_time,
+                stop_time=built.stop_time,
+                built_outputs={},
+                built_outputs_by_name=by_name,
+            )
+        )
 
     async def import_settings(self) -> ImportSettings:
         """What `addToStore` reads of this store's Nix settings. Read once, as the daemon reads them."""
@@ -994,6 +1105,21 @@ class LocalDBStore(Store):
                 pass
 
         return DerivationOutputMapBatchResponse(outputs=result)
+
+
+def _build_overrides(options: SetOptionsRequest | None) -> dict[str, str]:
+    """The session's settings for a build: `ClientSettings::apply` (`daemon.cc:234`).
+
+    The fixed fields of SetOptions apply first and the overrides over them.
+    `build-timeout` is the old name of `timeout`.
+    """
+    if options is None:
+        return {}
+    overrides = {"max-silent-time": str(int(options.max_silent_time)), "cores": str(options.build_cores)}
+    overrides.update(options.overrides)
+    if "build-timeout" in overrides:
+        overrides.setdefault("timeout", overrides["build-timeout"])
+    return overrides
 
 
 def write_router(store: Store) -> WriteRouter:

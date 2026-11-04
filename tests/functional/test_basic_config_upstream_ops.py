@@ -49,13 +49,7 @@ TOP = (
     'args = [ "-c" "echo ${dep} > $out" ]; }'
 )
 
-UPSTREAM: dict[str, str] = {
-    "BuildDerivation": "the daemon builds: pynixd has no builder yet",
-    "SetOptions": "the client's options, on the connection that builds",
-    "AddTempRoot": "the scheduler roots the inputs and the outputs on the worker that builds (scheduler.py add_temp_roots)",
-    "QueryPathInfo": "the pull of a local build's outputs reads their closure from the daemon store (op 105, one path at a time)",
-    "QueryValidPaths": "the same pull asks which outputs the local store holds, from a store into itself",
-}
+UPSTREAM: dict[str, str] = {}
 """Each op the daemon still receives under the basic config, and why."""
 
 
@@ -153,5 +147,5 @@ async def test_a_basic_config_sends_the_daemon_only_what_pynixd_does_not_do(
 
     sent = _since("pynixd_upstream_ops_total", before_sent)
     fell = _since("pynixd_op_fallthrough_total", before_fell)
-    assert sent.get("BuildDerivation") == 1, f"pynixd substitutes basic-dep and builds basic-top alone: {sites}"
+    assert "BuildDerivation" not in fell, f"pynixd's sandbox builds basic-top: {fell}"
     assert set(sent) == set(UPSTREAM), f"sent to the daemon: {sent}; fell through: {fell}; from: {sites}"

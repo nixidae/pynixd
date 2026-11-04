@@ -89,6 +89,7 @@ class FakeScheduler:
         self.triggers = 0
         self.local_store = SimpleNamespace(db=None)
         """A local store without a database: `execute_build` records nothing."""
+        self.local_builder = None
 
     def trigger(self) -> None:
         self.triggers += 1

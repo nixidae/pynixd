@@ -103,11 +103,18 @@ class StoreEngine:
         self._on_change = on_change
         self._name = name
         self._settings: add.ImportSettings | None = None
+        self._config: Mapping[str, Any] | None = None
+
+    async def nix_config(self) -> Mapping[str, Any]:
+        """The store's Nix settings, `nix config show --json`. Read once, as the daemon reads them."""
+        if self._config is None:
+            self._config = await self._read_config()
+        return self._config
 
     async def settings(self) -> add.ImportSettings:
-        """What `addToStore` reads of the store's Nix settings. Read once, as the daemon reads them."""
+        """What `addToStore` reads of the store's Nix settings."""
         if self._settings is None:
-            self._settings = add.ImportSettings.from_nix_config(await self._read_config())
+            self._settings = add.ImportSettings.from_nix_config(await self.nix_config())
         return self._settings
 
     async def gc_settings(self, overrides: Mapping[str, str]) -> collect.GCSettings:

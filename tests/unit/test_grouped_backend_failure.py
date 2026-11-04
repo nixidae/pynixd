@@ -66,6 +66,7 @@ class FakeScheduler:
         self.queue = FakeQueue()
         self.raised = raised
         self.local_store = SimpleNamespace(db=None)
+        self.local_builder = None
 
     def trigger(self) -> None:
         return
