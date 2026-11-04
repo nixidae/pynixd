@@ -5,13 +5,17 @@ It needs unprivileged user namespaces; the guest has them, as `nix build --store
 
 from __future__ import annotations
 
+import ctypes
 import errno
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 from pynixd_store.builder.spec import ChildSpec
 
@@ -124,3 +128,36 @@ def test_the_filter_refuses_setuid_setgid_and_xattrs(tmp_path: Path) -> None:
 
 def test_filter_syscalls_false_lets_them_through(tmp_path: Path) -> None:
     assert _try_modes(tmp_path, "a", filter_syscalls=False) == ["ok"] * 7
+
+
+_CONNECT = """
+import errno, socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+try:
+    s.connect(b"\\0" + sys.argv[1].encode())
+    print("ok")
+except OSError as e:
+    print(errno.errorcode[e.errno])
+"""
+
+
+def _landlock_abi() -> int:
+    libc = ctypes.CDLL(None, use_errno=True)
+    return int(libc.syscall(444, None, 0, 1))
+
+
+@pytest.mark.skipif(_landlock_abi() < 6, reason="landlock ABI 6 scopes abstract sockets")
+def test_a_shared_network_build_cannot_reach_an_abstract_socket_outside(tmp_path: Path) -> None:
+    """`setupLandlock` (`linux-derivation-builder.cc:201`): a fixed-output build shares the network namespace."""
+    name = f"pynixd-test-{os.getpid()}"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind(b"\0" + name.encode())
+        listener.listen()
+        outside = subprocess.run(
+            [sys.executable, "-I", "-c", _CONNECT, name], capture_output=True, text=True, check=True
+        )
+        args = ["-I", "-c", _CONNECT, name]
+        spec = _spec(tmp_path / "root", "", builder=sys.executable, args=args, private_network=False)
+        code, out, status = _run(tmp_path, spec)
+    assert outside.stdout.split() == ["ok"]
+    assert (code, status, out.split()) == (0, "", [errno.errorcode[errno.EPERM]])

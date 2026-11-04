@@ -42,6 +42,11 @@ PR_SET_NO_NEW_PRIVS = 38
 SIOCSIFFLAGS = 0x8914
 IFF_UP, IFF_LOOPBACK, IFF_RUNNING = 0x1, 0x8, 0x40
 SYS_PIVOT_ROOT = {"x86_64": 155, "aarch64": 41, "riscv64": 41}
+#: The same number on every architecture: landlock came after the unified syscall table.
+SYS_LANDLOCK_CREATE_RULESET = 444
+SYS_LANDLOCK_RESTRICT_SELF = 446
+LANDLOCK_CREATE_RULESET_VERSION = 1
+LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET = 1
 #: The calls that change a mode, and the index of their mode argument.
 CHMOD_CALLS = (("chmod", 1), ("fchmod", 1), ("fchmodat", 2), ("fchmodat2", 2))
 XATTR_CALLS = (
@@ -182,6 +187,35 @@ def _filter_syscalls(no_new_privileges: bool) -> None:
         raise SetupError(f"setting up the system call filter: {e}") from e
 
 
+def _scope_abstract_sockets() -> None:
+    """`setupLandlock` (`linux/build/linux-derivation-builder.cc:201`): no connect to an abstract socket made outside.
+
+    Two fixed-output builds share the host's network namespace, so without this they can talk.
+    """
+    abi = _libc.syscall(SYS_LANDLOCK_CREATE_RULESET, None, 0, LANDLOCK_CREATE_RULESET_VERSION)
+    if abi < 6:
+        return
+    # struct landlock_ruleset_attr: handled_access_fs, handled_access_net, scoped.
+    attr = struct.pack("=QQQ", 0, 0, LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET)
+
+    def refused(what: str) -> None:
+        """`enterChroot` (`:412`) warns on EPERM: no CAP_SYS_ADMIN and `allow-new-privileges`."""
+        err = ctypes.get_errno()
+        if err != errno.EPERM:
+            raise SetupError(f"{what}: {os.strerror(err)}")
+        print(f"warning: setting up landlock: {what}: {os.strerror(err)}", file=sys.stderr)
+
+    ruleset = _libc.syscall(SYS_LANDLOCK_CREATE_RULESET, attr, len(attr), 0)
+    if ruleset == -1:
+        refused("failed to create a landlock ruleset")
+        return
+    try:
+        if _libc.syscall(SYS_LANDLOCK_RESTRICT_SELF, ruleset, 0) == -1:
+            refused("failed to apply landlock")
+    finally:
+        os.close(ruleset)
+
+
 def _run_child(spec: ChildSpec) -> None:
     """`runChild` (`unix/build/derivation-builder.cc:933`) after `commonChildInit` (`child.cc:10`)."""
     os.setsid()
@@ -194,6 +228,7 @@ def _run_child(spec: ChildSpec) -> None:
         _prctl(PR_SET_NO_NEW_PRIVS, 1)
     if spec["filter_syscalls"]:
         _filter_syscalls(spec["no_new_privileges"])
+    _scope_abstract_sockets()
     os.chdir(spec["work_dir"])
     resource.setrlimit(resource.RLIMIT_CORE, (0, resource.RLIM_INFINITY))
     os.umask(0o022)
