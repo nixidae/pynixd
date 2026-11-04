@@ -71,6 +71,23 @@ echo done > $out""",
 )
 BAD_JSON = "bad JSON log message from the derivation builder: "
 
+FAKE_HASH = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+
+def _fod(name: str, mode: str, command: str, output_hash: str = FAKE_HASH) -> str:
+    return (
+        f"let dep = {DEP}; in "
+        f'derivation {{ name = "{name}"; system = builtins.currentSystem; builder = "/bin/sh"; '
+        f'args = [ "-c" "{command}" ]; outputHashMode = "{mode}"; outputHashAlgo = "sha256"; '
+        f'outputHash = "{output_hash}"; }}'
+    )
+
+
+FOD_FLAT = _fod("parity-fod-flat", "flat", "echo flat > $out")
+# A self-reference moves the output to its real path, so `rewriteOutput` changes its content.
+FOD_SELF = _fod("parity-fod-self", "recursive", "echo $out > $out")
+FOD_DEP = "parity-fod-dep", "recursive", "echo ${dep} > $out"
+
 
 def _rows(root: Path) -> tuple[list[tuple[Any, ...]], list[tuple[str, str]]]:
     db = sqlite3.connect(f"file:{root}/nix/var/nix/db/db.sqlite?mode=ro", uri=True)
@@ -156,8 +173,7 @@ async def _fail(tmp_path: Path, route: OpRoute) -> list[str]:
         _rc, _out, err, _both = await run_subproc(
             [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--expr", FAILS], expected_retcode=1
         )
-    lines = err.splitlines()
-    return lines[next(i for i, line in enumerate(lines) if line.startswith("error:")) :]
+    return _errors(err)
 
 
 async def test_a_failed_build_says_what_the_daemon_says(tmp_path: Path) -> None:
@@ -187,3 +203,42 @@ async def test_a_builders_json_lines_reach_the_client_as_the_daemon_sends_them(t
     assert here == there
     assert "builder says hi" in here, here
     assert not any("too quiet" in line or "not a transfer" in line for line in here), here
+
+
+def _errors(err: str) -> list[str]:
+    lines = err.splitlines()
+    return lines[next(i for i, line in enumerate(lines) if line.startswith("error:")) :]
+
+
+async def _fixed(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
+    errors: dict[str, list[str]] = {}
+    async with _serve(tmp_path, route) as (url, root):
+
+        async def build(expr: str) -> list[str]:
+            _rc, _out, err, _both = await run_subproc(
+                [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--expr", expr], expected_retcode=1
+            )
+            return _errors(err)
+
+        errors["flat"] = await build(FOD_FLAT)
+        errors["self"] = await build(FOD_SELF)
+        errors["dep"] = await build(_fod(*FOD_DEP))
+        got = next(line.split()[-1] for line in errors["dep"] if line.strip().startswith("got:"))
+        # The right hash: the path the mismatch registered is valid, and the reference still fails the build.
+        errors["dep-right"] = await build(_fod(*FOD_DEP, output_hash=got))
+    valid, refs = _rows(root)
+    return {"errors": errors, "valid": valid, "refs": refs}
+
+
+async def test_a_fixed_output_with_the_wrong_hash_stays_valid_under_its_real_one(tmp_path: Path) -> None:
+    """`registerOutputs` registers a content-addressed output before `checkOutputs` refuses it."""
+    here = await _fixed(tmp_path, OpRoute.pynixd)
+    there = await _fixed(tmp_path, OpRoute.daemon)
+
+    assert here["errors"] == there["errors"]
+    assert here["valid"] == there["valid"]
+    assert here["refs"] == there["refs"]
+    assert all(any("hash mismatch" in line for line in here["errors"][k]) for k in ("flat", "self", "dep")), here
+    assert any("must not reference store paths" in line for line in here["errors"]["dep-right"]), here
+    names = [row[0].split("-", 1)[1] for row in here["valid"]]
+    assert {"parity-fod-flat", "parity-fod-self", "parity-fod-dep", "parity-dep"} <= set(names), names

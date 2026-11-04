@@ -20,14 +20,14 @@ from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 
-from ..add import _nar_hash, canonicalise, content_hash, delete_path
+from ..add import PathLock, TempDir, _nar_hash, canonicalise, content_hash, delete_path
 from ..content_address import ContentAddress, Method, content_addressed_path, fixed_output_address
 from ..hintfmt import magenta
-from ..nar_fs import dump_path
+from ..nar_fs import dump_path, restore_path
 from .refscan import scan_for_references
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Iterable, Iterator, Mapping
     from pathlib import Path
 
     from nix_daemon_protocol.derivation_output import DerivationOutput
@@ -111,6 +111,34 @@ def _sorted(drv_path: str, scanned: Mapping[str, Scanned]) -> list[str]:
     return done
 
 
+@dataclass
+class Collected:
+    """What `registerOutputs` holds before `checkOutputs`: each output in the store and described.
+
+    *early* are the content-addressed outputs, which Nix registers before it
+    checks them, so a fixed output with the wrong hash stays valid under its
+    real one. *locks* guard paths that are not the derivation's own: hold them
+    until *early* is registered, then `release`.
+    """
+
+    infos: dict[str, ValidPathInfo]
+    early: list[ValidPathInfo]
+    failure: BuildFailure | None
+    locks: list[PathLock]
+
+    def release(self) -> None:
+        for lock in self.locks:
+            lock.release(delete=True)
+
+
+@dataclass(frozen=True)
+class _Fixed:
+    wanted: ContentAddress
+    got: ContentAddress
+    path: str
+    references: frozenset[str]
+
+
 def collect_outputs(
     drv_path: str,
     outputs: Mapping[str, DerivationOutput],
@@ -121,11 +149,13 @@ def collect_outputs(
     store_dir: str,
     input_paths: set[str],
     valid: set[str],
-) -> dict[str, ValidPathInfo]:
+    is_valid: Callable[[str], bool],
+) -> Collected:
     """Each output the build made, moved into the store and described; nothing is registered yet.
 
     An output in *valid* is not looked at, as Nix does outside check mode.
-    Blocking: call it from a worker thread.
+    *is_valid* asks the store about a path no output names. Blocking: call it
+    from a worker thread.
     """
     referenceable = input_paths | {o.path for o in outputs.values()}
     scanned = {
@@ -134,38 +164,62 @@ def collect_outputs(
         if o.path not in valid
     }
     infos: dict[str, ValidPathInfo] = {}
-    for name in _sorted(drv_path, scanned):
-        output, s = outputs[name], scanned[name]
-        actual = chroot_root / s.path.lstrip("/")
-        ca: ContentAddress | None = None
-        path = s.path
-        if output.method:
-            ca, path = _fixed(drv_path, name, drv_name, output, s, actual, store_dir)
-        dest = real_store_dir / _base(path)
-        delete_path(dest)
-        os.rename(actual, dest)
-        canonicalise(dest)
-        nar_hash, nar_size = _nar_hash(dest)
-        infos[name] = ValidPathInfo(
-            path=StorePath(path=path),
-            info=UnkeyedValidPathInfo(
-                deriver=StorePath(path=drv_path),
-                nar_hash=NARHash(hash=nar_hash.hex()),
-                references={StorePath(path=ref) for ref in s.references},
-                registration_time=Time(ts=0),
-                nar_size=nar_size,
-                ultimate=True,
-                sigs=set(),
-                ca=WireContentAddress(ca.render() if ca else ""),
-            ),
-        )
-    return infos
+    fixed: dict[str, _Fixed] = {}
+    locks: list[PathLock] = []
+    try:
+        for name in _sorted(drv_path, scanned):
+            output, s = outputs[name], scanned[name]
+            actual = chroot_root / s.path.lstrip("/")
+            path, references = s.path, s.references
+            if output.method:
+                f = fixed[name] = _fixed(name, drv_name, output, s, actual, store_dir, real_store_dir)
+                path, references = f.path, f.references
+            dest = real_store_dir / _base(path)
+            nar_hash, nar_size = _nar_hash(actual)
+            if path != s.path:
+                lock = PathLock(dest)
+                # Nix does not wait here: a build with the right hash may hold the lock.
+                if not lock.try_acquire():
+                    delete_path(actual)
+                    raise _check(drv_path, fixed[name]) or RuntimeError(f"'{drv_path}' made '{path}' for '{name}'")
+                locks.append(lock)
+            if path != s.path and is_valid(path):
+                delete_path(actual)
+            else:
+                delete_path(dest)
+                os.rename(actual, dest)
+                canonicalise(dest)
+            infos[name] = ValidPathInfo(
+                path=StorePath(path=path),
+                info=UnkeyedValidPathInfo(
+                    deriver=StorePath(path=drv_path),
+                    nar_hash=NARHash(hash=nar_hash.hex()),
+                    references={StorePath(path=ref) for ref in references},
+                    registration_time=Time(ts=0),
+                    nar_size=nar_size,
+                    ultimate=True,
+                    sigs=set(),
+                    ca=WireContentAddress(fixed[name].got.render() if name in fixed else ""),
+                ),
+            )
+    except BaseException:
+        for lock in locks:
+            lock.release(delete=True)
+        raise
+    failure = next((e for name in sorted(fixed) if (e := _check(drv_path, fixed[name])) is not None), None)
+    return Collected(infos, [infos[name] for name in fixed], failure, locks)
 
 
 def _fixed(
-    drv_path: str, name: str, drv_name: str, output: DerivationOutput, s: Scanned, actual: Path, store_dir: str
-) -> tuple[ContentAddress, str]:
-    """`newInfoFromCA` for a fixed output, then `checkCAFixedOutput` (`build/derivation-check.cc:10`)."""
+    name: str,
+    drv_name: str,
+    output: DerivationOutput,
+    s: Scanned,
+    actual: Path,
+    store_dir: str,
+    real_store_dir: Path,
+) -> _Fixed:
+    """`newInfoFromCA` (`unix/build/derivation-builder.cc:1341`) for a fixed output: the path its content has."""
     wanted = fixed_output_address(output.method, output.hash_digest)
     if wanted.method in (Method.FLAT, Method.TEXT) and (not stat.S_ISREG(s.mode) or s.mode & stat.S_IXUSR):
         raise BuildFailure(
@@ -173,19 +227,72 @@ def _fixed(
             f"output path {_quoted(actual)} should be a non-executable regular file since recursive "
             "hashing is not enabled (one of outputHashMode={flat,text} is true)",
         )
-    got = ContentAddress(wanted.method, wanted.algo, content_hash(wanted, actual, _base(s.path)[:32], dump_path))
-    if got.digest != wanted.digest:
-        raise BuildFailure(
+    old_hash_part = _base(s.path)[:32]
+    got = ContentAddress(wanted.method, wanted.algo, content_hash(wanted, actual, old_hash_part, dump_path))
+    self_reference = s.path in s.references
+    others = s.references - {s.path}
+    output_name = drv_name if name == "out" else f"{drv_name}-{name}"
+    path = content_addressed_path(got, output_name, others, store_dir, self_reference=self_reference)
+    if path != s.path and self_reference:
+        _rewrite(actual, old_hash_part, _base(path)[:32], real_store_dir)
+    return _Fixed(wanted, got, path, others | {path} if self_reference else others)
+
+
+def _check(drv_path: str, f: _Fixed) -> BuildFailure | None:
+    """`checkCAFixedOutput` (`build/derivation-check.cc:10`)."""
+    if f.got.digest != f.wanted.digest:
+        return BuildFailure(
             BuildResultStatus.HASH_MISMATCH,
             f"hash mismatch in fixed-output derivation '{magenta(drv_path)}':\n"
-            f"  specified: {magenta(_sri(wanted.algo, wanted.digest))}\n"
-            f"     got:    {magenta(_sri(got.algo, got.digest))}",
+            f"  specified: {magenta(_sri(f.wanted.algo, f.wanted.digest))}\n"
+            f"     got:    {magenta(_sri(f.got.algo, f.got.digest))}",
         )
-    if s.references:
-        raise BuildFailure(
+    if f.references:
+        return BuildFailure(
             BuildResultStatus.HASH_MISMATCH,
             f"fixed-output derivations must not reference store paths: '{magenta(drv_path)}' references "
-            f"{magenta(len(s.references))} distinct paths, e.g. '{magenta(min(s.references))}'",
+            f"{magenta(len(f.references))} distinct paths, e.g. '{magenta(min(f.references))}'",
         )
-    output_name = drv_name if name == "out" else f"{drv_name}-{name}"
-    return got, content_addressed_path(got, output_name, (), store_dir)
+    return None
+
+
+def _rewrite(actual: Path, old: str, new: str, real_store_dir: Path) -> None:
+    """`rewriteOutput`: *old* becomes *new* throughout the tree, by a NAR round trip through the store."""
+    tmp = TempDir.create(real_store_dir)
+    try:
+        staged = tmp.path / "x"
+        restore_path(staged, _Reader(_rewritten(dump_path(actual), old.encode(), new.encode())))
+        delete_path(actual)
+        os.rename(staged, actual)
+        canonicalise(actual)
+    finally:
+        tmp.remove()
+
+
+def _rewritten(pieces: Iterable[bytes], old: bytes, new: bytes) -> Iterator[bytes]:
+    """`RewritingSink`: keeps `len(old) - 1` bytes back, so a match across two pieces is found."""
+    keep = len(old) - 1
+    prev = b""
+    for piece in pieces:
+        s = (prev + piece).replace(old, new)
+        prev = s[len(s) - keep :] if len(s) > keep else s
+        yield s[: len(s) - len(prev)]
+    yield prev
+
+
+class _Reader:
+    """The sync `read` that `restore_path` takes, over an iterator of pieces."""
+
+    def __init__(self, pieces: Iterable[bytes]) -> None:
+        self._pieces = iter(pieces)
+        self._buffer = memoryview(b"")
+
+    def __call__(self, n: int) -> bytes:
+        while not self._buffer:
+            piece = next(self._pieces, None)
+            if piece is None:
+                return b""
+            self._buffer = memoryview(piece)
+        out = bytes(self._buffer[:n])
+        self._buffer = self._buffer[n:]
+        return out

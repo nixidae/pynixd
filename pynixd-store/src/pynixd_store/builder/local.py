@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import anyio
+import anyio.from_thread
 import anyio.to_thread
 import structlog
 
@@ -252,7 +253,7 @@ async def build(
         if failure is not None:
             return LocalBuildResult(failure.status, failure.message, start, stop)
         try:
-            infos = await anyio.to_thread.run_sync(
+            collected = await anyio.to_thread.run_sync(
                 lambda: collect_outputs(
                     drv_path,
                     drv.outputs,
@@ -262,12 +263,19 @@ async def build(
                     store_dir=str(layout.store_dir),
                     input_paths=inputs,
                     valid=valid,
+                    is_valid=lambda path: anyio.from_thread.run(engine.is_valid_path_uncached, path),
                 )
             )
         except BuildFailure as e:
             return LocalBuildResult(e.status, e.message, start, stop)
-        await engine.register_valid_paths(infos.values())
-        return LocalBuildResult(BuildResultStatus.BUILT, "", start, stop, infos)
+        try:
+            if collected.failure is not None:
+                await engine.register_valid_paths(collected.early)
+                return LocalBuildResult(collected.failure.status, collected.failure.message, start, stop)
+            await engine.register_valid_paths(collected.infos.values())
+        finally:
+            collected.release()
+        return LocalBuildResult(BuildResultStatus.BUILT, "", start, stop, collected.infos)
     finally:
         with anyio.CancelScope(shield=True):
             if paths is not None:

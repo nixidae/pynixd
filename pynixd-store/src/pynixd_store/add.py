@@ -110,13 +110,24 @@ class PathLock:
 
     def acquire(self) -> None:
         """Blocks until the lock is held. Call it from a worker thread."""
+        self._lock(wait=True)
+
+    def try_acquire(self) -> bool:
+        """`lockPaths(..., wait = false)`: `False` when another process holds the lock."""
+        return self._lock(wait=False)
+
+    def _lock(self, *, wait: bool) -> bool:
         while True:
             fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                os.close(fd)
+                return False
             # A holder that finished wrote "d" and unlinked the file: this lock guards nothing.
             if os.fstat(fd).st_size == 0:
                 self._fd = fd
-                return
+                return True
             os.close(fd)
 
     def release(self, *, delete: bool) -> None:
