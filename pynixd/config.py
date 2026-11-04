@@ -558,6 +558,8 @@ class ExternalUnixStoreSpec(StoreSpecBase):
     scheduleable: bool = False
     no_schedule: bool = True
     gc_enabled: bool = False
+    probe: bool | None = False
+    """A substituter builds nothing, so it is never sent the probe builds."""
 
     def reference_key(self) -> object | None:
         """`unix://<socket_path>?root=<store_path>`, and the trust."""
