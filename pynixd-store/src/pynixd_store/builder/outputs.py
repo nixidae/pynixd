@@ -247,7 +247,7 @@ def collect_outputs(
                 delete_path(actual)
             else:
                 delete_path(dest)
-                os.rename(actual, dest)
+                _move(actual, dest)
                 canonicalise(dest)
             infos[name] = ValidPathInfo(
                 path=StorePath(path=path),
@@ -544,6 +544,20 @@ def check_outputs(
         if c is not None and (failure := apply(name, infos[name], c)) is not None:
             return failure
     return None
+
+
+def _move(actual: Path, dest: Path) -> None:
+    """Move a canonicalised output into the store.
+
+    A directory's rename to another parent rewrites its `..`, which needs write
+    permission on it: `canonicalise` left it 0555. The daemon moves it as root,
+    which this check never stops; pynixd builds as its own user, so the caller
+    canonicalises again after.
+    """
+    st = os.lstat(actual)
+    if stat.S_ISDIR(st.st_mode):
+        os.chmod(actual, stat.S_IMODE(st.st_mode) | stat.S_IWUSR)
+    os.rename(actual, dest)
 
 
 def _rewrite(actual: Path, rewrites: Mapping[str, str], real_store_dir: Path) -> None:
