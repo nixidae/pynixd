@@ -83,7 +83,7 @@ store directory, as `verifyStore` does. `collect_garbage`
 
 | op | today | to own it |
 | --- | --- | --- |
-| 36 BuildDerivation | scheduler sends it to a store; for the local store, the daemon builds | a builder: sandbox, user, environment, output registration |
+| 36 BuildDerivation | scheduler sends it to a store; for the local store, the daemon builds | a builder: sandbox, user, environment, output registration (`builder.md`) |
 | 9, 46 BuildPaths(WithResults) | goal engine; leaves are ops 36 and 10; repair and check modes go to the daemon whole (`engine.py:267`) | the leaves; repair and check can stay unsupported |
 | 10 EnsurePath | on trial: the daemon in a deployment, `pynixd` in every test store; there `SubstitutePathGoal` fetches from the race and imports through the route of op 39. A client's own substituters take part as in op 32. A content-addressed output takes its path from a substituter's realisation, which the goal then records (`derivation-goal.cc:105`). A substituter no backend stands for sends the path to the daemon | that case |
 
