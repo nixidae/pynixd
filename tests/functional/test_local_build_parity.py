@@ -282,6 +282,39 @@ async def test_a_fixed_output_with_the_wrong_hash_stays_valid_under_its_real_one
     assert {"parity-fod-flat", "parity-fod-self", "parity-fod-dep", "parity-dep"} <= set(names), names
 
 
+TWINS = (
+    'derivation { name = "parity-twins"; system = builtins.currentSystem; builder = "/bin/sh"; '
+    'outputs = [ "out" "dev" ]; args = [ "-c" "echo twin > $out; echo twin > $dev" ]; }'
+)
+
+
+async def _optimised(tmp_path: Path, route: OpRoute, *, optimise: bool) -> dict[str, Any]:
+    base = tmp_path / f"o{int(optimise)}"
+    base.mkdir(exist_ok=True)
+    async with _serve(base, route) as (url, root):
+        flags = ["--option", "auto-optimise-store", "true"] if optimise else []
+        _rc, out, _err, _both = await run_subproc(
+            [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--print-out-paths", *flags, "--expr", TWINS]
+        )
+    store = root / "nix/store"
+    links = {entry.stat().st_ino for entry in (store / ".links").iterdir()} if (store / ".links").exists() else set()
+    outputs = {}
+    for path in out.split():
+        st = (store / path.rsplit("/", 1)[-1]).lstat()
+        outputs[path.rsplit("/", 1)[-1].split("-", 1)[1]] = (st.st_nlink, st.st_ino in links)
+    return outputs
+
+
+async def test_auto_optimise_store_links_the_outputs_of_a_build(tmp_path: Path) -> None:
+    """`registerOutputs` calls `optimisePath` (`derivation-builder.cc:1600`) on each output it registers."""
+    for optimise in (True, False):
+        here = await _optimised(tmp_path, OpRoute.pynixd, optimise=optimise)
+        there = await _optimised(tmp_path, OpRoute.daemon, optimise=optimise)
+        assert here == there, optimise
+        expected = (3, True) if optimise else (1, False)
+        assert here == {"parity-twins": expected, "parity-twins-dev": expected}, here
+
+
 async def _signed(tmp_path: Path, route: OpRoute, key: Path) -> list[tuple[Any, ...]]:
     async with _serve(tmp_path, route) as (url, root):
         build = [NIX_BIN, "build", "--store", url, "--impure", "--no-link"]

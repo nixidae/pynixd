@@ -53,6 +53,7 @@ class BuildSettings:
     allow_new_privileges: bool
     filter_syscalls: bool
     secret_key_files: tuple[str, ...]
+    auto_optimise_store: bool
     build_dir: str | None
     ca_derivations: bool
     log_lines: int = 25
@@ -103,6 +104,7 @@ class BuildSettings:
             allow_new_privileges=boolean(value("allow-new-privileges", False)),
             filter_syscalls=boolean(value("filter-syscalls", True)),
             secret_key_files=secret_key_files(),
+            auto_optimise_store=boolean(value("auto-optimise-store", False)),
             build_dir=value("build-dir") or None,
             ca_derivations="ca-derivations" in features,
             log_lines=int(value("log-lines", 25)),

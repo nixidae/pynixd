@@ -27,6 +27,7 @@ from nix_daemon_protocol.build_result import BuildResultStatus
 from nix_daemon_protocol.derivation_output import OutputKind
 from nix_daemon_protocol.signature import Signature
 
+from .. import optimise
 from ..add import PathLock, delete_path
 from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta
 from ..signing import SecretKey, fingerprint
@@ -204,6 +205,19 @@ def _binds(
     return [(target, source, optional) for target, (source, optional) in sorted(binds.items())]
 
 
+def _optimise(real_store_dir: Path, links_dir: Path, names: Iterable[str]) -> None:
+    """`LocalStore::optimisePath` (`optimise-store.cc:331`): a fresh inode set for each path."""
+    links_dir.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        optimise.optimise_path(
+            real_store_dir / name,
+            set(),
+            real_store_dir=real_store_dir,
+            links_dir=links_dir,
+            stats=optimise.OptimiseStats(),
+        )
+
+
 def _sign(infos: Iterable[ValidPathInfo], secret_key_files: Sequence[str]) -> None:
     """`Store::signPathInfo` (`store-api.cc:1238`): each key file read again, a bad one fails the build."""
     keys = [SecretKey.from_file(Path(file)) for file in secret_key_files]
@@ -312,6 +326,14 @@ async def build(
         except BuildFailure as e:
             return LocalBuildResult(e.status, e.message, start, stop)
         try:
+            if settings.auto_optimise_store:
+                # `registerOutputs` (`derivation-builder.cc:1600`) skips an output that is valid already.
+                fresh = [
+                    info.path.path.rsplit("/", 1)[-1]
+                    for info in collected.infos.values()
+                    if not await engine.is_valid_path_uncached(info.path.path)
+                ]
+                await anyio.to_thread.run_sync(_optimise, layout.real_store_dir, layout.links_dir, fresh)
             await anyio.to_thread.run_sync(_sign, collected.infos.values(), settings.secret_key_files)
             if collected.failure is not None:
                 await engine.register_valid_paths(collected.early)
