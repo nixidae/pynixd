@@ -35,6 +35,23 @@ def test_an_override_is_words() -> None:
     )
 
 
+def test_extra_sandbox_paths_append_without_replacing_a_target() -> None:
+    config = {"system": {"value": "x86_64-linux"}, "sandbox-paths": {"value": {"/bin/sh": {"source": BUSYBOX}}}}
+    settings = BuildSettings.from_nix_config(config, {"extra-sandbox-paths": "/bin/sh=/other /dep=/nix/store/x-dep"})
+    assert settings.sandbox_paths == (
+        SandboxPath("/bin/sh", BUSYBOX, optional=False),
+        SandboxPath("/dep", "/nix/store/x-dep", optional=False),
+    )
+
+
+def test_sandbox_paths_replace_what_extra_sandbox_paths_add() -> None:
+    """`ClientSettings::apply` sets the overrides in sorted order: `extra-` first."""
+    settings = BuildSettings.from_nix_config(
+        {"system": {"value": "x86_64-linux"}}, {"extra-sandbox-paths": "/dep", "sandbox-paths": "/bin/sh"}
+    )
+    assert settings.sandbox_paths == (SandboxPath("/bin/sh", "/bin/sh", optional=False),)
+
+
 def test_session_limits_override_the_config() -> None:
     config = {"system": {"value": "x86_64-linux"}, "max-silent-time": {"value": 10}, "timeout": {"value": 0}}
     settings = BuildSettings.from_nix_config(config, {"max-silent-time": "3", "timeout": "7"})

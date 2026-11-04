@@ -68,6 +68,17 @@ class BuildSettings:
         def boolean(raw: Any) -> bool:
             return raw in (True, "true", "1")
 
+        def sandbox_paths() -> tuple[SandboxPath, ...]:
+            """`ClientSettings::apply` walks the overrides sorted, so `extra-sandbox-paths` comes before
+            `sandbox-paths` and that one replaces it. An appended target that exists keeps its source
+            (`appendOrSet`, `globals.cc:448`)."""
+            paths = SandboxPath.parse_all(value("sandbox-paths", ()))
+            if "sandbox-paths" in overrides:
+                return paths
+            targets = {p.target for p in paths}
+            extra = SandboxPath.parse_all(overrides.get("extra-sandbox-paths", ()))
+            return paths + tuple(p for p in extra if p.target not in targets)
+
         sandbox = value("sandbox", True)
         features = words(value("experimental-features", ()))
         cores = int(value("cores", 0) or 0)
@@ -75,7 +86,7 @@ class BuildSettings:
             system=str(value("system")),
             extra_platforms=frozenset(words(value("extra-platforms", ()))),
             sandbox=sandbox if isinstance(sandbox, str) else ("true" if sandbox else "false"),
-            sandbox_paths=SandboxPath.parse_all(value("sandbox-paths", ())),
+            sandbox_paths=sandbox_paths(),
             build_cores=cores or os.cpu_count() or 1,
             max_silent_time=int(value("max-silent-time", 0) or 0),
             timeout=int(value("timeout", 0) or 0),
