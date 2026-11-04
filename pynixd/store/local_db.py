@@ -1084,6 +1084,10 @@ class LocalDBStore(Store):
         return DerivationOutputMapBatchResponse(outputs=result)
 
 
+# `daemon.cc:271-283`: the daemon keeps its own value of these, even for a trusted client.
+_NEVER_APPLIED = frozenset({"experimental-features", "plugin-files", "ssh-auth-sock"})
+
+
 def _build_overrides(options: SetOptionsRequest | None) -> dict[str, str]:
     """The session's settings for a build: `ClientSettings::apply` (`daemon.cc:234`).
 
@@ -1093,7 +1097,7 @@ def _build_overrides(options: SetOptionsRequest | None) -> dict[str, str]:
     if options is None:
         return {}
     overrides = {"max-silent-time": str(int(options.max_silent_time)), "cores": str(options.build_cores)}
-    overrides.update(options.overrides)
+    overrides.update((k, v) for k, v in options.overrides.items() if k not in _NEVER_APPLIED)
     if "build-timeout" in overrides:
         overrides.setdefault("timeout", overrides["build-timeout"])
     return overrides
