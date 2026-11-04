@@ -33,7 +33,7 @@ from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta
 from ..signing import SecretKey, fingerprint
 from .buildlog import BuildLog
 from .env import HOME_DIR, SANDBOX_BUILD_DIR, build_env
-from .outputs import BuildFailure, collect_outputs
+from .outputs import BuildFailure, check_outputs, collect_outputs
 from .spec import ChildSpec
 
 if TYPE_CHECKING:
@@ -55,14 +55,6 @@ DISK_FULL_BYTES = 8 * 1024 * 1024
 """Less free space than this after a failure is a full disk (`decideWhetherDiskFull`, `derivation-builder.cc:304`)."""
 
 DEV_FILES = ("/dev/full", "/dev/null", "/dev/random", "/dev/tty", "/dev/urandom", "/dev/zero")
-OUTPUT_CHECKS = (
-    "allowedReferences",
-    "allowedRequisites",
-    "disallowedReferences",
-    "disallowedRequisites",
-    "outputChecks",
-    "unsafeDiscardReferences",
-)
 
 
 def unsupported(drv: BasicDerivation, settings: BuildSettings) -> str | None:
@@ -80,8 +72,6 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings) -> str | None:
         return f"the features {sorted(features & {'recursive-nix', 'uid-range'})}"
     if "__json" in drv.env or "exportReferencesGraph" in drv.env:
         return "structured attrs or exportReferencesGraph"
-    if any(name in drv.env for name in OUTPUT_CHECKS):
-        return "output checks"
     kinds = {o.kind for o in drv.outputs.values()}
     if kinds - {OutputKind.INPUT_ADDRESSED, OutputKind.CA_FIXED}:
         return "a floating, impure or deferred output"
@@ -335,9 +325,18 @@ async def build(
                 ]
                 await anyio.to_thread.run_sync(_optimise, layout.real_store_dir, layout.links_dir, fresh)
             await anyio.to_thread.run_sync(_sign, collected.infos.values(), settings.secret_key_files)
-            if collected.failure is not None:
+            failure = collected.failure or await anyio.to_thread.run_sync(
+                lambda: check_outputs(
+                    drv_path,
+                    drv.env,
+                    collected.infos,
+                    store_dir=str(layout.store_dir),
+                    path_info=lambda path: anyio.from_thread.run(engine.query_path_info, path),
+                )
+            )
+            if failure is not None:
                 await engine.register_valid_paths(collected.early)
-                return LocalBuildResult(collected.failure.status, collected.failure.message, start, stop)
+                return LocalBuildResult(failure.status, failure.message, start, stop)
             await engine.register_valid_paths(collected.infos.values())
         finally:
             collected.release()

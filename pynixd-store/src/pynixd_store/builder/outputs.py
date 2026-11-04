@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import stat
+from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -254,6 +256,100 @@ def _check(drv_path: str, f: _Fixed) -> BuildFailure | None:
             f"{magenta(len(f.references))} distinct paths, e.g. '{magenta(min(f.references))}'",
         )
     return None
+
+
+OUTPUT_CHECKS = (
+    ("allowedReferences", True, False),
+    ("allowedRequisites", True, True),
+    ("disallowedReferences", False, False),
+    ("disallowedRequisites", False, True),
+)
+"""Each attribute `checkOutputs` reads without structured attrs: allowed, recursive."""
+
+_STORE_PATH_BASE = re.compile(r"[0-9a-df-np-sv-z]{32}-([A-Za-z0-9+\-._?=]{1,211})")
+
+
+def check_outputs(
+    drv_path: str,
+    env: Mapping[str, str],
+    infos: Mapping[str, ValidPathInfo],
+    *,
+    store_dir: str,
+    path_info: Callable[[str], ValidPathInfo | None],
+) -> BuildFailure | None:
+    """`checkOutputs` (`build/derivation-check.cc:39`) for a derivation without structured attrs.
+
+    Op 36 carries no input derivations, so no placeholder resolves: an exact
+    store path names a path, and any other word names an output.
+    *path_info* blocks: call this from a worker thread.
+    """
+    by_path = {info.path.path: info for info in infos.values()}
+
+    def closure(start: str) -> set[str]:
+        done: set[str] = set()
+        left = deque([start])
+        while left:
+            path = left.popleft()
+            if path in done:
+                continue
+            done.add(path)
+            info = by_path.get(path) or path_info(path)
+            if info is None:
+                raise RuntimeError(f"path '{path}' is not valid")
+            left.extend(ref.path for ref in info.info.references)
+        return done
+
+    def spec(output: str, words: Iterable[str]) -> set[str] | BuildFailure:
+        paths: set[str] = set()
+        # `DrvRef` orders a store path before an output name.
+        for word in sorted(words, key=lambda w: (not _is_store_path(w, store_dir), w)):
+            if _is_store_path(word, store_dir):
+                paths.add(word)
+            elif word in infos:
+                paths.add(infos[word].path.path)
+            else:
+                return BuildFailure(
+                    BuildResultStatus.OUTPUT_REJECTED,
+                    f"derivation '{magenta(drv_path)}' output check for '{magenta(output)}' contains output name "
+                    f"'{magenta(word)}', but this is not a valid output of this derivation. "
+                    f"(Valid outputs are [{magenta(', '.join(sorted(infos)))}].)",
+                )
+        return paths
+
+    for name in sorted(infos):
+        info = infos[name]
+        for attribute, allowed, recursive in OUTPUT_CHECKS:
+            if attribute not in env:
+                continue
+            words = set(env[attribute].split())
+            if not allowed and not words:
+                continue
+            refs = spec(name, words)
+            if isinstance(refs, BuildFailure):
+                return refs
+            if recursive:
+                used = closure(info.path.path) - {info.path.path}
+            else:
+                used = {ref.path for ref in info.info.references}
+            bad = {p for p in used if (p not in refs) == allowed}
+            if bad:
+                listing = "".join(f"\n  {p}" for p in sorted(bad, key=_base))
+                return BuildFailure(
+                    BuildResultStatus.OUTPUT_REJECTED,
+                    f"output '{magenta(info.path.path)}' is not allowed to refer to the following paths:"
+                    f"{magenta(listing)}",
+                )
+    return None
+
+
+def _is_store_path(word: str, store_dir: str) -> bool:
+    """`StoreDirConfig::isStorePath`: in the store directory itself, with a valid base name."""
+    parent, _, base = word.rpartition("/")
+    match = _STORE_PATH_BASE.fullmatch(base)
+    if parent != store_dir or match is None:
+        return False
+    name = match.group(1)
+    return name not in (".", "..") and not name.startswith((".-", "..-"))
 
 
 def _rewrite(actual: Path, old: str, new: str, real_store_dir: Path) -> None:

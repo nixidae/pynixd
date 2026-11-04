@@ -315,6 +315,60 @@ async def test_auto_optimise_store_links_the_outputs_of_a_build(tmp_path: Path) 
         assert here == {"parity-twins": expected, "parity-twins-dev": expected}, here
 
 
+MID = (
+    f"let dep = {DEP}; in "
+    'derivation { name = "parity-mid"; system = builtins.currentSystem; builder = "/bin/sh"; '
+    'args = [ "-c" "echo ${dep} > $out" ]; }'
+)
+
+
+def _checked(name: str, attrs: str, command: str = "echo ${mid} $out > $out") -> str:
+    """A build that refers to `mid` (and through it `dep`) and to itself, under the output checks *attrs*."""
+    return (
+        f"let dep = {DEP}; mid = {MID}; in "
+        f'derivation {{ name = "parity-{name}"; system = builtins.currentSystem; builder = "/bin/sh"; '
+        f'args = [ "-c" "{command}" ]; {attrs} }}'
+    )
+
+
+CHECKED = {
+    # Only the recursive checks ignore a self-reference (`ignoreSelfRefs`).
+    "allowed-not-self": "allowedReferences = [ mid ];",
+    "allowed-self": 'allowedReferences = [ "out" mid ]; disallowedReferences = [ dep ];',
+    "allowed-empty": "allowedReferences = [ ];",
+    "disallowed": "disallowedReferences = [ mid ];",
+    "requisites-ok": "allowedRequisites = [ mid dep ];",
+    "requisites": "allowedRequisites = [ mid ];",
+    "disallowed-requisites": "disallowedRequisites = [ dep ];",
+    "unknown-output": 'allowedReferences = [ mid "dev" "bin" ];',
+}
+
+
+async def _output_checks(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
+    results: dict[str, Any] = {}
+    async with _serve(tmp_path, route) as (url, root):
+        for name, attrs in CHECKED.items():
+            rc, _out, err, _both = await run_subproc(
+                [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--expr", _checked(name, attrs)],
+                expected_retcode=None,
+            )
+            results[name] = (rc, _errors(err) if rc else [])
+    valid, refs = _rows(root)
+    return {"results": results, "valid": valid, "refs": refs}
+
+
+async def test_output_checks_refuse_what_the_daemon_refuses(tmp_path: Path) -> None:
+    """`checkOutputs` (`derivation-check.cc:39`) after `registerOutputs` has described each output."""
+    here = await _output_checks(tmp_path, OpRoute.pynixd)
+    there = await _output_checks(tmp_path, OpRoute.daemon)
+
+    assert here == there
+    passed = {name for name, (rc, _errors) in here["results"].items() if rc == 0}
+    assert passed == {"allowed-self", "requisites-ok"}, here["results"]
+    assert any("not a valid output" in line for line in here["results"]["unknown-output"][1]), here["results"]
+    assert any("not allowed to refer" in line for line in here["results"]["disallowed-requisites"][1]), here
+
+
 async def _signed(tmp_path: Path, route: OpRoute, key: Path) -> list[tuple[Any, ...]]:
     async with _serve(tmp_path, route) as (url, root):
         build = [NIX_BIN, "build", "--store", url, "--impure", "--no-link"]
