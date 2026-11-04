@@ -10,8 +10,8 @@ import base64
 import os
 import stat
 from collections import deque
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 from nix_daemon_protocol.build_result import BuildResultStatus
 from nix_daemon_protocol.content_address import ContentAddress as WireContentAddress
@@ -25,7 +25,7 @@ from ..add import PathLock, TempDir, _nar_hash, canonicalise, content_hash, dele
 from ..content_address import ContentAddress, Method, content_addressed_path, fixed_output_address
 from ..hintfmt import magenta
 from ..nar_fs import dump_path, restore_path
-from .env import is_store_path
+from .env import is_store_path, parse_structured_attrs
 from .refscan import scan_for_references
 
 if TYPE_CHECKING:
@@ -66,7 +66,7 @@ def _sri(algo: str, digest: bytes) -> str:
     return f"{algo}-{base64.b64encode(digest).decode()}"
 
 
-def _scan(drv_path: str, name: str, path: str, actual: Path, referenceable: set[str]) -> Scanned:
+def _scan(drv_path: str, name: str, path: str, actual: Path, referenceable: set[str], *, discard: bool) -> Scanned:
     try:
         st = os.lstat(actual)
     except FileNotFoundError:
@@ -82,7 +82,8 @@ def _scan(drv_path: str, name: str, path: str, actual: Path, referenceable: set[
             f"'{magenta(name)}'; rejecting this build output",
         )
     canonicalise(actual)
-    return Scanned(path, frozenset(scan_for_references(actual, referenceable)), st.st_mode)
+    references = frozenset() if discard else frozenset(scan_for_references(actual, referenceable))
+    return Scanned(path, references, st.st_mode)
 
 
 def _sorted(drv_path: str, scanned: Mapping[str, Scanned]) -> list[str]:
@@ -152,16 +153,18 @@ def collect_outputs(
     input_paths: set[str],
     valid: set[str],
     is_valid: Callable[[str], bool],
+    discard: set[str],
 ) -> Collected:
     """Each output the build made, moved into the store and described; nothing is registered yet.
 
     An output in *valid* is not looked at, as Nix does outside check mode.
-    *is_valid* asks the store about a path no output names. Blocking: call it
+    *is_valid* asks the store about a path no output names. An output in
+    *discard* is not scanned (`unsafeDiscardReferences`). Blocking: call it
     from a worker thread.
     """
     referenceable = input_paths | {o.path for o in outputs.values()}
     scanned = {
-        name: _scan(drv_path, name, o.path, chroot_root / o.path.lstrip("/"), referenceable)
+        name: _scan(drv_path, name, o.path, chroot_root / o.path.lstrip("/"), referenceable, discard=name in discard)
         for name, o in outputs.items()
         if o.path not in valid
     }
@@ -258,24 +261,94 @@ def _check(drv_path: str, f: _Fixed) -> BuildFailure | None:
     return None
 
 
-OUTPUT_CHECKS = (
-    ("allowedReferences", True, False),
-    ("allowedRequisites", True, True),
-    ("disallowedReferences", False, False),
-    ("disallowedRequisites", False, True),
-)
-"""Each attribute `checkOutputs` reads without structured attrs: allowed, recursive."""
+@dataclass(frozen=True)
+class OutputChecks:
+    """`DerivationOptions::OutputChecks`: each word is a store path or an output name."""
+
+    ignore_self_refs: bool = False
+    max_size: int | None = None
+    max_closure_size: int | None = None
+    allowed_references: frozenset[str] | None = None
+    allowed_requisites: frozenset[str] | None = None
+    disallowed_references: frozenset[str] = field(default_factory=frozenset)
+    disallowed_requisites: frozenset[str] = field(default_factory=frozenset)
+
+
+_REF_LISTS = ("allowedReferences", "allowedRequisites", "disallowedReferences", "disallowedRequisites")
+_SIZES = ("maxSize", "maxClosureSize")
+
+
+def _words(value: Any) -> frozenset[str]:
+    """`getStringList`; anything else is an error Nix throws, which the daemon reports."""
+    if not isinstance(value, list) or not all(isinstance(word, str) for word in value):
+        raise ValueError("a list that is not a list of strings")
+    return frozenset(value)
+
+
+def _size(value: Any) -> int:
+    """`get<uint64_t>`: a negative number would wrap, and a non-number throws."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("a size that is not a non-negative integer")
+    return value
+
+
+def output_checks(env: Mapping[str, str]) -> OutputChecks | dict[str, OutputChecks]:
+    """`DerivationOptions::outputChecks` (`derivation-options.cc:214`).
+
+    Without structured attrs, one set for every output that ignores a
+    self-reference in the recursive checks. With them, one set per output
+    name. `ValueError` names what pynixd leaves to the daemon.
+    """
+    if "__json" not in env:
+        lists = {name: frozenset(env[name].split()) if name in env else None for name in _REF_LISTS}
+        return OutputChecks(
+            ignore_self_refs=True,
+            allowed_references=lists["allowedReferences"],
+            allowed_requisites=lists["allowedRequisites"],
+            disallowed_references=lists["disallowedReferences"] or frozenset(),
+            disallowed_requisites=lists["disallowedRequisites"] or frozenset(),
+        )
+    raw = parse_structured_attrs(env["__json"]).get("outputChecks")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict) or not all(isinstance(value, dict) for value in raw.values()):
+        raise ValueError("outputChecks that is not an object of objects")
+    checks: dict[str, OutputChecks] = {}
+    for output, value in raw.items():
+        sizes = {name: _size(value[name]) if name in value else None for name in _SIZES}
+        lists = {name: _words(value[name]) if name in value else None for name in _REF_LISTS}
+        checks[output] = OutputChecks(
+            max_size=sizes["maxSize"],
+            max_closure_size=sizes["maxClosureSize"],
+            allowed_references=lists["allowedReferences"],
+            allowed_requisites=lists["allowedRequisites"],
+            disallowed_references=lists["disallowedReferences"] or frozenset(),
+            disallowed_requisites=lists["disallowedRequisites"] or frozenset(),
+        )
+    return checks
+
+
+def discarded_references(env: Mapping[str, str]) -> set[str]:
+    """The outputs `unsafeDiscardReferences` names true (`derivation-options.cc:277`); structured attrs only."""
+    if "__json" not in env:
+        return set()
+    raw = parse_structured_attrs(env["__json"]).get("unsafeDiscardReferences")
+    if raw is None:
+        return set()
+    if not isinstance(raw, dict) or not all(isinstance(value, bool) for value in raw.values()):
+        raise ValueError("unsafeDiscardReferences that is not an object of Booleans")
+    return {name for name, value in raw.items() if value}
 
 
 def check_outputs(
     drv_path: str,
-    env: Mapping[str, str],
+    checks: OutputChecks | Mapping[str, OutputChecks],
     infos: Mapping[str, ValidPathInfo],
     *,
     store_dir: str,
     path_info: Callable[[str], ValidPathInfo | None],
 ) -> BuildFailure | None:
-    """`checkOutputs` (`build/derivation-check.cc:39`) for a derivation without structured attrs.
+    """`checkOutputs` (`build/derivation-check.cc:39`) after the fixed-output check.
 
     Op 36 carries no input derivations, so no placeholder resolves: an exact
     store path names a path, and any other word names an output.
@@ -283,8 +356,9 @@ def check_outputs(
     """
     by_path = {info.path.path: info for info in infos.values()}
 
-    def closure(start: str) -> set[str]:
+    def closure(start: str) -> tuple[set[str], int]:
         done: set[str] = set()
+        size = 0
         left = deque([start])
         while left:
             path = left.popleft()
@@ -294,8 +368,9 @@ def check_outputs(
             info = by_path.get(path) or path_info(path)
             if info is None:
                 raise RuntimeError(f"path '{path}' is not valid")
+            size += info.info.nar_size
             left.extend(ref.path for ref in info.info.references)
-        return done
+        return done, size
 
     def spec(output: str, words: Iterable[str]) -> set[str] | BuildFailure:
         paths: set[str] = set()
@@ -314,19 +389,37 @@ def check_outputs(
                 )
         return paths
 
-    for name in sorted(infos):
-        info = infos[name]
-        for attribute, allowed, recursive in OUTPUT_CHECKS:
-            if attribute not in env:
-                continue
-            words = set(env[attribute].split())
-            if not allowed and not words:
+    def apply(name: str, info: ValidPathInfo, c: OutputChecks) -> BuildFailure | None:
+        path = info.path.path
+        if c.max_size is not None and info.info.nar_size > c.max_size:
+            return BuildFailure(
+                BuildResultStatus.OUTPUT_REJECTED,
+                f"path '{magenta(path)}' is too large at {magenta(info.info.nar_size)} bytes; "
+                f"limit is {magenta(c.max_size)} bytes",
+            )
+        if c.max_closure_size is not None and (size := closure(path)[1]) > c.max_closure_size:
+            return BuildFailure(
+                BuildResultStatus.OUTPUT_REJECTED,
+                f"closure of path '{magenta(path)}' is too large at {magenta(size)} bytes; "
+                f"limit is {magenta(c.max_closure_size)} bytes",
+            )
+        # An absent allow-list allows everything; an empty disallow-list is skipped.
+        lists = (
+            (c.allowed_references, True, False),
+            (c.allowed_requisites, True, True),
+            (c.disallowed_references or None, False, False),
+            (c.disallowed_requisites or None, False, True),
+        )
+        for words, allowed, recursive in lists:
+            if words is None:
                 continue
             refs = spec(name, words)
             if isinstance(refs, BuildFailure):
                 return refs
             if recursive:
-                used = closure(info.path.path) - {info.path.path}
+                used = closure(path)[0]
+                if c.ignore_self_refs:
+                    used.discard(path)
             else:
                 used = {ref.path for ref in info.info.references}
             bad = {p for p in used if (p not in refs) == allowed}
@@ -334,9 +427,14 @@ def check_outputs(
                 listing = "".join(f"\n  {p}" for p in sorted(bad, key=_base))
                 return BuildFailure(
                     BuildResultStatus.OUTPUT_REJECTED,
-                    f"output '{magenta(info.path.path)}' is not allowed to refer to the following paths:"
-                    f"{magenta(listing)}",
+                    f"output '{magenta(path)}' is not allowed to refer to the following paths:{magenta(listing)}",
                 )
+        return None
+
+    for name in sorted(infos):
+        c = checks if isinstance(checks, OutputChecks) else checks.get(name)
+        if c is not None and (failure := apply(name, infos[name], c)) is not None:
+            return failure
     return None
 
 

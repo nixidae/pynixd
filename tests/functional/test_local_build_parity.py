@@ -458,14 +458,29 @@ CHECKED = {
     "disallowed-requisites": "disallowedRequisites = [ dep ];",
     "unknown-output": 'allowedReferences = [ mid "dev" "bin" ];',
 }
+# Structured attrs check per output and ignore no self-reference; `$out` is not in the environment.
+STRUCTURED_CHECKED = {
+    "s-allowed-self": 'outputChecks.out.allowedReferences = [ "out" mid ];',
+    "s-requisites-self": "outputChecks.out.allowedRequisites = [ mid dep ];",
+    "s-requisites-ok": 'outputChecks.out.allowedRequisites = [ "out" mid dep ];',
+    "s-max-size": "outputChecks.out.maxSize = 10;",
+    "s-max-closure": "outputChecks.out = { maxSize = 100000; maxClosureSize = 100; };",
+    "s-other-output": "outputChecks.dev.allowedReferences = [ ];",
+    "s-discard": "unsafeDiscardReferences.out = true; outputChecks.out.allowedReferences = [ ];",
+}
+_STRUCTURED_COMMAND = 'echo ${mid} ${builtins.placeholder "out"} > ${builtins.placeholder "out"}'
 
 
 async def _output_checks(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
     results: dict[str, Any] = {}
     async with _serve(tmp_path, route) as (url, root):
-        for name, attrs in CHECKED.items():
+        exprs = {name: _checked(name, attrs) for name, attrs in CHECKED.items()} | {
+            name: _checked(name, f"__structuredAttrs = true; {attrs}", _STRUCTURED_COMMAND)
+            for name, attrs in STRUCTURED_CHECKED.items()
+        }
+        for name, expr in exprs.items():
             rc, _out, err, _both = await run_subproc(
-                [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--expr", _checked(name, attrs)],
+                [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--expr", expr],
                 expected_retcode=None,
             )
             results[name] = (rc, _errors(err) if rc else [])
@@ -474,13 +489,25 @@ async def _output_checks(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
 
 
 async def test_output_checks_refuse_what_the_daemon_refuses(tmp_path: Path) -> None:
-    """`checkOutputs` (`derivation-check.cc:39`) after `registerOutputs` has described each output."""
+    """`checkOutputs` (`derivation-check.cc:39`) after `registerOutputs` has described each output.
+
+    `unsafeDiscardReferences` (`derivation-builder.cc:1174`) leaves the output with no references to check.
+    """
     here = await _output_checks(tmp_path, OpRoute.pynixd)
     there = await _output_checks(tmp_path, OpRoute.daemon)
 
     assert here == there
     passed = {name for name, (rc, _errors) in here["results"].items() if rc == 0}
-    assert passed == {"allowed-self", "requisites-ok"}, here["results"]
+    assert passed == {
+        "allowed-self",
+        "requisites-ok",
+        "s-allowed-self",
+        "s-requisites-ok",
+        "s-other-output",
+        "s-discard",
+    }, here["results"]
+    assert any("is too large at" in line for line in here["results"]["s-max-size"][1]), here["results"]
+    assert any("closure of path" in line for line in here["results"]["s-max-closure"][1]), here["results"]
     assert any("not a valid output" in line for line in here["results"]["unknown-output"][1]), here["results"]
     assert any("not allowed to refer" in line for line in here["results"]["disallowed-requisites"][1]), here
 

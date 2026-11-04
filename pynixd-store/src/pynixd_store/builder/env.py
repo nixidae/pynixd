@@ -49,7 +49,6 @@ class _Unreproduced(ValueError):
 _INT_RANGE = range(-(2**63), 2**64)
 """What nlohmann keeps as an integer; a larger one becomes a double."""
 
-_NOT_YET = ("outputChecks", "unsafeDiscardReferences")
 # `derivationOptionsFromStructuredAttrs` warns about each (`derivation-options.cc:186`).
 _WARNED = (
     "allowedReferences",
@@ -125,8 +124,6 @@ def structured_attrs_reason(env: Mapping[str, str]) -> str | None:
         return f"__json with {e}"
     if "passAsFile" in env or any(name in attrs for name in _WARNED):
         return "an attribute structured attrs ignore, which Nix warns about"
-    if found := [name for name in _NOT_YET if name in attrs]:
-        return f"structured attrs with {found}"
     if any(name in attrs and not isinstance(attrs[name], bool) for name in _BOOLS):
         return "a structured attribute that must be a Boolean"
     if "__sandboxProfile" in attrs and not isinstance(attrs["__sandboxProfile"], str):

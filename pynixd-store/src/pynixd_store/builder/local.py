@@ -42,7 +42,7 @@ from .env import (
     rewrite_strings,
     structured_attrs_reason,
 )
-from .outputs import BuildFailure, check_outputs, collect_outputs
+from .outputs import BuildFailure, check_outputs, collect_outputs, discarded_references, output_checks
 from .spec import ChildSpec
 
 if TYPE_CHECKING:
@@ -85,6 +85,11 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
         export_requests(drv.env, store_dir)
     except ValueError as e:
         return f"exportReferencesGraph with {e}"
+    try:
+        output_checks(drv.env)
+        discarded_references(drv.env)
+    except ValueError as e:
+        return f"structured attrs with {e}"
     kinds = {o.kind for o in drv.outputs.values()}
     if kinds - {OutputKind.INPUT_ADDRESSED, OutputKind.CA_FIXED}:
         return "a floating, impure or deferred output"
@@ -361,6 +366,7 @@ async def build(
                     input_paths=inputs,
                     valid=valid,
                     is_valid=lambda path: anyio.from_thread.run(engine.is_valid_path_uncached, path),
+                    discard=discarded_references(drv.env),
                 )
             )
         except BuildFailure as e:
@@ -378,7 +384,7 @@ async def build(
             failure = collected.failure or await anyio.to_thread.run_sync(
                 lambda: check_outputs(
                     drv_path,
-                    {} if "__json" in drv.env else drv.env,
+                    output_checks(drv.env),
                     collected.infos,
                     store_dir=str(layout.store_dir),
                     path_info=lambda path: anyio.from_thread.run(engine.query_path_info, path),

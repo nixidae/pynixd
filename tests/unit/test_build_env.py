@@ -11,6 +11,7 @@ from pynixd_store.builder.env import (
     structured_attrs_reason,
     write_shell,
 )
+from pynixd_store.builder.outputs import OutputChecks, discarded_references, output_checks
 
 
 def _env(env: dict[str, str], *, fixed_output: bool = False) -> dict[str, str]:
@@ -130,7 +131,6 @@ def test_a_structured_build_pynixd_cannot_reproduce_goes_to_the_daemon() -> None
     assert reason('{"bad":"\\ud800"}') is not None
     assert reason("[1]") is not None
     assert reason("{") is not None
-    assert reason('{"unsafeDiscardReferences":{}}') is not None
     assert reason('{"allowedReferences":[]}') is not None
     assert reason("{}", passAsFile="x") is not None
     assert reason('{"__noChroot":1}') is not None
@@ -164,3 +164,34 @@ def test_export_references_graph_names_store_paths_by_file_name() -> None:
 def test_an_export_nix_refuses_or_warns_about_goes_to_the_daemon(env: dict[str, str]) -> None:
     with pytest.raises(ValueError, match=r"."):
         export_requests(env, "/nix/store")
+
+
+def test_structured_output_checks_are_per_output_and_keep_self_references() -> None:
+    """`DerivationOptions::outputChecks` (`derivation-options.cc:214`)."""
+    raw = '{"outputChecks":{"out":{"maxSize":5,"allowedReferences":["out"]}},"unsafeDiscardReferences":{"out":true,"dev":false}}'
+    assert output_checks({"__json": raw}) == {"out": OutputChecks(max_size=5, allowed_references=frozenset({"out"}))}
+    assert discarded_references({"__json": raw}) == {"out"}
+    assert output_checks({"disallowedReferences": "a b"}) == OutputChecks(
+        ignore_self_refs=True, disallowed_references=frozenset({"a", "b"})
+    )
+    assert discarded_references({"unsafeDiscardReferences": "1"}) == set()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"outputChecks":[]}',
+        '{"outputChecks":{"out":[]}}',
+        '{"outputChecks":{"out":{"maxSize":-1}}}',
+        '{"outputChecks":{"out":{"maxSize":true}}}',
+        '{"outputChecks":{"out":{"allowedReferences":"x"}}}',
+        '{"unsafeDiscardReferences":{"out":1}}',
+    ],
+)
+def test_structured_checks_nix_refuses_go_to_the_daemon(raw: str) -> None:
+    def both(env: dict[str, str]) -> None:
+        output_checks(env)
+        discarded_references(env)
+
+    with pytest.raises(ValueError, match=r"."):
+        both({"__json": raw})
