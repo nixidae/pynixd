@@ -51,9 +51,16 @@ from .build_queue import BuildQueue, QueuedBuild
 from .config import NoLocalJobs
 from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from .exceptions import BackendError, InfrastructureError, error_text, leaves
-from .goals.results import result_succeeded
+from .goals.results import failure, result_succeeded
 from .placement_trace import CandidateTrace, Outcome, PlacementDecision, PlacementTrace
-from .serde import AddTempRootRequest, AddTempRootsRequest, BuildResultStatus, LogNext, QueryValidPathsRequest
+from .serde import (
+    AddTempRootRequest,
+    AddTempRootsRequest,
+    BuildDerivationResponse,
+    BuildResultStatus,
+    LogNext,
+    QueryValidPathsRequest,
+)
 from .store import DaemonStore, LocalDBStore
 from .store.transfer import stream_paths_store_to_store
 from .substitution_queue import SubstitutionQueue
@@ -77,7 +84,6 @@ if TYPE_CHECKING:
     from .psi import SystemHealth
     from .serde import (
         BuildDerivationRequest,
-        BuildDerivationResponse,
         BuildResult,
         SetOptionsRequest,
     )
@@ -1266,7 +1272,13 @@ class Scheduler:
             build.last_output_at = time.monotonic()
             messages.append(message)
 
-        resp = await local.build_here(build.request, settings, keep)
+        try:
+            resp = await local.build_here(build.request, settings, keep)
+        except Exception as e:
+            # pynixd's own builder raised: a bug, or this machine (a full disk). Either way not a
+            # lost connection, so the same store gets no second try; another store may.
+            log.exception("local_build_crashed", build_id=build.build_id)
+            resp = BuildDerivationResponse(result=failure(f"pynixd's sandbox failed: {error_text(e)}"))
         observation.build_ms = _ms_since(build.started_at)
         for message in messages:
             await build.post_log_and_fanout(message)
