@@ -14,11 +14,15 @@ import anyio
 import structlog
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
+from pynixd_store.background import Background
 
 from .store_url import reference_key, substituter_spec
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
+    from contextlib import AbstractAsyncContextManager
+
+    from anyio.abc import TaskStatus
 
     from .config import PynixdSettings
     from .store import Store
@@ -39,6 +43,11 @@ class ClientSubstituters:
         self._settings = settings
         self._made: dict[object, Store] = {}
         self._lock = anyio.Lock()
+        self._held = Background("ClientSubstituters")
+
+    def running(self) -> AbstractAsyncContextManager[None]:
+        """Hold the backends open for the body of this block; outside it none is made."""
+        return self._held.running()
 
     async def resolve(
         self, urls: Sequence[str], configured: Iterable[tuple[StoreId, Store]]
@@ -78,22 +87,38 @@ class ClientSubstituters:
                 return None
             store = spec.to_store(str(spec.store_id))
             try:
-                await store.start()
+                await self._held.start(self._hold, key, store, url)
             except Exception:
                 # Nix drops a substituter it cannot open, with a warning
                 # (`store-registration.cc:114`); the daemon answers for this one.
                 log.warning("client_substituter_start_failed", url=url, exc_info=True)
-                with anyio.CancelScope(shield=True), anyio.move_on_after(10):
-                    await store.close()
                 return None
             self._made[key] = store
             return store
+
+    async def _hold(self, key: object, store: Store, url: str, *, task_status: TaskStatus[None]) -> None:
+        """Keep *store* open, its loops in its own `async with`, as `Server._host_store` does.
+
+        A failure before the start raises to `_backend`. One after it drops
+        this backend alone: a group would cancel every other one.
+        """
+        started = False
+        try:
+            async with store:
+                started = True
+                task_status.started()
+                await anyio.sleep_forever()
+        except Exception:
+            if not started:
+                raise
+            log.exception("client_substituter_failed", url=url)
+        finally:
+            if self._made.get(key) is store:
+                del self._made[key]
 
     def stores(self) -> tuple[Store, ...]:
         return tuple(self._made.values())
 
     async def close(self) -> None:
-        made = list(self._made.values())
+        await self._held.aclose()
         self._made.clear()
-        for store in made:
-            await store.close()

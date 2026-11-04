@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -26,8 +27,7 @@ from .store_url import is_own_cache, reference_key
 from .substituters import ClientSubstituters
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
-    from contextlib import AbstractAsyncContextManager
+    from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterable
 
     from anyio.abc import TaskStatus
 
@@ -227,9 +227,11 @@ class SubstitutionQueue:
             return None if self.uncovered else tuple(self.substituter_stores())
         return await self.client_substituters.resolve(named.split(), self.ctx.stores.items())
 
-    def running(self) -> AbstractAsyncContextManager[None]:
-        """Run the probes for the body of this block; a lookup outside it raises."""
-        return self._probes.running()
+    @contextlib.asynccontextmanager
+    async def running(self) -> AsyncIterator[None]:
+        """Run the probes and hold the client's backends for the body of this block; a lookup outside it raises."""
+        async with self.client_substituters.running(), self._probes.running():
+            yield
 
     async def serve(self, *, task_status: TaskStatus[None]) -> None:
         """Run the probes until cancelled, for an owner's task group."""

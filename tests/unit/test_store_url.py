@@ -120,8 +120,6 @@ async def test_a_named_host_key_is_the_only_key() -> None:
 async def test_a_dead_host_leaves_the_client_op_to_the_daemon() -> None:
     """Nothing listens on port 1: the start fails, and the client op does not."""
     substituters = ClientSubstituters(PynixdSettings())
-    try:
+    async with substituters.running():
         assert await substituters.resolve(["ssh-ng://127.0.0.1:1"], []) is None
         assert substituters.stores() == ()
-    finally:
-        await substituters.close()

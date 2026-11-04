@@ -63,34 +63,34 @@ async def test_a_list_replaces_the_daemons_set(tmp_path: Path) -> None:
     daemon_cache = HTTPBinaryCacheSpec(url="https://cache.example/").to_store("http-cache.example")
     queue = _queue({"http-cache.example": daemon_cache})
     root = _cache(tmp_path / "cache")
-    stores = await queue.substituters_for(_client(substituters=f"file://{root}"))
+    async with queue.running():
+        stores = await queue.substituters_for(_client(substituters=f"file://{root}"))
     assert stores is not None
     assert len(stores) == 1
     store = stores[0]
     assert isinstance(store, LocalBinaryCacheStore)
     assert store.path == root
-    await queue.close()
 
 
 async def test_a_named_cache_takes_its_priority_from_nix_cache_info_or_the_url(tmp_path: Path) -> None:
     """`binary-cache-store.cc:67` sets the cache's priority as a default; `?priority=` wins."""
     first, second = _cache(tmp_path / "first"), _cache(tmp_path / "second")
     queue = _queue()
-    stores = await queue.substituters_for(_client(substituters=f"file://{first} file://{second}?priority=10"))
+    async with queue.running():
+        stores = await queue.substituters_for(_client(substituters=f"file://{first} file://{second}?priority=10"))
     assert stores is not None
     assert [store.priority for store in stores] == [30.0, 10.0]
-    await queue.close()
 
 
 async def test_a_named_backend_is_made_once_and_kept(tmp_path: Path) -> None:
     root = _cache(tmp_path / "cache")
     queue = _queue()
-    one = await queue.substituters_for(_client(substituters=f"file://{root}"))
-    two = await queue.substituters_for(_client(substituters=f"file://{root}"))
+    async with queue.running():
+        one = await queue.substituters_for(_client(substituters=f"file://{root}"))
+        two = await queue.substituters_for(_client(substituters=f"file://{root}"))
     assert one == two
     assert one is not None
     assert len(one) == 1
-    await queue.close()
 
 
 async def test_a_named_substituter_the_daemon_has_reuses_its_backend() -> None:
@@ -104,14 +104,14 @@ async def test_a_trusted_spelling_gets_a_backend_of_its_own(tmp_path: Path) -> N
     root = _cache(tmp_path / "cache")
     daemon_cache = LocalBinaryCacheSpec(path=root).to_store("file-cache")
     queue = _queue({"file-cache": daemon_cache})
-    stores = await queue.substituters_for(_client(substituters=f"file://{root}?trusted=1"))
-    assert stores is not None
-    assert len(stores) == 1
-    assert stores[0] is not daemon_cache
-    assert isinstance(stores[0], LocalBinaryCacheStore)
-    assert stores[0].trusted
-    assert await queue.substituters_for(_client(substituters=f"file://{root}")) == (daemon_cache,)
-    await queue.close()
+    async with queue.running():
+        stores = await queue.substituters_for(_client(substituters=f"file://{root}?trusted=1"))
+        assert stores is not None
+        assert len(stores) == 1
+        assert stores[0] is not daemon_cache
+        assert isinstance(stores[0], LocalBinaryCacheStore)
+        assert stores[0].trusted
+        assert await queue.substituters_for(_client(substituters=f"file://{root}")) == (daemon_cache,)
 
 
 async def test_a_named_substituter_with_no_backend_sends_the_client_to_the_daemon(tmp_path: Path) -> None:
