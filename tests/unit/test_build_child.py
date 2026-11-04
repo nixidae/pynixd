@@ -45,6 +45,7 @@ def _spec(root: Path, script: str, **over: object) -> ChildSpec:
         "shm_size": "50%",
         "no_new_privileges": True,
         "filter_syscalls": True,
+        "fetchurl": None,
     }
     spec.update(over)  # type: ignore[typeddict-item]  # the tests vary one key at a time
     return spec

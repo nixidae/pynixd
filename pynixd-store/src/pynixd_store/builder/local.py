@@ -30,7 +30,7 @@ from nix_daemon_protocol.signature import Signature
 
 from .. import optimise
 from ..add import PathLock, delete_path
-from ..content_address import Method, output_method
+from ..content_address import Method, fixed_output_address, output_method
 from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta, show_error
 from ..signing import SecretKey, fingerprint
 from .buildlog import BuildLog
@@ -53,7 +53,7 @@ from .outputs import (
     output_checks,
     random_path,
 )
-from .spec import ChildSpec
+from .spec import ChildSpec, FetchSpec
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -75,6 +75,9 @@ DISK_FULL_BYTES = 8 * 1024 * 1024
 
 DEV_FILES = ("/dev/full", "/dev/null", "/dev/random", "/dev/tty", "/dev/urandom", "/dev/zero")
 
+FETCH_SCHEMES = frozenset({"http", "https", "file"})
+"""The schemes pynixd's `builtin:fetchurl` fetches."""
+
 
 def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str, relocated: bool) -> str | None:
     """Why pynixd leaves this build to the daemon, or `None` when it builds it.
@@ -83,9 +86,11 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
     """
     if not sys.platform.startswith("linux"):
         return "pynixd builds on Linux only"
-    if drv.builder.startswith("builtin:"):
-        return "a builtin builder"
-    if drv.platform != settings.system and drv.platform not in settings.extra_platforms:
+    builtin = drv.builder.startswith("builtin:")
+    if builtin and (reason := _fetchurl_unsupported(drv, settings)) is not None:
+        return reason
+    # A builtin builds on any platform (`derivation-building-goal.cc:420`).
+    if drv.platform != settings.system and drv.platform not in settings.extra_platforms and not builtin:
         return f"the platform {drv.platform}"
     if "__json" in drv.env and (reason := structured_attrs_reason(drv.env)) is not None:
         return reason
@@ -120,6 +125,85 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
     if git and not settings.git_hashing:
         return "a Git-hashed output without git-hashing"
     return None
+
+
+def _url_unsupported(url: str) -> str | None:
+    """A URL whose transfer pynixd leaves to the daemon: S3 needs AWS credentials resolved on the host
+    (`derivation-builder.cc:622`), and `displayUri` re-renders a URL with credentials (`filetransfer.cc:1280`)."""
+    scheme, sep, rest = url.partition("://")
+    if not sep or scheme.lower() not in FETCH_SCHEMES:
+        return f"builtin:fetchurl of the URL scheme '{scheme}'"
+    authority = rest.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    if "@" in authority:
+        return "builtin:fetchurl of a URL with credentials"
+    return None
+
+
+def _fetchurl_unsupported(drv: BasicDerivation, settings: BuildSettings) -> str | None:
+    """Why the daemon runs this builtin. Nix's own refusals (`builtins/fetchurl.cc:25`) stay there too."""
+    if drv.builder != "builtin:fetchurl":
+        return f"the builtin builder '{drv.builder}'"
+    if "__json" in drv.env:
+        return "builtin:fetchurl with structured attrs"
+    out = drv.outputs.get("out")
+    if out is None or out.kind not in (OutputKind.CA_FIXED, OutputKind.IMPURE):
+        return "builtin:fetchurl with no fixed or impure output 'out'"
+    if "url" not in drv.env:
+        return "builtin:fetchurl with no url"
+    for url in (drv.env["url"], *(_mirror_urls(drv, settings))):
+        if (reason := _url_unsupported(url)) is not None:
+            return reason
+    return None
+
+
+def _mirror_urls(drv: BasicDerivation, settings: BuildSettings) -> list[str]:
+    """The hashed mirrors `builtinFetchurl` tries for a flat fixed output (`builtins/fetchurl.cc:76`)."""
+    out = drv.outputs["out"]
+    if out.kind is not OutputKind.CA_FIXED or not out.method:
+        return []
+    method, algo = output_method(out.method)
+    if method not in (Method.FLAT, Method.TEXT):
+        return []
+    digest = fixed_output_address(out.method, out.hash_digest).digest.hex()
+    return [f"{m if m.endswith('/') else m + '/'}{algo}/{digest}" for m in settings.transfer.hashed_mirrors]
+
+
+def _read_or_empty(path: str | None) -> str:
+    """`readFile` with `SystemError` ignored, as `runChild` reads netrc and the CA file (`:956`)."""
+    if path is None:
+        return ""
+    try:
+        return Path(path).read_bytes().decode("utf-8", "surrogateescape")
+    except OSError:
+        return ""
+
+
+def _fetch_spec(drv: BasicDerivation, settings: BuildSettings, out: str) -> FetchSpec:
+    transfer = settings.transfer
+    return {
+        "main_url": drv.env["url"],
+        "mirrors": _mirror_urls(drv, settings),
+        "out": out,
+        "unpack": drv.env.get("unpack", "") == "1",
+        "executable": drv.env.get("executable") == "1",
+        "tmp_dir": SANDBOX_BUILD_DIR,
+        "netrc_data": _read_or_empty(transfer.netrc_file),
+        "netrc_file": transfer.netrc_file,
+        "ca_data": _read_or_empty(transfer.ssl_cert_file),
+        "ca_file": "",
+        "nix_version": settings.nix_version,
+        "user_agent_suffix": transfer.user_agent_suffix,
+        "http2": transfer.http2,
+        "http3": transfer.http3,
+        "connect_timeout": transfer.connect_timeout,
+        "stalled_download_timeout": transfer.stalled_download_timeout,
+        "download_speed": transfer.download_speed,
+        "tries": transfer.tries,
+        "retry_delay_ms": transfer.retry_delay_ms,
+        "retry_delay_rate_limited_ms": transfer.retry_delay_rate_limited_ms,
+        "retry_max_delay_ms": transfer.retry_max_delay_ms,
+        "retry_jitter": transfer.retry_jitter,
+    }
 
 
 @dataclass
@@ -355,6 +439,11 @@ async def build(
         )
         for name, contents in env.files.items():
             (paths.tmp / name).write_text(contents, encoding="utf-8")
+        fetch = (
+            await anyio.to_thread.run_sync(_fetch_spec, drv, settings, scratch["out"])
+            if drv.builder == "builtin:fetchurl"
+            else None
+        )
         spec: ChildSpec = {
             "builder": drv.builder,
             "args": [rewrite_strings(arg, rewrites) for arg in drv.args],
@@ -370,6 +459,7 @@ async def build(
             "shm_size": settings.sandbox_shm_size,
             "no_new_privileges": not settings.allow_new_privileges,
             "filter_syscalls": settings.filter_syscalls,
+            "fetchurl": fetch,
         }
         if os.path.exists(HOME_DIR):
             raise ValueError(f"home directory '{HOME_DIR}' exists; please remove it to assure purity of builds")

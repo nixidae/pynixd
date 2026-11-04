@@ -40,6 +40,26 @@ class SandboxPath:
 
 
 @dataclass(frozen=True)
+class TransferSettings:
+    """`FileTransferSettings` (`filetransfer.hh:30`) and `hashed-mirrors`, which `builtin:fetchurl` reads."""
+
+    netrc_file: str = "/etc/nix/netrc"
+    ssl_cert_file: str | None = None
+    hashed_mirrors: tuple[str, ...] = ()
+    http2: bool = True
+    http3: bool = False
+    user_agent_suffix: str = ""
+    connect_timeout: int = 15
+    stalled_download_timeout: int = 300
+    download_speed: int = 0
+    tries: int = 5
+    retry_delay_ms: int = 100
+    retry_delay_rate_limited_ms: int = 5000
+    retry_max_delay_ms: int = 60000
+    retry_jitter: bool = True
+
+
+@dataclass(frozen=True)
 class BuildSettings:
     system: str
     extra_platforms: frozenset[str]
@@ -62,12 +82,18 @@ class BuildSettings:
     fsync_store_paths: bool = False
     log_lines: int = 25
     nix_command: bool = True
+    transfer: TransferSettings = TransferSettings()
+    nix_version: str = ""
 
     @classmethod
-    def from_nix_config(cls, config: Mapping[str, Any], overrides: Mapping[str, str]) -> BuildSettings:
-        def value(name: str, default: Any = None) -> Any:
+    def from_nix_config(
+        cls, config: Mapping[str, Any], overrides: Mapping[str, str], *, nix_version: str = ""
+    ) -> BuildSettings:
+        def value(name: str, default: Any = None, alias: str | None = None) -> Any:
             if name in overrides:
                 return overrides[name]
+            if alias is not None and alias in overrides:
+                return overrides[alias]
             entry = config.get(name)
             return entry["value"] if entry is not None else default
 
@@ -109,6 +135,27 @@ class BuildSettings:
                 env = string_map(overrides.get("extra-impure-env", ())) | env
             return env
 
+        def transfer() -> TransferSettings:
+            d = TransferSettings()
+            return TransferSettings(
+                netrc_file=str(value("netrc-file", d.netrc_file)),
+                ssl_cert_file=value("ssl-cert-file") or None,
+                hashed_mirrors=tuple(words(value("hashed-mirrors", ()))),
+                http2=boolean(value("http2", d.http2)),
+                http3=boolean(value("http3", d.http3)),
+                user_agent_suffix=str(value("user-agent-suffix", d.user_agent_suffix)),
+                connect_timeout=int(value("connect-timeout", d.connect_timeout)),
+                stalled_download_timeout=int(value("stalled-download-timeout", d.stalled_download_timeout)),
+                download_speed=int(value("download-speed", d.download_speed)),
+                tries=int(value("filetransfer-retry-attempts", d.tries, alias="download-attempts")),
+                retry_delay_ms=int(value("filetransfer-retry-delay", d.retry_delay_ms)),
+                retry_delay_rate_limited_ms=int(
+                    value("filetransfer-retry-delay-rate-limited", d.retry_delay_rate_limited_ms)
+                ),
+                retry_max_delay_ms=int(value("filetransfer-retry-max-delay", d.retry_max_delay_ms)),
+                retry_jitter=boolean(value("filetransfer-retry-jitter", d.retry_jitter)),
+            )
+
         sandbox = value("sandbox", True)
         features = words(value("experimental-features", ()))
         cores = int(value("cores", 0) or 0)
@@ -133,4 +180,6 @@ class BuildSettings:
             fsync_store_paths=boolean(value("fsync-store-paths", False)),
             log_lines=int(value("log-lines", 25)),
             nix_command="nix-command" in features,
+            transfer=transfer(),
+            nix_version=nix_version,
         )

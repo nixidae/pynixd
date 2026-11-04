@@ -8,17 +8,21 @@ must be equal. `registrationTime` and the row ids differ by nature.
 
 from __future__ import annotations
 
+import base64
 import contextlib
+import hashlib
 import json
 import sqlite3
 from typing import TYPE_CHECKING, Any
 
+from aiohttp import web
 from prometheus_client import REGISTRY
 
 from nix_daemon_protocol.ids import StoreId
 from pynixd import Server
 from pynixd.op_routes import OpRoute
 from pynixd.store import LocalDBStore
+from pynixd_store.nar_fs import dump_path
 from tests._conftest.nix_config import for_test_store
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
@@ -910,3 +914,130 @@ async def test_a_git_hashed_output_lands_where_the_daemon_puts_it(tmp_path: Path
     assert here["floating"][0] == 0, here
     assert any("not allowed to refer to other store paths" in line for line in here["self"][2]), here
     assert any("hash mismatch" in line for line in here["fixed"][2]), here
+
+
+FETCHED = b"fetched by builtin:fetchurl\n"
+
+
+def _sri(data: bytes) -> str:
+    return "sha256-" + base64.b64encode(hashlib.sha256(data).digest()).decode()
+
+
+def _nar_string(data: bytes) -> bytes:
+    return len(data).to_bytes(8, "little") + data + b"\0" * (-len(data) % 8)
+
+
+# `executable` makes the output recursive: its hash is that of the file's NAR.
+EXECUTABLE_NAR = (
+    b"".join(_nar_string(s) for s in (b"nix-archive-1", b"(", b"type", b"regular", b"executable", b"", b"contents"))
+    + _nar_string(FETCHED)
+    + _nar_string(b")")
+)
+
+
+@contextlib.asynccontextmanager
+async def _http(tmp_path: Path) -> AsyncIterator[tuple[str, dict[str, Any]]]:
+    """The files the fetches ask for, at `localhost`: the name must resolve inside the sandbox.
+
+    *seen* records the path and User-Agent of each request.
+    """
+    tree = tmp_path / "tree"
+    (tree / "sub").mkdir(parents=True)
+    (tree / "sub" / "file").write_text("unpacked\n")
+    (tree / "run").write_text("#!/bin/sh\n")
+    (tree / "run").chmod(0o755)
+    nar = b"".join(dump_path(tree))
+    seen: dict[str, Any] = {"requests": [], "nar": nar}
+    mirrored = f"/mirror/sha256/{hashlib.sha256(FETCHED).hexdigest()}"
+
+    async def handle(request: web.Request) -> web.StreamResponse:
+        seen["requests"].append((request.path, request.headers.get("User-Agent", "")))
+        if request.path in ("/file", mirrored):
+            return web.Response(body=FETCHED)
+        if request.path == "/tree.nar":
+            return web.Response(body=nar)
+        if request.path == "/forbidden":
+            return web.Response(status=403, text="go away\n")
+        return web.Response(status=404, text="no such file\n")
+
+    app = web.Application()
+    app.router.add_route("GET", "/{tail:.*}", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "127.0.0.1", 0).start()
+    try:
+        yield f"http://localhost:{runner.addresses[0][1]}", seen
+    finally:
+        await runner.cleanup()
+
+
+def _fetchurl(name: str, url: str, extra: str) -> str:
+    return f'import <nix/fetchurl.nix> {{ name = "{name}"; url = "{url}"; {extra} }}'
+
+
+def _tree(path: Path) -> list[str] | str:
+    if path.is_dir():
+        return sorted(f"{p.relative_to(path)} {oct(p.lstat().st_mode)}" for p in path.rglob("*"))
+    return f"{path.read_text()} {oct(path.lstat().st_mode)}"
+
+
+async def _fetches(tmp_path: Path, route: OpRoute, base: str, seen: dict[str, Any]) -> dict[str, Any]:
+    results: dict[str, Any] = {}
+    async with _serve(tmp_path, route) as (url, root):
+        fetches = {
+            "flat": ((), _fetchurl("parity-fetch", f"{base}/file", f'hash = "{_sri(FETCHED)}";')),
+            "executable": (
+                (),
+                _fetchurl("parity-fetch-exe", f"{base}/file", f'hash = "{_sri(EXECUTABLE_NAR)}"; executable = true;'),
+            ),
+            "unpack": (
+                (),
+                _fetchurl("parity-fetch-nar", f"{base}/tree.nar", f'hash = "{_sri(seen["nar"])}"; unpack = true;'),
+            ),
+            "mirror": (
+                ("--option", "hashed-mirrors", f"{base}/mirror"),
+                _fetchurl("parity-fetch-mirror", f"{base}/gone", f'hash = "{_sri(FETCHED)}";'),
+            ),
+            "missing": ((), _fetchurl("parity-fetch-missing", f"{base}/gone", f'hash = "{FAKE_HASH}";')),
+            "forbidden": ((), _fetchurl("parity-fetch-forbidden", f"{base}/forbidden", f'hash = "{FAKE_HASH}";')),
+            "wrong-hash": ((), _fetchurl("parity-fetch-wrong", f"{base}/file", f'hash = "{FAKE_HASH}";')),
+        }
+        for name, (options, expr) in fetches.items():
+            seen["requests"].clear()
+            rc, out, err, _both = await run_subproc(
+                [
+                    NIX_BIN,
+                    "build",
+                    "--store",
+                    url,
+                    *options,
+                    "--impure",
+                    "--no-link",
+                    "--print-out-paths",
+                    "--expr",
+                    expr,
+                ],
+                expected_retcode=None,
+            )
+            paths = out.split()
+            errors = _errors(err) if rc else []
+            results[name] = rc, paths, [_tree(root / p.lstrip("/")) for p in paths], errors, list(seen["requests"])
+    results["valid"], results["refs"] = _rows(root)
+    return results
+
+
+async def test_builtin_fetchurl_fetches_what_the_daemon_fetches(tmp_path: Path) -> None:
+    """`builtinFetchurl` (`builtins/fetchurl.cc:10`): a flat file, an executable one, an unpacked NAR, the
+    hashed mirrors first, and the errors of a missing file, a refused one and a wrong hash."""
+    # One server for both runs: the URL is part of the derivation, so its port must not change.
+    async with _http(tmp_path) as (base, seen):
+        before = _fallthrough()
+        here = await _fetches(tmp_path, OpRoute.pynixd, base, seen)
+        assert _fallthrough() == before, "pynixd's sandbox runs every builtin:fetchurl"
+        there = await _fetches(tmp_path, OpRoute.daemon, base, seen)
+
+    assert here == there
+    assert here["flat"][0] == here["executable"][0] == here["unpack"][0] == here["mirror"][0] == 0, here
+    assert here["mirror"][4][0][0].startswith("/mirror/sha256/"), here["mirror"]
+    assert any("HTTP error" in line and "404" in line for line in here["missing"][3]), here["missing"]
+    assert here["flat"][4][0][1].startswith("curl/"), here["flat"]

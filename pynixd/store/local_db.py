@@ -22,7 +22,7 @@ from pynixd_store.builder import local as local_builder
 from pynixd_store.builder.settings import BuildSettings
 from pynixd_store.engine import StoreEngine
 from pynixd_store.local_store_db import LocalStoreDB
-from pynixd_store.nix_config import nix_environment, read_nix_config
+from pynixd_store.nix_config import nix_environment, read_nix_config, read_nix_version
 from pynixd_store.signing import SecretKey, realisation_fingerprint
 
 from .. import metrics
@@ -259,6 +259,8 @@ class LocalDBStore(Store):
             on_change=self.forget_path_info,
             name=str(self.store_id),
         )
+        self._nix_version_command = (spec.nix_bin, spec.extra_env)
+        self._nix_version: str | None = None
         #: The scheduler's race over the substituters; the instance sets it at start.
         self.substitution_queue: SubstitutionQueue | None = None
         self.configured_routes = {_OP_CODES[name]: route for name, route in spec.op_routes.items()}
@@ -609,7 +611,13 @@ class LocalDBStore(Store):
             return None
         reason = "repair or check" if request.build_mode != BuildMode.NORMAL else None
         layout = self.engine.layout
-        settings = BuildSettings.from_nix_config(await self.engine.nix_config(), _build_overrides(options))
+        # `builtin:fetchurl` sends `nixVersion` in its User-Agent.
+        if request.derivation.builder == "builtin:fetchurl" and self._nix_version is None:
+            nix_bin, extra_env = self._nix_version_command
+            self._nix_version = await read_nix_version(nix_bin, nix_environment(layout, extra_env))
+        settings = BuildSettings.from_nix_config(
+            await self.engine.nix_config(), _build_overrides(options), nix_version=self._nix_version or ""
+        )
         reason = (
             reason
             or local_builder.unsupported(

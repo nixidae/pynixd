@@ -31,6 +31,7 @@ from pathlib import Path
 
 import seccomp
 
+from . import fetchurl
 from .spec import ChildSpec
 
 MS_BIND = 4096
@@ -223,6 +224,8 @@ def _run_child(spec: ChildSpec) -> None:
     null = os.open("/dev/null", os.O_RDWR | os.O_CLOEXEC)
     os.dup2(null, 0)
     os.close(null)
+    if spec["fetchurl"] is not None:
+        fetchurl.preload_nss()
     _enter_chroot(spec)
     if spec["no_new_privileges"]:
         _prctl(PR_SET_NO_NEW_PRIVS, 1)
@@ -232,6 +235,8 @@ def _run_child(spec: ChildSpec) -> None:
     os.chdir(spec["work_dir"])
     resource.setrlimit(resource.RLIMIT_CORE, (0, resource.RLIM_INFINITY))
     os.umask(0o022)
+    if spec["fetchurl"] is not None:
+        fetchurl.run(spec["fetchurl"])
     builder = spec["builder"]
     argv = [os.path.basename(builder), *spec["args"]]
     os.execve(builder, argv, spec["env"])

@@ -4,6 +4,7 @@
   hatchling,
   aiosqlite,
   anyio,
+  pycurl,
   pynacl,
   seccomp,
   structlog,
@@ -28,6 +29,7 @@ pythonBuilder (finalAttrs: {
   dependencies = [
     aiosqlite
     anyio
+    pycurl
     pynacl
     seccomp
     structlog

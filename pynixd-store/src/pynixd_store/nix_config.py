@@ -43,3 +43,13 @@ async def read_nix_config(nix_bin: str, env: Mapping[str, str]) -> dict[str, Any
         )
     config: dict[str, Any] = json.loads(result.stdout)
     return config
+
+
+async def read_nix_version(nix_bin: str, env: Mapping[str, str]) -> str:
+    """`nixVersion`: `nix --version` prints `nix (Nix) <version>` (`main.cc`)."""
+    result = await anyio.run_process([nix_bin, "--version"], stdin=subprocess.DEVNULL, env=dict(env), check=False)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"`nix --version` failed with code {result.returncode}: {result.stderr.decode(errors='replace')}"
+        )
+    return result.stdout.decode().split()[-1]

@@ -17,6 +17,7 @@ dependencies = [
     "aiosqlite",
     "anyio",
     "nix-daemon-protocol>=0.1.0",
+    "pycurl",
     "pynacl",
     "seccomp",
     "structlog",

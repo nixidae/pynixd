@@ -8,6 +8,35 @@ from __future__ import annotations
 from typing import TypedDict
 
 
+class FetchSpec(TypedDict):
+    """`builtin:fetchurl`: the derivation's attributes, the file transfer settings, and what `runChild` reads
+    on the host (`unix/build/derivation-builder.cc:956`)."""
+
+    main_url: str
+    mirrors: list[str]
+    """The hashed-mirror URLs to try first, in order."""
+    out: str
+    unpack: bool
+    executable: bool
+    tmp_dir: str
+    netrc_data: str
+    netrc_file: str
+    ca_data: str
+    ca_file: str
+    nix_version: str
+    user_agent_suffix: str
+    http2: bool
+    http3: bool
+    connect_timeout: int
+    stalled_download_timeout: int
+    download_speed: int
+    tries: int
+    retry_delay_ms: int
+    retry_delay_rate_limited_ms: int
+    retry_max_delay_ms: int
+    retry_jitter: bool
+
+
 class ChildSpec(TypedDict):
     builder: str
     args: list[str]
@@ -23,3 +52,5 @@ class ChildSpec(TypedDict):
     shm_size: str
     no_new_privileges: bool
     filter_syscalls: bool
+    fetchurl: FetchSpec | None
+    """A builtin to run in the sandbox in place of *builder*."""
