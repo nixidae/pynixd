@@ -454,6 +454,7 @@ class SSHSubprocessStore(SSHStore):
             SSHNixReader(proc.stdout, identifier=conn_id),
             SSHNixWriter(proc.stdin, identifier=conn_id),
             conn_id,
+            store_id=self.store_id,
         )
         await conn.connect()
         return conn
@@ -514,6 +515,7 @@ class SSHSocketStore(SSHStore):
             SSHNixReader(r, identifier=conn_id),
             SSHNixWriter(w, identifier=conn_id),
             conn_id,
+            store_id=self.store_id,
         )
         await conn.connect()
         return conn

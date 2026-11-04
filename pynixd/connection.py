@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 import anyio
 import structlog
 
-from . import wire
+from . import metrics, wire
 from .exceptions import InfrastructureError
 from .protocol import DELEGATION_FEATURE, get_extension_features
 from .serde.context import ReadContext, WriteContext
@@ -186,6 +186,7 @@ class Connection:
         w: NixWriter,
         conn_id: str,
         store_path: Path | None = None,
+        store_id: str | None = None,
     ) -> None:
         """Wrap a reader/writer pair as a daemon protocol connection.
 
@@ -194,8 +195,10 @@ class Connection:
             w: Writer for outgoing daemon traffic.
             conn_id: Unique identifier for this connection (e.g. store name).
             store_path: Optional store root path for local Nix stores.
+            store_id: The store this connection reaches, for `pynixd_upstream_ops_total`.
         """
         self.id: str = conn_id
+        self.store_id: str | None = store_id
         self.store_path: Path | None = store_path
         self.version: int = wire.PROTOCOL_VERSION
         self.nix_version: str = ""
@@ -318,14 +321,25 @@ class Connection:
         """
         if options is None or options == self.applied_options:
             return
-        self.op_log.append(type(options).__name__)
-        await options.to_writer(WriteContext.from_conn(self))
+        await self.send_request(options)
         await self.w.drain()
         # The daemon answers `SetOptions` with the log stream alone, so this
         # reads that stream and discards it. A failure here is a failure of
         # the connection, and the caller sees it on its own request.
         await type(options).response_type.from_reader(ReadContext.from_conn(self, buffer_logs=False))
         self.applied_options = options
+
+    async def send_request(self, request: WireRequest) -> None:
+        """Write *request*: its op number and its fields, with nothing after them.
+
+        Every op pynixd sends to a store goes through here, so `op_log` and
+        `pynixd_upstream_ops_total` see all of them. The caller drains, and
+        sends what the op streams after its fields.
+        """
+        self.op_log.append(type(request).__name__)
+        if self.store_id is not None:
+            metrics.UPSTREAM_OPS.labels(store_id=self.store_id, op=request.name).inc()
+        await request.to_writer(WriteContext.from_conn(self))
 
     async def call(
         self,
@@ -356,10 +370,9 @@ class Connection:
 
         await self.apply_options(options if options is not None else (client.options if client else None))
 
-        self.op_log.append(type(request).__name__)
         self.current_op = (type(request).__name__, time.monotonic())
         try:
-            await request.to_writer(WriteContext.from_conn(self))
+            await self.send_request(request)
             await self.w.drain()
             resp_cls = type(request).response_type
             return await resp_cls.from_reader(
@@ -392,10 +405,9 @@ class Connection:
 
         await self.apply_options(client.options if client else None)
 
-        self.op_log.append(type(request).__name__)
         self.current_op = (type(request).__name__, time.monotonic())
         try:
-            await request.to_writer(WriteContext.from_conn(self))
+            await self.send_request(request)
             framed = self.w.framed()
             framed.write(payload)
             await framed.finalize()

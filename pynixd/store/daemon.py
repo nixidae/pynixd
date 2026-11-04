@@ -49,7 +49,6 @@ from ..serde import (
     Realisation,
     StorePath,
 )
-from ..serde.context import WriteContext
 from ..system_features import BUILTIN_SYSTEM, KNOWN_FEATURES, PROBE_SYSTEMS
 from .base import Store
 from .pool import ConnectionPool
@@ -1421,7 +1420,7 @@ class DaemonStore(Store):
         nar_size = info_resp.info.nar_size if info_resp.valid and info_resp.info is not None else 0
 
         async with self.transfer_conn() as conn:
-            await NarFromPathRequest(path=sp).to_writer(WriteContext.from_conn(conn))
+            await conn.send_request(NarFromPathRequest(path=sp))
             await conn.w.drain()
             await conn.r.drain_stderr()
             if nar_size > 0:

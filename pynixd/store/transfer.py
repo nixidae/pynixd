@@ -15,7 +15,7 @@ from pynixd_store.store_path import StorePath
 from .. import metrics
 from ..daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from ..exceptions import BackendError, leaves
-from ..serde.context import ReadContext, WriteContext
+from ..serde.context import ReadContext
 from .copied import as_copied
 from .nar_reader import NarReader
 
@@ -238,12 +238,11 @@ async def _stream_paths_over_conns(
     cancel_event: anyio.Event | None,
 ) -> None:
     """Stream already-selected path infos from *nars* over an established destination connection."""
-    dst_conn.op_log.append("AddMultipleToStore (stream_paths_to)")
     req = AddMultipleToStoreRequest(
         repair=0,
         dont_check_sigs=1,
     )
-    await req.to_writer(WriteContext.from_conn(dst_conn))
+    await dst_conn.send_request(req)
     await dst_conn.w.drain()
 
     async def read_response() -> AddMultipleToStoreResponse:

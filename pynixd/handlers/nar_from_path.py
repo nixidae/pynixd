@@ -76,7 +76,7 @@ class NarFromPathHandler(Handler):
         async with anyio.create_task_group() as tg, store.transfer_conn() as conn:
             if shadow is not None and nar_size > 0:
                 tg.start_soon(shadow.dump)
-            await req.to_writer(WriteContext.from_conn(conn))
+            await conn.send_request(req)
             await conn.w.drain()
 
             # 4. Read stderr logs from daemon

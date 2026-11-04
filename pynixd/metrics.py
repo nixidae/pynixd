@@ -68,6 +68,12 @@ OP_FALLTHROUGH = Counter(
     ["store_id", "op"],
 )
 
+UPSTREAM_OPS = Counter(
+    "pynixd_upstream_ops_total",
+    "Operations pynixd sent to a store, its own daemon included (nixidae/nixidae#1155)",
+    ["store_id", "op"],
+)
+
 OP_SHADOW = Counter(
     "pynixd_op_shadow_total",
     "Shadow-routed operations, by how pynixd's answer compared with the daemon's (nixidae/nixidae#1155)",

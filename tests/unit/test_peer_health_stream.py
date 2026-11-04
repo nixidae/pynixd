@@ -126,6 +126,9 @@ class Conn:
         self.version = PROTOCOL_VERSION
         self.standard_features: frozenset[str] = frozenset()
 
+    async def send_request(self, request: Any) -> None:
+        await request.to_writer(WriteContext(writer=self.w, version=self.version, features=self.standard_features))
+
     async def close(self) -> None:
         self.closed = True
 

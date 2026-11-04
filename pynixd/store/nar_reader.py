@@ -20,7 +20,6 @@ from nix_daemon_protocol.nar_from_path import NarFromPathRequest
 from .. import metrics
 from ..exceptions import BackendError
 from ..op_routes import OpRoute
-from ..serde.context import WriteContext
 from ..wire import _CHUNK_SIZE
 from .local_db import LocalDBStore
 
@@ -156,7 +155,7 @@ class NarReader:
             shadow = NarShadow(self.store, path)
         finished = False
         try:
-            await NarFromPathRequest(path=path).to_writer(WriteContext.from_conn(conn))
+            await conn.send_request(NarFromPathRequest(path=path))
             await conn.w.drain()
             await conn.r.drain_stderr()
             remaining = nar_size

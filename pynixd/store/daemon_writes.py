@@ -32,7 +32,7 @@ from nix_daemon_protocol.optimise_store import OptimiseStoreRequest, OptimiseSto
 from nix_daemon_protocol.verify_store import VerifyStoreRequest, VerifyStoreResponse
 
 from ..serde import AddToStoreRequest, StorePath
-from ..serde.context import ReadContext, WriteContext
+from ..serde.context import ReadContext
 from ..wire import FramedWriter, send_framed, send_raw
 from .copied import as_copied
 
@@ -114,7 +114,7 @@ class DaemonWrites:
             return chunk
 
         async with self.store.transfer_conn(None) as conn:
-            await AddBuildLogRequest(path=path).to_writer(WriteContext.from_conn(conn))
+            await conn.send_request(AddBuildLogRequest(path=path))
             await conn.w.drain()
             await send_framed(read, conn.w)
             response: AddBuildLogResponse = await AddBuildLogResponse.from_reader(ReadContext.from_conn(conn))
@@ -135,7 +135,7 @@ class DaemonWrites:
         request = AddToStoreNarRequest(info=info, repair=int(repair), dont_check_sigs=int(dont_check_sigs))
         async with self.store.transfer_conn(options) as conn:
             await conn.apply_options(options)
-            await request.to_writer(WriteContext.from_conn(conn))
+            await conn.send_request(request)
             await conn.w.drain()
             await send_framed(source.read, conn.w, on_bytes=on_bytes)
             await AddToStoreNarResponse.from_reader(ReadContext.from_conn(conn, client=logs))
@@ -168,7 +168,7 @@ class DaemonWrites:
         )
         async with self.store.transfer_conn(options) as conn:
             await conn.apply_options(options)
-            await request.to_writer(WriteContext.from_conn(conn))
+            await conn.send_request(request)
             await conn.w.drain()
             await send_framed(source.read, conn.w, on_bytes=on_bytes)
             response = await AddToStoreResponse.from_reader(ReadContext.from_conn(conn))
@@ -195,7 +195,7 @@ class DaemonWrites:
         request = AddMultipleToStoreRequest(repair=int(repair), dont_check_sigs=int(dont_check_sigs))
         async with self.store.transfer_conn(options) as conn:
             await conn.apply_options(options)
-            await request.to_writer(WriteContext.from_conn(conn))
+            await conn.send_request(request)
             await conn.w.drain()
             # A task group hands back no result, so the child records it here.
             responses: list[AddMultipleToStoreResponse] = []

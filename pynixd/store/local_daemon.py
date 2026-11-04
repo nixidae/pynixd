@@ -478,6 +478,7 @@ class LocalStore(DaemonStore):
             UnixNixWriter(link, identifier=conn_id),
             conn_id,
             store_path=self.store_path,
+            store_id=self.store_id,
         )
         await conn.connect()
         return conn

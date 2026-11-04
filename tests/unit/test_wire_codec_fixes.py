@@ -49,6 +49,9 @@ class Upstream:
     async def apply_options(self, _options: Any) -> None:
         return
 
+    async def send_request(self, request: Any) -> None:
+        await request.to_writer(WriteContext(writer=self.w, version=self.version, features=self.standard_features))
+
     @asynccontextmanager
     async def transfer_conn(self, _options: Any = None) -> AsyncIterator[Upstream]:
         yield self

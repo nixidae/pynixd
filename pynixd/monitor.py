@@ -41,7 +41,6 @@ from .psi import (
     parse_psi_output,
 )
 from .serde import LogError, LogNext
-from .serde.context import WriteContext
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine, Mapping
@@ -235,7 +234,7 @@ class PeerHealthMonitor(ResourceMonitor):
                 # Read here, not through `Connection.call`: the stream never
                 # ends, and `call` waits for a response after it.
                 request = PynixdHostHealthStreamRequest(interval_ms=int(self.interval * 1000))
-                await request.to_writer(WriteContext.from_conn(conn))
+                await conn.send_request(request)
                 await conn.w.drain()
                 async for msg in conn.r.read_stderr():
                     if isinstance(msg, LogError):
