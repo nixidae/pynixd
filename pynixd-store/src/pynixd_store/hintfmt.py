@@ -13,6 +13,19 @@ ANSI_RED = "\x1b[31;1m"
 ANSI_MAGENTA = "\x1b[35;1m"
 
 
+ERROR_PREFIX = f"{ANSI_RED}error:{ANSI_NORMAL} "
+"""The word `showErrorInfo` writes in front of an error. The daemon colours it whatever the client wants."""
+
+
 def magenta(value: object) -> str:
     """One argument of a Nix message, as `HintFmt` renders it."""
     return f"{ANSI_MAGENTA}{value}{ANSI_NORMAL}"
+
+
+def show_error(message: str) -> str:
+    """*message* as `showErrorInfo` renders it, which `Error::msg` answers.
+
+    Each line after the first carries seven spaces, the width of "error: ",
+    and no line feed ends the text.
+    """
+    return ERROR_PREFIX + "\n       ".join(message.split("\n"))

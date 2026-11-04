@@ -12,7 +12,13 @@ from nix_daemon_protocol.constants import FEATURE_REALISATION_WITH_PATH
 from nix_daemon_protocol.exceptions import DaemonProtocolError
 from pynixd_store.drv_hash import output_hashes
 from pynixd_store.drv_parser import ChildMapNode, to_basic_derivation
-from pynixd_store.hintfmt import ANSI_NORMAL as _ANSI_NORMAL, ANSI_RED as _ANSI_RED, magenta as _magenta
+from pynixd_store.hintfmt import (
+    ANSI_NORMAL as _ANSI_NORMAL,
+    ANSI_RED as _ANSI_RED,
+    ERROR_PREFIX,
+    magenta as _magenta,
+    show_error,
+)
 from pynixd_store.store_path import StorePath
 
 from ..derived_path import DerivedPath, OutputsAll, OutputsNames
@@ -56,12 +62,8 @@ log = structlog.get_logger(__name__)
 U = TypeVar("U")
 
 
-_ERROR_PREFIX = "\x1b[31;1merror:\x1b[0m "
-"""The word that `showErrorInfo` of Nix writes in front of a failure.
-
-The daemon colours the word itself, and it does not ask whether the client
-wants colour. The wire parity run reads these bytes from `nix-daemon`.
-"""
+_ERROR_PREFIX = ERROR_PREFIX
+"""The word that `showErrorInfo` of Nix writes in front of a failure; the wire parity run reads these bytes."""
 
 
 def _show_known_outputs(parsed: Derivation) -> str:
@@ -87,11 +89,9 @@ def _as_an_error(message: str) -> str:
     """Give *message* the shape that `showErrorInfo` of Nix gives it.
 
     `TunnelLogger::logEI` at `daemon.cc` formats the failure of a goal and
-    sends the text as one `STDERR_NEXT`. Each line after the first carries
-    seven spaces, which is the width of "error: ". The text carries no line
-    feed at the end, because the client adds one.
+    sends the text as one `STDERR_NEXT`; the client adds the line feed.
     """
-    return _ERROR_PREFIX + "\n       ".join(message.split("\n"))
+    return show_error(message)
 
 
 type InputNode = tuple[str, tuple[str, ...]]

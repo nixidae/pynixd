@@ -57,6 +57,11 @@ class BuildFailure(Exception):
         return self.message
 
 
+class ErrorAfterBuild(Exception):
+    """A plain `Error` out of `registerOutputs`, which `Store::buildDerivation` answers as `MISC_FAILURE`
+    with its rendered text (`entry-points.cc:89`)."""
+
+
 @dataclass(frozen=True)
 class Scanned:
     path: str
@@ -296,9 +301,13 @@ def _content_addressed(
     )
     self_reference = s.path in s.references
     others = frozenset(final.get(ref, ref) for ref in s.references if ref != s.path)
-    path = content_addressed_path(
-        got, _output_path_name(drv_name, name), others, store_dir, self_reference=self_reference
-    )
+    try:
+        path = content_addressed_path(
+            got, _output_path_name(drv_name, name), others, store_dir, self_reference=self_reference
+        )
+    except ValueError as e:
+        # `ContentAddressWithReferences::fromParts` and `makeFixedOutputPath` throw a plain `Error`.
+        raise ErrorAfterBuild(str(e)) from e
     if path != s.path and (self_reference or discard):
         _rewrite(actual, {old_hash_part: _hash_part(path)}, real_store_dir)
     return _Addressed(got, path, others | {path} if self_reference else others)

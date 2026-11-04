@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from .hintfmt import magenta
 from .utils import compress_hash, nix32_decode, nix32_encode
 
 if TYPE_CHECKING:
@@ -154,7 +155,7 @@ def content_addressed_path(
         if ca.algo != "sha256":
             raise ValueError("text hashing requires sha256")
         if self_reference:
-            raise ValueError("a text path cannot refer to itself")
+            raise ValueError("self-reference not allowed with text hashing")
         return make_store_path(_make_type("text", references, False), ca.algo, ca.digest, name, store_dir)
     if ca.method is Method.GIT and ca.algo not in ("sha1", "sha256"):
         raise ValueError(f"Git file ingestion must use SHA-1 or SHA-256 hash, but instead using: {ca.algo}")
@@ -162,7 +163,7 @@ def content_addressed_path(
         return make_store_path(_make_type("source", references, self_reference), ca.algo, ca.digest, name, store_dir)
     if references or self_reference:
         raise ValueError(
-            f"fixed output derivation '{name}' is not allowed to refer to other store paths.\n"
+            f"fixed output derivation '{magenta(name)}' is not allowed to refer to other store paths.\n"
             "You may need to use the 'unsafeDiscardReferences' derivation attribute, see the manual for more details."
         )
     payload = f"fixed:out:{ca.method}{ca.algo}:{ca.digest.hex()}:"

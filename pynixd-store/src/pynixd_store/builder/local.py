@@ -31,7 +31,7 @@ from nix_daemon_protocol.signature import Signature
 from .. import optimise
 from ..add import PathLock, delete_path
 from ..content_address import Method, output_method
-from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta
+from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta, show_error
 from ..signing import SecretKey, fingerprint
 from .buildlog import BuildLog
 from .env import (
@@ -45,6 +45,7 @@ from .env import (
 )
 from .outputs import (
     BuildFailure,
+    ErrorAfterBuild,
     check_outputs,
     collect_outputs,
     discarded_references,
@@ -397,6 +398,8 @@ async def build(
             )
         except BuildFailure as e:
             return LocalBuildResult(e.status, e.message, start, stop)
+        except ErrorAfterBuild as e:
+            return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(str(e)))
         try:
             if settings.auto_optimise_store:
                 # `registerOutputs` (`derivation-builder.cc:1600`) skips an output that is valid already.

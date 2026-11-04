@@ -708,3 +708,30 @@ async def test_a_fixed_output_with_fsync_store_paths_goes_to_the_daemon(tmp_path
         )
     assert _fallthrough() == before + 1
     assert any("hash mismatch in fixed-output derivation" in line for line in _errors(err)), err
+
+
+async def _flat_with_references(tmp_path: Path, route: OpRoute) -> tuple[int, list[str]]:
+    async with _serve(tmp_path, route) as (url, _root):
+        rc, _out, err, _both = await run_subproc(
+            [
+                NIX_BIN,
+                "build",
+                "--store",
+                url,
+                "--impure",
+                "--no-link",
+                "--expr",
+                _fod("parity-fod-flat-dep", "flat", "echo ${dep} > $out"),
+            ],
+            expected_retcode=None,
+        )
+    return rc, _errors(err)
+
+
+async def test_a_flat_fixed_output_with_a_reference_fails_as_the_daemon_fails_it(tmp_path: Path) -> None:
+    """`makeFixedOutputPath` (`store-dir-config.cc:119`) refuses a flat address with references."""
+    before = _fallthrough()
+    here = await _flat_with_references(tmp_path, OpRoute.pynixd)
+    assert _fallthrough() == before
+    there = await _flat_with_references(tmp_path, OpRoute.daemon)
+    assert here == there
