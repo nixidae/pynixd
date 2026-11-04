@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 ANSI_NORMAL = "\x1b[0m"
+ANSI_BOLD = "\x1b[1m"
 ANSI_RED = "\x1b[31;1m"
 ANSI_MAGENTA = "\x1b[35;1m"
 

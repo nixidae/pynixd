@@ -51,6 +51,8 @@ class BuildSettings:
     allow_new_privileges: bool
     build_dir: str | None
     ca_derivations: bool
+    log_lines: int = 25
+    nix_command: bool = True
 
     @classmethod
     def from_nix_config(cls, config: Mapping[str, Any], overrides: Mapping[str, str]) -> BuildSettings:
@@ -67,6 +69,7 @@ class BuildSettings:
             return raw in (True, "true", "1")
 
         sandbox = value("sandbox", True)
+        features = words(value("experimental-features", ()))
         cores = int(value("cores", 0) or 0)
         return cls(
             system=str(value("system")),
@@ -79,5 +82,7 @@ class BuildSettings:
             sandbox_shm_size=str(value("sandbox-dev-shm-size", "50%")),
             allow_new_privileges=boolean(value("allow-new-privileges", False)),
             build_dir=value("build-dir") or None,
-            ca_derivations="ca-derivations" in words(value("experimental-features", ())),
+            ca_derivations="ca-derivations" in features,
+            log_lines=int(value("log-lines", 25)),
+            nix_command="nix-command" in features,
         )

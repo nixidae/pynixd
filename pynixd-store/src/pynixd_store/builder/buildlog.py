@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+from collections import deque
+
 
 class BuildLog:
     """Cuts the builder's bytes into lines.
 
     A `\\r` that a `\\n` does not follow moves the column back to the start, and
     later bytes overwrite the line from there, as a terminal shows a progress bar.
+    `tail` keeps the last *max_tail_lines* lines, which a failure message shows.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, max_tail_lines: int = 0) -> None:
+        self.tail: deque[str] = deque(maxlen=max_tail_lines)
         self._line = bytearray()
         self._pos = 0
         self._pending_cr = False
@@ -50,4 +54,5 @@ class BuildLog:
         line = self._line.decode(errors="surrogateescape")
         self._line.clear()
         self._pos = 0
+        self.tail.append(line)
         return line

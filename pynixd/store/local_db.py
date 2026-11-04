@@ -17,7 +17,6 @@ from nix_daemon_protocol.operations import STANDARD_OPERATIONS
 from nix_daemon_protocol.protocol import ActivityType, FieldType, ResultType, Verbosity
 from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
 from pynixd_store.builder import local as local_builder
-from pynixd_store.builder.buildlog import BuildLog
 from pynixd_store.builder.settings import BuildSettings
 from pynixd_store.engine import StoreEngine
 from pynixd_store.local_store_db import LocalStoreDB
@@ -641,19 +640,14 @@ class LocalDBStore(Store):
                 ],
             )
         )
-        lines = BuildLog()
 
         async def emit(texts: list[str]) -> None:
             for text in texts:
                 field = ActivityField(type=FieldType.STRING, valstr=text)
                 await on_log(LogResult(act_id=act_id, result_type=ResultType.BUILD_LOG_LINE, fields=[field]))
 
-        async def piece(data: bytes) -> None:
-            await emit(lines.feed(data))
-
         try:
-            built = await local_builder.build(self.engine, drv_path, request.derivation, settings, on_log=piece)
-            await emit(lines.flush())
+            built = await local_builder.build(self.engine, drv_path, request.derivation, settings, on_lines=emit)
         finally:
             with anyio.CancelScope(shield=True):
                 await on_log(LogStopActivity(act_id=act_id))

@@ -32,5 +32,19 @@ def test_an_empty_line_is_a_line() -> None:
     assert _all(b"a\n\nb\n") == ["a", "", "b"]
 
 
+def test_the_tail_keeps_the_last_lines_and_the_flushed_one() -> None:
+    log = BuildLog(2)
+    log.feed(b"one\ntwo\nthree\n")
+    log.feed(b"four")
+    log.flush()
+    assert list(log.tail) == ["three", "four"]
+
+
+def test_no_tail_by_default() -> None:
+    log = BuildLog()
+    log.feed(b"one\n")
+    assert list(log.tail) == []
+
+
 def test_bytes_that_are_not_utf8_survive() -> None:
     assert _all(b"\xff\n")[0].encode(errors="surrogateescape") == b"\xff"

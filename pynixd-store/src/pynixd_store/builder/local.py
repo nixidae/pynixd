@@ -10,6 +10,7 @@ import contextlib
 import errno
 import json
 import os
+import signal
 import sys
 import tempfile
 import time
@@ -25,7 +26,8 @@ from nix_daemon_protocol.build_result import BuildResultStatus
 from nix_daemon_protocol.derivation_output import OutputKind
 
 from ..add import PathLock, delete_path
-from ..hintfmt import magenta
+from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta
+from .buildlog import BuildLog
 from .child import ChildSpec
 from .env import HOME_DIR, SANDBOX_BUILD_DIR, build_env
 from .outputs import BuildFailure, collect_outputs
@@ -43,6 +45,9 @@ _log = structlog.get_logger(__name__)
 
 SANDBOX_UID, SANDBOX_GID = 1000, 100
 """`sandboxUid` and `sandboxGid` without build users (`linux-derivation-builder.cc:430`)."""
+
+DISK_FULL_BYTES = 8 * 1024 * 1024
+"""Less free space than this after a failure is a full disk (`decideWhetherDiskFull`, `derivation-builder.cc:304`)."""
 
 DEV_FILES = ("/dev/full", "/dev/null", "/dev/random", "/dev/tty", "/dev/urandom", "/dev/zero")
 OUTPUT_CHECKS = (
@@ -87,6 +92,13 @@ class LocalBuildResult:
     start_time: int = 0
     stop_time: int = 0
     outputs: dict[str, ValidPathInfo] = field(default_factory=dict)
+
+
+@dataclass
+class _BuilderFailed:
+    """The builder exited non-zero: `statusToString` without the leading word (`processes.cc:378`)."""
+
+    reason: str
 
 
 @dataclass
@@ -169,11 +181,11 @@ async def build(
     drv: BasicDerivation,
     settings: BuildSettings,
     *,
-    on_log: Callable[[bytes], Awaitable[None]],
+    on_lines: Callable[[list[str]], Awaitable[None]],
 ) -> LocalBuildResult:
     """Build *drv*, whose inputs are valid, and register its outputs. `unsupported(drv)` must be `None`.
 
-    *on_log* receives the builder's output as it comes, in pieces.
+    *on_lines* receives the builder's output as it comes, cut into Nix's log lines.
     """
     layout = engine.layout
     locks = [PathLock(layout.real_store_dir / o.path.rsplit("/", 1)[-1]) for o in drv.outputs.values() if o.path]
@@ -217,15 +229,25 @@ async def build(
             raise ValueError(f"home directory '{HOME_DIR}' exists; please remove it to assure purity of builds")
         start = int(time.time())
         log = bytearray()
+        lines = BuildLog(settings.log_lines)
 
         async def keep(piece: bytes) -> None:
             log.extend(piece)
-            await on_log(piece)
+            await on_lines(lines.feed(piece))
 
         failure = await _run(paths, spec, settings, drv_path, keep)
         stop = int(time.time())
+        # Nix flushes at the builder's end of file, which a timeout never reaches.
+        if not (isinstance(failure, BuildFailure) and failure.status is BuildResultStatus.TIMED_OUT):
+            await on_lines(lines.flush())
         if log:
             await engine.add_build_log(drv_path.rsplit("/", 1)[-1], bytes(log))
+        if isinstance(failure, _BuilderFailed):
+            disk_full = await anyio.to_thread.run_sync(_disk_full, layout.real_store_dir, paths.tmp)
+            failure = BuildFailure(
+                BuildResultStatus.TRANSIENT_FAILURE if fixed or disk_full else BuildResultStatus.PERMANENT_FAILURE,
+                builder_failure_message(drv_path, drv, failure.reason, list(lines.tail), settings, disk_full=disk_full),
+            )
         if failure is not None:
             return LocalBuildResult(failure.status, failure.message, start, stop)
         try:
@@ -259,7 +281,7 @@ async def _run(
     settings: BuildSettings,
     drv_path: str,
     on_log: Callable[[bytes], Awaitable[None]],
-) -> BuildFailure | None:
+) -> BuildFailure | _BuilderFailed | None:
     """Run the helper on a pseudoterminal, as `startBuild` does, and wait under the two timeouts."""
     spec_file = paths.top / "spec.json"
     spec_file.write_text(json.dumps(spec))
@@ -311,9 +333,40 @@ async def _run(
     if setup_error:
         return BuildFailure(BuildResultStatus.MISC_FAILURE, f"while setting up the build environment: {setup_error}")
     code = process.returncode
+    if code is not None and code < 0:
+        return _BuilderFailed(f"failed due to signal {-code} ({signal.strsignal(-code)})")
     if code:
-        reason = f"signal {-code}" if code < 0 else f"exit code {code}"
-        return BuildFailure(
-            BuildResultStatus.PERMANENT_FAILURE, f"builder for '{magenta(drv_path)}' failed with {reason}"
-        )
+        return _BuilderFailed(f"failed with exit code {code}")
     return None
+
+
+def _disk_full(*paths: Path) -> bool:
+    return any(_free_bytes(path) < DISK_FULL_BYTES for path in paths)
+
+
+def _free_bytes(path: Path) -> int:
+    try:
+        st = os.statvfs(path)
+    except OSError:
+        return DISK_FULL_BYTES
+    return st.f_bavail * st.f_bsize
+
+
+def builder_failure_message(
+    drv_path: str, drv: BasicDerivation, reason: str, tail: list[str], settings: BuildSettings, *, disk_full: bool
+) -> str:
+    """`fixupBuilderFailureErrorMessage` (`derivation-building-goal.cc:1157`).
+
+    The daemon's logger is never verbose, so the tail always shows.
+    """
+    msg = f"Cannot build '{magenta(drv_path)}'.\nReason: {ANSI_RED}builder {reason}{ANSI_NORMAL}."
+    outputs = sorted(o.path for o in drv.outputs.values() if o.path)
+    if outputs:
+        msg += "\nOutput paths:" + "".join(f"\n  {magenta(path)}" for path in outputs)
+    if tail:
+        msg += f"\nLast {len(tail)} log lines:\n" + "".join(f"> {line}\n" for line in tail)
+        command = "nix log" if settings.nix_command else "nix-store -l"
+        msg += f"For full logs, run:\n  {ANSI_BOLD}{command} {drv_path}{ANSI_NORMAL}"
+    if disk_full:
+        msg += "\nnote: build failure may have been caused by lack of free disk space"
+    return msg
