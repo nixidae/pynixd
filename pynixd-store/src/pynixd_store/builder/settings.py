@@ -58,6 +58,7 @@ class BuildSettings:
     ca_derivations: bool
     impure_env: Mapping[str, str]
     """`impure-env`, which a fixed-output build reads before the process environment."""
+    fsync_store_paths: bool = False
     log_lines: int = 25
     nix_command: bool = True
 
@@ -127,6 +128,7 @@ class BuildSettings:
             ca_derivations="ca-derivations" in features,
             # The setting carries `Xp::ConfigurableImpureEnv`: without the feature Nix ignores it.
             impure_env=impure_env() if "configurable-impure-env" in features else {},
+            fsync_store_paths=boolean(value("fsync-store-paths", False)),
             log_lines=int(value("log-lines", 25)),
             nix_command="nix-command" in features,
         )

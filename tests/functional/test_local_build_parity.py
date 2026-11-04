@@ -684,3 +684,27 @@ async def test_impure_env_reaches_a_fixed_output_build_as_the_daemon_passes_it(t
 
     assert here == there
     assert any(line.endswith("token=secret extra=") for line in here), here
+
+
+async def test_a_fixed_output_with_fsync_store_paths_goes_to_the_daemon(tmp_path: Path) -> None:
+    """`moveOutputToTempDir` fsyncs a fixed output (`derivation-builder.cc:1417`), and pynixd's restore cannot."""
+    before = _fallthrough()
+    async with _serve(tmp_path, OpRoute.pynixd) as (url, _root):
+        _rc, _out, err, _both = await run_subproc(
+            [
+                NIX_BIN,
+                "build",
+                "--store",
+                url,
+                "--option",
+                "fsync-store-paths",
+                "true",
+                "--impure",
+                "--no-link",
+                "--expr",
+                FOD_FLAT,
+            ],
+            expected_retcode=1,
+        )
+    assert _fallthrough() == before + 1
+    assert any("hash mismatch in fixed-output derivation" in line for line in _errors(err)), err

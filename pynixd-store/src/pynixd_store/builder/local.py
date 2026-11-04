@@ -103,6 +103,10 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
         return "an impure or deferred output"
     if len(kinds) != 1 or (OutputKind.CA_FIXED in kinds and len(drv.outputs) != 1):
         return f"the outputs {sorted(drv.outputs)} of kinds {sorted(k.name for k in kinds)}"
+    # `moveOutputToTempDir` (`derivation-builder.cc:1417`) restores a fixed output with fsync; pynixd's
+    # restore has none, as its own writes leave this setting to the daemon (`write_router._fsync`).
+    if OutputKind.CA_FIXED in kinds and settings.fsync_store_paths:
+        return "a fixed output with fsync-store-paths"
     if any(o.method and output_method(o.method)[0] is Method.GIT for o in drv.outputs.values()):
         return "a Git-hashed output"
     return None
