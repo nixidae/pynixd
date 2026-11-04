@@ -58,7 +58,7 @@ the reference; paths are under `src/libstore/`.
    sends a local build to `local_store.execute`. On the `pynixd` route the
    outputs register in place, so the pull and the daemon's `AddTempRoot`
    go away.
-2. **Nix's split, in Python.** The store side goes in `pynixd_store/build/`:
+2. **Nix's split, in Python.** The store side goes in `pynixd_store/builder/`:
    `env.py` (`initEnv` and `DesugaredEnv`), `refscan.py`, `outputs.py`
    (`registerOutputs` and `checkOutputs`). The process side is one interface,
    `Sandbox`, whose methods are Nix's virtual ones: `start_child`,
@@ -82,7 +82,7 @@ test, and Nix can do that only in a user namespace.
 
 ## The child: pynixd's own helper
 
-| | bubblewrap (`bwrap`, a Nix package) | a helper of pynixd's (`python -m pynixd_store.build.child`) |
+| | bubblewrap (`bwrap`, a Nix package) | a helper of pynixd's (`python -m pynixd_store.builder.child`) |
 | --- | --- | --- |
 | does | namespaces, uid map, binds, `pivot_root`, `--die-with-parent`, hostname, `--seccomp FD` | the same, with `os.unshare`, `mount` and `pivot_root` through ctypes |
 | lacks | cgroups, `uid-range` (one uid mapped), a build user as root | nothing by design |
@@ -93,3 +93,9 @@ later root and build-user row, with cgroups and `uid-range`, and with no
 external dependency. It is a separate Python process, single-threaded, that
 does what Nix's `startChild` and `enterChroot` do and then `execve`s the
 builder.
+
+Later, after the basics (User, 2026-11-04): a libkrun builder, a second
+implementation of `Sandbox` that runs the build in a microVM, and per-build
+resource reporting that is finer than Nix's `cpuUser` and `cpuSystem`. So the
+helper takes its whole job from one file that pynixd writes, as Nix's
+`build.json` does, and nothing in the store side assumes namespaces.
