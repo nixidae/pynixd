@@ -26,8 +26,9 @@ import pytest
 from nix_daemon_protocol.constants import STDERR_START_ACTIVITY, STDERR_STOP_ACTIVITY
 from nix_daemon_protocol.ids import BuildId
 from nix_daemon_protocol.protocol import ActivityType, Verbosity
+from pynixd.activity import next_activity_id
 from pynixd.answer import Answer
-from pynixd.build_queue import QueuedBuild, _next_activity_id
+from pynixd.build_queue import QueuedBuild
 from pynixd_store.store_path import StorePath
 
 if TYPE_CHECKING:
@@ -182,10 +183,10 @@ class TestTheActivityId:
         """`logging.cc:208` puts the pid in the high half so two daemons
         cannot answer with the same id. pynixd forwards a backend's ids
         unchanged, so its own have to miss that space."""
-        assert _next_activity_id() >> 32 == os.getpid()
+        assert next_activity_id() >> 32 == os.getpid()
 
     def test_two_of_them_differ(self) -> None:
-        assert _next_activity_id() != _next_activity_id()
+        assert next_activity_id() != next_activity_id()
 
 
 def _read_int(block: bytes, index: int) -> int:

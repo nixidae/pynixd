@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import itertools
-import os
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -17,6 +15,7 @@ from nix_daemon_protocol.protocol import ActivityType, Verbosity
 from pynixd_store.store_path import StorePath
 
 from . import metrics, wire
+from .activity import next_activity_id
 from .answer import Answer
 from .exceptions import DelegationLoopError
 from .serde import BuildDerivationResponse, BuildMode, BuildResult, BuildResultStatus
@@ -36,26 +35,6 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 MAX_STORE_RETRIES = 3
-
-_act_counter = itertools.count()
-
-
-def _next_activity_id() -> int:
-    """An activity id that cannot collide with the ones a backend sends.
-
-    pynixd forwards a backend daemon's log messages with their activity ids
-    unchanged, so an id pynixd makes for itself has to miss that space.
-    `src/libutil/logging.cc:208` is where Nix answers the same question:
-
-        id(nextId++ + (((uint64_t) getPid()) << 32))
-
-    Same scheme here. Two daemons on one machine have different pids, so the
-    high half separates them. Two on different machines can share a pid, and
-    that is a collision Nix has as well with a remote builder -- copying the
-    scheme copies its limit, and inventing a different one would not remove
-    it.
-    """
-    return next(_act_counter) + (os.getpid() << 32)
 
 
 @dataclass
@@ -434,7 +413,7 @@ class QueuedBuild:
         later subscriber replays. This activity belongs to one client, and the
         client that asked for the build must not read it.
         """
-        act_id = _next_activity_id()
+        act_id = next_activity_id()
         message = LogStartActivity(
             act_id=act_id,
             level=Verbosity.WARN,
