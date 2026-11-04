@@ -154,13 +154,38 @@ def _prepare(engine: StoreEngine, drv_path: str, settings: BuildSettings) -> _Pa
     return _Paths(top, tmp, chroot_parent, root)
 
 
+def _sandbox_store_paths(settings: BuildSettings, store_dir: str) -> set[str]:
+    """`toStorePath` of each `sandbox-paths` source that `isInStore`."""
+    prefix = f"{store_dir}/"
+    return {
+        prefix + p.source.removeprefix(prefix).split("/", 1)[0]
+        for p in settings.sandbox_paths
+        if p.source.startswith(prefix) and len(p.source) > len(prefix)
+    }
+
+
 def _binds(
-    engine: StoreEngine, paths: _Paths, inputs: set[str], settings: BuildSettings, sandboxed: bool
+    engine: StoreEngine,
+    paths: _Paths,
+    inputs: set[str],
+    sandbox_closure: set[str],
+    settings: BuildSettings,
+    sandboxed: bool,
 ) -> list[tuple[str, str, bool]]:
-    """`pathsInChroot`: `sandbox-paths`, the build directory, the input closure and `/dev` (`enterChroot`)."""
+    """`pathsInChroot`: `sandbox-paths` and the closure of its store paths, the build directory, the input
+    closure and `/dev` (`enterChroot`).
+
+    NIX-DEFECT (#23): `build/derivation-building-goal.cc:957` binds each path of
+    the `sandbox-paths` closure from its store path, and the chroot builder
+    translates only the inputs (`unix/build/chroot-derivation-builder.cc:54`).
+    In a store at `?root=` the source is absent and the build fails. pynixd
+    binds the real path, as for the inputs; Lillecarl/nix#392 holds the report.
+    """
     binds: dict[str, tuple[str, bool]] = {p.target: (p.source, p.optional) for p in settings.sandbox_paths}
-    binds[SANDBOX_BUILD_DIR] = (str(paths.tmp), False)
     real = engine.layout.real_store_dir
+    for path in sandbox_closure:
+        binds[path] = (str(real / path.rsplit("/", 1)[-1]), False)
+    binds[SANDBOX_BUILD_DIR] = (str(paths.tmp), False)
     for path in inputs:
         binds[path] = (str(real / path.rsplit("/", 1)[-1]), False)
     if "/dev" not in binds:
@@ -200,6 +225,10 @@ async def build(
         if valid == {o.path for o in drv.outputs.values()}:
             return LocalBuildResult(BuildResultStatus.ALREADY_VALID)
         inputs = {str(p) for p in await engine.query_closure(sorted(str(p) for p in drv.input_srcs))}
+        # An invalid path drops out of the closure, as Nix ignores `InvalidPath` here.
+        sandbox_closure = {
+            str(p) for p in await engine.query_closure(sorted(_sandbox_store_paths(settings, str(layout.store_dir))))
+        }
         paths = await anyio.to_thread.run_sync(_prepare, engine, drv_path, settings)
         fixed = any(o.kind is OutputKind.CA_FIXED for o in drv.outputs.values())
         env = build_env(
@@ -219,7 +248,9 @@ async def build(
             "args": list(drv.args),
             "env": env.variables,
             "root": str(paths.root),
-            "binds": await anyio.to_thread.run_sync(_binds, engine, paths, inputs, settings, not fixed),
+            "binds": await anyio.to_thread.run_sync(
+                _binds, engine, paths, inputs, sandbox_closure, settings, not fixed
+            ),
             "private_network": not fixed,
             "sandbox_uid": SANDBOX_UID,
             "sandbox_gid": SANDBOX_GID,

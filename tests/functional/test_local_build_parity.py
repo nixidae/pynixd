@@ -205,6 +205,44 @@ async def test_a_builders_json_lines_reach_the_client_as_the_daemon_sends_them(t
     assert not any("too quiet" in line or "not a transfer" in line for line in here), here
 
 
+def _probe(top: str, dep: str) -> str:
+    """What the build sees of `/top`, of its store path and of the dependency only its closure brings."""
+    checks = "; ".join(f"if [ -e {p} ]; then echo yes; else echo no; fi" for p in ("/top", top, dep))
+    return (
+        'derivation { name = "parity-probe"; system = builtins.currentSystem; builder = "/bin/sh"; '
+        f'args = [ "-c" "({checks}) > $out" ]; }}'
+    )
+
+
+async def _sandbox_closure(tmp_path: Path, route: OpRoute) -> tuple[int, str]:
+    async with _serve(tmp_path, route) as (url, root):
+        build = [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--print-out-paths"]
+        _rc, top, _err, _both = await run_subproc([*build, "--expr", TOP])
+        top = top.strip()
+        _rc, dep, _err, _both = await run_subproc([NIX_BIN, "path-info", "--store", url, "--expr", DEP, "--impure"])
+        probe_expr = _probe(top, dep.strip())
+        # Optional: a source names a host path, and this store's files are under its root.
+        rc, probe, err, _both = await run_subproc(
+            [*build, "--option", "extra-sandbox-paths", f"/top={top}?", "--expr", probe_expr], expected_retcode=None
+        )
+        return rc, (root / probe.strip().lstrip("/")).read_text() if rc == 0 else err
+
+
+async def test_a_sandbox_path_in_the_store_brings_its_closure(tmp_path: Path) -> None:
+    """`DerivationBuildingGoal` binds the closure of each store path `sandbox-paths` names.
+
+    NIX-DEFECT (#23) in `local._binds`: the daemon binds the closure from the
+    store path, which a store at `?root=` does not have (Lillecarl/nix#392).
+    """
+    here = await _sandbox_closure(tmp_path, OpRoute.pynixd)
+    there = await _sandbox_closure(tmp_path, OpRoute.daemon)
+
+    # `/top` names a host path that this store does not have; its closure is in the store.
+    assert here == (0, "no\nyes\nyes\n")
+    assert there[0] == 1
+    assert "-parity-dep" in there[1] and "No such file or directory" in there[1], there[1]
+
+
 def _errors(err: str) -> list[str]:
     lines = err.splitlines()
     return lines[next(i for i, line in enumerate(lines) if line.startswith("error:")) :]
