@@ -608,10 +608,16 @@ class LocalDBStore(Store):
         if self.routes.get(BuildDerivationRequest.op) is not OpRoute.pynixd or not self.engine.writable:
             return None
         reason = "repair or check" if request.build_mode != BuildMode.NORMAL else None
+        layout = self.engine.layout
         settings = BuildSettings.from_nix_config(await self.engine.nix_config(), _build_overrides(options))
         reason = (
             reason
-            or local_builder.unsupported(request.derivation, settings, store_dir=str(self.engine.layout.store_dir))
+            or local_builder.unsupported(
+                request.derivation,
+                settings,
+                store_dir=str(layout.store_dir),
+                relocated=layout.store_dir != layout.real_store_dir,
+            )
             or await self._realisations_unsupported(request)
         )
         if reason is None:

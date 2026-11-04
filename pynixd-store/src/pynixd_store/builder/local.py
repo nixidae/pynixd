@@ -76,8 +76,11 @@ DISK_FULL_BYTES = 8 * 1024 * 1024
 DEV_FILES = ("/dev/full", "/dev/null", "/dev/random", "/dev/tty", "/dev/urandom", "/dev/zero")
 
 
-def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str) -> str | None:
-    """Why pynixd leaves this build to the daemon, or `None` when it builds it."""
+def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str, relocated: bool) -> str | None:
+    """Why pynixd leaves this build to the daemon, or `None` when it builds it.
+
+    *relocated* is whether the store's real directory is not its logical one (`isRelocatedStore`).
+    """
     if not sys.platform.startswith("linux"):
         return "pynixd builds on Linux only"
     if drv.builder.startswith("builtin:"):
@@ -105,6 +108,10 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
         return "a deferred output"
     if len(kinds) != 1 or (OutputKind.CA_FIXED in kinds and len(drv.outputs) != 1):
         return f"the outputs {sorted(drv.outputs)} of kinds {sorted(k.name for k in kinds)}"
+    # `makeDerivationBuilder` (`derivation-builder.cc:1777`): relaxed builds an unsandboxed type without the
+    # chroot, unless the store is relocated. pynixd always builds in one.
+    if settings.sandbox == "relaxed" and not relocated and kinds & {OutputKind.CA_FIXED, OutputKind.IMPURE}:
+        return "an unsandboxed derivation with sandbox = relaxed"
     # `moveOutputToTempDir` (`derivation-builder.cc:1417`) restores a fixed output with fsync; pynixd's
     # restore has none, as its own writes leave this setting to the daemon (`write_router._fsync`).
     if OutputKind.CA_FIXED in kinds and settings.fsync_store_paths:
