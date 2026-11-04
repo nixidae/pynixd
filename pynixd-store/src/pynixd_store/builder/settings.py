@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -24,6 +22,19 @@ class SandboxPath:
         entry = entry.removesuffix("?")
         target, sep, source = entry.partition("=")
         return cls(target, source if sep else target, optional)
+
+    @classmethod
+    def parse_all(cls, raw: Any) -> tuple[SandboxPath, ...]:
+        """`sandbox-paths` from an override (words) or from `nix config show --json`.
+
+        The JSON is a map of target to `{"source", "optional"}` (`PathsInChroot`).
+        Reading it as a list of words takes the targets alone, and binds the
+        host's `/bin/sh` where Nix binds its busybox.
+        """
+        if isinstance(raw, Mapping):
+            return tuple(cls(target, e["source"], bool(e.get("optional"))) for target, e in raw.items())
+        words = raw.split() if isinstance(raw, str) else list(raw or ())
+        return tuple(cls.parse(entry) for entry in words)
 
 
 @dataclass(frozen=True)
@@ -61,7 +72,7 @@ class BuildSettings:
             system=str(value("system")),
             extra_platforms=frozenset(words(value("extra-platforms", ()))),
             sandbox=sandbox if isinstance(sandbox, str) else ("true" if sandbox else "false"),
-            sandbox_paths=tuple(SandboxPath.parse(e) for e in words(value("sandbox-paths", ()))),
+            sandbox_paths=SandboxPath.parse_all(value("sandbox-paths", ())),
             build_cores=cores or os.cpu_count() or 1,
             max_silent_time=int(value("max-silent-time", 0) or 0),
             timeout=int(value("timeout", 0) or 0),
