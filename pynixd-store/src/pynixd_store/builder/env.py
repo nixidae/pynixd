@@ -79,4 +79,5 @@ def build_env(
             variables[name] = impure_source.get(name, "")
     variables["NIX_LOG_FD"] = "2"
     variables["TERM"] = "xterm-256color"
-    return BuildEnv({k: rewrite_strings(v, rewrites) for k, v in variables.items()}, files)
+    # `rewriteStrings` over `name=value`: a placeholder holds no `=`, so each half rewrites alone.
+    return BuildEnv({rewrite_strings(k, rewrites): rewrite_strings(v, rewrites) for k, v in variables.items()}, files)

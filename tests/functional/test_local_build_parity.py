@@ -315,6 +315,35 @@ async def test_auto_optimise_store_links_the_outputs_of_a_build(tmp_path: Path) 
         assert here == {"parity-twins": expected, "parity-twins-dev": expected}, here
 
 
+PLACEHOLDERS = (
+    'derivation { name = "parity-placeholders"; system = builtins.currentSystem; builder = "/bin/sh"; '
+    'outputs = [ "out" "dev" ]; foo = builtins.placeholder "dev"; passAsFile = [ "bar" ]; '
+    'bar = builtins.placeholder "out"; '
+    'args = [ "-c" "read -r bar < $barPath; echo $foo $bar > ${builtins.placeholder "out"}; echo dev > $dev" ]; }'
+)
+
+
+async def _placeholders(tmp_path: Path, route: OpRoute) -> tuple[int, dict[str, str]]:
+    async with _serve(tmp_path, route) as (url, root):
+        rc, out, _err, _both = await run_subproc(
+            [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--print-out-paths", "--expr", PLACEHOLDERS],
+            expected_retcode=None,
+        )
+        return rc, {p: (root / p.lstrip("/")).read_text() for p in out.split()}
+
+
+async def test_an_output_placeholder_reaches_the_builder_as_its_path(tmp_path: Path) -> None:
+    """`inputRewrites` (`derivation-builder.cc:435`) in the arguments, the environment and `passAsFile`."""
+    here = await _placeholders(tmp_path, OpRoute.pynixd)
+    there = await _placeholders(tmp_path, OpRoute.daemon)
+
+    assert here == there
+    assert here[0] == 0, here
+    dev = next(p for p in here[1] if p.endswith("-dev"))
+    out = next(p for p in here[1] if not p.endswith("-dev"))
+    assert here[1][out] == f"{dev} {out}\n", here
+
+
 MID = (
     f"let dep = {DEP}; in "
     'derivation { name = "parity-mid"; system = builtins.currentSystem; builder = "/bin/sh"; '

@@ -32,7 +32,7 @@ from ..add import PathLock, delete_path
 from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta
 from ..signing import SecretKey, fingerprint
 from .buildlog import BuildLog
-from .env import HOME_DIR, SANDBOX_BUILD_DIR, build_env
+from .env import HOME_DIR, SANDBOX_BUILD_DIR, build_env, hash_placeholder, rewrite_strings
 from .outputs import BuildFailure, check_outputs, collect_outputs
 from .spec import ChildSpec
 
@@ -246,11 +246,13 @@ async def build(
         }
         paths = await anyio.to_thread.run_sync(_prepare, engine, drv_path, settings)
         fixed = any(o.kind is OutputKind.CA_FIXED for o in drv.outputs.values())
+        # `inputRewrites` (`derivation-builder.cc:435`): the sandbox builds each output at its own path.
+        rewrites = {hash_placeholder(name): o.path for name, o in drv.outputs.items()}
         env = build_env(
             drv.env,
             store_dir=str(layout.store_dir),
             build_cores=settings.build_cores,
-            rewrites={},
+            rewrites=rewrites,
             fixed_output=fixed,
             impure_source=os.environ,
         )
@@ -260,7 +262,7 @@ async def build(
             (paths.tmp / name).write_text(contents)
         spec: ChildSpec = {
             "builder": drv.builder,
-            "args": list(drv.args),
+            "args": [rewrite_strings(arg, rewrites) for arg in drv.args],
             "env": env.variables,
             "root": str(paths.root),
             "binds": await anyio.to_thread.run_sync(
