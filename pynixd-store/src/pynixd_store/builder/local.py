@@ -51,6 +51,7 @@ from .outputs import (
     discarded_references,
     fallback_path,
     output_checks,
+    random_path,
 )
 from .spec import ChildSpec
 
@@ -100,8 +101,8 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
     except ValueError as e:
         return f"structured attrs with {e}"
     kinds = {o.kind for o in drv.outputs.values()}
-    if kinds - {OutputKind.INPUT_ADDRESSED, OutputKind.CA_FIXED, OutputKind.CA_FLOATING}:
-        return "an impure or deferred output"
+    if OutputKind.DEFERRED in kinds:
+        return "a deferred output"
     if len(kinds) != 1 or (OutputKind.CA_FIXED in kinds and len(drv.outputs) != 1):
         return f"the outputs {sorted(drv.outputs)} of kinds {sorted(k.name for k in kinds)}"
     # `moveOutputToTempDir` (`derivation-builder.cc:1417`) restores a fixed output with fsync; pynixd's
@@ -300,7 +301,12 @@ async def build(
     """
     layout = engine.layout
     store_dir = str(layout.store_dir)
-    known = {name: realised.get(name, o.path) for name, o in drv.outputs.items()}
+    drv_name = _drv_name(drv_path)
+    impure = any(o.kind is OutputKind.IMPURE for o in drv.outputs.values())
+    known = {
+        name: random_path(name, drv_name, store_dir) if impure else realised.get(name, o.path)
+        for name, o in drv.outputs.items()
+    }
     locks = [PathLock(layout.real_store_dir / path.rsplit("/", 1)[-1]) for path in known.values() if path]
     for lock in locks:
         # Not cancellable: an abandoned `flock` would hold the lock with no owner to release it.
@@ -311,9 +317,7 @@ async def build(
         if valid == set(known.values()):
             return LocalBuildResult(BuildResultStatus.ALREADY_VALID, paths=known)
         # The sandbox needs no hash rewrite, so a known path is its own scratch path (`derivation-builder.cc:417`).
-        scratch = {
-            name: path or fallback_path(drv_path, name, _drv_name(drv_path), store_dir) for name, path in known.items()
-        }
+        scratch = {name: path or fallback_path(drv_path, name, drv_name, store_dir) for name, path in known.items()}
         inputs = {str(p) for p in await engine.query_closure(sorted(str(p) for p in drv.input_srcs))}
         # An invalid path drops out of the closure, as Nix ignores `InvalidPath` here.
         sandbox_closure = {
@@ -325,6 +329,7 @@ async def build(
             return LocalBuildResult(e.status, e.message)
         paths = await anyio.to_thread.run_sync(_prepare, engine, drv_path, settings)
         fixed = any(o.kind is OutputKind.CA_FIXED for o in drv.outputs.values())
+        sandboxed = not (fixed or impure)
         # `inputRewrites` (`derivation-builder.cc:435`): the sandbox builds each output at its scratch path.
         rewrites = {hash_placeholder(name): path for name, path in scratch.items()}
         env = build_env(
@@ -334,6 +339,7 @@ async def build(
             build_cores=settings.build_cores,
             rewrites=rewrites,
             fixed_output=fixed,
+            sandboxed=sandboxed,
             impure_source={**os.environ, **settings.impure_env},
             exported=exported,
         )
@@ -345,9 +351,9 @@ async def build(
             "env": env.variables,
             "root": str(paths.root),
             "binds": await anyio.to_thread.run_sync(
-                _binds, engine, paths, inputs, sandbox_closure, settings, not fixed
+                _binds, engine, paths, inputs, sandbox_closure, settings, sandboxed
             ),
-            "private_network": not fixed,
+            "private_network": sandboxed,
             "sandbox_uid": SANDBOX_UID,
             "sandbox_gid": SANDBOX_GID,
             "work_dir": SANDBOX_BUILD_DIR,
@@ -375,7 +381,9 @@ async def build(
         if isinstance(failure, _BuilderFailed):
             disk_full = await anyio.to_thread.run_sync(_disk_full, layout.real_store_dir, paths.tmp)
             failure = BuildFailure(
-                BuildResultStatus.TRANSIENT_FAILURE if fixed or disk_full else BuildResultStatus.PERMANENT_FAILURE,
+                BuildResultStatus.TRANSIENT_FAILURE
+                if not sandboxed or disk_full
+                else BuildResultStatus.PERMANENT_FAILURE,
                 builder_failure_message(drv_path, drv, failure.reason, list(lines.tail), settings, disk_full=disk_full),
             )
         if failure is not None:
@@ -386,7 +394,7 @@ async def build(
                     drv_path,
                     drv.outputs,
                     scratch=scratch,
-                    drv_name=_drv_name(drv_path),
+                    drv_name=drv_name,
                     chroot_root=paths.root,
                     real_store_dir=layout.real_store_dir,
                     store_dir=store_dir,

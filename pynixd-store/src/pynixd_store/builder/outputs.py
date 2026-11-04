@@ -36,6 +36,7 @@ from ..content_address import (
 )
 from ..hintfmt import magenta
 from ..nar_fs import dump_path, restore_path
+from ..utils import nix32_encode
 from .env import is_store_path, parse_structured_attrs
 from .refscan import scan_for_references
 
@@ -91,6 +92,11 @@ def fallback_path(drv_path: str, output: str, drv_name: str, store_dir: str) -> 
     """`makeFallbackPath(outputName)` (`derivation-builder.cc:1708`): where an output with no known path builds."""
     kind = f"rewrite:{_base(drv_path)}:name:{output}"
     return make_store_path(kind, "sha256", bytes(32), _output_path_name(drv_name, output), store_dir)
+
+
+def random_path(output: str, drv_name: str, store_dir: str) -> str:
+    """`StorePath::random(outputPathName(...))`: the known path of an impure output (`derivation-building-goal.cc:383`)."""
+    return f"{store_dir}/{nix32_encode(os.urandom(20))}-{_output_path_name(drv_name, output)}"
 
 
 def _sri(algo: str, digest: bytes) -> str:

@@ -627,14 +627,18 @@ class LocalDBStore(Store):
         """Why the daemon builds *request* for its realisations, or `None`.
 
         Without `ca-derivations` the daemon refuses a floating output when it
-        reads the derivation. pynixd writes `BuildTraceV3` only, the table of
+        reads the derivation, and without `impure-derivations` an impure one
+        (`derivations.cc:325`). pynixd writes `BuildTraceV3` only, the table of
         Nix 2.35 and later.
         """
         from nix_daemon_protocol.constants import FEATURE_REALISATION_WITH_PATH
 
+        kinds = {o.kind for o in request.derivation.outputs.values()}
+        features = (await self.trust_policy()).experimental_features
+        if OutputKind.IMPURE in kinds and "impure-derivations" not in features:
+            return "an impure output without impure-derivations"
         if not await self._ca_derivations():
-            floating = any(o.kind is OutputKind.CA_FLOATING for o in request.derivation.outputs.values())
-            return "a floating output without ca-derivations" if floating else None
+            return "a floating output without ca-derivations" if OutputKind.CA_FLOATING in kinds else None
         if FEATURE_REALISATION_WITH_PATH not in self.features:
             return "realisations keyed by the derivation's hash"
         return None
@@ -642,10 +646,11 @@ class LocalDBStore(Store):
     async def _realised(self, request: BuildDerivationRequest) -> dict[str, str]:
         """`checkPathValidity` (`derivation-building-goal.cc:1329`): the realised path of each output.
 
-        A valid static output with no realisation gets one, as Nix registers it there.
+        A valid static output with no realisation gets one, as Nix registers it there. An impure
+        derivation has none.
         """
         realised: dict[str, str] = {}
-        if not await self._ca_derivations():
+        if request.derivation.has_impure or not await self._ca_derivations():
             return realised
         drv = request.drv_path.name
         for name, output in request.derivation.outputs.items():
@@ -696,7 +701,11 @@ class LocalDBStore(Store):
             with anyio.CancelScope(shield=True):
                 await activity.stop()
         signed: dict[str, set[Signature]] = {}
-        if built.status is BuildResultStatus.BUILT and await self._ca_derivations():
+        if (
+            built.status is BuildResultStatus.BUILT
+            and not request.derivation.has_impure
+            and await self._ca_derivations()
+        ):
             signed = await self._register_realisations(
                 request, ((name, info.path.path) for name, info in built.outputs.items()), settings
             )

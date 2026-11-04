@@ -260,12 +260,14 @@ def build_env(
     build_cores: int,
     rewrites: Mapping[str, str],
     fixed_output: bool,
+    sandboxed: bool,
     impure_source: Mapping[str, str],
     exported: Mapping[str, Sequence[ValidPathInfo]],
 ) -> BuildEnv:
     """The environment the builder runs with. A structured build must pass `structured_attrs_reason` first.
 
-    *exported* is `exportReferences` of each `export_requests` name.
+    *fixed_output* and *sandboxed* are `isFixed` and `isSandboxed` of the derivation's type: an impure
+    derivation is neither. *exported* is `exportReferences` of each `export_requests` name.
     """
     variables = {
         "PATH": "/path-not-set",
@@ -304,6 +306,7 @@ def build_env(
         variables[name] = SANDBOX_BUILD_DIR
     if fixed_output:
         variables["NIX_OUTPUT_CHECKED"] = "1"
+    if not sandboxed:
         for name in impure:
             variables[name] = impure_source.get(name, "")
     variables["NIX_LOG_FD"] = "2"

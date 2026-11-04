@@ -735,3 +735,68 @@ async def test_a_flat_fixed_output_with_a_reference_fails_as_the_daemon_fails_it
     assert _fallthrough() == before
     there = await _flat_with_references(tmp_path, OpRoute.daemon)
     assert here == there
+
+
+# `out` refers to `dev` and to itself. The scratch path is random, so the log holds no output path.
+IMPURE = (
+    'derivation { name = "parity-impure"; system = builtins.currentSystem; builder = "/bin/sh"; '
+    '__impure = true; outputHashMode = "recursive"; outputHashAlgo = "sha256"; outputs = [ "out" "dev" ]; '
+    'impureEnvVars = [ "PARITY_TOKEN" ]; '
+    'args = [ "-c" "echo token=$PARITY_TOKEN checked=$NIX_OUTPUT_CHECKED; echo dev > $dev; echo $dev $out > $out" ]; }'
+)
+IMPURE_FEATURES = ("ca-derivations", "impure-derivations", "configurable-impure-env")
+
+
+async def _impure(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
+    async with _serve(tmp_path, route, experimental_features=IMPURE_FEATURES) as (url, root):
+        _rc, out, err, _both = await run_subproc(
+            [
+                NIX_BIN,
+                "build",
+                "--store",
+                url,
+                "--extra-experimental-features",
+                " ".join(IMPURE_FEATURES),
+                "--option",
+                "impure-env",
+                "PARITY_TOKEN=secret",
+                "--impure",
+                "--no-link",
+                "--print-out-paths",
+                "--print-build-logs",
+                "--expr",
+                IMPURE,
+            ]
+        )
+        paths = out.split()
+        _rc, info, _err, _both = await run_subproc([NIX_BIN, "path-info", "--store", url, "--json", *paths])
+        contents = {path: (root / path.lstrip("/")).read_text() for path in paths}
+    db = sqlite3.connect(f"file:{root}/nix/var/nix/db/db.sqlite?mode=ro", uri=True)
+    try:
+        trace = db.execute("SELECT drvPath, outputName, outputPath FROM BuildTraceV3").fetchall()
+    finally:
+        db.close()
+    valid, refs = _rows(root)
+    return {
+        "paths": paths,
+        "info": _without_times(json.loads(info)),
+        "contents": contents,
+        "valid": valid,
+        "refs": refs,
+        "trace": trace,
+        "log": [line for line in err.splitlines() if line.startswith("parity-")],
+    }
+
+
+async def test_an_impure_derivation_builds_where_the_daemon_builds_it(tmp_path: Path) -> None:
+    """`registerOutputs` addresses an impure output as a floating one (`derivation-builder.cc:1469`) and registers
+    no realisation (`:1667`); `initEnv` passes `impureEnvVars` and no `NIX_OUTPUT_CHECKED` (`:749`, `:761`)."""
+    before = _fallthrough()
+    here = await _impure(tmp_path, OpRoute.pynixd)
+    assert _fallthrough() == before, "pynixd's sandbox builds parity-impure"
+    there = await _impure(tmp_path, OpRoute.daemon)
+
+    assert here == there
+    assert len(here["paths"]) == 2, here["paths"]
+    assert here["trace"] == []
+    assert any(line.endswith("token=secret checked=") for line in here["log"]), here["log"]

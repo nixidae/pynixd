@@ -14,7 +14,7 @@ from pynixd_store.builder.env import (
 from pynixd_store.builder.outputs import OutputChecks, discarded_references, output_checks
 
 
-def _env(env: dict[str, str], *, fixed_output: bool = False) -> dict[str, str]:
+def _env(env: dict[str, str], *, fixed_output: bool = False, sandboxed: bool = True) -> dict[str, str]:
     built = build_env(
         env,
         outputs=["out"],
@@ -22,6 +22,7 @@ def _env(env: dict[str, str], *, fixed_output: bool = False) -> dict[str, str]:
         build_cores=4,
         rewrites={hash_placeholder("out"): "/nix/store/x-out"},
         fixed_output=fixed_output,
+        sandboxed=sandboxed,
         impure_source={"http_proxy": "http://proxy"},
         exported={},
     )
@@ -49,6 +50,7 @@ def test_pass_as_file_moves_the_value_into_the_build_directory() -> None:
         build_cores=1,
         rewrites={},
         fixed_output=False,
+        sandboxed=True,
         impure_source={},
         exported={},
     )
@@ -59,11 +61,18 @@ def test_pass_as_file_moves_the_value_into_the_build_directory() -> None:
     assert contents == "hello"
 
 
-def test_only_a_fixed_output_derivation_sees_impure_variables() -> None:
+def test_only_an_unsandboxed_derivation_sees_impure_variables() -> None:
     drv = {"impureEnvVars": "http_proxy ftp_proxy"}
     assert "http_proxy" not in _env(drv)
-    fixed = _env(drv, fixed_output=True)
+    fixed = _env(drv, fixed_output=True, sandboxed=False)
     assert (fixed["http_proxy"], fixed["ftp_proxy"], fixed["NIX_OUTPUT_CHECKED"]) == ("http://proxy", "", "1")
+
+
+def test_an_impure_derivation_sees_impure_variables_but_is_not_checked() -> None:
+    """`initEnv` (`derivation-builder.cc:749`, `:761`): `NIX_OUTPUT_CHECKED` needs `isFixed`, the variables `!isSandboxed`."""
+    impure = _env({"impureEnvVars": "http_proxy"}, sandboxed=False)
+    assert impure["http_proxy"] == "http://proxy"
+    assert "NIX_OUTPUT_CHECKED" not in impure
 
 
 def test_structured_attrs_reach_the_builder_as_two_files_and_nothing_else() -> None:
@@ -76,6 +85,7 @@ def test_structured_attrs_reach_the_builder_as_two_files_and_nothing_else() -> N
         build_cores=1,
         rewrites={hash_placeholder("out"): "/nix/store/x-out"},
         fixed_output=False,
+        sandboxed=True,
         impure_source={},
         exported={},
     )
