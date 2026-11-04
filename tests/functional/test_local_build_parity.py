@@ -13,6 +13,8 @@ import json
 import sqlite3
 from typing import TYPE_CHECKING, Any
 
+from prometheus_client import REGISTRY
+
 from nix_daemon_protocol.ids import StoreId
 from pynixd import Server
 from pynixd.op_routes import OpRoute
@@ -113,7 +115,9 @@ def _without_times(value: Any) -> Any:
 
 
 @contextlib.asynccontextmanager
-async def _serve(tmp_path: Path, route: OpRoute) -> AsyncIterator[tuple[str, Path]]:
+async def _serve(
+    tmp_path: Path, route: OpRoute, *, experimental_features: tuple[str, ...] = ()
+) -> AsyncIterator[tuple[str, Path]]:
     """A fresh store with `BuildDerivation` on *route*: its URL and its root."""
     root = tmp_path / route.name / "store"
     socket = tmp_path / f"{route.name}.sock"
@@ -121,7 +125,7 @@ async def _serve(tmp_path: Path, route: OpRoute) -> AsyncIterator[tuple[str, Pat
         store_id="local",
         store_path=root,
         no_probe=True,
-        nix_config=for_test_store(substituters=()),
+        nix_config=for_test_store(substituters=(), experimental_features=experimental_features),
         op_routes={"BuildDerivation": route},
     )
     async with Server(stores={StoreId("local"): LocalDBStore(spec)}, unix_path=socket, ssh_port=None, http_port=None):
@@ -534,3 +538,103 @@ async def test_a_built_output_carries_the_signature_of_each_secret_key(tmp_path:
     sigs = {row[0].split("-", 1)[1]: row[5] for row in here if not row[0].endswith(".drv")}
     assert set(sigs) == {"parity-dep", "parity-top", "parity-fod-flat"}, sigs
     assert all(s and s.startswith("parity-1:") for s in sigs.values()), sigs
+
+
+def _ca(name: str, command: str, mode: str = "recursive", outputs: str = '[ "out" ]') -> str:
+    return (
+        f'derivation {{ name = "{name}"; system = builtins.currentSystem; builder = "/bin/sh"; '
+        f'__contentAddressed = true; outputHashMode = "{mode}"; outputHashAlgo = "sha256"; '
+        f'outputs = {outputs}; args = [ "-c" "{command}" ]; }}'
+    )
+
+
+# `out` refers to `dev`, so `dev` moves first and `out` gets its final hash; each refers to itself.
+# `echo $out` puts the scratch path in the log. The inputs are floating as well: a flat file, and
+# text with a reference.
+CA_TOP = (
+    "let dep = " + _ca("parity-ca-dep", "echo dep > $out") + "; "
+    "flat = " + _ca("parity-ca-flat", "echo flat > $out", "flat") + "; "
+    "text = "
+    + _ca("parity-ca-text", "echo ${dep} > $out", "text")
+    + "; in "
+    + _ca(
+        "parity-ca-top",
+        "echo $out; echo $dev > $dev; echo ${dep} ${flat} ${text} $dev $out > $out",
+        outputs='[ "out" "dev" ]',
+    )
+)
+
+
+def _fallthrough() -> float:
+    return sum(
+        sample.value
+        for metric in REGISTRY.collect()
+        if metric.name == "pynixd_op_fallthrough"
+        for sample in metric.samples
+        if sample.name == "pynixd_op_fallthrough_total" and sample.labels.get("op") == "BuildDerivation"
+    )
+
+
+async def _floating(tmp_path: Path, route: OpRoute, key: Path) -> dict[str, Any]:
+    async with _serve(tmp_path, route, experimental_features=("ca-derivations",)) as (url, root):
+        _rc, out, err, _both = await run_subproc(
+            [
+                NIX_BIN,
+                "build",
+                "--store",
+                url,
+                "--extra-experimental-features",
+                "ca-derivations",
+                "--option",
+                "secret-key-files",
+                str(key),
+                "--impure",
+                "--no-link",
+                "--print-out-paths",
+                "--print-build-logs",
+                "--expr",
+                CA_TOP,
+            ]
+        )
+        paths = out.split()
+        _rc, info, _err, _both = await run_subproc(
+            [NIX_BIN, "path-info", "--store", url, "--json", "--recursive", *paths]
+        )
+    db = sqlite3.connect(f"file:{root}/nix/var/nix/db/db.sqlite?mode=ro", uri=True)
+    try:
+        trace = db.execute(
+            "SELECT drvPath, outputName, outputPath, signatures FROM BuildTraceV3 ORDER BY drvPath, outputName"
+        ).fetchall()
+    finally:
+        db.close()
+    valid, refs = _rows(root)
+    return {
+        "paths": paths,
+        "info": _without_times(json.loads(info)),
+        "valid": valid,
+        "refs": refs,
+        "trace": trace,
+        "log": [line for line in err.splitlines() if line.startswith("parity-")],
+    }
+
+
+async def test_a_floating_output_lands_where_the_daemon_puts_it(tmp_path: Path) -> None:
+    """`newInfoFromCA` (`derivation-builder.cc:1341`) and the realisations `registerOutputs` signs (`:1656`)."""
+    key = tmp_path / "secret"
+    _rc, secret, _err, _both = await run_subproc([NIX_BIN, "key", "generate-secret", "--key-name", "parity-1"])
+    key.write_text(secret)
+    before = _fallthrough()
+    here = await _floating(tmp_path, OpRoute.pynixd, key)
+    assert _fallthrough() == before, "pynixd's sandbox builds every floating derivation"
+    there = await _floating(tmp_path, OpRoute.daemon, key)
+
+    assert here["paths"] == there["paths"]
+    assert here["info"] == there["info"]
+    assert here["valid"] == there["valid"]
+    assert here["refs"] == there["refs"]
+    assert here["trace"] == there["trace"]
+    assert here["log"] == there["log"]
+    assert len(here["paths"]) == 2, here["paths"]
+    built = {row[2].split("-", 1)[1] for row in here["trace"]}
+    assert {"parity-ca-dep", "parity-ca-flat", "parity-ca-text", "parity-ca-top", "parity-ca-top-dev"} <= built
+    assert any(row[3].startswith("parity-1:") for row in here["trace"]), here["trace"]

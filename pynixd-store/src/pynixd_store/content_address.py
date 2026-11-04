@@ -109,10 +109,15 @@ def parse_method_algo(text: str) -> tuple[Method, str]:
     return method, rest
 
 
+def output_method(method: str) -> tuple[Method, str]:
+    """The method and algorithm a content-addressed output of a derivation names: `r:sha256`, say."""
+    found = next((m for m in (Method.TEXT, Method.NAR, Method.GIT) if method.startswith(m)), Method.FLAT)
+    return found, method.removeprefix(found)
+
+
 def fixed_output_address(method: str, hash_text: str) -> ContentAddress:
     """The address a fixed output of a derivation names: `r:sha256` and its hash, say."""
-    found = next((m for m in (Method.TEXT, Method.NAR, Method.GIT) if method.startswith(m)), Method.FLAT)
-    algo = method.removeprefix(found)
+    found, algo = output_method(method)
     return ContentAddress(found, algo, parse_digest(hash_text, algo))
 
 

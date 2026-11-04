@@ -17,7 +17,17 @@ NEW = b"b" * 32
 def test_a_match_across_two_pieces_is_rewritten() -> None:
     data = b"x" * 5 + OLD + b"y" + OLD
     for cut in range(len(data) + 1):
-        assert b"".join(_rewritten([data[:cut], data[cut:]], OLD, NEW)) == b"x" * 5 + NEW + b"y" + NEW, cut
+        assert b"".join(_rewritten([data[:cut], data[cut:]], {OLD: NEW})) == b"x" * 5 + NEW + b"y" + NEW, cut
+
+
+def test_every_hash_of_the_map_is_rewritten_in_one_pass() -> None:
+    """`outputRewrites` moves several outputs at once; a new hash is never read again as an old one."""
+    other, final = b"c" * 32, b"d" * 32
+    data = OLD + b"/" + other + NEW
+    for cut in range(len(data) + 1):
+        assert b"".join(_rewritten([data[:cut], data[cut:]], {OLD: NEW, other: final, NEW: OLD})) == (
+            NEW + b"/" + final + OLD
+        ), cut
 
 
 def test_the_reader_serves_short_reads_then_end_of_file() -> None:

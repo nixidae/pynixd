@@ -30,6 +30,7 @@ from nix_daemon_protocol.signature import Signature
 
 from .. import optimise
 from ..add import PathLock, delete_path
+from ..content_address import Method, output_method
 from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta
 from ..signing import SecretKey, fingerprint
 from .buildlog import BuildLog
@@ -42,7 +43,14 @@ from .env import (
     rewrite_strings,
     structured_attrs_reason,
 )
-from .outputs import BuildFailure, check_outputs, collect_outputs, discarded_references, output_checks
+from .outputs import (
+    BuildFailure,
+    check_outputs,
+    collect_outputs,
+    discarded_references,
+    fallback_path,
+    output_checks,
+)
 from .spec import ChildSpec
 
 if TYPE_CHECKING:
@@ -91,10 +99,12 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
     except ValueError as e:
         return f"structured attrs with {e}"
     kinds = {o.kind for o in drv.outputs.values()}
-    if kinds - {OutputKind.INPUT_ADDRESSED, OutputKind.CA_FIXED}:
-        return "a floating, impure or deferred output"
-    if OutputKind.CA_FIXED in kinds and len(drv.outputs) != 1:
-        return "a fixed output beside another output"
+    if kinds - {OutputKind.INPUT_ADDRESSED, OutputKind.CA_FIXED, OutputKind.CA_FLOATING}:
+        return "an impure or deferred output"
+    if len(kinds) != 1 or (OutputKind.CA_FIXED in kinds and len(drv.outputs) != 1):
+        return f"the outputs {sorted(drv.outputs)} of kinds {sorted(k.name for k in kinds)}"
+    if any(o.method and output_method(o.method)[0] is Method.GIT for o in drv.outputs.values()):
+        return "a Git-hashed output"
     return None
 
 
@@ -105,6 +115,8 @@ class LocalBuildResult:
     start_time: int = 0
     stop_time: int = 0
     outputs: dict[str, ValidPathInfo] = field(default_factory=dict)
+    paths: dict[str, str] = field(default_factory=dict)
+    """The path of each output, on success: built, or valid before."""
 
 
 @dataclass
@@ -273,38 +285,47 @@ async def build(
     settings: BuildSettings,
     *,
     on_lines: Callable[[list[Output]], Awaitable[None]],
+    realised: Mapping[str, str],
 ) -> LocalBuildResult:
     """Build *drv*, whose inputs are valid, and register its outputs. `unsupported(drv)` must be `None`.
 
     *on_lines* receives the builder's output as it comes: Nix's log lines and its `@nix` events.
+    *realised* is the path of each output the store holds a realisation for (`checkPathValidity`,
+    `derivation-building-goal.cc:1329`).
     """
     layout = engine.layout
-    locks = [PathLock(layout.real_store_dir / o.path.rsplit("/", 1)[-1]) for o in drv.outputs.values() if o.path]
+    store_dir = str(layout.store_dir)
+    known = {name: realised.get(name, o.path) for name, o in drv.outputs.items()}
+    locks = [PathLock(layout.real_store_dir / path.rsplit("/", 1)[-1]) for path in known.values() if path]
     for lock in locks:
         # Not cancellable: an abandoned `flock` would hold the lock with no owner to release it.
         await anyio.to_thread.run_sync(lock.acquire)
     paths: _Paths | None = None
     try:
-        valid = {o.path for o in drv.outputs.values() if await engine.is_valid_path_uncached(o.path)}
-        if valid == {o.path for o in drv.outputs.values()}:
-            return LocalBuildResult(BuildResultStatus.ALREADY_VALID)
+        valid = {path for path in known.values() if path and await engine.is_valid_path_uncached(path)}
+        if valid == set(known.values()):
+            return LocalBuildResult(BuildResultStatus.ALREADY_VALID, paths=known)
+        # The sandbox needs no hash rewrite, so a known path is its own scratch path (`derivation-builder.cc:417`).
+        scratch = {
+            name: path or fallback_path(drv_path, name, _drv_name(drv_path), store_dir) for name, path in known.items()
+        }
         inputs = {str(p) for p in await engine.query_closure(sorted(str(p) for p in drv.input_srcs))}
         # An invalid path drops out of the closure, as Nix ignores `InvalidPath` here.
         sandbox_closure = {
             str(p) for p in await engine.query_closure(sorted(_sandbox_store_paths(settings, str(layout.store_dir))))
         }
         try:
-            exported = await _export_references(engine, export_requests(drv.env, str(layout.store_dir)), inputs)
+            exported = await _export_references(engine, export_requests(drv.env, store_dir), inputs)
         except BuildFailure as e:
             return LocalBuildResult(e.status, e.message)
         paths = await anyio.to_thread.run_sync(_prepare, engine, drv_path, settings)
         fixed = any(o.kind is OutputKind.CA_FIXED for o in drv.outputs.values())
-        # `inputRewrites` (`derivation-builder.cc:435`): the sandbox builds each output at its own path.
-        rewrites = {hash_placeholder(name): o.path for name, o in drv.outputs.items()}
+        # `inputRewrites` (`derivation-builder.cc:435`): the sandbox builds each output at its scratch path.
+        rewrites = {hash_placeholder(name): path for name, path in scratch.items()}
         env = build_env(
             drv.env,
             outputs=drv.outputs,
-            store_dir=str(layout.store_dir),
+            store_dir=store_dir,
             build_cores=settings.build_cores,
             rewrites=rewrites,
             fixed_output=fixed,
@@ -359,10 +380,11 @@ async def build(
                 lambda: collect_outputs(
                     drv_path,
                     drv.outputs,
+                    scratch=scratch,
                     drv_name=_drv_name(drv_path),
                     chroot_root=paths.root,
                     real_store_dir=layout.real_store_dir,
-                    store_dir=str(layout.store_dir),
+                    store_dir=store_dir,
                     input_paths=inputs,
                     valid=valid,
                     is_valid=lambda path: anyio.from_thread.run(engine.is_valid_path_uncached, path),
@@ -386,7 +408,7 @@ async def build(
                     drv_path,
                     output_checks(drv.env),
                     collected.infos,
-                    store_dir=str(layout.store_dir),
+                    store_dir=store_dir,
                     path_info=lambda path: anyio.from_thread.run(engine.query_path_info, path),
                 )
             )
@@ -396,7 +418,8 @@ async def build(
             await engine.register_valid_paths(collected.infos.values())
         finally:
             collected.release()
-        return LocalBuildResult(BuildResultStatus.BUILT, "", start, stop, collected.infos)
+        built = {name: info.path.path for name, info in collected.infos.items()}
+        return LocalBuildResult(BuildResultStatus.BUILT, "", start, stop, collected.infos, known | built)
     finally:
         with anyio.CancelScope(shield=True):
             if paths is not None:

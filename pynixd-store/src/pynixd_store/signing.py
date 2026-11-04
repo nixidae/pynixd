@@ -8,6 +8,7 @@ Uses the same key format and fingerprint construction as Nix:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from base64 import b64decode, b64encode
@@ -157,6 +158,15 @@ def fingerprint(
     """
     refs = ",".join(sorted(str(r) for r in references))
     return f"1;{store_path};{nar_hash_for_a_fingerprint(nar_hash)};{nar_size};{refs}"
+
+
+def realisation_fingerprint(drv_name: str, output_name: str, out_name: str) -> str:
+    """`UnkeyedRealisation::fingerprint` (`realisation.cc:36`): the realisation's JSON without its signatures.
+
+    Each path is a base name, as `StorePath`'s JSON is. nlohmann orders the keys.
+    """
+    key = f'{{"drvPath":{json.dumps(drv_name)},"outputName":{json.dumps(output_name)}}}'
+    return f'{{"key":{key},"value":{{"outPath":{json.dumps(out_name)}}}}}'
 
 
 def sign_path_info(

@@ -1,13 +1,16 @@
-"""`registerOutputs` (`unix/build/derivation-builder.cc:1069`) for input-addressed and fixed outputs.
+"""`registerOutputs` (`unix/build/derivation-builder.cc:1069`) for input-addressed and content-addressed outputs.
 
-The builder wrote each output inside the chroot, at the path it will have, so
-no hash is rewritten: the sandbox needs none (`needsHashRewrite`).
+The builder wrote each output inside the chroot at its scratch path: the path
+it will have when the derivation names one, else `fallback_path`. Only a
+content-addressed output whose path differs from its scratch path has hashes
+rewritten.
 """
 
 from __future__ import annotations
 
 import base64
 import os
+import re
 import stat
 from collections import deque
 from dataclasses import dataclass, field
@@ -15,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from nix_daemon_protocol.build_result import BuildResultStatus
 from nix_daemon_protocol.content_address import ContentAddress as WireContentAddress
+from nix_daemon_protocol.derivation_output import OutputKind
 from nix_daemon_protocol.nar_hash import NARHash
 from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
 from nix_daemon_protocol.store_path import StorePath
@@ -22,7 +26,14 @@ from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 
 from ..add import PathLock, TempDir, _nar_hash, canonicalise, content_hash, delete_path
-from ..content_address import ContentAddress, Method, content_addressed_path, fixed_output_address
+from ..content_address import (
+    ContentAddress,
+    Method,
+    content_addressed_path,
+    fixed_output_address,
+    make_store_path,
+    output_method,
+)
 from ..hintfmt import magenta
 from ..nar_fs import dump_path, restore_path
 from .env import is_store_path, parse_structured_attrs
@@ -60,6 +71,21 @@ def _base(path: str) -> str:
 def _quoted(path: Path) -> str:
     """`PathFmt`: a path in double quotes."""
     return magenta(f'"{path}"')
+
+
+def _hash_part(path: str) -> str:
+    return _base(path)[:32]
+
+
+def _output_path_name(drv_name: str, output: str) -> str:
+    """`outputPathName`."""
+    return drv_name if output == "out" else f"{drv_name}-{output}"
+
+
+def fallback_path(drv_path: str, output: str, drv_name: str, store_dir: str) -> str:
+    """`makeFallbackPath(outputName)` (`derivation-builder.cc:1708`): where an output with no known path builds."""
+    kind = f"rewrite:{_base(drv_path)}:name:{output}"
+    return make_store_path(kind, "sha256", bytes(32), _output_path_name(drv_name, output), store_dir)
 
 
 def _sri(algo: str, digest: bytes) -> str:
@@ -142,10 +168,18 @@ class _Fixed:
     references: frozenset[str]
 
 
+@dataclass(frozen=True)
+class _Addressed:
+    got: ContentAddress
+    path: str
+    references: frozenset[str]
+
+
 def collect_outputs(
     drv_path: str,
     outputs: Mapping[str, DerivationOutput],
     *,
+    scratch: Mapping[str, str],
     drv_name: str,
     chroot_root: Path,
     real_store_dir: Path,
@@ -155,21 +189,24 @@ def collect_outputs(
     is_valid: Callable[[str], bool],
     discard: set[str],
 ) -> Collected:
-    """Each output the build made, moved into the store and described; nothing is registered yet.
+    """Each output the build made at its *scratch* path, moved into the store and described; nothing is registered yet.
 
-    An output in *valid* is not looked at, as Nix does outside check mode.
+    An output whose scratch path is in *valid* is not looked at, as Nix does outside check mode.
     *is_valid* asks the store about a path no output names. An output in
     *discard* is not scanned (`unsafeDiscardReferences`). Blocking: call it
     from a worker thread.
     """
-    referenceable = input_paths | {o.path for o in outputs.values()}
+    referenceable = input_paths | set(scratch.values())
     scanned = {
-        name: _scan(drv_path, name, o.path, chroot_root / o.path.lstrip("/"), referenceable, discard=name in discard)
-        for name, o in outputs.items()
-        if o.path not in valid
+        name: _scan(drv_path, name, path, chroot_root / path.lstrip("/"), referenceable, discard=name in discard)
+        for name, path in scratch.items()
+        if path not in valid
     }
     infos: dict[str, ValidPathInfo] = {}
     fixed: dict[str, _Fixed] = {}
+    addressed: dict[str, ContentAddress] = {}
+    # `outputRewrites`: the final path of each output done so far, by its scratch path.
+    final: dict[str, str] = {}
     locks: list[PathLock] = []
     try:
         for name in _sorted(drv_path, scanned):
@@ -177,8 +214,14 @@ def collect_outputs(
             actual = chroot_root / s.path.lstrip("/")
             path, references = s.path, s.references
             if output.method:
-                f = fixed[name] = _fixed(name, drv_name, output, s, actual, store_dir, real_store_dir)
-                path, references = f.path, f.references
+                a = _content_addressed(
+                    name, drv_name, output, s, actual, store_dir, real_store_dir, final, discard=name in discard
+                )
+                path, references, addressed[name] = a.path, a.references, a.got
+                if output.kind is OutputKind.CA_FIXED:
+                    wanted = fixed_output_address(output.method, output.hash_digest)
+                    fixed[name] = _Fixed(wanted, a.got, a.path, a.references)
+            final[s.path] = path
             dest = real_store_dir / _base(path)
             nar_hash, nar_size = _nar_hash(actual)
             if path != s.path:
@@ -204,7 +247,7 @@ def collect_outputs(
                     nar_size=nar_size,
                     ultimate=True,
                     sigs=set(),
-                    ca=WireContentAddress(fixed[name].got.render() if name in fixed else ""),
+                    ca=WireContentAddress(addressed[name].render() if name in addressed else ""),
                 ),
             )
     except BaseException:
@@ -212,10 +255,10 @@ def collect_outputs(
             lock.release(delete=True)
         raise
     failure = next((e for name in sorted(fixed) if (e := _check(drv_path, fixed[name])) is not None), None)
-    return Collected(infos, [infos[name] for name in fixed], failure, locks)
+    return Collected(infos, [infos[name] for name in addressed], failure, locks)
 
 
-def _fixed(
+def _content_addressed(
     name: str,
     drv_name: str,
     output: DerivationOutput,
@@ -223,24 +266,42 @@ def _fixed(
     actual: Path,
     store_dir: str,
     real_store_dir: Path,
-) -> _Fixed:
-    """`newInfoFromCA` (`unix/build/derivation-builder.cc:1341`) for a fixed output: the path its content has."""
-    wanted = fixed_output_address(output.method, output.hash_digest)
-    if wanted.method in (Method.FLAT, Method.TEXT) and (not stat.S_ISREG(s.mode) or s.mode & stat.S_IXUSR):
+    final: Mapping[str, str],
+    *,
+    discard: bool,
+) -> _Addressed:
+    """`newInfoFromCA` (`unix/build/derivation-builder.cc:1341`): the path the content has.
+
+    The final hash of each output in *final* goes in first, as `rewriteOutput(outputRewrites)` puts it.
+    Nix rewrites the whole tree whenever a hash moves; a hash the scan did not find is not in the
+    tree, so pynixd rewrites only for a found one, or for an output it did not scan.
+    """
+    method, algo = output_method(output.method)
+    if method in (Method.FLAT, Method.TEXT) and (not stat.S_ISREG(s.mode) or s.mode & stat.S_IXUSR):
         raise BuildFailure(
             BuildResultStatus.OUTPUT_REJECTED,
             f"output path {_quoted(actual)} should be a non-executable regular file since recursive "
             "hashing is not enabled (one of outputHashMode={flat,text} is true)",
         )
-    old_hash_part = _base(s.path)[:32]
-    got = ContentAddress(wanted.method, wanted.algo, content_hash(wanted, actual, old_hash_part, dump_path))
+    moved = {
+        _hash_part(old): _hash_part(new)
+        for old, new in final.items()
+        if old != new and (discard or old in s.references)
+    }
+    if moved:
+        _rewrite(actual, moved, real_store_dir)
+    old_hash_part = _hash_part(s.path)
+    got = ContentAddress(
+        method, algo, content_hash(ContentAddress(method, algo, b""), actual, old_hash_part, dump_path)
+    )
     self_reference = s.path in s.references
-    others = s.references - {s.path}
-    output_name = drv_name if name == "out" else f"{drv_name}-{name}"
-    path = content_addressed_path(got, output_name, others, store_dir, self_reference=self_reference)
-    if path != s.path and self_reference:
-        _rewrite(actual, old_hash_part, _base(path)[:32], real_store_dir)
-    return _Fixed(wanted, got, path, others | {path} if self_reference else others)
+    others = frozenset(final.get(ref, ref) for ref in s.references if ref != s.path)
+    path = content_addressed_path(
+        got, _output_path_name(drv_name, name), others, store_dir, self_reference=self_reference
+    )
+    if path != s.path and (self_reference or discard):
+        _rewrite(actual, {old_hash_part: _hash_part(path)}, real_store_dir)
+    return _Addressed(got, path, others | {path} if self_reference else others)
 
 
 def _check(drv_path: str, f: _Fixed) -> BuildFailure | None:
@@ -438,12 +499,13 @@ def check_outputs(
     return None
 
 
-def _rewrite(actual: Path, old: str, new: str, real_store_dir: Path) -> None:
-    """`rewriteOutput`: *old* becomes *new* throughout the tree, by a NAR round trip through the store."""
+def _rewrite(actual: Path, rewrites: Mapping[str, str], real_store_dir: Path) -> None:
+    """`rewriteOutput`: each key becomes its value throughout the tree, by a NAR round trip through the store."""
     tmp = TempDir.create(real_store_dir)
     try:
         staged = tmp.path / "x"
-        restore_path(staged, _Reader(_rewritten(dump_path(actual), old.encode(), new.encode())))
+        encoded = {old.encode(): new.encode() for old, new in rewrites.items()}
+        restore_path(staged, _Reader(_rewritten(dump_path(actual), encoded)))
         delete_path(actual)
         os.rename(staged, actual)
         canonicalise(actual)
@@ -451,12 +513,13 @@ def _rewrite(actual: Path, old: str, new: str, real_store_dir: Path) -> None:
         tmp.remove()
 
 
-def _rewritten(pieces: Iterable[bytes], old: bytes, new: bytes) -> Iterator[bytes]:
-    """`RewritingSink`: keeps `len(old) - 1` bytes back, so a match across two pieces is found."""
-    keep = len(old) - 1
+def _rewritten(pieces: Iterable[bytes], rewrites: Mapping[bytes, bytes]) -> Iterator[bytes]:
+    """`RewritingSink`: keeps the longest key's length less one byte back, so a match across two pieces is found."""
+    pattern = re.compile(b"|".join(re.escape(old) for old in rewrites))
+    keep = max(map(len, rewrites)) - 1
     prev = b""
     for piece in pieces:
-        s = (prev + piece).replace(old, new)
+        s = pattern.sub(lambda m: rewrites[m.group()], prev + piece)
         prev = s[len(s) - keep :] if len(s) > keep else s
         yield s[: len(s) - len(prev)]
     yield prev

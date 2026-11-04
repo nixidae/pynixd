@@ -6,20 +6,24 @@ import contextlib
 import functools
 import types
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Union, get_args, get_origin
 
 import anyio
 import structlog
 from pydantic import BaseModel
 
+from nix_daemon_protocol.derivation_output import OutputKind
 from nix_daemon_protocol.operations import STANDARD_OPERATIONS
 from nix_daemon_protocol.protocol import Verbosity
+from nix_daemon_protocol.signature import Signature
 from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
 from pynixd_store.builder import local as local_builder
 from pynixd_store.builder.settings import BuildSettings
 from pynixd_store.engine import StoreEngine
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.nix_config import nix_environment, read_nix_config
+from pynixd_store.signing import SecretKey, realisation_fingerprint
 
 from .. import metrics
 from ..activity import BuildActivity
@@ -605,14 +609,68 @@ class LocalDBStore(Store):
             return None
         reason = "repair or check" if request.build_mode != BuildMode.NORMAL else None
         settings = BuildSettings.from_nix_config(await self.engine.nix_config(), _build_overrides(options))
-        reason = reason or local_builder.unsupported(
-            request.derivation, settings, store_dir=str(self.engine.layout.store_dir)
+        reason = (
+            reason
+            or local_builder.unsupported(request.derivation, settings, store_dir=str(self.engine.layout.store_dir))
+            or await self._realisations_unsupported(request)
         )
         if reason is None:
             return settings
         log.info("build_left_to_the_daemon", drv=str(request.drv_path), reason=reason)
         metrics.OP_FALLTHROUGH.labels(store_id=self.store_id, op=request.name).inc()
         return None
+
+    async def _ca_derivations(self) -> bool:
+        return "ca-derivations" in (await self.trust_policy()).experimental_features
+
+    async def _realisations_unsupported(self, request: BuildDerivationRequest) -> str | None:
+        """Why the daemon builds *request* for its realisations, or `None`.
+
+        Without `ca-derivations` the daemon refuses a floating output when it
+        reads the derivation. pynixd writes `BuildTraceV3` only, the table of
+        Nix 2.35 and later.
+        """
+        from nix_daemon_protocol.constants import FEATURE_REALISATION_WITH_PATH
+
+        if not await self._ca_derivations():
+            floating = any(o.kind is OutputKind.CA_FLOATING for o in request.derivation.outputs.values())
+            return "a floating output without ca-derivations" if floating else None
+        if FEATURE_REALISATION_WITH_PATH not in self.features:
+            return "realisations keyed by the derivation's hash"
+        return None
+
+    async def _realised(self, request: BuildDerivationRequest) -> dict[str, str]:
+        """`checkPathValidity` (`derivation-building-goal.cc:1329`): the realised path of each output.
+
+        A valid static output with no realisation gets one, as Nix registers it there.
+        """
+        realised: dict[str, str] = {}
+        if not await self._ca_derivations():
+            return realised
+        drv = request.drv_path.name
+        for name, output in request.derivation.outputs.items():
+            found = await self.engine.query_realisation(drv, name, by_path=True)
+            if found is not None:
+                realised[name] = str(found[0])
+            elif output.path and await self.engine.is_valid_path_uncached(output.path):
+                await self.engine.register_drv_output(drv, name, output.path, (), by_path=True)
+        return realised
+
+    async def _register_realisations(
+        self, request: BuildDerivationRequest, built: Iterable[tuple[str, str]], settings: BuildSettings
+    ) -> dict[str, set[Signature]]:
+        """The end of `registerOutputs` (`derivation-builder.cc:1656`): sign and register each built output.
+
+        Answers each output's signatures, which `builtOutputs` carries too.
+        """
+        drv = request.drv_path.name
+        keys = [SecretKey.from_file(Path(file)) for file in settings.secret_key_files]
+        signed: dict[str, set[Signature]] = {}
+        for name, path in built:
+            fp = realisation_fingerprint(drv, name, path.rsplit("/", 1)[-1])
+            sigs = signed[name] = {Signature(key.sign_fingerprint(fp)) for key in keys}
+            await self.engine.register_drv_output(drv, name, path, sigs, by_path=True)
+        return signed
 
     async def build_here(
         self,
@@ -627,21 +685,26 @@ class LocalDBStore(Store):
         is the client's, which a builder's `@nix` message must pass.
         """
         drv_path = str(request.drv_path)
+        realised = await self._realised(request)
         activity = BuildActivity(drv_path, on_log, verbosity)
         await activity.start()
         try:
             built = await local_builder.build(
-                self.engine, drv_path, request.derivation, settings, on_lines=activity.emit
+                self.engine, drv_path, request.derivation, settings, on_lines=activity.emit, realised=realised
             )
         finally:
             with anyio.CancelScope(shield=True):
                 await activity.stop()
-        # `--print-out-paths` prints these; `GoalEngine` keys them by `DrvOutput`.
-        by_name = (
-            {name: UnkeyedRealisation(out_path=StorePath(o.path)) for name, o in request.derivation.outputs.items()}
-            if built.status.is_success
-            else {}
-        )
+        signed: dict[str, set[Signature]] = {}
+        if built.status is BuildResultStatus.BUILT and await self._ca_derivations():
+            signed = await self._register_realisations(
+                request, ((name, info.path.path) for name, info in built.outputs.items()), settings
+            )
+        # `--print-out-paths` prints these; `GoalEngine` keys them by `DrvOutput`, and copies the signatures.
+        by_name = {
+            name: UnkeyedRealisation(out_path=StorePath(path), signatures=signed.get(name, set()))
+            for name, path in built.paths.items()
+        }
         return BuildDerivationResponse(
             result=BuildResult(
                 status=int(built.status),
