@@ -25,16 +25,18 @@ import structlog
 
 from nix_daemon_protocol.build_result import BuildResultStatus
 from nix_daemon_protocol.derivation_output import OutputKind
+from nix_daemon_protocol.signature import Signature
 
 from ..add import PathLock, delete_path
 from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta
+from ..signing import SecretKey, fingerprint
 from .buildlog import BuildLog
 from .env import HOME_DIR, SANDBOX_BUILD_DIR, build_env
 from .outputs import BuildFailure, collect_outputs
 from .spec import ChildSpec
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterable, Sequence
 
     from nix_daemon_protocol.basic_derivation import BasicDerivation
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
@@ -202,6 +204,15 @@ def _binds(
     return [(target, source, optional) for target, (source, optional) in sorted(binds.items())]
 
 
+def _sign(infos: Iterable[ValidPathInfo], secret_key_files: Sequence[str]) -> None:
+    """`Store::signPathInfo` (`store-api.cc:1238`): each key file read again, a bad one fails the build."""
+    keys = [SecretKey.from_file(Path(file)) for file in secret_key_files]
+    for info in infos:
+        fp = fingerprint(info.path, info.info.nar_hash, info.info.nar_size, info.info.references)
+        for key in keys:
+            info.info.sigs.add(Signature(key.sign_fingerprint(fp)))
+
+
 async def build(
     engine: StoreEngine,
     drv_path: str,
@@ -301,6 +312,7 @@ async def build(
         except BuildFailure as e:
             return LocalBuildResult(e.status, e.message, start, stop)
         try:
+            await anyio.to_thread.run_sync(_sign, collected.infos.values(), settings.secret_key_files)
             if collected.failure is not None:
                 await engine.register_valid_paths(collected.early)
                 return LocalBuildResult(collected.failure.status, collected.failure.message, start, stop)

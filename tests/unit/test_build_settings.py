@@ -56,3 +56,11 @@ def test_session_limits_override_the_config() -> None:
     config = {"system": {"value": "x86_64-linux"}, "max-silent-time": {"value": 10}, "timeout": {"value": 0}}
     settings = BuildSettings.from_nix_config(config, {"max-silent-time": "3", "timeout": "7"})
     assert (settings.max_silent_time, settings.timeout) == (3, 7)
+
+
+def test_secret_key_files_take_extra_and_a_replacement() -> None:
+    """`ClientSettings::apply` walks the overrides sorted: `extra-` appends, the plain name replaces."""
+    config = {"system": {"value": "x86_64-linux"}, "secret-key-files": {"value": ["/etc/a"]}}
+    assert BuildSettings.from_nix_config(config, {}).secret_key_files == ("/etc/a",)
+    assert BuildSettings.from_nix_config(config, {"extra-secret-key-files": "/b"}).secret_key_files == ("/etc/a", "/b")
+    assert BuildSettings.from_nix_config(config, {"secret-key-files": "/c"}).secret_key_files == ("/c",)

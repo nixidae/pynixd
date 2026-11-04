@@ -280,3 +280,27 @@ async def test_a_fixed_output_with_the_wrong_hash_stays_valid_under_its_real_one
     assert any("must not reference store paths" in line for line in here["errors"]["dep-right"]), here
     names = [row[0].split("-", 1)[1] for row in here["valid"]]
     assert {"parity-fod-flat", "parity-fod-self", "parity-fod-dep", "parity-dep"} <= set(names), names
+
+
+async def _signed(tmp_path: Path, route: OpRoute, key: Path) -> list[tuple[Any, ...]]:
+    async with _serve(tmp_path, route) as (url, root):
+        build = [NIX_BIN, "build", "--store", url, "--impure", "--no-link"]
+        await run_subproc([*build, "--option", "secret-key-files", str(key), "--expr", TOP])
+        await run_subproc(
+            [*build, "--option", "extra-secret-key-files", str(key), "--expr", FOD_FLAT], expected_retcode=1
+        )
+    return _rows(root)[0]
+
+
+async def test_a_built_output_carries_the_signature_of_each_secret_key(tmp_path: Path) -> None:
+    """`registerOutputs` calls `signPathInfo` (`derivation-builder.cc:1605`) for every output it registers."""
+    key = tmp_path / "secret"
+    _rc, secret, _err, _both = await run_subproc([NIX_BIN, "key", "generate-secret", "--key-name", "parity-1"])
+    key.write_text(secret)
+    here = await _signed(tmp_path, OpRoute.pynixd, key)
+    there = await _signed(tmp_path, OpRoute.daemon, key)
+
+    assert here == there
+    sigs = {row[0].split("-", 1)[1]: row[5] for row in here if not row[0].endswith(".drv")}
+    assert set(sigs) == {"parity-dep", "parity-top", "parity-fod-flat"}, sigs
+    assert all(s and s.startswith("parity-1:") for s in sigs.values()), sigs

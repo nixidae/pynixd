@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from ..signing import key_settings
+
 
 @dataclass(frozen=True)
 class SandboxPath:
@@ -50,6 +52,7 @@ class BuildSettings:
     sandbox_shm_size: str
     allow_new_privileges: bool
     filter_syscalls: bool
+    secret_key_files: tuple[str, ...]
     build_dir: str | None
     ca_derivations: bool
     log_lines: int = 25
@@ -80,6 +83,11 @@ class BuildSettings:
             extra = SandboxPath.parse_all(overrides.get("extra-sandbox-paths", ()))
             return paths + tuple(p for p in extra if p.target not in targets)
 
+        def secret_key_files() -> tuple[str, ...]:
+            configured = config.get("secret-key-files")
+            _trusted, files = key_settings((), words(configured["value"] if configured else ()), overrides)
+            return tuple(files)
+
         sandbox = value("sandbox", True)
         features = words(value("experimental-features", ()))
         cores = int(value("cores", 0) or 0)
@@ -94,6 +102,7 @@ class BuildSettings:
             sandbox_shm_size=str(value("sandbox-dev-shm-size", "50%")),
             allow_new_privileges=boolean(value("allow-new-privileges", False)),
             filter_syscalls=boolean(value("filter-syscalls", True)),
+            secret_key_files=secret_key_files(),
             build_dir=value("build-dir") or None,
             ca_derivations="ca-derivations" in features,
             log_lines=int(value("log-lines", 25)),
