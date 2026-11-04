@@ -344,6 +344,41 @@ async def test_an_output_placeholder_reaches_the_builder_as_its_path(tmp_path: P
     assert here[1][out] == f"{dev} {out}\n", here
 
 
+# Busybox `sh` has no `declare`, so the build copies both files out: the daemon's are the reference.
+STRUCTURED = r"""derivation {
+  name = "parity-structured"; system = builtins.currentSystem; builder = "/bin/sh";
+  __structuredAttrs = true;
+  args = [ "-c" ''
+    copy() { while IFS= read -r line || [ -n "$line" ]; do printf '%s\n' "$line"; done < "$1"; }
+    { copy "$NIX_ATTRS_SH_FILE"; copy "$NIX_ATTRS_JSON_FILE"; } > ${builtins.placeholder "out"}
+  '' ];
+  int = 123456789; big = 1099511627783; neg = -5; yes = true; no = false; nothing = null;
+  list = [ "a" "it's" "\"" 1 null ]; mixed = [ "a" [ "b" ] ];
+  hardening = { format = true; fortify = false; }; outer.inner = [ 1 2 3 ];
+  text = "tab\tnewline\nunicode é"; dest = "${builtins.placeholder "out"}/foo";
+  "foo bar" = "BAD"; "1foobar" = "BAD";
+}"""
+
+
+async def _structured(tmp_path: Path, route: OpRoute) -> tuple[int, list[str]]:
+    async with _serve(tmp_path, route) as (url, root):
+        rc, out, _err, _both = await run_subproc(
+            [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--print-out-paths", "--expr", STRUCTURED],
+            expected_retcode=None,
+        )
+        return rc, [(root / p.lstrip("/")).read_text() for p in sorted(out.split())]
+
+
+async def test_structured_attrs_reach_the_builder_as_the_daemon_writes_them(tmp_path: Path) -> None:
+    """`prepareStructuredAttrs` and `writeShell` (`parsed-derivations.cc`), each placeholder rewritten."""
+    here = await _structured(tmp_path, OpRoute.pynixd)
+    there = await _structured(tmp_path, OpRoute.daemon)
+
+    assert here == there
+    assert here[0] == 0, here
+    assert any("declare -A outputs=" in text for text in here[1]), here
+
+
 MID = (
     f"let dep = {DEP}; in "
     'derivation { name = "parity-mid"; system = builtins.currentSystem; builder = "/bin/sh"; '

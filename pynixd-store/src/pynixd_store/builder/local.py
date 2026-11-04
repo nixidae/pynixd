@@ -23,6 +23,7 @@ import anyio.from_thread
 import anyio.to_thread
 import structlog
 
+from nix_daemon_protocol.basic_derivation import bool_attr
 from nix_daemon_protocol.build_result import BuildResultStatus
 from nix_daemon_protocol.derivation_output import OutputKind
 from nix_daemon_protocol.signature import Signature
@@ -32,7 +33,14 @@ from ..add import PathLock, delete_path
 from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta
 from ..signing import SecretKey, fingerprint
 from .buildlog import BuildLog
-from .env import HOME_DIR, SANDBOX_BUILD_DIR, build_env, hash_placeholder, rewrite_strings
+from .env import (
+    HOME_DIR,
+    SANDBOX_BUILD_DIR,
+    build_env,
+    hash_placeholder,
+    rewrite_strings,
+    structured_attrs_reason,
+)
 from .outputs import BuildFailure, check_outputs, collect_outputs
 from .spec import ChildSpec
 
@@ -65,13 +73,15 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings) -> str | None:
         return "a builtin builder"
     if drv.platform != settings.system and drv.platform not in settings.extra_platforms:
         return f"the platform {drv.platform}"
-    if settings.sandbox == "false" or drv.env.get("__noChroot") == "1":
+    if "__json" in drv.env and (reason := structured_attrs_reason(drv.env)) is not None:
+        return reason
+    if settings.sandbox == "false" or bool_attr(drv.env, "__noChroot", default=False):
         return "a build without the sandbox"
     features = set(drv.required_system_features)
     if features & {"recursive-nix", "uid-range"}:
         return f"the features {sorted(features & {'recursive-nix', 'uid-range'})}"
-    if "__json" in drv.env or "exportReferencesGraph" in drv.env:
-        return "structured attrs or exportReferencesGraph"
+    if "__json" not in drv.env and "exportReferencesGraph" in drv.env:
+        return "exportReferencesGraph"
     kinds = {o.kind for o in drv.outputs.values()}
     if kinds - {OutputKind.INPUT_ADDRESSED, OutputKind.CA_FIXED}:
         return "a floating, impure or deferred output"
@@ -250,6 +260,7 @@ async def build(
         rewrites = {hash_placeholder(name): o.path for name, o in drv.outputs.items()}
         env = build_env(
             drv.env,
+            outputs=drv.outputs,
             store_dir=str(layout.store_dir),
             build_cores=settings.build_cores,
             rewrites=rewrites,
@@ -259,7 +270,7 @@ async def build(
         if env is None:
             raise ValueError(f"pynixd cannot build the environment of '{drv_path}'")
         for name, contents in env.files.items():
-            (paths.tmp / name).write_text(contents)
+            (paths.tmp / name).write_text(contents, encoding="utf-8")
         spec: ChildSpec = {
             "builder": drv.builder,
             "args": [rewrite_strings(arg, rewrites) for arg in drv.args],
@@ -330,7 +341,7 @@ async def build(
             failure = collected.failure or await anyio.to_thread.run_sync(
                 lambda: check_outputs(
                     drv_path,
-                    drv.env,
+                    {} if "__json" in drv.env else drv.env,
                     collected.infos,
                     store_dir=str(layout.store_dir),
                     path_info=lambda path: anyio.from_thread.run(engine.query_path_info, path),
