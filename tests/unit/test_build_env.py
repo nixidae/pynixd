@@ -6,6 +6,8 @@ import pytest
 
 from pynixd_store.builder.env import (
     build_env,
+    dump_float,
+    dump_json,
     export_requests,
     hash_placeholder,
     structured_attrs_reason,
@@ -106,9 +108,10 @@ def test_structured_attrs_reach_the_builder_as_two_files_and_nothing_else() -> N
 
 
 def test_write_shell_declares_what_bash_can_hold() -> None:
-    """The cases of Nix's `tests/functional/structured-attrs.nix`, without its float."""
+    """The cases of Nix's `tests/functional/structured-attrs.nix`; its float is not declared (`:28`)."""
     attrs = {
         "int": 123456789,
+        "float": 123.456,
         "boolTrue": True,
         "boolFalse": False,
         "nothing": None,
@@ -136,7 +139,8 @@ def test_a_structured_build_pynixd_cannot_reproduce_goes_to_the_daemon() -> None
         return structured_attrs_reason({"__json": raw, **env})
 
     assert reason('{"a":1,"s":"x","l":[null,true]}') is None
-    assert reason('{"float":123.456}') is not None
+    assert reason('{"float":123.456}') is None
+    assert reason('{"float":3e9}') is not None
     assert reason('{"big":18446744073709551616}') is not None
     assert reason('{"bad":"\\ud800"}') is not None
     assert reason("[1]") is not None
@@ -205,3 +209,44 @@ def test_structured_checks_nix_refuses_go_to_the_daemon(raw: str) -> None:
 
     with pytest.raises(ValueError, match=r"."):
         both({"__json": raw})
+
+
+# What `builtins.toJSON (builtins.fromJSON ...)` printed under Nix 2.35.3: nlohmann's Grisu2 and `format_buffer`.
+NLOHMANN_FLOATS = {
+    1e15: "1e+15",
+    1e16: "1e+16",
+    1e-5: "1e-05",
+    1e-4: "0.0001",
+    0.1: "0.1",
+    1.5: "1.5",
+    123456789012345.0: "123456789012345.0",
+    1234567890123456.0: "1.234567890123456e+15",
+    -0.0: "-0.0",
+    5e-324: "5e-324",
+    1.7976931348623157e308: "1.7976931348623157e+308",
+    7e22: "7.0000000000000004e+22",
+    -476.4663769236316: "-476.46637692363163",
+    1626983080611305.8: "1.6269830806113057e+15",
+}
+
+
+@pytest.mark.parametrize(("value", "printed"), NLOHMANN_FLOATS.items())
+def test_a_float_dumps_as_nlohmann_dumps_it(value: float, printed: str) -> None:
+    """Grisu2 is not always shortest: 259 of 200,012 random doubles differ from `repr`, and none from this port."""
+    assert dump_float(value) == printed
+
+
+def test_dump_json_sorts_keys_and_keeps_floats_nlohmann_shaped() -> None:
+    assert dump_json({"b": [1e15, 2.0], "a": {"x": None, "y": "é"}}) == '{"a":{"x":null,"y":"é"},"b":[1e+15,2.0]}'
+
+
+def test_a_float_reaches_the_shell_only_when_its_single_precision_value_is_whole() -> None:
+    """`handleSimpleType` (`parsed-derivations.cc:131`): `get<float>()`, then `get<int>()` of the double."""
+    shell = write_shell({"whole": 2.0, "frac": 2.5, "near": 0.99999999, "single": 16777217.5, "list": [1.5]})
+    assert shell == "declare near=0\ndeclare single=16777217\ndeclare whole=2\n"
+
+
+@pytest.mark.parametrize("number", ["3e9", "1e15", "1e39", "-2147483649.0"])
+def test_a_float_the_shell_would_cast_out_of_range_goes_to_the_daemon(number: str) -> None:
+    """`get<int>()` of a double out of `int` range is undefined in C++."""
+    assert structured_attrs_reason({"__json": f'{{"x":{number}}}'}) == f"__json with the number {number}"

@@ -361,6 +361,8 @@ STRUCTURED = r"""derivation {
   hardening = { format = true; fortify = false; }; outer.inner = [ 1 2 3 ];
   text = "tab\tnewline\nunicode é"; dest = "${builtins.placeholder "out"}/foo";
   "foo bar" = "BAD"; "1foobar" = "BAD";
+  pi = 3.14; whole = 2.0; tiny = 1.0e-5; small = 0.0001; near = 0.99999999; half = -2.5;
+  single = 16777217.5; floats = [ 1.5 2.0 ]; scaled = { a = 3.0; b = 0.1; };
 }"""
 
 
@@ -374,8 +376,13 @@ async def _structured(tmp_path: Path, route: OpRoute) -> tuple[int, list[str]]:
 
 
 async def test_structured_attrs_reach_the_builder_as_the_daemon_writes_them(tmp_path: Path) -> None:
-    """`prepareStructuredAttrs` and `writeShell` (`parsed-derivations.cc`), each placeholder rewritten."""
+    """`prepareStructuredAttrs` and `writeShell` (`parsed-derivations.cc`), each placeholder rewritten.
+
+    `writeShell` declares a float only when its single-precision value is whole (`parsed-derivations.cc:131`).
+    """
+    before = _fallthrough()
     here = await _structured(tmp_path, OpRoute.pynixd)
+    assert _fallthrough() == before, "pynixd's sandbox builds parity-structured"
     there = await _structured(tmp_path, OpRoute.daemon)
 
     assert here == there
