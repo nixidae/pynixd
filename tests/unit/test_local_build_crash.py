@@ -64,6 +64,7 @@ def _build() -> Any:
         wait_time=None,
         request=SimpleNamespace(derivation=BasicDerivation(platform="x86_64-linux", builder="/bin/sh")),
         store_failures={},
+        options=None,
         post_log_and_fanout=post,
     )
 

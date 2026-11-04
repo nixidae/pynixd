@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from pynixd_store.builder.buildlog import BuildLog
+from pynixd_store.builder.buildlog import BuildLog, Output
 
 
-def _all(*pieces: bytes) -> list[str]:
+def _all(*pieces: bytes) -> list[Output]:
     log = BuildLog()
     lines = [line for piece in pieces for line in log.feed(piece)]
     return lines + log.flush()
@@ -47,4 +47,6 @@ def test_no_tail_by_default() -> None:
 
 
 def test_bytes_that_are_not_utf8_survive() -> None:
-    assert _all(b"\xff\n")[0].encode(errors="surrogateescape") == b"\xff"
+    [line] = _all(b"\xff\n")
+    assert isinstance(line, str)
+    assert line.encode(errors="surrogateescape") == b"\xff"

@@ -23,6 +23,7 @@ import anyio
 import structlog
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID
+from nix_daemon_protocol.protocol import Verbosity
 from pynixd_store.build_stats import (
     BuildEstimateSource,
     BuildObservation,
@@ -1272,8 +1273,9 @@ class Scheduler:
             build.last_output_at = time.monotonic()
             messages.append(message)
 
+        verbosity = build.options.verbosity if build.options is not None else Verbosity.INFO
         try:
-            resp = await local.build_here(build.request, settings, keep)
+            resp = await local.build_here(build.request, settings, keep, verbosity)
         except Exception as e:
             # pynixd's own builder raised: a bug, or this machine (a full disk). Either way not a
             # lost connection, so the same store gets no second try; another store may.

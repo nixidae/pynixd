@@ -12,9 +12,8 @@ import anyio
 import structlog
 from pydantic import BaseModel
 
-from nix_daemon_protocol.logs import ActivityField, LogResult, LogStartActivity, LogStopActivity
 from nix_daemon_protocol.operations import STANDARD_OPERATIONS
-from nix_daemon_protocol.protocol import ActivityType, FieldType, ResultType, Verbosity
+from nix_daemon_protocol.protocol import Verbosity
 from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
 from pynixd_store.builder import local as local_builder
 from pynixd_store.builder.settings import BuildSettings
@@ -23,7 +22,7 @@ from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.nix_config import nix_environment, read_nix_config
 
 from .. import metrics
-from ..activity import next_activity_id
+from ..activity import BuildActivity
 from ..op_routes import OpRoute, Owned
 from ..serde import (
     BuildDerivationRequest,
@@ -592,7 +591,8 @@ class LocalDBStore(Store):
             if client is not None:
                 await client.send(message)
 
-        return await self.build_here(request, settings, send)
+        verbosity = options.verbosity if options is not None else Verbosity.INFO
+        return await self.build_here(request, settings, send, verbosity)
 
     async def local_build_settings(
         self, request: BuildDerivationRequest, options: SetOptionsRequest | None
@@ -617,40 +617,23 @@ class LocalDBStore(Store):
         request: BuildDerivationRequest,
         settings: BuildSettings,
         on_log: Callable[[LogMessage], Awaitable[None]],
+        verbosity: int,
     ) -> BuildDerivationResponse:
         """Build *request* in pynixd's sandbox and register its outputs in this store.
 
-        *on_log* gets Nix's `actBuild` activity: its start, one
-        `resBuildLogLine` for each line, and its stop
-        (`derivation-building-goal.cc:884`, `build/build-log.cc:46`).
+        *on_log* gets Nix's `actBuild` activity (`BuildActivity`). *verbosity*
+        is the client's, which a builder's `@nix` message must pass.
         """
         drv_path = str(request.drv_path)
-        act_id = next_activity_id()
-        await on_log(
-            LogStartActivity(
-                act_id=act_id,
-                level=Verbosity.INFO,
-                type=ActivityType.BUILD,
-                text=f"building '{drv_path}'",
-                fields=[
-                    ActivityField(type=FieldType.STRING, valstr=drv_path),
-                    ActivityField(type=FieldType.STRING, valstr=""),
-                    ActivityField(type=FieldType.INT, valint=1),
-                    ActivityField(type=FieldType.INT, valint=1),
-                ],
-            )
-        )
-
-        async def emit(texts: list[str]) -> None:
-            for text in texts:
-                field = ActivityField(type=FieldType.STRING, valstr=text)
-                await on_log(LogResult(act_id=act_id, result_type=ResultType.BUILD_LOG_LINE, fields=[field]))
-
+        activity = BuildActivity(drv_path, on_log, verbosity)
+        await activity.start()
         try:
-            built = await local_builder.build(self.engine, drv_path, request.derivation, settings, on_lines=emit)
+            built = await local_builder.build(
+                self.engine, drv_path, request.derivation, settings, on_lines=activity.emit
+            )
         finally:
             with anyio.CancelScope(shield=True):
-                await on_log(LogStopActivity(act_id=act_id))
+                await activity.stop()
         # `--print-out-paths` prints these; `GoalEngine` keys them by `DrvOutput`.
         by_name = (
             {name: UnkeyedRealisation(out_path=StorePath(o.path)) for name, o in request.derivation.outputs.items()}

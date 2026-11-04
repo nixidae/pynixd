@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
     from ..engine import StoreEngine
+    from .buildlog import Output
     from .settings import BuildSettings
 
 _log = structlog.get_logger(__name__)
@@ -181,11 +182,11 @@ async def build(
     drv: BasicDerivation,
     settings: BuildSettings,
     *,
-    on_lines: Callable[[list[str]], Awaitable[None]],
+    on_lines: Callable[[list[Output]], Awaitable[None]],
 ) -> LocalBuildResult:
     """Build *drv*, whose inputs are valid, and register its outputs. `unsupported(drv)` must be `None`.
 
-    *on_lines* receives the builder's output as it comes, cut into Nix's log lines.
+    *on_lines* receives the builder's output as it comes: Nix's log lines and its `@nix` events.
     """
     layout = engine.layout
     locks = [PathLock(layout.real_store_dir / o.path.rsplit("/", 1)[-1]) for o in drv.outputs.values() if o.path]

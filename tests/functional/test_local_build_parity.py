@@ -35,11 +35,41 @@ TOP = (
     'args = [ "-c" "echo one; printf \'50%%\\r100%%\\n\'; echo two >&2; printf tail; echo ${dep} $out > $out" ]; }'
 )
 
-# More lines than `log-lines` keeps, and a last line that no newline ends.
-FAILS = (
-    'derivation { name = "parity-fails"; system = builtins.currentSystem; builder = "/bin/sh"; '
-    'args = [ "-c" "i=0; while [ $i -lt 30 ]; do echo line $i; i=$((i+1)); done; printf partial; exit 3" ]; }'
+
+def _script(name: str, body: str) -> str:
+    return (
+        f'derivation {{ name = "{name}"; system = builtins.currentSystem; builder = "/bin/sh"; '
+        f"args = [ (builtins.toFile \"{name}.sh\" ''\n{body}\n'') ]; }}"
+    )
+
+
+# More lines than `log-lines` keeps, a `@nix` line after each, and a last line that no newline ends.
+FAILS = _script(
+    "parity-fails",
+    """i=0
+while [ $i -lt 30 ]; do echo line $i; echo '@nix {"action":"setPhase","phase":"p"}'; i=$((i+1)); done
+printf partial
+exit 3""",
 )
+
+# Each `@nix` action an untrusted builder may send, and lines `handleJSONLogMessage` refuses.
+JSON = _script(
+    "parity-json",
+    """echo before
+echo '@nix {"action":"setPhase","phase":"buildPhase"}'
+echo '@nix {"action":"msg","level":0,"msg":"builder says hi"}'
+echo '@nix {"action":"msg","level":7,"msg":"too quiet"}'
+echo '@nix {"action":"start","id":5,"type":105,"level":0,"text":"not a transfer"}'
+echo '@nix {"action":"start","id":6,"type":101,"level":0,"text":"downloading","fields":["u"]}'
+echo '@nix {"action":"result","id":6,"type":105,"fields":[1,2,0,0]}'
+echo '@nix {"action":"stop","id":6}'
+echo '@nix {"action":"msg","level":"loud","msg":"x"}'
+echo '@nix {"action":"dance"}'
+echo '@nix {bad'
+echo after
+echo done > $out""",
+)
+BAD_JSON = "bad JSON log message from the derivation builder: "
 
 
 def _rows(root: Path) -> tuple[list[tuple[Any, ...]], list[tuple[str, str]]]:
@@ -138,3 +168,22 @@ async def test_a_failed_build_says_what_the_daemon_says(tmp_path: Path) -> None:
     assert here == there
     assert any("Last 25 log lines:" in line for line in here), here
     assert any(line.rstrip().endswith("> partial") for line in here), here
+    assert not any("@nix" in line for line in here), here
+
+
+async def _json(tmp_path: Path, route: OpRoute) -> list[str]:
+    async with _serve(tmp_path, route) as (url, _root):
+        _rc, _out, err, _both = await run_subproc(
+            [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--print-build-logs", "--expr", JSON]
+        )
+    # NIX-DEVIATION (#27) in `jsonlog.handle`: the parse error's own words differ.
+    return [line.split(BAD_JSON, 1)[0] + BAD_JSON if BAD_JSON in line else line for line in err.splitlines()]
+
+
+async def test_a_builders_json_lines_reach_the_client_as_the_daemon_sends_them(tmp_path: Path) -> None:
+    here = await _json(tmp_path, OpRoute.pynixd)
+    there = await _json(tmp_path, OpRoute.daemon)
+
+    assert here == there
+    assert "builder says hi" in here, here
+    assert not any("too quiet" in line or "not a transfer" in line for line in here), here
