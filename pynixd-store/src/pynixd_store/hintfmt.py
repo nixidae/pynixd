@@ -22,10 +22,19 @@ def magenta(value: object) -> str:
     return f"{ANSI_MAGENTA}{value}{ANSI_NORMAL}"
 
 
-def show_error(message: str) -> str:
-    """*message* as `showErrorInfo` renders it, which `Error::msg` answers.
+def _chomp(line: str) -> str:
+    return line.rstrip(" \n\r\t")
 
-    Each line after the first carries seven spaces, the width of "error: ",
-    and no line feed ends the text.
+
+def show_error(message: str, traces: tuple[str, ...] = ()) -> str:
+    """*message* as `showErrorInfo` renders it (`error.cc:229`), which `Error::msg` answers.
+
+    Each *trace* is an `addTrace` hint, innermost last: a `… ` line above a
+    second "error: ". `indent` (`error.cc:120`) gives each line after the first
+    seven spaces, the width of "error: ", and chomps every line, so an empty
+    line carries none. No line feed ends the text.
     """
-    return ERROR_PREFIX + "\n       ".join(message.split("\n"))
+    if traces:
+        message = "".join(f"\n… {hint}\n" for hint in traces) + "\n" + ERROR_PREFIX + message
+    lines = _chomp(message).split("\n")
+    return "\n".join(_chomp(("       " if i else ERROR_PREFIX) + line) for i, line in enumerate(lines))
