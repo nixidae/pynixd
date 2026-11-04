@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from pynixd_store.builder.env import build_env, hash_placeholder, structured_attrs_reason, write_shell
+import pytest
+
+from pynixd_store.builder.env import (
+    build_env,
+    export_requests,
+    hash_placeholder,
+    structured_attrs_reason,
+    write_shell,
+)
 
 
 def _env(env: dict[str, str], *, fixed_output: bool = False) -> dict[str, str]:
@@ -14,8 +22,8 @@ def _env(env: dict[str, str], *, fixed_output: bool = False) -> dict[str, str]:
         rewrites={hash_placeholder("out"): "/nix/store/x-out"},
         fixed_output=fixed_output,
         impure_source={"http_proxy": "http://proxy"},
+        exported={},
     )
-    assert built is not None
     return built.variables
 
 
@@ -41,8 +49,8 @@ def test_pass_as_file_moves_the_value_into_the_build_directory() -> None:
         rewrites={},
         fixed_output=False,
         impure_source={},
+        exported={},
     )
-    assert built is not None
     assert "text" not in built.variables
     ((name, contents),) = built.files.items()
     assert name.startswith(".attr-")
@@ -68,8 +76,8 @@ def test_structured_attrs_reach_the_builder_as_two_files_and_nothing_else() -> N
         rewrites={hash_placeholder("out"): "/nix/store/x-out"},
         fixed_output=False,
         impure_source={},
+        exported={},
     )
-    assert built is not None
     assert "ignored" not in built.variables
     assert built.variables["NIX_ATTRS_JSON_FILE"] == "/build/.attrs.json"
     assert built.variables["NIX_ATTRS_SH_FILE"] == "/build/.attrs.sh"
@@ -122,8 +130,37 @@ def test_a_structured_build_pynixd_cannot_reproduce_goes_to_the_daemon() -> None
     assert reason('{"bad":"\\ud800"}') is not None
     assert reason("[1]") is not None
     assert reason("{") is not None
-    assert reason('{"exportReferencesGraph":{}}') is not None
+    assert reason('{"unsafeDiscardReferences":{}}') is not None
     assert reason('{"allowedReferences":[]}') is not None
     assert reason("{}", passAsFile="x") is not None
     assert reason('{"__noChroot":1}') is not None
     assert reason('{"requiredSystemFeatures":["kvm",1]}') is not None
+
+
+A = "/nix/store/" + "a" * 32 + "-a"
+B = "/nix/store/" + "b" * 32 + "-b"
+
+
+def test_export_references_graph_names_store_paths_by_file_name() -> None:
+    """`DerivationOptions::exportReferencesGraph` (`derivation-options.cc:310`), both forms."""
+    assert export_requests({"exportReferencesGraph": f"z {A}\t\na {B}"}, "/nix/store") == {"a": [B], "z": [A]}
+    raw = f'{{"exportReferencesGraph":{{"g":["{B}",["{A}"]]}}}}'
+    assert export_requests({"__json": raw}, "/nix/store") == {"g": [A, B]}
+    assert export_requests({}, "/nix/store") == {}
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"exportReferencesGraph": f"a {A} b"},
+        {"exportReferencesGraph": f".a {A}"},
+        {"exportReferencesGraph": f"a {A}/bin"},
+        {"exportReferencesGraph": f"a {A}^out"},
+        {"exportReferencesGraph": f"a\x0b{A}"},
+        {"__json": '{"exportReferencesGraph":["x"]}'},
+        {"__json": '{"exportReferencesGraph":{"g":[1]}}'},
+    ],
+)
+def test_an_export_nix_refuses_or_warns_about_goes_to_the_daemon(env: dict[str, str]) -> None:
+    with pytest.raises(ValueError, match=r"."):
+        export_requests(env, "/nix/store")

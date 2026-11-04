@@ -379,6 +379,58 @@ async def test_structured_attrs_reach_the_builder_as_the_daemon_writes_them(tmp_
     assert any("declare -A outputs=" in text for text in here[1]), here
 
 
+_COPY = """copy() { while IFS= read -r line || [ -n "$line" ]; do printf '%s\\n' "$line"; done < "$1"; }"""
+# `dep.drvPath` puts the derivation's closure in the input closure, and `exportReferences` adds its outputs.
+EXPORTS = {
+    "plain": f"""let dep = {DEP}; in derivation {{
+  name = "parity-export"; system = builtins.currentSystem; builder = "/bin/sh";
+  exportReferencesGraph = [ "graph" dep "drv.graph" dep.drvPath ];
+  args = [ "-c" ''{_COPY}
+    {{ copy graph; copy drv.graph; }} > $out'' ];
+}}""",
+    "structured": f"""let dep = {DEP}; in derivation {{
+  name = "parity-export-structured"; system = builtins.currentSystem; builder = "/bin/sh";
+  __structuredAttrs = true; exportReferencesGraph.closure = [ dep [ dep.drvPath ] ];
+  args = [ "-c" ''{_COPY}
+    {{ copy "$NIX_ATTRS_SH_FILE"; copy "$NIX_ATTRS_JSON_FILE"; }} > ${{builtins.placeholder "out"}}'' ];
+}}""",
+}
+EXPORT_REJECTED = (
+    f"let dep = {DEP}; in "
+    'derivation { name = "parity-export-rejected"; system = builtins.currentSystem; builder = "/bin/sh"; '
+    'exportReferencesGraph = [ "graph" (builtins.unsafeDiscardStringContext "${dep}") ]; '
+    'args = [ "-c" "echo > $out" ]; }'
+)
+
+
+async def _exported(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
+    results: dict[str, Any] = {}
+    async with _serve(tmp_path, route) as (url, root):
+        for name, expr in EXPORTS.items():
+            rc, out, _err, _both = await run_subproc(
+                [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--print-out-paths", "--expr", expr],
+                expected_retcode=None,
+            )
+            results[name] = rc, [(root / p.lstrip("/")).read_text() for p in out.split()]
+        _rc, _out, err, _both = await run_subproc(
+            [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--expr", EXPORT_REJECTED], expected_retcode=1
+        )
+        results["rejected"] = _errors(err)
+    return results
+
+
+async def test_export_references_graph_reaches_the_builder_as_the_daemon_writes_it(tmp_path: Path) -> None:
+    """`exportReferences` (`store-api.cc:830`) as `makeValidityRegistration` and as `pathInfoToJSON`."""
+    here = await _exported(tmp_path, OpRoute.pynixd)
+    there = await _exported(tmp_path, OpRoute.daemon)
+
+    assert here == there
+    assert here["plain"][0] == here["structured"][0] == 0, here
+    assert "-parity-dep.drv\n" in here["plain"][1][0], here
+    assert '"closureSize":' in here["structured"][1][0], here
+    assert any("cannot export references of path" in line for line in here["rejected"]), here
+
+
 MID = (
     f"let dep = {DEP}; in "
     'derivation { name = "parity-mid"; system = builtins.currentSystem; builder = "/bin/sh"; '

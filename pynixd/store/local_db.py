@@ -605,7 +605,9 @@ class LocalDBStore(Store):
             return None
         reason = "repair or check" if request.build_mode != BuildMode.NORMAL else None
         settings = BuildSettings.from_nix_config(await self.engine.nix_config(), _build_overrides(options))
-        reason = reason or local_builder.unsupported(request.derivation, settings)
+        reason = reason or local_builder.unsupported(
+            request.derivation, settings, store_dir=str(self.engine.layout.store_dir)
+        )
         if reason is None:
             return settings
         log.info("build_left_to_the_daemon", drv=str(request.drv_path), reason=reason)

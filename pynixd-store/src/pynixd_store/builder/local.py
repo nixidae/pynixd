@@ -37,6 +37,7 @@ from .env import (
     HOME_DIR,
     SANDBOX_BUILD_DIR,
     build_env,
+    export_requests,
     hash_placeholder,
     rewrite_strings,
     structured_attrs_reason,
@@ -45,7 +46,7 @@ from .outputs import BuildFailure, check_outputs, collect_outputs
 from .spec import ChildSpec
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable, Sequence
+    from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 
     from nix_daemon_protocol.basic_derivation import BasicDerivation
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
@@ -65,7 +66,7 @@ DISK_FULL_BYTES = 8 * 1024 * 1024
 DEV_FILES = ("/dev/full", "/dev/null", "/dev/random", "/dev/tty", "/dev/urandom", "/dev/zero")
 
 
-def unsupported(drv: BasicDerivation, settings: BuildSettings) -> str | None:
+def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str) -> str | None:
     """Why pynixd leaves this build to the daemon, or `None` when it builds it."""
     if not sys.platform.startswith("linux"):
         return "pynixd builds on Linux only"
@@ -80,8 +81,10 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings) -> str | None:
     features = set(drv.required_system_features)
     if features & {"recursive-nix", "uid-range"}:
         return f"the features {sorted(features & {'recursive-nix', 'uid-range'})}"
-    if "__json" not in drv.env and "exportReferencesGraph" in drv.env:
-        return "exportReferencesGraph"
+    try:
+        export_requests(drv.env, store_dir)
+    except ValueError as e:
+        return f"exportReferencesGraph with {e}"
     kinds = {o.kind for o in drv.outputs.values()}
     if kinds - {OutputKind.INPUT_ADDRESSED, OutputKind.CA_FIXED}:
         return "a floating, impure or deferred output"
@@ -205,6 +208,37 @@ def _binds(
     return [(target, source, optional) for target, (source, optional) in sorted(binds.items())]
 
 
+async def _export_references(
+    engine: StoreEngine, requests: Mapping[str, Sequence[str]], inputs: set[str]
+) -> dict[str, list[ValidPathInfo]]:
+    """`Store::exportReferences` (`store-api.cc:830`) of each name's paths, sorted as a `StorePathSet`."""
+    exported: dict[str, list[ValidPathInfo]] = {}
+    for name, requested in requests.items():
+        for path in requested:
+            if path not in inputs:
+                raise BuildFailure(
+                    BuildResultStatus.INPUT_REJECTED,
+                    f"cannot export references of path '{magenta(path)}' because it is not in the input closure "
+                    "of the derivation",
+                )
+        paths = {p.path for p in await engine.query_closure(requested)}
+        outputs: set[str] = set()
+        for drv_path in sorted(p for p in paths if p.endswith(".drv")):
+            drv = await engine.read_derivation(drv_path)
+            if drv is None:
+                raise ValueError(f"cannot read derivation '{drv_path}'")
+            for output in drv.outputs:
+                if not output.path:
+                    raise ValueError("exportReferences on CA derivations is not yet implemented")
+                outputs.add(output.path)
+        # `computeFSClosure` throws `InvalidPath` where `query_closure` drops the path.
+        if missing := sorted(outputs - {p.path for p in await engine.query_valid_paths(outputs)}):
+            raise ValueError(f"path '{missing[0]}' is not valid")
+        paths |= {p.path for p in await engine.query_closure(sorted(outputs))}
+        exported[name] = sorted(await engine.query_path_infos(sorted(paths)), key=lambda info: info.path.path)
+    return exported
+
+
 def _optimise(real_store_dir: Path, links_dir: Path, names: Iterable[str]) -> None:
     """`LocalStore::optimisePath` (`optimise-store.cc:331`): a fresh inode set for each path."""
     links_dir.mkdir(parents=True, exist_ok=True)
@@ -254,6 +288,10 @@ async def build(
         sandbox_closure = {
             str(p) for p in await engine.query_closure(sorted(_sandbox_store_paths(settings, str(layout.store_dir))))
         }
+        try:
+            exported = await _export_references(engine, export_requests(drv.env, str(layout.store_dir)), inputs)
+        except BuildFailure as e:
+            return LocalBuildResult(e.status, e.message)
         paths = await anyio.to_thread.run_sync(_prepare, engine, drv_path, settings)
         fixed = any(o.kind is OutputKind.CA_FIXED for o in drv.outputs.values())
         # `inputRewrites` (`derivation-builder.cc:435`): the sandbox builds each output at its own path.
@@ -266,9 +304,8 @@ async def build(
             rewrites=rewrites,
             fixed_output=fixed,
             impure_source=os.environ,
+            exported=exported,
         )
-        if env is None:
-            raise ValueError(f"pynixd cannot build the environment of '{drv_path}'")
         for name, contents in env.files.items():
             (paths.tmp / name).write_text(contents, encoding="utf-8")
         spec: ChildSpec = {

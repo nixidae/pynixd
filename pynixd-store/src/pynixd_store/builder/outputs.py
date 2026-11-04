@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import base64
 import os
-import re
 import stat
 from collections import deque
 from dataclasses import dataclass
@@ -26,6 +25,7 @@ from ..add import PathLock, TempDir, _nar_hash, canonicalise, content_hash, dele
 from ..content_address import ContentAddress, Method, content_addressed_path, fixed_output_address
 from ..hintfmt import magenta
 from ..nar_fs import dump_path, restore_path
+from .env import is_store_path
 from .refscan import scan_for_references
 
 if TYPE_CHECKING:
@@ -266,8 +266,6 @@ OUTPUT_CHECKS = (
 )
 """Each attribute `checkOutputs` reads without structured attrs: allowed, recursive."""
 
-_STORE_PATH_BASE = re.compile(r"[0-9a-df-np-sv-z]{32}-([A-Za-z0-9+\-._?=]{1,211})")
-
 
 def check_outputs(
     drv_path: str,
@@ -302,8 +300,8 @@ def check_outputs(
     def spec(output: str, words: Iterable[str]) -> set[str] | BuildFailure:
         paths: set[str] = set()
         # `DrvRef` orders a store path before an output name.
-        for word in sorted(words, key=lambda w: (not _is_store_path(w, store_dir), w)):
-            if _is_store_path(word, store_dir):
+        for word in sorted(words, key=lambda w: (not is_store_path(w, store_dir), w)):
+            if is_store_path(word, store_dir):
                 paths.add(word)
             elif word in infos:
                 paths.add(infos[word].path.path)
@@ -340,16 +338,6 @@ def check_outputs(
                     f"{magenta(listing)}",
                 )
     return None
-
-
-def _is_store_path(word: str, store_dir: str) -> bool:
-    """`StoreDirConfig::isStorePath`: in the store directory itself, with a valid base name."""
-    parent, _, base = word.rpartition("/")
-    match = _STORE_PATH_BASE.fullmatch(base)
-    if parent != store_dir or match is None:
-        return False
-    name = match.group(1)
-    return name not in (".", "..") and not name.startswith((".-", "..-"))
 
 
 def _rewrite(actual: Path, old: str, new: str, real_store_dir: Path) -> None:

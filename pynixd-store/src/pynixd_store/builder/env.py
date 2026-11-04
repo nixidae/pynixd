@@ -8,10 +8,13 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from ..signing import nar_hash_for_a_fingerprint
 from ..utils import nix32_encode
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Iterable, Mapping, Sequence
+
+    from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
 SANDBOX_BUILD_DIR = "/build"
 """`sandbox-build-dir`'s default: the build directory as the builder sees it."""
@@ -46,7 +49,7 @@ class _Unreproduced(ValueError):
 _INT_RANGE = range(-(2**63), 2**64)
 """What nlohmann keeps as an integer; a larger one becomes a double."""
 
-_NOT_YET = ("outputChecks", "unsafeDiscardReferences", "exportReferencesGraph")
+_NOT_YET = ("outputChecks", "unsafeDiscardReferences")
 # `derivationOptionsFromStructuredAttrs` warns about each (`derivation-options.cc:186`).
 _WARNED = (
     "allowedReferences",
@@ -59,6 +62,20 @@ _WARNED = (
 _BOOLS = ("__noChroot", "preferLocalBuild", "allowSubstitutes", "__darwinAllowLocalNetworking")
 _STRING_SETS = ("__impureHostDeps", "impureEnvVars", "requiredSystemFeatures")
 _SH_VAR_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_STORE_PATH_BASE = re.compile(r"[0-9a-df-np-sv-z]{32}-([A-Za-z0-9+\-._?=]{1,211})")
+_EXPORT_FILE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*")
+_TOKEN_SEPARATORS = re.compile(r"[ \t\n\r]+")
+"""`tokenizeString`'s default separators; `str.split` splits on more."""
+
+
+def is_store_path(word: str, store_dir: str) -> bool:
+    """`StoreDirConfig::isStorePath`: in the store directory itself, with a valid base name."""
+    parent, _, base = word.rpartition("/")
+    match = _STORE_PATH_BASE.fullmatch(base)
+    if parent != store_dir or match is None:
+        return False
+    name = match.group(1)
+    return name not in (".", "..") and not name.startswith((".-", "..-"))
 
 
 def _refuse_number(text: str) -> Any:
@@ -120,6 +137,81 @@ def structured_attrs_reason(env: Mapping[str, str]) -> str | None:
     return None
 
 
+def _flatten(value: Any) -> Iterable[str]:
+    """`flatten` (`derivation-options.cc:106`)."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            yield from _flatten(item)
+    else:
+        raise _Unreproduced("a value that is not an array or a string")
+
+
+def export_requests(env: Mapping[str, str], store_dir: str) -> dict[str, list[str]]:
+    """`DerivationOptions::exportReferencesGraph`: each name and its store paths, in Nix's `std::map` order.
+
+    `ValueError` names what pynixd leaves to the daemon: what Nix refuses or
+    warns about, and a derived path, which a `BasicDerivation` cannot resolve.
+    """
+    requests: dict[str, set[str]] = {}
+    if "__json" in env:
+        graph = parse_structured_attrs(env["__json"]).get("exportReferencesGraph")
+        if graph is None:
+            return {}
+        if not isinstance(graph, dict):
+            raise _Unreproduced("a value that is not an object")
+        for key, value in graph.items():
+            requests[key] = set(_flatten(value))
+    else:
+        words = [word for word in _TOKEN_SEPARATORS.split(env.get("exportReferencesGraph", "")) if word]
+        if len(words) % 2:
+            raise _Unreproduced("an odd number of words")
+        for name, path in zip(words[::2], words[1::2], strict=True):
+            if not _EXPORT_FILE_NAME.fullmatch(name):
+                raise _Unreproduced(f"the file name {name!r}")
+            requests[name] = {path}
+    for paths in requests.values():
+        if bad := sorted(path for path in paths if not is_store_path(path, store_dir)):
+            raise _Unreproduced(f"the path {bad[0]!r}")
+    return {name: sorted(paths) for name, paths in sorted(requests.items())}
+
+
+def validity_registration(infos: Sequence[ValidPathInfo]) -> str:
+    """`Store::makeValidityRegistration` without derivers or hashes (`store-api.cc:804`)."""
+    lines: list[str] = []
+    for info in infos:
+        references = sorted(ref.path for ref in info.info.references)
+        lines += [info.path.path, "", str(len(references)), *references]
+    return "".join(f"{line}\n" for line in lines)
+
+
+def path_info_json(infos: Sequence[ValidPathInfo]) -> list[dict[str, Any]]:
+    """`pathInfoToJSON` (`parsed-derivations.cc`); *infos* is a closure, so each `closureSize` sums within it."""
+    by_path = {info.path.path: info for info in infos}
+    entries: list[dict[str, Any]] = []
+    for info in infos:
+        closure = {info.path.path}
+        pending = [info.path.path]
+        while pending:
+            for ref in by_path[pending.pop()].info.references:
+                if ref.path not in closure:
+                    closure.add(ref.path)
+                    pending.append(ref.path)
+        entry: dict[str, Any] = {
+            "narHash": nar_hash_for_a_fingerprint(info.info.nar_hash),
+            "narSize": info.info.nar_size,
+            "references": sorted(ref.path for ref in info.info.references),
+            "path": info.path.path,
+            "valid": True,
+            "closureSize": sum(by_path[path].info.nar_size for path in closure),
+        }
+        if info.info.ca:
+            entry["ca"] = str(info.info.ca)
+        entries.append(entry)
+    return entries
+
+
 def dump_json(value: Any) -> str:
     """nlohmann's `dump()`: keys sorted (`std::map`), no spaces, UTF-8 left unescaped."""
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -172,11 +264,11 @@ def build_env(
     rewrites: Mapping[str, str],
     fixed_output: bool,
     impure_source: Mapping[str, str],
-) -> BuildEnv | None:
-    """The environment the builder runs with, or `None` where pynixd leaves the build to the daemon.
+    exported: Mapping[str, Sequence[ValidPathInfo]],
+) -> BuildEnv:
+    """The environment the builder runs with. A structured build must pass `structured_attrs_reason` first.
 
-    `None`: `exportReferencesGraph`, which needs the input closure's validity
-    registration. A structured build must pass `structured_attrs_reason` first.
+    *exported* is `exportReferences` of each `export_requests` name.
     """
     variables = {
         "PATH": "/path-not-set",
@@ -190,13 +282,13 @@ def build_env(
         # `DesugaredEnv::create`: the JSON and its shell form, and nothing of `drv.env`.
         attrs = parse_structured_attrs(env["__json"])
         attrs["outputs"] = {name: hash_placeholder(name) for name in outputs}
+        for key, infos in exported.items():
+            attrs[key] = path_info_json(infos)
         files[".attrs.sh"] = rewrite_strings(write_shell(attrs), rewrites)
         files[".attrs.json"] = rewrite_strings(dump_json(attrs), rewrites)
         variables["NIX_ATTRS_SH_FILE"] = f"{SANDBOX_BUILD_DIR}/.attrs.sh"
         variables["NIX_ATTRS_JSON_FILE"] = f"{SANDBOX_BUILD_DIR}/.attrs.json"
         impure = list(attrs.get("impureEnvVars", ()))
-    elif "exportReferencesGraph" in env:
-        return None
     else:
         pass_as_file = set(env.get("passAsFile", "").split())
         for name, value in env.items():
@@ -206,6 +298,8 @@ def build_env(
                 variables[name + "Path"] = f"{SANDBOX_BUILD_DIR}/{file_name}"
             else:
                 variables[name] = value
+        for file_name, infos in exported.items():
+            files[file_name] = rewrite_strings(validity_registration(infos), rewrites)
         impure = env.get("impureEnvVars", "").split()
 
     variables["NIX_BUILD_TOP"] = SANDBOX_BUILD_DIR
