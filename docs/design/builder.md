@@ -1,8 +1,8 @@
 # The builder: what pynixd takes from Nix's local builder
 
-Status: proposal, 2026-11-04. It is row 6 of `daemonless.md` (op 36,
-nixidae/nixidae#1155). Nix 2.35.3 is the reference; paths are under
-`src/libstore/`.
+Status: accepted by User, 2026-11-04, with pynixd's own helper as the child.
+It is row 6 of `daemonless.md` (op 36, nixidae/nixidae#1155). Nix 2.35.3 is
+the reference; paths are under `src/libstore/`.
 
 ## What Nix does
 
@@ -65,7 +65,7 @@ nixidae/nixidae#1155). Nix 2.35.3 is the reference; paths are under
    `prepare_sandbox`, `enter_chroot`, `set_user`. There is no class tree.
 3. **pynixd never forks itself.** It runs aiosqlite and other threads, the
    case Nix's helper process exists for. The child is a separate executable.
-   The choice of that executable is the open question below.
+   It is pynixd's own helper (below).
 4. **Scope of the first version: an `_own_answer` that returns `None` for the
    rest.** Linux, sandboxed, unprivileged: the caller's uid as sandbox uid
    1000, as Nix does without build users. Input-addressed and fixed-output
@@ -80,7 +80,7 @@ nixidae/nixidae#1155). Nix 2.35.3 is the reference; paths are under
 The guest permits this: `tester` builds into a `?root=` store in the same
 test, and Nix can do that only in a user namespace.
 
-## Open question: the child
+## The child: pynixd's own helper
 
 | | bubblewrap (`bwrap`, a Nix package) | a helper of pynixd's (`python -m pynixd_store.build.child`) |
 | --- | --- | --- |
@@ -88,6 +88,8 @@ test, and Nix can do that only in a user namespace.
 | lacks | cgroups, `uid-range` (one uid mapped), a build user as root | nothing by design |
 | costs | one dependency; the seccomp program is still pynixd's | ~400 lines and Nix's traps (`setgroups`, the uid map handshake, `/dev/pts`) |
 
-Recommendation: bubblewrap first, behind `Sandbox`. It covers all of the
-first version's scope, and its gaps are the later root row. A helper of
-pynixd's replaces it when that row starts.
+User chose the helper: one implementation serves the first version and the
+later root and build-user row, with cgroups and `uid-range`, and with no
+external dependency. It is a separate Python process, single-threaded, that
+does what Nix's `startChild` and `enterChroot` do and then `execve`s the
+builder.
