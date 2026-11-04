@@ -52,6 +52,12 @@ def test_a_base_name_that_is_not_a_derivation_is_refused(tmp_path: Path) -> None
         build_log.add_build_log(tmp_path, "zg01p02q4lq6g9p7v3s6xk0bq0zs0y8c-hello", LOG)
 
 
+def test_a_full_store_path_is_refused(tmp_path: Path) -> None:
+    """`/nix/store/...` split at two characters is `/n`, a directory at the root."""
+    with pytest.raises(build_log.BuildLogError, match="base name"):
+        build_log.add_build_log(tmp_path, f"/nix/store/{DRV}", LOG)
+
+
 async def _no_config() -> dict[str, Any]:
     raise AssertionError("addBuildLog reads no Nix setting")
 

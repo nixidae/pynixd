@@ -225,7 +225,7 @@ async def build(
         failure = await _run(paths, spec, settings, drv_path, keep)
         stop = int(time.time())
         if log:
-            await engine.add_build_log(drv_path, bytes(log))
+            await engine.add_build_log(drv_path.rsplit("/", 1)[-1], bytes(log))
         if failure is not None:
             return LocalBuildResult(failure.status, failure.message, start, stop)
         try:

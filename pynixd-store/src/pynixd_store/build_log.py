@@ -18,7 +18,7 @@ DRVS_LOG_DIR = "drvs"
 
 
 class BuildLogError(PynixdError):
-    """The base name is not a derivation, as `addBuildLog` asserts."""
+    """The name is not a derivation's base name, as `addBuildLog` asserts."""
 
 
 def log_path(log_dir: Path, drv_base_name: str) -> Path:
@@ -35,8 +35,8 @@ def add_build_log(log_dir: Path, drv_base_name: str, log: bytes) -> None:
     A log already present is kept: Nix returns before it writes. The write is
     a temporary file and a rename, so a reader never sees a half-written log.
     """
-    if not drv_base_name.endswith(".drv"):
-        raise BuildLogError(f"not a derivation: '{drv_base_name}'")
+    if "/" in drv_base_name or not drv_base_name.endswith(".drv"):
+        raise BuildLogError(f"not a derivation's base name: '{drv_base_name}'")
     destination = log_path(log_dir, drv_base_name)
     if destination.exists():
         return
