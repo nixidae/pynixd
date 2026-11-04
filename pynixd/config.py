@@ -666,8 +666,11 @@ class SSHSubprocessStoreSpec(StoreSpecBase):
     host: str
     port: int = 22
     username: str | None = None
-    known_hosts: str | None
+    known_hosts: str | list[str] | None
     """The file that names the host key of this builder, or `null` for none.
+
+    A list names files read when they exist, as OpenSSH reads its defaults.
+    No file existing accepts no key.
 
     **This field has no default, so a configuration has to answer it.** A Nix
     build store sees the whole content of every build that a client pushes,
@@ -711,6 +714,38 @@ class SSHSubprocessStoreSpec(StoreSpecBase):
     Set `monitor = false` alongside it. The monitor polls over the same
     connection, so it would hold the builder awake by itself. Issue nixidae/nixidae#203.
     """
+
+    host_public_key: str | None = None
+    """The one host key accepted, an OpenSSH public key line; it overrides `known_hosts`.
+
+    Nix's `base64-ssh-public-host-key`, decoded (`ssh.cc:11`).
+    """
+    remote_command: list[str] | None = None
+    """The command that serves the daemon protocol on the host; `None` derives it from `nix_bin` and `store_path`.
+
+    An `ssh-ng://` URL sets Nix's: `remote-program`, `--stdio`, then
+    `--store` and `remote-store` when given (`ssh-store.cc:227`).
+    """
+    compress: bool = False
+    """SSH compression, as Nix's `compress` (`ssh.cc:107`)."""
+    connect_timeout: float | None = None
+    """Seconds to reach the host and log in; `None` waits on TCP."""
+
+    def reference_key(self) -> object | None:
+        """Every setting an `ssh-ng://` URL names, and `no_schedule`, so a configured builder is never a substituter's store."""
+        return (
+            "ssh-ng",
+            self.username,
+            self.host,
+            self.port,
+            tuple(self.known_hosts) if isinstance(self.known_hosts, list) else self.known_hosts,
+            self.host_public_key,
+            tuple(str(key) for key in self.client_keys),
+            tuple(self.remote_command or ()),
+            self.compress,
+            self.trusted,
+            self.no_schedule,
+        )
 
     def to_store(self, store_id: str) -> SSHSubprocessStore:
         """Build an ``SSHSubprocessStore`` from this spec."""

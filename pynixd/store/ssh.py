@@ -33,6 +33,8 @@ from .daemon import SSHD_DEFAULT_MAX_SESSIONS, DaemonStore
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
+    from asyncssh.known_hosts import KnownHostsArg
+
     from nix_daemon_protocol.ids import StoreId
 
     from ..agent import AgentStream
@@ -69,7 +71,10 @@ class SSHStore(DaemonStore):
         client_keys: list[str | Path | asyncssh.SSHKey] | None = None,
         settings: PynixdSettings | None = None,
         persistent_connection: bool = True,
-        known_hosts: str | None = None,
+        known_hosts: str | list[str] | None = None,
+        host_public_key: str | None = None,
+        compress: bool = False,
+        connect_timeout: float | None = None,
     ) -> None:
         """Initialise SSH connection state, backoff, and resource monitor settings."""
         self.persistent_connection = persistent_connection
@@ -77,6 +82,9 @@ class SSHStore(DaemonStore):
         # `None` is `asyncssh`'s "accept any host key", and it is now written
         # rather than implied. Issue nixidae/nixidae#204.
         self.known_hosts = known_hosts
+        self.host_public_key = host_public_key
+        self.compress = compress
+        self.connect_timeout = connect_timeout
         if not persistent_connection and monitor_enabled:
             # The monitor polls over this store's own SSH connection, so it
             # would hold the builder awake by itself and undo the whole point
@@ -299,7 +307,7 @@ class SSHStore(DaemonStore):
                 connect_kwargs: dict[str, Any] = {
                     "host": self.host,
                     "port": self.port,
-                    "known_hosts": self.known_hosts,
+                    "known_hosts": await self._known_hosts(),
                     "encryption_algs": SSH_ENCRYPTION_ALGS,
                     "keepalive_interval": SSH_KEEPALIVE_INTERVAL,
                     "keepalive_count_max": SSH_KEEPALIVE_COUNT_MAX,
@@ -308,6 +316,10 @@ class SSHStore(DaemonStore):
                     connect_kwargs["username"] = self.username
                 if self.client_keys is not None:
                     connect_kwargs["client_keys"] = self.client_keys
+                if self.compress:
+                    connect_kwargs["compression_algs"] = ["zlib@openssh.com", "zlib"]
+                if self.connect_timeout is not None:
+                    connect_kwargs["connect_timeout"] = self.connect_timeout
                 self.conn = await asyncssh.connect(**connect_kwargs)
                 # Reset backoff on success
                 self.backoff = self.INITIAL_BACKOFF
@@ -328,6 +340,21 @@ class SSHStore(DaemonStore):
                 raise
             else:
                 return self.conn
+
+    async def _known_hosts(self) -> KnownHostsArg:
+        """What `asyncssh` checks the host key against.
+
+        A list keeps the files that exist: `asyncssh` raises on a missing one,
+        and OpenSSH skips it. With none left, an empty set accepts no key;
+        `()` would read only `~/.ssh/known_hosts` (nixidae/nixidae#1172).
+        """
+        if self.host_public_key is not None:
+            return ([asyncssh.import_public_key(self.host_public_key)], [], [], [], [], [], [])
+        if not isinstance(self.known_hosts, list):
+            return self.known_hosts
+        paths = [Path(path).expanduser() for path in self.known_hosts]
+        present = [str(path) for path in paths if await anyio.Path(path).exists()]
+        return present or asyncssh.import_known_hosts("")
 
     def invalidate_ssh(self) -> None:
         """Mark SSH connection as dead, triggering reconnect on next use."""
@@ -388,14 +415,20 @@ class SSHSubprocessStore(SSHStore):
             settings=spec.settings,
             persistent_connection=spec.persistent_connection,
             known_hosts=spec.known_hosts,
+            host_public_key=spec.host_public_key,
+            compress=spec.compress,
+            connect_timeout=spec.connect_timeout,
         )
+        self.remote_command = spec.remote_command
         self.ssh_processes: list[asyncssh.SSHClientProcess[bytes]] = []
 
     async def create_conn(self) -> Connection:
         """Spawn a nix-daemon --stdio subprocess over the SSH connection."""
         ssh_conn = await self.ensure_ssh()
         conn_id = f"{self.store_id}-{self.conn_counter}"
-        if self.store_path and self.store_path != Path("/"):
+        if self.remote_command is not None:
+            cmd = shlex.join(self.remote_command)
+        elif self.store_path and self.store_path != Path("/"):
             cmd = f"{self.nix_bin} daemon --store {self.store_path} --stdio"
         elif self.nix_bin != "nix":
             cmd = f"{self.nix_bin} daemon --stdio"

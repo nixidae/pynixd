@@ -9,6 +9,9 @@ drops a setting the user wrote. `docs/design/store-model.md`.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,7 +23,7 @@ import structlog
 
 from nix_daemon_protocol.ids import StoreId
 
-from .config import ExternalUnixStoreSpec, HTTPBinaryCacheSpec, LocalBinaryCacheSpec
+from .config import ExternalUnixStoreSpec, HTTPBinaryCacheSpec, LocalBinaryCacheSpec, SSHSubprocessStoreSpec
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -107,12 +110,90 @@ def _unix(ref: StoreReference) -> StoreSpecBase | None:
     )
 
 
+_SSH_NG_PARAMS: Final = frozenset(
+    {"ssh-key", "base64-ssh-public-host-key", "compress", "remote-program", "remote-store"}
+)
+OPENSSH_KNOWN_HOSTS: Final = (
+    "~/.ssh/known_hosts",
+    "~/.ssh/known_hosts2",
+    "/etc/ssh/ssh_known_hosts",
+    "/etc/ssh/ssh_known_hosts2",
+)
+"""OpenSSH's `UserKnownHostsFile` and `GlobalKnownHostsFile` defaults, which Nix's `ssh` reads."""
+SSH_NG_CONNECT_TIMEOUT: Final = 10.0
+"""A dead host fails a substituter's start in this many seconds, not TCP's two minutes."""
+
+
+def _host_public_key(encoded: str | None) -> str | None:
+    """`base64-ssh-public-host-key` as an OpenSSH key line; `ValueError` when it has not that shape.
+
+    The shape only: `asyncssh` parses the key at connect, so the daemon does
+    not load it (`tests/unit/test_import_budget.py`).
+    """
+    if not encoded:
+        return None
+    try:
+        line = base64.b64decode(encoded, validate=True).decode().strip()
+        _, blob, *_ = line.split()
+        base64.b64decode(blob, validate=True)
+    except (binascii.Error, UnicodeDecodeError) as e:
+        raise ValueError(encoded) from e
+    return line
+
+
+def _ssh_ng(ref: StoreReference) -> StoreSpecBase | None:
+    """Nix's `SSHStoreConfig` (`ssh-store.hh`), as a store that only substitutes."""
+    settings = _substituter_settings(ref, _SSH_NG_PARAMS)
+    compress = _flag(ref.params.get("compress"))
+    key = ref.params.get("ssh-key")
+    program = ref.params.get("remote-program", "nix-daemon").split()
+    if settings is None or compress is None or ref.path not in {"", "/"} or not program:
+        return None
+    if key is not None and not Path(key).is_absolute():
+        return None
+    try:
+        authority = urlsplit(f"//{ref.authority}")
+        host, port = authority.hostname, authority.port or 22
+        host_public_key = _host_public_key(ref.params.get("base64-ssh-public-host-key"))
+    except ValueError:
+        return None
+    if not host:
+        return None
+    settings.setdefault("priority", 0.0)
+    store = ref.params.get("remote-store")
+    command = [*program, "--stdio", *(["--store", store] if store else [])]
+    spec = SSHSubprocessStoreSpec.model_validate(
+        {
+            "store_id": StoreId("ssh-ng"),
+            "host": host,
+            "port": port,
+            "username": authority.username,
+            "known_hosts": list(OPENSSH_KNOWN_HOSTS),
+            "host_public_key": host_public_key,
+            "client_keys": [key] if key is not None else [],
+            "remote_command": command,
+            "compress": compress,
+            "connect_timeout": SSH_NG_CONNECT_TIMEOUT,
+            "monitor": False,
+            "probe": False,
+            "scheduleable": False,
+            "no_schedule": True,
+            "gc_enabled": False,
+            **settings,
+        }
+    )
+    # Two URLs to one host differ in a key or a command; the hash keeps their ids apart.
+    digest = hashlib.sha256(repr(spec.reference_key()).encode()).hexdigest()[:8]
+    return spec.model_copy(update={"store_id": StoreId(_name("ssh-ng", ref.authority, digest))})
+
+
 SCHEMES: Final[Mapping[str, Callable[[StoreReference], StoreSpecBase | None]]] = MappingProxyType(
     {
         "http": _http,
         "https": _http,
         "file": _file,
         "unix": _unix,
+        "ssh-ng": _ssh_ng,
     }
 )
 """Each scheme pynixd opens a store for. Any other stays with the daemon."""

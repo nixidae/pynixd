@@ -77,7 +77,15 @@ class ClientSubstituters:
             if spec is None:
                 return None
             store = spec.to_store(str(spec.store_id))
-            await store.start()
+            try:
+                await store.start()
+            except Exception:
+                # Nix drops a substituter it cannot open, with a warning
+                # (`store-registration.cc:114`); the daemon answers for this one.
+                log.warning("client_substituter_start_failed", url=url, exc_info=True)
+                with anyio.CancelScope(shield=True), anyio.move_on_after(10):
+                    await store.close()
+                return None
             self._made[key] = store
             return store
 

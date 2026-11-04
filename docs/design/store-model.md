@@ -1,7 +1,7 @@
 # The store model: what pynixd takes from Nix's store classes
 
-Status: accepted by User, 2026-11-04, at nixidae ca0d513c. Nothing here is
-implemented yet. It prepares `ssh-ng://` substituters for nixidae/nixidae#1155
+Status: accepted by User, 2026-11-04, at nixidae ca0d513c. Commits 1–4 are
+implemented. It prepares `ssh-ng://` substituters for nixidae/nixidae#1155
 (`daemonless.md`). Nix 2.35.2 is the reference.
 
 ## What Nix does
@@ -81,13 +81,19 @@ Nine sites go and four stay. The narinfo race is a cache ability, as Nix's
 ## Where `ssh-ng://` fits
 
 `ssh-ng://[user@]host[:port]` becomes an `SSHSubprocessStoreSpec` with
-`no_schedule`, not `scheduleable`, no GC, `monitor=False` and no agent upload.
-The parameters it reads: `ssh-key`, `base64-ssh-public-host-key`, `compress`,
-`remote-program`, `remote-store`, `trusted`, `priority`. Any other gives `None`.
+`no_schedule`, not `scheduleable`, no GC, no probe builds, `monitor=False` and
+no agent upload. The parameters it reads: `ssh-key`,
+`base64-ssh-public-host-key`, `compress`, `remote-program`, `remote-store`,
+`trusted`, `priority`. Any other gives `None`.
 
-The spec needs one change. `known_hosts: str | None` has no value for "the
-default `known_hosts` files", which is what `ssh-ng://` uses without
-`base64-ssh-public-host-key`. `None` means "accept any key" and is wrong here.
+- Host keys: `base64-ssh-public-host-key` is the only key accepted. Without
+  it, `known_hosts` lists OpenSSH's four default files and pynixd reads the
+  ones that exist. No file accepts no key. `None` ("accept any key") is never
+  used. asyncssh alone reads only `~/.ssh/known_hosts` (nixidae/nixidae#1172).
+- The command is Nix's: `remote-program --stdio`, then `--store remote-store`
+  when given (`ssh-store.cc:227`).
+- A connect gives up after 10 s. A client's substituter whose start fails
+  stays with the daemon, and the client op goes on.
 
 A bare `ssh-ng://` has priority 0, so it ranks before `cache.nixos.org` (40).
 Nix ranks it the same way.
