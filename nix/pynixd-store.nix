@@ -5,6 +5,7 @@
   aiosqlite,
   anyio,
   pynacl,
+  seccomp,
   structlog,
   nix-daemon-protocol,
 }:
@@ -28,6 +29,7 @@ pythonBuilder (finalAttrs: {
     aiosqlite
     anyio
     pynacl
+    seccomp
     structlog
     nix-daemon-protocol
   ];

@@ -18,6 +18,7 @@ dependencies = [
     "anyio",
     "nix-daemon-protocol>=0.1.0",
     "pynacl",
+    "seccomp",
     "structlog",
 ]
 

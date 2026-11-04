@@ -5,6 +5,7 @@ It needs unprivileged user namespaces; the guest has them, as `nix build --store
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -12,7 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from pynixd_store.builder.child import ChildSpec
+from pynixd_store.builder.spec import ChildSpec
 
 SH = os.path.realpath("/bin/sh")
 COREUTILS = os.path.dirname(os.path.realpath(shutil.which("ls") or "/bin/ls"))
@@ -39,6 +40,7 @@ def _spec(root: Path, script: str, **over: object) -> ChildSpec:
         "work_dir": "/build",
         "shm_size": "50%",
         "no_new_privileges": True,
+        "filter_syscalls": True,
     }
     spec.update(over)  # type: ignore[typeddict-item]  # the tests vary one key at a time
     return spec
@@ -88,3 +90,37 @@ def test_the_network_is_private_unless_fixed_output(tmp_path: Path) -> None:
     shared = _run(tmp_path, _spec(tmp_path / "b", "cat /proc/net/dev", private_network=False))[1]
     assert [line.split(":")[0].strip() for line in private.splitlines()[2:]] == ["lo"]
     assert private != shared
+
+
+_TRY_MODES = """
+import errno, os
+def attempt(call, *args):
+    try:
+        call(*args)
+        print("ok")
+    except OSError as e:
+        print(errno.errorcode[e.errno])
+open("f", "w").close()
+fd = os.open("f", os.O_RDONLY)
+for mode in (0o4755, 0o2755, 0o755):
+    attempt(os.chmod, "f", mode)
+    attempt(os.fchmod, fd, mode)
+attempt(os.listxattr, "f")
+"""
+
+
+def _try_modes(tmp_path: Path, root: str, **over: object) -> list[str]:
+    spec = _spec(tmp_path / root, "", builder=sys.executable, args=["-I", "-c", _TRY_MODES], **over)
+    code, out, status = _run(tmp_path, spec)
+    assert (code, status) == (0, ""), out
+    return out.split()
+
+
+def test_the_filter_refuses_setuid_setgid_and_xattrs(tmp_path: Path) -> None:
+    """`setupSeccomp` (`linux-derivation-builder.cc:79`): EPERM for a set-id bit, ENOTSUP for an xattr."""
+    refused = errno.errorcode[errno.EPERM]
+    assert _try_modes(tmp_path, "a") == [refused] * 4 + ["ok", "ok", errno.errorcode[errno.ENOTSUP]]
+
+
+def test_filter_syscalls_false_lets_them_through(tmp_path: Path) -> None:
+    assert _try_modes(tmp_path, "a", filter_syscalls=False) == ["ok"] * 7

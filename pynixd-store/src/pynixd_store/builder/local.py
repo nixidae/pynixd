@@ -29,9 +29,9 @@ from nix_daemon_protocol.derivation_output import OutputKind
 from ..add import PathLock, delete_path
 from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta
 from .buildlog import BuildLog
-from .child import ChildSpec
 from .env import HOME_DIR, SANDBOX_BUILD_DIR, build_env
 from .outputs import BuildFailure, collect_outputs
+from .spec import ChildSpec
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -257,6 +257,7 @@ async def build(
             "work_dir": SANDBOX_BUILD_DIR,
             "shm_size": settings.sandbox_shm_size,
             "no_new_privileges": not settings.allow_new_privileges,
+            "filter_syscalls": settings.filter_syscalls,
         }
         if os.path.exists(HOME_DIR):
             raise ValueError(f"home directory '{HOME_DIR}' exists; please remove it to assure purity of builds")

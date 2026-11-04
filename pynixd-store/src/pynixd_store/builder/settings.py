@@ -49,6 +49,7 @@ class BuildSettings:
     timeout: int
     sandbox_shm_size: str
     allow_new_privileges: bool
+    filter_syscalls: bool
     build_dir: str | None
     ca_derivations: bool
     log_lines: int = 25
@@ -92,6 +93,7 @@ class BuildSettings:
             timeout=int(value("timeout", 0) or 0),
             sandbox_shm_size=str(value("sandbox-dev-shm-size", "50%")),
             allow_new_privileges=boolean(value("allow-new-privileges", False)),
+            filter_syscalls=boolean(value("filter-syscalls", True)),
             build_dir=value("build-dir") or None,
             ca_derivations="ca-derivations" in features,
             log_lines=int(value("log-lines", 25)),

@@ -16,6 +16,7 @@ Nix does without build users.
 from __future__ import annotations
 
 import ctypes
+import errno
 import fcntl
 import json
 import os
@@ -27,7 +28,10 @@ import stat
 import struct
 import sys
 from pathlib import Path
-from typing import TypedDict
+
+import seccomp
+
+from .spec import ChildSpec
 
 MS_BIND = 4096
 MS_REC = 16384
@@ -38,24 +42,21 @@ PR_SET_NO_NEW_PRIVS = 38
 SIOCSIFFLAGS = 0x8914
 IFF_UP, IFF_LOOPBACK, IFF_RUNNING = 0x1, 0x8, 0x40
 SYS_PIVOT_ROOT = {"x86_64": 155, "aarch64": 41, "riscv64": 41}
+#: The calls that change a mode, and the index of their mode argument.
+CHMOD_CALLS = (("chmod", 1), ("fchmod", 1), ("fchmodat", 2), ("fchmodat2", 2))
+XATTR_CALLS = (
+    "listxattr",
+    "llistxattr",
+    "flistxattr",
+    "getxattr",
+    "lgetxattr",
+    "fgetxattr",
+    "setxattr",
+    "lsetxattr",
+    "fsetxattr",
+)
 
 _libc = ctypes.CDLL(None, use_errno=True)
-
-
-class ChildSpec(TypedDict):
-    builder: str
-    args: list[str]
-    env: dict[str, str]
-    root: str
-    """The chroot root, prepared by pynixd: `etc`, `tmp`, the store directory, `/dev` links."""
-    binds: list[tuple[str, str, bool]]
-    """(path in the sandbox, source on the host, optional)."""
-    private_network: bool
-    sandbox_uid: int
-    sandbox_gid: int
-    work_dir: str
-    shm_size: str
-    no_new_privileges: bool
 
 
 class SetupError(Exception):
@@ -150,6 +151,37 @@ def _enter_chroot(spec: ChildSpec) -> None:
     os.rmdir("real-root")
 
 
+def _filter_syscalls(no_new_privileges: bool) -> None:
+    """`setupSeccomp` (`linux/build/linux-derivation-builder.cc:79`): no setuid or setgid file, no xattr.
+
+    NAR cannot hold an extended attribute or an ACL, so a builder never gets to make one.
+    """
+    rules = seccomp.SyscallFilter(defaction=seccomp.ALLOW)
+    machine = platform.machine()
+    try:
+        if machine == "x86_64":
+            rules.add_arch(seccomp.Arch.X86)
+            rules.add_arch(seccomp.Arch.X32)
+        elif machine == "aarch64":
+            try:
+                rules.add_arch(seccomp.Arch.ARM)
+            except RuntimeError:
+                print(
+                    "unable to add ARM seccomp architecture; this may result in spurious build failures"
+                    " if running 32-bit ARM processes",
+                    file=sys.stderr,
+                )
+        for perm in (stat.S_ISUID, stat.S_ISGID):
+            for call, index in CHMOD_CALLS:
+                rules.add_rule(seccomp.ERRNO(errno.EPERM), call, seccomp.Arg(index, seccomp.MASKED_EQ, perm, perm))
+        for call in XATTR_CALLS:
+            rules.add_rule(seccomp.ERRNO(errno.ENOTSUP), call)
+        rules.set_attr(seccomp.Attr.CTL_NNP, 1 if no_new_privileges else 0)
+        rules.load()
+    except RuntimeError as e:
+        raise SetupError(f"setting up the system call filter: {e}") from e
+
+
 def _run_child(spec: ChildSpec) -> None:
     """`runChild` (`unix/build/derivation-builder.cc:933`) after `commonChildInit` (`child.cc:10`)."""
     os.setsid()
@@ -160,6 +192,8 @@ def _run_child(spec: ChildSpec) -> None:
     _enter_chroot(spec)
     if spec["no_new_privileges"]:
         _prctl(PR_SET_NO_NEW_PRIVS, 1)
+    if spec["filter_syscalls"]:
+        _filter_syscalls(spec["no_new_privileges"])
     os.chdir(spec["work_dir"])
     resource.setrlimit(resource.RLIMIT_CORE, (0, resource.RLIM_INFINITY))
     os.umask(0o022)
