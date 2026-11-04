@@ -638,3 +638,49 @@ async def test_a_floating_output_lands_where_the_daemon_puts_it(tmp_path: Path) 
     built = {row[2].split("-", 1)[1] for row in here["trace"]}
     assert {"parity-ca-dep", "parity-ca-flat", "parity-ca-text", "parity-ca-top", "parity-ca-top-dev"} <= built
     assert any(row[3].startswith("parity-1:") for row in here["trace"]), here["trace"]
+
+
+IMPURE_ENV = (
+    'derivation { name = "parity-impure-env"; system = builtins.currentSystem; builder = "/bin/sh"; '
+    'impureEnvVars = [ "PARITY_TOKEN" "PARITY_EXTRA" ]; outputHashMode = "flat"; outputHashAlgo = "sha256"; '
+    f'outputHash = "{FAKE_HASH}"; '
+    'args = [ "-c" "echo token=$PARITY_TOKEN extra=$PARITY_EXTRA; echo x > $out" ]; }'
+)
+
+
+async def _impure_env(tmp_path: Path, route: OpRoute) -> list[str]:
+    async with _serve(tmp_path, route, experimental_features=("configurable-impure-env",)) as (url, _root):
+        _rc, _out, err, _both = await run_subproc(
+            [
+                NIX_BIN,
+                "build",
+                "--store",
+                url,
+                "--extra-experimental-features",
+                "configurable-impure-env",
+                "--option",
+                "extra-impure-env",
+                "PARITY_TOKEN=lost PARITY_EXTRA=lost",
+                "--option",
+                "impure-env",
+                "PARITY_TOKEN=secret",
+                "--impure",
+                "--no-link",
+                "--print-build-logs",
+                "--expr",
+                IMPURE_ENV,
+            ],
+            expected_retcode=1,
+        )
+    return [line for line in err.splitlines() if line.startswith("parity-")]
+
+
+async def test_impure_env_reaches_a_fixed_output_build_as_the_daemon_passes_it(tmp_path: Path) -> None:
+    """`initEnv` reads `impure-env` before the environment (`derivation-builder.cc:762`)."""
+    before = _fallthrough()
+    here = await _impure_env(tmp_path, OpRoute.pynixd)
+    assert _fallthrough() == before, "pynixd's sandbox builds parity-impure-env"
+    there = await _impure_env(tmp_path, OpRoute.daemon)
+
+    assert here == there
+    assert any(line.endswith("token=secret extra=") for line in here), here

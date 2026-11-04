@@ -329,7 +329,7 @@ async def build(
             build_cores=settings.build_cores,
             rewrites=rewrites,
             fixed_output=fixed,
-            impure_source=os.environ,
+            impure_source={**os.environ, **settings.impure_env},
             exported=exported,
         )
         for name, contents in env.files.items():

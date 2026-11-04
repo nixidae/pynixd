@@ -56,6 +56,8 @@ class BuildSettings:
     auto_optimise_store: bool
     build_dir: str | None
     ca_derivations: bool
+    impure_env: Mapping[str, str]
+    """`impure-env`, which a fixed-output build reads before the process environment."""
     log_lines: int = 25
     nix_command: bool = True
 
@@ -89,6 +91,22 @@ class BuildSettings:
             _trusted, files = key_settings((), words(configured["value"] if configured else ()), overrides)
             return tuple(files)
 
+        def string_map(raw: Any) -> dict[str, str]:
+            """`Setting<StringMap>::parse` (`config.cc`): words of `name=value`."""
+            if isinstance(raw, Mapping):
+                return {str(k): str(v) for k, v in raw.items()}
+            return dict(word.split("=", 1) for word in words(raw) if "=" in word)
+
+        def impure_env() -> dict[str, str]:
+            """`extra-impure-env` comes first in the sorted overrides, and `impure-env` replaces it.
+
+            `appendOrSet` (`configuration.cc:474`) inserts into the map, so a name already set keeps its value.
+            """
+            env = string_map(value("impure-env", {}))
+            if "impure-env" not in overrides:
+                env = string_map(overrides.get("extra-impure-env", ())) | env
+            return env
+
         sandbox = value("sandbox", True)
         features = words(value("experimental-features", ()))
         cores = int(value("cores", 0) or 0)
@@ -107,6 +125,8 @@ class BuildSettings:
             auto_optimise_store=boolean(value("auto-optimise-store", False)),
             build_dir=value("build-dir") or None,
             ca_derivations="ca-derivations" in features,
+            # The setting carries `Xp::ConfigurableImpureEnv`: without the feature Nix ignores it.
+            impure_env=impure_env() if "configurable-impure-env" in features else {},
             log_lines=int(value("log-lines", 25)),
             nix_command="nix-command" in features,
         )
