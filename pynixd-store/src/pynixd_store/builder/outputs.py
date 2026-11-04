@@ -58,9 +58,9 @@ class BuildFailure(Exception):
         return self.message
 
 
-class ErrorAfterBuild(Exception):
-    """A plain `Error` out of `registerOutputs`, which `Store::buildDerivation` answers as `MISC_FAILURE`
-    with its rendered text (`entry-points.cc:89`)."""
+class PlainError(Exception):
+    """A plain `Error` out of a build, which `Store::buildDerivation` answers as `MISC_FAILURE` with its
+    rendered text (`entry-points.cc:89`)."""
 
 
 @dataclass(frozen=True)
@@ -313,7 +313,7 @@ def _content_addressed(
         )
     except ValueError as e:
         # `ContentAddressWithReferences::fromParts` and `makeFixedOutputPath` throw a plain `Error`.
-        raise ErrorAfterBuild(str(e)) from e
+        raise PlainError(str(e)) from e
     if path != s.path and (self_reference or discard):
         _rewrite(actual, {old_hash_part: _hash_part(path)}, real_store_dir)
     return _Addressed(got, path, others | {path} if self_reference else others)

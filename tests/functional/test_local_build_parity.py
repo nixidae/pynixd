@@ -800,3 +800,58 @@ async def test_an_impure_derivation_builds_where_the_daemon_builds_it(tmp_path: 
     assert len(here["paths"]) == 2, here["paths"]
     assert here["trace"] == []
     assert any(line.endswith("token=secret checked=") for line in here["log"]), here["log"]
+
+
+def _export_drv(name: str, dep: str) -> str:
+    return (
+        f"let dep = {dep}; in "
+        f'derivation {{ name = "{name}"; system = builtins.currentSystem; builder = "/bin/sh"; '
+        'exportReferencesGraph = [ "graph" (builtins.unsafeDiscardOutputDependency dep.drvPath) ]; '
+        'args = [ "-c" "echo > $out" ]; }'
+    )
+
+
+# A derivation in the graph whose output was never built, and one whose output is floating. The context
+# of `drvPath` alone would build every output first.
+EXPORT_ERRORS = {
+    "invalid": _export_drv("parity-export-invalid", _script("parity-export-unbuilt", "echo > $out")),
+    "floating": _export_drv("parity-export-floating", _ca("parity-export-ca", "echo > $out")),
+}
+
+
+async def _export_errors(tmp_path: Path, route: OpRoute) -> dict[str, tuple[int, list[str]]]:
+    results: dict[str, tuple[int, list[str]]] = {}
+    async with _serve(tmp_path, route, experimental_features=("ca-derivations",)) as (url, _root):
+        for name, expr in EXPORT_ERRORS.items():
+            rc, _out, err, _both = await run_subproc(
+                [
+                    NIX_BIN,
+                    "build",
+                    "--store",
+                    url,
+                    "--extra-experimental-features",
+                    "ca-derivations",
+                    "--impure",
+                    "--no-link",
+                    "--expr",
+                    expr,
+                ],
+                expected_retcode=None,
+            )
+            results[name] = rc, _errors(err)
+    return results
+
+
+async def test_a_derivation_in_the_export_graph_without_an_output_path_fails_as_the_daemon_fails_it(
+    tmp_path: Path,
+) -> None:
+    """`exportReferences` (`store-api.cc:850`) throws a plain `Error`, which `Store::buildDerivation` answers
+    as `MISC_FAILURE` with its text (`entry-points.cc:89`)."""
+    before = _fallthrough()
+    here = await _export_errors(tmp_path, OpRoute.pynixd)
+    assert _fallthrough() == before
+    there = await _export_errors(tmp_path, OpRoute.daemon)
+
+    assert here == there
+    assert any("is not valid" in line for line in here["invalid"][1]), here
+    assert any("exportReferences on CA derivations" in line for line in here["floating"][1]), here

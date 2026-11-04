@@ -45,7 +45,7 @@ from .env import (
 )
 from .outputs import (
     BuildFailure,
-    ErrorAfterBuild,
+    PlainError,
     check_outputs,
     collect_outputs,
     discarded_references,
@@ -259,11 +259,11 @@ async def _export_references(
                 raise ValueError(f"cannot read derivation '{drv_path}'")
             for output in drv.outputs:
                 if not output.path:
-                    raise ValueError("exportReferences on CA derivations is not yet implemented")
+                    raise PlainError("exportReferences on CA derivations is not yet implemented")
                 outputs.add(output.path)
         # `computeFSClosure` throws `InvalidPath` where `query_closure` drops the path.
         if missing := sorted(outputs - {p.path for p in await engine.query_valid_paths(outputs)}):
-            raise ValueError(f"path '{missing[0]}' is not valid")
+            raise PlainError(f"path '{magenta(missing[0])}' is not valid")
         paths |= {p.path for p in await engine.query_closure(sorted(outputs))}
         exported[name] = sorted(await engine.query_path_infos(sorted(paths)), key=lambda info: info.path.path)
     return exported
@@ -334,6 +334,8 @@ async def build(
             exported = await _export_references(engine, export_requests(drv.env, store_dir), inputs)
         except BuildFailure as e:
             return LocalBuildResult(e.status, e.message)
+        except PlainError as e:
+            return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(str(e)))
         paths = await anyio.to_thread.run_sync(_prepare, engine, drv_path, settings)
         fixed = any(o.kind is OutputKind.CA_FIXED for o in drv.outputs.values())
         sandboxed = not (fixed or impure)
@@ -413,7 +415,7 @@ async def build(
             )
         except BuildFailure as e:
             return LocalBuildResult(e.status, e.message, start, stop)
-        except ErrorAfterBuild as e:
+        except PlainError as e:
             return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(str(e)))
         try:
             if settings.auto_optimise_store:
