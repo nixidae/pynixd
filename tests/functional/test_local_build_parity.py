@@ -862,3 +862,51 @@ async def test_a_derivation_in_the_export_graph_without_an_output_path_fails_as_
     assert here == there
     assert any("is not valid" in line for line in here["invalid"][1]), here
     assert any("exportReferences on CA derivations" in line for line in here["floating"][1]), here
+
+
+# A floating Git output, one that refers to itself, and a fixed one with the wrong hash.
+GIT_OUTPUTS = {
+    "floating": _ca("parity-git", "echo git > $out", "git"),
+    "self": _ca("parity-git-self", "echo $out > $out", "git"),
+    "fixed": _fod("parity-git-fod", "git", "echo fod > $out"),
+}
+GIT_FEATURES = ("ca-derivations", "git-hashing")
+
+
+async def _git_outputs(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
+    results: dict[str, Any] = {}
+    async with _serve(tmp_path, route, experimental_features=GIT_FEATURES) as (url, root):
+        for name, expr in GIT_OUTPUTS.items():
+            rc, out, err, _both = await run_subproc(
+                [
+                    NIX_BIN,
+                    "build",
+                    "--store",
+                    url,
+                    "--extra-experimental-features",
+                    " ".join(GIT_FEATURES),
+                    "--impure",
+                    "--no-link",
+                    "--print-out-paths",
+                    "--expr",
+                    expr,
+                ],
+                expected_retcode=None,
+            )
+            results[name] = rc, out.split(), _errors(err) if rc else []
+    results["valid"], results["refs"] = _rows(root)
+    return results
+
+
+async def test_a_git_hashed_output_lands_where_the_daemon_puts_it(tmp_path: Path) -> None:
+    """`newInfoFromCA` hashes a Git output with `git::dumpHash`, no modulo (`derivation-builder.cc:1366`), and
+    `makeFixedOutputPath` refuses its references (`store-dir-config.cc:119`)."""
+    before = _fallthrough()
+    here = await _git_outputs(tmp_path, OpRoute.pynixd)
+    assert _fallthrough() == before, "pynixd's sandbox builds each Git-hashed derivation"
+    there = await _git_outputs(tmp_path, OpRoute.daemon)
+
+    assert here == there
+    assert here["floating"][0] == 0, here
+    assert any("not allowed to refer to other store paths" in line for line in here["self"][2]), here
+    assert any("hash mismatch" in line for line in here["fixed"][2]), here

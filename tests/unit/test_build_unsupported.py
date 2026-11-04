@@ -32,6 +32,17 @@ def test_relaxed_in_a_relocated_store_still_sandboxes(output: DerivationOutput) 
     assert _reason(output, "relaxed", relocated=True) is None
 
 
+def test_a_git_hashed_output_needs_git_hashing() -> None:
+    """`dumpBlobPrefix` requires `Xp::GitHashing` (`libutil/git.cc:233`); the daemon answers without it."""
+    drv = BasicDerivation(
+        outputs={"out": DerivationOutput(path="", method="git:sha256")}, platform="x86_64-linux", builder="/bin/sh"
+    )
+    off = BuildSettings.from_nix_config({}, {"system": "x86_64-linux"})
+    on = BuildSettings.from_nix_config({}, {"system": "x86_64-linux", "experimental-features": "git-hashing"})
+    assert unsupported(drv, off, store_dir="/nix/store", relocated=True) == "a Git-hashed output without git-hashing"
+    assert unsupported(drv, on, store_dir="/nix/store", relocated=True) is None
+
+
 def test_a_sandboxed_type_or_sandbox_true_stays_in_pynixd() -> None:
     assert _reason(PLAIN, "relaxed", relocated=False) is None
     assert _reason(FIXED, "true", relocated=False) is None

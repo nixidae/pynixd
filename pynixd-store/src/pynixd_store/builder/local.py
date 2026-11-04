@@ -116,8 +116,9 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
     # restore has none, as its own writes leave this setting to the daemon (`write_router._fsync`).
     if OutputKind.CA_FIXED in kinds and settings.fsync_store_paths:
         return "a fixed output with fsync-store-paths"
-    if any(o.method and output_method(o.method)[0] is Method.GIT for o in drv.outputs.values()):
-        return "a Git-hashed output"
+    git = any(o.method and output_method(o.method)[0] is Method.GIT for o in drv.outputs.values())
+    if git and not settings.git_hashing:
+        return "a Git-hashed output without git-hashing"
     return None
 
 

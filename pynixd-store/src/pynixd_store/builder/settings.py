@@ -56,6 +56,7 @@ class BuildSettings:
     auto_optimise_store: bool
     build_dir: str | None
     ca_derivations: bool
+    git_hashing: bool
     impure_env: Mapping[str, str]
     """`impure-env`, which a fixed-output build reads before the process environment."""
     fsync_store_paths: bool = False
@@ -126,6 +127,7 @@ class BuildSettings:
             auto_optimise_store=boolean(value("auto-optimise-store", False)),
             build_dir=value("build-dir") or None,
             ca_derivations="ca-derivations" in features,
+            git_hashing="git-hashing" in features,
             # The setting carries `Xp::ConfigurableImpureEnv`: without the feature Nix ignores it.
             impure_env=impure_env() if "configurable-impure-env" in features else {},
             fsync_store_paths=boolean(value("fsync-store-paths", False)),

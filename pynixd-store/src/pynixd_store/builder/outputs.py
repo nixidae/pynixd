@@ -9,6 +9,7 @@ rewritten.
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
 import re
 import stat
@@ -302,9 +303,12 @@ def _content_addressed(
     if moved:
         _rewrite(actual, moved, real_store_dir)
     old_hash_part = _hash_part(s.path)
-    got = ContentAddress(
-        method, algo, content_hash(ContentAddress(method, algo, b""), actual, old_hash_part, dump_path)
-    )
+    if method is Method.GIT:
+        # `git::dumpHash` takes no modulo: the scratch hash part stays in what it hashes.
+        digest = _git_hash(actual, algo)[1]
+    else:
+        digest = content_hash(ContentAddress(method, algo, b""), actual, old_hash_part, dump_path)
+    got = ContentAddress(method, algo, digest)
     self_reference = s.path in s.references
     others = frozenset(final.get(ref, ref) for ref in s.references if ref != s.path)
     try:
@@ -317,6 +321,34 @@ def _content_addressed(
     if path != s.path and (self_reference or discard):
         _rewrite(actual, {old_hash_part: _hash_part(path)}, real_store_dir)
     return _Addressed(got, path, others | {path} if self_reference else others)
+
+
+def _git_hash(path: Path, algo: str) -> tuple[int, bytes]:
+    """`git::dumpHash` (`libutil/git.cc:314`): the Git mode and object hash of *path*.
+
+    A tree sorts its entries by name as bytes, a directory's name with a trailing `/`.
+    """
+    st = os.lstat(path)
+    h = hashlib.new(algo)
+    if stat.S_ISREG(st.st_mode):
+        h.update(b"blob %d\0" % st.st_size)
+        with open(path, "rb") as file:
+            while piece := file.read(64 * 1024):
+                h.update(piece)
+        return (0o100755 if st.st_mode & stat.S_IXUSR else 0o100644), h.digest()
+    if stat.S_ISLNK(st.st_mode):
+        target = os.readlink(os.fsencode(path))
+        h.update(b"blob %d\0" % len(target) + target)
+        return 0o120000, h.digest()
+    if stat.S_ISDIR(st.st_mode):
+        entries: dict[bytes, tuple[bytes, int, bytes]] = {}
+        for name in os.listdir(os.fsencode(path)):
+            mode, digest = _git_hash(path / os.fsdecode(name), algo)
+            entries[name + b"/" if mode == 0o40000 else name] = (name, mode, digest)
+        body = b"".join(b"%o %s\0" % (mode, name) + digest for _, (name, mode, digest) in sorted(entries.items()))
+        h.update(b"tree %d\0" % len(body) + body)
+        return 0o40000, h.digest()
+    raise PlainError(f"file '{magenta(str(path))}' has an unsupported type")
 
 
 def _check(drv_path: str, f: _Fixed) -> BuildFailure | None:
