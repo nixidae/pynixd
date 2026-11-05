@@ -10,6 +10,7 @@ above it (a path that changed) come in as callables.
 from __future__ import annotations
 
 import json
+import os
 from functools import partial
 from typing import TYPE_CHECKING
 
@@ -26,6 +27,7 @@ from nix_daemon_protocol.wire_time import Time
 
 from . import add, build_log, collect, optimise, register, roots, verify
 from .collector import Collection
+from .content_address import parse_any_sha256
 from .drv_parser import read_drv_file
 from .hintfmt import magenta
 from .liveness import unlink_stale_auto_roots, walk_roots
@@ -301,9 +303,11 @@ class StoreEngine:
         """`LocalStore::addToStore` (`local-store.cc:1046`) after the signature check."""
         await add.add_nar(self, info, source, repair=repair, ignored_acls=ignored_acls)
 
-    async def import_nar(self, info: ValidPathInfo, source: Source, *, dont_check_sigs: bool) -> None:
+    async def import_nar(
+        self, info: ValidPathInfo, source: Source, *, dont_check_sigs: bool, repair: bool = False
+    ) -> None:
         """`addToStore` for pynixd's own callers, with its own temporary root."""
-        await add.import_nar(self, info, source, dont_check_sigs=dont_check_sigs)
+        await add.import_nar(self, info, source, dont_check_sigs=dont_check_sigs, repair=repair)
 
     async def add_to_store_from_dump(
         self,
@@ -415,6 +419,23 @@ class StoreEngine:
                 )
             )
         return stats
+
+    async def contents_good(self, path: str) -> bool:
+        """`Worker::pathContentsGood` (`worker.cc:553`) without its cache and its lines.
+
+        A path whose files are gone answers `False`, as the null accessor does there. A null `narHash` is good.
+        """
+        info = await self.query_path_info(path)
+        if info is None:
+            return False
+        real = self.layout.real_store_dir / path.rsplit("/", 1)[-1]
+        if not await anyio.to_thread.run_sync(os.path.lexists, real):
+            return False
+        expected = parse_any_sha256(str(info.info.nar_hash))
+        if expected == bytes(32):
+            return True
+        current, _ = await anyio.to_thread.run_sync(verify.nar_hash_and_size, real)
+        return bytes.fromhex(current) == expected
 
     async def verify_store(self, *, check_contents: bool, report: Report) -> bool:
         """`LocalStore::verifyStore` (`local-store.cc:1380`): cross-check the database and the store directory.

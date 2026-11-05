@@ -46,7 +46,7 @@ class LocalStore:
 
 @pytest.mark.anyio
 async def test_a_builtin_input_whose_output_is_missing_gets_a_goal() -> None:
-    goal = SimpleNamespace(engine=SimpleNamespace(ctx=SimpleNamespace(local_store=LocalStore())))
+    goal = SimpleNamespace(engine=SimpleNamespace(ctx=SimpleNamespace(local_store=LocalStore())), build_mode=0)
 
     needed = await EnsureDerivedPathGoal._input_outputs_requiring_goals(  # noqa: SLF001 -- the decision is the unit
         cast("Any", goal), StorePath("/nix/store/00000000000000000000000000000002-probe.drv"), ["out"]
@@ -70,7 +70,7 @@ class FloatingStore(LocalStore):
 @pytest.mark.anyio
 async def test_a_floating_output_is_needed_without_asking_about_an_empty_path() -> None:
     store = FloatingStore()
-    goal = SimpleNamespace(engine=SimpleNamespace(ctx=SimpleNamespace(local_store=store)))
+    goal = SimpleNamespace(engine=SimpleNamespace(ctx=SimpleNamespace(local_store=store)), build_mode=0)
 
     needed = await EnsureDerivedPathGoal._input_outputs_requiring_goals(  # noqa: SLF001 -- the decision is the unit
         cast("Any", goal), StorePath("/nix/store/00000000000000000000000000000003-ca.drv"), ["out"]

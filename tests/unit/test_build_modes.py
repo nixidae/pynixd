@@ -1,4 +1,4 @@
-"""A check and a repair go to the local store, and no goal runs.
+"""A check of a derivation the store cannot read, and a repair without pynixd's own store, go to the local store.
 
 `nix build --rebuild` sends `BuildMode.CHECK`, and `--repair` sends
 `BuildMode.REPAIR`. `nix-store --realise --check`, `--repair-path` and
@@ -6,8 +6,7 @@
 for each one, so every such command failed through pynixd and succeeded
 through `nix-daemon`. `tests/parity/` recorded the difference.
 
-Neither mode is a build that pynixd can schedule. Read
-`GoalEngine._straight_to_the_store` for the reason.
+`GoalEngine._the_store_answers` says which requests the goals take.
 """
 
 from __future__ import annotations

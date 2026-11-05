@@ -175,8 +175,8 @@ class SubstitutionQueue:
         self.health: dict[StoreId, SubstitutionHealthLog] = {}
         self._probes = Background("SubstitutionQueue")
         """The probes that outlive their lookup: the stragglers of a race, and the unhealthy stores."""
-        self._active_imports: dict[tuple[StorePath, tuple[StoreId, ...]], Answer[SubstitutionImportResult]] = {}
-        """One import for each path and substituter set: a client must not join an import from another's set."""
+        self._active_imports: dict[tuple[StorePath, tuple[StoreId, ...], bool], Answer[SubstitutionImportResult]] = {}
+        """One import for each path, substituter set and repair flag: a client must not join an import from another's set."""
         # Created on first use: a limiter needs the running loop.
         self._import_limit: anyio.CapacityLimiter | None = None
         self._import_slots = 16
@@ -299,14 +299,16 @@ class SubstitutionQueue:
 
         return self._best_candidate_from_cache(path, stores)
 
-    async def substitute(self, path: StorePath, stores: Iterable[Store] | None = None) -> SubstitutionImportResult:
+    async def substitute(
+        self, path: StorePath, stores: Iterable[Store] | None = None, *, repair: bool = False
+    ) -> SubstitutionImportResult:
         """Import *path* from *stores*, the daemon's list without it, once for every caller that asks while it runs.
 
         The import runs in the queue's task group, so a caller that leaves cancels its own wait and not the
-        import of the others.
+        import of the others. With *repair*, the import writes over a valid path (`substitution-goal.cc:236`).
         """
         chosen = tuple(self.substituter_stores() if stores is None else stores)
-        key = (path, tuple(store.store_id for store in chosen))
+        key = (path, tuple(store.store_id for store in chosen), repair)
         answer = self._active_imports.get(key)
         if answer is None:
             answer = Answer()
@@ -318,11 +320,11 @@ class SubstitutionQueue:
         self,
         path: StorePath,
         stores: tuple[Store, ...],
-        key: tuple[StorePath, tuple[StoreId, ...]],
+        key: tuple[StorePath, tuple[StoreId, ...], bool],
         answer: Answer[SubstitutionImportResult],
     ) -> None:
         try:
-            answer.set(await self._substitute_uncached(path, stores))
+            answer.set(await self._substitute_uncached(path, stores, repair=key[2]))
         except Exception as e:
             answer.set_exception(e)
         finally:
@@ -579,7 +581,9 @@ class SubstitutionQueue:
         if self._import_limit is not None:
             self._import_limit.total_tokens = self._import_slots
 
-    async def _substitute_uncached(self, path: StorePath, stores: tuple[Store, ...]) -> SubstitutionImportResult:
+    async def _substitute_uncached(
+        self, path: StorePath, stores: tuple[Store, ...], *, repair: bool = False
+    ) -> SubstitutionImportResult:
         started = time.monotonic()
         candidate = await self.get_substituter(path, stores)
         if candidate is None:
@@ -591,7 +595,7 @@ class SubstitutionQueue:
             # Every import at once took a 512 MB cache guest's harmonia out
             # with an OOM kill: ten megabytes per stream, and no limit.
             async with self.import_limit:
-                await self._import_nar(path, candidate)
+                await self._import_nar(path, candidate, repair=repair)
         except Exception as exc:
             metrics.SUBSTITUTIONS.labels(result="error").inc()
             log.warning("substitution_import_failed", store_id=candidate.store.store_id, path=str(path), exc_info=True)
@@ -610,7 +614,7 @@ class SubstitutionQueue:
             # timing the import alone would hide it.
             metrics.SUBSTITUTION_DURATION.observe(time.monotonic() - started)
 
-    async def _import_nar(self, path: StorePath, candidate: SubstitutionCandidate) -> None:
+    async def _import_nar(self, path: StorePath, candidate: SubstitutionCandidate, *, repair: bool = False) -> None:
         """Import *path* from *candidate*, checking its signatures unless the store is trusted.
 
         NIX-DEVIATION (#27): `substitution-goal.cc:116` skips an unsigned
@@ -620,7 +624,7 @@ class SubstitutionQueue:
         """
         async with Pieces(self._nar_pieces(path, candidate)) as nar:
             await write_router(self.ctx.local_store).import_nar(
-                candidate.path_info, nar, dont_check_sigs=candidate.store.trusted
+                candidate.path_info, nar, dont_check_sigs=candidate.store.trusted, repair=repair
             )
 
     async def _nar_pieces(self, path: StorePath, candidate: SubstitutionCandidate) -> AsyncGenerator[bytes]:

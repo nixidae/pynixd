@@ -131,7 +131,7 @@ async def test_one_import_per_path_and_set(monkeypatch: Any) -> None:
     queue = _queue()
     sets: list[tuple[Any, ...]] = []
 
-    async def uncached(path: StorePath, stores: tuple[Any, ...]) -> Any:
+    async def uncached(path: StorePath, stores: tuple[Any, ...], *, repair: bool = False) -> Any:
         sets.append(stores)
         return SimpleNamespace(substituted=False, path=path)
 

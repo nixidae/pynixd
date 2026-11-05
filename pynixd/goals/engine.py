@@ -12,11 +12,13 @@ import anyio
 import structlog
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId
+from nix_daemon_protocol.protocol import Verbosity
 from pynixd_store.background import Background
 from pynixd_store.store_path import StorePath
 
 from ..derived_path import DerivedPath
 from ..exceptions import BackendError
+from ..op_routes import OpRoute
 from ..serde import (
     BuildDerivationRequest,
     BuildMode,
@@ -27,10 +29,11 @@ from ..serde import (
     QueryMissingRequest,
     QueryMissingResponse,
 )
+from ..store.local_db import LocalDBStore
 from .build_derivation import BuildDerivationGoal
 from .ensure import EnsureDerivedPathGoal
 from .keys import BuildDerivationKey, EnsureDerivedPathKey, SubstitutePathKey
-from .query_missing import QueryMissingPlanGoal
+from .query_missing import QueryMissingPlanGoal, daemon_substitutes
 from .requests import BuildPathsWithResultsGoal
 from .results import goal_failure, goal_success, result_succeeded
 from .substitute import SubstituteAttempt, SubstitutePathGoal, substituter_fingerprint
@@ -107,6 +110,33 @@ class GoalEngine:
         self._goals: dict[Any, Goal[Any]] = {}
         self._background: Background | None = None
         self.substitution_import_limiter = anyio.Semaphore(4)
+        self._contents: dict[str, bool] = {}
+        """`Worker::pathContentsGoodCache` (`worker.cc:556`): a path's contents are checked once per request."""
+
+    def _local_db(self) -> LocalDBStore:
+        store = self.ctx.local_store
+        if not isinstance(store, LocalDBStore):
+            raise TypeError("a repair through the goals needs pynixd's own local store")
+        return store
+
+    async def closure(self, paths: Iterable[str]) -> set[StorePath]:
+        """`computeFSClosure` of *paths* in the local store."""
+        return {StorePath(str(p)) for p in await self._local_db().engine.query_closure(sorted(paths))}
+
+    async def contents_good(self, path: StorePath, say: Callable[[int, str], Awaitable[None]]) -> bool:
+        """`Worker::pathContentsGood` (`worker.cc:553`): once per path and request, with its two lines."""
+        known = self._contents.get(str(path))
+        if known is not None:
+            return known
+        await say(Verbosity.INFO, f"checking path '{path}'...")
+        good = self._contents[str(path)] = await self._local_db().contents_good(str(path))
+        if not good:
+            await say(Verbosity.ERROR, f"path '{path}' is corrupted or missing!")
+        return good
+
+    def mark_contents_good(self, path: StorePath) -> None:
+        """`Worker::markContentsGood` (`worker.cc:572`): this request substituted or built *path*."""
+        self._contents[str(path)] = True
 
     @property
     def substitution_queue(self) -> SubstitutionQueue | None:
@@ -188,7 +218,7 @@ class GoalEngine:
         self, request: BuildPathsRequest, client: ClientConn | None = None, hold: Hold | None = None
     ) -> BuildPathsResponse:
         """Execute a BuildPaths request, returning a simple success/failure response."""
-        if request.build_mode != BuildMode.NORMAL and await self._the_store_answers(request):
+        if request.build_mode != BuildMode.NORMAL and await self._the_store_answers(request, client):
             straight: BuildPathsResponse = await self._straight_to_the_store(request, client)
             return straight
         response = await self.build_paths_with_results(
@@ -224,7 +254,7 @@ class GoalEngine:
         brought them in over a pooled connection, whose roots end when
         `CollectGarbage` retires it. nixidae/nixidae#1007.
         """
-        if request.build_mode != BuildMode.NORMAL and await self._the_store_answers(request):
+        if request.build_mode != BuildMode.NORMAL and await self._the_store_answers(request, client):
             straight: BuildPathsWithResultsResponse = await self._straight_to_the_store(request, client)
             return straight
         async with self.running():
@@ -247,15 +277,29 @@ class GoalEngine:
                         # Whatever state the goals are in, nobody waits for them now.
                         self.reap()
 
-    async def _the_store_answers(self, request: BuildPathsRequest | BuildPathsWithResultsRequest) -> bool:
+    async def _the_store_answers(
+        self, request: BuildPathsRequest | BuildPathsWithResultsRequest, client: ClientConn | None
+    ) -> bool:
         """Whether the local store's daemon answers *request* whole, and the goal system stands aside.
 
-        A check goes through the goals when each derived path is one
-        derivation whose outputs it names (`derivation-goal.cc:143` needs them
-        valid). A repair, a mode no version of Nix defines, and any other
-        check go to the daemon: pynixd invents no behaviour for them.
+        A check or a repair goes through the goals when each derived path is
+        one derivation whose outputs it names (`derivation-goal.cc:143` needs
+        them valid). A repair also needs pynixd's own local store, which
+        checks contents and builds, and pynixd's substituters: the daemon's
+        `EnsurePath` cannot repair. A daemon that builds under repair checks
+        each output's contents again, and its client would read the lines
+        twice. A mode no version of Nix defines, a repair of an opaque path,
+        and anything else go to the daemon: pynixd invents no behaviour for
+        them.
         """
-        if request.build_mode != BuildMode.CHECK:
+        if request.build_mode not in (BuildMode.CHECK, BuildMode.REPAIR):
+            return True
+        store = self.ctx.local_store
+        if request.build_mode == BuildMode.REPAIR and (
+            not isinstance(store, LocalDBStore)
+            or store.routes.get(BuildDerivationRequest.op) is not OpRoute.pynixd
+            or await daemon_substitutes(client, self.substitution_queue)
+        ):
             return True
         for wire_path in request.derived_paths:
             path = DerivedPath(wire_path.value)
@@ -269,10 +313,8 @@ class GoalEngine:
     async def _straight_to_the_store(self, request: Any, client: ClientConn | None) -> Any:
         """The local store's daemon does the work, and pynixd carries the bytes.
 
-        `nix build --repair`, `nix-store --repair-path` and `--verify --repair`
-        send `BuildMode.REPAIR`. A repair reads the closure and rewrites what
-        is corrupt (`derivation-goal.cc:140`): an operation on one store, which
-        a second builder answers no part of.
+        A repair `_the_store_answers` names, and a check of what pynixd's
+        goals do not build, go to the daemon whole.
         """
         return await self.ctx.local_store.call(request, client=client)
 
@@ -321,13 +363,15 @@ class GoalEngine:
         self,
         path: StorePath,
         substituter_ids: tuple[str, ...],
+        *,
+        repair: bool = False,
     ) -> SubstitutePathGoal:
         """Return a deduplicated SubstitutePathGoal for the given store path."""
-        key = SubstitutePathKey(str(path), substituter_fingerprint(substituter_ids))
+        key = SubstitutePathKey(str(path), substituter_fingerprint(substituter_ids), repair)
         async with self._lock:
             goal = self._goals.get(key)
             if goal is None:
-                goal = SubstitutePathGoal(self, path, substituter_ids)
+                goal = SubstitutePathGoal(self, path, substituter_ids, repair=repair)
                 self._goals[key] = goal
             if not isinstance(goal, SubstitutePathGoal):
                 raise TypeError(f"goal key collision for {key}")

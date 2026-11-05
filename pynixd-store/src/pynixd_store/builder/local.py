@@ -393,13 +393,15 @@ async def build(
     on_lines: Callable[[list[Output]], Awaitable[None]],
     realised: Mapping[str, str],
     check: bool = False,
+    repair: bool = False,
 ) -> LocalBuildResult:
     """Build *drv*, whose inputs are valid, and register its outputs. `unsupported(drv)` must be `None`.
 
     *on_lines* receives the builder's output as it comes: Nix's log lines and its `@nix` events.
     *realised* is the path of each output the store holds a realisation for (`checkPathValidity`,
     `derivation-building-goal.cc:1329`). With *check*, each output is valid, and the build
-    compares what it makes with it and registers nothing new.
+    compares what it makes with it and registers nothing new. With *repair*, an output is valid only when
+    its contents match its registered hash (`derivation-building-goal.cc:1334`); the build replaces the rest.
     """
     layout = engine.layout
     store_dir = str(layout.store_dir)
@@ -415,9 +417,17 @@ async def build(
         await anyio.to_thread.run_sync(lock.acquire)
     paths: _Paths | None = None
     try:
-        valid = {path for path in known.values() if path and await engine.is_valid_path_uncached(path)}
+        valid = {
+            path
+            for path in known.values()
+            if path and await engine.is_valid_path_uncached(path) and (not repair or await engine.contents_good(path))
+        }
         if valid == set(known.values()) and not check:
             return LocalBuildResult(BuildResultStatus.ALREADY_VALID, paths=known)
+        # `derivation-building-goal.cc:503`: an output on disk that is not valid goes before the build.
+        for path in known.values():
+            if path and path not in valid:
+                await anyio.to_thread.run_sync(delete_path, layout.real_store_dir / path.rsplit("/", 1)[-1])
         # The sandbox needs no hash rewrite, so a known path is its own scratch path (`derivation-builder.cc:417`).
         scratch = {name: path or fallback_path(drv_path, name, drv_name, store_dir) for name, path in known.items()}
         inputs = {str(p) for p in await engine.query_closure(sorted(str(p) for p in drv.input_srcs))}

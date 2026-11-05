@@ -42,15 +42,21 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
     `Goal.may_reach_a_root_goal` gives the rule. Issue nixidae/nixidae#246.
     """
 
-    def __init__(self, engine: GoalEngine, path: StorePath, substituter_ids: tuple[str, ...]) -> None:
-        """Initialize the goal with the path to substitute and eligible substituter IDs."""
+    def __init__(
+        self, engine: GoalEngine, path: StorePath, substituter_ids: tuple[str, ...], *, repair: bool = False
+    ) -> None:
+        """Initialize the goal with the path to substitute and eligible substituter IDs.
+
+        With *repair*, a valid path is substituted again (`substitution-goal.cc:36`); its references are not.
+        """
         super().__init__(engine)
         self.path = path
         self.substituter_ids = substituter_ids
+        self.repair = repair
 
     async def _run(self) -> SubstituteAttempt:
         log.debug("substitute_path_start", path=str(self.path), substituters=self.substituter_ids)
-        if await self._is_valid_local_path(self.path):
+        if not self.repair and await self._is_valid_local_path(self.path):
             log.debug("substitute_path_already_valid", path=str(self.path))
             result = goal_success()
             result.produced_paths.add(self.path)
@@ -108,7 +114,7 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
                 return SubstituteAttempt(found=True, result=reference_result.result)
 
         log.info("substitute_path_import_start", path=str(self.path), store_id=candidate.store.store_id)
-        import_result = await queue.substitute(self.path, stores)
+        import_result = await queue.substitute(self.path, stores, repair=self.repair)
         if not import_result.substituted:
             # A substitute the daemon refused for its signature is one Nix
             # never takes (`substitution-goal.cc:116`): no substituter, not a
@@ -124,6 +130,7 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
 
         result = goal_success()
         log.info("substitute_path_import_done", path=str(self.path), store_id=candidate.store.store_id)
+        self.engine.mark_contents_good(self.path)
         result.produced_paths.add(self.path)
         result.resolved_outputs["out"] = self.path
         return SubstituteAttempt(found=True, result=result)

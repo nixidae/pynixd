@@ -54,10 +54,16 @@ class BuildActivity:
     """
 
     def __init__(
-        self, drv_path: str, on_log: Callable[[LogMessage], Awaitable[None]], verbosity: int, *, checking: bool = False
+        self,
+        drv_path: str,
+        on_log: Callable[[LogMessage], Awaitable[None]],
+        verbosity: int,
+        *,
+        checking: bool = False,
+        repairing: bool = False,
     ) -> None:
         self.drv_path = drv_path
-        self._verb = "checking outputs of" if checking else "building"
+        self._verb = "repairing outputs of" if repairing else "checking outputs of" if checking else "building"
         self.id = next_activity_id()
         self._on_log = on_log
         self._verbosity = verbosity

@@ -353,7 +353,9 @@ async def add_nar(
         lock.release(delete=delete_lock)
 
 
-async def import_nar(engine: StoreEngine, info: ValidPathInfo, source: Source, *, dont_check_sigs: bool) -> None:
+async def import_nar(
+    engine: StoreEngine, info: ValidPathInfo, source: Source, *, dont_check_sigs: bool, repair: bool = False
+) -> None:
     """AddToStoreNar for pynixd's own callers: the substitution queue and the HTTP cache's upload.
 
     No client session holds the path, so the import holds its own temporary
@@ -371,7 +373,7 @@ async def import_nar(engine: StoreEngine, info: ValidPathInfo, source: Source, *
     try:
         if not await roots.add(info.path):
             raise AddError(f"pynixd cannot write a temporary root for '{magenta(info.path)}'")
-        await add_nar(engine, info, source, repair=False, ignored_acls=settings.ignored_acls)
+        await add_nar(engine, info, source, repair=repair, ignored_acls=settings.ignored_acls)
     finally:
         with anyio.CancelScope(shield=True):
             await roots.close()

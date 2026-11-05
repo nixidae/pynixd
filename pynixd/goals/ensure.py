@@ -10,6 +10,7 @@ import structlog
 
 from nix_daemon_protocol.constants import FEATURE_REALISATION_WITH_PATH
 from nix_daemon_protocol.exceptions import DaemonProtocolError
+from nix_daemon_protocol.protocol import Verbosity
 from pynixd_store.drv_hash import output_hashes
 from pynixd_store.drv_parser import ChildMapNode, to_basic_derivation
 from pynixd_store.hintfmt import (
@@ -448,7 +449,12 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             )
 
         early_outputs = {name: path for name, path in parsed.output_paths().items() if name in selected_outputs}
-        substituted = await self._try_substitute_known_outputs(early_outputs)
+        repairing = self.build_mode == BuildMode.REPAIR
+        if repairing:
+            repaired = await self._repair_if_valid(parsed, drv_path, early_outputs)
+            if repaired is not None:
+                return repaired.with_dynamic_outputs(self.derived_path.base_store_path())
+        substituted = None if repairing else await self._try_substitute_known_outputs(early_outputs)
         # `derivation-goal.cc:143`: a check builds again what the store holds, so each wanted output must be valid.
         checking = self.build_mode == BuildMode.CHECK
         if checking:
@@ -524,7 +530,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         # request for `drv^out` and a request for `drv^bin` made two builds of
         # one derivation. Issue nixidae/nixidae#217.
         selected_paths = {name: path for name, path in basic.output_paths().items() if name in selected_outputs}
-        substituted = None if checking else await self._try_substitute_known_outputs(selected_paths)
+        substituted = None if checking or repairing else await self._try_substitute_known_outputs(selected_paths)
         if substituted is not None:
             log.debug("ensure_derivation_substituted", drv_path=str(drv_path), outputs=sorted(selected_outputs))
             await self._record_under_the_resolved_one(parsed, basic, drv_path, selected_paths)
@@ -539,7 +545,9 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         )
 
         cut_off = (
-            None if checking else await self._try_realise_the_resolved_one(build_drv_path, drv_path, selected_outputs)
+            None
+            if checking or repairing
+            else await self._try_realise_the_resolved_one(build_drv_path, drv_path, selected_outputs)
         )
         if cut_off is not None:
             log.debug("ensure_derivation_cut_off", drv_path=str(drv_path), resolved=str(build_drv_path))
@@ -570,6 +578,10 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         await build_goal.wait_until_it_reached_the_queue()
         self._note_that_it_decided()
         result = await self.run_child(build_goal)
+        if repairing and result_succeeded(result.result):
+            # `derivation-building-goal.cc:1075`.
+            for path in basic.output_paths().values():
+                self.engine.mark_contents_good(path)
         result = await self._under_the_id_that_pynixd_uses(result, parsed)
         result = await self._name_the_resolved_derivation(result, drv_path, build_drv_path)
         result = result.with_dynamic_outputs(self.derived_path.base_store_path())
@@ -1182,6 +1194,122 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         for client in watchers:
             await client.send(LogNext(text=text))
 
+    async def _say_at(self, level: int, text: str) -> None:
+        """`printMsg` in the daemon: each watcher gets the line unless it is above its verbosity (`daemon.cc:89`)."""
+        async with self._lock:
+            watchers = list(self._watchers)
+        for client in watchers:
+            verbosity = client.options.verbosity if client.options is not None else Verbosity.INFO
+            if level <= verbosity:
+                await client.send(LogNext(text=f"{text}\n"))
+
+    async def _contents_good(self, path: StorePath) -> bool:
+        return await self.engine.contents_good(path, self._say_at)
+
+    async def _is_valid(self, path: StorePath) -> bool:
+        response = await self.engine.ctx.local_store.execute(
+            IsValidPathRequest(path=StorePath(path=str(path))), mark=False
+        )
+        return bool(response.valid)
+
+    async def _repair_if_valid(
+        self, parsed: Derivation, drv_path: StorePath, outputs: Mapping[str, StorePath | None]
+    ) -> GoalResult | None:
+        """`DerivationGoal` under repair (`derivation-goal.cc:78`), up to `repairClosure`; `None` builds again.
+
+        Each output's contents are checked, then substituted with repair, valid or not. Outputs that are
+        all valid and good lead to the closure.
+
+        NIX-DEFECT (#23): after `derivation-goal.cc:136` gives up on a corrupt
+        output, `acquireResources` (`build/derivation-building-goal.cc:494`)
+        skips the build as if the output were valid, so Nix 2.35 reports the
+        corruption, succeeds, and repairs nothing; a corrupt path in the
+        closure is the same. pynixd builds the corrupt path again in repair
+        mode, as `replaceValidPath` (`unix/build/derivation-builder.cc:269`)
+        intends; Lillecarl/nix#393 holds the report.
+        """
+        paths = {name: path for name, path in sorted(outputs.items()) if path is not None and path.base()}
+        for path in paths.values():
+            if await self._is_valid(path):
+                await self._contents_good(path)
+        failed = False
+        for path in paths.values():
+            goal = await self.engine.get_substitute_path_goal(path, self.substituter_ids, repair=True)
+            attempt = await self.run_child(goal)
+            failed = failed or (attempt.found and not result_succeeded(attempt.result.result))
+        if failed and (refusal := self._substitutes_failed()) is not None:
+            return refusal
+        for path in paths.values():
+            if not (await self._is_valid(path) and await self._contents_good(path)):
+                return None
+        return await self._repair_closure(parsed, drv_path, paths)
+
+    async def _repair_closure(
+        self, parsed: Derivation, drv_path: StorePath, wanted: Mapping[str, StorePath]
+    ) -> GoalResult:
+        """`DerivationGoal::repairClosure` (`derivation-goal.cc:277`): the outputs are good; repair what they need.
+
+        A bad path that an input derivation makes is built again in repair mode; any other is substituted
+        with repair.
+        """
+        own = {str(path) for path in parsed.output_paths().values() if str(path)}
+        closure = await self.engine.closure(str(path) for path in wanted.values())
+        members = sorted((str(p) for p in closure if str(p) not in own), key=lambda p: p.rsplit("/", 1)[-1])
+        derivers: dict[str, str] | None = None
+        rebuilds: list[EnsureDerivedPathGoal] = []
+        substitutes: list[StorePath] = []
+        for member in members:
+            if await self._contents_good(StorePath(member)):
+                continue
+            await self._say_at(
+                Verbosity.ERROR, f"found corrupted or missing path '{member}' in the output closure of '{drv_path}'"
+            )
+            if derivers is None:
+                derivers = await self._derivers_in_the_input_closure(drv_path)
+            deriver = derivers.get(member)
+            if deriver is None:
+                substitutes.append(StorePath(member))
+                continue
+            dp = DerivedPath._from_components(drv_path=StorePath(deriver), chain=(), outputs=OutputsAll())
+            rebuilds.append(await self.engine.get_ensure_derived_path_goal(dp, BuildMode.REPAIR, self.substituter_ids))
+        repaired = True
+        if rebuilds:
+            async with self._lock:
+                subscribers = list(self._subscribers)
+            for goal in rebuilds:
+                goal.note_a_parent()
+                await goal.subscribe_many(subscribers)
+            results = await self.run_child(DependencyGroupGoal(self.engine, rebuilds))
+            repaired = all(result_succeeded(result.result) for result in results)
+        for path in substitutes:
+            substitute = await self.engine.get_substitute_path_goal(path, self.substituter_ids, repair=True)
+            attempt = await self.run_child(substitute)
+            repaired = repaired and attempt.found and result_succeeded(attempt.result.result)
+        if not repaired:
+            return goal_failure(
+                f"some paths in the output closure of derivation '{_magenta(str(drv_path))}' could not be repaired",
+                BuildResultStatus.MISC_FAILURE,
+            )
+        answer = goal_success()
+        answer.resolved_outputs = dict(wanted)
+        answer.produced_paths = set(wanted.values())
+        return await self._say_what_it_produced(answer, parsed, set(wanted))
+
+    async def _derivers_in_the_input_closure(self, drv_path: StorePath) -> dict[str, str]:
+        """Each output path an input derivation names, and that derivation (`derivation-goal.cc:316`)."""
+        local = self.engine.ctx.local_store
+        derivers: dict[str, str] = {}
+        for path in await self.engine.closure([str(drv_path)]):
+            if not str(path).endswith(".drv"):
+                continue
+            parsed = await local.read_derivation(str(path))
+            if parsed is None:
+                continue
+            for output in parsed.output_paths().values():
+                if str(output):
+                    derivers[str(output)] = str(path)
+        return derivers
+
     async def _refuse_an_impure_input(self, parsed: Derivation, drv_path: StorePath) -> GoalResult | None:
         """A pure derivation cannot depend on an impure one.
 
@@ -1388,7 +1516,8 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             # A floating content-addressed output names no path: `StorePath("")`.
             # Nix parses the path of `IsValidPath` before `startWork`, so an
             # empty one ends the session on the wire.
-            if not output_path:
+            # `derivation-resolution-goal.cc:46`: under repair every input gets a goal, valid or not.
+            if not output_path or self.build_mode == BuildMode.REPAIR:
                 needed.add(output_name)
                 continue
             response = await self.engine.ctx.local_store.execute(

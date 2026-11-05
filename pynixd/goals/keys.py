@@ -30,3 +30,4 @@ class SubstitutePathKey:
 
     path: str
     substituter_fingerprint: str
+    repair: bool = False

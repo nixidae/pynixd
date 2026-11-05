@@ -169,6 +169,18 @@ def referenced_paths(request: object) -> set[str]:
     return found
 
 
+def _repair_unsupported(request: BuildDerivationRequest) -> str | None:
+    """Why the daemon repairs *request*, or `None`; also `None` for a request that does not repair.
+
+    pynixd repairs an output whose path the derivation names. A floating or impure output goes to the daemon.
+    """
+    if request.build_mode != BuildMode.REPAIR:
+        return None
+    if not all(output.path for output in request.derivation.outputs.values()) or request.derivation.has_impure:
+        return "a repair of an output with no path"
+    return None
+
+
 class LocalDBStore(Store):
     """pynixd's local store: the engine, the managed daemon, and the router between them.
 
@@ -605,11 +617,10 @@ class LocalDBStore(Store):
     ) -> BuildSettings | None:
         """The settings pynixd's sandbox builds *request* with, or `None` when the daemon builds it.
 
-        Repair stays on the daemon, and so does what `unsupported` or `_check_unsupported` names.
+        What `unsupported`, `_check_unsupported` or `_repair_unsupported` names stays on the daemon.
         """
         if self.routes.get(BuildDerivationRequest.op) is not OpRoute.pynixd or not self.engine.writable:
             return None
-        reason = "a repair" if request.build_mode == BuildMode.REPAIR else None
         layout = self.engine.layout
         # `builtin:fetchurl` sends `nixVersion` in its User-Agent.
         if request.derivation.builder == "builtin:fetchurl" and self._nix_version is None:
@@ -619,8 +630,7 @@ class LocalDBStore(Store):
             await self.engine.nix_config(), _build_overrides(options), nix_version=self._nix_version or ""
         )
         reason = (
-            reason
-            or local_builder.unsupported(
+            local_builder.unsupported(
                 request.derivation,
                 settings,
                 store_dir=str(layout.store_dir),
@@ -628,6 +638,7 @@ class LocalDBStore(Store):
             )
             or await self._realisations_unsupported(request)
             or await self._check_unsupported(request, settings)
+            or _repair_unsupported(request)
         )
         if reason is None:
             return settings
@@ -652,6 +663,10 @@ class LocalDBStore(Store):
         if not all([await self.engine.is_valid_path_uncached(path) for path in paths]):
             return "a check of an output that is not valid"
         return None
+
+    async def contents_good(self, path: str) -> bool:
+        """`Worker::pathContentsGood` (`worker.cc:553`) without its cache and its lines."""
+        return await self.engine.contents_good(path)
 
     async def _ca_derivations(self) -> bool:
         return "ca-derivations" in (await self.trust_policy()).experimental_features
@@ -725,7 +740,8 @@ class LocalDBStore(Store):
         drv_path = str(request.drv_path)
         realised = await self._realised(request)
         checking = request.build_mode == BuildMode.CHECK
-        activity = BuildActivity(drv_path, on_log, verbosity, checking=checking)
+        repairing = request.build_mode == BuildMode.REPAIR
+        activity = BuildActivity(drv_path, on_log, verbosity, checking=checking, repairing=repairing)
         await activity.start()
         try:
             built = await local_builder.build(
@@ -736,6 +752,7 @@ class LocalDBStore(Store):
                 on_lines=activity.emit,
                 realised=realised,
                 check=checking,
+                repair=repairing,
             )
         finally:
             with anyio.CancelScope(shield=True):

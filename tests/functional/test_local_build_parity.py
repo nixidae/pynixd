@@ -1095,3 +1095,78 @@ async def test_a_rebuild_checks_what_the_daemon_checks(tmp_path: Path) -> None:
     assert here["differs"][0] == 1, here["differs"]
     assert any("may not be deterministic" in line for line in here["differs"][2]), here["differs"]
     assert any("checking is not possible" in line for line in here["never-built"][2]), here["never-built"]
+
+
+def _chain(tag: str) -> tuple[str, str]:
+    """A dependency and a top whose output refers to it, as two expressions."""
+    dep = (
+        f'derivation {{ name = "parity-repair-{tag}-dep"; system = builtins.currentSystem; builder = "/bin/sh"; '
+        'args = [ "-c" "echo dep > $out" ]; }'
+    )
+    top = (
+        f"let dep = {dep}; in "
+        f'derivation {{ name = "parity-repair-{tag}-top"; system = builtins.currentSystem; builder = "/bin/sh"; '
+        'args = [ "-c" "echo ${dep} > $out" ]; }'
+    )
+    return dep, top
+
+
+# Each case breaks one path before `nix build --repair` of the top: none, the top, or the dependency.
+REPAIRS = ("good", "top", "dep", "gone")
+
+
+async def _repairs(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
+    results: dict[str, Any] = {}
+    async with _serve(tmp_path, route) as (url, root):
+        common = [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--print-out-paths"]
+        for tag in REPAIRS:
+            dep_expr, top_expr = _chain(tag)
+            _rc, top, _err, _both = await run_subproc([*common, "--expr", top_expr])
+            _rc, dep, _err, _both = await run_subproc([*common, "--expr", dep_expr])
+            files = {"top": root / "nix" / "store" / top.strip().rsplit("/", 1)[-1]}
+            files["dep"] = root / "nix" / "store" / dep.strip().rsplit("/", 1)[-1]
+            if tag in ("top", "dep"):
+                files[tag].chmod(0o644)
+                files[tag].write_bytes(b"corrupt\n")
+            elif tag == "gone":
+                files["dep"].unlink()
+            rc, out, err, _both = await run_subproc(
+                [*common, "--repair", "--print-build-logs", "--expr", top_expr], expected_retcode=None
+            )
+            contents = {name: path.read_text() if path.exists() else None for name, path in files.items()}
+            results[tag] = rc, out.split(), err.replace(str(root), "<root>").splitlines(), contents
+    results["valid"], results["refs"] = _rows(root)
+    return results
+
+
+async def test_a_repair_rebuilds_what_the_daemon_finds_corrupt(tmp_path: Path) -> None:
+    """`nix build --repair` sends `BuildMode.REPAIR`: each output and its closure is checked, a bad one built again.
+
+    `DerivationGoal` (`derivation-goal.cc:78`), `repairClosure` (`:277`) and `pathContentsGood` (`worker.cc:553`).
+    Both routes check the same paths and print the same lines. The daemon then builds nothing and leaves the
+    corrupt path (Lillecarl/nix#393); pynixd builds it again, so its client also reads `repairing outputs of`.
+    """
+    before = _sent("BuildPathsWithResults"), _sent("BuildDerivation"), _fallthrough()
+    here = await _repairs(tmp_path, OpRoute.pynixd)
+    assert (_sent("BuildPathsWithResults"), _sent("BuildDerivation"), _fallthrough()) == before, (
+        "pynixd's goals and sandbox repair every case"
+    )
+    there = await _repairs(tmp_path, OpRoute.daemon)
+
+    assert (here["valid"], here["refs"]) == (there["valid"], there["refs"])
+    assert here["good"] == there["good"]
+    for tag in REPAIRS:
+        rc, out, err, contents = here[tag]
+        daemon_rc, daemon_out, daemon_err, daemon_contents = there[tag]
+        assert (rc, out) == (daemon_rc, daemon_out) == (0, out), (here[tag], there[tag])
+        assert [line for line in err if not line.startswith("repairing outputs of ")] == daemon_err, (
+            here[tag],
+            there[tag],
+        )
+        assert contents["dep"] == "dep\n", here[tag]
+        assert (contents["top"] or "").strip().endswith(f"-parity-repair-{tag}-dep"), here[tag]
+        if tag != "good":
+            assert daemon_contents != contents, there[tag]
+            assert any(line.startswith("repairing outputs of ") for line in err), here[tag]
+    assert any("is corrupted or missing!" in line for line in here["top"][2]), here["top"]
+    assert any("found corrupted or missing path" in line for line in here["gone"][2]), here["gone"]

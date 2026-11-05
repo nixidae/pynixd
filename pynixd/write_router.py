@@ -146,13 +146,13 @@ def _dump(write: Write, facts: Facts) -> str | None:
     return None
 
 
-def pynixd_import(info: ValidPathInfo) -> Write:
+def pynixd_import(info: ValidPathInfo, *, repair: bool = False) -> Write:
     """A NAR pynixd itself fetched or received: a substitution, or the HTTP cache's upload.
 
     It follows AddToStoreNar's route, so a deployment that keeps that op on
     the daemon keeps these imports there too.
     """
-    return Write(op="AddToStoreNar", version=FRAMED_NAR, info=info)
+    return Write(op="AddToStoreNar", version=FRAMED_NAR, repair=repair, info=info)
 
 
 REASONS: tuple[Callable[[Write, Facts], str | None], ...] = (
@@ -556,9 +556,11 @@ class WriteRouter:
             paths_deleted={StorePath(path=path) for path in results.paths}, bytes_freed=results.bytes_freed, obsolete=0
         )
 
-    async def import_nar(self, info: ValidPathInfo, source: Source, *, dont_check_sigs: bool) -> None:
+    async def import_nar(
+        self, info: ValidPathInfo, source: Source, *, dont_check_sigs: bool, repair: bool = False
+    ) -> None:
         """A NAR pynixd itself fetched or received: a substitution, or the HTTP cache's upload."""
-        if await self.engine_takes(pynixd_import(info)):
-            await self._engine().import_nar(info, source, dont_check_sigs=dont_check_sigs)
+        if await self.engine_takes(pynixd_import(info, repair=repair)):
+            await self._engine().import_nar(info, source, dont_check_sigs=dont_check_sigs, repair=repair)
         else:
-            await self.daemon.add_to_store(info, source, dont_check_sigs=dont_check_sigs)
+            await self.daemon.add_to_store(info, source, dont_check_sigs=dont_check_sigs, repair=repair)
