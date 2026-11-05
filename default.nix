@@ -25,12 +25,34 @@ let
   # filed under the host's own system below (#1056).
   agent = pkgs.pkgsStatic.callPackage ./nix/agent.nix { };
 
-  package = pkgs.python3Packages.callPackage ./nix/pynixd.nix {
-    pythonBuilder = pkgs.python3Packages.buildPythonApplication;
-    nix-daemon-protocol = daemon-protocol;
-    pynixd-store = store;
-    agents.${pkgs.stdenv.hostPlatform.system} = agent;
-  };
+  /*
+    A venv, not `buildPythonApplication`: pynixd starts its sandbox helper as
+    `sys.executable -m pynixd_store.builder.child`, and only a venv's
+    interpreter finds pynixd's packages with no PYTHONPATH (#1046). The
+    wrapper carries `PYNIXD_AGENTS` (`pynixd/agent.py`, issue #98).
+  */
+  package =
+    let
+      venv = nixvenv {
+        python = pkgs.python3;
+        packages = _: [ library ];
+        executables = [ "pynixd" ];
+      };
+      agents.${pkgs.stdenv.hostPlatform.system} = lib.getExe agent;
+    in
+    pkgs.runCommand "pynixd-${library.version}"
+      {
+        nativeBuildInputs = [ pkgs.makeBinaryWrapper ];
+        passthru = { inherit venv; };
+        meta = {
+          inherit (library.meta) description;
+          mainProgram = "pynixd";
+        };
+      }
+      ''
+        makeWrapper ${lib.getExe venv} $out/bin/pynixd \
+          --set-default PYNIXD_AGENTS ${lib.escapeShellArg (builtins.toJSON agents)}
+      '';
   library = pkgs.python3Packages.callPackage ./nix/pynixd.nix {
     pythonBuilder = pkgs.python3Packages.buildPythonPackage;
     nix-daemon-protocol = daemon-protocol;
@@ -366,6 +388,13 @@ let
   '';
 
   checks = {
+    # The packaged pynixd's `sys.executable` starts the sandbox helper. A
+    # `buildPythonApplication` wrapper failed this: every build on pynixd's
+    # own route said `No module named 'pynixd_store'`.
+    packagedHelper = pkgs.runCommand "pynixd-check-packaged-helper" { } ''
+      ${package.venv}/lib/venv/bin/python -c 'import sys, pynixd_store.builder.child; print(sys.executable)'
+      touch $out
+    '';
     format = mkCheck "format" [ pkgs.ruff ] "ruff format --check .";
     lint = mkCheck "lint" [ pkgs.ruff ] "ruff check .";
     # One zuban run for each `mypy.ini`: nix-daemon-protocol and pynixd-store

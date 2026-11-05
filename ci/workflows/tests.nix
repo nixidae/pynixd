@@ -137,8 +137,8 @@ ghalib.evalWorkflow {
           '';
         }
         {
-          name = "Format, lint and types";
-          run = "nix build --file . checks.format checks.lint checks.types --no-link --print-build-logs";
+          name = "Format, lint, types and the package";
+          run = "nix build --file . checks.format checks.lint checks.types checks.packagedHelper --no-link --print-build-logs";
         }
         (pytestSuite "Tests" [
           "tests/functional"
