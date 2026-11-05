@@ -19,6 +19,7 @@ import tarfile
 import zipfile
 from typing import TYPE_CHECKING, Any
 
+import pytest
 from aiohttp import web
 from prometheus_client import REGISTRY
 
@@ -27,6 +28,8 @@ from pynixd import Server
 from pynixd.op_routes import OpRoute
 from pynixd.store import LocalDBStore
 from pynixd_store.nar_fs import dump_path
+from tests._conftest.config import NIX_GIT_BIN
+from tests._conftest.constants import _NO_PROBE_FEATURE_MATRIX
 from tests._conftest.nix_config import for_test_store
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
@@ -124,9 +127,9 @@ def _without_times(value: Any) -> Any:
 
 @contextlib.asynccontextmanager
 async def _serve(
-    tmp_path: Path, route: OpRoute, *, experimental_features: tuple[str, ...] = ()
+    tmp_path: Path, route: OpRoute, *, experimental_features: tuple[str, ...] = (), **spec_args: Any
 ) -> AsyncIterator[tuple[str, Path]]:
-    """A fresh store with `BuildDerivation` on *route*: its URL and its root."""
+    """A fresh store with `BuildDerivation` on *route*: its URL and its root. *spec_args* go to `make_test_spec`."""
     root = tmp_path / route.name / "store"
     socket = tmp_path / f"{route.name}.sock"
     spec = make_test_spec(
@@ -135,6 +138,7 @@ async def _serve(
         no_probe=True,
         nix_config=for_test_store(substituters=(), experimental_features=experimental_features),
         op_routes={"BuildDerivation": route},
+        **spec_args,
     )
     async with Server(stores={StoreId("local"): LocalDBStore(spec)}, unix_path=socket, ssh_port=None, http_port=None):
         yield f"unix://{socket}?root={root}", root
@@ -1515,8 +1519,8 @@ in derivation {
 """
 
 
-def _nix_store_path() -> str:
-    return "/".join(os.path.realpath(NIX_BIN).split("/")[:4])
+def _nix_store_path(binary: Path = NIX_BIN) -> str:
+    return "/".join(os.path.realpath(binary).split("/")[:4])
 
 
 async def _recursive(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
@@ -1570,3 +1574,100 @@ async def test_a_recursive_nix_build_builds_what_the_daemon_builds(tmp_path: Pat
     # `Store::unsupported` names the restricted store.
     assert "operation 'addSignatures' is not supported by store" in here["contents"], here["contents"]
     assert {foobar, inner1} <= set(here["info"][here["top"]]["references"]), here["info"]
+
+
+# `builder-rpc-v0` of Nix's master branch: the builder adds each output and submits it, and sees no output path.
+RPC = """
+let nix = builtins.storePath "@NIX@"; in
+derivation {
+  name = "parity-rpc"; system = builtins.currentSystem; builder = "/bin/sh";
+  __contentAddressed = true; outputHashMode = "recursive"; outputHashAlgo = "sha256";
+  outputs = [ "out" "dev" ];
+  requiredSystemFeatures = [ "builder-rpc-v0" ];
+  PATH = "${nix}/bin";
+  dummy = builtins.toFile "dummy" "bla bla";
+  args = [ (builtins.toFile "parity-rpc.sh" ''
+    set -e
+    o="--extra-experimental-features nix-command --extra-experimental-features dynamic-derivations"
+    refused=$(nix $o path-info $dummy 2>&1 || true)
+    echo "dev of $dummy" > dev
+    dev=$(nix $o store add --scan --name parity-rpc-dev ./dev)
+    nix $o store submit-output $dev dev
+    duplicate=$(nix $o store submit-output $dev dev 2>&1 || true)
+    plain=$(nix $o store add --name parity-rpc-plain ./dev)
+    printf '%s\\n' "out:$out" "$dev" "$plain" "$refused" "$duplicate" > out
+    out=$(nix $o store add --scan --name parity-rpc ./out)
+    nix $o store submit-output $out out
+  '') ];
+}
+"""
+
+
+async def _rpc(tmp_path: Path, route: OpRoute, nix_bin: Path) -> dict[str, Any]:
+    nix = _nix_store_path(nix_bin)
+    features = ("ca-derivations", "dynamic-derivations")
+    matrix = {system: set(fs) | {"builder-rpc-v0"} for system, fs in _NO_PROBE_FEATURE_MATRIX.items()}
+    async with _serve(tmp_path, route, experimental_features=features, nix_bin=nix_bin, feature_matrix=matrix) as (
+        url,
+        root,
+    ):
+        await run_subproc([nix_bin, "copy", "--no-check-sigs", "--to", url, nix])
+        _rc, out, err, _both = await run_subproc(
+            [
+                nix_bin,
+                "build",
+                "--store",
+                url,
+                "--extra-experimental-features",
+                " ".join(features),
+                "--impure",
+                "--no-link",
+                "--print-out-paths",
+                "--print-build-logs",
+                "--expr",
+                RPC.replace("@NIX@", nix),
+            ]
+        )
+        paths = out.split()
+        _rc, info, _err, _both = await run_subproc(
+            [nix_bin, "path-info", "--store", url, "--json", "--recursive", *paths]
+        )
+        contents = {path: (root / path.lstrip("/")).read_text() for path in paths}
+    db = sqlite3.connect(f"file:{root}/nix/var/nix/db/db.sqlite?mode=ro", uri=True)
+    try:
+        trace = db.execute(
+            "SELECT drvPath, outputName, outputPath, signatures FROM BuildTraceV3 ORDER BY drvPath, outputName"
+        ).fetchall()
+    finally:
+        db.close()
+    valid, refs = _rows(root)
+    return {
+        "paths": paths,
+        "contents": contents,
+        "info": _without_times(json.loads(info)),
+        "valid": valid,
+        "refs": refs,
+        "trace": trace,
+        "log": [line for line in err.splitlines() if line.startswith("parity-")],
+    }
+
+
+async def test_a_builder_rpc_build_builds_what_the_daemon_builds(tmp_path: Path) -> None:
+    """`startDaemon` with `RecursiveSubmitted` (`unix-derivation-builder.cc:672`) and `checkSubmittedOutputs`
+    (`derivation-builder-impl.cc:715`): the builder submits its outputs over the allowlist of `daemon.cc:329`."""
+    if NIX_GIT_BIN is None:
+        pytest.skip("NIX_GIT_BIN names no Nix of the master branch")
+    before = _fallthrough()
+    here = await _rpc(tmp_path, OpRoute.pynixd, NIX_GIT_BIN)
+    assert _fallthrough() == before, "pynixd's sandbox builds a builder-rpc-v0 derivation"
+    there = await _rpc(tmp_path, OpRoute.daemon, NIX_GIT_BIN)
+
+    for key in ("paths", "contents", "info", "valid", "refs", "trace", "log"):
+        assert here[key] == there[key], (key, here[key], there[key])
+    dev, out = sorted(here["paths"], key=lambda p: not p.endswith("-dev"))
+    lines = here["contents"][out].splitlines()
+    assert lines[:2] == ["out:", dev], lines
+    assert "not allowed inside derivation" in here["contents"][out], lines
+    assert "duplicate output" in here["contents"][out], lines
+    assert dev in here["info"][out]["references"], here["info"]
+    assert {row[1] for row in here["trace"]} >= {"out", "dev"}, here["trace"]

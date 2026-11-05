@@ -85,6 +85,9 @@ DEV_FILES = ("/dev/full", "/dev/null", "/dev/random", "/dev/tty", "/dev/urandom"
 FETCH_SCHEMES = frozenset({"http", "https", "file"})
 """The schemes pynixd's `builtin:fetchurl` fetches."""
 
+BUILDER_RPC = "builder-rpc-v0"
+"""`drvFeatureBuilderRpcV0`: the builder submits its outputs over its daemon (`derivations.hh:24`)."""
+
 
 def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str, relocated: bool) -> str | None:
     """Why pynixd leaves this build to the daemon, or `None` when it builds it.
@@ -115,6 +118,13 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
     # `startDaemon` (`derivation-builder.cc:1155`) refuses the build in the daemon's own words.
     if "recursive-nix" in features and not settings.recursive_nix:
         return "recursive-nix without the experimental feature"
+    if BUILDER_RPC in features:
+        if not settings.dynamic_derivations:
+            return "builder-rpc-v0 without dynamic-derivations"
+        # `startBuild` (`unix-derivation-builder.cc:355`) refuses an input-addressed one in Nix's words, and
+        # pynixd registers realisations for a floating output alone.
+        if {o.kind for o in drv.outputs.values()} != {OutputKind.CA_FLOATING}:
+            return "builder-rpc-v0 with an output that is not floating"
     try:
         export_requests(drv.env, store_dir)
     except ValueError as e:
@@ -449,7 +459,7 @@ async def build(
     `derivation-building-goal.cc:1329`). With *check*, each output is valid, and the build
     compares what it makes with it and registers nothing new. With *repair*, an output is valid only when
     its contents match its registered hash (`derivation-building-goal.cc:1334`); the build replaces the rest.
-    *recursive* serves the builder of a `recursive-nix` derivation; it must be given for one.
+    *recursive* serves the builder of a `recursive-nix` or `builder-rpc-v0` derivation; it must be given for one.
     """
     layout = engine.layout
     store_dir = str(layout.store_dir)
@@ -548,14 +558,15 @@ async def build(
 
         control: socket.socket | None = None
         restriction: RestrictionContext | None = None
+        submitting = BUILDER_RPC in drv.required_system_features
         async with contextlib.AsyncExitStack() as stack:
-            if "recursive-nix" in drv.required_system_features:
+            if submitting or "recursive-nix" in drv.required_system_features:
                 if recursive is None:
-                    raise ValueError("a recursive-nix build needs a server for its builder")
+                    raise ValueError("a recursive-nix or builder-rpc-v0 build needs a server for its builder")
                 ours, control = socket.socketpair()
                 stack.callback(control.close)
                 stream = await stack.enter_async_context(await SocketStream.from_socket(ours))
-                restriction = RestrictionContext(inputs, stream, layout.real_store_dir)
+                restriction = RestrictionContext(inputs, stream, layout.real_store_dir, submitting=submitting)
                 # `startDaemon` (`derivation-builder.cc:1171`): the socket is up before the builder starts.
                 spec["env"]["NIX_REMOTE"] = f"unix://{SANDBOX_BUILD_DIR}/{SOCKET_NAME}"
                 listener = await anyio.to_thread.run_sync(_listen, paths.tmp / SOCKET_NAME)
@@ -580,6 +591,8 @@ async def build(
             )
         if failure is not None:
             return LocalBuildResult(failure.status, failure.message, start, stop)
+        if restriction is not None and restriction.submitting:
+            return await _check_submitted(engine, drv_path, drv, restriction.submitted, start, stop)
         try:
             collected = await anyio.to_thread.run_sync(
                 lambda: collect_outputs(
@@ -637,6 +650,47 @@ async def build(
                 await anyio.to_thread.run_sync(paths.remove)
             for lock in locks:
                 lock.release(delete=True)
+
+
+async def _check_submitted(
+    engine: StoreEngine, drv_path: str, drv: BasicDerivation, submitted: Mapping[str, str], start: int, stop: int
+) -> LocalBuildResult:
+    """`checkSubmittedOutputs` (`derivation-builder-impl.cc:715`) up to the realisations, which the caller registers.
+
+    The builder added each output already, so nothing moves and nothing is signed: a content-addressed output
+    needs only its realisation signed.
+    """
+    infos: dict[str, ValidPathInfo] = {}
+    for name, path in submitted.items():
+        info = await engine.query_path_info(path)
+        if info is None:
+            return LocalBuildResult(
+                BuildResultStatus.MISC_FAILURE, show_error(f"path '{magenta(path)}' is not valid"), start, stop
+            )
+        infos[name] = info
+    failure = await anyio.to_thread.run_sync(
+        lambda: check_outputs(
+            drv_path,
+            output_checks(drv.env),
+            infos,
+            store_dir=str(engine.layout.store_dir),
+            path_info=lambda path: anyio.from_thread.run(engine.query_path_info, path),
+        )
+    )
+    if failure is not None:
+        return LocalBuildResult(failure.status, failure.message, start, stop)
+    for name in drv.outputs:
+        if name not in submitted:
+            return LocalBuildResult(
+                BuildResultStatus.OUTPUT_REJECTED,
+                f"builder for '{magenta(drv_path)}' failed to submit output path for '{magenta(name)}'",
+                start,
+                stop,
+            )
+    built = {name: infos[name] for name in drv.outputs}
+    return LocalBuildResult(
+        BuildResultStatus.BUILT, "", start, stop, built, {name: info.path.path for name, info in built.items()}
+    )
 
 
 async def _compare(

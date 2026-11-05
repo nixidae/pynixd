@@ -92,6 +92,19 @@ path goes over the helper's control socket, and the helper binds it into the
 sandbox's shared store mount. When the builder exits, the listener closes, and
 the outputs may then refer to the added paths.
 
+A `builder-rpc-v0` derivation uses the same socket, with the surface of
+`RecursiveSubmitted`. It builds here when the store names
+`dynamic-derivations` and each output is floating. The proxy speaks the
+version and features of `builderRpcV0` and serves only the operations of
+Nix's allowlist (`daemon.cc:332`). The builder adds each output with
+`AddToStoreScanning` (op 1001), which finds its references among the paths
+the build may see, and names it with `SubmitOutput` (op 1000). When the
+builder exits, `local.build` checks the submitted paths as
+`checkSubmittedOutputs` does, and the store registers their realisations.
+Nothing moves out of the sandbox. A check or a repair goes to the daemon.
+Only Nix's master branch has the feature, so its parity test runs the
+`nix` of `NIX_GIT_BIN`.
+
 ## The child: pynixd's own helper
 
 | | bubblewrap (`bwrap`, a Nix package) | a helper of pynixd's (`python -m pynixd_store.builder.child`) |

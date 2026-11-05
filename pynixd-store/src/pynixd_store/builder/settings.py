@@ -78,6 +78,8 @@ class BuildSettings:
     ca_derivations: bool
     git_hashing: bool
     recursive_nix: bool
+    dynamic_derivations: bool
+    """`builder-rpc-v0` needs it (`startDaemon`, `unix-derivation-builder.cc:675`)."""
     impure_env: Mapping[str, str]
     """`impure-env`, which a fixed-output build reads before the process environment."""
     fsync_store_paths: bool = False
@@ -181,6 +183,7 @@ class BuildSettings:
             ca_derivations="ca-derivations" in features,
             git_hashing="git-hashing" in features,
             recursive_nix="recursive-nix" in features,
+            dynamic_derivations="dynamic-derivations" in features,
             # The setting carries `Xp::ConfigurableImpureEnv`: without the feature Nix ignores it.
             impure_env=impure_env() if "configurable-impure-env" in features else {},
             fsync_store_paths=boolean(value("fsync-store-paths", False)),

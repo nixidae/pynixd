@@ -3,6 +3,9 @@
 `startDaemon` (`derivation-builder.cc:1153`) runs `processConnection` with `NotTrusted` and `Recursive` over a
 store that answers only for the input closure and what the builder added since. `RestrictedProxy` is that
 session: pynixd's own op handling, with each `RestrictedStore` override applied before or after it.
+
+A `builder-rpc-v0` build gets `RecursiveSubmitted` instead (`unix-derivation-builder.cc:693`): the version and
+features of `builderRpcV0`, the operations of `daemon.cc:332` alone, and `SubmitOutput` for its outputs.
 """
 
 from __future__ import annotations
@@ -18,11 +21,18 @@ from nix_daemon_protocol.add_indirect_root import AddIndirectRootRequest, AddInd
 from nix_daemon_protocol.add_signatures import AddSignaturesRequest
 from nix_daemon_protocol.add_temp_root import AddTempRootRequest, AddTempRootResponse
 from nix_daemon_protocol.add_temp_roots import AddTempRootsRequest, AddTempRootsResponse
+from nix_daemon_protocol.add_to_store_scanning import AddToStoreScanningRequest, AddToStoreScanningResponse
 from nix_daemon_protocol.build_derivation import BuildDerivationRequest
 from nix_daemon_protocol.build_paths import BuildPathsRequest, BuildPathsResponse
 from nix_daemon_protocol.build_paths_with_results import BuildPathsWithResultsRequest, BuildPathsWithResultsResponse
 from nix_daemon_protocol.build_result import BuildMode
 from nix_daemon_protocol.collect_garbage import CollectGarbageRequest, CollectGarbageResponse
+from nix_daemon_protocol.constants import (
+    FEATURE_ADD_TO_STORE_SCANNING,
+    FEATURE_DISABLE_SET_OPTIONS,
+    FEATURE_REALISATION_WITH_PATH,
+    FEATURE_SUBMIT_OUTPUT,
+)
 from nix_daemon_protocol.ensure_path import EnsurePathRequest, EnsurePathResponse
 from nix_daemon_protocol.find_roots import FindRootsRequest, FindRootsResponse
 from nix_daemon_protocol.is_valid_path import IsValidPathRequest, IsValidPathResponse
@@ -43,21 +53,24 @@ from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest
 from nix_daemon_protocol.register_drv_output import RegisterDrvOutputRequest
 from nix_daemon_protocol.set_options import SetOptionsRequest, SetOptionsResponse
 from nix_daemon_protocol.store_path import StorePath
+from nix_daemon_protocol.submit_output import SubmitOutputRequest, SubmitOutputResponse
+from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.verify_store import VerifyStoreRequest, VerifyStoreResponse
 from nix_daemon_protocol.wire_ops import WIRE_REGISTRY
-from pynixd_store.builder.restriction import AddDependencyError
+from pynixd_store.builder.restriction import AddDependencyError, SubmitError
+from pynixd_store.content_address import parse_method_algo
 from pynixd_store.hintfmt import magenta
 
 from .exceptions import BackendError, ClosingError, PynixdError
 from .goals.engine import _build_failure_message
 from .goals.results import result_succeeded
 from .handlers.nar_from_path import NarFromPathHandler
-from .proxy import DaemonProxy
+from .proxy import BUILDER_ONLY_OPS, DaemonProxy
 from .serde.auth import Role
 from .serde.context import ReadContext, RequestContext
 from .store import LocalDBStore
 from .unix_socket import as_link
-from .wire import UnixNixReader, UnixNixWriter
+from .wire import FramedReader, UnixNixReader, UnixNixWriter
 
 if TYPE_CHECKING:
     import socket
@@ -82,6 +95,19 @@ _ADDS = frozenset({7, 39, 44})
 
 _PASSED = frozenset({45, 47})
 """AddBuildLog and AddPermRoot: an untrusted client gets Nix's refusal from the handler already."""
+
+_SUBMITTING_OPS = _ADDS | {
+    AddToStoreScanningRequest.op,
+    SubmitOutputRequest.op,
+    AddTempRootRequest.op,
+    IsValidPathRequest.op,
+}
+"""The allowlist of `RecursiveSubmitted` (`daemon.cc:332`)."""
+
+BUILDER_RPC_FEATURES = frozenset(
+    {FEATURE_REALISATION_WITH_PATH, FEATURE_DISABLE_SET_OPTIONS, FEATURE_ADD_TO_STORE_SCANNING, FEATURE_SUBMIT_OUTPUT}
+)
+"""The features of `WorkerProto::builderRpcV0` (`worker-protocol.cc:42`)."""
 
 
 class RestrictedError(PynixdError):
@@ -111,6 +137,12 @@ class RestrictedProxy(DaemonProxy):
         self.restriction = restriction
         self._adding: list[str] | None = None
 
+    def honourable_features(self) -> frozenset[str]:
+        """`builderRpcV0` names its own features (`daemon.cc:1170`); recursive mode names those of the stores."""
+        if self.restriction.submitting:
+            return BUILDER_RPC_FEATURES
+        return super().honourable_features()
+
     def server_features(self, honourable: frozenset[str]) -> set[str]:
         """The protocol features alone: none of pynixd's own operations."""
         return set(honourable)
@@ -122,6 +154,18 @@ class RestrictedProxy(DaemonProxy):
         await super().add_temp_root(path)
 
     async def dispatch(self, op_num: int) -> WireResponse | None:
+        if self.restriction.submitting:
+            if op_num not in _SUBMITTING_OPS:
+                # `daemon.cc:345`, before `startWork`.
+                raise ClosingError(f"Operation {magenta(str(op_num))} not allowed inside derivation")
+            if op_num == SubmitOutputRequest.op:
+                return self._submit(await SubmitOutputRequest.from_reader(self._read_context()))
+            if op_num == AddToStoreScanningRequest.op:
+                return await self._add_scanning(await AddToStoreScanningRequest.from_reader(self._read_context()))
+        elif op_num in BUILDER_ONLY_OPS:
+            # `daemon.cc:353`: `SubmitOutput` is `RecursiveSubmitted`'s alone, and `Recursive` of Nix 2.35 has no
+            # `AddToStoreScanning`.
+            raise ClosingError(f"invalid operation {op_num}")
         if op_num in _ADDS:
             return await self._add(op_num)
         if op_num in _PASSED:
@@ -158,6 +202,44 @@ class RestrictedProxy(DaemonProxy):
                     if await self._engine.is_valid_path_uncached(path):
                         await self._add_dependency(path)
         return response
+
+    def _submit(self, request: SubmitOutputRequest) -> SubmitOutputResponse:
+        """`SubmitOutput` (`daemon.cc:1113`)."""
+        try:
+            self.restriction.submit_output(str(request.path), request.output, opaque=request.path.is_opaque)
+        except SubmitError as e:
+            raise RestrictedError(str(e)) from e
+        return SubmitOutputResponse(value=1)
+
+    async def _add_scanning(self, request: AddToStoreScanningRequest) -> AddToStoreScanningResponse:
+        """`AddToStoreScanning` (`daemon.cc:1081`) over `RestrictedStore::addToStoreScanning` (`:294`).
+
+        The candidates are what the build may see (`queryAllValidPaths`), and the new path joins it.
+        """
+        if FEATURE_ADD_TO_STORE_SCANNING not in self.standard_features:
+            raise ClosingError("Adding to store with scanning was requested, but not supported in negotiated protocol")
+        frames = FramedReader(self.r)
+        try:
+            method, algo = parse_method_algo(str(request.cam))
+            path = await self._engine.add_to_store_from_dump(
+                request.path_name,
+                method,
+                algo,
+                frozenset(self.restriction.allowed),
+                frames,
+                root=self.add_temp_root,
+                scan=True,
+            )
+        except ValueError as e:
+            raise RestrictedError(str(e)) from e
+        finally:
+            await frames.ensure_eof()
+        self._engine.invalidate_path_info_cache_for(StorePath(path))
+        await self._add_dependency(path)
+        found = await self._path_info(QueryPathInfoRequest(path=StorePath(path)))
+        if not isinstance(found, QueryPathInfoResponse) or found.info is None:
+            raise RestrictedError(f"path '{magenta(path)}' is not valid")
+        return AddToStoreScanningResponse(info=ValidPathInfo(path=StorePath(path), info=found.info))
 
     async def _add_dependency(self, path: str) -> None:
         try:

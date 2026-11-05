@@ -36,6 +36,7 @@ from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 
+from .builder.refscan import scan_for_references
 from .content_address import ContentAddress, Method, content_addressed_path, parse_any_sha256
 from .errors import PynixdError
 from .hintfmt import magenta
@@ -490,10 +491,12 @@ async def add_dump(
     root: Callable[[str], Awaitable[None]],
     repair: bool = False,
     ignored_acls: frozenset[str] = IGNORED_ACLS,
+    scan: bool = False,
 ) -> str:
     """`LocalStore::addToStoreFromDump` (`local-store.cc:1151`) for a flat, text, NAR or Git dump.
 
-    With *repair* it restores over a valid path (`local-store.cc:1249`).
+    With *repair* it restores over a valid path (`local-store.cc:1249`). With *scan* the references are
+    those of *references* the dump names (`filterReferences`), for `AddToStoreScanning`.
 
     The path is known only once the dump is read, so the dump goes to a
     temporary directory first, as Nix does with a dump past `narBufferSize`.
@@ -513,6 +516,8 @@ async def add_dump(
             digest = (await anyio.to_thread.run_sync(git_hash, staged, algo))[1]
         else:
             digest = reader.hasher.digest()
+        if scan:
+            references = frozenset(await anyio.to_thread.run_sync(scan_for_references, staged, references))
         ca = ContentAddress(method, algo, digest)
         store_dir = str(engine.layout.store_dir)
         path = content_addressed_path(ca, name, references, store_dir)

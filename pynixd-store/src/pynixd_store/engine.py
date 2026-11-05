@@ -321,10 +321,11 @@ class StoreEngine:
         root: Callable[[str], Awaitable[None]],
         repair: bool = False,
         ignored_acls: frozenset[str] = add.IGNORED_ACLS,
+        scan: bool = False,
     ) -> str:
-        """`LocalStore::addToStoreFromDump` (`local-store.cc:1151`)."""
+        """`LocalStore::addToStoreFromDump` (`local-store.cc:1151`); *scan* is `filterReferences`."""
         return await add.add_dump(
-            self, name, method, algo, references, source, root=root, repair=repair, ignored_acls=ignored_acls
+            self, name, method, algo, references, source, root=root, repair=repair, ignored_acls=ignored_acls, scan=scan
         )
 
     async def register_valid_paths(self, infos: Iterable[ValidPathInfo]) -> None:
