@@ -107,10 +107,6 @@ def _framing(write: Write, facts: Facts) -> str | None:
     return "the client sends the NAR unframed" if write.version < FRAMED_NAR else None
 
 
-def _auto_optimise(write: Write, facts: Facts) -> str | None:
-    return "auto-optimise-store" if facts.settings.auto_optimise_store else None
-
-
 def _fsync(write: Write, facts: Facts) -> str | None:
     return "fsync-store-paths" if facts.settings.fsync_store_paths else None
 
@@ -153,7 +149,6 @@ def pynixd_import(info: ValidPathInfo, *, repair: bool = False) -> Write:
 REASONS: tuple[Callable[[Write, Facts], str | None], ...] = (
     _database,
     _framing,
-    _auto_optimise,
     _fsync,
     _git_path,
     _dump,
@@ -183,6 +178,12 @@ async def _client_log(conn: ClientConn | None, level: Verbosity, text: str) -> N
     verbosity = conn.options.verbosity if conn.options is not None else Verbosity.INFO
     if level <= verbosity:
         await conn.send(LogNext(text=f"{text}\n"))
+
+
+def _auto_optimise(client: WriteClient) -> bool | None:
+    """The session's `auto-optimise-store`: `ClientSettings::apply` (`daemon.cc:233`) sets it for the worker's adds too."""
+    value = client.options.overrides.get("auto-optimise-store") if client.options is not None else None
+    return {"true": True, "false": False}.get(value) if value is not None else None
 
 
 async def _no_root(path: str) -> None:
@@ -301,7 +302,9 @@ class WriteRouter:
                 await self._check_signatures(info, settings, client)
             if root:
                 await client.root(str(info.path))
-            await engine.add_to_store(info, source, repair=repair, ignored_acls=settings.ignored_acls)
+            await engine.add_to_store(
+                info, source, repair=repair, ignored_acls=settings.ignored_acls, auto_optimise=_auto_optimise(client)
+            )
         finally:
             engine.invalidate_path_info_cache_for(info.path)
 
@@ -373,6 +376,7 @@ class WriteRouter:
             root=client.root,
             repair=write.repair,
             ignored_acls=settings.ignored_acls,
+            auto_optimise=_auto_optimise(client),
         )
         meter.finish()
         # `invalidatePathInfoCacheFor`: a path valid before this op may hold a negative entry.

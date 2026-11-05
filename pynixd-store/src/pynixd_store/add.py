@@ -36,6 +36,7 @@ from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 
+from . import optimise
 from .builder.refscan import scan_for_references
 from .content_address import ContentAddress, Method, content_addressed_path, parse_any_sha256
 from .errors import PynixdError
@@ -43,7 +44,7 @@ from .hintfmt import magenta
 from .nar_fs import BadArchive, dump_path, restore_path
 from .signing import check_signatures, key_settings, public_keys
 from .source import BlockingReader
-from .utils import nix32_encode
+from .utils import MTIME_STORE, nix32_encode
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
@@ -53,9 +54,6 @@ if TYPE_CHECKING:
     from .source import Source
 
 log = structlog.get_logger(__name__)
-
-MTIME_STORE = 1
-"""`mtimeStore`, `posix-fs-canonicalise.cc:13`."""
 
 IGNORED_ACLS = frozenset({"security.selinux", "system.nfs4_acl", "security.csm"})
 """The default of `ignored-acls` (`local-settings.hh`)."""
@@ -365,6 +363,7 @@ async def add_nar(
     *,
     repair: bool,
     ignored_acls: frozenset[str] = IGNORED_ACLS,
+    auto_optimise: bool | None = None,
 ) -> None:
     """`LocalStore::addToStore` after the signature check, for a path the client has temp-rooted.
 
@@ -385,7 +384,9 @@ async def add_nar(
         if not repair and await engine.is_valid_path_uncached(path):
             delete_lock = True
             return
-        await _restore_into_place(engine, info, real, source, ignored_acls)
+        await _restore_into_place(
+            engine, info, real, source, await _placement(engine, ignored_acls, repair, auto_optimise)
+        )
         await engine.register_valid_paths([info])
         delete_lock = True
     finally:
@@ -423,7 +424,7 @@ async def _restore_into_place(
     info: ValidPathInfo,
     real: Path,
     source: Source,
-    ignored_acls: frozenset[str],
+    placement: Placement,
 ) -> None:
     path = str(info.path)
     temp = await anyio.to_thread.run_sync(TempDir.create, engine.layout.real_store_dir)
@@ -457,7 +458,7 @@ async def _restore_into_place(
                     f"  specified: {magenta(f'{specified_ca.algo}:{nix32_encode(specified_ca.digest)}')}\n"
                     f"  got:       {magenta(f'{specified_ca.algo}:{nix32_encode(actual)}')}"
                 )
-        await anyio.to_thread.run_sync(_move_into_place, staged, real, ignored_acls)
+        await anyio.to_thread.run_sync(_move_into_place, staged, real, placement)
     finally:
         with anyio.CancelScope(shield=True):
             await anyio.to_thread.run_sync(temp.remove)
@@ -492,6 +493,7 @@ async def add_dump(
     repair: bool = False,
     ignored_acls: frozenset[str] = IGNORED_ACLS,
     scan: bool = False,
+    auto_optimise: bool | None = None,
 ) -> str:
     """`LocalStore::addToStoreFromDump` (`local-store.cc:1151`) for a flat, text, NAR or Git dump.
 
@@ -531,7 +533,8 @@ async def add_dump(
         delete_lock = False
         try:
             if repair or not await engine.is_valid_path_uncached(path):
-                await anyio.to_thread.run_sync(_move_into_place, staged, real, ignored_acls)
+                placement = await _placement(engine, ignored_acls, repair, auto_optimise)
+                await anyio.to_thread.run_sync(_move_into_place, staged, real, placement)
                 # A NAR dump hashed with SHA-256 is the NAR hash already (`local-store.cc:1304`).
                 if method is Method.NAR and algo == "sha256":
                     nar_hash, nar_size = ca.digest, reader.size
@@ -559,8 +562,36 @@ async def add_dump(
             await anyio.to_thread.run_sync(temp.remove)
 
 
-def _move_into_place(staged: Path, real: Path, ignored_acls: frozenset[str]) -> None:
+async def _placement(
+    engine: StoreEngine, ignored_acls: frozenset[str], repair: bool, auto_optimise: bool | None
+) -> Placement:
+    """`optimisePath` runs only with `auto-optimise-store`: the session's override, else the store's setting."""
+    optimising = (await engine.settings()).auto_optimise_store if auto_optimise is None else auto_optimise
+    return Placement(ignored_acls, engine.layout.links_dir if optimising else None, repair)
+
+
+def _move_into_place(staged: Path, real: Path, settings: Placement) -> None:
+    """Into place, then `canonicalisePathMetaData` and `optimisePath` (`local-store.cc:1149`, `:1310`)."""
     # A path left by an import that crashed before it registered: Nix deletes it even without repair.
     delete_path(real)
     os.rename(staged, real)
-    canonicalise(real, ignored_acls)
+    canonicalise(real, settings.ignored_acls)
+    if settings.links_dir is not None:
+        settings.links_dir.mkdir(parents=True, exist_ok=True)
+        optimise.optimise_path(
+            real,
+            set(),
+            real_store_dir=real.parent,
+            links_dir=settings.links_dir,
+            stats=optimise.OptimiseStats(),
+            repair=settings.repair,
+        )
+
+
+@dataclass(frozen=True)
+class Placement:
+    """What `_move_into_place` does after the rename. *links_dir* is set with `auto-optimise-store`."""
+
+    ignored_acls: frozenset[str]
+    links_dir: Path | None = None
+    repair: bool = False

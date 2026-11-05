@@ -24,9 +24,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from .add import MTIME_STORE
 from .nar_fs import nar_sha256
-from .utils import nix32_encode
+from .utils import MTIME_STORE, nix32_encode
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -119,13 +118,24 @@ def optimise_path(
     real_store_dir: Path,
     links_dir: Path,
     stats: OptimiseStats,
+    repair: bool = False,
 ) -> None:
-    """`LocalStore::optimisePath_`: deduplicate *path* and, when it is a directory, every file under it."""
+    """`LocalStore::optimisePath_`: deduplicate *path* and, when it is a directory, every file under it.
+
+    With *repair* a link whose content hash differs is corrupt too (`optimise-store.cc:169`).
+    """
     st = os.lstat(path)
 
     if stat.S_ISDIR(st.st_mode):
         for name in _read_directory_ignoring_inodes(path, inode_hash):
-            optimise_path(path / name, inode_hash, real_store_dir=real_store_dir, links_dir=links_dir, stats=stats)
+            optimise_path(
+                path / name,
+                inode_hash,
+                real_store_dir=real_store_dir,
+                links_dir=links_dir,
+                stats=stats,
+                repair=repair,
+            )
         return
 
     # Regular files and symlinks link; anything else is left alone.
@@ -140,12 +150,12 @@ def optimise_path(
     if st.st_nlink > 1 and st.st_ino in inode_hash:
         return
 
-    link_path = links_dir / _nar_hash_32(path)
+    name = _nar_hash_32(path)
+    link_path = links_dir / name
 
     st_link = _maybe_lstat(link_path)
-    # A link of the wrong size is corrupt; drop it and re-create. Only the size,
-    # because `optimiseStore` repairs nothing (`NoRepair`).
-    if st_link is not None and st.st_size != st_link.st_size:
+    # A link of the wrong size is corrupt; drop it and re-create. `optimiseStore` repairs nothing (`NoRepair`).
+    if st_link is not None and (st.st_size != st_link.st_size or (repair and _nar_hash_32(link_path) != name)):
         log.warning("optimise_removing_corrupted_link", link=str(link_path))
         _unlink_if_exists(link_path)
         st_link = None

@@ -7,6 +7,9 @@ import os
 
 NIX32_CHARS = "0123456789abcdfghijklmnpqrsvwxyz"
 
+MTIME_STORE = 1
+"""`mtimeStore`, `posix-fs-canonicalise.cc:13`."""
+
 
 def nix32_encode(data: bytes) -> str:
     """Encode bytes to Nix's base-32 format.

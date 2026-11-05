@@ -140,8 +140,8 @@ async def test_the_daemon_route_wins_and_counts_nothing() -> None:
     [
         ({"writable": False}, Write(op="AddToStoreNar", version=NEW, repair=True), "not writable"),
         ({}, Write(op="AddToStoreNar", version=proto(1, 22)), "NAR unframed"),
-        ({"auto_optimise_store": True, "fsync_store_paths": True}, Write(op="AddToStoreNar", version=NEW), "optimise"),
-        ({"fsync_store_paths": True}, Write(op="AddToStoreNar", version=NEW), "fsync"),
+        # The engine optimises an add itself (`add._placement`), so only `fsync-store-paths` is left.
+        ({"auto_optimise_store": True, "fsync_store_paths": True}, Write(op="AddToStoreNar", version=NEW), "fsync"),
         ({}, Write(op="AddMultipleToStore", version=NEW, info=_info("fixed:git:sha1:" + "0" * 40)), "Git"),
     ],
 )
