@@ -29,7 +29,7 @@ from . import add, build_log, collect, optimise, register, roots, verify
 from .collector import Collection
 from .content_address import parse_any_sha256
 from .drv_parser import read_drv_file
-from .hintfmt import magenta
+from .hintfmt import WARNING_PREFIX, magenta, show_error
 from .liveness import unlink_stale_auto_roots, walk_roots
 from .local_store_db import LocalStoreDB
 from .queries import (
@@ -64,6 +64,7 @@ if TYPE_CHECKING:
     from .store_layout import StoreLayout
 
     Report = Callable[[Verbosity, str], Awaitable[None]]
+    Repair = Callable[[str], Awaitable[None]]
 
 
 def path_info(row: tuple[Any, ...], references: Iterable[str]) -> ValidPathInfo:
@@ -437,7 +438,7 @@ class StoreEngine:
         current, _ = await anyio.to_thread.run_sync(verify.nar_hash_and_size, real)
         return bytes.fromhex(current) == expected
 
-    async def verify_store(self, *, check_contents: bool, report: Report) -> bool:
+    async def verify_store(self, *, check_contents: bool, report: Report, repair: Repair | None = None) -> bool:
         """`LocalStore::verifyStore` (`local-store.cc:1380`): cross-check the database and the store directory.
 
         It holds the big garbage-collector lock for reading, so the collector
@@ -448,9 +449,9 @@ class StoreEngine:
         prints, at Nix's level, in Nix's order.
 
         It writes without *check_contents* (it invalidates a lost path), so it
-        needs a writable store. A `repair` request never reaches the engine;
-        the router sends it to the daemon, which has the builder `repairPath`
-        needs.
+        needs a writable store. *repair* is `Store::repairPath`, which raises
+        `RepairError`; with it, a modified link goes, and a lost or modified
+        path is repaired.
         """
         if not self.writes:
             raise RuntimeError(f"store {self._name}: pynixd_writes is off, so pynixd verifies no store")
@@ -469,10 +470,10 @@ class StoreEngine:
             valid: set[str] = set()
             errors = False
             for path in await self.query_all_valid_paths():
-                errors = await self._verify_path(path, in_dir, done, valid, report) or errors
+                errors = await self._verify_path(path, in_dir, done, valid, report, repair) or errors
             if check_contents:
-                errors = await self._check_link_hashes(report) or errors
-                errors = await self._check_store_hashes(real_store_dir, valid, report) or errors
+                errors = await self._check_link_hashes(report, repair=repair is not None) or errors
+                errors = await self._check_store_hashes(real_store_dir, valid, report, repair) or errors
             return errors
         finally:
             await anyio.to_thread.run_sync(verify.release_gc_lock, gc_lock)
@@ -517,7 +518,13 @@ class StoreEngine:
             await anyio.to_thread.run_sync(verify.release_gc_lock, gc_lock)
 
     async def _verify_path(
-        self, path: StorePath, in_dir: set[str], done: set[str], valid: set[str], report: Report
+        self,
+        path: StorePath,
+        in_dir: set[str],
+        done: set[str],
+        valid: set[str],
+        report: Report,
+        repair: Repair | None = None,
     ) -> bool:
         """`LocalStore::verifyPath` (`local-store.cc:1518`): one path, its referrers first, then itself."""
         key = path.path
@@ -534,7 +541,7 @@ class StoreEngine:
         for referrer in await self.query_referrers(key):
             if referrer.path == key:
                 continue
-            errors = await self._verify_path(referrer, in_dir, done, valid, report) or errors
+            errors = await self._verify_path(referrer, in_dir, done, valid, report, repair) or errors
             if referrer.path in valid:
                 can_invalidate = False
         if can_invalidate:
@@ -542,12 +549,19 @@ class StoreEngine:
             await self._invalidate_path(key)
             return errors
         await report(Verbosity.ERROR, f"path '{key}' disappeared, but it still has valid referrers!")
-        return True
+        if repair is None:
+            return True
+        try:
+            await repair(key)
+        except verify.RepairError as e:
+            await report(Verbosity.WARN, f"{WARNING_PREFIX}{e}")
+            return True
+        return errors
 
-    async def _check_link_hashes(self, report: Report) -> bool:
+    async def _check_link_hashes(self, report: Report, *, repair: bool = False) -> bool:
         """The link-hash pass of `verifyStore` (`local-store.cc:1394`): a modified `.links` entry is an error.
 
-        Without repair the pass only reports; it removes nothing.
+        With *repair* the entry goes instead, and that is no error.
         """
         await report(Verbosity.INFO, "checking link hashes...")
         links_dir = self.layout.links_dir
@@ -559,7 +573,11 @@ class StoreEngine:
                 await report(
                     Verbosity.ERROR, f"link \"{links_dir / name}\" was modified! expected hash {name}, got '{got}'"
                 )
-                errors = True
+                if repair:
+                    await anyio.to_thread.run_sync(verify.unlink_if_exists, links_dir / name)
+                    await report(Verbosity.INFO, f'removed link "{links_dir / name}"')
+                else:
+                    errors = True
         return errors
 
     async def _invalidate_path(self, path: str) -> None:
@@ -567,7 +585,9 @@ class StoreEngine:
             await register.invalidate_path(conn, path)
         self._on_change(StorePath(path=path))
 
-    async def _check_store_hashes(self, real_store_dir: Path, valid: set[str], report: Report) -> bool:
+    async def _check_store_hashes(
+        self, real_store_dir: Path, valid: set[str], report: Report, repair: Repair | None = None
+    ) -> bool:
         """The store-hash pass of `verifyStore` (`local-store.cc:1415`): a modified path is an error.
 
         A path whose hash matches gets a missing hash or a zero size filled in,
@@ -575,7 +595,8 @@ class StoreEngine:
         """
         await report(Verbosity.INFO, "checking store hashes...")
         errors = False
-        for key in valid:
+        # `StorePathSet` order: by base name.
+        for key in sorted(valid, key=lambda p: p.rsplit("/", 1)[-1]):
             name = StorePath(path=key).name
             try:
                 info = await self.query_path_info(key)
@@ -599,7 +620,15 @@ class StoreEngine:
             if stored != verify.NULL_SHA256_HEX and stored != current_hex:
                 expected, got = (f"sha256:{nix32_encode(bytes.fromhex(h))}" for h in (stored, current_hex))
                 await report(Verbosity.ERROR, f"path '{key}' was modified! expected hash '{expected}', got '{got}'")
-                errors = True
+                if repair is None:
+                    errors = True
+                    continue
+                try:
+                    await repair(key)
+                except verify.RepairError as e:
+                    # `logError` of the `Error` the store-hash loop catches (`local-store.cc:1468`).
+                    await report(Verbosity.ERROR, show_error(str(e)))
+                    errors = True
                 continue
             final_hash, final_size = stored, info.info.nar_size
             if stored == verify.NULL_SHA256_HEX:

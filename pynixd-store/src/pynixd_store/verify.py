@@ -7,10 +7,9 @@ the directory lost is removed from the database when its referrers can go too.
 With `check_contents`, each `.links` entry and each valid path is re-hashed
 against the hash Nix recorded.
 
-The algorithm is Nix's across 2.34 and 2.35. The one textual difference, a
-`std::filesystem::remove` against an `unlinkIfExists` for a corrupt link, is on
-the repair path, which the engine never takes: a repair request goes to the
-daemon, as `buildPaths(bmRepair)` needs the builder.
+The algorithm is Nix's across 2.34 and 2.35. A repair calls back into the
+caller for `Store::repairPath`, which substitutes or builds: the engine has
+neither.
 """
 
 from __future__ import annotations
@@ -20,6 +19,7 @@ import hashlib
 import os
 from typing import TYPE_CHECKING
 
+from .errors import PynixdError
 from .nar_fs import dump_path, nar_sha256
 from .utils import nix32_encode
 
@@ -27,6 +27,11 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 GC_LOCK_FILE = "gc.lock"
+
+
+class RepairError(PynixdError):
+    """`Store::repairPath` (`build/entry-points.cc:141`) found no way to repair the path; the text is Nix's."""
+
 
 #: `Hash nullHash(SHA256)` as the `narHash` column holds it: Base16 of 32 zero bytes.
 NULL_SHA256_HEX = "0" * 64
@@ -54,6 +59,11 @@ def list_links(links_dir: Path) -> list[str]:
 def link_hash(link: Path) -> str:
     """The Nix32 NAR hash of a `.links` entry. The entry's name is this hash, so a mismatch means modified content."""
     return nix32_encode(nar_sha256(link).digest())
+
+
+def unlink_if_exists(path: Path) -> None:
+    """`unlinkIfExists` (`file-system.cc`)."""
+    path.unlink(missing_ok=True)
 
 
 def nar_hash_and_size(path: Path) -> tuple[str, int]:

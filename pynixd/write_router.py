@@ -510,23 +510,29 @@ class WriteRouter:
         return OptimiseStoreResponse.fast(value=1)
 
     async def verify_store(
-        self, *, check_contents: bool, repair: bool, conn: ClientConn | None = None
+        self,
+        *,
+        check_contents: bool,
+        repair: bool,
+        conn: ClientConn | None = None,
+        repair_path: Callable[[str], Awaitable[None]] | None = None,
     ) -> VerifyStoreResponse:
         """VerifyStore (op 35): `LocalStore::verifyStore`. Returns whether it found errors.
 
-        A `repair` request goes to the daemon, which has the builder
-        `repairPath` (`buildPaths(bmRepair)`) needs; the engine never repairs.
-        The handler refuses an untrusted repair before this. On the engine
-        route pynixd sends the lines Nix prints; the parity suite's `_queries`
-        reads them.
+        A `repair` request needs *repair_path*, pynixd's `Store::repairPath`;
+        without it the daemon repairs. The handler refuses an untrusted repair
+        before this. On the engine route pynixd sends the lines Nix prints;
+        the parity suite's `_queries` reads them.
         """
         engine = self._root_engine("VerifyStore")
-        if engine is None or repair:
+        if engine is None or (repair and repair_path is None):
             if engine is not None:
                 log.info("write_fallthrough", op="VerifyStore", subject=None, reason="repair")
                 metrics.OP_FALLTHROUGH.labels(store_id=self.store_id, op="VerifyStore").inc()
             return await self.daemon.verify_store(check_contents=check_contents, repair=repair)
-        errors = await engine.verify_store(check_contents=check_contents, report=partial(_client_log, conn))
+        errors = await engine.verify_store(
+            check_contents=check_contents, report=partial(_client_log, conn), repair=repair_path if repair else None
+        )
         return VerifyStoreResponse.fast(value=int(errors))
 
     async def collect_garbage(

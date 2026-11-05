@@ -15,6 +15,8 @@ ANSI_MAGENTA = "\x1b[35;1m"
 
 ERROR_PREFIX = f"{ANSI_RED}error:{ANSI_NORMAL} "
 """The word `showErrorInfo` writes in front of an error. The daemon colours it whatever the client wants."""
+WARNING_PREFIX = f"{ANSI_MAGENTA}warning:{ANSI_NORMAL} "
+"""`showErrorInfo`'s word at `lvlWarn` (`error.cc:245`); `ANSI_WARNING` is magenta."""
 
 
 def magenta(value: object) -> str:

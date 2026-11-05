@@ -1170,3 +1170,68 @@ async def test_a_repair_rebuilds_what_the_daemon_finds_corrupt(tmp_path: Path) -
             assert any(line.startswith("repairing outputs of ") for line in err), here[tag]
     assert any("is corrupted or missing!" in line for line in here["top"][2]), here["top"]
     assert any("found corrupted or missing path" in line for line in here["gone"][2]), here["gone"]
+
+
+async def _verify_repair(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
+    async with _serve(tmp_path, route) as (url, root):
+        common = [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--print-out-paths"]
+        dep_expr, top_expr = _chain("verify")
+        _rc, top, _err, _both = await run_subproc([*common, "--expr", top_expr])
+        _rc, dep, _err, _both = await run_subproc([*common, "--expr", dep_expr])
+        source = tmp_path / route.name / "parity-verify-source"
+        source.write_text("source\n")
+        _rc, added, _err, _both = await run_subproc([NIX_BIN, "store", "add-file", "--store", url, str(source)])
+        files = {
+            name: root / "nix" / "store" / path.strip().rsplit("/", 1)[-1]
+            for name, path in (("top", top), ("dep", dep), ("source", added))
+        }
+        for name in ("top", "source"):
+            files[name].chmod(0o644)
+            files[name].write_bytes(b"corrupt\n")
+        files["dep"].unlink()
+        rc, _out, err, _both = await run_subproc(
+            [str(NIX_BIN.parent / "nix-store"), "--store", url, "--verify", "--check-contents", "--repair"],
+            expected_retcode=None,
+        )
+        contents = {name: path.read_text() if path.exists() else None for name, path in files.items()}
+    valid, refs = _rows(root)
+    return {
+        "rc": rc,
+        "err": err.replace(str(root), "<root>").splitlines(),
+        "contents": contents,
+        "valid": valid,
+        "refs": refs,
+    }
+
+
+async def test_verify_repair_rebuilds_what_the_daemon_finds_corrupt(tmp_path: Path) -> None:
+    """`nix-store --verify --check-contents --repair`: `repairPath` (`build/entry-points.cc:118`) for each bad path.
+
+    A modified output and a lost one that a valid path refers to build again from their derivers
+    (`local-store.cc:1438`, `:1551`); a modified source has none, and "cannot repair path" is an error. Both
+    routes print the same lines; the daemon builds nothing (Lillecarl/nix#393), pynixd restores both outputs.
+    """
+    before = _sent("VerifyStore"), _sent("BuildPathsWithResults"), _sent("BuildDerivation")
+    here = await _verify_repair(tmp_path, OpRoute.pynixd)
+    assert (_sent("VerifyStore"), _sent("BuildPathsWithResults"), _sent("BuildDerivation")) == before, (
+        "pynixd verifies and repairs"
+    )
+    there = await _verify_repair(tmp_path, OpRoute.daemon)
+
+    assert (here["rc"], here["valid"], here["refs"]) == (there["rc"], there["valid"], there["refs"])
+    # The daemon still lacks the dependency when the top's repair checks it again, and says so a second time.
+    missing = [
+        i for i, line in enumerate(there["err"]) if "-parity-repair-verify-dep' is corrupted or missing!" in line
+    ]
+    assert len(missing) == 2, there["err"]
+    expected = there["err"][: missing[1]] + there["err"][missing[1] + 1 :]
+    assert [line for line in here["err"] if not line.startswith("repairing outputs of ")] == expected, (
+        here["err"],
+        there["err"],
+    )
+    assert here["rc"] != 0, here
+    assert any("cannot repair path" in line for line in here["err"]), here["err"]
+    assert here["contents"]["dep"] == "dep\n", here
+    assert (here["contents"]["top"] or "").strip().endswith("-parity-repair-verify-dep"), here
+    assert here["contents"]["source"] == there["contents"]["source"] == "corrupt\n"
+    assert (there["contents"]["top"], there["contents"]["dep"]) == ("corrupt\n", None), there

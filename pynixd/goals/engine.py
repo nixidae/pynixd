@@ -14,9 +14,11 @@ import structlog
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId
 from nix_daemon_protocol.protocol import Verbosity
 from pynixd_store.background import Background
+from pynixd_store.hintfmt import magenta
 from pynixd_store.store_path import StorePath
+from pynixd_store.verify import RepairError
 
-from ..derived_path import DerivedPath
+from ..derived_path import DerivedPath, OutputsAll
 from ..exceptions import BackendError
 from ..op_routes import OpRoute
 from ..serde import (
@@ -294,12 +296,7 @@ class GoalEngine:
         """
         if request.build_mode not in (BuildMode.CHECK, BuildMode.REPAIR):
             return True
-        store = self.ctx.local_store
-        if request.build_mode == BuildMode.REPAIR and (
-            not isinstance(store, LocalDBStore)
-            or store.routes.get(BuildDerivationRequest.op) is not OpRoute.pynixd
-            or await daemon_substitutes(client, self.substitution_queue)
-        ):
+        if request.build_mode == BuildMode.REPAIR and not await self.repairs_here(client):
             return True
         for wire_path in request.derived_paths:
             path = DerivedPath(wire_path.value)
@@ -309,6 +306,44 @@ class GoalEngine:
             if parsed is None or parsed.is_impure or not all(str(p) for p in parsed.output_paths().values()):
                 return True
         return False
+
+    async def repairs_here(self, client: ClientConn | None) -> bool:
+        """Whether pynixd's goals repair for *client*: its own store builds, and its own substituters answer."""
+        store = self.ctx.local_store
+        return (
+            isinstance(store, LocalDBStore)
+            and store.routes.get(BuildDerivationRequest.op) is OpRoute.pynixd
+            and not await daemon_substitutes(client, self.substitution_queue)
+        )
+
+    async def repair_path(self, path: StorePath, client: ClientConn | None) -> None:
+        """`Store::repairPath` (`build/entry-points.cc:118`): substitute *path* with repair, else build its deriver.
+
+        The deriver builds every output in repair mode. Raises `RepairError` with Nix's text when *path* has no
+        valid deriver. Nix makes a fresh `Worker` for each path, so each call takes a fresh engine.
+        """
+        async with self.running():
+            try:
+                ids = await self.substituter_ids_for(client)
+                substitute = await self.get_substitute_path_goal(path, ids, repair=True)
+                attempt = await substitute.result()
+                if attempt.found and result_succeeded(attempt.result.result):
+                    return
+                engine = self._local_db().engine
+                info = await engine.query_path_info(str(path))
+                deriver = str(info.info.deriver) if info is not None else ""
+                if not deriver or not await engine.is_valid_path_uncached(deriver):
+                    raise RepairError(f"cannot repair path '{magenta(str(path))}'")
+                every = DerivedPath._from_components(drv_path=StorePath(deriver), chain=(), outputs=OutputsAll())
+                goal = await self.get_ensure_derived_path_goal(every, BuildMode.REPAIR, ids)
+                await goal.subscribe(client)
+                await goal.result()
+            finally:
+                with anyio.CancelScope(shield=True):
+                    try:
+                        await self.let_go_of_every_build()
+                    finally:
+                        self.reap()
 
     async def _straight_to_the_store(self, request: Any, client: ClientConn | None) -> Any:
         """The local store's daemon does the work, and pynixd carries the bytes.
