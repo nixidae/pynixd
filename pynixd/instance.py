@@ -30,6 +30,7 @@ from .exceptions import GCNotPermittedError
 from .gc import Collector
 from .health import HealthReport, LoopLagMonitor, StallWatchdog
 from .liveness_watch import DirtyFlag, StableRootsWatch
+from .recursive import restricted_server
 from .scheduler import Scheduler
 from .serde.protocol import PynixdGCAction
 from .state import upstream_in_flight
@@ -702,6 +703,7 @@ class Server:
         if isinstance(local_store, LocalDBStore):
             if self.ctx.scheduler:
                 local_store.substitution_queue = self.ctx.scheduler.substitution_queue
+            local_store.recursive_server = restricted_server(self.ctx)
             self.ctx.db = local_store.db
             log.info(
                 "local_store_db_connected",

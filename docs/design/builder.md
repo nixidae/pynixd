@@ -80,6 +80,18 @@ the reference; paths are under `src/libstore/`.
 The guest permits this: `tester` builds into a `?root=` store in the same
 test, and Nix can do that only in a user namespace.
 
+## Recursive Nix
+
+A `recursive-nix` derivation builds here when the store's own
+`experimental-features` names the feature. Before the helper starts,
+`local.build` listens on `<build dir>/.nix-socket` and sets `NIX_REMOTE` to it,
+as `startDaemon` does. The instance gives the builder a `RecursiveServer`: each
+connection is a `RestrictedProxy` (`pynixd/recursive.py`). The proxy answers
+for the input closure and for what the builder added or built since. Each new
+path goes over the helper's control socket, and the helper binds it into the
+sandbox's shared store mount. When the builder exits, the listener closes, and
+the outputs may then refer to the added paths.
+
 ## The child: pynixd's own helper
 
 | | bubblewrap (`bwrap`, a Nix package) | a helper of pynixd's (`python -m pynixd_store.builder.child`) |

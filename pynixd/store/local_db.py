@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
     from nix_daemon_protocol.wire_ops import WireRequest
     from pynixd_store.add import ImportSettings
+    from pynixd_store.builder.restriction import RecursiveServer
     from pynixd_store.drv_parser import Derivation
 
     from ..config import LocalSocketStoreSpec
@@ -275,6 +276,9 @@ class LocalDBStore(Store):
         self._nix_version: str | None = None
         #: The scheduler's race over the substituters; the instance sets it at start.
         self.substitution_queue: SubstitutionQueue | None = None
+        #: What a recursive-nix build's builder talks to; the instance sets it at start, and without it the daemon
+        #: builds those.
+        self.recursive_server: RecursiveServer | None = None
         self.configured_routes = {_OP_CODES[name]: route for name, route in spec.op_routes.items()}
         for op, route in self.configured_routes.items():
             if route is OpRoute.daemon:
@@ -639,11 +643,17 @@ class LocalDBStore(Store):
             or await self._realisations_unsupported(request)
             or await self._check_unsupported(request, settings)
             or _repair_unsupported(request)
+            or self._recursive_unsupported(request)
         )
         if reason is None:
             return settings
         log.info("build_left_to_the_daemon", drv=str(request.drv_path), reason=reason)
         metrics.OP_FALLTHROUGH.labels(store_id=self.store_id, op=request.name).inc()
+        return None
+
+    def _recursive_unsupported(self, request: BuildDerivationRequest) -> str | None:
+        if "recursive-nix" in request.derivation.required_system_features and self.recursive_server is None:
+            return "recursive-nix with no server for the builder"
         return None
 
     async def _check_unsupported(self, request: BuildDerivationRequest, settings: BuildSettings) -> str | None:
@@ -753,6 +763,7 @@ class LocalDBStore(Store):
                 realised=realised,
                 check=checking,
                 repair=repairing,
+                recursive=self.recursive_server,
             )
         finally:
             with anyio.CancelScope(shield=True):

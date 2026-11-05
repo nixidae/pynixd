@@ -328,6 +328,32 @@ class DaemonProxy:
             honourable |= set(store.features)
         return frozenset(honourable & set(wire.SUPPORTED_STANDARD_FEATURES))
 
+    def server_features(self, honourable: frozenset[str]) -> set[str]:
+        """The features this session names in the handshake; *honourable* is `honourable_features()`."""
+        our_features = get_extension_features() | set(honourable)
+        # Features the proxy honours itself join here rather than in
+        # `honourable_features`: that answers what any buildable store
+        # reads, and op 49 never reaches one -- it writes session roots
+        # the way op 11 does. An old backend must not unname it, because
+        # the gate has no fallback: a client that misses the name
+        # silently holds no batch roots at all. Issue #66.
+        our_features.add(wire.FEATURE_ADD_TEMP_ROOTS)
+
+        # Only build-capable stores contribute scheduling capabilities.
+        # Substituters are deliberately non-scheduleable; advertising
+        # their host features would incorrectly tell clients that this
+        # server can build for those platforms.
+        for store in self.stores.values():
+            if store.no_schedule:
+                continue
+            fm = store._feature_matrix
+            if fm:
+                for system, features in fm.items():
+                    our_features.add(f"feature_matrix:{system}")
+                    for feat in features:
+                        our_features.add(f"feature_matrix:{system}:{feat}")
+        return our_features
+
     async def handshake(self) -> None:
         """Server-side daemon protocol handshake."""
         magic = await self.r.read_uint64()
@@ -372,30 +398,7 @@ class DaemonProxy:
                 standard_features=sorted(self.standard_features),
             )
 
-            our_features = get_extension_features() | set(honourable)
-            # Features the proxy honours itself join here rather than in
-            # `honourable_features`: that answers what any buildable store
-            # reads, and op 49 never reaches one -- it writes session roots
-            # the way op 11 does. An old backend must not unname it, because
-            # the gate has no fallback: a client that misses the name
-            # silently holds no batch roots at all. Issue #66.
-            our_features.add(wire.FEATURE_ADD_TEMP_ROOTS)
-
-            # Only build-capable stores contribute scheduling capabilities.
-            # Substituters are deliberately non-scheduleable; advertising
-            # their host features would incorrectly tell clients that this
-            # server can build for those platforms.
-            for store in self.stores.values():
-                if store.no_schedule:
-                    continue
-                fm = store._feature_matrix
-                if fm:
-                    for system, features in fm.items():
-                        our_features.add(f"feature_matrix:{system}")
-                        for feat in features:
-                            our_features.add(f"feature_matrix:{system}:{feat}")
-
-            self.w.write_string_set(our_features)  # our features
+            self.w.write_string_set(self.server_features(honourable))
             await self.w.drain()
 
         if await self.r.read_uint64():  # sendCpu

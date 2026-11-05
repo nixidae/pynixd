@@ -11,6 +11,7 @@ import errno
 import json
 import os
 import signal
+import socket
 import sys
 import tempfile
 import time
@@ -22,6 +23,7 @@ import anyio
 import anyio.from_thread
 import anyio.to_thread
 import structlog
+from anyio.abc import SocketStream
 
 from nix_daemon_protocol.basic_derivation import bool_attr
 from nix_daemon_protocol.build_result import BuildResultStatus
@@ -55,6 +57,7 @@ from .outputs import (
     output_checks,
     random_path,
 )
+from .restriction import SOCKET_NAME, RestrictionContext
 from .spec import BuildenvSpec, ChildSpec, FetchSpec
 
 if TYPE_CHECKING:
@@ -66,6 +69,7 @@ if TYPE_CHECKING:
     from ..engine import StoreEngine
     from .buildlog import Output
     from .outputs import Collected
+    from .restriction import RecursiveServer
     from .settings import BuildSettings
 
 _log = structlog.get_logger(__name__)
@@ -106,8 +110,11 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
     if settings.sandbox == "false" or bool_attr(drv.env, "__noChroot", default=False):
         return "a build without the sandbox"
     features = set(drv.required_system_features)
-    if features & {"recursive-nix", "uid-range"}:
-        return f"the features {sorted(features & {'recursive-nix', 'uid-range'})}"
+    if "uid-range" in features:
+        return "the feature uid-range"
+    # `startDaemon` (`derivation-builder.cc:1155`) refuses the build in the daemon's own words.
+    if "recursive-nix" in features and not settings.recursive_nix:
+        return "recursive-nix without the experimental feature"
     try:
         export_requests(drv.env, store_dir)
     except ValueError as e:
@@ -433,6 +440,7 @@ async def build(
     realised: Mapping[str, str],
     check: bool = False,
     repair: bool = False,
+    recursive: RecursiveServer | None = None,
 ) -> LocalBuildResult:
     """Build *drv*, whose inputs are valid, and register its outputs. `unsupported(drv)` must be `None`.
 
@@ -441,6 +449,7 @@ async def build(
     `derivation-building-goal.cc:1329`). With *check*, each output is valid, and the build
     compares what it makes with it and registers nothing new. With *repair*, an output is valid only when
     its contents match its registered hash (`derivation-building-goal.cc:1334`); the build replaces the rest.
+    *recursive* serves the builder of a `recursive-nix` derivation; it must be given for one.
     """
     layout = engine.layout
     store_dir = str(layout.store_dir)
@@ -537,7 +546,24 @@ async def build(
             log.extend(piece)
             await on_lines(lines.feed(piece))
 
-        failure = await _run(paths, spec, settings, drv_path, keep)
+        control: socket.socket | None = None
+        restriction: RestrictionContext | None = None
+        async with contextlib.AsyncExitStack() as stack:
+            if "recursive-nix" in drv.required_system_features:
+                if recursive is None:
+                    raise ValueError("a recursive-nix build needs a server for its builder")
+                ours, control = socket.socketpair()
+                stack.callback(control.close)
+                stream = await stack.enter_async_context(await SocketStream.from_socket(ours))
+                restriction = RestrictionContext(inputs, stream, layout.real_store_dir)
+                # `startDaemon` (`derivation-builder.cc:1171`): the socket is up before the builder starts.
+                spec["env"]["NIX_REMOTE"] = f"unix://{SANDBOX_BUILD_DIR}/{SOCKET_NAME}"
+                listener = await anyio.to_thread.run_sync(_listen, paths.tmp / SOCKET_NAME)
+                await stack.enter_async_context(recursive(listener, restriction))
+            failure = await _run(paths, spec, settings, drv_path, keep, control)
+        if restriction is not None:
+            # The paths the builder added may be referenced (`derivation-builder.cc:1434`).
+            inputs |= restriction.added
         stop = int(time.time())
         # Nix flushes at the builder's end of file, which a timeout never reaches.
         if not (isinstance(failure, BuildFailure) and failure.status is BuildResultStatus.TIMED_OUT):
@@ -656,23 +682,28 @@ async def _run(
     settings: BuildSettings,
     drv_path: str,
     on_log: Callable[[bytes], Awaitable[None]],
+    control: socket.socket | None = None,
 ) -> BuildFailure | _BuilderFailed | None:
-    """Run the helper on a pseudoterminal, as `startBuild` does, and wait under the two timeouts."""
+    """Run the helper on a pseudoterminal, as `startBuild` does, and wait under the two timeouts.
+
+    *control* is the helper's end of the socket it binds added paths on; it closes here once the helper has it.
+    """
     spec_file = paths.top / "spec.json"
     spec_file.write_text(json.dumps(spec))
     master, slave = os.openpty()
     status_read, status_write = os.pipe()
+    argv = [sys.executable, "-m", "pynixd_store.builder.child", str(spec_file), str(status_write)]
+    fds = [status_write]
+    if control is not None:
+        argv.append(str(control.fileno()))
+        fds.append(control.fileno())
     try:
-        process = await anyio.open_process(
-            [sys.executable, "-m", "pynixd_store.builder.child", str(spec_file), str(status_write)],
-            stdin=None,
-            stdout=slave,
-            stderr=slave,
-            pass_fds=(status_write,),
-        )
+        process = await anyio.open_process(argv, stdin=None, stdout=slave, stderr=slave, pass_fds=fds)
     finally:
         os.close(slave)
         os.close(status_write)
+        if control is not None:
+            control.close()
     timed_out: str | None = None
     try:
         with anyio.move_on_after(settings.timeout or None) as overall:
@@ -713,6 +744,22 @@ async def _run(
     if code:
         return _BuilderFailed(f"failed with exit code {code}")
     return None
+
+
+def _listen(path: Path) -> socket.socket:
+    """`createUnixDomainSocket(path, 0600)` (`derivation-builder.cc:1174`).
+
+    It binds through the directory's descriptor: the build directory of a deep store is longer than `sun_path`.
+    """
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    directory = os.open(path.parent, os.O_PATH | os.O_DIRECTORY)
+    try:
+        sock.bind(f"/proc/self/fd/{directory}/{path.name}")
+    finally:
+        os.close(directory)
+    path.chmod(0o600)
+    sock.listen()
+    return sock
 
 
 def _disk_full(*paths: Path) -> bool:

@@ -77,6 +77,7 @@ class BuildSettings:
     build_dir: str | None
     ca_derivations: bool
     git_hashing: bool
+    recursive_nix: bool
     impure_env: Mapping[str, str]
     """`impure-env`, which a fixed-output build reads before the process environment."""
     fsync_store_paths: bool = False
@@ -179,6 +180,7 @@ class BuildSettings:
             build_dir=value("build-dir") or None,
             ca_derivations="ca-derivations" in features,
             git_hashing="git-hashing" in features,
+            recursive_nix="recursive-nix" in features,
             # The setting carries `Xp::ConfigurableImpureEnv`: without the feature Nix ignores it.
             impure_env=impure_env() if "configurable-impure-env" in features else {},
             fsync_store_paths=boolean(value("fsync-store-paths", False)),

@@ -1475,3 +1475,98 @@ async def test_verify_repair_rebuilds_what_the_daemon_finds_corrupt(tmp_path: Pa
     assert (here["contents"]["top"] or "").strip().endswith("-parity-repair-verify-dep"), here
     assert here["contents"]["source"] == there["contents"]["source"] == "corrupt\n"
     assert (there["contents"]["top"], there["contents"]["dep"]) == ("corrupt\n", None), there
+
+
+# `recursive.nix` of Nix's functional suite, with what the sandbox has: a shell and no other program.
+RECURSIVE = """
+let
+  nix = builtins.storePath "@NIX@";
+  inner = builtins.toFile "parity-inner.nix" ''
+    derivation { name = "parity-inner"; system = builtins.currentSystem; builder = "/bin/sh";
+      args = [ "-c" "echo $fnord blaat > $out" ]; fnord = builtins.toFile "fnord" "fnord"; }
+  '';
+in derivation {
+  name = "parity-recursive"; system = builtins.currentSystem; builder = "/bin/sh";
+  requiredSystemFeatures = [ "recursive-nix" ];
+  PATH = "${nix}/bin";
+  dummy = builtins.toFile "dummy" "bla bla";
+  unreachable = builtins.unsafeDiscardStringContext (builtins.toFile "unreachable" "x");
+  inherit inner;
+  args = [ (builtins.toFile "parity-recursive.sh" ''
+    set -e
+    opts="--extra-experimental-features nix-command"
+    nix $opts path-info $dummy
+    nix $opts build --no-link $dummy
+    if nix $opts path-info $unreachable; then exit 10; fi
+    if nix $opts build --no-link $unreachable; then exit 11; fi
+    echo foobar > foobar
+    foobar=$(nix $opts store add-path ./foobar)
+    nix $opts path-info $foobar
+    n=0
+    for p in $(nix $opts path-info --all); do n=$((n+1)); done
+    inner1=$(nix $opts build --no-link --print-out-paths --file $inner)
+    nix $opts key generate-secret --key-name k > key
+    signed=$(nix $opts store sign --key-file ./key $dummy 2>&1 || true)
+    echo "$foobar $inner1 $n" > $out
+    nix $opts path-info --json $inner1 >> $out
+    echo "$signed" >> $out
+  '') ];
+}
+"""
+
+
+def _nix_store_path() -> str:
+    return "/".join(os.path.realpath(NIX_BIN).split("/")[:4])
+
+
+async def _recursive(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
+    nix = _nix_store_path()
+    async with _serve(tmp_path, route, experimental_features=("recursive-nix",)) as (url, root):
+        await run_subproc([NIX_BIN, "copy", "--no-check-sigs", "--to", url, nix])
+        _rc, out, err, _both = await run_subproc(
+            [
+                NIX_BIN,
+                "build",
+                "--store",
+                url,
+                "--impure",
+                "--no-link",
+                "--print-out-paths",
+                "--print-build-logs",
+                "--expr",
+                RECURSIVE.replace("@NIX@", nix),
+            ]
+        )
+        top = out.strip()
+        _rc, info, _err, _both = await run_subproc([NIX_BIN, "path-info", "--store", url, "--json", "--recursive", top])
+        contents = (root / top.lstrip("/")).read_text()
+    valid, refs = _rows(root)
+    return {
+        "top": top,
+        "contents": contents,
+        "info": _without_times(json.loads(info)),
+        "valid": valid,
+        "refs": refs,
+        "log": [line for line in err.splitlines() if line.startswith("parity-")],
+    }
+
+
+async def test_a_recursive_nix_build_builds_what_the_daemon_builds(tmp_path: Path) -> None:
+    """`startDaemon` (`derivation-builder.cc:1153`) serves a `RestrictedStore` (`restricted-store.cc`) in the sandbox.
+
+    The builder reaches its inputs and what it adds or builds, and nothing else (`recursive.sh`).
+    """
+    before = _fallthrough()
+    here = await _recursive(tmp_path, OpRoute.pynixd)
+    assert _fallthrough() == before, "pynixd's sandbox builds a recursive-nix derivation"
+    there = await _recursive(tmp_path, OpRoute.daemon)
+
+    for key in ("top", "contents", "info", "valid", "refs", "log"):
+        assert here[key] == there[key], (key, here[key], there[key])
+    first, *_info = here["contents"].splitlines()
+    foobar, inner1, count = first.split()
+    assert foobar.endswith("-foobar") and inner1.endswith("-parity-inner"), first
+    assert int(count) > 2, first
+    # `Store::unsupported` names the restricted store.
+    assert "operation 'addSignatures' is not supported by store" in here["contents"], here["contents"]
+    assert {foobar, inner1} <= set(here["info"][here["top"]]["references"]), here["info"]

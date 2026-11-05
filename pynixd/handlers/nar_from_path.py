@@ -37,7 +37,10 @@ class NarFromPathHandler(Handler):
         req = await NarFromPathRequest.from_reader(
             ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
         )
+        await self.serve(ctx, req)
 
+    async def serve(self, ctx: RequestContext, req: NarFromPathRequest) -> None:
+        """Stream the NAR of the decoded *req*."""
         # 2. Query path info to determine nar_size
         store: DaemonStore | LocalDBStore = ctx.proxy.local_store
         info_resp = await store.execute(QueryPathInfoRequest(path=req.path))

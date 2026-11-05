@@ -103,6 +103,9 @@ making the scalar itself a Pydantic model.
 ### Proxy (`DaemonProxy`)
 The component that manages the connection from a Nix client, handles the protocol handshake, and routes requests to the internal logic.
 
+### Restricted Proxy (`RestrictedProxy`)
+The session a recursive-nix builder opens on `/build/.nix-socket` (`pynixd/recursive.py`). It is a `DaemonProxy` for an untrusted client that applies Nix's `RestrictedStore` to each op: a query sees only the input closure and the paths the builder added or built since. Each new path joins the **Restriction Context** (`pynixd_store/builder/restriction.py`), and the sandbox helper binds it into the running sandbox.
+
 ### Tracker (`PathTracker`)
 An internal database (SQLite) that tracks which `StorePath`s are available on which `Store`, enabling locality-aware scheduling.
 
