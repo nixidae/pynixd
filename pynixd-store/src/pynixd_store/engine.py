@@ -319,10 +319,13 @@ class StoreEngine:
         source: Source,
         *,
         root: Callable[[str], Awaitable[None]],
+        repair: bool = False,
         ignored_acls: frozenset[str] = add.IGNORED_ACLS,
     ) -> str:
-        """`LocalStore::addToStoreFromDump` (`local-store.cc:1168`), without repair."""
-        return await add.add_dump(self, name, method, algo, references, source, root=root, ignored_acls=ignored_acls)
+        """`LocalStore::addToStoreFromDump` (`local-store.cc:1151`)."""
+        return await add.add_dump(
+            self, name, method, algo, references, source, root=root, repair=repair, ignored_acls=ignored_acls
+        )
 
     async def register_valid_paths(self, infos: Iterable[ValidPathInfo]) -> None:
         """Make *infos* valid in Nix's own tables, as `LocalStore::registerValidPaths` does.

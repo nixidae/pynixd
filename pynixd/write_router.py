@@ -107,14 +107,6 @@ def _framing(write: Write, facts: Facts) -> str | None:
     return "the client sends the NAR unframed" if write.version < FRAMED_NAR else None
 
 
-def _repair(write: Write, facts: Facts) -> str | None:
-    """`addToStoreFromDump` with repair restores over a valid path; pynixd's dump import never does.
-
-    A NAR import repairs as `LocalStore::addToStore` does (`local-store.cc:1054`).
-    """
-    return "repair of a dump" if write.repair and write.dump is not None else None
-
-
 def _auto_optimise(write: Write, facts: Facts) -> str | None:
     return "auto-optimise-store" if facts.settings.auto_optimise_store else None
 
@@ -158,7 +150,6 @@ def pynixd_import(info: ValidPathInfo, *, repair: bool = False) -> Write:
 REASONS: tuple[Callable[[Write, Facts], str | None], ...] = (
     _database,
     _framing,
-    _repair,
     _auto_optimise,
     _fsync,
     _git_path,
@@ -377,6 +368,7 @@ class WriteRouter:
             dump.references,
             Metered(source, meter.on_bytes),
             root=client.root,
+            repair=write.repair,
             ignored_acls=settings.ignored_acls,
         )
         meter.finish()

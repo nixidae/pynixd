@@ -450,9 +450,12 @@ async def add_dump(
     source: Source,
     *,
     root: Callable[[str], Awaitable[None]],
+    repair: bool = False,
     ignored_acls: frozenset[str] = IGNORED_ACLS,
 ) -> str:
-    """`LocalStore::addToStoreFromDump` (`local-store.cc:1168`) for a flat, text or NAR dump, without repair.
+    """`LocalStore::addToStoreFromDump` (`local-store.cc:1151`) for a flat, text or NAR dump.
+
+    With *repair* it restores over a valid path (`local-store.cc:1249`).
 
     The path is known only once the dump is read, so the dump goes to a
     temporary directory first, as Nix does with a dump past `narBufferSize`.
@@ -473,7 +476,7 @@ async def add_dump(
         store_dir = str(engine.layout.store_dir)
         path = content_addressed_path(ca, name, references, store_dir)
         await root(path)
-        if await engine.is_valid_path_uncached(path):
+        if not repair and await engine.is_valid_path_uncached(path):
             return path
         real = engine.layout.real_store_dir / path.rsplit("/", 1)[-1]
         lock = PathLock(real)
@@ -481,7 +484,7 @@ async def add_dump(
         await anyio.to_thread.run_sync(lock.acquire)
         delete_lock = False
         try:
-            if not await engine.is_valid_path_uncached(path):
+            if repair or not await engine.is_valid_path_uncached(path):
                 await anyio.to_thread.run_sync(_move_into_place, staged, real, ignored_acls)
                 # A NAR dump hashed with SHA-256 is the NAR hash already (`local-store.cc:1304`).
                 if method is Method.NAR and algo == "sha256":

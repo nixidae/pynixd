@@ -30,6 +30,7 @@ from tests._conftest.import_lab import (
     VALID_PATHS,
     client,
     files,
+    real,
     rows,
     run,
     server,
@@ -118,9 +119,9 @@ async def test_nix_store_add_and_eval_add_as_the_daemon_does(tmp_path: Path, add
     await run(str(NIX_BIN), "store", "verify", "--store", str(b), "--no-trust", *paths)
 
 
-async def _send(conn: Connection, name: str, cam: str, dump: bytes) -> AddToStoreResponse:
+async def _send(conn: Connection, name: str, cam: str, dump: bytes, *, repair: int = 0) -> AddToStoreResponse:
     """One AddToStore with *dump* in one frame; raises `BackendError`."""
-    request = AddToStoreRequest(path_name=name, cam=ContentAddress(value=cam), references=set(), repair=0)
+    request = AddToStoreRequest(path_name=name, cam=ContentAddress(value=cam), references=set(), repair=repair)
     await request.to_writer(WriteContext.from_conn(conn))
     framed = conn.w.framed()
     framed.write(dump)
@@ -154,6 +155,51 @@ async def test_each_mode_of_a_raw_client_adds_as_the_daemon_does(tmp_path: Path,
         assert rows(b, query) == rows(c, query)
     for path, *_ in rows(b, VALID_PATHS):
         assert files(b, path) == files(c, path), path
+
+
+def _corrupt(root: Path, path: str) -> None:
+    """A changed file, as a disk or a hand edit leaves it."""
+    target = real(root, path)
+    if target.is_dir():
+        target.chmod(0o755)
+        (target / "bin").chmod(0o755)
+        target = target / "bin" / "hello"
+    target.chmod(0o644)
+    target.write_bytes(b"corrupt\n")
+
+
+async def test_a_repair_restores_a_corrupted_dump_as_the_daemon_does(tmp_path: Path, added: list[str]) -> None:
+    """Op 7 with repair restores a valid path (`local-store.cc:1249`); without repair it keeps the path as it is."""
+    tree, flat = _inputs(tmp_path)
+    sends = [
+        ("tree", "fixed:r:sha256", b"".join(dump_path(tree))),
+        ("flat", "fixed:sha256", flat.read_bytes()),  # noqa: ASYNC240 -- test setup
+        ("note", "text:sha256", b"a note\n"),
+    ]
+    b, c = tmp_path / "b", tmp_path / "c"
+    for root, route in ((b, "pynixd"), (c, "daemon")):
+        socket = tmp_path / f"{route}.sock"
+        async with server(root, socket, route), client(socket) as conn:
+            paths = [str((await _send(conn, *send)).info.path) for send in sends]
+            good = {path: files(root, path) for path in paths}
+            for path in paths:
+                _corrupt(root, path)
+            corrupt = {path: files(root, path) for path in paths}
+            for send in sends:
+                await _send(conn, *send)
+            assert {path: files(root, path) for path in paths} == corrupt
+            for send in sends:
+                await _send(conn, *send, repair=1)
+            assert {path: files(root, path) for path in paths} == good
+        if route == "pynixd":
+            assert added == paths * 3, "pynixd took each send, none went to the daemon"
+            added.clear()
+    assert added == []
+    for query in (VALID_PATHS, REFS):
+        assert rows(b, query) == rows(c, query)
+    for path in paths:
+        assert files(b, path) == files(c, path), path
+    assert not list((b / "nix" / "store").glob("tmp-*"))
 
 
 @_ROUTES

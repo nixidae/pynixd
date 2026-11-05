@@ -114,11 +114,11 @@ async def test_the_engine_repairs_a_nar_import() -> None:
     assert await _router().engine_takes(Write(op="AddToStoreNar", version=NEW, repair=True, info=_info()))
 
 
-async def test_a_dump_repair_goes_to_the_daemon_before_auto_optimise() -> None:
-    """pynixd's `addToStoreFromDump` never restores over a valid path."""
-    router = _router({7: OpRoute.pynixd}, auto_optimise_store=True)
+async def test_the_engine_repairs_a_dump() -> None:
+    """`addToStoreFromDump` restores over a valid path with repair (`local-store.cc:1249`)."""
+    router = _router({7: OpRoute.pynixd})
     write = Write(op="AddToStore", version=NEW, repair=True, dump=Dump("x", "fixed:r:sha256", frozenset()))
-    assert await router.why_the_daemon(write) == "repair of a dump"
+    assert await router.engine_takes(write)
 
 
 async def test_the_daemon_route_wins_and_counts_nothing() -> None:
