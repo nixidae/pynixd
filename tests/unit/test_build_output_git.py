@@ -1,4 +1,4 @@
-"""`pynixd_store.builder.outputs._git_hash` hashes a tree as `git::dumpHash` does (`libutil/git.cc:314`).
+"""`pynixd_store.add.git_hash` hashes a tree as `git::dumpHash` does (`libutil/git.cc:314`).
 
 The expected hashes are what `nix hash path --mode git --base16` printed for the same tree under Nix 2.35.3.
 """
@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from pynixd_store.builder.outputs import _git_hash
+from pynixd_store.add import git_hash
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -38,7 +38,7 @@ def _tree(root: Path) -> Path:
 @pytest.mark.parametrize("algo", ["sha1", "sha256"])
 def test_a_tree_hashes_as_nix_hashes_it(tmp_path: Path, algo: str) -> None:
     root = _tree(tmp_path)
-    assert _git_hash(root, algo) == (0o40000, bytes.fromhex(TREE[algo]))
-    assert _git_hash(root / "a.txt", algo) == (0o100644, bytes.fromhex(BLOB[algo]))
-    assert _git_hash(root / "run", algo)[0] == 0o100755
-    assert _git_hash(root / "link", algo)[0] == 0o120000
+    assert git_hash(root, algo) == (0o40000, bytes.fromhex(TREE[algo]))
+    assert git_hash(root / "a.txt", algo) == (0o100644, bytes.fromhex(BLOB[algo]))
+    assert git_hash(root / "run", algo)[0] == 0o100755
+    assert git_hash(root / "link", algo)[0] == 0o120000

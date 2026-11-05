@@ -1,4 +1,4 @@
-"""pynixd adds AddToStore's dump on its `pynixd` route as `LocalStore::addToStoreFromDump` does (`local-store.cc:1168`).
+"""pynixd adds AddToStore's dump on its `pynixd` route as `LocalStore::addToStoreFromDump` does (`local-store.cc:1151`).
 
 An evaluation writes its derivations and `builtins.toFile` through op 7, as
 text with references (`remote-store.cc:addCAToStore`). `nix store add`
@@ -21,6 +21,7 @@ from nix_daemon_protocol.content_address import ContentAddress
 from pynixd.exceptions import BackendError
 from pynixd.serde.context import ReadContext, WriteContext
 from pynixd_store.engine import StoreEngine
+from pynixd_store.hintfmt import magenta
 from pynixd_store.nar_fs import dump_path
 from tests._conftest.import_lab import (
     EXPR,
@@ -44,6 +45,7 @@ if TYPE_CHECKING:
     from pynixd.connection import Connection
 
 _ROUTES = pytest.mark.parametrize("route", ["pynixd", "daemon"])
+_GIT = ("git-hashing",)
 
 
 @pytest.fixture
@@ -213,14 +215,62 @@ async def test_a_dump_that_is_not_a_nar_is_refused_and_the_session_goes_on(tmp_p
     assert not list((b / "nix" / "store").glob("tmp-*"))
 
 
-async def test_a_git_dump_goes_to_the_daemon(tmp_path: Path, added: list[str]) -> None:
-    """pynixd does not hash a Git address (`git::dumpHash`), so the daemon adds it."""
-    _, flat = _inputs(tmp_path)
+async def _git_add(store: str, algo: str, source: Path) -> str:
+    return await run(
+        str(NIX_BIN), "store", "add", "--store", store, "--extra-experimental-features", "git-hashing",
+        "--mode", "git", "--hash-algo", algo, str(source),
+    )  # fmt: skip
+
+
+async def test_a_git_dump_adds_as_the_daemon_does(tmp_path: Path, added: list[str]) -> None:
+    """With `git-hashing`, op 7 hashes a Git dump's tree with `git::dumpHash` (`local-store.cc:1238`).
+
+    `nix store add --mode git` sends op 39, whose import checks the address the same way (`local-store.cc:1113`).
+    """
+    tree, flat = _inputs(tmp_path)
+    sends = [
+        ("tree", "fixed:git:sha1", b"".join(dump_path(tree))),
+        ("tree", "fixed:git:sha256", b"".join(dump_path(tree))),
+        ("flat", "fixed:git:sha1", b"".join(dump_path(flat))),
+    ]
+    nix = str(NIX_BIN)
+    answers, printed = {}, {}
+    b, c = tmp_path / "b", tmp_path / "c"
+    for root, route in ((b, "pynixd"), (c, "daemon")):
+        socket = tmp_path / f"{route}.sock"
+        async with server(root, socket, route, experimental_features=_GIT):
+            async with client(socket) as conn:
+                answers[route] = [
+                    (await _send(conn, name, cam, dump)).info.model_dump(exclude={"info": {"registration_time"}})
+                    for name, cam, dump in sends
+                ]
+            store = f"unix://{socket}?root={root}"
+            printed[route] = [
+                await _git_add(store, algo, source) for algo, source in (("sha1", tree / "bin"), ("sha256", flat))
+            ]
+    assert len(added) == len(sends)
+    assert answers["pynixd"] == answers["daemon"]
+    assert printed["pynixd"] == printed["daemon"]
+    for query in (VALID_PATHS, REFS):
+        assert rows(b, query) == rows(c, query)
+    paths = [p for (p, *_) in rows(b, VALID_PATHS)]
+    assert len(paths) == len(sends) + 2
+    for path in paths:
+        assert files(b, path) == files(c, path), path
+    await run(
+        nix, "store", "verify", "--store", str(b), "--extra-experimental-features", "git-hashing", "--no-trust", *paths
+    )
+
+
+@_ROUTES
+async def test_a_git_dump_without_git_hashing_is_refused_in_nix_words(tmp_path: Path, route: str) -> None:
+    """The daemon's `ContentAddressMethod::parse` requires the feature (`content-address.cc:17`); a client's is ignored."""
+    tree, _ = _inputs(tmp_path)
     b, socket = tmp_path / "b", tmp_path / "b.sock"
-    async with server(b, socket, "pynixd", experimental_features=("git-hashing",)):
-        path = await run(
-            str(NIX_BIN), "store", "add", "--store", f"unix://{socket}?root={b}",
-            "--extra-experimental-features", "git-hashing", "--mode", "git", "--hash-algo", "sha1", str(flat),
-        )  # fmt: skip
-    assert added == []
-    assert str(rows(b, f"select ca from ValidPaths where path = '{path}'")[0][0]).startswith("fixed:git:sha1:")
+    async with server(b, socket, route), client(socket) as conn:
+        with pytest.raises(
+            BackendError, match=re.escape(f"experimental Nix feature '{magenta('git-hashing')}' is disabled")
+        ):
+            await _send(conn, "tree", "fixed:git:sha1", b"".join(dump_path(tree)))
+        resp = await _send(conn, "good", "fixed:sha256", b"good\n")
+        assert await valid(conn, str(resp.info.path))

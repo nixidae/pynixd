@@ -121,6 +121,11 @@ async def test_the_engine_repairs_a_dump() -> None:
     assert await router.engine_takes(write)
 
 
+async def test_the_engine_imports_a_git_path_with_git_hashing() -> None:
+    write = Write(op="AddToStoreNar", version=NEW, info=_info("fixed:git:sha1:" + "0" * 40))
+    assert await _router(git_hashing=True).engine_takes(write)
+
+
 async def test_the_daemon_route_wins_and_counts_nothing() -> None:
     before = _fallthroughs("AddToStoreNar")
     router = _router({39: OpRoute.daemon})

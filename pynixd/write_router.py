@@ -116,8 +116,11 @@ def _fsync(write: Write, facts: Facts) -> str | None:
 
 
 def _git_path(write: Write, facts: Facts) -> str | None:
+    """Without `git-hashing` the daemon refuses a Git address, in Nix's words."""
+    if facts.settings.git_hashing:
+        return None
     if write.info is not None and str(write.info.info.ca).startswith("fixed:git:"):
-        return "a Git content address"
+        return "a Git content address without git-hashing"
     return None
 
 
@@ -133,8 +136,8 @@ def _dump(write: Write, facts: Facts) -> str | None:
         content_addressed_path(ContentAddress(method, algo, b""), dump.name, dump.references, "/nix/store")
     except ValueError as error:
         return str(error)
-    if method is Method.GIT:
-        return "a Git content address"
+    if method is Method.GIT and not facts.settings.git_hashing:
+        return "a Git content address without git-hashing"
     return None
 
 

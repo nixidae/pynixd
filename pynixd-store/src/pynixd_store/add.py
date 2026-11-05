@@ -1,5 +1,5 @@
 """A path into the store as `LocalStore::addToStore` (`local-store.cc:1046` of Nix 2.35) and
-`addToStoreFromDump` (`local-store.cc:1168`) put one there.
+`addToStoreFromDump` (`local-store.cc:1151`) put one there.
 
 The file system half is here and synchronous: the path lock, the temporary
 directory, the hash of the restored tree, and `canonicalisePathMetaData`. An
@@ -81,6 +81,8 @@ class ImportSettings:
     auto_optimise_store: bool = False
     fsync_store_paths: bool = False
     ignored_acls: frozenset[str] = IGNORED_ACLS
+    #: The daemon's own `experimental-features`; a client's are ignored (`daemon.cc:278`).
+    git_hashing: bool = False
 
     @classmethod
     def from_nix_config(cls, config: Mapping[str, Any]) -> ImportSettings:
@@ -94,7 +96,12 @@ class ImportSettings:
             auto_optimise_store=bool(value("auto-optimise-store")),
             fsync_store_paths=bool(value("fsync-store-paths")),
             ignored_acls=frozenset(value("ignored-acls")),
+            git_hashing="git-hashing" in _words(value("experimental-features")),
         )
+
+
+def _words(raw: Any) -> list[str]:
+    return raw.split() if isinstance(raw, str) else list(raw or ())
 
 
 @dataclass
@@ -243,8 +250,11 @@ class HashModulo:
 def content_hash(ca: ContentAddress, path: Path, hash_part: str, dump: Callable[[Path], Iterable[bytes]]) -> bytes:
     """The hash `addToStore` takes of the restored tree to check its address (`local-store.cc:1099`).
 
-    *dump* is `nar_fs.dump_path`; a flat or text address hashes the file's bytes.
+    *dump* is `nar_fs.dump_path`; a flat or text address hashes the file's bytes, and a Git
+    address takes `git::dumpHash`, with no modulo.
     """
+    if ca.method is Method.GIT:
+        return git_hash(path, ca.algo)[1]
     sink = HashModulo(ca.algo, hash_part.encode())
     if ca.method is Method.NAR:
         for piece in dump(path):
@@ -258,6 +268,34 @@ def content_hash(ca: ContentAddress, path: Path, hash_part: str, dump: Callable[
     else:
         raise AddError(f"pynixd does not hash the content address method '{ca.method}'")
     return sink.finish()
+
+
+def git_hash(path: Path, algo: str) -> tuple[int, bytes]:
+    """`git::dumpHash` (`libutil/git.cc:314`): the Git mode and object hash of *path*.
+
+    A tree sorts its entries by name as bytes, a directory's name with a trailing `/`.
+    """
+    st = os.lstat(path)
+    h = hashlib.new(algo)
+    if stat.S_ISREG(st.st_mode):
+        h.update(b"blob %d\0" % st.st_size)
+        with open(path, "rb") as file:
+            while piece := file.read(64 * 1024):
+                h.update(piece)
+        return (0o100755 if st.st_mode & stat.S_IXUSR else 0o100644), h.digest()
+    if stat.S_ISLNK(st.st_mode):
+        target = os.readlink(os.fsencode(path))
+        h.update(b"blob %d\0" % len(target) + target)
+        return 0o120000, h.digest()
+    if stat.S_ISDIR(st.st_mode):
+        entries: dict[bytes, tuple[bytes, int, bytes]] = {}
+        for name in os.listdir(os.fsencode(path)):
+            mode, digest = git_hash(path / os.fsdecode(name), algo)
+            entries[name + b"/" if mode == 0o40000 else name] = (name, mode, digest)
+        body = b"".join(b"%o %s\0" % (mode, name) + digest for _, (name, mode, digest) in sorted(entries.items()))
+        h.update(b"tree %d\0" % len(body) + body)
+        return 0o40000, h.digest()
+    raise AddError(f"file '{magenta(str(path))}' has an unsupported type")
 
 
 def _walk(path: str) -> Iterator[str]:
@@ -453,7 +491,7 @@ async def add_dump(
     repair: bool = False,
     ignored_acls: frozenset[str] = IGNORED_ACLS,
 ) -> str:
-    """`LocalStore::addToStoreFromDump` (`local-store.cc:1151`) for a flat, text or NAR dump.
+    """`LocalStore::addToStoreFromDump` (`local-store.cc:1151`) for a flat, text, NAR or Git dump.
 
     With *repair* it restores over a valid path (`local-store.cc:1249`).
 
@@ -461,18 +499,21 @@ async def add_dump(
     temporary directory first, as Nix does with a dump past `narBufferSize`.
     *root* temp-roots the path before the validity check.
     """
-    if method is Method.GIT:
-        raise ValueError("pynixd does not hash a Git dump")
     temp = await anyio.to_thread.run_sync(TempDir.create, engine.layout.real_store_dir)
     try:
         staged = temp.path / "x"
         reader = HashingReader(BlockingReader(source), algo)
-        restore = restore_path if method is Method.NAR else _restore_flat
+        # A Git dump comes as a NAR (`daemon.cc:430`).
+        restore = _restore_flat if method in (Method.FLAT, Method.TEXT) else restore_path
         try:
             await anyio.to_thread.run_sync(restore, staged, reader)
         except BadArchive as error:
             raise AddError(str(error)) from error
-        ca = ContentAddress(method, algo, reader.hasher.digest())
+        if method is Method.GIT:
+            digest = (await anyio.to_thread.run_sync(git_hash, staged, algo))[1]
+        else:
+            digest = reader.hasher.digest()
+        ca = ContentAddress(method, algo, digest)
         store_dir = str(engine.layout.store_dir)
         path = content_addressed_path(ca, name, references, store_dir)
         await root(path)

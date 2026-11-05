@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from nix_daemon_protocol.add_multiple_to_store import AddMultipleToStoreRequest, AddMultipleToStoreResponse
+from nix_daemon_protocol.content_address import ContentAddress
 from nix_daemon_protocol.nar_hash import NARHash
 from pynixd.exceptions import BackendError
 from pynixd.serde.context import ReadContext, WriteContext
@@ -228,22 +229,59 @@ async def test_an_unsigned_path_is_refused_unless_the_client_says_not_to_check(t
         assert await valid(conn, IA)
 
 
-async def test_a_git_address_goes_to_the_daemon_between_two_imports(tmp_path: Path, imported: list[str]) -> None:
-    """pynixd does not hash a Git address (`git::dumpHash`), so that one path goes to the daemon as AddToStoreNar."""
+async def _git_lab(tmp_path: Path) -> tuple[Path, list[str]]:
+    """Store A, and a flat path, a Git-addressed tree and the plain tree, in that order."""
     a, order, _ = await lab(tmp_path)
-    nix = str(NIX_BIN)
-    source = tmp_path / "git-source"
-    source.write_bytes(b"git\n")  # noqa: ASYNC240 -- test setup
     git = await run(
-        nix, "store", "add", "--store", str(a), "--extra-experimental-features", "git-hashing",
-        "--mode", "git", "--hash-algo", "sha1", str(source),
+        str(NIX_BIN), "store", "add", "--store", str(a), "--extra-experimental-features", "git-hashing",
+        "--mode", "git", "--hash-algo", "sha1", str(tmp_path / "tree"),
     )  # fmt: skip
     assert str(rows(a, f"select ca from ValidPaths where path = '{git}'")[0][0]).startswith("fixed:git:")
     flat = next(p for p in order if p.endswith("-flat"))
     tree = next(p for p in order if p.endswith("-tree"))
+    return a, [flat, git, tree]
+
+
+async def test_a_git_address_is_imported_as_the_daemon_does(tmp_path: Path, imported: list[str]) -> None:
+    """With `git-hashing`, `addToStore` checks a Git address with `git::dumpHash` (`local-store.cc:1113`)."""
+    a, paths = await _git_lab(tmp_path)
+    b, c = tmp_path / "b", tmp_path / "c"
+    for root, route in ((b, "pynixd"), (c, "daemon")):
+        socket = tmp_path / f"{route}.sock"
+        async with server(root, socket, route, experimental_features=("git-hashing",)), client(socket) as conn:
+            await _send(conn, _items(a, paths))
+        if route == "pynixd":
+            assert imported == paths, "pynixd imported each path, none went to the daemon"
+            imported.clear()
+    assert imported == []
+    for query in (VALID_PATHS, REFS):
+        assert rows(b, query) == rows(c, query)
+    for path in paths:
+        assert files(b, path) == files(c, path) == files(a, path), path
+
+
+@_ROUTES
+async def test_a_wrong_git_address_is_refused_as_the_daemon_refuses_it(tmp_path: Path, route: str) -> None:
+    a, [flat, git, _] = await _git_lab(tmp_path)
+    wrong = ContentAddress(value="fixed:git:sha1:" + "0" * 32)
     b, socket = tmp_path / "b", tmp_path / "b.sock"
-    async with server(b, socket, "pynixd", experimental_features=("git-hashing",)), client(socket) as conn:
-        await _send(conn, _items(a, [flat, git, tree]))
-        for path in (flat, git, tree):
-            assert await valid(conn, path), path
-    assert imported == [flat, tree]
+    async with server(b, socket, route, experimental_features=("git-hashing",)), client(socket) as conn:
+        with pytest.raises(BackendError) as refused:
+            await _send(conn, [*_items(a, [flat]), (info_of(a, git, ca=wrong), nar_of(a, git))])
+        assert await valid(conn, flat)
+        assert not await valid(conn, git)
+    assert str(refused.value).startswith(f"ca hash mismatch importing path '{magenta(git)}';\n  specified: ")
+
+
+@_ROUTES
+async def test_a_git_address_without_git_hashing_is_refused(tmp_path: Path, route: str) -> None:
+    """pynixd's route sends the Git path to the daemon, which refuses it in Nix's words."""
+    a, [flat, git, tree] = await _git_lab(tmp_path)
+    b, socket = tmp_path / "b", tmp_path / "b.sock"
+    async with server(b, socket, route), client(socket) as conn:
+        with pytest.raises(
+            BackendError, match=re.escape(f"experimental Nix feature '{magenta('git-hashing')}' is disabled")
+        ):
+            await _send(conn, _items(a, [flat, git, tree]))
+        assert await valid(conn, flat)
+        assert not await valid(conn, git)

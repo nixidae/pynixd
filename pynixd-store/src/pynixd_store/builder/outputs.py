@@ -9,7 +9,6 @@ rewritten.
 from __future__ import annotations
 
 import base64
-import hashlib
 import os
 import re
 import stat
@@ -26,7 +25,7 @@ from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 
-from ..add import PathLock, TempDir, _nar_hash, canonicalise, content_hash, delete_path
+from ..add import AddError, PathLock, TempDir, _nar_hash, canonicalise, content_hash, delete_path, git_hash
 from ..content_address import (
     ContentAddress,
     Method,
@@ -309,7 +308,10 @@ def _content_addressed(
     old_hash_part = _hash_part(s.path)
     if method is Method.GIT:
         # `git::dumpHash` takes no modulo: the scratch hash part stays in what it hashes.
-        digest = _git_hash(actual, algo)[1]
+        try:
+            digest = git_hash(actual, algo)[1]
+        except AddError as e:
+            raise PlainError(str(e)) from e
     else:
         digest = content_hash(ContentAddress(method, algo, b""), actual, old_hash_part, dump_path)
     got = ContentAddress(method, algo, digest)
@@ -325,34 +327,6 @@ def _content_addressed(
     if path != s.path and (self_reference or discard):
         _rewrite(actual, {old_hash_part: _hash_part(path)}, real_store_dir)
     return _Addressed(got, path, others | {path} if self_reference else others)
-
-
-def _git_hash(path: Path, algo: str) -> tuple[int, bytes]:
-    """`git::dumpHash` (`libutil/git.cc:314`): the Git mode and object hash of *path*.
-
-    A tree sorts its entries by name as bytes, a directory's name with a trailing `/`.
-    """
-    st = os.lstat(path)
-    h = hashlib.new(algo)
-    if stat.S_ISREG(st.st_mode):
-        h.update(b"blob %d\0" % st.st_size)
-        with open(path, "rb") as file:
-            while piece := file.read(64 * 1024):
-                h.update(piece)
-        return (0o100755 if st.st_mode & stat.S_IXUSR else 0o100644), h.digest()
-    if stat.S_ISLNK(st.st_mode):
-        target = os.readlink(os.fsencode(path))
-        h.update(b"blob %d\0" % len(target) + target)
-        return 0o120000, h.digest()
-    if stat.S_ISDIR(st.st_mode):
-        entries: dict[bytes, tuple[bytes, int, bytes]] = {}
-        for name in os.listdir(os.fsencode(path)):
-            mode, digest = _git_hash(path / os.fsdecode(name), algo)
-            entries[name + b"/" if mode == 0o40000 else name] = (name, mode, digest)
-        body = b"".join(b"%o %s\0" % (mode, name) + digest for _, (name, mode, digest) in sorted(entries.items()))
-        h.update(b"tree %d\0" % len(body) + body)
-        return 0o40000, h.digest()
-    raise PlainError(f"file '{magenta(str(path))}' has an unsupported type")
 
 
 def compare_outputs(

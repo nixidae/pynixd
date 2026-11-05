@@ -45,6 +45,12 @@ def test_pynixd_adds_what_it_can_hash() -> None:
     assert _why("f", "fixed:sha1", [], version=NEW) is None
 
 
+def test_pynixd_adds_a_git_dump_with_git_hashing() -> None:
+    dump = Dump("f", "fixed:git:sha1", frozenset())
+    facts = Facts(writable=True, settings=ImportSettings(git_hashing=True))
+    assert first_reason(Write(op="AddToStore", version=NEW, dump=dump), facts) is None
+
+
 @pytest.mark.parametrize(
     ("name", "method", "refs", "version", "reason"),
     [
