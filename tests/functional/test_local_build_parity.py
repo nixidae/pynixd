@@ -11,9 +11,12 @@ from __future__ import annotations
 import base64
 import contextlib
 import hashlib
+import io
 import json
 import os
 import sqlite3
+import tarfile
+import zipfile
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -1164,6 +1167,96 @@ async def test_builtin_buildenv_builds_the_profile_the_daemon_builds(tmp_path: P
     assert {"bin/c", "share/doc/b", "manifest.nix"} <= set(here["profile"][2][0]), here["profile"]
     assert any("skipping dangling symlink" in line for line in here["profile"][3]), here["profile"]
     assert all(here[name][0] == 1 for name in ("conflict", "non-directory", "directory")), here
+
+
+def _tar_member(
+    tar: tarfile.TarFile, name: str, kind: bytes, *, mode: int = 0o644, data: bytes = b"", link: str = ""
+) -> None:
+    info = tarfile.TarInfo(name)
+    info.type, info.mode, info.size, info.linkname, info.mtime = kind, mode, len(data), link, 1234567890
+    tar.addfile(info, io.BytesIO(data) if data else None)
+
+
+def _tarballs(root: Path) -> None:
+    root.mkdir(parents=True)
+    with tarfile.open(root / "channel.tar.xz", "w:xz") as tar:
+        _tar_member(tar, "nixexprs-1/", tarfile.DIRTYPE, mode=0o755)
+        _tar_member(tar, "nixexprs-1/default.nix", tarfile.REGTYPE, data=b"{ }: 1\n")
+        _tar_member(tar, "nixexprs-1/closed/", tarfile.DIRTYPE, mode=0o200)
+        _tar_member(tar, "nixexprs-1/closed/f", tarfile.REGTYPE, data=b"inside\n")
+        _tar_member(tar, "nixexprs-1/run", tarfile.REGTYPE, mode=0o755, data=b"#!/bin/sh\n")
+        _tar_member(tar, "nixexprs-1/again", tarfile.LNKTYPE, link="nixexprs-1/default.nix")
+        _tar_member(tar, "nixexprs-1/link", tarfile.SYMTYPE, link="default.nix")
+    with zipfile.ZipFile(root / "channel.zip", "w") as archive:
+        archive.writestr("zipped/default.nix", "{ }: 2\n")
+    with tarfile.open(root / "empty.tar", "w"):
+        pass
+    with tarfile.open(root / "two.tar.gz", "w:gz") as tar:
+        _tar_member(tar, "one", tarfile.REGTYPE, data=b"1\n")
+        _tar_member(tar, "two", tarfile.REGTYPE, data=b"2\n")
+    (root / "garbage.tar").write_bytes(b"this is not an archive\n" * 64)
+
+
+#: Each case: (channelName, tarball).
+CHANNELS = {
+    "tar-xz": ("nixpkgs", "channel.tar.xz"),
+    "zip": ("other", "channel.zip"),
+    "empty": ("empty", "empty.tar"),
+    "two": ("two", "two.tar.gz"),
+    "garbage": ("garbage", "garbage.tar"),
+    "separator": ("a/b", "channel.tar.xz"),
+}
+
+
+def _channel(tarballs: Path, case: str) -> str:
+    name, tarball = CHANNELS[case]
+    return (
+        f'derivation {{ name = "parity-channel-{case}"; system = "builtin"; builder = "builtin:unpack-channel"; '
+        f'channelName = "{name}"; src = builtins.path {{ path = {tarballs}/{tarball}; name = "{tarball}"; }}; }}'
+    )
+
+
+async def _channels(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
+    results: dict[str, Any] = {}
+    # One set for both routes: gzip and zip write the time of writing, and the tarball is an input.
+    tarballs = tmp_path / "tarballs"
+    if not tarballs.exists():
+        _tarballs(tarballs)
+    async with _serve(tmp_path, route) as (url, root):
+        for case in CHANNELS:
+            rc, out, err, _both = await run_subproc(
+                [
+                    NIX_BIN,
+                    "build",
+                    "--store",
+                    url,
+                    "--impure",
+                    "--no-link",
+                    "--print-out-paths",
+                    "--expr",
+                    _channel(tarballs, case),
+                ],
+                expected_retcode=None,
+            )
+            paths = out.split()
+            results[case] = rc, paths, [_links(root / p.lstrip("/")) for p in paths], err.splitlines()
+    results["valid"], results["refs"] = _rows(root)
+    return results
+
+
+async def test_builtin_unpack_channel_unpacks_what_the_daemon_unpacks(tmp_path: Path) -> None:
+    """`builtinUnpackChannel` (`builtins/unpack-channel.cc:6`) over `unpackTarfile` (`tarfile.cc:202`): a tar.xz
+    with a closed directory, a hard link and a symbolic link, a zip, and the errors of an empty tarball, one of
+    two files, one that is no archive, and a channel name with a separator."""
+    before = _fallthrough()
+    here = await _channels(tmp_path, OpRoute.pynixd)
+    assert _fallthrough() == before, "pynixd's sandbox runs every builtin:unpack-channel"
+    there = await _channels(tmp_path, OpRoute.daemon)
+
+    assert here == there
+    assert here["tar-xz"][0] == here["zip"][0] == 0, here
+    assert {"nixpkgs/closed/f", "nixpkgs/again", "nixpkgs/link"} <= set(here["tar-xz"][2][0]), here["tar-xz"]
+    assert all(here[case][0] == 1 for case in ("empty", "two", "garbage", "separator")), here
 
 
 REBUILDS = {

@@ -4,6 +4,7 @@
   hatchling,
   aiosqlite,
   anyio,
+  libarchive-c,
   pycurl,
   pynacl,
   seccomp,
@@ -29,6 +30,7 @@ pythonBuilder (finalAttrs: {
   dependencies = [
     aiosqlite
     anyio
+    libarchive-c
     pycurl
     pynacl
     seccomp

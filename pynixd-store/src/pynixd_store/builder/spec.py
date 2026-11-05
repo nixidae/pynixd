@@ -46,6 +46,14 @@ class BuildenvSpec(TypedDict):
     manifest: str | None
 
 
+class UnpackChannelSpec(TypedDict):
+    """`builtin:unpack-channel`: its output and the derivation's own attributes, `None` for one it lacks."""
+
+    out: str
+    channel_name: str | None
+    src: str | None
+
+
 class ChildSpec(TypedDict):
     builder: str
     args: list[str]
@@ -64,3 +72,4 @@ class ChildSpec(TypedDict):
     fetchurl: FetchSpec | None
     """A builtin to run in the sandbox in place of *builder*."""
     buildenv: BuildenvSpec | None
+    unpack_channel: UnpackChannelSpec | None

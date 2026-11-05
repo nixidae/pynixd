@@ -47,6 +47,7 @@ def _spec(root: Path, script: str, **over: object) -> ChildSpec:
         "filter_syscalls": True,
         "fetchurl": None,
         "buildenv": None,
+        "unpack_channel": None,
     }
     spec.update(over)  # type: ignore[typeddict-item]  # the tests vary one key at a time
     return spec

@@ -77,11 +77,15 @@ def _join(directory: str, name: str) -> str:
     return directory + name if directory.endswith("/") else f"{directory}/{name}"
 
 
-def _warn(text: str) -> None:
-    """`warn` through `JSONLogger::log`. Not `fetchurl.log_message`: the daemon imports this module, and that one loads curl."""
-    event = {"action": "msg", "level": LVL_WARN, "msg": WARNING_PREFIX + text}
+def write_message(level: int, text: str) -> None:
+    """`JSONLogger::log`. Not `fetchurl.log_message`: the daemon imports this module, and that one loads curl."""
+    event = {"action": "msg", "level": level, "msg": text}
     line = "@nix " + json.dumps(event, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n"
     os.write(2, line.encode(errors="replace"))
+
+
+def _warn(text: str) -> None:
+    write_message(LVL_WARN, WARNING_PREFIX + text)
 
 
 def _system_error(e: OSError, what: str) -> BuildenvError:

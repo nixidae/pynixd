@@ -153,7 +153,18 @@ def _builtin_unsupported(drv: BasicDerivation, settings: BuildSettings) -> str |
         return _buildenv_unsupported(drv)
     if drv.builder == "builtin:fetchurl":
         return _fetchurl_unsupported(drv, settings)
+    if drv.builder == "builtin:unpack-channel":
+        return _unpack_channel_unsupported(drv)
     return f"the builtin builder '{drv.builder}'"
+
+
+def _unpack_channel_unsupported(drv: BasicDerivation) -> str | None:
+    """Structured attrs hide the attributes in `__json`; an output but `out` is a `map::at` throw."""
+    if "__json" in drv.env:
+        return "builtin:unpack-channel with structured attrs"
+    if set(drv.outputs) != {"out"}:
+        return f"builtin:unpack-channel with the outputs {sorted(drv.outputs)}"
+    return None
 
 
 def _buildenv_unsupported(drv: BasicDerivation) -> str | None:
@@ -509,6 +520,11 @@ async def build(
             "filter_syscalls": settings.filter_syscalls,
             "fetchurl": fetch,
             "buildenv": _buildenv_spec(drv, scratch["out"]) if drv.builder == "builtin:buildenv" else None,
+            "unpack_channel": (
+                {"out": scratch["out"], "channel_name": drv.env.get("channelName"), "src": drv.env.get("src")}
+                if drv.builder == "builtin:unpack-channel"
+                else None
+            ),
         }
         if os.path.exists(HOME_DIR):
             raise ValueError(f"home directory '{HOME_DIR}' exists; please remove it to assure purity of builds")

@@ -31,7 +31,7 @@ from pathlib import Path
 
 import seccomp
 
-from . import buildenv, fetchurl
+from . import buildenv, fetchurl, unpack_channel
 from .spec import ChildSpec
 
 MS_BIND = 4096
@@ -239,6 +239,8 @@ def _run_child(spec: ChildSpec) -> None:
         fetchurl.run(spec["fetchurl"])
     if spec["buildenv"] is not None:
         buildenv.run(spec["buildenv"])
+    if spec["unpack_channel"] is not None:
+        unpack_channel.run(spec["unpack_channel"])
     builder = spec["builder"]
     argv = [os.path.basename(builder), *spec["args"]]
     os.execve(builder, argv, spec["env"])

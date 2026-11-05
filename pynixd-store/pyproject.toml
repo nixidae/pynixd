@@ -16,6 +16,7 @@ license-files = [ "LICENSE" ]
 dependencies = [
     "aiosqlite",
     "anyio",
+    "libarchive-c",
     "nix-daemon-protocol>=0.1.0",
     "pycurl",
     "pynacl",

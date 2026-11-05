@@ -51,10 +51,8 @@ def test_what_pynixd_does_not_fetch_goes_to_the_daemon(drv: BasicDerivation, rea
 
 
 def test_another_builtin_goes_to_the_daemon() -> None:
-    drv = BasicDerivation(
-        outputs={"out": DerivationOutput(path="/x")}, platform="builtin", builder="builtin:unpack-channel"
-    )
-    assert _reason(drv) == "the builtin builder 'builtin:unpack-channel'"
+    drv = BasicDerivation(outputs={"out": DerivationOutput(path="/x")}, platform="builtin", builder="builtin:other")
+    assert _reason(drv) == "the builtin builder 'builtin:other'"
 
 
 def test_a_plain_output_is_nixs_own_refusal_and_goes_to_the_daemon() -> None:
