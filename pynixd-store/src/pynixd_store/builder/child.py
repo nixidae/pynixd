@@ -9,6 +9,8 @@ A setup error is written to *STATUS_FD*, which is close-on-exec: a clean exec
 closes it empty. The exit status of this process is the builder's: a code, or
 the same signal.
 
+With a third argument, *CONTROL_FD*, the helper serves `_add_path` on that socket while the builder runs.
+
 Unprivileged only: the helper maps its own uid and gid to the sandbox ids, as
 Nix does without build users.
 """
@@ -29,7 +31,10 @@ import struct
 import sys
 from pathlib import Path
 
+import anyio
 import seccomp
+from anyio.abc import SocketStream
+from anyio.streams.buffered import BufferedByteReceiveStream
 
 from . import buildenv, fetchurl, unpack_channel
 from .spec import ChildSpec
@@ -37,6 +42,7 @@ from .spec import ChildSpec
 MS_BIND = 4096
 MS_REC = 16384
 MS_PRIVATE = 1 << 18
+MS_SHARED = 1 << 20
 MNT_DETACH = 2
 PR_SET_PDEATHSIG = 1
 PR_SET_NO_NEW_PRIVS = 38
@@ -127,6 +133,11 @@ def _enter_chroot(spec: ChildSpec) -> None:
     root = Path(spec["root"])
     _mount(None, "/", None, MS_PRIVATE | MS_REC)
     _mount(str(root), str(root), None, MS_BIND)
+    # `enterChroot` (`linux-derivation-builder.cc:742`): a shared store, so a bind that `_add_path` makes in this
+    # namespace after the `unshare` below still reaches the builder. A shared root makes `pivot_root` fail.
+    store = str(root / spec["store_dir"].lstrip("/"))
+    _mount(store, store, None, MS_BIND)
+    _mount(None, store, None, MS_SHARED)
     for in_sandbox, source, optional in spec["binds"]:
         _bind(source, root / in_sandbox.lstrip("/"), optional)
 
@@ -250,6 +261,54 @@ def _report(status_fd: int, message: str) -> None:
     os.write(status_fd, message.encode(errors="surrogateescape"))
 
 
+def _add_path(spec: ChildSpec, source: str, target: str) -> str | None:
+    """`addDependency` (`linux-derivation-builder.cc:959`): bind *source* at *target* in the running sandbox.
+
+    The helper's own process is still in the namespace from before `pivot_root`, so it needs no `setns`.
+    """
+    store = spec["store_dir"]
+    if os.path.dirname(target) != store:
+        return f"'{target}' is not a path in the store '{store}'"
+    in_root = Path(spec["root"]) / target.lstrip("/")
+    # `addDependencyPrep` (`chroot-derivation-builder.cc:117`).
+    if os.path.lexists(in_root):
+        return f"store path '{target}' already exists in the sandbox"
+    try:
+        _bind(source, in_root, False)
+    except (OSError, SetupError) as e:
+        return str(e)
+    return None
+
+
+async def _answer_adds(spec: ChildSpec, control: socket.socket) -> None:
+    """Answer each add request on *control*: a JSON line in, a JSON line out."""
+    async with await SocketStream.from_socket(control) as stream:
+        lines = BufferedByteReceiveStream(stream)
+        while True:
+            try:
+                line = await lines.receive_until(b"\n", 1 << 20)
+            except (anyio.EndOfStream, anyio.IncompleteRead):
+                return
+            request = json.loads(line)
+            # Not `to_thread`: after `unshare(CLONE_NEWPID)` the kernel refuses this process a thread
+            # ("can't start new thread"). The bind is a few syscalls, and the loop serves nothing else.
+            error = _add_path(spec, request["source"], request["target"])
+            await stream.send(json.dumps({"error": error}).encode() + b"\n")
+
+
+async def _wait_serving(spec: ChildSpec, pid: int, control: socket.socket | None) -> None:
+    """Return when *pid* exits, and serve `_answer_adds` until then."""
+    pidfd = os.pidfd_open(pid)
+    try:
+        async with anyio.create_task_group() as tg:
+            if control is not None:
+                tg.start_soon(_answer_adds, spec, control)
+            await anyio.wait_readable(pidfd)
+            tg.cancel_scope.cancel()
+    finally:
+        os.close(pidfd)
+
+
 def _exit_like(status: int) -> None:
     if os.WIFSIGNALED(status):
         sig = os.WTERMSIG(status)
@@ -259,9 +318,12 @@ def _exit_like(status: int) -> None:
 
 
 def main() -> None:
-    spec_path, status_arg = sys.argv[1:3]
+    spec_path, status_arg, *control_arg = sys.argv[1:4]
     status_fd = int(status_arg)
     os.set_inheritable(status_fd, False)
+    control = socket.socket(fileno=int(control_arg[0])) if control_arg else None
+    if control is not None:
+        control.set_inheritable(False)
     try:
         _prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
         spec: ChildSpec = json.loads(Path(spec_path).read_text())
@@ -285,6 +347,8 @@ def main() -> None:
             _report(status_fd, str(e))
         os._exit(1)
     os.close(status_fd)
+    # Only now an event loop: the `unshare` above refuses a process with a second thread, and a fork copies a loop.
+    anyio.run(_wait_serving, spec, pid, control)
     _pid, status = os.waitpid(pid, 0)
     _exit_like(status)
 

@@ -525,6 +525,7 @@ async def build(
                 if drv.builder == "builtin:unpack-channel"
                 else None
             ),
+            "store_dir": store_dir,
         }
         if os.path.exists(HOME_DIR):
             raise ValueError(f"home directory '{HOME_DIR}' exists; please remove it to assure purity of builds")

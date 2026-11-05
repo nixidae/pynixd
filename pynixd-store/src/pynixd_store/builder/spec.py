@@ -73,3 +73,5 @@ class ChildSpec(TypedDict):
     """A builtin to run in the sandbox in place of *builder*."""
     buildenv: BuildenvSpec | None
     unpack_channel: UnpackChannelSpec | None
+    store_dir: str
+    """The logical store directory: a shared mount in the sandbox, where the helper adds a path late."""

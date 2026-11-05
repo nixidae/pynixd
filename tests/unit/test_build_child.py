@@ -48,6 +48,7 @@ def _spec(root: Path, script: str, **over: object) -> ChildSpec:
         "fetchurl": None,
         "buildenv": None,
         "unpack_channel": None,
+        "store_dir": "/nix/store",
     }
     spec.update(over)  # type: ignore[typeddict-item]  # the tests vary one key at a time
     return spec
@@ -142,6 +143,73 @@ try:
 except OSError as e:
     print(errno.errorcode[e.errno])
 """
+
+
+# The file, not the directory: `_bind` makes the mount point before it mounts.
+_WAIT_FOR = (
+    'until [ -e "$1/file" ]; do sleep 0.05; done; ls "$1"; cat "$1/file"; until [ -e "$2" ]; do sleep 0.05; done'
+)
+
+
+def _add(control: socket.socket, source: str, target: str) -> dict[str, str | None]:
+    control.sendall(json.dumps({"source": source, "target": target}).encode() + b"\n")
+    reply: dict[str, str | None] = json.loads(control.makefile("rb").readline())
+    return reply
+
+
+def test_a_path_added_during_the_build_appears_in_the_sandbox(tmp_path: Path) -> None:
+    """`addDependency` (`linux-derivation-builder.cc:959`): a bind into the namespace before `pivot_root`.
+
+    It reaches the builder because the sandbox's store is a shared subtree (`:745`).
+    """
+    source = tmp_path / "x-added"
+    source.mkdir()
+    (source / "file").write_text("late\n")
+    args = ["-c", _WAIT_FOR, "sh", "/store2/x-added", "/store2/done"]
+    spec = _spec(tmp_path / "root", "", args=args, store_dir="/store2")
+    (tmp_path / "root/store2").mkdir()
+    spec_file = tmp_path / "spec.json"
+    spec_file.write_text(json.dumps(spec))
+    read, write = os.pipe()
+    ours, theirs = socket.socketpair()
+    with (
+        ours,
+        subprocess.Popen(
+            [sys.executable, "-m", "pynixd_store.builder.child", str(spec_file), str(write), str(theirs.fileno())],
+            pass_fds=(write, theirs.fileno()),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        ) as proc,
+    ):
+        os.close(write)
+        theirs.close()
+        ours.settimeout(10)
+        try:
+            replies = [
+                _add(ours, str(source), "/store2/x-added"),
+                _add(ours, str(source), "/store2/x-added"),
+                _add(ours, str(source), "/elsewhere/x-added"),
+            ]
+        except Exception as e:
+            proc.kill()
+            raise AssertionError(f"the helper said:\n{proc.communicate()[0]}") from e
+        finally:
+            (tmp_path / "root/store2/done").touch()
+        # A builder that never sees the path would hold the block open for good.
+        try:
+            out, _ = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, _ = proc.communicate()
+    assert replies == [
+        {"error": None},
+        {"error": "store path '/store2/x-added' already exists in the sandbox"},
+        {"error": "'/elsewhere/x-added' is not a path in the store '/store2'"},
+    ]
+    with os.fdopen(read) as status:
+        assert (proc.returncode, status.read()) == (0, ""), out
+    assert out.split() == ["file", "late"]
 
 
 def _landlock_abi() -> int:
