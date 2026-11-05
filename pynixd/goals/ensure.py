@@ -325,6 +325,8 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
 
     async def _ensure_opaque(self) -> GoalResult:
         store_path = StorePath(self.derived_path.drv_path)
+        if self.build_mode == BuildMode.REPAIR:
+            return await self._repair_opaque(store_path)
         path = StorePath(path=self.derived_path.drv_path)
         response = await self.engine.ctx.local_store.execute(IsValidPathRequest(path=path), mark=False)
         if response.valid:
@@ -354,6 +356,21 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             return substitute
         return goal_failure(
             f"path '{store_path}' is required, but there is no substituter that can build it",
+            BuildResultStatus.NO_SUBSTITUTERS,
+        )
+
+    async def _repair_opaque(self, store_path: StorePath) -> GoalResult:
+        """`Worker::makeGoal` under repair (`worker.cc:138`): substitute the path again, valid or not, and no more.
+
+        Nix checks no contents and builds nothing here, so a good path with no substituter fails.
+        """
+        goal = await self.engine.get_substitute_path_goal(store_path, self.substituter_ids, repair=True)
+        attempt = await self.run_child(goal)
+        if attempt.found and result_succeeded(attempt.result.result):
+            return self._opaque_success(store_path)
+        # `substitution-goal.cc:157`: one answer for a failed substituter and for none.
+        return goal_failure(
+            f"path '{_magenta(str(store_path))}' is required, but there is no substituter that can build it",
             BuildResultStatus.NO_SUBSTITUTERS,
         )
 

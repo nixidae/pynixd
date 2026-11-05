@@ -1172,6 +1172,27 @@ async def test_a_repair_rebuilds_what_the_daemon_finds_corrupt(tmp_path: Path) -
     assert any("found corrupted or missing path" in line for line in here["gone"][2]), here["gone"]
 
 
+async def _opaque_repair(tmp_path: Path, route: OpRoute) -> tuple[int, list[str], list[str]]:
+    async with _serve(tmp_path, route) as (url, root):
+        common = [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--print-out-paths"]
+        dep_expr, _top_expr = _chain("opaque")
+        _rc, dep, _err, _both = await run_subproc([*common, "--expr", dep_expr])
+        rc, out, err, _both = await run_subproc([*common, "--repair", dep.strip()], expected_retcode=None)
+    return rc, out.split(), err.replace(str(root), "<root>").splitlines()
+
+
+async def test_a_repair_of_a_store_path_substitutes_it_as_the_daemon_does(tmp_path: Path) -> None:
+    """`nix build --repair <path>`: a substitution with repair alone (`worker.cc:138`), so a good path fails here."""
+    before = _sent("BuildPathsWithResults")
+    here = await _opaque_repair(tmp_path, OpRoute.pynixd)
+    assert _sent("BuildPathsWithResults") == before, "pynixd's goals repair a store path"
+    there = await _opaque_repair(tmp_path, OpRoute.daemon)
+
+    assert here == there
+    assert here[0] != 0, here
+    assert any("there is no substituter that can build it" in line for line in here[2]), here
+
+
 async def _verify_repair(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
     async with _serve(tmp_path, route) as (url, root):
         common = [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--print-out-paths"]
