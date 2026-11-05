@@ -730,6 +730,15 @@ async def _compare(
     return LocalBuildResult(BuildResultStatus.BUILT, "", start, stop, paths=known)
 
 
+def helper_environment() -> dict[str, str]:
+    """The helper's environment: this one, with this process's `sys.path` as `PYTHONPATH`.
+
+    A Nix-wrapped application adds its packages with `site.addsitedir`, so `sys.executable`
+    alone does not find `pynixd_store`. The builder never sees this: the helper `execve`s it with the spec's env.
+    """
+    return {**os.environ, "PYTHONPATH": os.pathsep.join(entry for entry in sys.path if entry)}
+
+
 async def _run(
     paths: _Paths,
     spec: ChildSpec,
@@ -752,7 +761,9 @@ async def _run(
         argv.append(str(control.fileno()))
         fds.append(control.fileno())
     try:
-        process = await anyio.open_process(argv, stdin=None, stdout=slave, stderr=slave, pass_fds=fds)
+        process = await anyio.open_process(
+            argv, stdin=None, stdout=slave, stderr=slave, pass_fds=fds, env=helper_environment()
+        )
     finally:
         os.close(slave)
         os.close(status_write)
