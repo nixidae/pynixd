@@ -25,6 +25,7 @@ from ..derived_path import DerivedPath, OutputsAll, OutputsNames
 from ..exceptions import BackendError
 from ..serde import (
     BuildDerivationRequest,
+    BuildMode,
     BuildPathsRequest,
     BuildResult,
     BuildResultStatus,
@@ -448,7 +449,21 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
 
         early_outputs = {name: path for name, path in parsed.output_paths().items() if name in selected_outputs}
         substituted = await self._try_substitute_known_outputs(early_outputs)
-        if substituted is not None:
+        # `derivation-goal.cc:143`: a check builds again what the store holds, so each wanted output must be valid.
+        checking = self.build_mode == BuildMode.CHECK
+        if checking:
+            if substituted is None:
+                return goal_failure(
+                    f"some outputs of '{_magenta(str(drv_path))}' are not valid, so checking is not possible\n"
+                    "Hint: --rebuild and --check error if the derivation was not previously built and cannot be"
+                    " substituted.\n"
+                    "      Remove it to perform a fresh build, or use --repair to rewrite missing or corrupted builds"
+                    " in the store.",
+                    BuildResultStatus.MISC_FAILURE,
+                )
+            if not result_succeeded(substituted.result):
+                return substituted
+        elif substituted is not None:
             log.debug("ensure_derivation_substituted", drv_path=str(drv_path), outputs=sorted(selected_outputs))
             substituted = await self._say_what_it_produced(substituted, parsed, selected_outputs)
             return substituted.with_dynamic_outputs(self.derived_path.base_store_path())
@@ -509,7 +524,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         # request for `drv^out` and a request for `drv^bin` made two builds of
         # one derivation. Issue nixidae/nixidae#217.
         selected_paths = {name: path for name, path in basic.output_paths().items() if name in selected_outputs}
-        substituted = await self._try_substitute_known_outputs(selected_paths)
+        substituted = None if checking else await self._try_substitute_known_outputs(selected_paths)
         if substituted is not None:
             log.debug("ensure_derivation_substituted", drv_path=str(drv_path), outputs=sorted(selected_outputs))
             await self._record_under_the_resolved_one(parsed, basic, drv_path, selected_paths)
@@ -523,7 +538,9 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             else drv_path
         )
 
-        cut_off = await self._try_realise_the_resolved_one(build_drv_path, drv_path, selected_outputs)
+        cut_off = (
+            None if checking else await self._try_realise_the_resolved_one(build_drv_path, drv_path, selected_outputs)
+        )
         if cut_off is not None:
             log.debug("ensure_derivation_cut_off", drv_path=str(drv_path), resolved=str(build_drv_path))
             cut_off = await self._under_the_original_id(cut_off, parsed)
@@ -1333,7 +1350,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         for input_drv_path, node in parsed.dynamic_input_drvs.items():
             for child_dp in _child_map_to_derived_paths(StorePath(input_drv_path), node):
                 child_goals.append(
-                    await self.engine.get_ensure_derived_path_goal(child_dp, self.build_mode, self.substituter_ids)
+                    await self.engine.get_ensure_derived_path_goal(child_dp, self._input_mode, self.substituter_ids)
                 )
                 nodes.append((child_dp.drv_path, child_dp.chain))
 
@@ -1387,7 +1404,12 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             chain=(),
             outputs=OutputsNames(frozenset({output_name})),
         )
-        return await self.engine.get_ensure_derived_path_goal(dp, self.build_mode, self.substituter_ids)
+        return await self.engine.get_ensure_derived_path_goal(dp, self._input_mode, self.substituter_ids)
+
+    @property
+    def _input_mode(self) -> int:
+        """`derivation-resolution-goal.cc:46`: an input builds normally, unless the request repairs."""
+        return BuildMode.NORMAL if self.build_mode == BuildMode.CHECK else self.build_mode
 
     async def _try_substitute_known_outputs(self, output_paths: Mapping[str, StorePath | None]) -> GoalResult | None:
         """Substitute each output whose path the derivation already names.

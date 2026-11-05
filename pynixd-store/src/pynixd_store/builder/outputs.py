@@ -34,6 +34,7 @@ from ..content_address import (
     fixed_output_address,
     make_store_path,
     output_method,
+    parse_any_sha256,
 )
 from ..hintfmt import magenta
 from ..nar_fs import dump_path, restore_path
@@ -200,10 +201,12 @@ def collect_outputs(
     valid: set[str],
     is_valid: Callable[[str], bool],
     discard: set[str],
+    check: bool = False,
 ) -> Collected:
     """Each output the build made at its *scratch* path, moved into the store and described; nothing is registered yet.
 
     An output whose scratch path is in *valid* is not looked at, as Nix does outside check mode.
+    With *check*, every output stays in the chroot to be compared (`derivation-builder.cc:1530`).
     *is_valid* asks the store about a path no output names. An output in
     *discard* is not scanned (`unsafeDiscardReferences`). Blocking: call it
     from a worker thread.
@@ -236,19 +239,20 @@ def collect_outputs(
             final[s.path] = path
             dest = real_store_dir / _base(path)
             nar_hash, nar_size = _nar_hash(actual)
-            if path != s.path:
-                lock = PathLock(dest)
-                # Nix does not wait here: a build with the right hash may hold the lock.
-                if not lock.try_acquire():
+            if not check:
+                if path != s.path:
+                    lock = PathLock(dest)
+                    # Nix does not wait here: a build with the right hash may hold the lock.
+                    if not lock.try_acquire():
+                        delete_path(actual)
+                        raise _check(drv_path, fixed[name]) or RuntimeError(f"'{drv_path}' made '{path}' for '{name}'")
+                    locks.append(lock)
+                if path != s.path and is_valid(path):
                     delete_path(actual)
-                    raise _check(drv_path, fixed[name]) or RuntimeError(f"'{drv_path}' made '{path}' for '{name}'")
-                locks.append(lock)
-            if path != s.path and is_valid(path):
-                delete_path(actual)
-            else:
-                delete_path(dest)
-                _move(actual, dest)
-                canonicalise(dest)
+                else:
+                    delete_path(dest)
+                    _move(actual, dest)
+                    canonicalise(dest)
             infos[name] = ValidPathInfo(
                 path=StorePath(path=path),
                 info=UnkeyedValidPathInfo(
@@ -349,6 +353,33 @@ def _git_hash(path: Path, algo: str) -> tuple[int, bytes]:
         h.update(b"tree %d\0" % len(body) + body)
         return 0o40000, h.digest()
     raise PlainError(f"file '{magenta(str(path))}' has an unsupported type")
+
+
+def compare_outputs(
+    drv_path: str,
+    infos: Mapping[str, ValidPathInfo],
+    registered: Mapping[str, ValidPathInfo | None],
+    real_store_dir: Path,
+) -> tuple[BuildFailure | None, list[ValidPathInfo]]:
+    """`registerOutputs` in check mode (`derivation-builder.cc:1546`): each rebuilt output against the valid one.
+
+    Answers the first difference, and the valid infos to mark `ultimate`, which a check verified.
+    """
+    verified: list[ValidPathInfo] = []
+    for info in infos.values():
+        old = registered.get(info.path.path)
+        if old is None:
+            continue
+        if parse_any_sha256(str(old.info.nar_hash)) != parse_any_sha256(str(info.info.nar_hash)):
+            return BuildFailure(
+                BuildResultStatus.NOT_DETERMINISTIC,
+                f"derivation '{magenta(drv_path)}' may not be deterministic: output "
+                f"{_quoted(real_store_dir / _base(info.path.path))} differs",
+            ), verified
+        if not old.info.ultimate:
+            old.info.ultimate = True
+            verified.append(old)
+    return None, verified
 
 
 def _check(drv_path: str, f: _Fixed) -> BuildFailure | None:

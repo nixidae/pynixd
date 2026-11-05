@@ -3,8 +3,8 @@
 The basic config: one local store with `pynixd_writes` on and every answer
 of `LocalDBStore.OWNED` on the `pynixd` route, and one `file://` cache that
 pynixd stands for. The client names that cache as its substituter. The
-workload is what a user of one machine does: substitute and build, query,
-copy out, add, optimise, verify, collect.
+workload is what a user of one machine does: substitute and build, check a
+rebuild, query, copy out, add, optimise, verify, collect.
 
 `pynixd_upstream_ops_total` counts every op pynixd sends to the store's
 daemon, from every site, so the set it holds after the workload is what
@@ -135,6 +135,7 @@ async def test_a_basic_config_sends_the_daemon_only_what_pynixd_does_not_do(
             "--expr",
             TOP,
         )
+        await run(nix, "build", *common, "--impure", "--no-link", "--rebuild", "--expr", TOP)
         await run(nix, "path-info", *common, "--recursive", top)
         await run(NIX_STORE, "--store", url, "--query", "--referrers", dep)
         await run(nix, "copy", *common, "--to", f"file://{tmp_path / 'out'}", top)

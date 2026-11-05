@@ -1041,3 +1041,57 @@ async def test_builtin_fetchurl_fetches_what_the_daemon_fetches(tmp_path: Path) 
     assert here["mirror"][4][0][0].startswith("/mirror/sha256/"), here["mirror"]
     assert any("HTTP error" in line and "404" in line for line in here["missing"][3]), here["missing"]
     assert here["flat"][4][0][1].startswith("curl/"), here["flat"]
+
+
+REBUILDS = {
+    "same": (True, _script("parity-check-same", "echo same > $out")),
+    # The sandbox has no `date` and no `mkdir`; a read of the kernel's UUID needs no binary.
+    "differs": (True, _script("parity-check-differs", "read u < /proc/sys/kernel/random/uuid; echo $u > $out")),
+    "never-built": (False, _script("parity-check-never", "echo never > $out")),
+}
+
+
+def _sent(op: str) -> float:
+    return sum(
+        sample.value
+        for metric in REGISTRY.collect()
+        if metric.name == "pynixd_upstream_ops"
+        for sample in metric.samples
+        if sample.name == "pynixd_upstream_ops_total" and sample.labels.get("op") == op
+    )
+
+
+async def _rebuilds(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
+    results: dict[str, Any] = {}
+    async with _serve(tmp_path, route) as (url, root):
+        common = [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--print-out-paths"]
+        for name, (first, expr) in REBUILDS.items():
+            if first:
+                await run_subproc([*common, "--expr", expr])
+            rc, out, err, _both = await run_subproc(
+                [*common, "--rebuild", "--print-build-logs", "--expr", expr], expected_retcode=None
+            )
+            results[name] = rc, out.split(), err.replace(str(root), "<root>").splitlines()
+    valid, results["refs"] = _rows(root)
+    # Each build of `differs` has its own NAR hash.
+    results["valid"] = [row[:1] + row[2:] if row[0].endswith("-parity-check-differs") else row for row in valid]
+    return results
+
+
+async def test_a_rebuild_checks_what_the_daemon_checks(tmp_path: Path) -> None:
+    """`nix build --rebuild` sends `BuildMode.CHECK`: the same output, a different one, and none built before.
+
+    `registerOutputs` (`derivation-builder.cc:1546`) and `DerivationGoal` (`derivation-goal.cc:143`).
+    """
+    before = _sent("BuildPathsWithResults"), _sent("BuildDerivation"), _fallthrough()
+    here = await _rebuilds(tmp_path, OpRoute.pynixd)
+    assert (_sent("BuildPathsWithResults"), _sent("BuildDerivation"), _fallthrough()) == before, (
+        "pynixd's sandbox checks every rebuild"
+    )
+    there = await _rebuilds(tmp_path, OpRoute.daemon)
+
+    assert here == there
+    assert here["same"][0] == 0, here["same"]
+    assert here["differs"][0] == 1, here["differs"]
+    assert any("may not be deterministic" in line for line in here["differs"][2]), here["differs"]
+    assert any("checking is not possible" in line for line in here["never-built"][2]), here["never-built"]

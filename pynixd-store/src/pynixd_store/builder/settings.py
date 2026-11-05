@@ -82,6 +82,8 @@ class BuildSettings:
     fsync_store_paths: bool = False
     keep_failed: bool = False
     post_build_hook: str = ""
+    diff_hook: str = ""
+    """`diff-hook`, which a check runs only with `run-diff-hook` (`local-settings.hh:551`); empty otherwise."""
     log_lines: int = 25
     nix_command: bool = True
     transfer: TransferSettings = TransferSettings()
@@ -182,6 +184,7 @@ class BuildSettings:
             fsync_store_paths=boolean(value("fsync-store-paths", False)),
             keep_failed=boolean(value("keep-failed", False)),
             post_build_hook=str(value("post-build-hook", "") or ""),
+            diff_hook=str(value("diff-hook", "") or "") if boolean(value("run-diff-hook", False)) else "",
             log_lines=int(value("log-lines", 25)),
             nix_command="nix-command" in features,
             transfer=transfer(),

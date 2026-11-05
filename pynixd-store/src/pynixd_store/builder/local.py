@@ -48,6 +48,7 @@ from .outputs import (
     PlainError,
     check_outputs,
     collect_outputs,
+    compare_outputs,
     discarded_references,
     fallback_path,
     output_checks,
@@ -63,6 +64,7 @@ if TYPE_CHECKING:
 
     from ..engine import StoreEngine
     from .buildlog import Output
+    from .outputs import Collected
     from .settings import BuildSettings
 
 _log = structlog.get_logger(__name__)
@@ -390,12 +392,14 @@ async def build(
     *,
     on_lines: Callable[[list[Output]], Awaitable[None]],
     realised: Mapping[str, str],
+    check: bool = False,
 ) -> LocalBuildResult:
     """Build *drv*, whose inputs are valid, and register its outputs. `unsupported(drv)` must be `None`.
 
     *on_lines* receives the builder's output as it comes: Nix's log lines and its `@nix` events.
     *realised* is the path of each output the store holds a realisation for (`checkPathValidity`,
-    `derivation-building-goal.cc:1329`).
+    `derivation-building-goal.cc:1329`). With *check*, each output is valid, and the build
+    compares what it makes with it and registers nothing new.
     """
     layout = engine.layout
     store_dir = str(layout.store_dir)
@@ -412,7 +416,7 @@ async def build(
     paths: _Paths | None = None
     try:
         valid = {path for path in known.values() if path and await engine.is_valid_path_uncached(path)}
-        if valid == set(known.values()):
+        if valid == set(known.values()) and not check:
             return LocalBuildResult(BuildResultStatus.ALREADY_VALID, paths=known)
         # The sandbox needs no hash rewrite, so a known path is its own scratch path (`derivation-builder.cc:417`).
         scratch = {name: path or fallback_path(drv_path, name, drv_name, store_dir) for name, path in known.items()}
@@ -505,9 +509,11 @@ async def build(
                     real_store_dir=layout.real_store_dir,
                     store_dir=store_dir,
                     input_paths=inputs,
-                    valid=valid,
+                    # `derivation-builder.cc:1131`: a check looks at every output.
+                    valid=set() if check else valid,
                     is_valid=lambda path: anyio.from_thread.run(engine.is_valid_path_uncached, path),
                     discard=discarded_references(drv.env),
+                    check=check,
                 )
             )
         except BuildFailure as e:
@@ -515,6 +521,8 @@ async def build(
         except PlainError as e:
             return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(str(e)))
         try:
+            if check:
+                return await _compare(engine, drv_path, drv, collected, settings, known, start, stop)
             if settings.auto_optimise_store:
                 # `registerOutputs` (`derivation-builder.cc:1600`) skips an output that is valid already.
                 fresh = [
@@ -547,6 +555,43 @@ async def build(
                 await anyio.to_thread.run_sync(paths.remove)
             for lock in locks:
                 lock.release(delete=True)
+
+
+async def _compare(
+    engine: StoreEngine,
+    drv_path: str,
+    drv: BasicDerivation,
+    collected: Collected,
+    settings: BuildSettings,
+    known: dict[str, str],
+    start: int,
+    stop: int,
+) -> LocalBuildResult:
+    """The end of `registerOutputs` in check mode (`derivation-builder.cc:1546`, `:1633`).
+
+    A valid output the check verified becomes `ultimate` and is signed again, even when a later one differs.
+    """
+    registered = {path: await engine.query_path_info(path) for path in known.values()}
+    failure, verified = compare_outputs(drv_path, collected.infos, registered, engine.layout.real_store_dir)
+    if verified:
+        await anyio.to_thread.run_sync(_sign, verified, settings.secret_key_files)
+        await engine.register_valid_paths(verified)
+    failure = (
+        failure
+        or collected.failure
+        or await anyio.to_thread.run_sync(
+            lambda: check_outputs(
+                drv_path,
+                output_checks(drv.env),
+                collected.infos,
+                store_dir=str(engine.layout.store_dir),
+                path_info=lambda path: anyio.from_thread.run(engine.query_path_info, path),
+            )
+        )
+    )
+    if failure is not None:
+        return LocalBuildResult(failure.status, failure.message, start, stop)
+    return LocalBuildResult(BuildResultStatus.BUILT, "", start, stop, paths=known)
 
 
 async def _run(

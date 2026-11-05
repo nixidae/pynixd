@@ -15,6 +15,7 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId
 from pynixd_store.background import Background
 from pynixd_store.store_path import StorePath
 
+from ..derived_path import DerivedPath
 from ..exceptions import BackendError
 from ..serde import (
     BuildDerivationRequest,
@@ -41,7 +42,6 @@ if TYPE_CHECKING:
 
     from ..connection import ClientConn
     from ..context import PynixdContext
-    from ..derived_path import DerivedPath
     from ..serde import BuildPathsWithResultsResponse
     from ..store import Store
     from ..substitution_queue import SubstitutionQueue
@@ -188,7 +188,7 @@ class GoalEngine:
         self, request: BuildPathsRequest, client: ClientConn | None = None, hold: Hold | None = None
     ) -> BuildPathsResponse:
         """Execute a BuildPaths request, returning a simple success/failure response."""
-        if request.build_mode != BuildMode.NORMAL:
+        if request.build_mode != BuildMode.NORMAL and await self._the_store_answers(request):
             straight: BuildPathsResponse = await self._straight_to_the_store(request, client)
             return straight
         response = await self.build_paths_with_results(
@@ -224,7 +224,7 @@ class GoalEngine:
         brought them in over a pooled connection, whose roots end when
         `CollectGarbage` retires it. nixidae/nixidae#1007.
         """
-        if request.build_mode != BuildMode.NORMAL:
+        if request.build_mode != BuildMode.NORMAL and await self._the_store_answers(request):
             straight: BuildPathsWithResultsResponse = await self._straight_to_the_store(request, client)
             return straight
         async with self.running():
@@ -247,30 +247,32 @@ class GoalEngine:
                         # Whatever state the goals are in, nobody waits for them now.
                         self.reap()
 
+    async def _the_store_answers(self, request: BuildPathsRequest | BuildPathsWithResultsRequest) -> bool:
+        """Whether the local store's daemon answers *request* whole, and the goal system stands aside.
+
+        A check goes through the goals when each derived path is one
+        derivation whose outputs it names (`derivation-goal.cc:143` needs them
+        valid). A repair, a mode no version of Nix defines, and any other
+        check go to the daemon: pynixd invents no behaviour for them.
+        """
+        if request.build_mode != BuildMode.CHECK:
+            return True
+        for wire_path in request.derived_paths:
+            path = DerivedPath(wire_path.value)
+            if path.is_opaque or path.is_nested:
+                return True
+            parsed = await self.ctx.local_store.read_derivation(path.drv_path)
+            if parsed is None or parsed.is_impure or not all(str(p) for p in parsed.output_paths().values()):
+                return True
+        return False
+
     async def _straight_to_the_store(self, request: Any, client: ClientConn | None) -> Any:
-        """A check or a repair goes to the local store, and the goal system stands aside.
+        """The local store's daemon does the work, and pynixd carries the bytes.
 
-        `nix build --rebuild` sends `BuildMode.CHECK`, and `--repair` sends
-        `BuildMode.REPAIR`. `nix-store --realise --check`, `--repair-path` and
-        `--verify --repair` send the same two. The goal system raised
-        `RuntimeError` for each one, so every such command failed through
-        pynixd and succeeded through `nix-daemon`.
-
-        **Neither mode is a build that pynixd can schedule.** A check builds
-        the derivation again in the same store and compares the two outputs,
-        at `derivation-building-goal.cc:990`. A repair reads the closure and
-        rewrites what is corrupt, at `derivation-goal.cc:152`. Both are
-        operations on one store, and a second builder answers no part of
-        either one. The local store is a whole Nix daemon, so it does the
-        work, and pynixd carries the bytes.
-
-        The scheduling of pynixd, the dedup of a build and the fleet are all
-        out of the path here, and that is the point: they answer a question
-        that a check does not ask.
-
-        A mode that no version of Nix defines takes the same road. The store
-        answers what it answers, and pynixd invents no behaviour for a number
-        that it does not know.
+        `nix build --repair`, `nix-store --repair-path` and `--verify --repair`
+        send `BuildMode.REPAIR`. A repair reads the closure and rewrites what
+        is corrupt (`derivation-goal.cc:140`): an operation on one store, which
+        a second builder answers no part of.
         """
         return await self.ctx.local_store.call(request, client=client)
 
@@ -293,7 +295,7 @@ class GoalEngine:
         substituter_ids: tuple[str, ...],
     ) -> EnsureDerivedPathGoal:
         """Return a deduplicated EnsureDerivedPathGoal for the given derived path."""
-        key = EnsureDerivedPathKey(str(path), substituter_fingerprint(substituter_ids))
+        key = EnsureDerivedPathKey(str(path), substituter_fingerprint(substituter_ids), int(build_mode))
         async with self._lock:
             goal = self._goals.get(key)
             if goal is None:
@@ -305,7 +307,7 @@ class GoalEngine:
 
     async def get_build_derivation_goal(self, request: BuildDerivationRequest) -> BuildDerivationGoal:
         """Return a deduplicated BuildDerivationGoal for the given build request."""
-        key = BuildDerivationKey(str(request.drv_path), _derivation_fingerprint(request))
+        key = BuildDerivationKey(str(request.drv_path), _derivation_fingerprint(request), int(request.build_mode))
         async with self._lock:
             goal = self._goals.get(key)
             if goal is None:

@@ -53,8 +53,11 @@ class BuildActivity:
     it (`daemon.cc:89`), and so does `printMsg` before it.
     """
 
-    def __init__(self, drv_path: str, on_log: Callable[[LogMessage], Awaitable[None]], verbosity: int) -> None:
+    def __init__(
+        self, drv_path: str, on_log: Callable[[LogMessage], Awaitable[None]], verbosity: int, *, checking: bool = False
+    ) -> None:
         self.drv_path = drv_path
+        self._verb = "checking outputs of" if checking else "building"
         self.id = next_activity_id()
         self._on_log = on_log
         self._verbosity = verbosity
@@ -67,7 +70,7 @@ class BuildActivity:
                 act_id=self.id,
                 level=Verbosity.INFO,
                 type=ActivityType.BUILD,
-                text=f"building '{self.drv_path}'",
+                text=f"{self._verb} '{self.drv_path}'",
                 fields=_fields((self.drv_path, "", 1, 1)),
             )
         )

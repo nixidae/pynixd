@@ -605,11 +605,11 @@ class LocalDBStore(Store):
     ) -> BuildSettings | None:
         """The settings pynixd's sandbox builds *request* with, or `None` when the daemon builds it.
 
-        Repair and check stay on the daemon, and so does what `unsupported` names.
+        Repair stays on the daemon, and so does what `unsupported` or `_check_unsupported` names.
         """
         if self.routes.get(BuildDerivationRequest.op) is not OpRoute.pynixd or not self.engine.writable:
             return None
-        reason = "repair or check" if request.build_mode != BuildMode.NORMAL else None
+        reason = "a repair" if request.build_mode == BuildMode.REPAIR else None
         layout = self.engine.layout
         # `builtin:fetchurl` sends `nixVersion` in its User-Agent.
         if request.derivation.builder == "builtin:fetchurl" and self._nix_version is None:
@@ -627,11 +627,30 @@ class LocalDBStore(Store):
                 relocated=layout.store_dir != layout.real_store_dir,
             )
             or await self._realisations_unsupported(request)
+            or await self._check_unsupported(request, settings)
         )
         if reason is None:
             return settings
         log.info("build_left_to_the_daemon", drv=str(request.drv_path), reason=reason)
         metrics.OP_FALLTHROUGH.labels(store_id=self.store_id, op=request.name).inc()
+        return None
+
+    async def _check_unsupported(self, request: BuildDerivationRequest, settings: BuildSettings) -> str | None:
+        """Why the daemon checks *request*, or `None`; also `None` for a request that does not check.
+
+        `DerivationGoal` substitutes a missing output before it checks
+        (`derivation-goal.cc:113`). pynixd's goals do that before they send a
+        check; an output that is still not valid here goes to the daemon.
+        """
+        if request.build_mode != BuildMode.CHECK:
+            return None
+        if settings.diff_hook:
+            return "a check with a diff-hook"
+        paths = [output.path for output in request.derivation.outputs.values()]
+        if not all(paths) or request.derivation.has_impure:
+            return "a check of an output with no path"
+        if not all([await self.engine.is_valid_path_uncached(path) for path in paths]):
+            return "a check of an output that is not valid"
         return None
 
     async def _ca_derivations(self) -> bool:
@@ -705,11 +724,18 @@ class LocalDBStore(Store):
         """
         drv_path = str(request.drv_path)
         realised = await self._realised(request)
-        activity = BuildActivity(drv_path, on_log, verbosity)
+        checking = request.build_mode == BuildMode.CHECK
+        activity = BuildActivity(drv_path, on_log, verbosity, checking=checking)
         await activity.start()
         try:
             built = await local_builder.build(
-                self.engine, drv_path, request.derivation, settings, on_lines=activity.emit, realised=realised
+                self.engine,
+                drv_path,
+                request.derivation,
+                settings,
+                on_lines=activity.emit,
+                realised=realised,
+                check=checking,
             )
         finally:
             with anyio.CancelScope(shield=True):
@@ -733,7 +759,7 @@ class LocalDBStore(Store):
                 status=int(built.status),
                 error_msg=built.error_msg,
                 times_built=1 if built.status is BuildResultStatus.BUILT else 0,
-                is_non_deterministic=0,
+                is_non_deterministic=int(built.status is BuildResultStatus.NOT_DETERMINISTIC),
                 start_time=built.start_time,
                 stop_time=built.stop_time,
                 built_outputs={},

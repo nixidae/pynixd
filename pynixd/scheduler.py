@@ -58,6 +58,7 @@ from .serde import (
     AddTempRootRequest,
     AddTempRootsRequest,
     BuildDerivationResponse,
+    BuildMode,
     BuildResultStatus,
     LogNext,
     QueryValidPathsRequest,
@@ -632,7 +633,11 @@ class Scheduler:
                 local_can_build = False
                 ranked = RankedStores([c for c in ranked if c.store_id != local_store.store_id])
                 notes.excluded.append(ExcludedStore(local_store.store_id, "the client forbids local builds"))
-        prefer_local = build.request.derivation.build_local and local_can_build
+        # `derivation-building-goal.cc:599`: a check acts on this store, so it builds here or nowhere.
+        here_only = build.request.build_mode != BuildMode.NORMAL
+        if here_only:
+            ranked = RankedStores([c for c in ranked if c.store_id == local_store.store_id])
+        prefer_local = (build.request.derivation.build_local or here_only) and local_can_build
         notes.prefer_local = prefer_local
         notes.local_can_build = local_can_build
         # Nix weighs no load for a `preferLocalBuild` derivation, so the
@@ -654,7 +659,7 @@ class Scheduler:
         # empty ranking with a local store that can build means the ranking
         # dropped it, for pressure or for disk, and it waits: full is full.
         notes.ranked = list(ranked)
-        if not ranked and not local_can_build and not self._has_compatible_store(build, build_features):
+        if not ranked and not local_can_build and (here_only or not self._has_compatible_store(build, build_features)):
             notes.end(Outcome.FAILED, "no store can build it")
             await self._fail_no_compatible_store(build, build_features)
             return False

@@ -11,6 +11,8 @@ class EnsureDerivedPathKey:
 
     derived_path: str
     substituter_fingerprint: str
+    build_mode: int
+    """A check of a derivation and the normal build of it as an input are two goals."""
 
 
 @dataclass(frozen=True)
@@ -19,6 +21,7 @@ class BuildDerivationKey:
 
     drv_path: str
     derivation_fingerprint: str
+    build_mode: int
 
 
 @dataclass(frozen=True)
