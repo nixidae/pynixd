@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import fcntl
 import hashlib
 import io
 import json
@@ -19,6 +20,7 @@ import tarfile
 import zipfile
 from typing import TYPE_CHECKING, Any
 
+import anyio
 import pytest
 from aiohttp import web
 from prometheus_client import REGISTRY
@@ -657,6 +659,78 @@ async def test_a_floating_output_lands_where_the_daemon_puts_it(tmp_path: Path) 
     built = {row[2].split("-", 1)[1] for row in here["trace"]}
     assert {"parity-ca-dep", "parity-ca-flat", "parity-ca-text", "parity-ca-top", "parity-ca-top-dev"} <= built
     assert any(row[3].startswith("parity-1:") for row in here["trace"]), here["trace"]
+
+
+CA_TWIN = (
+    'derivation { name = "parity-ca-twin"; system = builtins.currentSystem; builder = "/bin/sh"; '
+    '__contentAddressed = true; outputHashMode = "recursive"; outputHashAlgo = "sha256"; '
+    'args = [ "-c" "echo twin > $out" ]; }'
+)
+
+
+async def _held(tmp_path: Path, route: OpRoute) -> tuple[bool, str]:
+    """Build `CA_TWIN` while this process holds its final path's lock, as a concurrent build would.
+
+    Whether the build was still running when the lock was let go, and the path it gave.
+    """
+    content = tmp_path / route.name / "parity-ca-twin"
+    content.parent.mkdir(parents=True)
+    content.write_text("twin\n")
+    _rc, final, _err, _both = await run_subproc(
+        [
+            NIX_BIN,
+            "store",
+            "add",
+            "--store",
+            tmp_path / route.name / "dry",
+            "--dry-run",
+            "--name",
+            "parity-ca-twin",
+            content,
+        ]
+    )
+    async with _serve(tmp_path, route, experimental_features=("ca-derivations",)) as (url, root):
+        lock = root / "nix/store" / f"{final.strip().rsplit('/', 1)[-1]}.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        done = anyio.Event()
+        out: list[str] = []
+
+        async def build() -> None:
+            _rc, stdout, _err, _both = await run_subproc(
+                [
+                    NIX_BIN,
+                    "build",
+                    "--store",
+                    url,
+                    "--extra-experimental-features",
+                    "ca-derivations",
+                    "--impure",
+                    "--no-link",
+                    "--print-out-paths",
+                    "--expr",
+                    CA_TWIN,
+                ]
+            )
+            out.append(stdout.strip())
+            done.set()
+
+        with lock.open("a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            async with anyio.create_task_group() as group:
+                group.start_soon(build)
+                await anyio.sleep(5)
+                waited = not done.is_set()
+                fcntl.flock(held, fcntl.LOCK_UN)
+    return waited, out[0]
+
+
+async def test_a_floating_output_waits_for_the_lock_on_its_path(tmp_path: Path) -> None:
+    """`lockPaths(..., wait = !optFixedPath)` (`derivation-builder.cc:1510`): a floating output waits; it does not fail."""
+    here = await _held(tmp_path, OpRoute.pynixd)
+    there = await _held(tmp_path, OpRoute.daemon)
+
+    assert here == there
+    assert here[0], "the build finished while another process held the lock on its path"
 
 
 IMPURE_ENV = (

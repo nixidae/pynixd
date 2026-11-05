@@ -241,8 +241,11 @@ def collect_outputs(
             if not check:
                 if path != s.path:
                     lock = PathLock(dest)
-                    # Nix does not wait here: a build with the right hash may hold the lock.
-                    if not lock.try_acquire():
+                    # `derivation-builder.cc:1510`: a floating output waits for a build of the same path.
+                    # A mismatched fixed output does not: a build with the right hash may hold the lock.
+                    if name not in fixed:
+                        lock.acquire()
+                    elif not lock.try_acquire():
                         delete_path(actual)
                         raise _check(drv_path, fixed[name]) or RuntimeError(f"'{drv_path}' made '{path}' for '{name}'")
                     locks.append(lock)
