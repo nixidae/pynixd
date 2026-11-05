@@ -23,6 +23,8 @@
   # `pynixd-agent`, which `tests/unit/test_agent.py` runs against the parser.
   agent,
   nix,
+  # Nix's master branch, as `NIX_GIT_BIN`: only `builder-rpc-v0`'s parity test runs it.
+  nixGit,
 }:
 
 let
@@ -112,6 +114,7 @@ vivariumLib.mkTest (
       # `HELLO` in tests/_conftest/constants.py: the same `hello` that
       # `<nixpkgs>` evaluates to in the guest, so it is already valid.
       hello = "${pkgs.hello}";
+      nixGit = "${nixGit}";
 
       /*
         What a build with each nixpkgs builder the suites use needs,

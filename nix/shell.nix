@@ -5,6 +5,8 @@
   ruff,
   sqlite,
   nix,
+  # Nix's master branch, as `NIX_GIT_BIN`, for `builder-rpc-v0`.
+  nixGit,
   # The interpreter, resolved by pyproject.nix. `default.nix` says why it is
   # one environment and not several: the oracle of `tests/differential`
   # reaches the nanopynix bindings, and a closure that deep does not survive
@@ -39,6 +41,7 @@ mkShell {
   shellHook = ''
     unset PYTHONPATH
     export NIX_BIN=${lib.getExe nix}
+    export NIX_GIT_BIN=${lib.getExe nixGit}
 
     # **The nixpkgs of this repository, and not the one the host happens to
     # have.** `tests/nix/drv-probes.nix` imports `<nixpkgs>` at eight places,

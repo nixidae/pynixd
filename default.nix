@@ -459,6 +459,7 @@ let
         inherit agent;
         devEnv = guestEnv;
         nix = defaultNix;
+        nixGit = pkgs.nixVersions.git;
       }
     );
 
@@ -506,6 +507,7 @@ let
   shell = pkgs.callPackage ./nix/shell.nix {
     inherit agent;
     nix = defaultNix;
+    nixGit = pkgs.nixVersions.git;
     devEnv = shellEnv;
     nixpkgsPath = pkgs.path;
   };

@@ -52,6 +52,7 @@ async def test(vms: Machines) -> None:
     command = (
         f"cd /work && "
         f"NIX_BIN=$(command -v nix) "
+        f"NIX_GIT_BIN={vms.settings['nixGit']}/bin/nix "
         f"PYNIXD_TEST_LOG_DIR=/artifacts/{name}-logs "
         f"pytest -p no:cacheprovider --tb=short -q {' '.join(suite['flags'])} "
         f"--junitxml=/artifacts/junit/{name}.xml {suite['path']} {select} "
