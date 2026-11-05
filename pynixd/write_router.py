@@ -108,7 +108,11 @@ def _framing(write: Write, facts: Facts) -> str | None:
 
 
 def _repair(write: Write, facts: Facts) -> str | None:
-    return "repair" if write.repair else None
+    """`addToStoreFromDump` with repair restores over a valid path; pynixd's dump import never does.
+
+    A NAR import repairs as `LocalStore::addToStore` does (`local-store.cc:1054`).
+    """
+    return "repair of a dump" if write.repair and write.dump is not None else None
 
 
 def _auto_optimise(write: Write, facts: Facts) -> str | None:
@@ -418,14 +422,26 @@ class WriteRouter:
             # `daemon.cc:515`: for every client, not only an untrusted one.
             copied = as_copied(info)
             if await self.engine_takes(replace(write, info=copied)):
+                # `daemon.cc:518`: each path is added with the op's repair flag.
                 await self._engine_add(
-                    copied, nar, settings, repair=False, dont_check_sigs=dont_check_sigs, client=client, root=True
+                    copied,
+                    nar,
+                    settings,
+                    repair=write.repair,
+                    dont_check_sigs=dont_check_sigs,
+                    client=client,
+                    root=True,
                 )
             else:
                 await client.root(str(copied.path))
                 try:
                     await self.daemon.add_to_store(
-                        copied, nar, dont_check_sigs=dont_check_sigs, options=client.options, logs=client.conn
+                        copied,
+                        nar,
+                        repair=write.repair,
+                        dont_check_sigs=dont_check_sigs,
+                        options=client.options,
+                        logs=client.conn,
                     )
                 finally:
                     engine.invalidate_path_info_cache_for(copied.path)

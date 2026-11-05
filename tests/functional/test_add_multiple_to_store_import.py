@@ -38,7 +38,7 @@ from tests._conftest.import_lab import (
     server,
     valid,
 )
-from tests.conftest import NIX_BIN
+from tests.conftest import NIX_BIN, run_subproc
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -87,14 +87,63 @@ async def test_nix_copy_imports_as_the_daemon_does(tmp_path: Path, imported: lis
     await run(nix, "store", "verify", "--store", str(b), "--no-trust", *order)
 
 
+def _corrupt(root: Path, flat: str, tree: str) -> None:
+    """A changed file and a changed file under a directory, as a disk or a hand edit leaves them."""
+    target = real(root, flat)
+    target.chmod(0o644)
+    target.write_bytes(b"corrupt\n")
+    hello = real(root, tree) / "bin" / "hello"
+    hello.parent.chmod(0o755)
+    hello.chmod(0o755)
+    hello.write_bytes(b"#!/bin/sh\necho corrupt\n")
+
+
+async def test_a_repair_restores_a_corrupted_path_as_the_daemon_does(tmp_path: Path, imported: list[str]) -> None:
+    """Op 44 with repair: `addToStore` restores a valid path (`local-store.cc:1054`).
+
+    A raw client sends it: `nix copy --repair` drops a valid path before it sends (`store-api.cc:1018`).
+    """
+    a, order, _ = await lab(tmp_path)
+    flat = next(p for p in order if p.endswith("-flat"))
+    tree = next(p for p in order if p.endswith("-tree"))
+    b, c = tmp_path / "b", tmp_path / "c"
+    nix = str(NIX_BIN)
+    for root, route in ((b, "pynixd"), (c, "daemon")):
+        socket = tmp_path / f"{route}.sock"
+        url = f"unix://{socket}?root={root}"
+        async with server(root, socket, route):
+            await run(nix, "copy", "--from", str(a), "--to", url, "--no-check-sigs", *order)
+            _corrupt(root, flat, tree)
+            imported.clear()
+            async with client(socket) as conn:
+                await _send(conn, _items(a, [flat, tree]), repair=1)
+        if route == "pynixd":
+            assert sorted(imported) == sorted([flat, tree]), "pynixd repaired each path, none went to the daemon"
+    assert imported == []
+
+    for query in (VALID_PATHS, REFS, OUTPUTS):
+        assert rows(b, query) == rows(c, query)
+    for path in (flat, tree):
+        assert files(b, path) == files(c, path) == files(a, path), path
+    assert not list((b / "nix" / "store").glob("tmp-*"))
+    await run_subproc([nix, "store", "verify", "--store", str(b), "--no-trust", flat, tree])
+
+
 async def _send(
-    conn: Connection, items: list[tuple[ValidPathInfo, bytes]], *, frame: int = 0, dont_check_sigs: int = 0
+    conn: Connection,
+    items: list[tuple[ValidPathInfo, bytes]],
+    *,
+    frame: int = 0,
+    dont_check_sigs: int = 0,
+    repair: int = 0,
 ) -> None:
     """One AddMultipleToStore, in frames of *frame* bytes (0: one frame); raises `BackendError`."""
     payload = struct.pack("<Q", len(items))
     for info, nar in items:
         payload += await info.bytes_wire() + nar
-    await AddMultipleToStoreRequest(repair=0, dont_check_sigs=dont_check_sigs).to_writer(WriteContext.from_conn(conn))
+    await AddMultipleToStoreRequest(repair=repair, dont_check_sigs=dont_check_sigs).to_writer(
+        WriteContext.from_conn(conn)
+    )
     framed = conn.w.framed()
     step = frame or len(payload)
     for at in range(0, len(payload), step):
