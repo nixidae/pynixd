@@ -18,6 +18,8 @@ from .add_to_store import AddToStoreRequest as AddToStoreRequest
 from .add_to_store import AddToStoreResponse as AddToStoreResponse
 from .add_to_store_nar import AddToStoreNarRequest as AddToStoreNarRequest
 from .add_to_store_nar import AddToStoreNarResponse as AddToStoreNarResponse
+from .add_to_store_scanning import AddToStoreScanningRequest as AddToStoreScanningRequest
+from .add_to_store_scanning import AddToStoreScanningResponse as AddToStoreScanningResponse
 from .basic_derivation import BasicDerivation as BasicDerivation
 from .build_derivation import BuildDerivationRequest as BuildDerivationRequest
 from .build_derivation import BuildDerivationResponse as BuildDerivationResponse
@@ -155,6 +157,7 @@ from .register_drv_output import RegisterDrvOutputResponse as RegisterDrvOutputR
 from .set_options import SetOptionsRequest as SetOptionsRequest
 from .set_options import SetOptionsResponse as SetOptionsResponse
 from .signature import Signature as Signature
+from .single_derived_path import SingleDerivedPath as SingleDerivedPath
 from .store_dir import (
     DEFAULT_STORE_DIR as DEFAULT_STORE_DIR,
 )
@@ -183,6 +186,8 @@ from .store_dir import (
     store_prefix as store_prefix,
 )
 from .store_path import StorePath as StorePath
+from .submit_output import SubmitOutputRequest as SubmitOutputRequest
+from .submit_output import SubmitOutputResponse as SubmitOutputResponse
 from .unkeyed_realisation import UnkeyedRealisation as UnkeyedRealisation
 from .valid_path_info import ValidPathInfo as ValidPathInfo
 from .verify_store import VerifyStoreRequest as VerifyStoreRequest

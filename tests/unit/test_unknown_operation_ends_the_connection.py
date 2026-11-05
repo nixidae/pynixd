@@ -61,21 +61,9 @@ def test_the_manifest_leaves_out_only_what_no_client_sends() -> None:
     """The operations of Nix that this package answers with a close.
 
     Each entry names why it is out. `worker-protocol.hh` of Nix is the list to
-    compare against.
-
-    **A new operation of Nix comes with a feature name, and not with a new
-    protocol number.** `worker-protocol.hh:105` states that rule, and 1.38 is
-    the number that Nix 2.34, Nix 2.35 and the master branch all report. The
-    last two entries below are therefore gated by a name that pynixd does not
-    claim in the handshake. `tests/unit/test_protocol_features.py` holds the
-    ledger of those names, and issue #14 holds the work.
-
-    Both of those two belong to `builder-rpc-v0`, which is a derivation
-    feature of dynamic derivations. Nix gives such a builder a restricted
-    daemon socket and no output path in the environment, and the builder
-    registers each output itself. It is not recursive Nix: the builder starts
-    no build through that socket. `docs/notes/reentrancy.md` holds the
-    detail, as Fact 9.
+    compare against. SubmitOutput (1000) and AddToStoreScanning (1001) are in
+    the manifest: a `builder-rpc-v0` builder's own session serves them
+    (`pynixd/recursive.py`), and every other session closes on them.
     """
     left_out = {
         8: "AddTextToStore, obsolete since protocol 1.25; the floor is 1.32",
@@ -83,8 +71,6 @@ def test_the_manifest_leaves_out_only_what_no_client_sends() -> None:
         18: "QueryDeriver, obsolete",
         22: "QueryDerivationOutputs, obsolete",
         28: "QueryDerivationOutputNames, obsolete",
-        1000: "SubmitOutput; the `submit-output` feature of `builder-rpc-v0`",
-        1001: "AddToStoreScanning; the `add-to-store-scanning` feature of `builder-rpc-v0`",
     }
     named = {op.code for op in STANDARD_OPERATIONS}
     assert not named & set(left_out)

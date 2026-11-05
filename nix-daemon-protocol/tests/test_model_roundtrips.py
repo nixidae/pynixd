@@ -55,6 +55,8 @@ def _example_value(annotation: Any, field_name: str) -> Any:
         return [_example_value(arguments[0], field_name)]
     if origin is set:
         return {_example_value(arguments[0], field_name)}
+    if origin is tuple:
+        return (_example_value(arguments[0], field_name),)
     if origin is dict:
         return {_example_value(arguments[0], f"{field_name}_key"): _example_value(arguments[1], field_name)}
 

@@ -13,10 +13,12 @@ from typing import TYPE_CHECKING, Any, cast
 import anyio
 import structlog
 
+from nix_daemon_protocol.add_to_store_scanning import AddToStoreScanningRequest
 from nix_daemon_protocol.ensure_path import EnsurePathRequest
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId, StoreId
 from nix_daemon_protocol.logs import TraceLine
 from nix_daemon_protocol.store_path import StorePath
+from nix_daemon_protocol.submit_output import SubmitOutputRequest
 from nix_daemon_protocol.wire_ops import WIRE_REGISTRY, WireResponse
 from pynixd_store.temp_roots import TempRoots
 
@@ -61,6 +63,9 @@ if TYPE_CHECKING:
 from .store import DaemonStore as DaemonStore
 
 log = structlog.get_logger(__name__)
+
+BUILDER_ONLY_OPS = frozenset({SubmitOutputRequest.op, AddToStoreScanningRequest.op})
+"""The operations of `builder-rpc-v0`, which only a builder's own daemon serves."""
 
 
 NIX_VERSION: str = "pynixd-0.1.0"
@@ -644,6 +649,9 @@ class DaemonProxy:
 
     async def dispatch(self, op_num: int) -> WireResponse | None:
         """Route an operation to its request type's handle method."""
+        if op_num in BUILDER_ONLY_OPS:
+            # `daemon.cc:353`: only a builder's own daemon serves these.
+            raise ClosingError(f"invalid operation {op_num}")
         # NEW: try new handler registry first
         if handler_cls := HANDLER_REGISTRY.get(op_num):
             response = await handler_cls().handle(
