@@ -290,9 +290,10 @@ class GoalEngine:
         checks contents and builds, and pynixd's substituters: the daemon's
         `EnsurePath` cannot repair. A daemon that builds under repair checks
         each output's contents again, and its client would read the lines
-        twice. A repair of an opaque path substitutes it. A mode no version
-        of Nix defines, a check of an opaque path, and anything else go to
-        the daemon: pynixd invents no behaviour for them.
+        twice. An opaque path is a substitution, with repair under repair
+        and without it under check (`worker.cc:138`). A mode no version of
+        Nix defines, and anything else, go to the daemon: pynixd invents no
+        behaviour for them.
         """
         if request.build_mode not in (BuildMode.CHECK, BuildMode.REPAIR):
             return True
@@ -300,9 +301,9 @@ class GoalEngine:
             return True
         for wire_path in request.derived_paths:
             path = DerivedPath(wire_path.value)
-            if path.is_opaque and request.build_mode == BuildMode.REPAIR:
+            if path.is_opaque:
                 continue
-            if path.is_opaque or path.is_nested:
+            if path.is_nested:
                 return True
             parsed = await self.ctx.local_store.read_derivation(path.drv_path)
             if parsed is None or parsed.is_impure or not all(str(p) for p in parsed.output_paths().values()):

@@ -1264,6 +1264,8 @@ REBUILDS = {
     # The sandbox has no `date` and no `mkdir`; a read of the kernel's UUID needs no binary.
     "differs": (True, _script("parity-check-differs", "read u < /proc/sys/kernel/random/uuid; echo $u > $out")),
     "never-built": (False, _script("parity-check-never", "echo never > $out")),
+    # An opaque path: `makeGoal` substitutes it without repair (`worker.cc:138`).
+    "opaque": (False, 'builtins.toFile "parity-check-opaque" "opaque"'),
 }
 
 
@@ -1311,6 +1313,7 @@ async def test_a_rebuild_checks_what_the_daemon_checks(tmp_path: Path) -> None:
     assert here["differs"][0] == 1, here["differs"]
     assert any("may not be deterministic" in line for line in here["differs"][2]), here["differs"]
     assert any("checking is not possible" in line for line in here["never-built"][2]), here["never-built"]
+    assert here["opaque"][0] == 0, here["opaque"]
 
 
 def _chain(tag: str) -> tuple[str, str]:
