@@ -37,6 +37,15 @@ class FetchSpec(TypedDict):
     retry_jitter: bool
 
 
+class BuildenvSpec(TypedDict):
+    """`builtin:buildenv`: its output and the derivation's own attributes, `None` for one it lacks."""
+
+    out: str
+    packages: list[tuple[str, bool, int]] | None
+    """The `derivations` attribute, read: a path, whether it is active, its priority."""
+    manifest: str | None
+
+
 class ChildSpec(TypedDict):
     builder: str
     args: list[str]
@@ -54,3 +63,4 @@ class ChildSpec(TypedDict):
     filter_syscalls: bool
     fetchurl: FetchSpec | None
     """A builtin to run in the sandbox in place of *builder*."""
+    buildenv: BuildenvSpec | None

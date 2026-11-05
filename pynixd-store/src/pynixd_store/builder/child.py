@@ -31,7 +31,7 @@ from pathlib import Path
 
 import seccomp
 
-from . import fetchurl
+from . import buildenv, fetchurl
 from .spec import ChildSpec
 
 MS_BIND = 4096
@@ -237,6 +237,8 @@ def _run_child(spec: ChildSpec) -> None:
     os.umask(0o022)
     if spec["fetchurl"] is not None:
         fetchurl.run(spec["fetchurl"])
+    if spec["buildenv"] is not None:
+        buildenv.run(spec["buildenv"])
     builder = spec["builder"]
     argv = [os.path.basename(builder), *spec["args"]]
     os.execve(builder, argv, spec["env"])

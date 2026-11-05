@@ -33,6 +33,7 @@ from ..add import PathLock, delete_path
 from ..content_address import Method, fixed_output_address, output_method
 from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta, show_error
 from ..signing import SecretKey, fingerprint
+from . import buildenv
 from .buildlog import BuildLog
 from .env import (
     HOME_DIR,
@@ -54,7 +55,7 @@ from .outputs import (
     output_checks,
     random_path,
 )
-from .spec import ChildSpec, FetchSpec
+from .spec import BuildenvSpec, ChildSpec, FetchSpec
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -89,7 +90,7 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
     if not sys.platform.startswith("linux"):
         return "pynixd builds on Linux only"
     builtin = drv.builder.startswith("builtin:")
-    if builtin and (reason := _fetchurl_unsupported(drv, settings)) is not None:
+    if builtin and (reason := _builtin_unsupported(drv, settings)) is not None:
         return reason
     # A builtin builds on any platform (`derivation-building-goal.cc:420`).
     if drv.platform != settings.system and drv.platform not in settings.extra_platforms and not builtin:
@@ -147,10 +148,37 @@ def _url_unsupported(url: str) -> str | None:
     return None
 
 
+def _builtin_unsupported(drv: BasicDerivation, settings: BuildSettings) -> str | None:
+    if drv.builder == "builtin:buildenv":
+        return _buildenv_unsupported(drv)
+    if drv.builder == "builtin:fetchurl":
+        return _fetchurl_unsupported(drv, settings)
+    return f"the builtin builder '{drv.builder}'"
+
+
+def _buildenv_unsupported(drv: BasicDerivation) -> str | None:
+    """Structured attrs hide `derivations` in `__json`; a malformed one is a `stoi` throw or undefined behaviour."""
+    if "__json" in drv.env:
+        return "builtin:buildenv with structured attrs"
+    if set(drv.outputs) != {"out"}:
+        return f"builtin:buildenv with the outputs {sorted(drv.outputs)}"
+    if "derivations" in drv.env and buildenv.packages(drv.env["derivations"]) is None:
+        return "builtin:buildenv with derivations that Nix cannot read"
+    return None
+
+
+def _buildenv_spec(drv: BasicDerivation, out: str) -> BuildenvSpec:
+    """`builtinBuildenv` reads the derivation's own attributes, not the builder's environment (`buildenv.cc:175`)."""
+    derivations = drv.env.get("derivations")
+    return {
+        "out": out,
+        "packages": None if derivations is None else buildenv.packages(derivations),
+        "manifest": drv.env.get("manifest"),
+    }
+
+
 def _fetchurl_unsupported(drv: BasicDerivation, settings: BuildSettings) -> str | None:
     """Why the daemon runs this builtin. Nix's own refusals (`builtins/fetchurl.cc:25`) stay there too."""
-    if drv.builder != "builtin:fetchurl":
-        return f"the builtin builder '{drv.builder}'"
     if "__json" in drv.env:
         return "builtin:fetchurl with structured attrs"
     out = drv.outputs.get("out")
@@ -480,6 +508,7 @@ async def build(
             "no_new_privileges": not settings.allow_new_privileges,
             "filter_syscalls": settings.filter_syscalls,
             "fetchurl": fetch,
+            "buildenv": _buildenv_spec(drv, scratch["out"]) if drv.builder == "builtin:buildenv" else None,
         }
         if os.path.exists(HOME_DIR):
             raise ValueError(f"home directory '{HOME_DIR}' exists; please remove it to assure purity of builds")

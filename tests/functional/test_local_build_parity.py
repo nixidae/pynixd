@@ -12,6 +12,7 @@ import base64
 import contextlib
 import hashlib
 import json
+import os
 import sqlite3
 from typing import TYPE_CHECKING, Any
 
@@ -27,7 +28,7 @@ from tests._conftest.nix_config import for_test_store
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Iterable
     from pathlib import Path
 
 DEP = (
@@ -1041,6 +1042,128 @@ async def test_builtin_fetchurl_fetches_what_the_daemon_fetches(tmp_path: Path) 
     assert here["mirror"][4][0][0].startswith("/mirror/sha256/"), here["mirror"]
     assert any("HTTP error" in line and "404" in line for line in here["missing"][3]), here["missing"]
     assert here["flat"][4][0][1].startswith("curl/"), here["flat"]
+
+
+#: Package trees for `builtin:buildenv`; "->" makes a symbolic link.
+PROFILE_PACKAGES = {
+    "env-a": {
+        "bin/a": "a",
+        "bin/same": "a",
+        "share/doc/a": "a",
+        "lib": "->bin",
+        ".hidden": "",
+        "manifest.json": "",
+        "gone": "->/nowhere",
+    },
+    "env-b": {"bin/b": "b", "bin/same": "b", "share/doc/b": "b"},
+    "env-c": {"bin/c": "c"},
+    "conflict-a": {"bin/x": "a"},
+    "conflict-b": {"bin/x": "b"},
+    "file-a": {"etc": "a"},
+    "dir-b": {"etc/x": "b"},
+    "merge-a": {"share/x": "a"},
+    "merge-b": {"share/y": "b"},
+    "merge-c": {"share": "c"},
+}
+
+#: Each profile: (active, priority, package); `env-c` is in `env-a`'s propagated-user-env-packages.
+PROFILES = {
+    "profile": [("true", 3, "env-a"), ("true", 5, "env-b"), ("false", 1, "env-c"), ("true", 5, "file")],
+    "conflict": [("true", 5, "conflict-a"), ("true", 5, "conflict-b")],
+    "non-directory": [("true", 1, "file-a"), ("true", 2, "dir-b")],
+    "directory": [("true", 1, "merge-a"), ("true", 2, "merge-b"), ("true", 3, "merge-c")],
+}
+
+
+def _packages(root: Path, names: Iterable[str]) -> None:
+    for name in names:
+        for rel, text in PROFILE_PACKAGES[name].items():
+            path = root / name / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if text.startswith("->"):
+                path.symlink_to(text[2:])
+            else:
+                path.write_text(text)
+
+
+def _profile(packages: Path, name: str) -> str:
+    entries = " ".join(
+        f'[ "{active}" {priority} 1 '
+        + (
+            '(builtins.toFile "file" "f")'
+            if pkg == "file"
+            else f'(builtins.path {{ path = {packages}/{pkg}; name = "{pkg}"; }})'
+        )
+        + " ]"
+        for active, priority, pkg in PROFILES[name]
+    )
+    return (
+        f'derivation {{ name = "parity-{name}"; system = "builtin"; builder = "builtin:buildenv"; '
+        f'manifest = builtins.toFile "manifest.nix" "[ ]"; derivations = [ {entries} ]; }}'
+    )
+
+
+def _links(path: Path) -> dict[str, str]:
+    return {
+        str(p.relative_to(path)): os.readlink(p) if p.is_symlink() else oct(p.lstat().st_mode)
+        for p in sorted(path.rglob("*"))
+    }
+
+
+async def _profiles(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
+    results: dict[str, Any] = {}
+    packages = tmp_path / route.name / "packages"
+    async with _serve(tmp_path, route) as (url, root):
+        _packages(packages, ["env-c"])
+        _rc, propagated, _err, _both = await run_subproc(
+            [
+                NIX_BIN,
+                "eval",
+                "--store",
+                url,
+                "--impure",
+                "--raw",
+                "--expr",
+                f'builtins.path {{ path = {packages}/env-c; name = "env-c"; }}',
+            ]
+        )
+        _packages(packages, PROFILE_PACKAGES.keys() - {"env-c"})
+        (packages / "env-a" / "nix-support").mkdir()
+        (packages / "env-a" / "nix-support" / "propagated-user-env-packages").write_text(f"{propagated}\n")
+        for name in PROFILES:
+            rc, out, err, _both = await run_subproc(
+                [
+                    NIX_BIN,
+                    "build",
+                    "--store",
+                    url,
+                    "--impure",
+                    "--no-link",
+                    "--print-out-paths",
+                    "--expr",
+                    _profile(packages, name),
+                ],
+                expected_retcode=None,
+            )
+            paths = out.split()
+            results[name] = rc, paths, [_links(root / p.lstrip("/")) for p in paths], err.splitlines()
+    results["valid"], results["refs"] = _rows(root)
+    return results
+
+
+async def test_builtin_buildenv_builds_the_profile_the_daemon_builds(tmp_path: Path) -> None:
+    """`builtinBuildenv` (`builtins/buildenv.cc:173`): merged directories, priorities, a propagated package,
+    the skipped names, its two warnings, and the errors of a conflict and of both collisions."""
+    before = _fallthrough()
+    here = await _profiles(tmp_path, OpRoute.pynixd)
+    assert _fallthrough() == before, "pynixd's sandbox runs every builtin:buildenv"
+    there = await _profiles(tmp_path, OpRoute.daemon)
+
+    assert here == there
+    assert here["profile"][0] == 0, here["profile"]
+    assert {"bin/c", "share/doc/b", "manifest.nix"} <= set(here["profile"][2][0]), here["profile"]
+    assert any("skipping dangling symlink" in line for line in here["profile"][3]), here["profile"]
+    assert all(here[name][0] == 1 for name in ("conflict", "non-directory", "directory")), here
 
 
 REBUILDS = {
