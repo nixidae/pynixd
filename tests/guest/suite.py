@@ -13,6 +13,9 @@ it back when the phase ends, so every test is a case of this run -- in its
 
 from __future__ import annotations
 
+import os
+import shlex
+
 from vivarium_runner import Machines
 
 TIMEOUT = 2400
@@ -20,6 +23,13 @@ TIMEOUT = 2400
 `tests/unit` 27.2s, `nix-daemon-protocol/tests` 4.8s, `tests/parity`
 122.2s. `tests/unit` takes 87s under UML. The rest is for a loaded
 builder."""
+
+SELECT_ENV = "PYNIXD_SUITE_ARGS"
+"""Extra pytest arguments for the suite inside the guest, such as `-k name`.
+
+Not the driver's own `-- ...`: vivarium hands those to the pytest that runs
+this file, and a `-k` there deselects `test` below. Pair it with `--only`, as
+a suite that the selection does not reach exits 5 and fails its phase."""
 
 
 async def test(vms: Machines) -> None:
@@ -30,6 +40,7 @@ async def test(vms: Machines) -> None:
     if name is None or name not in vms.settings["suites"]:
         raise RuntimeError(f"no suite for phase {name!r}; settings.suites has {list(vms.settings['suites'])}")
     suite = vms.settings["suites"][name]
+    select = shlex.join(shlex.split(os.environ.get(SELECT_ENV, "")))
 
     # Redirected to /artifacts rather than returned: pytest's output is
     # thousands of lines and the way back is a serial line.
@@ -43,7 +54,7 @@ async def test(vms: Machines) -> None:
         f"NIX_BIN=$(command -v nix) "
         f"PYNIXD_TEST_LOG_DIR=/artifacts/{name}-logs "
         f"pytest -p no:cacheprovider --tb=short -q {' '.join(suite['flags'])} "
-        f"--junitxml=/artifacts/junit/{name}.xml {suite['path']} "
+        f"--junitxml=/artifacts/junit/{name}.xml {suite['path']} {select} "
         f"> /artifacts/{name}.log 2>&1"
     )
     # `su -` and not `su`: a login shell gives tester its own HOME, and
