@@ -8,13 +8,18 @@ from typing import Any, cast
 from pynixd.store.local_db import _build_overrides
 
 
-def _options(**overrides: str) -> Any:
-    return cast("Any", SimpleNamespace(max_silent_time=5, build_cores=2, overrides=overrides))
+def _options(overrides: dict[str, str], keep_failed: int = 0) -> Any:
+    return cast("Any", SimpleNamespace(keep_failed=keep_failed, max_silent_time=5, build_cores=2, overrides=overrides))
 
 
 def test_the_daemon_keeps_its_own_experimental_features() -> None:
     """`daemon.cc:273`: a trusted client's experimental features do not reach the daemon either."""
     got = _build_overrides(
-        _options(**{"experimental-features": "ca-derivations", "plugin-files": "/x", "sandbox": "relaxed"})
+        _options({"experimental-features": "ca-derivations", "plugin-files": "/x", "sandbox": "relaxed"})
     )
-    assert got == {"max-silent-time": "5", "cores": "2", "sandbox": "relaxed"}
+    assert got == {"keep-failed": "false", "max-silent-time": "5", "cores": "2", "sandbox": "relaxed"}
+
+
+def test_keep_failed_is_a_fixed_field_of_the_session() -> None:
+    """`daemon.cc:223`: `settings.keepFailed = keepFailed`, whatever the daemon's own `keep-failed` says."""
+    assert _build_overrides(_options({}, keep_failed=1))["keep-failed"] == "true"

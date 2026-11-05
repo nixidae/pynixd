@@ -94,6 +94,12 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
         return f"the platform {drv.platform}"
     if "__json" in drv.env and (reason := structured_attrs_reason(drv.env)) is not None:
         return reason
+    # `runPostBuildHook` (`derivation-building-goal.cc:1079`) and the kept build directory
+    # (`cleanupBuild`, `derivation-builder.cc:1697`, never for a builtin) are the daemon's alone.
+    if settings.post_build_hook:
+        return "a build with a post-build-hook"
+    if settings.keep_failed and not builtin:
+        return "a build with keep-failed"
     if settings.sandbox == "false" or bool_attr(drv.env, "__noChroot", default=False):
         return "a build without the sandbox"
     features = set(drv.required_system_features)

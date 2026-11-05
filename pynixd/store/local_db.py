@@ -1184,7 +1184,11 @@ def _build_overrides(options: SetOptionsRequest | None) -> dict[str, str]:
     """
     if options is None:
         return {}
-    overrides = {"max-silent-time": str(int(options.max_silent_time)), "cores": str(options.build_cores)}
+    overrides = {
+        "keep-failed": "true" if options.keep_failed else "false",
+        "max-silent-time": str(int(options.max_silent_time)),
+        "cores": str(options.build_cores),
+    }
     overrides.update((k, v) for k, v in options.overrides.items() if k not in _NEVER_APPLIED)
     if "build-timeout" in overrides:
         overrides.setdefault("timeout", overrides["build-timeout"])

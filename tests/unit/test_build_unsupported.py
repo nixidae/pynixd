@@ -46,3 +46,17 @@ def test_a_git_hashed_output_needs_git_hashing() -> None:
 def test_a_sandboxed_type_or_sandbox_true_stays_in_pynixd() -> None:
     assert _reason(PLAIN, "relaxed", relocated=False) is None
     assert _reason(FIXED, "true", relocated=False) is None
+
+
+@pytest.mark.parametrize(
+    ("setting", "value", "reason"),
+    [
+        ("post-build-hook", "/bin/hook", "a build with a post-build-hook"),
+        ("keep-failed", "true", "a build with keep-failed"),
+    ],
+)
+def test_a_hook_or_a_kept_build_directory_goes_to_the_daemon(setting: str, value: str, reason: str) -> None:
+    """`runPostBuildHook` (`derivation-building-goal.cc:1079`) and `cleanupBuild` (`derivation-builder.cc:1697`)."""
+    drv = BasicDerivation(outputs={"out": PLAIN}, platform="x86_64-linux", builder="/bin/sh")
+    settings = BuildSettings.from_nix_config({}, {"system": "x86_64-linux", setting: value})
+    assert unsupported(drv, settings, store_dir="/nix/store", relocated=True) == reason
