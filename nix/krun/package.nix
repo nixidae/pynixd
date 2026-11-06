@@ -15,6 +15,15 @@
   makeBinaryWrapper,
 }:
 let
+  # A build's stall times read its guest cgroup's pressure files, and libkrunfw's
+  # x86_64 config alone leaves PSI out (aarch64 and riscv64 set it).
+  # nixidae/nixidae#1187.
+  kernel = libkrunfw.overrideAttrs (old: {
+    postPatch = old.postPatch + ''
+      substituteInPlace config-libkrunfw_x86_64 \
+        --replace-fail '# CONFIG_PSI is not set' 'CONFIG_PSI=y'
+    '';
+  });
   init = pkgsStatic.stdenv.mkDerivation {
     name = "pynixd-krun-init";
     src = ./init.c;
@@ -46,10 +55,10 @@ stdenv.mkDerivation {
     runHook preInstall
     install -D pynixd-krun $out/libexec/pynixd-krun
     makeBinaryWrapper $out/libexec/pynixd-krun $out/bin/pynixd-krun \
-      --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ libkrunfw ]}
+      --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ kernel ]}
     runHook postInstall
   '';
-  passthru = { inherit init; };
+  passthru = { inherit init kernel; };
   meta = {
     description = "A build guest for pynixd, on libkrun";
     mainProgram = "pynixd-krun";
