@@ -10,6 +10,7 @@
  *   exit     a path, where the command's end is written: "exit N" or "signal N"
  *   ids      "UID GID": who the command runs as
  *   cwd      the directory the command starts in
+ *   disks    one directory per line: where /dev/vda, /dev/vdb, ... mount, as XFS
  *
  * The shares show their files with the host's owners, so the command runs as
  * the uid that owns the build's directories, as it does on the host. As root it
@@ -140,6 +141,20 @@ static void mount_shares(void)
     free(text);
 }
 
+/* After the shares: a disk's directory is on one. */
+static void mount_disks(void)
+{
+    size_t len;
+    char *text = slurp(CONFIG "disks", &len);
+    char device[] = "/dev/vda";
+    for (char *line = strtok(text, "\n"); line; line = strtok(NULL, "\n")) {
+        if (mount(device, line, "xfs", MS_NOSUID | MS_NODEV, NULL) != 0)
+            fail(line);
+        device[sizeof device - 2]++;
+    }
+    free(text);
+}
+
 static char **read_argv(void)
 {
     size_t len;
@@ -186,6 +201,7 @@ int main(void)
     int console = open_console();
     mount_base();
     mount_shares();
+    mount_disks();
     char **argv = read_argv();
     char *status = read_path(CONFIG "status");
     /* Not the root: a null fs cannot list a directory. */

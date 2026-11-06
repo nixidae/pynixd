@@ -775,6 +775,7 @@ async def _run(
     master, slave = os.openpty()
     if guest is not None:
         status_read = status_write = -1
+        await guest.vm.make_disk(paths.top, paths.tmp)
         argv = guest.vm.argv(
             top=paths.top,
             chroot_parent=paths.chroot_parent,
@@ -782,6 +783,7 @@ async def _run(
             visible=guest.visible,
             sources=guest.sources,
             spec_file=spec_file,
+            build_dir=paths.tmp,
         )
         fds: list[int] = []
     else:

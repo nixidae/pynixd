@@ -98,6 +98,23 @@ async def test_the_builder_runs_on_the_guest_kernel(tmp_path: Path) -> None:
     assert release != os.uname().release
 
 
+async def test_the_build_directory_is_xfs_and_keeps_what_pynixd_wrote(tmp_path: Path) -> None:
+    """The build directory is a disk image, not a share: each small-file operation stays in the guest.
+
+    `passAsFile` puts a file in the build directory before the builder starts, so the image must hold it.
+    """
+    expr = (
+        'derivation { name = "vm-disk"; system = builtins.currentSystem; builder = "/bin/sh"; '
+        'passAsFile = [ "note" ]; note = "passed"; '
+        'args = [ "-c" "while read dev dir fs rest; do [ $dir = $NIX_BUILD_TOP ] && t=$fs; done < /proc/mounts; '
+        'read n < $notePath; echo $t $n > $out" ]; }'
+    )
+    async with _serve(tmp_path, "vm", BuildVmSpec(memory_mib=512, cpus=1)) as url:
+        path, _log = await _build(url, expr)
+
+    assert (tmp_path / "vm/store" / path.lstrip("/")).read_text() == "xfs passed\n"
+
+
 async def test_an_extra_sandbox_directory_reaches_the_builder_read_write(tmp_path: Path) -> None:
     """`extra-sandbox-paths` binds a directory read-write in the VM as on the host: `programs.ccache`'s cache."""
     cache = tmp_path / "ccache"

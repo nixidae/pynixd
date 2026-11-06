@@ -285,6 +285,7 @@ class LocalDBStore(Store):
                 memory_mib=spec.build_vm.memory_mib,
                 cpus=spec.build_vm.cpus,
                 dax_window_mib=spec.build_vm.dax_window_mib,
+                disk_gib=spec.build_vm.disk_gib,
             )
             if spec.build_vm is not None
             else None

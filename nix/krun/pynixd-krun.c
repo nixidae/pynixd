@@ -3,7 +3,7 @@
  *
  *   pynixd-krun --init FILE --cpus N --memory MIB [--dax-window BYTES]
  *               [--ro DIR:ALLOWLIST]... [--rw DIR]... [--rw-allow DIR:ALLOWLIST]...
- *               --cwd DIR --status PATH --exit PATH
+ *               [--disk IMAGE:DIR]... --cwd DIR --status PATH --exit PATH
  *               [--uid N --gid N] -- COMMAND [ARG]...
  *
  * The guest boots libkrunfw's kernel on a root that holds only --init (as
@@ -14,7 +14,9 @@
  * --dax-window bytes: the guest's page cache holds no copy of them. A
  * --rw-allow share is writable and shows only what its allowlist names; above
  * a listed path the guest can change nothing. It gives the guest one file of a
- * directory, which virtio-fs cannot share alone.
+ * directory, which virtio-fs cannot share alone. A --disk is a raw XFS image
+ * the init mounts at DIR after the shares, with no flush reaching the host: a
+ * build directory need not outlive a crash.
  *
  * The init runs COMMAND in --cwd, a directory on a share, as --uid and --gid (this process's own by default),
  * the owners the shares show. It opens --status as its file descriptor 3, and writes
@@ -39,6 +41,7 @@
 #include <libkrun.h>
 
 #define MAX_SHARES 16
+#define MAX_DISKS 4
 #define MAX_DIRS 512
 
 static bool push_to_stderr(void *userdata, KrunStr s)
@@ -60,6 +63,11 @@ static KrunVtableHandle stderr_writer =
         fputc('\n', stderr);                              \
         return 1;                                         \
     }
+
+struct disk {
+    const char *image;
+    const char *dir;
+};
 
 struct share {
     const char *dir;
@@ -85,7 +93,7 @@ static void usage(void)
 {
     fprintf(stderr, "usage: pynixd-krun --init FILE --cpus N --memory MIB [--dax-window BYTES]\n"
                     "                   [--ro DIR:ALLOWLIST]... [--rw DIR]... [--rw-allow DIR:ALLOWLIST]...\n"
-                    "                   --cwd DIR --status PATH --exit PATH\n"
+                    "                   [--disk IMAGE:DIR]... --cwd DIR --status PATH --exit PATH\n"
                     "                   [--uid N --gid N] -- COMMAND [ARG]...\n");
 }
 
@@ -144,20 +152,22 @@ static int add_file(KrunFsOverlay overlay, const char *path, const char *data, s
 
 int main(int argc, char *argv[])
 {
-    enum { INIT = 256, CPUS, MEMORY, DAX, RO, RW, RW_ALLOW, STATUS, EXIT, UID, GID, CWD };
+    enum { INIT = 256, CPUS, MEMORY, DAX, RO, RW, RW_ALLOW, DISK, STATUS, EXIT, UID, GID, CWD };
     static const struct option options[] = {
         {"init", required_argument, NULL, INIT},     {"cpus", required_argument, NULL, CPUS},
         {"memory", required_argument, NULL, MEMORY}, {"dax-window", required_argument, NULL, DAX},
         {"ro", required_argument, NULL, RO},         {"rw", required_argument, NULL, RW},
         {"status", required_argument, NULL, STATUS}, {"exit", required_argument, NULL, EXIT},
         {"cwd", required_argument, NULL, CWD},       {"rw-allow", required_argument, NULL, RW_ALLOW},
+        {"disk", required_argument, NULL, DISK},
         {"uid", required_argument, NULL, UID},       {"gid", required_argument, NULL, GID},
         {NULL, 0, NULL, 0},
     };
     const char *init = NULL, *status = NULL, *exit_path = NULL, *cwd = NULL;
     long cpus = 0, memory = 0, dax_window = 0, uid = (long)getuid(), gid = (long)getgid();
     struct share shares[MAX_SHARES];
-    int nshares = 0, c;
+    struct disk disks[MAX_DISKS];
+    int nshares = 0, ndisks = 0, c;
 
     while ((c = getopt_long(argc, argv, "", options, NULL)) != -1) {
         bool ok = true;
@@ -178,6 +188,15 @@ int main(int argc, char *argv[])
             if (ok) {
                 *colon = '\0';
                 shares[nshares++] = (struct share){.dir = optarg, .allowlist = colon + 1, .writable = c == RW_ALLOW};
+            }
+            break;
+        }
+        case DISK: {
+            char *colon = strrchr(optarg, ':');
+            ok = ndisks < MAX_DISKS && colon != NULL && colon[1] == '/';
+            if (ok) {
+                *colon = '\0';
+                disks[ndisks++] = (struct disk){.image = optarg, .dir = colon + 1};
             }
             break;
         }
@@ -224,6 +243,12 @@ int main(int argc, char *argv[])
     for (int i = 0; i < nshares; i++)
         fprintf(m, "s%d %s %s\n", i, shares[i].writable ? "rw" : "ro", shares[i].dir);
     fclose(m);
+    char *disk_dirs = NULL;
+    size_t disk_dirs_len = 0;
+    FILE *dd = open_memstream(&disk_dirs, &disk_dirs_len);
+    for (int i = 0; i < ndisks; i++)
+        fprintf(dd, "%s\n", disks[i].dir);
+    fclose(dd);
     FILE *a = open_memstream(&args, &args_len);
     for (int i = optind; i < argc; i++)
         fwrite(argv[i], 1, strlen(argv[i]) + 1, a);
@@ -238,6 +263,7 @@ int main(int argc, char *argv[])
             return 1;
     if (add_file(overlay, "init", init_data, init_len, 0555) ||
         add_file(overlay, ".pynixd/mounts", mounts, mounts_len, 0444) ||
+        add_file(overlay, ".pynixd/disks", disk_dirs, disk_dirs_len, 0444) ||
         add_file(overlay, ".pynixd/argv", args, args_len, 0444) ||
         add_file(overlay, ".pynixd/status", status, strlen(status), 0444) ||
         add_file(overlay, ".pynixd/cwd", cwd, strlen(cwd), 0444) ||
@@ -288,6 +314,15 @@ int main(int argc, char *argv[])
             }
             krun_mmio_device_manager_add(devices, fs);
         }
+    }
+
+    /* In order: the guest names them vda, vdb, ... */
+    for (int i = 0; i < ndisks; i++) {
+        char id[16];
+        snprintf(id, sizeof id, "disk%d", i);
+        CHECK(KrunBlockDevice blk = krun_block_device_new(KRUN_STR(id), KRUN_STR(disks[i].image), KRUN_DISK_FORMAT_RAW, &err));
+        krun_block_device_set_sync_mode(blk, KRUN_SYNC_MODE_NONE);
+        krun_mmio_device_manager_add(devices, blk);
     }
 
     CHECK(KrunRngDevice rng = krun_rng_device_new(&err));

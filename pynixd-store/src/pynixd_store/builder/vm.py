@@ -4,8 +4,10 @@ The guest mounts each share at its host path, so the helper's spec means the sam
 read-only, each with an allowlist: the build store shows its input closure, and the host's store shows the
 closure the helper runs from. A builder that escapes the helper's namespaces sees no other store path. A
 `sandbox-paths` directory outside the stores, such as `/run/binfmt` or a ccache directory, is a writable share
-of its own. The build's two directories are writable shares: the top directory (the spec, the build directory) and the chroot,
-where the outputs land for `collect_outputs`.
+of its own, and so is a file's parent, whose allowlist shows the file alone. The top directory (the spec) and
+the chroot, where the outputs land for `collect_outputs`, are writable shares. The build directory is a sparse
+XFS image the guest mounts over its place in the top directory: a build makes many small files, and each
+operation on a share is a round trip to the host.
 """
 
 from __future__ import annotations
@@ -15,10 +17,13 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+import anyio
+
 #: Where the helper's interpreter and its closure live: the store pynixd itself runs from.
 HOST_STORE = Path("/nix/store")
 STATUS_NAME = "vm-status"
 EXIT_NAME = "vm-exit"
+DISK_NAME = "build.xfs"
 
 
 @dataclass(frozen=True)
@@ -29,15 +34,20 @@ class BuildVm:
     """The interpreter that runs the helper in the guest: a store path, unlike an editable `sys.executable`."""
     helper_closure: frozenset[str]
     """The host store paths the helper runs from: its interpreter and every module it imports."""
+    mkfs: Path
+    """`mkfs.xfs`, which makes the build directory's image on the host."""
     memory_mib: int
     cpus: int
     dax_window_mib: int
+    disk_gib: int
+    """The build directory's size. The image is sparse: the host pays for what the build writes."""
 
     @classmethod
-    def from_environment(cls, *, memory_mib: int, cpus: int, dax_window_mib: int) -> BuildVm:
+    def from_environment(cls, *, memory_mib: int, cpus: int, dax_window_mib: int, disk_gib: int) -> BuildVm:
         """What the package names: the launcher (`PYNIXD_KRUN`), the init (`PYNIXD_KRUN_INIT`), the helper's
-        interpreter (`PYNIXD_KRUN_PYTHON`) and its closure (`PYNIXD_KRUN_CLOSURE`, a file of store paths)."""
-        names = ("PYNIXD_KRUN", "PYNIXD_KRUN_INIT", "PYNIXD_KRUN_PYTHON", "PYNIXD_KRUN_CLOSURE")
+        interpreter (`PYNIXD_KRUN_PYTHON`) and its closure (`PYNIXD_KRUN_CLOSURE`, a file of store paths), and
+        `mkfs.xfs` (`PYNIXD_KRUN_MKFS`)."""
+        names = ("PYNIXD_KRUN", "PYNIXD_KRUN_INIT", "PYNIXD_KRUN_PYTHON", "PYNIXD_KRUN_CLOSURE", "PYNIXD_KRUN_MKFS")
         missing = [name for name in names if name not in os.environ]
         if missing:
             raise ValueError(f"build_vm needs {', '.join(missing)} in the environment; the pynixd package sets them")
@@ -47,10 +57,24 @@ class BuildVm:
             init=Path(os.environ["PYNIXD_KRUN_INIT"]),
             python=Path(os.environ["PYNIXD_KRUN_PYTHON"]),
             helper_closure=frozenset(closure),
+            mkfs=Path(os.environ["PYNIXD_KRUN_MKFS"]),
             memory_mib=memory_mib,
             cpus=cpus,
             dax_window_mib=dax_window_mib,
+            disk_gib=disk_gib,
         )
+
+    async def make_disk(self, top: Path, build_dir: Path) -> None:
+        """The build directory's image, `top/build.xfs`, holding what *build_dir* holds (the files pynixd wrote
+        there for the builder), with their owners.
+
+        `mkfs.xfs -p DIR` fills the image from a directory, unprivileged. A 64 MiB log, the least XFS takes: the
+        default log of a 1 TiB image is 513 MB of the host's disk (measured), this one 65 MB, in 48 ms.
+        """
+        image = top / DISK_NAME
+        with image.open("wb") as file:
+            file.truncate(self.disk_gib * 1024**3)
+        await anyio.run_process([str(self.mkfs), "-q", "-K", "-l", "size=64m", "-p", str(build_dir), str(image)])
 
     def argv(
         self,
@@ -61,6 +85,7 @@ class BuildVm:
         visible: Iterable[str],
         sources: Iterable[str],
         spec_file: Path,
+        build_dir: Path,
     ) -> list[str]:
         """The launcher's command line, after it writes the allowlists into *top*.
 
@@ -117,6 +142,7 @@ class BuildVm:
             allowlist.write_text("".join(f"{p}\n" for p in allowed or ()))
             argv.append(f"--{kind}={root}:{allowlist}")
         argv += [
+            f"--disk={top / DISK_NAME}:{build_dir}",
             f"--cwd={top}",
             f"--status={top / STATUS_NAME}",
             f"--exit={top / EXIT_NAME}",

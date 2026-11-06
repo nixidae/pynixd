@@ -430,6 +430,9 @@ class BuildVmSpec(BaseModel):
     cpus: int = Field(default=2, gt=0, le=255)
     dax_window_mib: int = Field(default=4096, ge=0)
     """The address space the guest maps the store through. It costs no host memory."""
+    disk_gib: int = Field(default=1024, gt=0)
+    """The build directory's size: a sparse XFS image on the host's disk, which costs what the build writes
+    and a 64 MiB log. A build that fills it fails with ENOSPC; the host's memory never holds it."""
 
 
 class LocalSocketStoreSpec(StoreSpecBase):

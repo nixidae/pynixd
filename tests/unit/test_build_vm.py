@@ -20,10 +20,12 @@ def _vm() -> BuildVm:
         launcher=Path("/nix/store/dddd-pynixd-krun/bin/pynixd-krun"),
         init=Path("/nix/store/eeee-init/bin/pynixd-krun-init"),
         python=Path(f"{HELPER}/bin/python"),
+        mkfs=Path("/nix/store/gggg-xfsprogs/bin/mkfs.xfs"),
         helper_closure=frozenset({HELPER}),
         memory_mib=512,
         cpus=1,
         dax_window_mib=64,
+        disk_gib=1,
     )
 
 
@@ -35,6 +37,7 @@ def _argv(tmp_path: Path, real_store: Path, sources: tuple[str, ...] = ()) -> li
         visible=[INPUT],
         sources=sources,
         spec_file=tmp_path / "top/spec.json",
+        build_dir=tmp_path / "top/build",
     )
 
 
@@ -62,6 +65,7 @@ def test_a_relocated_store_and_the_host_store_each_show_their_own_paths(tmp_path
         f"--rw={real / 'ffff-x.drv.chroot'}",
     ], "the shallower path mounts first"
     assert f"--cwd={tmp_path / 'top'}" in argv
+    assert f"--disk={tmp_path / 'top/build.xfs'}:{tmp_path / 'top/build'}" in argv
     assert argv[argv.index("--") + 1 :] == [
         f"{HELPER}/bin/python",
         "-I",
