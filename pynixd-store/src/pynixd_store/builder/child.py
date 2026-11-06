@@ -38,6 +38,7 @@ from anyio.streams.buffered import BufferedByteReceiveStream
 
 from . import buildenv, fetchurl, unpack_channel
 from .spec import ChildSpec
+from .usage import from_rusage, write_usage
 
 MS_BIND = 4096
 MS_REC = 16384
@@ -349,7 +350,9 @@ def main() -> None:
     os.close(status_fd)
     # Only now an event loop: the `unshare` above refuses a process with a second thread, and a fork copies a loop.
     anyio.run(_wait_serving, spec, pid, control)
-    _pid, status = os.waitpid(pid, 0)
+    # The sandbox's pid 1 reaps its orphans, so its usage holds theirs too.
+    _pid, status, rusage = os.wait4(pid, 0)
+    write_usage(Path(spec["usage_file"]), from_rusage(rusage))
     _exit_like(status)
 
 

@@ -75,3 +75,5 @@ class ChildSpec(TypedDict):
     unpack_channel: UnpackChannelSpec | None
     store_dir: str
     """The logical store directory: a shared mount in the sandbox, where the helper adds a path late."""
+    usage_file: str
+    """Where the helper writes what the builder used (`usage.py`), on the host."""

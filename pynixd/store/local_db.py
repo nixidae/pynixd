@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from nix_daemon_protocol.derivation_output import OutputKind
 from nix_daemon_protocol.operations import STANDARD_OPERATIONS
+from nix_daemon_protocol.opt_microseconds import OptMicroseconds
 from nix_daemon_protocol.protocol import Verbosity
 from nix_daemon_protocol.signature import Signature
 from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
@@ -51,6 +52,7 @@ if TYPE_CHECKING:
     from nix_daemon_protocol.wire_ops import WireRequest
     from pynixd_store.add import ImportSettings
     from pynixd_store.builder.restriction import RecursiveServer
+    from pynixd_store.builder.usage import BuildUsage
     from pynixd_store.drv_parser import Derivation
 
     from ..config import LocalSocketStoreSpec
@@ -767,6 +769,7 @@ class LocalDBStore(Store):
         checking = request.build_mode == BuildMode.CHECK
         repairing = request.build_mode == BuildMode.REPAIR
         activity = BuildActivity(drv_path, on_log, verbosity, checking=checking, repairing=repairing)
+        used: list[BuildUsage] = []
         await activity.start()
         try:
             built = await local_builder.build(
@@ -780,6 +783,7 @@ class LocalDBStore(Store):
                 repair=repairing,
                 recursive=self.recursive_server,
                 vm=self.build_vm,
+                on_usage=used.append,
             )
         finally:
             with anyio.CancelScope(shield=True):
@@ -808,6 +812,12 @@ class LocalDBStore(Store):
                 stop_time=built.stop_time,
                 built_outputs={},
                 built_outputs_by_name=by_name,
+                # NIX-DEVIATION (#27): `linux-derivation-builder.cc:950` fills `cpuUser` and `cpuSystem`
+                # from the build's cgroup alone, so without `use-cgroups` Nix sends neither. pynixd sends
+                # the helper's `wait4` usage too: the scheduler's observations read it (nixidae/nixidae#1187).
+                # To reverse it, show a client that misreads a BuildResult with CPU times.
+                cpu_user=OptMicroseconds(tag=1, value=used[0].cpu_user_us) if used else OptMicroseconds(),
+                cpu_system=OptMicroseconds(tag=1, value=used[0].cpu_system_us) if used else OptMicroseconds(),
             )
         )
 

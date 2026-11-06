@@ -60,6 +60,7 @@ from .outputs import (
 )
 from .restriction import SOCKET_NAME, RestrictionContext
 from .spec import BuildenvSpec, ChildSpec, FetchSpec
+from .usage import USAGE_NAME, read_usage
 from .vm import (
     BUILDER_SOCKET_NAME as VM_BUILDER_SOCKET_NAME,
     CONTROL_SOCKET_NAME as VM_CONTROL_SOCKET_NAME,
@@ -81,6 +82,7 @@ if TYPE_CHECKING:
     from .outputs import Collected
     from .restriction import RecursiveServer
     from .settings import BuildSettings
+    from .usage import BuildUsage
 
 _log = structlog.get_logger(__name__)
 
@@ -475,10 +477,12 @@ async def build(
     repair: bool = False,
     recursive: RecursiveServer | None = None,
     vm: BuildVm | None = None,
+    on_usage: Callable[[BuildUsage], None] | None = None,
 ) -> LocalBuildResult:
     """Build *drv*, whose inputs are valid, and register its outputs. `unsupported(drv)` must be `None`.
 
     *on_lines* receives the builder's output as it comes: Nix's log lines and its `@nix` events.
+    *on_usage* receives what the builder used, once it has ended, when the helper measured it.
     *realised* is the path of each output the store holds a realisation for (`checkPathValidity`,
     `derivation-building-goal.cc:1329`). With *check*, each output is valid, and the build
     compares what it makes with it and registers nothing new. With *repair*, an output is valid only when
@@ -570,6 +574,7 @@ async def build(
                 else None
             ),
             "store_dir": store_dir,
+            "usage_file": str(paths.top / USAGE_NAME),
         }
         if os.path.exists(HOME_DIR):
             raise ValueError(f"home directory '{HOME_DIR}' exists; please remove it to assure purity of builds")
@@ -628,6 +633,8 @@ async def build(
                     vm, layout.real_store_dir, frozenset(inputs | sandbox_closure), sources, restriction is not None
                 )
             failure = await _run(paths, spec, settings, drv_path, keep, control, guest)
+        if on_usage is not None and (usage := read_usage(paths.top / USAGE_NAME)) is not None:
+            on_usage(usage)
         if restriction is not None:
             # The paths the builder added may be referenced (`derivation-builder.cc:1434`).
             inputs |= restriction.added
