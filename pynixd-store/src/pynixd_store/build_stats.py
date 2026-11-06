@@ -53,6 +53,14 @@ class BuildObservation:
     cpu_system_us: int | None = None
     pull_ms: int | None = None
     pull_bytes: int | None = None
+    resource_source: str | None = None
+    """How the builder measured the fields below: `rusage` or `cgroup` (`BuildResources.source`)."""
+    peak_memory_bytes: int | None = None
+    io_read_bytes: int | None = None
+    io_write_bytes: int | None = None
+    cpu_stall_us: int | None = None
+    memory_stall_us: int | None = None
+    io_stall_us: int | None = None
 
 
 def name_without_version(name: str) -> str:

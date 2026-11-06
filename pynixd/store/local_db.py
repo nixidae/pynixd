@@ -13,6 +13,7 @@ import anyio
 import structlog
 from pydantic import BaseModel
 
+from nix_daemon_protocol.build_resources import BuildResources
 from nix_daemon_protocol.derivation_output import OutputKind
 from nix_daemon_protocol.operations import STANDARD_OPERATIONS
 from nix_daemon_protocol.opt_microseconds import OptMicroseconds
@@ -183,6 +184,18 @@ def _repair_unsupported(request: BuildDerivationRequest) -> str | None:
     if not all(output.path for output in request.derivation.outputs.values()) or request.derivation.has_impure:
         return "a repair of an output with no path"
     return None
+
+
+def _resources(usage: BuildUsage) -> BuildResources:
+    return BuildResources(
+        measured=1,
+        source=usage.source,
+        cpu_user_us=usage.cpu_user_us,
+        cpu_system_us=usage.cpu_system_us,
+        peak_memory_bytes=usage.peak_memory_bytes,
+        io_read_bytes=usage.io_read_bytes,
+        io_write_bytes=usage.io_write_bytes,
+    )
 
 
 class LocalDBStore(Store):
@@ -818,6 +831,7 @@ class LocalDBStore(Store):
                 # To reverse it, show a client that misreads a BuildResult with CPU times.
                 cpu_user=OptMicroseconds(tag=1, value=used[0].cpu_user_us) if used else OptMicroseconds(),
                 cpu_system=OptMicroseconds(tag=1, value=used[0].cpu_system_us) if used else OptMicroseconds(),
+                resources=_resources(used[0]) if used else BuildResources(),
             )
         )
 

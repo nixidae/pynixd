@@ -1564,6 +1564,14 @@ class Scheduler:
         observation.status = int(resp.result.status)
         observation.cpu_user_us = resp.result.cpu_user.value if resp.result.cpu_user else None
         observation.cpu_system_us = resp.result.cpu_system.value if resp.result.cpu_system else None
+        if (used := resp.result.resources).measured:
+            observation.resource_source = used.source
+            observation.peak_memory_bytes = used.peak_memory_bytes
+            observation.io_read_bytes = used.io_read_bytes
+            observation.io_write_bytes = used.io_write_bytes
+            observation.cpu_stall_us = used.cpu_stall.value
+            observation.memory_stall_us = used.memory_stall.value
+            observation.io_stall_us = used.io_stall.value
         identity = identity_of(build.request.derivation)
         observation_id = await self.local_store.db.record_build_observation(identity, observation)
         if build.placement is not None and observation_id is not None:

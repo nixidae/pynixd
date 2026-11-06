@@ -6,7 +6,8 @@ import json
 from dataclasses import dataclass, field
 from enum import IntEnum
 
-from .constants import FEATURE_REALISATION_WITH_PATH, proto
+from .build_resources import BuildResources
+from .constants import FEATURE_PYNIXD_BUILD_RESOURCES, FEATURE_REALISATION_WITH_PATH, proto
 from .drv_output import DrvOutput
 from .opt_microseconds import OptMicroseconds
 from .realisation import Realisation
@@ -204,6 +205,11 @@ class BuildResult(WireModel):
     carries the bare `<hash>-<name>`. `_whole_path` and `_bare_path` are the
     translation, and `ca:build-cache` measured what skipping it costs.
     """
+
+    resources: BuildResources = WireField(
+        default_factory=BuildResources, needs_features=[FEATURE_PYNIXD_BUILD_RESOURCES]
+    )
+    """What the build used. Last, so that Nix's fields keep their place; a Nix peer never names the feature."""
 
     def realised_outputs(self) -> dict[str, Realisation]:
         """Every output this result realised, keyed by the **output name**.

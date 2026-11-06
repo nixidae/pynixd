@@ -89,6 +89,12 @@ A client pins a set of temporary roots with one round trip instead of one
 this package already reads.
 """
 
+FEATURE_PYNIXD_BUILD_RESOURCES: Final[str] = "pynixd-build-resources"
+"""`BuildResult.resources`: what the build used (`build_resources.py`), after Nix's fields.
+
+pynixd's own feature, not Nix's, so it is not in `STANDARD_FEATURES`. Two pynixd peers name it.
+"""
+
 STANDARD_FEATURES: Final[frozenset[str]] = frozenset(
     {
         FEATURE_REALISATION_WITH_PATH,

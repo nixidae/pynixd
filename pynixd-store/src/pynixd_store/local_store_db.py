@@ -225,8 +225,9 @@ INSERT OR IGNORE INTO {DERIVATION_SHAPE_TABLE} (shape, keys, features) VALUES (?
 INSERT_BUILD_OBSERVATION = f"""
 INSERT INTO {BUILD_OBSERVATION_TABLE}
 (name, system, shape, storeId, status, queuedMs, inputsMs, inputsBytes, buildMs,
- cpuUserUs, cpuSystemUs, pullMs, pullBytes, finishedAt)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+ cpuUserUs, cpuSystemUs, pullMs, pullBytes, resourceSource, peakMemoryBytes, ioReadBytes, ioWriteBytes,
+ cpuStallUs, memoryStallUs, ioStallUs, finishedAt)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
 """
 
 PRUNE_BUILD_OBSERVATIONS = f"""
@@ -971,6 +972,13 @@ class LocalStoreDB:
                         observation.cpu_system_us,
                         observation.pull_ms,
                         observation.pull_bytes,
+                        observation.resource_source,
+                        observation.peak_memory_bytes,
+                        observation.io_read_bytes,
+                        observation.io_write_bytes,
+                        observation.cpu_stall_us,
+                        observation.memory_stall_us,
+                        observation.io_stall_us,
                     ),
                 )
                 row_id = cursor.lastrowid

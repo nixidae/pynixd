@@ -41,10 +41,15 @@ async def test_a_build_in_the_sandbox_records_its_cpu_time(tmp_path: Path) -> No
 
     with closing(sqlite3.connect(root / "nix/var/nix/db/db.sqlite")) as conn:
         rows = conn.execute(
-            f"SELECT cpuUserUs, cpuSystemUs FROM {BUILD_OBSERVATION_TABLE} WHERE name = 'usage-spin'"
+            "SELECT cpuUserUs, cpuSystemUs, resourceSource, peakMemoryBytes, ioReadBytes, ioWriteBytes "
+            f"FROM {BUILD_OBSERVATION_TABLE} WHERE name = 'usage-spin'"
         ).fetchall()
 
     assert len(rows) == 1
-    user_us, system_us = rows[0]
+    user_us, system_us, source, peak, read, written = rows[0]
     assert user_us > 50_000, "500000 shell iterations take well over 50 ms of user time"
     assert system_us is not None
+    assert source == "rusage"
+    assert peak > 1 << 20, "a shell holds more than 1 MiB"
+    assert read is not None
+    assert written is not None

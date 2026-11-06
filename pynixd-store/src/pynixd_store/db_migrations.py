@@ -338,6 +338,23 @@ MIGRATIONS: tuple[Migration, ...] = (
         ),
         creates=(PLACEMENT_DECISION_TABLE, PLACEMENT_CANDIDATE_TABLE),
     ),
+    Migration(
+        version=10,
+        name="build-observation-resources",
+        # What the builder measured, nixidae/nixidae#1187. A row from before has none.
+        statements=tuple(
+            f"ALTER TABLE {BUILD_OBSERVATION_TABLE} ADD COLUMN {column}"
+            for column in (
+                "resourceSource TEXT",
+                "peakMemoryBytes INTEGER",
+                "ioReadBytes INTEGER",
+                "ioWriteBytes INTEGER",
+                "cpuStallUs INTEGER",
+                "memoryStallUs INTEGER",
+                "ioStallUs INTEGER",
+            )
+        ),
+    ),
 )
 
 TARGET_VERSION = MIGRATIONS[-1].version if MIGRATIONS else 0
