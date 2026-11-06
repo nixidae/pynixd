@@ -60,10 +60,11 @@ from .outputs import (
 )
 from .restriction import SOCKET_NAME, RestrictionContext
 from .spec import BuildenvSpec, ChildSpec, FetchSpec
-from .usage import USAGE_NAME, read_usage
+from .usage import USAGE_NAME, read_usage, with_host
 from .vm import (
     BUILDER_SOCKET_NAME as VM_BUILDER_SOCKET_NAME,
     CONTROL_SOCKET_NAME as VM_CONTROL_SOCKET_NAME,
+    VMM_USAGE_NAME,
     BuildVm,
     allow as vm_allow,
     returncode as vm_returncode,
@@ -637,8 +638,8 @@ async def build(
                 guest = _Guest(
                     vm, layout.real_store_dir, frozenset(inputs | sandbox_closure), sources, restriction is not None
                 )
-            # The guest is a VM: its processes are not the host's to count.
-            cgroup = None if guest is not None else await stack.enter_async_context(build_cgroup.build_cgroup())
+            # A VM build's host cgroup holds the VMM, and the guest measures the build in a cgroup of its own.
+            cgroup = await stack.enter_async_context(build_cgroup.build_cgroup())
             spec["cgroup"] = None if cgroup is None else str(cgroup)
             if guest is not None:
                 spec["cgroup"] = str(build_cgroup.GUEST)
@@ -647,14 +648,23 @@ async def build(
             samples: list[UsageSample] = []
             sampler = await stack.enter_async_context(anyio.create_task_group())
             stack.callback(sampler.cancel_scope.cancel)
-            if cgroup is not None and sample_seconds > 0:
+            if cgroup is not None and sample_seconds > 0 and guest is None:
                 sampler.start_soon(build_cgroup.sample_every, cgroup, sample_seconds, samples)
-            failure = await _run(paths, spec, settings, drv_path, keep, control, guest)
+            failure = await _run(paths, spec, settings, drv_path, keep, control, guest, cgroup)
             # Not `sampler.cancel_scope.cancel()` here: this body runs in that scope, and the read below would be
             # cancelled too. The stack's callback stops the sampler on the way out.
             taken = tuple(samples)
             usage: BuildUsage | None
-            if cgroup is not None:
+            if guest is not None:
+                usage = read_usage(paths.top / USAGE_NAME)
+                host = (
+                    read_usage(paths.top / VMM_USAGE_NAME)
+                    if cgroup is None
+                    else await anyio.to_thread.run_sync(build_cgroup.read, cgroup)
+                )
+                if usage is not None and host is not None:
+                    usage = with_host(usage, host)
+            elif cgroup is not None:
                 read = await anyio.to_thread.run_sync(build_cgroup.read, cgroup)
                 usage = replace(read, samples=taken)
             else:
@@ -827,11 +837,13 @@ async def _run(
     on_log: Callable[[bytes], Awaitable[None]],
     control: socket.socket | None = None,
     guest: _Guest | None = None,
+    cgroup: Path | None = None,
 ) -> BuildFailure | _BuilderFailed | None:
     """Run the helper on a pseudoterminal, as `startBuild` does, and wait under the two timeouts.
 
     *control* is the helper's end of the socket it binds added paths on; it closes here once the helper has it.
-    With *guest*, the helper runs in a microVM, which reports through files in the top directory.
+    With *guest*, the helper runs in a microVM, which reports through files in the top directory, and its VMM
+    joins *cgroup*.
     """
     spec_file = paths.top / "spec.json"
     spec_file.write_text(json.dumps(spec))
@@ -848,6 +860,7 @@ async def _run(
             spec_file=spec_file,
             build_dir=paths.tmp,
             recursive=guest.recursive,
+            cgroup=cgroup,
         )
         fds: list[int] = []
         # libkrun connects to the host's sockets by their names in the top directory.

@@ -64,6 +64,11 @@ class BuildObservation:
     io_stall_us: int | None = None
     samples: tuple[ResourceSample, ...] = ()
     """The builder's time series (`BuildResources.samples`), oldest first."""
+    host_resource_source: str | None = None
+    """How the host measured a VM build's VMM (`BuildResources.host_source`); `None` outside a VM."""
+    host_cpu_user_us: int | None = None
+    host_cpu_system_us: int | None = None
+    host_peak_memory_bytes: int | None = None
 
 
 def name_without_version(name: str) -> str:

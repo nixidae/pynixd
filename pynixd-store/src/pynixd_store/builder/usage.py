@@ -6,7 +6,7 @@ The helper writes `USAGE_NAME` in the build's top directory after its builder en
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -49,6 +49,23 @@ class BuildUsage:
     memory_stall_us: int | None = None
     io_stall_us: int | None = None
     samples: tuple[UsageSample, ...] = ()
+    host_source: UsageSource | None = None
+    """How the host measured a VM build's VMM; `None` outside a VM. Its CPU time holds the guest's vCPUs, and its
+    memory the guest's RAM, so it never adds to the guest's figures above."""
+    host_cpu_user_us: int | None = None
+    host_cpu_system_us: int | None = None
+    host_peak_memory_bytes: int | None = None
+
+
+def with_host(usage: BuildUsage, host: BuildUsage) -> BuildUsage:
+    """*usage*, the guest's record, with *host*, the VMM's, as its host cost."""
+    return replace(
+        usage,
+        host_source=host.source,
+        host_cpu_user_us=host.cpu_user_us,
+        host_cpu_system_us=host.cpu_system_us,
+        host_peak_memory_bytes=host.peak_memory_bytes,
+    )
 
 
 def from_rusage(usage: resource.struct_rusage) -> BuildUsage:
@@ -74,4 +91,12 @@ def read_usage(path: Path) -> BuildUsage | None:
     except FileNotFoundError:
         return None
     samples = tuple(UsageSample(**sample) for sample in data.get("samples", ()))
-    return BuildUsage(**{**data, "source": UsageSource(data["source"]), "samples": samples})
+    host = data.get("host_source")
+    return BuildUsage(
+        **{
+            **data,
+            "source": UsageSource(data["source"]),
+            "samples": samples,
+            "host_source": None if host is None else UsageSource(host),
+        }
+    )

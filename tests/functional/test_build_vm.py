@@ -19,6 +19,7 @@ from pynixd import Server
 from pynixd.config import BuildVmSpec
 from pynixd.op_routes import OpRoute
 from pynixd.store import LocalDBStore
+from pynixd_store.builder import cgroup as build_cgroup
 from pynixd_store.db_migrations import BUILD_OBSERVATION_SAMPLE_TABLE, BUILD_OBSERVATION_TABLE
 from tests._conftest.config import NIX_GIT_BIN
 from tests._conftest.constants import _NO_PROBE_FEATURE_MATRIX
@@ -239,6 +240,47 @@ async def test_a_build_in_the_vm_reports_its_guest_cgroup(tmp_path: Path) -> Non
     assert peak > 4 * STRING_BYTES, f"{peak} bytes: the subshells held their strings at once"
     assert cpu_stall is not None, "the guest kernel has PSI"
     assert samples >= 1
+
+
+def _host_cost(store: Path, name: str) -> tuple[Any, ...]:
+    with contextlib.closing(sqlite3.connect(store / "nix/var/nix/db/db.sqlite")) as conn:
+        row = conn.execute(
+            "SELECT hostResourceSource, hostCpuUserUs + hostCpuSystemUs, hostPeakMemoryBytes, peakMemoryBytes "
+            f"FROM {BUILD_OBSERVATION_TABLE} WHERE name = ?",
+            (name,),
+        ).fetchone()
+    assert row is not None
+    return tuple(row)
+
+
+async def test_a_build_in_the_vm_reports_its_host_cgroup(tmp_path: Path) -> None:
+    """The launcher's VMM joins a host cgroup of the build: its CPU and memory, guest RAM included."""
+    async with _serve(tmp_path, "vm", BuildVmSpec(memory_mib=512, cpus=2)) as url:
+        await _build(url, PARALLEL)
+    source, cpu, host_peak, guest_peak = _host_cost(tmp_path / "vm/store", "vm-parallel")
+
+    assert source == "cgroup"
+    assert cpu > 0
+    assert host_peak > guest_peak, f"{host_peak} bytes: the host holds the guest's RAM and the VMM"
+
+
+async def test_a_build_in_the_vm_reports_its_host_rusage_without_a_cgroup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without a delegated cgroup, the launcher's parent reaps the VMM and writes its rusage."""
+
+    @contextlib.asynccontextmanager
+    async def no_cgroup() -> AsyncIterator[None]:
+        yield None
+
+    monkeypatch.setattr(build_cgroup, "build_cgroup", no_cgroup)
+    async with _serve(tmp_path, "vm", BuildVmSpec(memory_mib=512, cpus=2)) as url:
+        await _build(url, PARALLEL)
+    source, cpu, host_peak, _guest_peak = _host_cost(tmp_path / "vm/store", "vm-parallel")
+
+    assert source == "rusage"
+    assert cpu > 0
+    assert host_peak > 4 * STRING_BYTES
 
 
 async def test_a_build_for_another_system_runs_on_the_host_kernel(tmp_path: Path) -> None:

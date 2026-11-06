@@ -373,6 +373,20 @@ MIGRATIONS: tuple[Migration, ...] = (
         ),
         creates=(BUILD_OBSERVATION_SAMPLE_TABLE,),
     ),
+    Migration(
+        version=12,
+        name="build-observation-host-cost",
+        # A VM build's VMM, as the host measured it, nixidae/nixidae#1187. A row from before has none.
+        statements=tuple(
+            f"ALTER TABLE {BUILD_OBSERVATION_TABLE} ADD COLUMN {column}"
+            for column in (
+                "hostResourceSource TEXT",
+                "hostCpuUserUs INTEGER",
+                "hostCpuSystemUs INTEGER",
+                "hostPeakMemoryBytes INTEGER",
+            )
+        ),
+    ),
 )
 
 TARGET_VERSION = MIGRATIONS[-1].version if MIGRATIONS else 0

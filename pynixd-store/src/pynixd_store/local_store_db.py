@@ -227,8 +227,9 @@ INSERT_BUILD_OBSERVATION = f"""
 INSERT INTO {BUILD_OBSERVATION_TABLE}
 (name, system, shape, storeId, status, queuedMs, inputsMs, inputsBytes, buildMs,
  cpuUserUs, cpuSystemUs, pullMs, pullBytes, resourceSource, peakMemoryBytes, ioReadBytes, ioWriteBytes,
- cpuStallUs, memoryStallUs, ioStallUs, finishedAt)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+ cpuStallUs, memoryStallUs, ioStallUs, hostResourceSource, hostCpuUserUs, hostCpuSystemUs, hostPeakMemoryBytes,
+ finishedAt)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
 """
 
 INSERT_BUILD_OBSERVATION_SAMPLE = f"""
@@ -1009,6 +1010,10 @@ class LocalStoreDB:
                         observation.cpu_stall_us,
                         observation.memory_stall_us,
                         observation.io_stall_us,
+                        observation.host_resource_source,
+                        observation.host_cpu_user_us,
+                        observation.host_cpu_system_us,
+                        observation.host_peak_memory_bytes,
                     ),
                 )
                 row_id = cursor.lastrowid

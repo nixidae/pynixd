@@ -48,3 +48,15 @@ class BuildResources(WireModel):
     )
     samples: list[ResourceSample] = WireField(default_factory=list, wire_depends_on=lambda self: self.measured == 1)
     """The time series of a `cgroup` record, oldest first. A `rusage` record has none."""
+    host_source: str = WireField(default="", wire_depends_on=lambda self: self.measured == 1)
+    """How the host measured a VM build's VMM, `rusage` or `cgroup`; empty outside a VM, and then the three
+    counters below are absent. The VMM's CPU time holds the guest's vCPUs, and its memory the guest's RAM."""
+    host_cpu_user_us: int = WireField(
+        default=0, wire_depends_on=lambda self: self.measured == 1 and self.host_source != ""
+    )
+    host_cpu_system_us: int = WireField(
+        default=0, wire_depends_on=lambda self: self.measured == 1 and self.host_source != ""
+    )
+    host_peak_memory_bytes: int = WireField(
+        default=0, wire_depends_on=lambda self: self.measured == 1 and self.host_source != ""
+    )

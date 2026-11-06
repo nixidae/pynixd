@@ -24,6 +24,10 @@ RESOURCES = BuildResources(
         ResourceSample(at_ms=100, cpu_us=8, memory_bytes=9, io_read_bytes=10, io_write_bytes=11),
         ResourceSample(at_ms=200, cpu_us=12, memory_bytes=13, io_read_bytes=14, io_write_bytes=15),
     ],
+    host_source="rusage",
+    host_cpu_user_us=16,
+    host_cpu_system_us=17,
+    host_peak_memory_bytes=18,
 )
 
 
@@ -60,6 +64,21 @@ async def test_the_record_reads_back_under_the_feature() -> None:
 
     assert read.status == 3
     assert read.resources == RESOURCES
+
+
+async def test_a_record_without_a_host_cost_reads_back() -> None:
+    """A build outside a VM has no host cost: one empty string stands for its three counters."""
+    features = frozenset({FEATURE_PYNIXD_BUILD_RESOURCES})
+    alone = RESOURCES.model_copy(
+        update={"host_source": "", "host_cpu_user_us": 0, "host_cpu_system_us": 0, "host_peak_memory_bytes": 0}
+    )
+    raw = await _bytes(_result(resources=alone), features)
+    read = await BuildResult.from_reader(
+        ReadContext(reader=BytesReader(raw), version=PROTOCOL_VERSION, features=features)
+    )
+
+    assert read.resources == alone
+    assert len(raw) == len(await _bytes(_result(resources=RESOURCES), features)) - 3 * 8 - 8
 
 
 async def test_an_unmeasured_record_is_one_word() -> None:

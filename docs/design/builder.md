@@ -144,7 +144,11 @@ build's observation, and a pynixd peer gets it in `BuildResult.resources`.
   gives it to the build's uid, and the helper reads it into the usage file and
   samples it on its event loop: after `unshare(CLONE_NEWPID)` the helper can
   start no thread. pynixd's libkrunfw sets `CONFIG_PSI`, which the stock x86_64
-  config leaves out.
+  config leaves out. The record also holds the VMM's host cost, in `host_*`
+  fields: its CPU time holds the guest's vCPUs, and its memory the guest's RAM,
+  so the two never add. The VMM joins a host cgroup of the build when there is
+  one. Otherwise the launcher forks it and writes its `wait4` rusage, because
+  libkrun ends the VMM with `_exit`.
 
 The scheduler expects a build to peak at the median peak memory of the
 derivation's recent builds. It leaves out each store whose available memory,

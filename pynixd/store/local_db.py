@@ -200,6 +200,10 @@ def _resources(usage: BuildUsage) -> BuildResources:
         memory_stall=_stall(usage.memory_stall_us),
         io_stall=_stall(usage.io_stall_us),
         samples=[ResourceSample(**dataclasses.asdict(sample)) for sample in usage.samples],
+        host_source=usage.host_source or "",
+        host_cpu_user_us=usage.host_cpu_user_us or 0,
+        host_cpu_system_us=usage.host_cpu_system_us or 0,
+        host_peak_memory_bytes=usage.host_peak_memory_bytes or 0,
     )
 
 
