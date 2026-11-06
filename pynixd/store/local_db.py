@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import functools
 import types
 from enum import Enum
@@ -13,7 +14,7 @@ import anyio
 import structlog
 from pydantic import BaseModel
 
-from nix_daemon_protocol.build_resources import BuildResources
+from nix_daemon_protocol.build_resources import BuildResources, ResourceSample
 from nix_daemon_protocol.derivation_output import OutputKind
 from nix_daemon_protocol.operations import STANDARD_OPERATIONS
 from nix_daemon_protocol.opt_microseconds import OptMicroseconds
@@ -198,6 +199,7 @@ def _resources(usage: BuildUsage) -> BuildResources:
         cpu_stall=_stall(usage.cpu_stall_us),
         memory_stall=_stall(usage.memory_stall_us),
         io_stall=_stall(usage.io_stall_us),
+        samples=[ResourceSample(**dataclasses.asdict(sample)) for sample in usage.samples],
     )
 
 
@@ -302,6 +304,7 @@ class LocalDBStore(Store):
         #: What a recursive-nix build's builder talks to; the instance sets it at start, and without it the daemon
         #: builds those.
         self.recursive_server: RecursiveServer | None = None
+        self.usage_sample_seconds = spec.usage_sample_seconds
         self.build_vm = (
             BuildVm.from_environment(
                 memory_mib=spec.build_vm.memory_mib,
@@ -804,6 +807,7 @@ class LocalDBStore(Store):
                 recursive=self.recursive_server,
                 vm=self.build_vm,
                 on_usage=used.append,
+                sample_seconds=self.usage_sample_seconds,
             )
         finally:
             with anyio.CancelScope(shield=True):

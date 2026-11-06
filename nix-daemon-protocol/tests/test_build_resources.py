@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from nix_daemon_protocol import PROTOCOL_VERSION, BuildResult, OptMicroseconds
-from nix_daemon_protocol.build_resources import BuildResources
+from nix_daemon_protocol.build_resources import BuildResources, ResourceSample
 from nix_daemon_protocol.constants import FEATURE_PYNIXD_BUILD_RESOURCES
 from nix_daemon_protocol.context import ReadContext, WriteContext
 from nix_daemon_protocol.io import BytesReader, BytesWriter
@@ -20,6 +20,10 @@ RESOURCES = BuildResources(
     io_write_bytes=5,
     cpu_stall=OptMicroseconds(tag=1, value=6),
     io_stall=OptMicroseconds(tag=1, value=7),
+    samples=[
+        ResourceSample(at_ms=100, cpu_us=8, memory_bytes=9, io_read_bytes=10, io_write_bytes=11),
+        ResourceSample(at_ms=200, cpu_us=12, memory_bytes=13, io_read_bytes=14, io_write_bytes=15),
+    ],
 )
 
 

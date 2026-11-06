@@ -27,6 +27,15 @@ class UsageSource(StrEnum):
 
 
 @dataclass(frozen=True)
+class UsageSample:
+    at_ms: int
+    cpu_us: int
+    memory_bytes: int
+    io_read_bytes: int
+    io_write_bytes: int
+
+
+@dataclass(frozen=True)
 class BuildUsage:
     source: UsageSource
     cpu_user_us: int
@@ -39,6 +48,7 @@ class BuildUsage:
     """PSI `some` totals: the time in which a task of the build waited. `None` without a cgroup or without PSI."""
     memory_stall_us: int | None = None
     io_stall_us: int | None = None
+    samples: tuple[UsageSample, ...] = ()
 
 
 def from_rusage(usage: resource.struct_rusage) -> BuildUsage:
@@ -63,4 +73,5 @@ def read_usage(path: Path) -> BuildUsage | None:
         data = json.loads(path.read_text())
     except FileNotFoundError:
         return None
-    return BuildUsage(**{**data, "source": UsageSource(data["source"])})
+    samples = tuple(UsageSample(**sample) for sample in data.get("samples", ()))
+    return BuildUsage(**{**data, "source": UsageSource(data["source"]), "samples": samples})

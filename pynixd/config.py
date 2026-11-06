@@ -521,6 +521,8 @@ class LocalSocketStoreSpec(StoreSpecBase):
     """
     build_vm: BuildVmSpec | None = None
     """Run pynixd's sandboxed builds in a microVM; `None` runs them in the namespace helper alone."""
+    usage_sample_seconds: float = Field(default=5.0, ge=0)
+    """Seconds between two samples of a running build's cgroup (`builder/cgroup.py`); 0 takes none."""
 
     @model_validator(mode="after")
     def _check_the_op_routes(self) -> LocalSocketStoreSpec:

@@ -44,6 +44,7 @@ import structlog
 
 from .build_stats import BuildEstimateSource, ExpectedBytes, StoreLink
 from .db_migrations import (
+    BUILD_OBSERVATION_SAMPLE_TABLE,
     BUILD_OBSERVATION_TABLE,
     DERIVATION_SHAPE_TABLE,
     PATH_ACCESS_TABLE,
@@ -228,6 +229,23 @@ INSERT INTO {BUILD_OBSERVATION_TABLE}
  cpuUserUs, cpuSystemUs, pullMs, pullBytes, resourceSource, peakMemoryBytes, ioReadBytes, ioWriteBytes,
  cpuStallUs, memoryStallUs, ioStallUs, finishedAt)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+"""
+
+INSERT_BUILD_OBSERVATION_SAMPLE = f"""
+INSERT INTO {BUILD_OBSERVATION_SAMPLE_TABLE}
+(observationId, atMs, cpuUs, memoryBytes, ioReadBytes, ioWriteBytes) VALUES (?, ?, ?, ?, ?, ?)
+"""
+
+PRUNE_BUILD_OBSERVATION_SAMPLES = f"""
+DELETE FROM {BUILD_OBSERVATION_SAMPLE_TABLE}
+WHERE observationId IN (
+    SELECT id FROM {BUILD_OBSERVATION_TABLE}
+    WHERE name = ? AND system = ? AND shape = ? AND storeId = ? AND id NOT IN (
+        SELECT id FROM {BUILD_OBSERVATION_TABLE}
+        WHERE name = ? AND system = ? AND shape = ? AND storeId = ?
+        ORDER BY id DESC LIMIT ?
+    )
+)
 """
 
 PRUNE_BUILD_OBSERVATIONS = f"""
@@ -982,6 +1000,15 @@ class LocalStoreDB:
                     ),
                 )
                 row_id = cursor.lastrowid
+                await db.executemany(
+                    INSERT_BUILD_OBSERVATION_SAMPLE,
+                    [
+                        (row_id, s.at_ms, s.cpu_us, s.memory_bytes, s.io_read_bytes, s.io_write_bytes)
+                        for s in observation.samples
+                    ],
+                )
+                # The samples first: the subquery finds the rows the next statement removes.
+                await db.execute(PRUNE_BUILD_OBSERVATION_SAMPLES, (*key, *key, OBSERVATIONS_KEPT))
                 await db.execute(PRUNE_BUILD_OBSERVATIONS, (*key, *key, OBSERVATIONS_KEPT))
                 await db.commit()
         except aiosqlite.Error:

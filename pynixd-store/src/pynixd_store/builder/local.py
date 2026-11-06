@@ -16,7 +16,7 @@ import socket
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -82,7 +82,7 @@ if TYPE_CHECKING:
     from .outputs import Collected
     from .restriction import RecursiveServer
     from .settings import BuildSettings
-    from .usage import BuildUsage
+    from .usage import BuildUsage, UsageSample
 
 _log = structlog.get_logger(__name__)
 
@@ -478,11 +478,13 @@ async def build(
     recursive: RecursiveServer | None = None,
     vm: BuildVm | None = None,
     on_usage: Callable[[BuildUsage], None] | None = None,
+    sample_seconds: float = 0,
 ) -> LocalBuildResult:
     """Build *drv*, whose inputs are valid, and register its outputs. `unsupported(drv)` must be `None`.
 
     *on_lines* receives the builder's output as it comes: Nix's log lines and its `@nix` events.
     *on_usage* receives what the builder used, once it has ended, when the helper measured it.
+    In a cgroup, it holds a sample of the running build every *sample_seconds*; 0 takes none.
     *realised* is the path of each output the store holds a realisation for (`checkPathValidity`,
     `derivation-building-goal.cc:1329`). With *check*, each output is valid, and the build
     compares what it makes with it and registers nothing new. With *repair*, an output is valid only when
@@ -636,10 +638,19 @@ async def build(
             # The guest is a VM: its processes are not the host's to count.
             cgroup = None if guest is not None else await stack.enter_async_context(build_cgroup.build_cgroup())
             spec["cgroup"] = None if cgroup is None else str(cgroup)
+            samples: list[UsageSample] = []
+            sampler = await stack.enter_async_context(anyio.create_task_group())
+            stack.callback(sampler.cancel_scope.cancel)
+            if cgroup is not None and sample_seconds > 0:
+                sampler.start_soon(build_cgroup.sample_every, cgroup, sample_seconds, samples)
             failure = await _run(paths, spec, settings, drv_path, keep, control, guest)
+            # Not `sampler.cancel_scope.cancel()` here: this body runs in that scope, and the read below would be
+            # cancelled too. The stack's callback stops the sampler on the way out.
+            taken = tuple(samples)
             usage: BuildUsage | None
             if cgroup is not None:
-                usage = await anyio.to_thread.run_sync(build_cgroup.read, cgroup)
+                read = await anyio.to_thread.run_sync(build_cgroup.read, cgroup)
+                usage = replace(read, samples=taken)
             else:
                 usage = read_usage(paths.top / USAGE_NAME)
         if on_usage is not None and usage is not None:

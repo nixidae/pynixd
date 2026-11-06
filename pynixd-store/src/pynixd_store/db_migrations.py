@@ -82,6 +82,7 @@ DERIVATION_STATS_TABLE = f"{TABLE_PREFIX}DerivationStats"
 DERIVATION_SHAPE_TABLE = f"{TABLE_PREFIX}DerivationShape"
 """The attribute names and features behind each shape hash, once per hash."""
 BUILD_OBSERVATION_TABLE = f"{TABLE_PREFIX}BuildObservation"
+BUILD_OBSERVATION_SAMPLE_TABLE = f"{TABLE_PREFIX}BuildObservationSample"
 """What each build cost, by phase, the last few per identity and store.
 
 Raw rows, not a running average: an estimator can change, and an outlier can
@@ -354,6 +355,23 @@ MIGRATIONS: tuple[Migration, ...] = (
                 "ioStallUs INTEGER",
             )
         ),
+    ),
+    Migration(
+        version=11,
+        name="build-observation-samples",
+        # The builder's time series, nixidae/nixidae#1187; pruned with its observation.
+        statements=(
+            f"CREATE TABLE IF NOT EXISTS {BUILD_OBSERVATION_SAMPLE_TABLE} ("
+            "observationId INTEGER NOT NULL, "
+            "atMs INTEGER NOT NULL, "
+            "cpuUs INTEGER NOT NULL, "
+            "memoryBytes INTEGER NOT NULL, "
+            "ioReadBytes INTEGER NOT NULL, "
+            "ioWriteBytes INTEGER NOT NULL, "
+            "PRIMARY KEY (observationId, atMs)"
+            ") WITHOUT ROWID",
+        ),
+        creates=(BUILD_OBSERVATION_SAMPLE_TABLE,),
     ),
 )
 

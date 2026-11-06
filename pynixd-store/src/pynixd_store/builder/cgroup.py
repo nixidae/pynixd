@@ -12,6 +12,7 @@ import errno
 import functools
 import itertools
 import os
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -19,7 +20,7 @@ import anyio
 import anyio.to_thread
 import structlog
 
-from .usage import BuildUsage, UsageSource
+from .usage import BuildUsage, UsageSample, UsageSource
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -133,11 +134,35 @@ def _stall(path: Path) -> int | None:
         return None
 
 
-def read(path: Path) -> BuildUsage:
-    cpu = _fields((path / "cpu.stat").read_text())
+def _io(path: Path) -> tuple[int, int]:
     # No io controller, no `io.stat`: the build is then counted as reading nothing from a disk.
     io_stat = path / "io.stat"
-    io_read, io_written = io_bytes(io_stat.read_text()) if io_stat.exists() else (0, 0)
+    return io_bytes(io_stat.read_text()) if io_stat.exists() else (0, 0)
+
+
+def sample(path: Path, at_ms: int) -> UsageSample:
+    io_read, io_written = _io(path)
+    return UsageSample(
+        at_ms=at_ms,
+        cpu_us=_fields((path / "cpu.stat").read_text())["usage_usec"],
+        memory_bytes=int((path / "memory.current").read_text()),
+        io_read_bytes=io_read,
+        io_write_bytes=io_written,
+    )
+
+
+async def sample_every(path: Path, seconds: float, into: list[UsageSample]) -> None:
+    """Append a `sample` of *path* to *into* every *seconds*, until cancelled."""
+    started = time.monotonic()
+    while True:
+        await anyio.sleep(seconds)
+        at_ms = round((time.monotonic() - started) * 1000)
+        into.append(await anyio.to_thread.run_sync(sample, path, at_ms))
+
+
+def read(path: Path) -> BuildUsage:
+    cpu = _fields((path / "cpu.stat").read_text())
+    io_read, io_written = _io(path)
     return BuildUsage(
         source=UsageSource.CGROUP,
         cpu_user_us=cpu["user_usec"],

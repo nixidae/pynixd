@@ -33,8 +33,8 @@ PARALLEL = (
 )
 
 
-async def _build(tmp_path: Path, expr: str, name: str) -> tuple[object, ...]:
-    """Build *expr* in pynixd's own sandbox; answer its observation's resource columns."""
+async def _build(tmp_path: Path, expr: str, name: str, sample_seconds: float = 5.0) -> tuple[object, ...]:
+    """Build *expr* in pynixd's own sandbox; answer its observation's id, then its resource columns."""
     root = tmp_path / "store"
     socket = tmp_path / "pynixd.sock"
     spec = make_test_spec(
@@ -43,6 +43,7 @@ async def _build(tmp_path: Path, expr: str, name: str) -> tuple[object, ...]:
         no_probe=True,
         nix_config=for_test_store(substituters=()),
         op_routes={"BuildDerivation": OpRoute.pynixd},
+        usage_sample_seconds=sample_seconds,
     )
     async with Server(stores={StoreId("local"): LocalDBStore(spec)}, unix_path=socket, ssh_port=None, http_port=None):
         await run_subproc(
@@ -51,7 +52,7 @@ async def _build(tmp_path: Path, expr: str, name: str) -> tuple[object, ...]:
 
     with closing(sqlite3.connect(root / "nix/var/nix/db/db.sqlite")) as conn:
         rows = conn.execute(
-            "SELECT cpuUserUs, cpuSystemUs, resourceSource, peakMemoryBytes, ioReadBytes, ioWriteBytes "
+            "SELECT id, cpuUserUs, cpuSystemUs, resourceSource, peakMemoryBytes, ioReadBytes, ioWriteBytes "
             f"FROM {BUILD_OBSERVATION_TABLE} WHERE name = ?",
             (name,),
         ).fetchall()
@@ -60,7 +61,7 @@ async def _build(tmp_path: Path, expr: str, name: str) -> tuple[object, ...]:
 
 
 async def test_a_build_in_the_sandbox_records_its_cpu_time(tmp_path: Path) -> None:
-    user_us, system_us, source, peak, read, written = await _build(tmp_path, SPIN, "usage-spin")
+    _id, user_us, system_us, source, peak, read, written = await _build(tmp_path, SPIN, "usage-spin")
     assert isinstance(user_us, int)
     assert user_us > 50_000, "500000 shell iterations take well over 50 ms of user time"
     assert system_us is not None
@@ -73,7 +74,26 @@ async def test_a_build_in_the_sandbox_records_its_cpu_time(tmp_path: Path) -> No
 
 
 async def test_a_build_cgroup_counts_every_process(tmp_path: Path) -> None:
-    _user, _system, source, peak, _read, _written = await _build(tmp_path, PARALLEL, "usage-parallel")
+    _id, _user, _system, source, peak, _read, _written = await _build(tmp_path, PARALLEL, "usage-parallel")
     assert source == "cgroup", "the guest suite runs in a cgroup that the tester owns"
     assert isinstance(peak, int)
     assert peak > PROCESSES * STRING_BYTES, f"{peak} bytes: the subshells held their strings at once"
+
+
+async def test_a_running_build_is_sampled(tmp_path: Path) -> None:
+    observation, _user, _system, _source, peak, _read, _written = await _build(
+        tmp_path, PARALLEL, "usage-parallel", sample_seconds=0.1
+    )
+    with closing(sqlite3.connect(tmp_path / "store/nix/var/nix/db/db.sqlite")) as conn:
+        samples = conn.execute(
+            "SELECT atMs, cpuUs, memoryBytes FROM PynixdBuildObservationSample WHERE observationId = ? ORDER BY atMs",
+            (observation,),
+        ).fetchall()
+
+    assert len(samples) >= 2, f"{samples}: the spinning subshells run for longer than 0.2 s"
+    times = [at for at, _cpu, _memory in samples]
+    assert times == sorted(set(times))
+    cpu = [used for _at, used, _memory in samples]
+    assert cpu == sorted(cpu), "CPU time only grows"
+    assert isinstance(peak, int)
+    assert all(0 < memory <= peak for _at, _cpu, memory in samples)

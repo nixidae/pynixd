@@ -1572,6 +1572,7 @@ class Scheduler:
             observation.cpu_stall_us = used.cpu_stall.value
             observation.memory_stall_us = used.memory_stall.value
             observation.io_stall_us = used.io_stall.value
+            observation.samples = tuple(used.samples)
         identity = identity_of(build.request.derivation)
         observation_id = await self.local_store.db.record_build_observation(identity, observation)
         if build.placement is not None and observation_id is not None:

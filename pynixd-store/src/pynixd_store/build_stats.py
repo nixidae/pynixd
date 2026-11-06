@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from nix_daemon_protocol.basic_derivation import BasicDerivation
+    from nix_daemon_protocol.build_resources import ResourceSample
 
 SHAPE_HEX_DIGITS = 16
 """64 bits of the SHA-256: no two shapes of one store meet by chance."""
@@ -61,6 +62,8 @@ class BuildObservation:
     cpu_stall_us: int | None = None
     memory_stall_us: int | None = None
     io_stall_us: int | None = None
+    samples: tuple[ResourceSample, ...] = ()
+    """The builder's time series (`BuildResources.samples`), oldest first."""
 
 
 def name_without_version(name: str) -> str:

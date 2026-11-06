@@ -133,6 +133,9 @@ build's observation, and a pynixd peer gets it in `BuildResult.resources`.
   into a `pynixd` leaf and makes a `build-*` sibling for each build. The
   helper joins that cgroup before it forks the builder. The record then counts
   every process of the build together, and `cgroup.kill` ends what is left.
+  Every `usage_sample_seconds` (5 by default) pynixd also samples the
+  cgroup's CPU time, current memory and IO. The samples travel in
+  `BuildResources.samples`, and the observation keeps them in its own table.
 - **Otherwise `wait4`** on the sandbox's pid 1: only what it reaped, memory as
   the largest single process, and no stall times. That figure includes the
   helper's interpreter, about 30 MB, which the builder inherits at the fork.

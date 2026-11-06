@@ -10,6 +10,17 @@ from .opt_microseconds import OptMicroseconds
 from .wire_message import WireField, WireModel
 
 
+class ResourceSample(WireModel):
+    """The build's cgroup at one moment, *at_ms* after the builder started. The counters are cumulative."""
+
+    at_ms: int = 0
+    cpu_us: int = 0
+    memory_bytes: int = 0
+    """`memory.current`: what the build holds now, page cache included."""
+    io_read_bytes: int = 0
+    io_write_bytes: int = 0
+
+
 class BuildResources(WireModel):
     """[measured uint64], then the rest when measured is 1.
 
@@ -35,3 +46,5 @@ class BuildResources(WireModel):
     io_stall: OptMicroseconds = WireField(
         default_factory=OptMicroseconds, wire_depends_on=lambda self: self.measured == 1
     )
+    samples: list[ResourceSample] = WireField(default_factory=list, wire_depends_on=lambda self: self.measured == 1)
+    """The time series of a `cgroup` record, oldest first. A `rusage` record has none."""
