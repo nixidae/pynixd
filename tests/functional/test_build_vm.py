@@ -61,9 +61,9 @@ async def _serve(tmp_path: Path, name: str, vm: BuildVmSpec | None) -> AsyncIter
         yield f"unix://{socket}?root={root}"
 
 
-async def _build(url: str, expr: str) -> tuple[str, str]:
+async def _build(url: str, expr: str, *options: str) -> tuple[str, str]:
     _rc, out, err, _both = await run_subproc(
-        [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--print-out-paths", "-L", "--expr", expr]
+        [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--print-out-paths", "-L", *options, "--expr", expr]
     )
     return out.strip(), err
 
@@ -96,3 +96,19 @@ async def test_the_builder_runs_on_the_guest_kernel(tmp_path: Path) -> None:
     release = (tmp_path / "vm/store" / path.lstrip("/")).read_text().strip()
 
     assert release != os.uname().release
+
+
+async def test_an_extra_sandbox_directory_reaches_the_builder_read_write(tmp_path: Path) -> None:
+    """`extra-sandbox-paths` binds a directory read-write in the VM as on the host: `programs.ccache`'s cache."""
+    cache = tmp_path / "ccache"
+    cache.mkdir()
+    (cache / "hit").write_text("from the host\n")
+    expr = (
+        'derivation { name = "vm-extra"; system = builtins.currentSystem; builder = "/bin/sh"; '
+        'args = [ "-c" "read x < /cache/hit; echo $x > $out; echo stored > /cache/miss" ]; }'
+    )
+    async with _serve(tmp_path, "vm", BuildVmSpec(memory_mib=512, cpus=1)) as url:
+        path, _log = await _build(url, expr, "--option", "extra-sandbox-paths", f"/cache={cache}")
+
+    assert (tmp_path / "vm/store" / path.lstrip("/")).read_text() == "from the host\n"
+    assert (cache / "miss").read_text() == "stored\n"

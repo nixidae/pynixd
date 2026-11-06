@@ -9,6 +9,7 @@
  *   status   a path, opened for writing as file descriptor 3
  *   exit     a path, where the command's end is written: "exit N" or "signal N"
  *   ids      "UID GID": who the command runs as
+ *   cwd      the directory the command starts in
  *
  * The shares show their files with the host's owners, so the command runs as
  * the uid that owns the build's directories, as it does on the host. As root it
@@ -26,7 +27,6 @@
 #include <grp.h>
 #include <poll.h>
 #include <signal.h>
-#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -117,11 +117,8 @@ static void mount_base(void)
         fail("mount /dev/shm");
 }
 
-/* The command starts in the first writable share: the root is a null fs, which
- * cannot list a directory, and Python puts its working directory on sys.path. */
 static void mount_shares(void)
 {
-    bool cwd = false;
     size_t len;
     char *text = slurp(CONFIG "mounts", &len);
     for (char *line = strtok(text, "\n"); line; line = strtok(NULL, "\n")) {
@@ -139,11 +136,6 @@ static void mount_shares(void)
         }
         if (mount(tag, path, "virtiofs", flags, data) != 0)
             fail(path);
-        if (!cwd && data == NULL) {
-            if (chdir(path) != 0)
-                fail(path);
-            cwd = true;
-        }
     }
     free(text);
 }
@@ -196,6 +188,10 @@ int main(void)
     mount_shares();
     char **argv = read_argv();
     char *status = read_path(CONFIG "status");
+    /* Not the root: a null fs cannot list a directory. */
+    char *cwd = read_path(CONFIG "cwd");
+    if (chdir(cwd) != 0)
+        fail(cwd);
     char *exit_path = read_path(CONFIG "exit");
     unsigned uid, gid;
     char *ids = read_path(CONFIG "ids");

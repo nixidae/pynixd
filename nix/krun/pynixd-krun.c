@@ -2,7 +2,7 @@
  * pynixd-krun: one build guest, in this process (nixidae/nixidae#1186).
  *
  *   pynixd-krun --init FILE --cpus N --memory MIB [--dax-window BYTES]
- *               [--ro DIR:ALLOWLIST]... [--rw DIR]... --status PATH --exit PATH
+ *               [--ro DIR:ALLOWLIST]... [--rw DIR]... --cwd DIR --status PATH --exit PATH
  *               [--uid N --gid N] -- COMMAND [ARG]...
  *
  * The guest boots libkrunfw's kernel on a root that holds only --init (as
@@ -12,7 +12,7 @@
  * store path per line, and maps its files through a DAX window of
  * --dax-window bytes: the guest's page cache holds no copy of them.
  *
- * The init runs COMMAND as --uid and --gid (this process's own by default),
+ * The init runs COMMAND in --cwd, a directory on a share, as --uid and --gid (this process's own by default),
  * the owners the shares show. It opens --status as its file descriptor 3, and writes
  * how COMMAND ended to --exit. Both are paths in the guest, on a --rw share.
  * The guest's console is this process's stdout. libkrun takes the process
@@ -79,7 +79,7 @@ static bool parse_long(const char *text, long min, long max, long *out)
 static void usage(void)
 {
     fprintf(stderr, "usage: pynixd-krun --init FILE --cpus N --memory MIB [--dax-window BYTES]\n"
-                    "                   [--ro DIR:ALLOWLIST]... [--rw DIR]... --status PATH --exit PATH\n"
+                    "                   [--ro DIR:ALLOWLIST]... [--rw DIR]... --cwd DIR --status PATH --exit PATH\n"
                     "                   [--uid N --gid N] -- COMMAND [ARG]...\n");
 }
 
@@ -138,16 +138,17 @@ static int add_file(KrunFsOverlay overlay, const char *path, const char *data, s
 
 int main(int argc, char *argv[])
 {
-    enum { INIT = 256, CPUS, MEMORY, DAX, RO, RW, STATUS, EXIT, UID, GID };
+    enum { INIT = 256, CPUS, MEMORY, DAX, RO, RW, STATUS, EXIT, UID, GID, CWD };
     static const struct option options[] = {
         {"init", required_argument, NULL, INIT},     {"cpus", required_argument, NULL, CPUS},
         {"memory", required_argument, NULL, MEMORY}, {"dax-window", required_argument, NULL, DAX},
         {"ro", required_argument, NULL, RO},         {"rw", required_argument, NULL, RW},
         {"status", required_argument, NULL, STATUS}, {"exit", required_argument, NULL, EXIT},
+        {"cwd", required_argument, NULL, CWD},
         {"uid", required_argument, NULL, UID},       {"gid", required_argument, NULL, GID},
         {NULL, 0, NULL, 0},
     };
-    const char *init = NULL, *status = NULL, *exit_path = NULL;
+    const char *init = NULL, *status = NULL, *exit_path = NULL, *cwd = NULL;
     long cpus = 0, memory = 0, dax_window = 0, uid = (long)getuid(), gid = (long)getgid();
     struct share shares[MAX_SHARES];
     int nshares = 0, c;
@@ -157,6 +158,7 @@ int main(int argc, char *argv[])
         switch (c) {
         case INIT: init = optarg; break;
         case STATUS: status = optarg; break;
+        case CWD: cwd = optarg; break;
         case EXIT: exit_path = optarg; break;
         case CPUS: ok = parse_long(optarg, 1, 255, &cpus); break;
         case MEMORY: ok = parse_long(optarg, 1, UINT32_MAX, &memory); break;
@@ -184,7 +186,7 @@ int main(int argc, char *argv[])
             return 2;
         }
     }
-    if (optind >= argc || !init || !status || !exit_path || !cpus || !memory) {
+    if (optind >= argc || !init || !cwd || !status || !exit_path || !cpus || !memory) {
         usage();
         return 2;
     }
@@ -231,6 +233,7 @@ int main(int argc, char *argv[])
         add_file(overlay, ".pynixd/mounts", mounts, mounts_len, 0444) ||
         add_file(overlay, ".pynixd/argv", args, args_len, 0444) ||
         add_file(overlay, ".pynixd/status", status, strlen(status), 0444) ||
+        add_file(overlay, ".pynixd/cwd", cwd, strlen(cwd), 0444) ||
         add_file(overlay, ".pynixd/exit", exit_path, strlen(exit_path), 0444) ||
         add_file(overlay, ".pynixd/ids", ids, strlen(ids), 0444))
         return 1;

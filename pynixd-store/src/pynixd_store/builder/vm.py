@@ -2,8 +2,9 @@
 
 The guest mounts each share at its host path, so the helper's spec means the same inside. The stores are
 read-only, each with an allowlist: the build store shows its input closure, and the host's store shows the
-closure the helper runs from. A builder that escapes the helper's namespaces sees no other store path. The
-build's two directories are writable shares: the top directory (the spec, the build directory) and the chroot,
+closure the helper runs from. A builder that escapes the helper's namespaces sees no other store path. A
+`sandbox-paths` directory outside the stores, such as `/run/binfmt` or a ccache directory, is a writable share
+of its own. The build's two directories are writable shares: the top directory (the spec, the build directory) and the chroot,
 where the outputs land for `collect_outputs`.
 """
 
@@ -64,19 +65,32 @@ class BuildVm:
         """The launcher's command line, after it writes the allowlists into *top*.
 
         *visible* names the build store's paths the guest may see, as store paths. *sources* are the host paths
-        the helper binds (`sandbox-paths`), each inside one of the two stores (`unshared`). The helper reads
+        the helper binds (`sandbox-paths`): one in a store shows its store path, and a directory outside both
+        stores is a writable share of its own, as Nix binds it read-write and the host's permissions decide
+        (`programs.ccache`'s cache). A file outside them cannot be a share (`unshareable`). The helper reads
         *spec_file* and gets `top/vm-status` as its file descriptor 3.
         """
-        build_store = {str(real_store_dir / path.rsplit("/", 1)[-1]) for path in visible}
-        # The chroot is a mount point inside the build store's share, so that share must show it.
-        build_store.add(str(chroot_parent))
-        stores: dict[Path, set[str]] = {real_store_dir: build_store}
-        stores.setdefault(HOST_STORE, set()).update(self.helper_closure)
-        for source in sources:
-            root = _store_of(Path(source), real_store_dir)
-            if root is None:
-                raise ValueError(f"'{source}' is in no store the build VM shares")
-            stores[root].add(str(root / Path(source).relative_to(root).parts[0]))
+        shown: dict[Path, set[str]] = {
+            real_store_dir: {str(real_store_dir / path.rsplit("/", 1)[-1]) for path in visible},
+        }
+        shown.setdefault(HOST_STORE, set()).update(self.helper_closure)
+        directories: set[Path] = set()
+        for source in map(Path, sources):
+            store = _store_of(source, real_store_dir)
+            if store is not None:
+                shown[store].add(str(store / source.relative_to(store).parts[0]))
+            # A missing source fails in the helper, as it does on the host.
+            elif source.is_dir():
+                directories.add(source)
+        ro = _outermost(shown)
+        # A directory inside another is already in its share.
+        extra = [d for d in directories if not any(d != o and d.is_relative_to(o) for o in directories)]
+        rw = [chroot_parent, top, *sorted(extra)]
+        # A share that mounts inside a read-only one needs its mount point shown there.
+        for inner in rw:
+            for root, paths in ro.items():
+                if inner.is_relative_to(root):
+                    paths.add(str(inner))
         argv = [
             str(self.launcher),
             f"--init={self.init}",
@@ -84,18 +98,24 @@ class BuildVm:
             f"--memory={self.memory_mib}",
             f"--dax-window={self.dax_window_mib * 1024 * 1024}",
         ]
-        # A share inside another mounts after it.
-        for i, (root, paths) in enumerate(sorted(stores.items(), key=lambda item: len(item[0].parts))):
+        # A share inside another mounts after it; at one depth, the read-only ones first.
+        shares = [(root, sorted(paths)) for root, paths in ro.items()] + [(root, None) for root in rw]
+        for i, (root, allowed) in enumerate(sorted(shares, key=lambda share: (len(share[0].parts), share[1] is None))):
+            if allowed is None:
+                argv.append(f"--rw={root}")
+                continue
             allowlist = top / f"vm-allowlist-{i}"
-            allowlist.write_text("".join(f"{p}\n" for p in sorted(paths)))
+            allowlist.write_text("".join(f"{p}\n" for p in allowed))
             argv.append(f"--ro={root}:{allowlist}")
         argv += [
-            f"--rw={chroot_parent}",
-            f"--rw={top}",
+            f"--cwd={top}",
             f"--status={top / STATUS_NAME}",
             f"--exit={top / EXIT_NAME}",
             "--",
             str(self.python),
+            # Isolated: a writable share holds what earlier builders wrote, and the working directory and
+            # `PYTHON*` must not reach `sys.path`.
+            "-I",
             "-m",
             "pynixd_store.builder.child",
             str(spec_file),
@@ -111,13 +131,26 @@ def _store_of(path: Path, real_store_dir: Path) -> Path | None:
     return None
 
 
-def unshared(sources: Iterable[str], real_store_dir: Path) -> str | None:
-    """The first host path of *sources* that no share of the guest holds, or `None`.
+def unshareable(sources: Iterable[str], real_store_dir: Path) -> str | None:
+    """The first source that is a file outside both stores, or `None`.
 
-    The guest sees the two stores and nothing else of the host, so a `sandbox-paths` entry from outside them
-    cannot reach the helper.
+    virtio-fs mounts only a directory: the kernel fixes the root's mode at `S_IFDIR` (`fs/fuse/virtio_fs.c`,
+    `virtio_fs_ctx_set_defaults`) and takes no `rootmode=`. A writable share of the file's parent would show
+    its siblings writable, and libkrun's allowlist filters only a read-only share (nixidae/nixidae#1186).
     """
-    return next((s for s in sources if _store_of(Path(s), real_store_dir) is None), None)
+    return next(
+        (s for s in sources if _store_of(Path(s), real_store_dir) is None and Path(s).is_file()),
+        None,
+    )
+
+
+def _outermost(shown: dict[Path, set[str]]) -> dict[Path, set[str]]:
+    """*shown* with each share inside another folded into it: one mount, whose allowlist holds both."""
+    merged: dict[Path, set[str]] = {}
+    for root in sorted(shown, key=lambda r: len(r.parts)):
+        outer = next((r for r in merged if root.is_relative_to(r)), None)
+        merged.setdefault(outer or root, set()).update(shown[root])
+    return merged
 
 
 def returncode(top: Path) -> int | None:

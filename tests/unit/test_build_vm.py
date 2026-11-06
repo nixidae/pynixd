@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pynixd_store.builder.vm import BuildVm, returncode, status, unshared
+from pynixd_store.builder.vm import BuildVm, returncode, status, unshareable
 
 HELPER = "/nix/store/aaaa-venv"
 INPUT = "/nix/store/bbbb-input"
@@ -58,11 +58,13 @@ def test_a_relocated_store_and_the_host_store_each_show_their_own_paths(tmp_path
     assert shares["/nix/store"] == [HELPER, SHELL]
     assert shares[str(real)] == [str(real / "bbbb-input"), str(real / "ffff-x.drv.chroot")]
     assert [a for a in argv if a.startswith("--rw=")] == [
-        f"--rw={real / 'ffff-x.drv.chroot'}",
         f"--rw={tmp_path / 'top'}",
-    ]
+        f"--rw={real / 'ffff-x.drv.chroot'}",
+    ], "the shallower path mounts first"
+    assert f"--cwd={tmp_path / 'top'}" in argv
     assert argv[argv.index("--") + 1 :] == [
         f"{HELPER}/bin/python",
+        "-I",
         "-m",
         "pynixd_store.builder.child",
         str(tmp_path / "top/spec.json"),
@@ -76,11 +78,31 @@ def test_the_host_store_is_one_share_with_every_path(tmp_path: Path) -> None:
     assert shares == {"/nix/store": [HELPER, INPUT, "/nix/store/ffff-x.drv.chroot"]}
 
 
-def test_a_source_outside_the_stores_is_unshared() -> None:
-    real = Path("/srv/store/nix/store")
-    assert unshared([f"{SHELL}/bin/busybox", f"{real}/gggg-x/bin/sh"], real) is None
-    assert unshared([f"{SHELL}/bin/busybox", "/run/binfmt"], real) == "/run/binfmt"
-    assert unshared(["/nix/store"], real) == "/nix/store", "the store directory itself is no store path"
+def test_a_directory_outside_the_stores_is_a_writable_share_of_its_own(tmp_path: Path) -> None:
+    """`programs.ccache`'s cache and `/run/binfmt`: Nix binds them read-write, and the host's permissions decide.
+
+    The share is the directory itself, so the guest sees nothing beside it; one inside another is in its share.
+    """
+    (tmp_path / "top").mkdir()
+    cache = tmp_path / "var/cache/ccache"
+    (cache / "inner").mkdir(parents=True)
+    (tmp_path / "var/cache/secret").mkdir()
+    sources = (str(cache), str(cache / "inner"), str(tmp_path / "missing"))
+    argv = _argv(tmp_path, tmp_path / "root/nix/store", sources=sources)
+
+    rw = [a.removeprefix("--rw=") for a in argv if a.startswith("--rw=")]
+    assert rw.count(str(cache)) == 1
+    assert str(cache / "inner") not in rw
+    assert str(tmp_path / "missing") not in rw, "a missing source is left to the helper to report"
+    assert not any(root.startswith(str(tmp_path / "var")) for root in _shares(argv))
+
+
+def test_a_file_outside_the_stores_is_unshareable(tmp_path: Path) -> None:
+    """virtio-fs mounts a directory only: the kernel fixes its root's mode at `S_IFDIR`."""
+    (tmp_path / "netrc").touch()
+    real = tmp_path / "root/nix/store"
+    assert unshareable([f"{SHELL}/bin/busybox", str(tmp_path)], real) is None
+    assert unshareable([str(tmp_path), str(tmp_path / "netrc")], real) == str(tmp_path / "netrc")
 
 
 def test_the_guest_reports_an_exit_a_signal_or_nothing(tmp_path: Path) -> None:

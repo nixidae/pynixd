@@ -59,7 +59,7 @@ from .outputs import (
 )
 from .restriction import SOCKET_NAME, RestrictionContext
 from .spec import BuildenvSpec, ChildSpec, FetchSpec
-from .vm import BuildVm, returncode as vm_returncode, status as vm_status, unshared as vm_unshared
+from .vm import BuildVm, returncode as vm_returncode, status as vm_status, unshareable as vm_unshareable
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -591,10 +591,10 @@ async def build(
                 sources = tuple(
                     p.source for p in settings.sandbox_paths if not p.source.startswith(("/dev/", "/proc/"))
                 )
-                if (missing := vm_unshared(sources, layout.real_store_dir)) is not None:
+                if (file := vm_unshareable(sources, layout.real_store_dir)) is not None:
                     return LocalBuildResult(
                         BuildResultStatus.MISC_FAILURE,
-                        f"sandbox-paths names '{magenta(missing)}', which the build VM cannot share",
+                        f"sandbox-paths names the file '{magenta(file)}', and the build VM shares only directories",
                     )
                 guest = _Guest(vm, layout.real_store_dir, frozenset(inputs | sandbox_closure), sources)
             failure = await _run(paths, spec, settings, drv_path, keep, control, guest)
