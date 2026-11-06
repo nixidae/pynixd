@@ -277,14 +277,16 @@ ORDER BY id DESC LIMIT ?
 """
 
 QUERY_PEAK_MEMORY_OF_SHAPE = f"""
-SELECT peakMemoryBytes FROM {BUILD_OBSERVATION_TABLE}
-WHERE name = ? AND system = ? AND shape = ? AND status = 0 AND peakMemoryBytes IS NOT NULL
+SELECT coalesce(hostPeakMemoryBytes, peakMemoryBytes) FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = ? AND system = ? AND shape = ? AND status = 0
+AND coalesce(hostPeakMemoryBytes, peakMemoryBytes) IS NOT NULL
 ORDER BY id DESC LIMIT ?
 """
 
 QUERY_PEAK_MEMORY_OF_NAME = f"""
-SELECT peakMemoryBytes FROM {BUILD_OBSERVATION_TABLE}
-WHERE name = ? AND system = ? AND status = 0 AND peakMemoryBytes IS NOT NULL
+SELECT coalesce(hostPeakMemoryBytes, peakMemoryBytes) FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = ? AND system = ? AND status = 0
+AND coalesce(hostPeakMemoryBytes, peakMemoryBytes) IS NOT NULL
 ORDER BY id DESC LIMIT ?
 """
 
@@ -1057,7 +1059,7 @@ class LocalStoreDB:
     async def expected_peak_memory(self, identity: DerivationIdentity) -> int | None:
         """The median peak memory of the identity's recent `BUILT` builds, on any store, in bytes.
 
-        Falls back to the name and system under any shape, as `expected_build_ms` does.
+        A VM build counts its host peak: the guest's RAM is what the host's available memory loses. Falls back to the name and system under any shape, as `expected_build_ms` does.
         """
         if not self.active or not self.schema.usable:
             return None

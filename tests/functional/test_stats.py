@@ -342,6 +342,13 @@ async def test_expected_peak_memory_is_the_median_of_the_identity() -> None:
         )
 
         assert await db.expected_peak_memory(testpkg) == 400
+        # A VM build costs the host its guest's RAM: the host's peak is the one a store's free memory loses.
+        vmpkg = identity_of(BasicDerivation(platform="x86_64-linux", builder="", env={"pname": "vmpkg"}))
+        await db.record_build_observation(
+            vmpkg,
+            BuildObservation(store_id="a", status=0, build_ms=1, peak_memory_bytes=300, host_peak_memory_bytes=900),
+        )
+        assert await db.expected_peak_memory(vmpkg) == 900
         other = identity_of(BasicDerivation(platform="x86_64-linux", builder="", env={"pname": "otherpkg"}))
         assert await db.expected_peak_memory(other) is None
 

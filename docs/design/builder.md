@@ -151,7 +151,7 @@ build's observation, and a pynixd peer gets it in `BuildResult.resources`.
   libkrun ends the VMM with `_exit`.
 
 The scheduler expects a build to peak at the median peak memory of the
-derivation's recent builds. It leaves out each store whose available memory,
+derivation's recent builds, the host peak for a VM build. It leaves out each store whose available memory,
 less the expected peaks of the builds it runs, is below that figure. When no
 store has the room, the store with the most room goes first, and the
 placement trace says why.
