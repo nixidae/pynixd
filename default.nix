@@ -87,7 +87,9 @@ let
     name = "pynixd-specifictest";
     testArgs = "";
   };
-  vivariumLib = (import sources.vivarium { inherit pkgs sources; }).lib;
+  vivarium = import sources.vivarium { inherit pkgs sources; };
+  vivariumLib = vivarium.lib;
+  krun = pkgs.callPackage ./nix/krun/package.nix { inherit (vivarium.packages) libkrun; };
 
   # The Nix pynixd runs against unless a test names another: the newest
   # release, not `pkgs.nix`, which nixpkgs keeps a minor behind.
@@ -566,6 +568,7 @@ in
     };
     inherit
       pkgs
+      krun
       specifictest
       fix
       ciWorkflows
