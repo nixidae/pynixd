@@ -152,6 +152,9 @@ in
         Restart = "on-failure";
         RestartSec = "5s";
         NoNewPrivileges = true;
+        # pynixd makes a cgroup per build below its own, to measure each build
+        # (`pynixd_store/builder/cgroup.py`).
+        Delegate = true;
       };
     };
 

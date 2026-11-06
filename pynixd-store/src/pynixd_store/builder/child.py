@@ -328,6 +328,9 @@ def main() -> None:
     try:
         _prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
         spec: ChildSpec = json.loads(Path(spec_path).read_text())
+        # Before the fork, so that the builder starts in it. The interpreter's own pages stay charged to pynixd.
+        if spec["cgroup"] is not None:
+            Path(spec["cgroup"], "cgroup.procs").write_text(str(os.getpid()))
         uid, gid = os.getuid(), os.getgid()
         flags = os.CLONE_NEWUSER | os.CLONE_NEWPID | os.CLONE_NEWNS | os.CLONE_NEWIPC | os.CLONE_NEWUTS
         if spec["private_network"]:
@@ -352,7 +355,8 @@ def main() -> None:
     anyio.run(_wait_serving, spec, pid, control)
     # The sandbox's pid 1 reaps its orphans, so its usage holds theirs too.
     _pid, status, rusage = os.wait4(pid, 0)
-    write_usage(Path(spec["usage_file"]), from_rusage(rusage))
+    if spec["cgroup"] is None:
+        write_usage(Path(spec["usage_file"]), from_rusage(rusage))
     _exit_like(status)
 
 

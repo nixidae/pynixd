@@ -50,6 +50,7 @@ def _spec(root: Path, script: str, **over: object) -> ChildSpec:
         "unpack_channel": None,
         "store_dir": "/nix/store",
         "usage_file": str(root.parent / "usage.json"),
+        "cgroup": None,
     }
     spec.update(over)  # type: ignore[typeddict-item]  # the tests vary one key at a time
     return spec

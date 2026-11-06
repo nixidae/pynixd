@@ -195,7 +195,14 @@ def _resources(usage: BuildUsage) -> BuildResources:
         peak_memory_bytes=usage.peak_memory_bytes,
         io_read_bytes=usage.io_read_bytes,
         io_write_bytes=usage.io_write_bytes,
+        cpu_stall=_stall(usage.cpu_stall_us),
+        memory_stall=_stall(usage.memory_stall_us),
+        io_stall=_stall(usage.io_stall_us),
     )
+
+
+def _stall(us: int | None) -> OptMicroseconds:
+    return OptMicroseconds() if us is None else OptMicroseconds(tag=1, value=us)
 
 
 class LocalDBStore(Store):

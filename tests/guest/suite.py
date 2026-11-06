@@ -58,9 +58,20 @@ async def test(vms: Machines) -> None:
         f"--junitxml=/artifacts/junit/{name}.xml {suite['path']} {select} "
         f"> /artifacts/{name}.log 2>&1"
     )
+    # The agent's own cgroup belongs to root, so pynixd could make no cgroup per build (`builder/cgroup.py`).
+    # This one is delegated to tester, as `Delegate=yes` delegates a unit's. `su` does not move a process.
+    cgroup = f"/sys/fs/cgroup/pynixd-tests-{name}"
+    # systemd enables the controllers on the path to a delegated unit; the guest's root enables none.
+    await vm.succeed(
+        "echo '+cpu +memory +io' > /sys/fs/cgroup/cgroup.subtree_control && "
+        f"mkdir {cgroup} && "
+        f"chown tester {cgroup} {cgroup}/cgroup.procs {cgroup}/cgroup.threads {cgroup}/cgroup.subtree_control"
+    )
     # `su -` and not `su`: a login shell gives tester its own HOME, and
     # pytest writes there. A non-login su leaves HOME as root's.
-    rc, _ = await vm.execute(f"su - tester -c {command!r}", timeout=TIMEOUT, label=f"pytest {name}")
+    rc, _ = await vm.execute(
+        f"echo $$ > {cgroup}/cgroup.procs && su - tester -c {command!r}", timeout=TIMEOUT, label=f"pytest {name}"
+    )
     tail = (await vm.succeed(f"tail -n 3 /artifacts/{name}.log")).strip()
     print(f"[test] {name}: exit {rc}\n[test]   {tail}")
     if rc != 0:

@@ -122,6 +122,23 @@ builder.
 The helper takes its whole job from one file that pynixd writes, as Nix's
 `build.json` does, and nothing in the store side assumes namespaces.
 
+## What a build used
+
+Each build gets a record: CPU time, peak memory, bytes read and written, and
+the PSI stall times (nixidae/nixidae#1187). The scheduler stores it in the
+build's observation, and a pynixd peer gets it in `BuildResult.resources`.
+
+- **A cgroup per build**, when pynixd's own cgroup is delegated to it
+  (`Delegate=yes` on the unit): `builder/cgroup.py` moves pynixd's processes
+  into a `pynixd` leaf and makes a `build-*` sibling for each build. The
+  helper joins that cgroup before it forks the builder. The record then counts
+  every process of the build together, and `cgroup.kill` ends what is left.
+- **Otherwise `wait4`** on the sandbox's pid 1: only what it reaped, memory as
+  the largest single process, and no stall times. That figure includes the
+  helper's interpreter, about 30 MB, which the builder inherits at the fork.
+  In a cgroup the interpreter's pages stay charged to pynixd.
+- **A VM build** reports what the guest's helper measured with `wait4`.
+
 ## The build VM
 
 `build_vm` on a local-socket store runs the same helper in a libkrun

@@ -76,4 +76,6 @@ class ChildSpec(TypedDict):
     store_dir: str
     """The logical store directory: a shared mount in the sandbox, where the helper adds a path late."""
     usage_file: str
+    cgroup: str | None
+    """The cgroup the helper joins before anything else (`cgroup.py`), or `None`."""
     """Where the helper writes what the builder used (`usage.py`), on the host."""

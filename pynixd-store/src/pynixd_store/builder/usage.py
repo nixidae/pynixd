@@ -22,6 +22,8 @@ BLOCK_BYTES = 512
 class UsageSource(StrEnum):
     RUSAGE = "rusage"
     """`wait4` on the sandbox's pid 1: only what it reaped. Memory is the largest single process."""
+    CGROUP = "cgroup"
+    """The build's own cgroup (`cgroup.py`): every process, and memory counted together."""
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,10 @@ class BuildUsage:
     io_read_bytes: int
     """Bytes read from a block device; a page cache hit reads none."""
     io_write_bytes: int
+    cpu_stall_us: int | None = None
+    """PSI `some` totals: the time in which a task of the build waited. `None` without a cgroup or without PSI."""
+    memory_stall_us: int | None = None
+    io_stall_us: int | None = None
 
 
 def from_rusage(usage: resource.struct_rusage) -> BuildUsage:
