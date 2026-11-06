@@ -135,5 +135,7 @@ interpreter runs the helper. The guest's page cache keeps no copy of either.
 A fixed-output build stays on the namespace helper, by User's choice
 (2026-11-06), and so does a build with a builder socket, until the socket
 reaches the guest over vsock. A `sandbox-paths` source outside both stores
-fails the build rather than lose its bind. Still to come: per-build
+is writable, as Nix binds it: a directory is a share of its own, and a file
+a share of its parent whose allowlist shows the file alone, because
+virtio-fs mounts only a directory. Still to come: per-build
 resource reporting finer than Nix's `cpuUser` and `cpuSystem`.
