@@ -2,9 +2,30 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+import anyio
 import pytest
 
-from pynixd_store.builder.cgroup import io_bytes, own_cgroup, stall_us
+from pynixd_store.builder.cgroup import io_bytes, own_cgroup, sample_every, stall_us
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from pynixd_store.builder.usage import UsageSample
+
+
+@pytest.mark.parametrize(("populated", "sampled"), [(0, False), (1, True)])
+async def test_an_empty_cgroup_gives_no_sample(tmp_path: Path, populated: int, sampled: bool) -> None:
+    """After the build's last process exits, `memory.current` reads 0: a sample then would say nothing true."""
+    (tmp_path / "cgroup.events").write_text(f"populated {populated}\nfrozen 0\n")
+    (tmp_path / "cpu.stat").write_text("usage_usec 10\nuser_usec 6\nsystem_usec 4\n")
+    (tmp_path / "memory.current").write_text("4096\n")
+    samples: list[UsageSample] = []
+    with anyio.move_on_after(0.05):
+        await sample_every(tmp_path, 0.01, samples, in_thread=False)
+
+    assert bool(samples) is sampled
 
 
 def test_the_v2_line_names_the_cgroup() -> None:

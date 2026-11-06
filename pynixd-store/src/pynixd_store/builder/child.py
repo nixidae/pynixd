@@ -20,6 +20,7 @@ from __future__ import annotations
 import ctypes
 import errno
 import fcntl
+import functools
 import json
 import os
 import platform
@@ -29,6 +30,7 @@ import socket
 import stat
 import struct
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import anyio
@@ -36,9 +38,9 @@ import seccomp
 from anyio.abc import SocketStream
 from anyio.streams.buffered import BufferedByteReceiveStream
 
-from . import buildenv, fetchurl, unpack_channel
+from . import buildenv, cgroup as build_cgroup, fetchurl, unpack_channel
 from .spec import ChildSpec
-from .usage import from_rusage, write_usage
+from .usage import UsageSample, from_rusage, write_usage
 
 MS_BIND = 4096
 MS_REC = 16384
@@ -297,13 +299,23 @@ async def _answer_adds(spec: ChildSpec, control: socket.socket) -> None:
             await stream.send(json.dumps({"error": error}).encode() + b"\n")
 
 
-async def _wait_serving(spec: ChildSpec, pid: int, control: socket.socket | None) -> None:
-    """Return when *pid* exits, and serve `_answer_adds` until then."""
+async def _wait_serving(spec: ChildSpec, pid: int, control: socket.socket | None, samples: list[UsageSample]) -> None:
+    """Return when *pid* exits, and serve `_answer_adds` and sample the cgroup until then."""
     pidfd = os.pidfd_open(pid)
     try:
         async with anyio.create_task_group() as tg:
             if control is not None:
                 tg.start_soon(_answer_adds, spec, control)
+            if spec["cgroup_report"] and spec["cgroup"] is not None and spec["sample_seconds"] > 0:
+                tg.start_soon(
+                    functools.partial(
+                        build_cgroup.sample_every,
+                        Path(spec["cgroup"]),
+                        spec["sample_seconds"],
+                        samples,
+                        in_thread=False,
+                    )
+                )
             await anyio.wait_readable(pidfd)
             tg.cancel_scope.cancel()
     finally:
@@ -352,10 +364,14 @@ def main() -> None:
         os._exit(1)
     os.close(status_fd)
     # Only now an event loop: the `unshare` above refuses a process with a second thread, and a fork copies a loop.
-    anyio.run(_wait_serving, spec, pid, control)
+    samples: list[UsageSample] = []
+    anyio.run(_wait_serving, spec, pid, control, samples)
     # The sandbox's pid 1 reaps its orphans, so its usage holds theirs too.
     _pid, status, rusage = os.wait4(pid, 0)
-    if spec["cgroup"] is None:
+    if spec["cgroup_report"] and spec["cgroup"] is not None:
+        usage = replace(build_cgroup.read(Path(spec["cgroup"])), samples=tuple(samples))
+        write_usage(Path(spec["usage_file"]), usage)
+    elif spec["cgroup"] is None:
         write_usage(Path(spec["usage_file"]), from_rusage(rusage))
     _exit_like(status)
 

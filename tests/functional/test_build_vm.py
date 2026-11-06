@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -18,6 +19,7 @@ from pynixd import Server
 from pynixd.config import BuildVmSpec
 from pynixd.op_routes import OpRoute
 from pynixd.store import LocalDBStore
+from pynixd_store.db_migrations import BUILD_OBSERVATION_SAMPLE_TABLE, BUILD_OBSERVATION_TABLE
 from tests._conftest.config import NIX_GIT_BIN
 from tests._conftest.constants import _NO_PROBE_FEATURE_MATRIX
 from tests._conftest.nix_config import for_test_store
@@ -44,6 +46,15 @@ TOP = (
 KERNEL = (
     'derivation { name = "vm-kernel"; system = builtins.currentSystem; builder = "/bin/sh"; '
     'args = [ "-c" "read r < /proc/sys/kernel/osrelease; echo $r > $out" ]; }'
+)
+
+
+STRING_BYTES = 1 << 24
+# Four subshells hold a 16 MiB string each at once: the guest cgroup counts them together.
+PARALLEL = (
+    'derivation { name = "vm-parallel"; system = builtins.currentSystem; builder = "/bin/sh"; '
+    'args = [ "-c" "for n in 1 2 3 4; do (s=a; i=0; while [ $i -lt 24 ]; do s=$s$s; i=$((i+1)); done; '
+    'j=0; while [ $j -lt 300000 ]; do j=$((j+1)); done) & done; wait; echo > $out" ]; }'
 )
 
 
@@ -209,6 +220,25 @@ async def test_an_extra_sandbox_file_reaches_the_builder_read_write(tmp_path: Pa
 
     assert (tmp_path / "vm/store" / path.lstrip("/")).read_text() == "1\n"
     assert (etc / "counter").read_text() == "1\n2\n"
+
+
+async def test_a_build_in_the_vm_reports_its_guest_cgroup(tmp_path: Path) -> None:
+    """The guest's init makes a cgroup for the build, and the helper reads it. nixidae/nixidae#1187."""
+    async with _serve(tmp_path, "vm", BuildVmSpec(memory_mib=512, cpus=2), usage_sample_seconds=0.1) as url:
+        await _build(url, PARALLEL)
+    with contextlib.closing(sqlite3.connect(tmp_path / "vm/store/nix/var/nix/db/db.sqlite")) as conn:
+        source, peak, cpu_stall, observation = conn.execute(
+            f"SELECT resourceSource, peakMemoryBytes, cpuStallUs, id FROM {BUILD_OBSERVATION_TABLE} WHERE name = ?",
+            ("vm-parallel",),
+        ).fetchone()
+        (samples,) = conn.execute(
+            f"SELECT count(*) FROM {BUILD_OBSERVATION_SAMPLE_TABLE} WHERE observationId = ?", (observation,)
+        ).fetchone()
+
+    assert source == "cgroup"
+    assert peak > 4 * STRING_BYTES, f"{peak} bytes: the subshells held their strings at once"
+    assert cpu_stall is not None, "the guest kernel has PSI"
+    assert samples >= 1
 
 
 async def test_a_build_for_another_system_runs_on_the_host_kernel(tmp_path: Path) -> None:

@@ -36,6 +36,10 @@ _log = structlog.get_logger(__name__)
 _serial = itertools.count()
 
 
+GUEST = Path(ROOT, "build")
+"""The build's cgroup in the build VM. `nix/krun/init.c` makes it and gives it to the build's uid."""
+
+
 def own_cgroup(proc_self_cgroup: str) -> str | None:
     """The v2 path in `/proc/self/cgroup`: the line `0::<path>`."""
     for line in proc_self_cgroup.splitlines():
@@ -151,13 +155,30 @@ def sample(path: Path, at_ms: int) -> UsageSample:
     )
 
 
-async def sample_every(path: Path, seconds: float, into: list[UsageSample]) -> None:
-    """Append a `sample` of *path* to *into* every *seconds*, until cancelled."""
+async def sample_every(path: Path, seconds: float, into: list[UsageSample], *, in_thread: bool = True) -> None:
+    """Append a `sample` of *path* to *into* every *seconds*, until cancelled.
+
+    `in_thread=False` reads on the loop: a process that ran `unshare(CLONE_NEWPID)` gets
+    EINVAL from `clone(CLONE_THREAD)`, so the helper can start no thread.
+    """
     started = time.monotonic()
     while True:
         await anyio.sleep(seconds)
         at_ms = round((time.monotonic() - started) * 1000)
-        into.append(await anyio.to_thread.run_sync(sample, path, at_ms))
+        taken = (
+            await anyio.to_thread.run_sync(_sample_populated, path, at_ms)
+            if in_thread
+            else _sample_populated(path, at_ms)
+        )
+        if taken is not None:
+            into.append(taken)
+
+
+def _sample_populated(path: Path, at_ms: int) -> UsageSample | None:
+    """A `sample`, or `None` while the cgroup holds no process: before the helper joins and after the build ends."""
+    if "populated 1" not in (path / "cgroup.events").read_text():
+        return None
+    return sample(path, at_ms)
 
 
 def read(path: Path) -> BuildUsage:

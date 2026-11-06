@@ -76,6 +76,10 @@ class ChildSpec(TypedDict):
     store_dir: str
     """The logical store directory: a shared mount in the sandbox, where the helper adds a path late."""
     usage_file: str
+    """Where the helper writes what the builder used (`usage.py`), on the host."""
     cgroup: str | None
     """The cgroup the helper joins before anything else (`cgroup.py`), or `None`."""
-    """Where the helper writes what the builder used (`usage.py`), on the host."""
+    cgroup_report: bool
+    """The helper reads *cgroup* into *usage_file*: a VM's cgroup is out of the host's reach."""
+    sample_seconds: float
+    """With *cgroup_report*, how often the helper samples the cgroup; 0 takes no samples."""

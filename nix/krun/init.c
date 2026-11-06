@@ -211,6 +211,23 @@ static int write_all(int fd, const char *buf, ssize_t n)
     return 0;
 }
 
+/* The build's cgroup, `GUEST` in `builder/cgroup.py`. The helper starts in
+ * the root and moves itself, which takes write access to both cgroup.procs
+ * files; the guest holds this one build alone. */
+static void make_build_cgroup(unsigned uid, unsigned gid)
+{
+    if (mount("cgroup2", "/sys/fs/cgroup", "cgroup2", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) != 0)
+        fail("mount /sys/fs/cgroup");
+    int control = open("/sys/fs/cgroup/cgroup.subtree_control", O_WRONLY | O_CLOEXEC);
+    const char controllers[] = "+cpu +memory +io";
+    if (control < 0 || write_all(control, controllers, sizeof controllers - 1) != 0)
+        fail("enable the cgroup controllers");
+    close(control);
+    if (mkdir("/sys/fs/cgroup/build", 0755) != 0 || chown("/sys/fs/cgroup/build", uid, gid) != 0 ||
+        chown("/sys/fs/cgroup/build/cgroup.procs", uid, gid) != 0 || chown("/sys/fs/cgroup/cgroup.procs", uid, gid) != 0)
+        fail("/sys/fs/cgroup/build");
+}
+
 static int vsock_connect(unsigned port)
 {
     struct sockaddr_vm addr = {.svm_family = AF_VSOCK, .svm_cid = VMADDR_CID_HOST, .svm_port = port};
@@ -347,6 +364,7 @@ int main(void)
         errno = EINVAL;
         fail(CONFIG "ids");
     }
+    make_build_cgroup(uid, gid);
     int targets[MAX_PORTS];
     int nports = open_ports(uid, gid, targets);
 

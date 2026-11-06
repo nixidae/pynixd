@@ -140,7 +140,11 @@ build's observation, and a pynixd peer gets it in `BuildResult.resources`.
   the largest single process, and no stall times. That figure includes the
   helper's interpreter, about 30 MB, which the builder inherits at the fork.
   In a cgroup the interpreter's pages stay charged to pynixd.
-- **A VM build** reports what the guest's helper measured with `wait4`.
+- **A VM build** has a cgroup in the guest. The guest's init makes it and
+  gives it to the build's uid, and the helper reads it into the usage file and
+  samples it on its event loop: after `unshare(CLONE_NEWPID)` the helper can
+  start no thread. pynixd's libkrunfw sets `CONFIG_PSI`, which the stock x86_64
+  config leaves out.
 
 The scheduler expects a build to peak at the median peak memory of the
 derivation's recent builds. It leaves out each store whose available memory,
@@ -168,5 +172,4 @@ A path the builder adds joins the build store's allowlist before the helper
 binds it, and such a build caches no negative lookup. A `sandbox-paths` source outside both stores
 is writable, as Nix binds it: a directory is a share of its own, and a file
 a share of its parent whose allowlist shows the file alone, because
-virtio-fs mounts only a directory. Still to come: per-build
-resource reporting finer than Nix's `cpuUser` and `cpuSystem`.
+virtio-fs mounts only a directory.

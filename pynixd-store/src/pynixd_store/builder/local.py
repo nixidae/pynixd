@@ -578,6 +578,8 @@ async def build(
             "store_dir": store_dir,
             "usage_file": str(paths.top / USAGE_NAME),
             "cgroup": None,
+            "cgroup_report": False,
+            "sample_seconds": 0,
         }
         if os.path.exists(HOME_DIR):
             raise ValueError(f"home directory '{HOME_DIR}' exists; please remove it to assure purity of builds")
@@ -638,6 +640,10 @@ async def build(
             # The guest is a VM: its processes are not the host's to count.
             cgroup = None if guest is not None else await stack.enter_async_context(build_cgroup.build_cgroup())
             spec["cgroup"] = None if cgroup is None else str(cgroup)
+            if guest is not None:
+                spec["cgroup"] = str(build_cgroup.GUEST)
+                spec["cgroup_report"] = True
+                spec["sample_seconds"] = sample_seconds
             samples: list[UsageSample] = []
             sampler = await stack.enter_async_context(anyio.create_task_group())
             stack.callback(sampler.cancel_scope.cancel)
