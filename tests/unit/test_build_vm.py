@@ -29,7 +29,7 @@ def _vm() -> BuildVm:
     )
 
 
-def _argv(tmp_path: Path, real_store: Path, sources: tuple[str, ...] = ()) -> list[str]:
+def _argv(tmp_path: Path, real_store: Path, sources: tuple[str, ...] = (), cgroup: Path | None = None) -> list[str]:
     return _vm().argv(
         top=tmp_path / "top",
         chroot_parent=real_store / "ffff-x.drv.chroot",
@@ -38,6 +38,7 @@ def _argv(tmp_path: Path, real_store: Path, sources: tuple[str, ...] = ()) -> li
         sources=sources,
         spec_file=tmp_path / "top/spec.json",
         build_dir=tmp_path / "top/build",
+        cgroup=cgroup,
     )
 
 
@@ -75,6 +76,18 @@ def test_a_relocated_store_and_the_host_store_each_show_their_own_paths(tmp_path
         str(tmp_path / "top/spec.json"),
         "3",
     ]
+
+
+def test_the_launcher_reports_the_vms_host_cost_and_joins_the_cgroup(tmp_path: Path) -> None:
+    """The VMM ends with `_exit`, so the launcher's parent writes what it used. nixidae/nixidae#1187."""
+    (tmp_path / "top").mkdir()
+    real = tmp_path / "root/nix/store"
+    without = _argv(tmp_path, real)
+    with_cgroup = _argv(tmp_path, real, cgroup=Path("/sys/fs/cgroup/pynixd/build-1"))
+
+    assert f"--usage={tmp_path / 'top/vm-usage.json'}" in without
+    assert not [a for a in without if a.startswith("--cgroup")]
+    assert "--cgroup=/sys/fs/cgroup/pynixd/build-1" in with_cgroup[: with_cgroup.index("--")]
 
 
 def test_the_host_store_is_one_share_with_every_path(tmp_path: Path) -> None:

@@ -31,6 +31,7 @@ HOST_STORE = Path("/nix/store")
 STATUS_NAME = "vm-status"
 EXIT_NAME = "vm-exit"
 DISK_NAME = "build.xfs"
+VMM_USAGE_NAME = "vm-usage.json"
 #: The build store's allowlist, which `allow` extends while the guest runs.
 STORE_ALLOWLIST_NAME = "vm-allowlist-store"
 #: The host's end of the builder's socket and of the helper's control socket, in the top directory. The launcher
@@ -103,6 +104,7 @@ class BuildVm:
         spec_file: Path,
         build_dir: Path,
         recursive: bool = False,
+        cgroup: Path | None = None,
     ) -> list[str]:
         """The launcher's command line, after it writes the allowlists into *top*.
 
@@ -112,7 +114,7 @@ class BuildVm:
         directory is a share of its own, and a file is a share of its parent that shows the file alone, because
         virtio-fs mounts only a directory. The helper reads *spec_file* and gets `top/vm-status` as its file
         descriptor 3. A *recursive* build gets the two sockets of the module's docstring. The launcher must run in
-        *top*.
+        *top*. The VMM joins *cgroup*, and the launcher writes the VMM's rusage to `top/vm-usage.json`.
         """
         shown: dict[Path, set[str]] = {
             real_store_dir: {str(real_store_dir / path.rsplit("/", 1)[-1]) for path in visible},
@@ -172,7 +174,10 @@ class BuildVm:
                 f"--vsock-fd={CONTROL_FD}:{CONTROL_SOCKET_NAME}",
                 f"--vsock-listen={build_dir / SOCKET_NAME}:{BUILDER_SOCKET_NAME}",
             ]
+        if cgroup is not None:
+            argv.append(f"--cgroup={cgroup}")
         argv += [
+            f"--usage={top / VMM_USAGE_NAME}",
             f"--cwd={top}",
             f"--status={top / STATUS_NAME}",
             f"--exit={top / EXIT_NAME}",

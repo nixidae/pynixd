@@ -4,6 +4,7 @@
  *   pynixd-krun --init FILE --cpus N --memory MIB [--dax-window BYTES] [--negative-timeout MS]
  *               [--ro DIR:ALLOWLIST]... [--rw DIR]... [--rw-allow DIR:ALLOWLIST]...
  *               [--disk IMAGE:DIR]... [--vsock-fd N:SOCKET]... [--vsock-listen PATH:SOCKET]...
+ *               [--cgroup DIR] [--usage PATH]
  *               --cwd DIR --status PATH --exit PATH [--uid N --gid N] -- COMMAND [ARG]...
  *
  * The guest boots libkrunfw's kernel on a root that holds only --init (as
@@ -34,6 +35,12 @@
  * over, and the guest's reset ends it. PYNIXD_KRUN_LOG_LEVEL is libkrun's log
  * level: 0 off to 5 trace, errors by default. PYNIXD_KRUN_CMDLINE goes on the
  * end of the kernel's command line ("loglevel=7" shows the boot).
+ *
+ * The VMM ends with _exit, so nothing in it can report what it used. With
+ * --usage, this process forks the VMM, reaps it with wait4 and writes its
+ * rusage to PATH, in the shape of pynixd's usage.json, then exits as the VMM
+ * did. The VMM joins the cgroup DIR first, when given, and dies with this
+ * process.
  */
 
 #include <errno.h>
@@ -44,8 +51,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
+#include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <libkrun.h>
@@ -113,7 +123,54 @@ static void usage(void)
     fprintf(stderr, "usage: pynixd-krun --init FILE --cpus N --memory MIB [--dax-window BYTES] [--negative-timeout MS]\n"
                     "                   [--ro DIR:ALLOWLIST]... [--rw DIR]... [--rw-allow DIR:ALLOWLIST]...\n"
                     "                   [--disk IMAGE:DIR]... [--vsock-fd N:SOCKET]... [--vsock-listen PATH:SOCKET]...\n"
+                    "                   [--cgroup DIR] [--usage PATH]\n"
                     "                   --cwd DIR --status PATH --exit PATH [--uid N --gid N] -- COMMAND [ARG]...\n");
+}
+
+static int join_cgroup(const char *dir)
+{
+    char path[4096];
+    snprintf(path, sizeof path, "%s/cgroup.procs", dir);
+    int fd = open(path, O_WRONLY | O_CLOEXEC);
+    /* "0" is the writer itself. */
+    if (fd < 0 || write(fd, "0", 1) != 1) {
+        fprintf(stderr, "pynixd-krun: cannot join the cgroup %s: %s\n", dir, strerror(errno));
+        if (fd >= 0)
+            close(fd);
+        return 1;
+    }
+    close(fd);
+    return 0;
+}
+
+static long long microseconds(struct timeval t)
+{
+    return (long long)t.tv_sec * 1000000 + t.tv_usec;
+}
+
+/* Linux counts ru_maxrss in KiB and ru_inblock and ru_oublock in 512-byte units. */
+static int supervise(pid_t vmm, const char *usage_path)
+{
+    int status;
+    struct rusage ru;
+    while (wait4(vmm, &status, 0, &ru) < 0) {
+        if (errno != EINTR) {
+            perror("pynixd-krun: wait4");
+            return 1;
+        }
+    }
+    FILE *f = fopen(usage_path, "w");
+    if (f == NULL) {
+        fprintf(stderr, "pynixd-krun: cannot write %s: %s\n", usage_path, strerror(errno));
+    } else {
+        fprintf(f,
+                "{\"source\": \"rusage\", \"cpu_user_us\": %lld, \"cpu_system_us\": %lld, "
+                "\"peak_memory_bytes\": %lld, \"io_read_bytes\": %lld, \"io_write_bytes\": %lld}\n",
+                microseconds(ru.ru_utime), microseconds(ru.ru_stime), (long long)ru.ru_maxrss * 1024,
+                (long long)ru.ru_inblock * 512, (long long)ru.ru_oublock * 512);
+        fclose(f);
+    }
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
 }
 
 static char *slurp(const char *path, size_t *len)
@@ -171,7 +228,8 @@ static int add_file(KrunFsOverlay overlay, const char *path, const char *data, s
 
 int main(int argc, char *argv[])
 {
-    enum { INIT = 256, CPUS, MEMORY, DAX, RO, RW, RW_ALLOW, DISK, NEGATIVE, STATUS, EXIT, UID, GID, CWD, VSOCK_FD, VSOCK_LISTEN };
+    enum { INIT = 256, CPUS, MEMORY, DAX, RO, RW, RW_ALLOW, DISK, NEGATIVE, STATUS, EXIT, UID, GID, CWD, VSOCK_FD, VSOCK_LISTEN,
+           CGROUP, USAGE };
     static const struct option options[] = {
         {"init", required_argument, NULL, INIT},     {"cpus", required_argument, NULL, CPUS},
         {"memory", required_argument, NULL, MEMORY}, {"dax-window", required_argument, NULL, DAX},
@@ -181,9 +239,10 @@ int main(int argc, char *argv[])
         {"disk", required_argument, NULL, DISK},     {"negative-timeout", required_argument, NULL, NEGATIVE},
         {"uid", required_argument, NULL, UID},       {"gid", required_argument, NULL, GID},
         {"vsock-fd", required_argument, NULL, VSOCK_FD}, {"vsock-listen", required_argument, NULL, VSOCK_LISTEN},
+        {"cgroup", required_argument, NULL, CGROUP}, {"usage", required_argument, NULL, USAGE},
         {NULL, 0, NULL, 0},
     };
-    const char *init = NULL, *status = NULL, *exit_path = NULL, *cwd = NULL;
+    const char *init = NULL, *status = NULL, *exit_path = NULL, *cwd = NULL, *cgroup = NULL, *usage_path = NULL;
     long cpus = 0, memory = 0, dax_window = 0, negative_timeout = 0, uid = (long)getuid(), gid = (long)getgid();
     struct share shares[MAX_SHARES];
     struct disk disks[MAX_DISKS];
@@ -197,6 +256,8 @@ int main(int argc, char *argv[])
         case STATUS: status = optarg; break;
         case CWD: cwd = optarg; break;
         case EXIT: exit_path = optarg; break;
+        case CGROUP: cgroup = optarg; break;
+        case USAGE: usage_path = optarg; break;
         case CPUS: ok = parse_long(optarg, 1, 255, &cpus); break;
         case MEMORY: ok = parse_long(optarg, 1, UINT32_MAX, &memory); break;
         case DAX: ok = parse_long(optarg, 0, INT64_MAX, &dax_window); break;
@@ -267,6 +328,22 @@ int main(int argc, char *argv[])
         fprintf(stderr, "pynixd-krun: PYNIXD_KRUN_LOG_LEVEL is 0 to 5, not %s\n", level_env);
         return 2;
     }
+
+    if (usage_path != NULL) {
+        pid_t parent = getpid();
+        pid_t vmm = fork();
+        if (vmm < 0) {
+            perror("pynixd-krun: fork");
+            return 1;
+        }
+        if (vmm > 0)
+            return supervise(vmm, usage_path);
+        /* pynixd kills this process at a timeout: the VMM must not outlive it. */
+        if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0 || getppid() != parent)
+            _exit(1);
+    }
+    if (cgroup != NULL && join_cgroup(cgroup))
+        return 1;
 
     /* libkrun holds a host descriptor for each inode the guest has looked up and each file a
      * DAX mapping reads: nix's closure is past a soft limit of 1024, and the guest sees EMFILE. */
