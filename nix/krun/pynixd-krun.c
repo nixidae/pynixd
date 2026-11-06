@@ -3,7 +3,7 @@
  *
  *   pynixd-krun --init FILE --cpus N --memory MIB [--dax-window BYTES]
  *               [--ro DIR:ALLOWLIST]... [--rw DIR]... --status PATH --exit PATH
- *               -- COMMAND [ARG]...
+ *               [--uid N --gid N] -- COMMAND [ARG]...
  *
  * The guest boots libkrunfw's kernel on a root that holds only --init (as
  * /init), its configuration and the mount points. Each --ro and --rw share is
@@ -12,7 +12,8 @@
  * store path per line, and maps its files through a DAX window of
  * --dax-window bytes: the guest's page cache holds no copy of them.
  *
- * The init runs COMMAND, opens --status as its file descriptor 3, and writes
+ * The init runs COMMAND as --uid and --gid (this process's own by default),
+ * the owners the shares show. It opens --status as its file descriptor 3, and writes
  * how COMMAND ended to --exit. Both are paths in the guest, on a --rw share.
  * The guest's console is this process's stdout. libkrun takes the process
  * over, and the guest's reset ends it. PYNIXD_KRUN_LOG_LEVEL is libkrun's log
@@ -79,7 +80,7 @@ static void usage(void)
 {
     fprintf(stderr, "usage: pynixd-krun --init FILE --cpus N --memory MIB [--dax-window BYTES]\n"
                     "                   [--ro DIR:ALLOWLIST]... [--rw DIR]... --status PATH --exit PATH\n"
-                    "                   -- COMMAND [ARG]...\n");
+                    "                   [--uid N --gid N] -- COMMAND [ARG]...\n");
 }
 
 static char *slurp(const char *path, size_t *len)
@@ -137,16 +138,17 @@ static int add_file(KrunFsOverlay overlay, const char *path, const char *data, s
 
 int main(int argc, char *argv[])
 {
-    enum { INIT = 256, CPUS, MEMORY, DAX, RO, RW, STATUS, EXIT };
+    enum { INIT = 256, CPUS, MEMORY, DAX, RO, RW, STATUS, EXIT, UID, GID };
     static const struct option options[] = {
         {"init", required_argument, NULL, INIT},     {"cpus", required_argument, NULL, CPUS},
         {"memory", required_argument, NULL, MEMORY}, {"dax-window", required_argument, NULL, DAX},
         {"ro", required_argument, NULL, RO},         {"rw", required_argument, NULL, RW},
         {"status", required_argument, NULL, STATUS}, {"exit", required_argument, NULL, EXIT},
+        {"uid", required_argument, NULL, UID},       {"gid", required_argument, NULL, GID},
         {NULL, 0, NULL, 0},
     };
     const char *init = NULL, *status = NULL, *exit_path = NULL;
-    long cpus = 0, memory = 0, dax_window = 0;
+    long cpus = 0, memory = 0, dax_window = 0, uid = (long)getuid(), gid = (long)getgid();
     struct share shares[MAX_SHARES];
     int nshares = 0, c;
 
@@ -159,6 +161,8 @@ int main(int argc, char *argv[])
         case CPUS: ok = parse_long(optarg, 1, 255, &cpus); break;
         case MEMORY: ok = parse_long(optarg, 1, UINT32_MAX, &memory); break;
         case DAX: ok = parse_long(optarg, 0, INT64_MAX, &dax_window); break;
+        case UID: ok = parse_long(optarg, 0, UINT32_MAX - 1, &uid); break;
+        case GID: ok = parse_long(optarg, 0, UINT32_MAX - 1, &gid); break;
         case RO: {
             char *colon = strrchr(optarg, ':');
             ok = nshares < MAX_SHARES && colon != NULL && optarg[0] == '/';
@@ -203,6 +207,8 @@ int main(int argc, char *argv[])
     }
 
     /* The configuration the init reads from /.pynixd. */
+    char ids[32];
+    snprintf(ids, sizeof ids, "%ld %ld\n", uid, gid);
     char *mounts = NULL, *args = NULL;
     size_t mounts_len = 0, args_len = 0;
     FILE *m = open_memstream(&mounts, &mounts_len);
@@ -225,7 +231,8 @@ int main(int argc, char *argv[])
         add_file(overlay, ".pynixd/mounts", mounts, mounts_len, 0444) ||
         add_file(overlay, ".pynixd/argv", args, args_len, 0444) ||
         add_file(overlay, ".pynixd/status", status, strlen(status), 0444) ||
-        add_file(overlay, ".pynixd/exit", exit_path, strlen(exit_path), 0444))
+        add_file(overlay, ".pynixd/exit", exit_path, strlen(exit_path), 0444) ||
+        add_file(overlay, ".pynixd/ids", ids, strlen(ids), 0444))
         return 1;
 
     KrunMmioDeviceManager devices = krun_mmio_device_manager_new();

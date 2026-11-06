@@ -8,6 +8,12 @@
  *   argv     the command, each argument ended by a NUL byte
  *   status   a path, opened for writing as file descriptor 3
  *   exit     a path, where the command's end is written: "exit N" or "signal N"
+ *   ids      "UID GID": who the command runs as
+ *
+ * The shares show their files with the host's owners, so the command runs as
+ * the uid that owns the build's directories, as it does on the host. As root it
+ * would lose the directories in its own user namespace, where that uid is not
+ * mapped.
  *
  * The command runs on a pseudoterminal, as a build on the host does, and its
  * output reaches hvc0, the console pynixd-krun gives the build's terminal.
@@ -17,6 +23,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -190,6 +197,12 @@ int main(void)
     char **argv = read_argv();
     char *status = read_path(CONFIG "status");
     char *exit_path = read_path(CONFIG "exit");
+    unsigned uid, gid;
+    char *ids = read_path(CONFIG "ids");
+    if (sscanf(ids, "%u %u", &uid, &gid) != 2) {
+        errno = EINVAL;
+        fail(CONFIG "ids");
+    }
 
     int master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
     if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0)
@@ -213,6 +226,8 @@ int main(void)
         dup2(status_fd, 3);
         for (int fd = 4; fd < 64; fd++)
             close(fd);
+        if (setgroups(0, NULL) != 0 || setgid(gid) != 0 || setuid(uid) != 0)
+            fail("drop to the build's uid");
         execv(argv[0], argv);
         fail(argv[0]);
     }
