@@ -97,12 +97,50 @@ def test_a_directory_outside_the_stores_is_a_writable_share_of_its_own(tmp_path:
     assert not any(root.startswith(str(tmp_path / "var")) for root in _shares(argv))
 
 
-def test_a_file_outside_the_stores_is_unshareable(tmp_path: Path) -> None:
-    """virtio-fs mounts a directory only: the kernel fixes its root's mode at `S_IFDIR`."""
+def _kinds(argv: list[str]) -> dict[str, tuple[str, list[str] | None]]:
+    """Each share's root: its kind, and its allowlist's lines when it has one."""
+    kinds: dict[str, tuple[str, list[str] | None]] = {}
+    for arg in argv[: argv.index("--")]:
+        kind, _, value = arg.removeprefix("--").partition("=")
+        if kind == "rw":
+            kinds[value] = (kind, None)
+        elif kind in {"ro", "rw-allow"}:
+            root, _, allowlist = value.rpartition(":")
+            kinds[root] = (kind, Path(allowlist).read_text().splitlines())
+    return kinds
+
+
+def test_a_file_outside_the_stores_is_its_parent_showing_the_file_alone(tmp_path: Path) -> None:
+    """virtio-fs mounts a directory only: the kernel fixes its root's mode at `S_IFDIR`. The share of the
+    file's parent is writable and lists the file alone, as Nix binds the file read-write."""
+    (tmp_path / "top").mkdir()
+    etc = tmp_path / "etc"
+    etc.mkdir()
+    (etc / "netrc").touch()
+    (etc / "machines").touch()
+    (etc / "shadow").touch()
+    (etc / "nix").mkdir()
+    sources = (str(etc / "netrc"), str(etc / "machines"), str(etc / "nix"))
+    kinds = _kinds(_argv(tmp_path, tmp_path / "root/nix/store", sources=sources))
+
+    assert kinds[str(etc)] == ("rw-allow", [str(etc / "machines"), str(etc / "netrc"), str(etc / "nix")])
+    assert str(etc / "nix") not in kinds, "a directory inside a filtered share shows through it"
+
+
+def test_a_file_inside_a_shared_directory_needs_no_share_of_its_own(tmp_path: Path) -> None:
+    (tmp_path / "top").mkdir()
+    cache = tmp_path / "ccache"
+    cache.mkdir()
+    (cache / "conf").touch()
+    kinds = _kinds(_argv(tmp_path, tmp_path / "root/nix/store", sources=(str(cache / "conf"), str(cache))))
+
+    assert kinds[str(cache)] == ("rw", None)
+
+
+def test_only_a_file_in_the_root_is_unshareable(tmp_path: Path) -> None:
     (tmp_path / "netrc").touch()
     real = tmp_path / "root/nix/store"
-    assert unshareable([f"{SHELL}/bin/busybox", str(tmp_path)], real) is None
-    assert unshareable([str(tmp_path), str(tmp_path / "netrc")], real) == str(tmp_path / "netrc")
+    assert unshareable([f"{SHELL}/bin/busybox", str(tmp_path), str(tmp_path / "netrc")], real) is None
 
 
 def test_the_guest_reports_an_exit_a_signal_or_nothing(tmp_path: Path) -> None:

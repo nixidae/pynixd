@@ -112,3 +112,20 @@ async def test_an_extra_sandbox_directory_reaches_the_builder_read_write(tmp_pat
 
     assert (tmp_path / "vm/store" / path.lstrip("/")).read_text() == "from the host\n"
     assert (cache / "miss").read_text() == "stored\n"
+
+
+async def test_an_extra_sandbox_file_reaches_the_builder_read_write(tmp_path: Path) -> None:
+    """A file alone: the share of its parent shows only it (libkrun's allowlist on a writable share)."""
+    etc = tmp_path / "etc"
+    etc.mkdir()
+    (etc / "counter").write_text("1\n")
+    (etc / "beside").write_text("hidden\n")
+    expr = (
+        'derivation { name = "vm-file"; system = builtins.currentSystem; builder = "/bin/sh"; '
+        'args = [ "-c" "read x < /counter; echo $x > $out; echo 2 >> /counter" ]; }'
+    )
+    async with _serve(tmp_path, "vm", BuildVmSpec(memory_mib=512, cpus=1)) as url:
+        path, _log = await _build(url, expr, "--option", "extra-sandbox-paths", f"/counter={etc / 'counter'}")
+
+    assert (tmp_path / "vm/store" / path.lstrip("/")).read_text() == "1\n"
+    assert (etc / "counter").read_text() == "1\n2\n"

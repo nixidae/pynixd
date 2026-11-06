@@ -594,7 +594,7 @@ async def build(
                 if (file := vm_unshareable(sources, layout.real_store_dir)) is not None:
                     return LocalBuildResult(
                         BuildResultStatus.MISC_FAILURE,
-                        f"sandbox-paths names the file '{magenta(file)}', and the build VM shares only directories",
+                        f"sandbox-paths names the file '{magenta(file)}' in /, which the build VM cannot share",
                     )
                 guest = _Guest(vm, layout.real_store_dir, frozenset(inputs | sandbox_closure), sources)
             failure = await _run(paths, spec, settings, drv_path, keep, control, guest)

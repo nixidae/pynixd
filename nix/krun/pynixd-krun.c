@@ -2,7 +2,8 @@
  * pynixd-krun: one build guest, in this process (nixidae/nixidae#1186).
  *
  *   pynixd-krun --init FILE --cpus N --memory MIB [--dax-window BYTES]
- *               [--ro DIR:ALLOWLIST]... [--rw DIR]... --cwd DIR --status PATH --exit PATH
+ *               [--ro DIR:ALLOWLIST]... [--rw DIR]... [--rw-allow DIR:ALLOWLIST]...
+ *               --cwd DIR --status PATH --exit PATH
  *               [--uid N --gid N] -- COMMAND [ARG]...
  *
  * The guest boots libkrunfw's kernel on a root that holds only --init (as
@@ -10,7 +11,10 @@
  * mounted at its host path, in the order given, so a path means the same on
  * both sides. A --ro share shows the guest only what its allowlist names, one
  * store path per line, and maps its files through a DAX window of
- * --dax-window bytes: the guest's page cache holds no copy of them.
+ * --dax-window bytes: the guest's page cache holds no copy of them. A
+ * --rw-allow share is writable and shows only what its allowlist names; above
+ * a listed path the guest can change nothing. It gives the guest one file of a
+ * directory, which virtio-fs cannot share alone.
  *
  * The init runs COMMAND in --cwd, a directory on a share, as --uid and --gid (this process's own by default),
  * the owners the shares show. It opens --status as its file descriptor 3, and writes
@@ -59,7 +63,8 @@ static KrunVtableHandle stderr_writer =
 
 struct share {
     const char *dir;
-    const char *allowlist; /* NULL for a writable share */
+    const char *allowlist; /* NULL for a writable share that shows everything */
+    bool writable;
 };
 
 static const char *dirs[MAX_DIRS];
@@ -79,7 +84,8 @@ static bool parse_long(const char *text, long min, long max, long *out)
 static void usage(void)
 {
     fprintf(stderr, "usage: pynixd-krun --init FILE --cpus N --memory MIB [--dax-window BYTES]\n"
-                    "                   [--ro DIR:ALLOWLIST]... [--rw DIR]... --cwd DIR --status PATH --exit PATH\n"
+                    "                   [--ro DIR:ALLOWLIST]... [--rw DIR]... [--rw-allow DIR:ALLOWLIST]...\n"
+                    "                   --cwd DIR --status PATH --exit PATH\n"
                     "                   [--uid N --gid N] -- COMMAND [ARG]...\n");
 }
 
@@ -138,13 +144,13 @@ static int add_file(KrunFsOverlay overlay, const char *path, const char *data, s
 
 int main(int argc, char *argv[])
 {
-    enum { INIT = 256, CPUS, MEMORY, DAX, RO, RW, STATUS, EXIT, UID, GID, CWD };
+    enum { INIT = 256, CPUS, MEMORY, DAX, RO, RW, RW_ALLOW, STATUS, EXIT, UID, GID, CWD };
     static const struct option options[] = {
         {"init", required_argument, NULL, INIT},     {"cpus", required_argument, NULL, CPUS},
         {"memory", required_argument, NULL, MEMORY}, {"dax-window", required_argument, NULL, DAX},
         {"ro", required_argument, NULL, RO},         {"rw", required_argument, NULL, RW},
         {"status", required_argument, NULL, STATUS}, {"exit", required_argument, NULL, EXIT},
-        {"cwd", required_argument, NULL, CWD},
+        {"cwd", required_argument, NULL, CWD},       {"rw-allow", required_argument, NULL, RW_ALLOW},
         {"uid", required_argument, NULL, UID},       {"gid", required_argument, NULL, GID},
         {NULL, 0, NULL, 0},
     };
@@ -165,19 +171,20 @@ int main(int argc, char *argv[])
         case DAX: ok = parse_long(optarg, 0, INT64_MAX, &dax_window); break;
         case UID: ok = parse_long(optarg, 0, UINT32_MAX - 1, &uid); break;
         case GID: ok = parse_long(optarg, 0, UINT32_MAX - 1, &gid); break;
-        case RO: {
+        case RO:
+        case RW_ALLOW: {
             char *colon = strrchr(optarg, ':');
             ok = nshares < MAX_SHARES && colon != NULL && optarg[0] == '/';
             if (ok) {
                 *colon = '\0';
-                shares[nshares++] = (struct share){.dir = optarg, .allowlist = colon + 1};
+                shares[nshares++] = (struct share){.dir = optarg, .allowlist = colon + 1, .writable = c == RW_ALLOW};
             }
             break;
         }
         case RW:
             ok = nshares < MAX_SHARES && optarg[0] == '/';
             if (ok)
-                shares[nshares++] = (struct share){.dir = optarg, .allowlist = NULL};
+                shares[nshares++] = (struct share){.dir = optarg, .allowlist = NULL, .writable = true};
             break;
         default: ok = false; break;
         }
@@ -215,7 +222,7 @@ int main(int argc, char *argv[])
     size_t mounts_len = 0, args_len = 0;
     FILE *m = open_memstream(&mounts, &mounts_len);
     for (int i = 0; i < nshares; i++)
-        fprintf(m, "s%d %s %s\n", i, shares[i].allowlist ? "ro" : "rw", shares[i].dir);
+        fprintf(m, "s%d %s %s\n", i, shares[i].writable ? "rw" : "ro", shares[i].dir);
     fclose(m);
     FILE *a = open_memstream(&args, &args_len);
     for (int i = optind; i < argc; i++)
@@ -265,7 +272,7 @@ int main(int argc, char *argv[])
     for (int i = 0; i < nshares; i++) {
         char tag[16];
         snprintf(tag, sizeof tag, "s%d", i);
-        if (shares[i].allowlist) {
+        if (!shares[i].writable) {
             /* Store paths never change, so the guest's cache of them never goes
              * stale: Always. Auto drops a DAX mapping in use on open, and the
              * guest takes a SIGBUS (smol-machines/smolvm#1741). */
@@ -276,6 +283,9 @@ int main(int argc, char *argv[])
             krun_mmio_device_manager_add(devices, fs);
         } else {
             CHECK(KrunFsDevice fs = krun_fs_device_new(KRUN_STR(tag), KRUN_STR(shares[i].dir), &err));
+            if (shares[i].allowlist) {
+                CHECK(krun_fs_device_set_allowlist_file(fs, KRUN_STR(shares[i].allowlist), &err));
+            }
             krun_mmio_device_manager_add(devices, fs);
         }
     }
