@@ -48,6 +48,7 @@ from .constants import FEATURE_REALISATION_WITH_PATH as FEATURE_REALISATION_WITH
 from .constants import FEATURE_SUBMIT_OUTPUT as FEATURE_SUBMIT_OUTPUT
 from .constants import MINIMUM_REMOTE_PROTOCOL as MINIMUM_REMOTE_PROTOCOL
 from .constants import PROTOCOL_VERSION as PROTOCOL_VERSION
+from .constants import PYNIXD_FEATURES as PYNIXD_FEATURES
 from .constants import STANDARD_FEATURES as STANDARD_FEATURES
 from .constants import STDERR_ERROR as STDERR_ERROR
 from .constants import STDERR_LAST as STDERR_LAST

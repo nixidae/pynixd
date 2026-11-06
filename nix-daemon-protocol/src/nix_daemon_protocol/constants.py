@@ -95,6 +95,9 @@ FEATURE_PYNIXD_BUILD_RESOURCES: Final[str] = "pynixd-build-resources"
 pynixd's own feature, not Nix's, so it is not in `STANDARD_FEATURES`. Two pynixd peers name it.
 """
 
+PYNIXD_FEATURES: Final[frozenset[str]] = frozenset({FEATURE_PYNIXD_BUILD_RESOURCES})
+"""pynixd's own features that this package has a codec for. A pynixd names them in both directions, and Nix never does."""
+
 STANDARD_FEATURES: Final[frozenset[str]] = frozenset(
     {
         FEATURE_REALISATION_WITH_PATH,

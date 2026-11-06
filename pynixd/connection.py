@@ -453,7 +453,10 @@ class Connection:
         # Feature negotiation (1.38+) — before CPU/reserveSpace
         if self.version >= wire.FEATURE_EXCHANGE_PROTOCOL:
             self.w.write_string_set(
-                get_extension_features() | set(wire.SUPPORTED_STANDARD_FEATURES) | {DELEGATION_FEATURE}
+                get_extension_features()
+                | set(wire.SUPPORTED_STANDARD_FEATURES)
+                | set(wire.PYNIXD_FEATURES)
+                | {DELEGATION_FEATURE}
             )
             await w.drain()
             self.features = await self.r.read_string_set()
@@ -462,7 +465,9 @@ class Connection:
             # reads, and the `feature_matrix:` entries under it are data.
             # `standard_features` is the intersection that Nix computes, and
             # only that answers what a codec may send.
-            self.standard_features = wire.negotiate_features(self.features, wire.SUPPORTED_STANDARD_FEATURES)
+            self.standard_features = wire.negotiate_features(
+                self.features, wire.SUPPORTED_STANDARD_FEATURES | wire.PYNIXD_FEATURES
+            )
             log.debug(
                 "daemon_features",
                 server_features=self.features,

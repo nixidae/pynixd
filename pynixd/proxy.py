@@ -333,9 +333,12 @@ class DaemonProxy:
             honourable |= set(store.features)
         return frozenset(honourable & set(wire.SUPPORTED_STANDARD_FEATURES))
 
+    pynixd_features: frozenset[str] = wire.PYNIXD_FEATURES
+    """pynixd's own features: this proxy writes their shapes itself, whatever its backends read."""
+
     def server_features(self, honourable: frozenset[str]) -> set[str]:
         """The features this session names in the handshake; *honourable* is `honourable_features()`."""
-        our_features = get_extension_features() | set(honourable)
+        our_features = get_extension_features() | set(honourable) | set(self.pynixd_features)
         # Features the proxy honours itself join here rather than in
         # `honourable_features`: that answers what any buildable store
         # reads, and op 49 never reaches one -- it writes session roots
@@ -391,7 +394,7 @@ class DaemonProxy:
             # when pynixd names it back, which is `intersectFeatures` at
             # `worker-protocol-connection.cc:148`. Issue #14.
             honourable = self.honourable_features()
-            self.standard_features = wire.negotiate_features(client_features, honourable)
+            self.standard_features = wire.negotiate_features(client_features, honourable | self.pynixd_features)
             # `ClientConn.send` writes a log message straight to the client,
             # so it needs the set of that client and not of a backend.
             self.client.standard_features = self.standard_features

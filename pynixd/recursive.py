@@ -137,6 +137,9 @@ class RestrictedProxy(DaemonProxy):
         self.restriction = restriction
         self._adding: list[str] | None = None
 
+    pynixd_features = frozenset()
+    """A builder is no pynixd peer."""
+
     def honourable_features(self) -> frozenset[str]:
         """`builderRpcV0` names its own features (`daemon.cc:1170`); recursive mode names those of the stores."""
         if self.restriction.submitting:
