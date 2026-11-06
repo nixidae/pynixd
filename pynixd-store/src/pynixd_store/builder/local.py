@@ -59,6 +59,7 @@ from .outputs import (
 )
 from .restriction import SOCKET_NAME, RestrictionContext
 from .spec import BuildenvSpec, ChildSpec, FetchSpec
+from .vm import BuildVm, returncode as vm_returncode, status as vm_status, unshared as vm_unshared
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -288,6 +289,17 @@ class _BuilderFailed:
     reason: str
 
 
+@dataclass(frozen=True)
+class _Guest:
+    """A build that runs in a microVM, and the build store paths it sees."""
+
+    vm: BuildVm
+    real_store_dir: Path
+    visible: frozenset[str]
+    sources: tuple[str, ...]
+    """The `sandbox-paths` sources the helper binds."""
+
+
 @dataclass
 class _Paths:
     top: Path
@@ -451,6 +463,7 @@ async def build(
     check: bool = False,
     repair: bool = False,
     recursive: RecursiveServer | None = None,
+    vm: BuildVm | None = None,
 ) -> LocalBuildResult:
     """Build *drv*, whose inputs are valid, and register its outputs. `unsupported(drv)` must be `None`.
 
@@ -460,6 +473,7 @@ async def build(
     compares what it makes with it and registers nothing new. With *repair*, an output is valid only when
     its contents match its registered hash (`derivation-building-goal.cc:1334`); the build replaces the rest.
     *recursive* serves the builder of a `recursive-nix` or `builder-rpc-v0` derivation; it must be given for one.
+    With *vm*, a sandboxed build with no builder socket runs in a microVM, and the helper inside it.
     """
     layout = engine.layout
     store_dir = str(layout.store_dir)
@@ -571,7 +585,19 @@ async def build(
                 spec["env"]["NIX_REMOTE"] = f"unix://{SANDBOX_BUILD_DIR}/{SOCKET_NAME}"
                 listener = await anyio.to_thread.run_sync(_listen, paths.tmp / SOCKET_NAME)
                 await stack.enter_async_context(recursive(listener, restriction))
-            failure = await _run(paths, spec, settings, drv_path, keep, control)
+            guest: _Guest | None = None
+            if vm is not None and sandboxed and control is None:
+                # The guest has its own `/dev` and `/proc`.
+                sources = tuple(
+                    p.source for p in settings.sandbox_paths if not p.source.startswith(("/dev/", "/proc/"))
+                )
+                if (missing := vm_unshared(sources, layout.real_store_dir)) is not None:
+                    return LocalBuildResult(
+                        BuildResultStatus.MISC_FAILURE,
+                        f"sandbox-paths names '{magenta(missing)}', which the build VM cannot share",
+                    )
+                guest = _Guest(vm, layout.real_store_dir, frozenset(inputs | sandbox_closure), sources)
+            failure = await _run(paths, spec, settings, drv_path, keep, control, guest)
         if restriction is not None:
             # The paths the builder added may be referenced (`derivation-builder.cc:1434`).
             inputs |= restriction.added
@@ -737,17 +763,32 @@ async def _run(
     drv_path: str,
     on_log: Callable[[bytes], Awaitable[None]],
     control: socket.socket | None = None,
+    guest: _Guest | None = None,
 ) -> BuildFailure | _BuilderFailed | None:
     """Run the helper on a pseudoterminal, as `startBuild` does, and wait under the two timeouts.
 
     *control* is the helper's end of the socket it binds added paths on; it closes here once the helper has it.
+    With *guest*, the helper runs in a microVM, which reports through files in the top directory.
     """
     spec_file = paths.top / "spec.json"
     spec_file.write_text(json.dumps(spec))
     master, slave = os.openpty()
-    status_read, status_write = os.pipe()
-    argv = [sys.executable, "-m", "pynixd_store.builder.child", str(spec_file), str(status_write)]
-    fds = [status_write]
+    helper = [sys.executable, "-m", "pynixd_store.builder.child", str(spec_file)]
+    if guest is not None:
+        status_read = status_write = -1
+        argv = guest.vm.argv(
+            top=paths.top,
+            chroot_parent=paths.chroot_parent,
+            real_store_dir=guest.real_store_dir,
+            visible=guest.visible,
+            sources=guest.sources,
+            helper=[*helper, "3"],
+        )
+        fds: list[int] = []
+    else:
+        status_read, status_write = os.pipe()
+        argv = [*helper, str(status_write)]
+        fds = [status_write]
     if control is not None:
         argv.append(str(control.fileno()))
         fds.append(control.fileno())
@@ -755,7 +796,8 @@ async def _run(
         process = await anyio.open_process(argv, stdin=None, stdout=slave, stderr=slave, pass_fds=fds)
     finally:
         os.close(slave)
-        os.close(status_write)
+        if status_write >= 0:
+            os.close(status_write)
         if control is not None:
             control.close()
     timed_out: str | None = None
@@ -786,13 +828,28 @@ async def _run(
                         process.kill()
             await process.wait()
             os.close(master)
-    with os.fdopen(status_read, "rb") as status_file:
-        setup_error = status_file.read().decode(errors="surrogateescape")
+    if guest is not None:
+        setup_error = vm_status(paths.top)
+    else:
+        with os.fdopen(status_read, "rb") as status_file:
+            setup_error = status_file.read().decode(errors="surrogateescape")
     if timed_out is not None:
         return BuildFailure(BuildResultStatus.TIMED_OUT, f"building '{magenta(drv_path)}' {timed_out}")
     if setup_error:
         return BuildFailure(BuildResultStatus.MISC_FAILURE, f"while setting up the build environment: {setup_error}")
-    code = process.returncode
+    if guest is not None:
+        code = vm_returncode(paths.top)
+        if code is None:
+            return BuildFailure(
+                BuildResultStatus.MISC_FAILURE,
+                f"the build VM of '{magenta(drv_path)}' stopped before its builder ended "
+                f"(pynixd-krun exited with {process.returncode})",
+            )
+        return _builder_ended(code)
+    return _builder_ended(process.returncode)
+
+
+def _builder_ended(code: int | None) -> _BuilderFailed | None:
     if code is not None and code < 0:
         return _BuilderFailed(f"failed due to signal {-code} ({signal.strsignal(-code)})")
     if code:

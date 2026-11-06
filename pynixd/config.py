@@ -417,6 +417,21 @@ class StoreSpecBase(BaseModel):
         raise NotImplementedError(f"{type(self).__name__} must implement to_store()")
 
 
+class BuildVmSpec(BaseModel):
+    """A sandboxed build in a libkrun microVM, around the namespace helper (nixidae/nixidae#1186).
+
+    The guest sees only the build's input closure, through a read-only DAX share, so it keeps no copy of the
+    store in its own memory. A fixed-output build, and one with a builder socket (`recursive-nix`,
+    `builder-rpc-v0`), stays on the namespace helper alone.
+    """
+
+    memory_mib: int = Field(default=2048, gt=0)
+    """The guest's memory. Freed pages go back to the host (free page reporting)."""
+    cpus: int = Field(default=2, gt=0, le=255)
+    dax_window_mib: int = Field(default=4096, ge=0)
+    """The address space the guest maps the store through. It costs no host memory."""
+
+
 class LocalSocketStoreSpec(StoreSpecBase):
     """A local Nix daemon accessed via Unix domain socket.
 
@@ -501,6 +516,8 @@ class LocalSocketStoreSpec(StoreSpecBase):
     reaping a dead process's temporary roots file) leaves that to the
     daemon. The test suites turn it on; a deployment turns it on by hand.
     """
+    build_vm: BuildVmSpec | None = None
+    """Run pynixd's sandboxed builds in a microVM; `None` runs them in the namespace helper alone."""
 
     @model_validator(mode="after")
     def _check_the_op_routes(self) -> LocalSocketStoreSpec:

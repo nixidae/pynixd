@@ -53,11 +53,11 @@ from pynixd.config import HTTPBinaryCacheSpec
 #: 757 with the local builder: the eight `pynixd_store.builder` modules and
 #: `pynixd.activity`. 758 with `pynixd_store.builder.jsonlog`. 761 with recursive Nix:
 #: `pynixd.recursive` and `pynixd_store.builder.restriction`. 764 with `builder-rpc-v0`: the codecs of ops 1000
-#: and 1001, and `nix_daemon_protocol.single_derived_path`.
+#: and 1001, and `nix_daemon_protocol.single_derived_path`. 765 with the build VM: `pynixd_store.builder.vm`.
 #: The headroom is small on purpose. A legitimate new dependency raises this
 #: number in the commit that adds it, and a reader sees the cost. Raise it with
 #: a measurement in the commit message, and never to make a red run green.
-MODULE_BUDGET = 764
+MODULE_BUDGET = 765
 
 #: The libraries that only an SSH or an HTTP configuration may load.
 #:

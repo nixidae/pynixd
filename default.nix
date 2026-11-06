@@ -29,7 +29,9 @@ let
     A venv, not `buildPythonApplication`: pynixd starts its sandbox helper as
     `sys.executable -m pynixd_store.builder.child`, and only a venv's
     interpreter finds pynixd's packages with no PYTHONPATH (#1046). The
-    wrapper carries `PYNIXD_AGENTS` (`pynixd/agent.py`, issue #98).
+    wrapper carries `PYNIXD_AGENTS` (`pynixd/agent.py`, issue #98), and on
+    Linux the build VM (`build_vm`, #1186): its launcher, its init, and the
+    venv's closure, which the guest's allowlist shows to the helper.
   */
   package =
     let
@@ -39,6 +41,18 @@ let
         executables = [ "pynixd" ];
       };
       agents.${pkgs.stdenv.hostPlatform.system} = lib.getExe agent;
+      setDefault = name: value: [
+        "--set-default"
+        name
+        value
+      ];
+      wrapperArgs =
+        setDefault "PYNIXD_AGENTS" (builtins.toJSON agents)
+        ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux (
+          setDefault "PYNIXD_KRUN" (lib.getExe krun)
+          ++ setDefault "PYNIXD_KRUN_INIT" "${krun.init}/bin/pynixd-krun-init"
+          ++ setDefault "PYNIXD_KRUN_CLOSURE" "${pkgs.closureInfo { rootPaths = [ venv ]; }}/store-paths"
+        );
     in
     pkgs.runCommand "pynixd-${library.version}"
       {
@@ -50,8 +64,7 @@ let
         };
       }
       ''
-        makeWrapper ${lib.getExe venv} $out/bin/pynixd \
-          --set-default PYNIXD_AGENTS ${lib.escapeShellArg (builtins.toJSON agents)}
+        makeWrapper ${lib.getExe venv} $out/bin/pynixd ${lib.escapeShellArgs wrapperArgs}
       '';
   library = pkgs.python3Packages.callPackage ./nix/pynixd.nix {
     pythonBuilder = pkgs.python3Packages.buildPythonPackage;

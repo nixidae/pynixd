@@ -20,6 +20,7 @@ from nix_daemon_protocol.signature import Signature
 from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
 from pynixd_store.builder import local as local_builder
 from pynixd_store.builder.settings import BuildSettings
+from pynixd_store.builder.vm import BuildVm
 from pynixd_store.engine import StoreEngine
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.nix_config import nix_environment, read_nix_config, read_nix_version
@@ -279,6 +280,15 @@ class LocalDBStore(Store):
         #: What a recursive-nix build's builder talks to; the instance sets it at start, and without it the daemon
         #: builds those.
         self.recursive_server: RecursiveServer | None = None
+        self.build_vm = (
+            BuildVm.from_environment(
+                memory_mib=spec.build_vm.memory_mib,
+                cpus=spec.build_vm.cpus,
+                dax_window_mib=spec.build_vm.dax_window_mib,
+            )
+            if spec.build_vm is not None
+            else None
+        )
         self.configured_routes = {_OP_CODES[name]: route for name, route in spec.op_routes.items()}
         for op, route in self.configured_routes.items():
             if route is OpRoute.daemon:
@@ -768,6 +778,7 @@ class LocalDBStore(Store):
                 check=checking,
                 repair=repairing,
                 recursive=self.recursive_server,
+                vm=self.build_vm,
             )
         finally:
             with anyio.CancelScope(shield=True):
