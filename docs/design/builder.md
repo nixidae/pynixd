@@ -119,8 +119,21 @@ external dependency. It is a separate Python process, single-threaded, that
 does what Nix's `startChild` and `enterChroot` do and then `execve`s the
 builder.
 
-Later, after the basics (User, 2026-11-04): a libkrun builder, a second
-implementation of `Sandbox` that runs the build in a microVM, and per-build
-resource reporting that is finer than Nix's `cpuUser` and `cpuSystem`. So the
-helper takes its whole job from one file that pynixd writes, as Nix's
+The helper takes its whole job from one file that pynixd writes, as Nix's
 `build.json` does, and nothing in the store side assumes namespaces.
+
+## The build VM
+
+`build_vm` on a local-socket store runs the same helper in a libkrun
+microVM (nixidae/nixidae#1186): `pynixd/nix/krun` holds the launcher and
+the guest's init, and `pynixd_store/builder/vm.py` the command line. Each
+share mounts at its host path, so the spec needs no translation. Each store
+is a read-only DAX share with an allowlist: the build store shows the input
+closure, and the host's store the closure of the package's venv, whose
+interpreter runs the helper. The guest's page cache keeps no copy of either.
+
+A fixed-output build stays on the namespace helper, by User's choice
+(2026-11-06), and so does a build with a builder socket, until the socket
+reaches the guest over vsock. A `sandbox-paths` source outside both stores
+fails the build rather than lose its bind. Still to come: per-build
+resource reporting finer than Nix's `cpuUser` and `cpuSystem`.
