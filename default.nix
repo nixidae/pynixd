@@ -30,29 +30,37 @@ let
     `sys.executable -m pynixd_store.builder.child`, and only a venv's
     interpreter finds pynixd's packages with no PYTHONPATH (#1046). The
     wrapper carries `PYNIXD_AGENTS` (`pynixd/agent.py`, issue #98), and on
-    Linux the build VM (`build_vm`, #1186): its launcher, its init, and the
-    venv's closure, which the guest's allowlist shows to the helper.
+    Linux `krunVariables`.
   */
+  venv = nixvenv {
+    python = pkgs.python3;
+    packages = _: [ library ];
+    executables = [ "pynixd" ];
+  };
+
+  /*
+    What the build VM (`build_vm`, #1186) runs: its launcher and its init,
+    and the helper inside the guest, which is this venv's interpreter. The
+    guest's allowlist shows the helper the venv's closure and nothing else
+    of the host's store.
+  */
+  krunVariables = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+    PYNIXD_KRUN = lib.getExe krun;
+    PYNIXD_KRUN_INIT = "${krun.init}/bin/pynixd-krun-init";
+    PYNIXD_KRUN_PYTHON = "${venv}/lib/venv/bin/python";
+    PYNIXD_KRUN_CLOSURE = "${pkgs.closureInfo { rootPaths = [ venv ]; }}/store-paths";
+  };
+
   package =
     let
-      venv = nixvenv {
-        python = pkgs.python3;
-        packages = _: [ library ];
-        executables = [ "pynixd" ];
-      };
       agents.${pkgs.stdenv.hostPlatform.system} = lib.getExe agent;
-      setDefault = name: value: [
-        "--set-default"
-        name
-        value
-      ];
-      wrapperArgs =
-        setDefault "PYNIXD_AGENTS" (builtins.toJSON agents)
-        ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux (
-          setDefault "PYNIXD_KRUN" (lib.getExe krun)
-          ++ setDefault "PYNIXD_KRUN_INIT" "${krun.init}/bin/pynixd-krun-init"
-          ++ setDefault "PYNIXD_KRUN_CLOSURE" "${pkgs.closureInfo { rootPaths = [ venv ]; }}/store-paths"
-        );
+      wrapperArgs = lib.concatLists (
+        lib.mapAttrsToList (name: value: [
+          "--set-default"
+          name
+          value
+        ]) ({ PYNIXD_AGENTS = builtins.toJSON agents; } // krunVariables)
+      );
     in
     pkgs.runCommand "pynixd-${library.version}"
       {
@@ -500,7 +508,7 @@ let
         pynixd-lib = library;
         src = lib.cleanSource ./.;
         inherit vivariumLib;
-        inherit agent;
+        inherit agent krunVariables;
         devEnv = guestEnv;
         nix = defaultNix;
         nixGit = pkgs.nixVersions.git;

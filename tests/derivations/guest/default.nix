@@ -25,6 +25,8 @@
   nix,
   # Nix's master branch, as `NIX_GIT_BIN`: only `builder-rpc-v0`'s parity test runs it.
   nixGit,
+  # The build VM's launcher and helper, which `tests/functional/test_build_vm.py` runs.
+  krunVariables,
 }:
 
 let
@@ -168,14 +170,18 @@ vivariumLib.mkTest (
 
     # One guest per suite, named after it, so events.jsonl says
     # `machine=unit` and a suite's files land in artifacts/unit/.
-    nodes = lib.genAttrs (lib.attrNames suites) (_: {
+    nodes = lib.genAttrs (lib.attrNames suites) (name: {
       vivarium = {
         # `tests/unit` peaks well above the default 128M, and an agent that
         # is OOM-killed partway through looks exactly like a hang.
         memory = "3072M";
         # The suites make stores of their own under /tmp, on the root disk.
         diskSize = 8192;
+        # `/dev/kvm` for the build VM's tests. UML has none to give.
+        nestedVirtualization = name == "functional" && config.resolved.backend.value != "uml";
       };
+
+      environment.variables = krunVariables;
 
       environment.systemPackages = [
         pytestEnv

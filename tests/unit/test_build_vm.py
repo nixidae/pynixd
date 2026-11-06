@@ -19,6 +19,7 @@ def _vm() -> BuildVm:
     return BuildVm(
         launcher=Path("/nix/store/dddd-pynixd-krun/bin/pynixd-krun"),
         init=Path("/nix/store/eeee-init/bin/pynixd-krun-init"),
+        python=Path(f"{HELPER}/bin/python"),
         helper_closure=frozenset({HELPER}),
         memory_mib=512,
         cpus=1,
@@ -33,7 +34,7 @@ def _argv(tmp_path: Path, real_store: Path, sources: tuple[str, ...] = ()) -> li
         real_store_dir=real_store,
         visible=[INPUT],
         sources=sources,
-        helper=["python", "-m", "child", "spec.json", "3"],
+        spec_file=tmp_path / "top/spec.json",
     )
 
 
@@ -60,7 +61,13 @@ def test_a_relocated_store_and_the_host_store_each_show_their_own_paths(tmp_path
         f"--rw={real / 'ffff-x.drv.chroot'}",
         f"--rw={tmp_path / 'top'}",
     ]
-    assert argv[argv.index("--") + 1 :] == ["python", "-m", "child", "spec.json", "3"]
+    assert argv[argv.index("--") + 1 :] == [
+        f"{HELPER}/bin/python",
+        "-m",
+        "pynixd_store.builder.child",
+        str(tmp_path / "top/spec.json"),
+        "3",
+    ]
 
 
 def test_the_host_store_is_one_share_with_every_path(tmp_path: Path) -> None:

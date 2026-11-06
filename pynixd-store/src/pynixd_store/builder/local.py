@@ -773,7 +773,6 @@ async def _run(
     spec_file = paths.top / "spec.json"
     spec_file.write_text(json.dumps(spec))
     master, slave = os.openpty()
-    helper = [sys.executable, "-m", "pynixd_store.builder.child", str(spec_file)]
     if guest is not None:
         status_read = status_write = -1
         argv = guest.vm.argv(
@@ -782,12 +781,12 @@ async def _run(
             real_store_dir=guest.real_store_dir,
             visible=guest.visible,
             sources=guest.sources,
-            helper=[*helper, "3"],
+            spec_file=spec_file,
         )
         fds: list[int] = []
     else:
         status_read, status_write = os.pipe()
-        argv = [*helper, str(status_write)]
+        argv = [sys.executable, "-m", "pynixd_store.builder.child", str(spec_file), str(status_write)]
         fds = [status_write]
     if control is not None:
         argv.append(str(control.fileno()))

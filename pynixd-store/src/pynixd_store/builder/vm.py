@@ -10,7 +10,7 @@ where the outputs land for `collect_outputs`.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +24,8 @@ EXIT_NAME = "vm-exit"
 class BuildVm:
     launcher: Path
     init: Path
+    python: Path
+    """The interpreter that runs the helper in the guest: a store path, unlike an editable `sys.executable`."""
     helper_closure: frozenset[str]
     """The host store paths the helper runs from: its interpreter and every module it imports."""
     memory_mib: int
@@ -32,17 +34,17 @@ class BuildVm:
 
     @classmethod
     def from_environment(cls, *, memory_mib: int, cpus: int, dax_window_mib: int) -> BuildVm:
-        """The launcher, the init and the helper's closure that the package names in `PYNIXD_KRUN`,
-        `PYNIXD_KRUN_INIT` and `PYNIXD_KRUN_CLOSURE` (a file of store paths, one per line)."""
-        missing = [
-            name for name in ("PYNIXD_KRUN", "PYNIXD_KRUN_INIT", "PYNIXD_KRUN_CLOSURE") if name not in os.environ
-        ]
+        """What the package names: the launcher (`PYNIXD_KRUN`), the init (`PYNIXD_KRUN_INIT`), the helper's
+        interpreter (`PYNIXD_KRUN_PYTHON`) and its closure (`PYNIXD_KRUN_CLOSURE`, a file of store paths)."""
+        names = ("PYNIXD_KRUN", "PYNIXD_KRUN_INIT", "PYNIXD_KRUN_PYTHON", "PYNIXD_KRUN_CLOSURE")
+        missing = [name for name in names if name not in os.environ]
         if missing:
             raise ValueError(f"build_vm needs {', '.join(missing)} in the environment; the pynixd package sets them")
         closure = Path(os.environ["PYNIXD_KRUN_CLOSURE"]).read_text().split()
         return cls(
             launcher=Path(os.environ["PYNIXD_KRUN"]),
             init=Path(os.environ["PYNIXD_KRUN_INIT"]),
+            python=Path(os.environ["PYNIXD_KRUN_PYTHON"]),
             helper_closure=frozenset(closure),
             memory_mib=memory_mib,
             cpus=cpus,
@@ -57,13 +59,13 @@ class BuildVm:
         real_store_dir: Path,
         visible: Iterable[str],
         sources: Iterable[str],
-        helper: Sequence[str],
+        spec_file: Path,
     ) -> list[str]:
         """The launcher's command line, after it writes the allowlists into *top*.
 
         *visible* names the build store's paths the guest may see, as store paths. *sources* are the host paths
-        the helper binds (`sandbox-paths`), each inside one of the two stores (`unshared`). *helper* runs in the
-        guest with `top/vm-status` as its file descriptor 3.
+        the helper binds (`sandbox-paths`), each inside one of the two stores (`unshared`). The helper reads
+        *spec_file* and gets `top/vm-status` as its file descriptor 3.
         """
         build_store = {str(real_store_dir / path.rsplit("/", 1)[-1]) for path in visible}
         # The chroot is a mount point inside the build store's share, so that share must show it.
@@ -93,7 +95,11 @@ class BuildVm:
             f"--status={top / STATUS_NAME}",
             f"--exit={top / EXIT_NAME}",
             "--",
-            *helper,
+            str(self.python),
+            "-m",
+            "pynixd_store.builder.child",
+            str(spec_file),
+            "3",
         ]
         return argv
 
