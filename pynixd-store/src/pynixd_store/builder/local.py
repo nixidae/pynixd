@@ -484,7 +484,7 @@ async def build(
     compares what it makes with it and registers nothing new. With *repair*, an output is valid only when
     its contents match its registered hash (`derivation-building-goal.cc:1334`); the build replaces the rest.
     *recursive* serves the builder of a `recursive-nix` or `builder-rpc-v0` derivation; it must be given for one.
-    With *vm*, a sandboxed build with no builder socket runs in a microVM, and the helper inside it.
+    With *vm*, a sandboxed build for the store's own system runs in a microVM, and the helper inside it.
     """
     layout = engine.layout
     store_dir = str(layout.store_dir)
@@ -584,7 +584,8 @@ async def build(
         control: socket.socket | None = None
         restriction: RestrictionContext | None = None
         submitting = BUILDER_RPC in drv.required_system_features
-        in_vm = vm is not None and sandboxed
+        # The guest kernel has no binfmt handler and no IA32 emulation: another system builds on the host's kernel.
+        in_vm = vm is not None and sandboxed and drv.platform in {settings.system, "builtin"}
         async with contextlib.AsyncExitStack() as stack:
             if submitting or "recursive-nix" in drv.required_system_features:
                 if recursive is None:

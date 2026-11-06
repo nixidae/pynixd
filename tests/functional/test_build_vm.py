@@ -95,15 +95,23 @@ derivation {
 
 @contextlib.asynccontextmanager
 async def _serve(
-    tmp_path: Path, name: str, vm: BuildVmSpec | None, *, experimental_features: tuple[str, ...] = (), **spec_args: Any
+    tmp_path: Path,
+    name: str,
+    vm: BuildVmSpec | None,
+    *,
+    experimental_features: tuple[str, ...] = (),
+    extra_platforms: tuple[str, ...] = (),
+    **spec_args: Any,
 ) -> AsyncIterator[str]:
     root = tmp_path / name / "store"
     socket = tmp_path / f"{name}.sock"
+    nix_config = for_test_store(substituters=(), experimental_features=experimental_features)
+    nix_config.extra_platforms = list(extra_platforms) or None
     spec = make_test_spec(
         store_id="local",
         store_path=root,
         no_probe=True,
-        nix_config=for_test_store(substituters=(), experimental_features=experimental_features),
+        nix_config=nix_config,
         op_routes={"BuildDerivation": OpRoute.pynixd},
         build_vm=vm,
         **spec_args,
@@ -201,6 +209,19 @@ async def test_an_extra_sandbox_file_reaches_the_builder_read_write(tmp_path: Pa
 
     assert (tmp_path / "vm/store" / path.lstrip("/")).read_text() == "1\n"
     assert (etc / "counter").read_text() == "1\n2\n"
+
+
+async def test_a_build_for_another_system_runs_on_the_host_kernel(tmp_path: Path) -> None:
+    """The guest kernel has no binfmt handler, and emulation in a VM is slow: the namespaces take the build.
+
+    The builder is the host's own shell, so it starts on either kernel, and only the kernel tells them apart.
+    """
+    expr = KERNEL.replace("builtins.currentSystem", '"aarch64-linux"')
+    vm = BuildVmSpec(memory_mib=512, cpus=1)
+    async with _serve(tmp_path, "vm", vm, extra_platforms=("aarch64-linux",)) as url:
+        path, _log = await _build(url, expr)
+
+    assert (tmp_path / "vm/store" / path.lstrip("/")).read_text().strip() == os.uname().release
 
 
 async def test_a_recursive_nix_builder_in_the_vm_reads_what_it_adds_and_builds(tmp_path: Path) -> None:

@@ -133,7 +133,8 @@ closure, and the host's store the closure of the package's venv, whose
 interpreter runs the helper. The guest's page cache keeps no copy of either.
 
 A fixed-output build stays on the namespace helper, by User's choice
-(2026-11-06). A `recursive-nix` or `builder-rpc-v0` builder reaches the
+(2026-11-06). So does a build for a system other than the store's own: the
+guest kernel has no binfmt handler, and emulation in a VM is slow. A `recursive-nix` or `builder-rpc-v0` builder reaches the
 store's socket over vsock, with no TSI: the guest's init listens at the
 socket's place in the build directory and joins each connection to a host
 socket in the top directory. The helper's control socket comes the same way.
