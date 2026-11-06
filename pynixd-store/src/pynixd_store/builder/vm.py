@@ -24,6 +24,8 @@ HOST_STORE = Path("/nix/store")
 STATUS_NAME = "vm-status"
 EXIT_NAME = "vm-exit"
 DISK_NAME = "build.xfs"
+#: How long the guest caches a store lookup that finds nothing: the longest build is the bound that matters.
+NEGATIVE_TIMEOUT_MS = 24 * 3600 * 1000
 
 
 @dataclass(frozen=True)
@@ -126,6 +128,9 @@ class BuildVm:
             f"--cpus={self.cpus}",
             f"--memory={self.memory_mib}",
             f"--dax-window={self.dax_window_mib * 1024 * 1024}",
+            # A store share gains no name while the build runs: its allowlist is fixed before the guest
+            # starts, and a path another build adds is outside it.
+            f"--negative-timeout={NEGATIVE_TIMEOUT_MS}",
         ]
         shares: list[tuple[Path, str, list[str] | None]] = [
             *((root, "ro", sorted(paths)) for root, paths in ro.items()),

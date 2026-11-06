@@ -1,7 +1,7 @@
 /*
  * pynixd-krun: one build guest, in this process (nixidae/nixidae#1186).
  *
- *   pynixd-krun --init FILE --cpus N --memory MIB [--dax-window BYTES]
+ *   pynixd-krun --init FILE --cpus N --memory MIB [--dax-window BYTES] [--negative-timeout MS]
  *               [--ro DIR:ALLOWLIST]... [--rw DIR]... [--rw-allow DIR:ALLOWLIST]...
  *               [--disk IMAGE:DIR]... --cwd DIR --status PATH --exit PATH
  *               [--uid N --gid N] -- COMMAND [ARG]...
@@ -11,7 +11,9 @@
  * mounted at its host path, in the order given, so a path means the same on
  * both sides. A --ro share shows the guest only what its allowlist names, one
  * store path per line, and maps its files through a DAX window of
- * --dax-window bytes: the guest's page cache holds no copy of them. A
+ * --dax-window bytes: the guest's page cache holds no copy of them. The guest
+ * caches a lookup on it that finds nothing for --negative-timeout milliseconds
+ * (none by default): a share whose names never change while the guest runs. A
  * --rw-allow share is writable and shows only what its allowlist names; above
  * a listed path the guest can change nothing. It gives the guest one file of a
  * directory, which virtio-fs cannot share alone. A --disk is a raw XFS image
@@ -91,7 +93,7 @@ static bool parse_long(const char *text, long min, long max, long *out)
 
 static void usage(void)
 {
-    fprintf(stderr, "usage: pynixd-krun --init FILE --cpus N --memory MIB [--dax-window BYTES]\n"
+    fprintf(stderr, "usage: pynixd-krun --init FILE --cpus N --memory MIB [--dax-window BYTES] [--negative-timeout MS]\n"
                     "                   [--ro DIR:ALLOWLIST]... [--rw DIR]... [--rw-allow DIR:ALLOWLIST]...\n"
                     "                   [--disk IMAGE:DIR]... --cwd DIR --status PATH --exit PATH\n"
                     "                   [--uid N --gid N] -- COMMAND [ARG]...\n");
@@ -152,19 +154,19 @@ static int add_file(KrunFsOverlay overlay, const char *path, const char *data, s
 
 int main(int argc, char *argv[])
 {
-    enum { INIT = 256, CPUS, MEMORY, DAX, RO, RW, RW_ALLOW, DISK, STATUS, EXIT, UID, GID, CWD };
+    enum { INIT = 256, CPUS, MEMORY, DAX, RO, RW, RW_ALLOW, DISK, NEGATIVE, STATUS, EXIT, UID, GID, CWD };
     static const struct option options[] = {
         {"init", required_argument, NULL, INIT},     {"cpus", required_argument, NULL, CPUS},
         {"memory", required_argument, NULL, MEMORY}, {"dax-window", required_argument, NULL, DAX},
         {"ro", required_argument, NULL, RO},         {"rw", required_argument, NULL, RW},
         {"status", required_argument, NULL, STATUS}, {"exit", required_argument, NULL, EXIT},
         {"cwd", required_argument, NULL, CWD},       {"rw-allow", required_argument, NULL, RW_ALLOW},
-        {"disk", required_argument, NULL, DISK},
+        {"disk", required_argument, NULL, DISK},     {"negative-timeout", required_argument, NULL, NEGATIVE},
         {"uid", required_argument, NULL, UID},       {"gid", required_argument, NULL, GID},
         {NULL, 0, NULL, 0},
     };
     const char *init = NULL, *status = NULL, *exit_path = NULL, *cwd = NULL;
-    long cpus = 0, memory = 0, dax_window = 0, uid = (long)getuid(), gid = (long)getgid();
+    long cpus = 0, memory = 0, dax_window = 0, negative_timeout = 0, uid = (long)getuid(), gid = (long)getgid();
     struct share shares[MAX_SHARES];
     struct disk disks[MAX_DISKS];
     int nshares = 0, ndisks = 0, c;
@@ -179,6 +181,7 @@ int main(int argc, char *argv[])
         case CPUS: ok = parse_long(optarg, 1, 255, &cpus); break;
         case MEMORY: ok = parse_long(optarg, 1, UINT32_MAX, &memory); break;
         case DAX: ok = parse_long(optarg, 0, INT64_MAX, &dax_window); break;
+        case NEGATIVE: ok = parse_long(optarg, 0, INT64_MAX, &negative_timeout); break;
         case UID: ok = parse_long(optarg, 0, UINT32_MAX - 1, &uid); break;
         case GID: ok = parse_long(optarg, 0, UINT32_MAX - 1, &gid); break;
         case RO:
@@ -306,6 +309,7 @@ int main(int argc, char *argv[])
             krun_fs_device_set_dax_window_size(fs, (uint64_t)dax_window);
             CHECK(krun_fs_device_set_cache_policy(fs, KRUN_CACHE_POLICY_ALWAYS, &err));
             CHECK(krun_fs_device_set_allowlist_file(fs, KRUN_STR(shares[i].allowlist), &err));
+            CHECK(krun_fs_device_set_negative_timeout_ms(fs, (uint64_t)negative_timeout, &err));
             krun_mmio_device_manager_add(devices, fs);
         } else {
             CHECK(KrunFsDevice fs = krun_fs_device_new(KRUN_STR(tag), KRUN_STR(shares[i].dir), &err));

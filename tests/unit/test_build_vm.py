@@ -65,6 +65,7 @@ def test_a_relocated_store_and_the_host_store_each_show_their_own_paths(tmp_path
         f"--rw={real / 'ffff-x.drv.chroot'}",
     ], "the shallower path mounts first"
     assert f"--cwd={tmp_path / 'top'}" in argv
+    assert "--negative-timeout=86400000" in argv
     assert f"--disk={tmp_path / 'top/build.xfs'}:{tmp_path / 'top/build'}" in argv
     assert argv[argv.index("--") + 1 :] == [
         f"{HELPER}/bin/python",
