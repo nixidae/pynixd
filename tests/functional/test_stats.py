@@ -324,6 +324,28 @@ async def test_scheduler_local_fasttrack(tmp_path: Path) -> None:
         assert tiny_build.is_building
 
 
+async def test_expected_peak_memory_is_the_median_of_the_identity() -> None:
+    """The peak estimate is the median of the identity's measured `BUILT` builds. nixidae/nixidae#1187."""
+    path = STORE_PREFIX / "stats-peak-test"
+    rmtree_robust(path)
+    (path / "nix/var/nix/db").mkdir(parents=True)
+    with closing(sqlite3.connect(path / "nix/var/nix/db/db.sqlite")) as conn, conn:
+        conn.execute("CREATE TABLE ValidPaths (id INTEGER PRIMARY KEY, path TEXT UNIQUE)")
+    async with await LocalStoreDB.open(StoreLayout.chroot(path)) as db:
+        testpkg = identity_of(BasicDerivation(platform="x86_64-linux", builder="", env={"pname": "testpkg"}))
+        for peak in (500, 300, 400, None):
+            await db.record_build_observation(
+                testpkg, BuildObservation(store_id="a", status=0, build_ms=1, peak_memory_bytes=peak)
+            )
+        await db.record_build_observation(
+            testpkg, BuildObservation(store_id="a", status=BuildResultStatus.MISC_FAILURE, peak_memory_bytes=9000)
+        )
+
+        assert await db.expected_peak_memory(testpkg) == 400
+        other = identity_of(BasicDerivation(platform="x86_64-linux", builder="", env={"pname": "otherpkg"}))
+        assert await db.expected_peak_memory(other) is None
+
+
 async def test_expected_build_ms_is_the_median_of_the_identity(tmp_path: Path) -> None:
     """The estimate is the median of the identity's `BUILT` builds, then of its name.
 

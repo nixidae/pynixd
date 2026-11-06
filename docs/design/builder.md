@@ -142,6 +142,12 @@ build's observation, and a pynixd peer gets it in `BuildResult.resources`.
   In a cgroup the interpreter's pages stay charged to pynixd.
 - **A VM build** reports what the guest's helper measured with `wait4`.
 
+The scheduler expects a build to peak at the median peak memory of the
+derivation's recent builds. It leaves out each store whose available memory,
+less the expected peaks of the builds it runs, is below that figure. When no
+store has the room, the store with the most room goes first, and the
+placement trace says why.
+
 ## The build VM
 
 `build_vm` on a local-socket store runs the same helper in a libkrun

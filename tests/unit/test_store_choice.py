@@ -18,13 +18,14 @@ from pynixd.allocator import (
     RankedStore,
     TelemetryStoreRanker,
     explore_store,
+    fit_memory,
     pick_store,
     score_store,
 )
 from pynixd.build_queue import BuildQueue
 from pynixd.config import PlacementTraceSettings, StoreRankingSettings
 from pynixd.placement_trace import PlacementTrace
-from pynixd.psi import SystemHealth
+from pynixd.psi import MemInfo, SystemHealth
 from pynixd.scheduler import Scheduler
 from pynixd.serde import BasicDerivation, BuildDerivationRequest, BuildMode, StorePath
 from pynixd_store.build_stats import ExpectedBytes, StoreEstimate, StoreLink, slot_wait_seconds, transfer_seconds
@@ -622,6 +623,78 @@ async def test_a_retry_goes_to_a_store_the_build_has_not_failed_on() -> None:
     await Scheduler._assign_to_stores(cast("Any", scheduler), [queue.by_id[build_id]], {})  # noqa: SLF001 -- the assignment is the unit
 
     assert scheduler.assigned == [OTHER]
+
+
+GIB = 1024 * 1024 * 1024
+
+
+def _with_memory(store_id: StoreId, available: int | None) -> RankedStore:
+    """A candidate whose monitor reports *available* bytes, or no monitor at all."""
+    store = FakeStore(store_id)
+    if available is not None:
+        meminfo = MemInfo(mem_total=64 * GIB // 1024, mem_available=available // 1024)
+        store.monitor = cast("Any", SimpleNamespace(health=SimpleNamespace(meminfo=meminfo)))
+    return RankedStore(store_id, 0.0, cast("Any", store))
+
+
+class TestTheMemoryFit:
+    """A build's expected peak against each store's room. User's design, nixidae/nixidae#1187."""
+
+    def test_leaves_out_a_store_short_of_memory(self) -> None:
+        fit = fit_memory([_with_memory(REMOTE, 1 * GIB), _with_memory(OTHER, 8 * GIB)], 2 * GIB, {})
+
+        assert [c.store_id for c in fit.stores] == [OTHER]
+        assert fit.short == {REMOTE: "1024 MiB free for an expected peak of 2048 MiB"}
+        assert fit.reason is None
+
+    def test_counts_what_running_builds_reserve(self) -> None:
+        fit = fit_memory([_with_memory(REMOTE, 4 * GIB), _with_memory(OTHER, 8 * GIB)], 2 * GIB, {REMOTE: 3 * GIB})
+
+        assert [c.store_id for c in fit.stores] == [OTHER]
+
+    def test_an_unmeasured_store_fits(self) -> None:
+        fit = fit_memory([_with_memory(REMOTE, None), _with_memory(OTHER, 1 * GIB)], 2 * GIB, {})
+
+        assert [c.store_id for c in fit.stores] == [REMOTE]
+
+    def test_no_estimate_keeps_every_candidate(self) -> None:
+        ranked = [_with_memory(REMOTE, 1 * GIB), _with_memory(OTHER, 8 * GIB)]
+
+        assert fit_memory(ranked, None, {}).stores == ranked
+
+    def test_with_no_fit_the_most_room_goes_first(self) -> None:
+        """A build never waits on an estimate."""
+        fit = fit_memory([_with_memory(REMOTE, 1 * GIB), _with_memory(OTHER, 3 * GIB)], 4 * GIB, {})
+
+        assert [c.store_id for c in fit.stores] == [OTHER, REMOTE]
+        assert fit.short == {}
+        assert fit.reason == "no candidate has memory for an expected peak of 4096 MiB; the most room goes first"
+
+
+class MemoryScheduler(AssignScheduler):
+    """The ranker puts REMOTE first; each remote has 4 GiB available."""
+
+    def __init__(self, queue: BuildQueue) -> None:
+        super().__init__(queue)
+        ranked = [_with_memory(REMOTE, 4 * GIB), _with_memory(OTHER, 4 * GIB)]
+        self.allocator = SimpleNamespace(rank_stores=lambda *_a, **_k: list(ranked))
+
+
+@pytest.mark.anyio
+async def test_a_second_large_build_goes_where_memory_is_left() -> None:
+    """The first 3 GiB build reserves its peak on REMOTE, so the second leaves for OTHER."""
+    queue = BuildQueue()
+    first, _ = await queue.enqueue(_request(1))
+    second, _ = await queue.enqueue(_request(2))
+    for build_id in (first, second):
+        queue.by_id[build_id].expected_peak_bytes = 3 * GIB
+    scheduler = MemoryScheduler(queue)
+
+    await Scheduler._assign_to_stores(  # noqa: SLF001 -- the assignment is the unit
+        cast("Any", scheduler), [queue.by_id[first], queue.by_id[second]], {}
+    )
+
+    assert scheduler.assigned == [REMOTE, OTHER]
 
 
 class FixedRng:

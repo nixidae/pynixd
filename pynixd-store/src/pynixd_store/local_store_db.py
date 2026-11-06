@@ -275,6 +275,18 @@ WHERE name = ? AND system = ? AND status = 0 AND buildMs IS NOT NULL
 ORDER BY id DESC LIMIT ?
 """
 
+QUERY_PEAK_MEMORY_OF_SHAPE = f"""
+SELECT peakMemoryBytes FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = ? AND system = ? AND shape = ? AND status = 0 AND peakMemoryBytes IS NOT NULL
+ORDER BY id DESC LIMIT ?
+"""
+
+QUERY_PEAK_MEMORY_OF_NAME = f"""
+SELECT peakMemoryBytes FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = ? AND system = ? AND status = 0 AND peakMemoryBytes IS NOT NULL
+ORDER BY id DESC LIMIT ?
+"""
+
 LINK_ROWS = 50
 """A store's newest rows that its link rates read: recent enough to follow a
 change of network, many enough that one stalled transfer does not decide."""
@@ -1035,6 +1047,26 @@ class LocalStoreDB:
                     return int(statistics.median(int(row[0]) for row in rows))
         except aiosqlite.Error:
             log.debug("expected_build_ms_failed", name=identity.name, exc_info=True)
+        return None
+
+    async def expected_peak_memory(self, identity: DerivationIdentity) -> int | None:
+        """The median peak memory of the identity's recent `BUILT` builds, on any store, in bytes.
+
+        Falls back to the name and system under any shape, as `expected_build_ms` does.
+        """
+        if not self.active or not self.schema.usable:
+            return None
+        try:
+            for query, params in (
+                (QUERY_PEAK_MEMORY_OF_SHAPE, (identity.name, identity.system, identity.shape, OBSERVATIONS_KEPT)),
+                (QUERY_PEAK_MEMORY_OF_NAME, (identity.name, identity.system, OBSERVATIONS_KEPT)),
+            ):
+                async with self.execute(query, params) as cursor:
+                    rows = await cursor.fetchall()
+                if rows:
+                    return int(statistics.median(int(row[0]) for row in rows))
+        except aiosqlite.Error:
+            log.debug("expected_peak_memory_failed", name=identity.name, exc_info=True)
         return None
 
     async def expected_build_ms_on(

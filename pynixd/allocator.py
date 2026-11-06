@@ -13,7 +13,7 @@ from .config import StoreRankingSettings
 from .system_features import PYNIXD_HANDLED_FEATURES, effective_required_features
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Iterable, Iterator, Mapping
 
     from nix_daemon_protocol.ids import StoreId
     from pynixd_store.build_stats import StoreEstimate
@@ -314,6 +314,73 @@ def short_of_disk(store: DaemonStore, settings: StoreRankingSettings, now: float
         enough: bool = disk.free_bytes < settings.min_free_bytes
         return enough
     return now < store.disk_full_until
+
+
+MIB = 1024 * 1024
+
+
+def memory_room(store: DaemonStore, reserved_bytes: int) -> int | None:
+    """The store's available memory less what its running builds are expected to peak at; `None` when unmeasured."""
+    monitor = store.monitor
+    meminfo = monitor.health.meminfo if monitor is not None else None
+    if meminfo is None or not meminfo.mem_total:
+        return None
+    return meminfo.mem_available * 1024 - reserved_bytes
+
+
+def reserved_memory(builds: Iterable[QueuedBuild]) -> dict[StoreId, int]:
+    """The expected peak bytes of the running builds, summed per store."""
+    reserved: dict[StoreId, int] = {}
+    for build in builds:
+        if build.is_building and build.assigned_store_id is not None and build.expected_peak_bytes:
+            reserved[build.assigned_store_id] = reserved.get(build.assigned_store_id, 0) + build.expected_peak_bytes
+    return reserved
+
+
+@dataclass(frozen=True)
+class MemoryFit:
+    """The candidates with room for a build's expected peak memory, best first."""
+
+    stores: list[RankedStore]
+    short: dict[StoreId, str]
+    """The candidates left out, each with why."""
+    reason: str | None = None
+    """Set when no candidate fits and the most room decides instead."""
+
+
+def fit_memory(
+    ranked: list[RankedStore], expected_peak_bytes: int | None, reserved: Mapping[StoreId, int]
+) -> MemoryFit:
+    """Leave out each candidate whose room is below the build's expected peak.
+
+    A store with no memory figure fits: an unmeasured store is no reason to
+    hold a build back. When no candidate fits, every candidate stays, the
+    most room first, so a build never waits on an estimate. User's design,
+    nixidae/nixidae#1187.
+    """
+    if not expected_peak_bytes:
+        return MemoryFit(ranked, {})
+    room = {c.store_id: memory_room(c.store, reserved.get(c.store_id, 0)) for c in ranked}
+    fits = [c for c in ranked if (free := room[c.store_id]) is None or free >= expected_peak_bytes]
+    if fits:
+        return MemoryFit(
+            fits,
+            {
+                c.store_id: f"{_mib(room[c.store_id])} MiB free for an expected peak of {_mib(expected_peak_bytes)} MiB"
+                for c in ranked
+                if c not in fits
+            },
+        )
+    most = sorted(ranked, key=lambda c: room[c.store_id] or 0, reverse=True)
+    return MemoryFit(
+        most,
+        {},
+        f"no candidate has memory for an expected peak of {_mib(expected_peak_bytes)} MiB; the most room goes first",
+    )
+
+
+def _mib(count: int | None) -> int:
+    return (count or 0) // MIB
 
 
 def incapable_reason(store: DaemonStore, build: QueuedBuild, features: set[str]) -> str | None:

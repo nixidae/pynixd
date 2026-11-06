@@ -46,7 +46,9 @@ from .allocator import (
     RankedStores,
     TelemetryStoreRanker,
     explore_store,
+    fit_memory,
     pick_store,
+    reserved_memory,
 )
 from .build_queue import BuildQueue, QueuedBuild
 from .config import NoLocalJobs
@@ -201,6 +203,7 @@ class _Notes:
     ranked: list[RankedStore] = field(default_factory=list)
     excluded: list[ExcludedStore] = field(default_factory=list)
     roomy: set[StoreId] | None = None
+    short_of_memory: dict[StoreId, str] = field(default_factory=dict)
     chosen: StoreId | None = None
     prefer_local: bool = False
     kept_local: bool = False
@@ -360,8 +363,11 @@ class Scheduler:
         """Add a build to the queue and trigger the scheduler."""
         t0 = time.monotonic()
         hint = None
+        peak = None
         if isinstance(self.local_store, LocalDBStore):
-            hint = await self.local_store.db.expected_build_ms(identity_of(request.derivation))
+            identity = identity_of(request.derivation)
+            hint = await self.local_store.db.expected_build_ms(identity)
+            peak = await self.local_store.db.expected_peak_memory(identity)
         t_hint = time.monotonic()
 
         res = await self.queue.enqueue(
@@ -374,6 +380,9 @@ class Scheduler:
             options=options,
             delegated=delegated,
         )
+        queued = self.queue.by_id.get(res[0])
+        if queued is not None and queued.expected_peak_bytes is None:
+            queued.expected_peak_bytes = peak
         t_enqueue = time.monotonic()
         self.trigger()
 
@@ -540,13 +549,14 @@ class Scheduler:
         """
         waiting_slot: list[QueuedBuild] = []
         assigned_this_pass: dict[StoreId, int] = {}
+        reserved = reserved_memory(self.queue.by_id.values())
         self.held_by_pressure = set()
 
         for build in schedulable:
             # One build that raises fails alone. The pass ran on, and the next
             # pass met the same build first, so no build anywhere started.
             try:
-                if await self._assign_one(build, running_builds, assigned_this_pass):
+                if await self._assign_one(build, running_builds, assigned_this_pass, reserved):
                     waiting_slot.append(build)
             except Exception as e:
                 log.exception("build_assignment_crashed", build_id=build.build_id)
@@ -561,13 +571,14 @@ class Scheduler:
         build: QueuedBuild,
         running_builds: dict[StoreId, int],
         assigned_this_pass: dict[StoreId, int],
+        reserved: dict[StoreId, int],
     ) -> bool:
         """Start *build* on a store, or fail it; answer whether it waits for a slot."""
         if build.is_building:
             return False
         notes = _Notes()
         try:
-            return await self._place(build, running_builds, assigned_this_pass, notes)
+            return await self._place(build, running_builds, assigned_this_pass, reserved, notes)
         finally:
             if notes.outcome is not None:
                 self._trace_decision(build, notes, running_builds, assigned_this_pass)
@@ -577,6 +588,7 @@ class Scheduler:
         build: QueuedBuild,
         running_builds: dict[StoreId, int],
         assigned_this_pass: dict[StoreId, int],
+        reserved: dict[StoreId, int],
         notes: _Notes,
     ) -> bool:
         build_features = effective_required_features(build.request.derivation)
@@ -671,6 +683,9 @@ class Scheduler:
                 notes.end(Outcome.WAITING, "every candidate is at its build limit")
                 self.held_by_pressure.add(build.build_id)
                 return True
+            fit = fit_memory(roomy, build.expected_peak_bytes, reserved)
+            roomy = fit.stores
+            notes.short_of_memory = fit.short
             notes.local_slot_full = self._local_slot_is_full(build, running_builds, assigned_this_pass)
             rs = pick_store(
                 roomy,
@@ -713,7 +728,7 @@ class Scheduler:
             if explored is not None:
                 rs = explored
             notes.chosen = rs.store_id
-            notes.end(Outcome.ASSIGNED, "exploration" if explored is not None else None)
+            notes.end(Outcome.ASSIGNED, "exploration" if explored is not None else fit.reason)
             log.debug(
                 "build_assigned_to_store",
                 build_id=build.build_id,
@@ -726,6 +741,8 @@ class Scheduler:
             build.assigned_store_id = rs.store_id
             self._spawn_worker(build, rs.store)
             assigned_this_pass[rs.store_id] = assigned_this_pass.get(rs.store_id, 0) + 1
+            if build.expected_peak_bytes:
+                reserved[rs.store_id] = reserved.get(rs.store_id, 0) + build.expected_peak_bytes
         else:
             # All compatible stores are busy, or this build can't be placed
             all_compatible = [
@@ -788,7 +805,7 @@ class Scheduler:
                 rank=rank,
                 reason="preferLocalBuild keeps the local store a candidate"
                 if notes.kept_local and candidate.store_id == local_id
-                else None,
+                else notes.short_of_memory.get(candidate.store_id),
                 chosen=candidate.store_id == notes.chosen,
                 roomy=roomy,
                 failed_here=build.store_failures.get(candidate.store_id, 0),
