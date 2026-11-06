@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import functools
 import json
 import os
 import signal
@@ -59,7 +60,15 @@ from .outputs import (
 )
 from .restriction import SOCKET_NAME, RestrictionContext
 from .spec import BuildenvSpec, ChildSpec, FetchSpec
-from .vm import BuildVm, returncode as vm_returncode, status as vm_status, unshareable as vm_unshareable
+from .vm import (
+    BUILDER_SOCKET_NAME as VM_BUILDER_SOCKET_NAME,
+    CONTROL_SOCKET_NAME as VM_CONTROL_SOCKET_NAME,
+    BuildVm,
+    allow as vm_allow,
+    returncode as vm_returncode,
+    status as vm_status,
+    unshareable as vm_unshareable,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -298,6 +307,8 @@ class _Guest:
     visible: frozenset[str]
     sources: tuple[str, ...]
     """The `sandbox-paths` sources the helper binds."""
+    recursive: bool
+    """The builder has the store's socket."""
 
 
 @dataclass
@@ -573,20 +584,36 @@ async def build(
         control: socket.socket | None = None
         restriction: RestrictionContext | None = None
         submitting = BUILDER_RPC in drv.required_system_features
+        in_vm = vm is not None and sandboxed
         async with contextlib.AsyncExitStack() as stack:
             if submitting or "recursive-nix" in drv.required_system_features:
                 if recursive is None:
                     raise ValueError("a recursive-nix or builder-rpc-v0 build needs a server for its builder")
-                ours, control = socket.socketpair()
-                stack.callback(control.close)
-                stream = await stack.enter_async_context(await SocketStream.from_socket(ours))
-                restriction = RestrictionContext(inputs, stream, layout.real_store_dir, submitting=submitting)
                 # `startDaemon` (`derivation-builder.cc:1171`): the socket is up before the builder starts.
                 spec["env"]["NIX_REMOTE"] = f"unix://{SANDBOX_BUILD_DIR}/{SOCKET_NAME}"
-                listener = await anyio.to_thread.run_sync(_listen, paths.tmp / SOCKET_NAME)
+                if in_vm:
+                    # The guest's init listens in the build directory, and the image holds no host socket.
+                    restriction = RestrictionContext(
+                        inputs,
+                        None,
+                        layout.real_store_dir,
+                        submitting=submitting,
+                        reveal=functools.partial(vm_allow, paths.top, layout.real_store_dir),
+                    )
+                    controls = await anyio.to_thread.run_sync(_listen, paths.top / VM_CONTROL_SOCKET_NAME)
+                    listener = await anyio.to_thread.run_sync(_listen, paths.top / VM_BUILDER_SOCKET_NAME)
+                    group = await stack.enter_async_context(anyio.create_task_group())
+                    stack.callback(group.cancel_scope.cancel)
+                    group.start_soon(_attach_control, controls, restriction)
+                else:
+                    ours, control = socket.socketpair()
+                    stack.callback(control.close)
+                    stream = await stack.enter_async_context(await SocketStream.from_socket(ours))
+                    restriction = RestrictionContext(inputs, stream, layout.real_store_dir, submitting=submitting)
+                    listener = await anyio.to_thread.run_sync(_listen, paths.tmp / SOCKET_NAME)
                 await stack.enter_async_context(recursive(listener, restriction))
             guest: _Guest | None = None
-            if vm is not None and sandboxed and control is None:
+            if in_vm and vm is not None:
                 # The guest has its own `/dev` and `/proc`.
                 sources = tuple(
                     p.source for p in settings.sandbox_paths if not p.source.startswith(("/dev/", "/proc/"))
@@ -596,7 +623,9 @@ async def build(
                         BuildResultStatus.MISC_FAILURE,
                         f"sandbox-paths names the file '{magenta(file)}' in /, which the build VM cannot share",
                     )
-                guest = _Guest(vm, layout.real_store_dir, frozenset(inputs | sandbox_closure), sources)
+                guest = _Guest(
+                    vm, layout.real_store_dir, frozenset(inputs | sandbox_closure), sources, restriction is not None
+                )
             failure = await _run(paths, spec, settings, drv_path, keep, control, guest)
         if restriction is not None:
             # The paths the builder added may be referenced (`derivation-builder.cc:1434`).
@@ -784,17 +813,21 @@ async def _run(
             sources=guest.sources,
             spec_file=spec_file,
             build_dir=paths.tmp,
+            recursive=guest.recursive,
         )
         fds: list[int] = []
+        # libkrun connects to the host's sockets by their names in the top directory.
+        cwd: Path | None = paths.top
     else:
         status_read, status_write = os.pipe()
         argv = [sys.executable, "-m", "pynixd_store.builder.child", str(spec_file), str(status_write)]
         fds = [status_write]
+        cwd = None
     if control is not None:
         argv.append(str(control.fileno()))
         fds.append(control.fileno())
     try:
-        process = await anyio.open_process(argv, stdin=None, stdout=slave, stderr=slave, pass_fds=fds)
+        process = await anyio.open_process(argv, stdin=None, stdout=slave, stderr=slave, pass_fds=fds, cwd=cwd)
     finally:
         os.close(slave)
         if status_write >= 0:
@@ -856,6 +889,22 @@ def _builder_ended(code: int | None) -> _BuilderFailed | None:
     if code:
         return _BuilderFailed(f"failed with exit code {code}")
     return None
+
+
+async def _attach_control(listener: socket.socket, restriction: RestrictionContext) -> None:
+    """Give *restriction* the guest helper's control connection, the first one, and close *listener*."""
+    with listener:
+        listener.setblocking(False)
+        while True:
+            await anyio.wait_readable(listener)
+            try:
+                connection, _address = listener.accept()
+            except BlockingIOError:
+                continue
+            break
+    async with await SocketStream.from_socket(connection) as stream:
+        restriction.attach(stream)
+        await anyio.sleep_forever()
 
 
 def _listen(path: Path) -> socket.socket:

@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -17,12 +18,13 @@ from pynixd import Server
 from pynixd.config import BuildVmSpec
 from pynixd.op_routes import OpRoute
 from pynixd.store import LocalDBStore
+from tests._conftest.config import NIX_GIT_BIN
+from tests._conftest.constants import _NO_PROBE_FEATURE_MATRIX
 from tests._conftest.nix_config import for_test_store
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
-    from pathlib import Path
 
 pytestmark = pytest.mark.skipif(
     not os.access("/dev/kvm", os.R_OK | os.W_OK) or "PYNIXD_KRUN" not in os.environ,
@@ -45,27 +47,80 @@ KERNEL = (
 )
 
 
+# The builder reaches what it adds and builds through the store's socket, and reads both.
+RECURSIVE = """
+let
+  nix = builtins.storePath "@NIX@";
+  inner = builtins.toFile "vm-inner.nix" ''
+    derivation { name = "vm-inner"; system = builtins.currentSystem; builder = "/bin/sh";
+      args = [ "-c" "echo inner > $out" ]; }
+  '';
+in derivation {
+  name = "vm-recursive"; system = builtins.currentSystem; builder = "/bin/sh";
+  requiredSystemFeatures = [ "recursive-nix" ];
+  PATH = "${nix}/bin";
+  inherit inner;
+  args = [ (builtins.toFile "vm-recursive.sh" ''
+    set -e
+    o="--extra-experimental-features nix-command"
+    read r < /proc/sys/kernel/osrelease
+    echo added > foobar
+    foobar=$(nix $o store add-path ./foobar)
+    built=$(nix $o build --no-link --print-out-paths --file $inner)
+    read a < $foobar
+    read b < $built
+    echo "$r $a $b $foobar $built" > $out
+  '') ];
+}
+"""
+# `builder-rpc-v0`: the builder adds its output and submits it.
+RPC = """
+let nix = builtins.storePath "@NIX@"; in
+derivation {
+  name = "vm-rpc"; system = builtins.currentSystem; builder = "/bin/sh";
+  __contentAddressed = true; outputHashMode = "recursive"; outputHashAlgo = "sha256";
+  requiredSystemFeatures = [ "builder-rpc-v0" ];
+  PATH = "${nix}/bin";
+  args = [ (builtins.toFile "vm-rpc.sh" ''
+    set -e
+    o="--extra-experimental-features nix-command --extra-experimental-features dynamic-derivations"
+    read r < /proc/sys/kernel/osrelease
+    echo "$r" > out
+    out=$(nix $o store add --name vm-rpc ./out)
+    nix $o store submit-output $out out
+  '') ];
+}
+"""
+
+
 @contextlib.asynccontextmanager
-async def _serve(tmp_path: Path, name: str, vm: BuildVmSpec | None) -> AsyncIterator[str]:
+async def _serve(
+    tmp_path: Path, name: str, vm: BuildVmSpec | None, *, experimental_features: tuple[str, ...] = (), **spec_args: Any
+) -> AsyncIterator[str]:
     root = tmp_path / name / "store"
     socket = tmp_path / f"{name}.sock"
     spec = make_test_spec(
         store_id="local",
         store_path=root,
         no_probe=True,
-        nix_config=for_test_store(substituters=()),
+        nix_config=for_test_store(substituters=(), experimental_features=experimental_features),
         op_routes={"BuildDerivation": OpRoute.pynixd},
         build_vm=vm,
+        **spec_args,
     )
     async with Server(stores={StoreId("local"): LocalDBStore(spec)}, unix_path=socket, ssh_port=None, http_port=None):
         yield f"unix://{socket}?root={root}"
 
 
-async def _build(url: str, expr: str, *options: str) -> tuple[str, str]:
+async def _build(url: str, expr: str, *options: str, nix_bin: Path = NIX_BIN) -> tuple[str, str]:
     _rc, out, err, _both = await run_subproc(
-        [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--print-out-paths", "-L", *options, "--expr", expr]
+        [nix_bin, "build", "--store", url, "--impure", "--no-link", "--print-out-paths", "-L", *options, "--expr", expr]
     )
     return out.strip(), err
+
+
+def _nix_store_path(binary: Path) -> str:
+    return "/".join(os.path.realpath(binary).split("/")[:4])
 
 
 async def _info(url: str, path: str) -> Any:
@@ -146,3 +201,35 @@ async def test_an_extra_sandbox_file_reaches_the_builder_read_write(tmp_path: Pa
 
     assert (tmp_path / "vm/store" / path.lstrip("/")).read_text() == "1\n"
     assert (etc / "counter").read_text() == "1\n2\n"
+
+
+async def test_a_recursive_nix_builder_in_the_vm_reads_what_it_adds_and_builds(tmp_path: Path) -> None:
+    """The store's socket reaches the guest over vsock, and each path the builder adds joins the store share's
+    allowlist before the helper binds it."""
+    nix = _nix_store_path(NIX_BIN)
+    vm = BuildVmSpec(memory_mib=512, cpus=1)
+    async with _serve(tmp_path, "vm", vm, experimental_features=("recursive-nix",)) as url:
+        await run_subproc([NIX_BIN, "copy", "--no-check-sigs", "--to", url, nix])
+        path, log = await _build(url, RECURSIVE.replace("@NIX@", nix))
+    release, added, inner, foobar, built = (tmp_path / "vm/store" / path.lstrip("/")).read_text().split()
+
+    assert release != os.uname().release, log
+    assert (added, inner) == ("added", "inner"), log
+    assert foobar.endswith("-foobar") and built.endswith("-vm-inner"), (foobar, built)
+
+
+async def test_a_builder_rpc_builder_in_the_vm_submits_its_output(tmp_path: Path) -> None:
+    if NIX_GIT_BIN is None:
+        pytest.skip("NIX_GIT_BIN names no Nix of the master branch")
+    nix = _nix_store_path(NIX_GIT_BIN)
+    features = ("ca-derivations", "dynamic-derivations")
+    matrix = {system: set(fs) | {"builder-rpc-v0"} for system, fs in _NO_PROBE_FEATURE_MATRIX.items()}
+    vm = BuildVmSpec(memory_mib=512, cpus=1)
+    async with _serve(tmp_path, "vm", vm, experimental_features=features, feature_matrix=matrix) as url:
+        await run_subproc([NIX_GIT_BIN, "copy", "--no-check-sigs", "--to", url, nix])
+        path, log = await _build(
+            url, RPC.replace("@NIX@", nix), "--extra-experimental-features", " ".join(features), nix_bin=NIX_GIT_BIN
+        )
+
+    assert path.endswith("-vm-rpc"), log
+    assert (tmp_path / "vm/store" / path.lstrip("/")).read_text().strip() != os.uname().release, log

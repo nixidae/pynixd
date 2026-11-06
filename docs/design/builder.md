@@ -133,8 +133,12 @@ closure, and the host's store the closure of the package's venv, whose
 interpreter runs the helper. The guest's page cache keeps no copy of either.
 
 A fixed-output build stays on the namespace helper, by User's choice
-(2026-11-06), and so does a build with a builder socket, until the socket
-reaches the guest over vsock. A `sandbox-paths` source outside both stores
+(2026-11-06). A `recursive-nix` or `builder-rpc-v0` builder reaches the
+store's socket over vsock, with no TSI: the guest's init listens at the
+socket's place in the build directory and joins each connection to a host
+socket in the top directory. The helper's control socket comes the same way.
+A path the builder adds joins the build store's allowlist before the helper
+binds it, and such a build caches no negative lookup. A `sandbox-paths` source outside both stores
 is writable, as Nix binds it: a directory is a share of its own, and a file
 a share of its parent whose allowlist shows the file alone, because
 virtio-fs mounts only a directory. Still to come: per-build

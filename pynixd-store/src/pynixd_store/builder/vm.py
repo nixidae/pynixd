@@ -8,6 +8,11 @@ of its own, and so is a file's parent, whose allowlist shows the file alone. The
 the chroot, where the outputs land for `collect_outputs`, are writable shares. The build directory is a sparse
 XFS image the guest mounts over its place in the top directory: a build makes many small files, and each
 operation on a share is a round trip to the host.
+
+A `recursive-nix` or `builder-rpc-v0` builder reaches the store's socket through vsock. The guest's init listens
+at the socket's place in the build directory and joins each connection to the host's socket in the top
+directory. The helper gets its control socket the same way, as descriptor 4. A path the builder adds joins the
+build store's allowlist before the helper binds it.
 """
 
 from __future__ import annotations
@@ -19,11 +24,20 @@ from pathlib import Path
 
 import anyio
 
+from .restriction import SOCKET_NAME
+
 #: Where the helper's interpreter and its closure live: the store pynixd itself runs from.
 HOST_STORE = Path("/nix/store")
 STATUS_NAME = "vm-status"
 EXIT_NAME = "vm-exit"
 DISK_NAME = "build.xfs"
+#: The build store's allowlist, which `allow` extends while the guest runs.
+STORE_ALLOWLIST_NAME = "vm-allowlist-store"
+#: The host's end of the builder's socket and of the helper's control socket, in the top directory. The launcher
+#: runs there, so libkrun connects by name: a top directory is longer than `sun_path`.
+BUILDER_SOCKET_NAME = "vm-builder.sock"
+CONTROL_SOCKET_NAME = "vm-control.sock"
+CONTROL_FD = 4
 #: How long the guest caches a store lookup that finds nothing: the longest build is the bound that matters.
 NEGATIVE_TIMEOUT_MS = 24 * 3600 * 1000
 
@@ -88,6 +102,7 @@ class BuildVm:
         sources: Iterable[str],
         spec_file: Path,
         build_dir: Path,
+        recursive: bool = False,
     ) -> list[str]:
         """The launcher's command line, after it writes the allowlists into *top*.
 
@@ -96,7 +111,8 @@ class BuildVm:
         writable, as Nix binds it read-write and the host's permissions decide (`programs.ccache`'s cache): a
         directory is a share of its own, and a file is a share of its parent that shows the file alone, because
         virtio-fs mounts only a directory. The helper reads *spec_file* and gets `top/vm-status` as its file
-        descriptor 3.
+        descriptor 3. A *recursive* build gets the two sockets of the module's docstring. The launcher must run in
+        *top*.
         """
         shown: dict[Path, set[str]] = {
             real_store_dir: {str(real_store_dir / path.rsplit("/", 1)[-1]) for path in visible},
@@ -128,9 +144,10 @@ class BuildVm:
             f"--cpus={self.cpus}",
             f"--memory={self.memory_mib}",
             f"--dax-window={self.dax_window_mib * 1024 * 1024}",
-            # A store share gains no name while the build runs: its allowlist is fixed before the guest
-            # starts, and a path another build adds is outside it.
-            f"--negative-timeout={NEGATIVE_TIMEOUT_MS}",
+            # Without a builder socket, a store share gains no name while the build runs: its allowlist is fixed
+            # before the guest starts, and a path another build adds is outside it. With one, a path the
+            # builder adds joins the allowlist, and the guest may have looked its name up before.
+            f"--negative-timeout={0 if recursive else NEGATIVE_TIMEOUT_MS}",
         ]
         shares: list[tuple[Path, str, list[str] | None]] = [
             *((root, "ro", sorted(paths)) for root, paths in ro.items()),
@@ -143,11 +160,19 @@ class BuildVm:
             if kind == "rw":
                 argv.append(f"--rw={root}")
                 continue
-            allowlist = top / f"vm-allowlist-{i}"
+            name = STORE_ALLOWLIST_NAME if kind == "ro" and real_store_dir.is_relative_to(root) else f"vm-allowlist-{i}"
+            allowlist = top / name
             allowlist.write_text("".join(f"{p}\n" for p in allowed or ()))
             argv.append(f"--{kind}={root}:{allowlist}")
         argv += [
             f"--disk={top / DISK_NAME}:{build_dir}",
+        ]
+        if recursive:
+            argv += [
+                f"--vsock-fd={CONTROL_FD}:{CONTROL_SOCKET_NAME}",
+                f"--vsock-listen={build_dir / SOCKET_NAME}:{BUILDER_SOCKET_NAME}",
+            ]
+        argv += [
             f"--cwd={top}",
             f"--status={top / STATUS_NAME}",
             f"--exit={top / EXIT_NAME}",
@@ -160,8 +185,15 @@ class BuildVm:
             "pynixd_store.builder.child",
             str(spec_file),
             "3",
+            *([str(CONTROL_FD)] if recursive else []),
         ]
         return argv
+
+
+def allow(top: Path, real_store_dir: Path, path: str) -> None:
+    """Show the store path *path* in the guest: libkrun reads the allowlist again when a lookup misses."""
+    with (top / STORE_ALLOWLIST_NAME).open("a") as file:
+        file.write(f"{real_store_dir / path.rsplit('/', 1)[-1]}\n")
 
 
 def _store_of(path: Path, real_store_dir: Path) -> Path | None:

@@ -3,8 +3,8 @@
  *
  *   pynixd-krun --init FILE --cpus N --memory MIB [--dax-window BYTES] [--negative-timeout MS]
  *               [--ro DIR:ALLOWLIST]... [--rw DIR]... [--rw-allow DIR:ALLOWLIST]...
- *               [--disk IMAGE:DIR]... --cwd DIR --status PATH --exit PATH
- *               [--uid N --gid N] -- COMMAND [ARG]...
+ *               [--disk IMAGE:DIR]... [--vsock-fd N:SOCKET]... [--vsock-listen PATH:SOCKET]...
+ *               --cwd DIR --status PATH --exit PATH [--uid N --gid N] -- COMMAND [ARG]...
  *
  * The guest boots libkrunfw's kernel on a root that holds only --init (as
  * /init), its configuration and the mount points. Each --ro and --rw share is
@@ -19,6 +19,13 @@
  * directory, which virtio-fs cannot share alone. A --disk is a raw XFS image
  * the init mounts at DIR after the shares, with no flush reaching the host: a
  * build directory need not outlive a crash.
+ *
+ * Each SOCKET is a host Unix socket this process connects to when the guest
+ * connects to its vsock port, relative to this process's working directory:
+ * sun_path holds 108 bytes. COMMAND gets a connection to a --vsock-fd SOCKET as
+ * its file descriptor N. The init listens at a --vsock-listen PATH, a path in
+ * the guest, and joins each connection to a new one to its SOCKET. The vsock
+ * device carries nothing else: no TSI, so the guest has no network.
  *
  * The init runs COMMAND in --cwd, a directory on a share, as --uid and --gid (this process's own by default),
  * the owners the shares show. It opens --status as its file descriptor 3, and writes
@@ -37,6 +44,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -45,6 +53,8 @@
 #define MAX_SHARES 16
 #define MAX_DISKS 4
 #define MAX_DIRS 512
+#define MAX_PORTS 8
+#define FIRST_PORT 1024
 
 static bool push_to_stderr(void *userdata, KrunStr s)
 {
@@ -71,6 +81,13 @@ struct disk {
     const char *dir;
 };
 
+/* fd >= 0: the command's descriptor; else listen at guest_path. */
+struct port {
+    int fd;
+    const char *guest_path;
+    const char *socket;
+};
+
 struct share {
     const char *dir;
     const char *allowlist; /* NULL for a writable share that shows everything */
@@ -95,8 +112,8 @@ static void usage(void)
 {
     fprintf(stderr, "usage: pynixd-krun --init FILE --cpus N --memory MIB [--dax-window BYTES] [--negative-timeout MS]\n"
                     "                   [--ro DIR:ALLOWLIST]... [--rw DIR]... [--rw-allow DIR:ALLOWLIST]...\n"
-                    "                   [--disk IMAGE:DIR]... --cwd DIR --status PATH --exit PATH\n"
-                    "                   [--uid N --gid N] -- COMMAND [ARG]...\n");
+                    "                   [--disk IMAGE:DIR]... [--vsock-fd N:SOCKET]... [--vsock-listen PATH:SOCKET]...\n"
+                    "                   --cwd DIR --status PATH --exit PATH [--uid N --gid N] -- COMMAND [ARG]...\n");
 }
 
 static char *slurp(const char *path, size_t *len)
@@ -154,7 +171,7 @@ static int add_file(KrunFsOverlay overlay, const char *path, const char *data, s
 
 int main(int argc, char *argv[])
 {
-    enum { INIT = 256, CPUS, MEMORY, DAX, RO, RW, RW_ALLOW, DISK, NEGATIVE, STATUS, EXIT, UID, GID, CWD };
+    enum { INIT = 256, CPUS, MEMORY, DAX, RO, RW, RW_ALLOW, DISK, NEGATIVE, STATUS, EXIT, UID, GID, CWD, VSOCK_FD, VSOCK_LISTEN };
     static const struct option options[] = {
         {"init", required_argument, NULL, INIT},     {"cpus", required_argument, NULL, CPUS},
         {"memory", required_argument, NULL, MEMORY}, {"dax-window", required_argument, NULL, DAX},
@@ -163,13 +180,15 @@ int main(int argc, char *argv[])
         {"cwd", required_argument, NULL, CWD},       {"rw-allow", required_argument, NULL, RW_ALLOW},
         {"disk", required_argument, NULL, DISK},     {"negative-timeout", required_argument, NULL, NEGATIVE},
         {"uid", required_argument, NULL, UID},       {"gid", required_argument, NULL, GID},
+        {"vsock-fd", required_argument, NULL, VSOCK_FD}, {"vsock-listen", required_argument, NULL, VSOCK_LISTEN},
         {NULL, 0, NULL, 0},
     };
     const char *init = NULL, *status = NULL, *exit_path = NULL, *cwd = NULL;
     long cpus = 0, memory = 0, dax_window = 0, negative_timeout = 0, uid = (long)getuid(), gid = (long)getgid();
     struct share shares[MAX_SHARES];
     struct disk disks[MAX_DISKS];
-    int nshares = 0, ndisks = 0, c;
+    struct port ports[MAX_PORTS];
+    int nshares = 0, ndisks = 0, nports = 0, c;
 
     while ((c = getopt_long(argc, argv, "", options, NULL)) != -1) {
         bool ok = true;
@@ -203,6 +222,28 @@ int main(int argc, char *argv[])
             }
             break;
         }
+        case VSOCK_FD: {
+            char *colon = strchr(optarg, ':');
+            long fd = 0;
+            ok = nports < MAX_PORTS && colon != NULL;
+            if (ok) {
+                *colon = '\0';
+                /* 0 to 3 are the command's terminal and its status. */
+                ok = parse_long(optarg, 4, 63, &fd) && colon[1] != '\0';
+            }
+            if (ok)
+                ports[nports++] = (struct port){.fd = (int)fd, .guest_path = NULL, .socket = colon + 1};
+            break;
+        }
+        case VSOCK_LISTEN: {
+            char *colon = strrchr(optarg, ':');
+            ok = nports < MAX_PORTS && colon != NULL && optarg[0] == '/' && colon[1] != '\0';
+            if (ok) {
+                *colon = '\0';
+                ports[nports++] = (struct port){.fd = -1, .guest_path = optarg, .socket = colon + 1};
+            }
+            break;
+        }
         case RW:
             ok = nshares < MAX_SHARES && optarg[0] == '/';
             if (ok)
@@ -225,6 +266,14 @@ int main(int argc, char *argv[])
     if (level_env != NULL && !parse_long(level_env, KRUN_LOG_LEVEL_OFF, KRUN_LOG_LEVEL_TRACE, &level)) {
         fprintf(stderr, "pynixd-krun: PYNIXD_KRUN_LOG_LEVEL is 0 to 5, not %s\n", level_env);
         return 2;
+    }
+
+    /* libkrun holds a host descriptor for each inode the guest has looked up and each file a
+     * DAX mapping reads: nix's closure is past a soft limit of 1024, and the guest sees EMFILE. */
+    struct rlimit files;
+    if (getrlimit(RLIMIT_NOFILE, &files) == 0 && files.rlim_cur < files.rlim_max) {
+        files.rlim_cur = files.rlim_max;
+        setrlimit(RLIMIT_NOFILE, &files);
     }
 
     KrunError err;
@@ -252,6 +301,16 @@ int main(int argc, char *argv[])
     for (int i = 0; i < ndisks; i++)
         fprintf(dd, "%s\n", disks[i].dir);
     fclose(dd);
+    char *vsock = NULL;
+    size_t vsock_len = 0;
+    FILE *v = open_memstream(&vsock, &vsock_len);
+    for (int i = 0; i < nports; i++) {
+        if (ports[i].fd >= 0)
+            fprintf(v, "fd %d %d\n", FIRST_PORT + i, ports[i].fd);
+        else
+            fprintf(v, "listen %d %s\n", FIRST_PORT + i, ports[i].guest_path);
+    }
+    fclose(v);
     FILE *a = open_memstream(&args, &args_len);
     for (int i = optind; i < argc; i++)
         fwrite(argv[i], 1, strlen(argv[i]) + 1, a);
@@ -267,6 +326,7 @@ int main(int argc, char *argv[])
     if (add_file(overlay, "init", init_data, init_len, 0555) ||
         add_file(overlay, ".pynixd/mounts", mounts, mounts_len, 0444) ||
         add_file(overlay, ".pynixd/disks", disk_dirs, disk_dirs_len, 0444) ||
+        add_file(overlay, ".pynixd/vsock", vsock, vsock_len, 0444) ||
         add_file(overlay, ".pynixd/argv", args, args_len, 0444) ||
         add_file(overlay, ".pynixd/status", status, strlen(status), 0444) ||
         add_file(overlay, ".pynixd/cwd", cwd, strlen(cwd), 0444) ||
@@ -327,6 +387,14 @@ int main(int argc, char *argv[])
         CHECK(KrunBlockDevice blk = krun_block_device_new(KRUN_STR(id), KRUN_STR(disks[i].image), KRUN_DISK_FORMAT_RAW, &err));
         krun_block_device_set_sync_mode(blk, KRUN_SYNC_MODE_NONE);
         krun_mmio_device_manager_add(devices, blk);
+    }
+
+    if (nports > 0) {
+        /* The guest's cid; the host is 2. */
+        CHECK(KrunVsockDevice vsock_dev = krun_vsock_device_new(3, 0, &err));
+        for (int i = 0; i < nports; i++)
+            krun_vsock_device_add_unix_port(vsock_dev, FIRST_PORT + i, KRUN_STR(ports[i].socket), false);
+        krun_mmio_device_manager_add(devices, vsock_dev);
     }
 
     CHECK(KrunRngDevice rng = krun_rng_device_new(&err));

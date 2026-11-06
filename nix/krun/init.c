@@ -11,6 +11,12 @@
  *   ids      "UID GID": who the command runs as
  *   cwd      the directory the command starts in
  *   disks    one directory per line: where /dev/vda, /dev/vdb, ... mount, as XFS
+ *   vsock    one port per line: "fd PORT N", a connection to the host's PORT
+ *            as the command's descriptor N; or "listen PORT PATH", a Unix
+ *            socket at PATH whose every connection joins a new one to PORT
+ *
+ * A listen socket is the build's: its owner is the command's uid, mode 0600.
+ * Its relay runs outside the command's namespaces, as that uid.
  *
  * The shares show their files with the host's owners, so the command runs as
  * the uid that owns the build's directories, as it does on the host. As root it
@@ -28,18 +34,26 @@
 #include <grp.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/reboot.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
 
+#include <linux/vm_sockets.h>
+
 #define CONFIG "/.pynixd/"
+#define MAX_PORTS 8
+/* Above every descriptor the command gets, until each moves to its own. */
+#define PARKED_FD 64
 
 static void stop(void)
 {
@@ -182,18 +196,136 @@ static char *read_path(const char *name)
     return path;
 }
 
-static void write_all(int fd, const char *buf, ssize_t n)
+static int write_all(int fd, const char *buf, ssize_t n)
 {
     while (n > 0) {
         ssize_t put = write(fd, buf, (size_t)n);
         if (put < 0) {
             if (errno == EINTR)
                 continue;
-            return;
+            return -1;
         }
         buf += put;
         n -= put;
     }
+    return 0;
+}
+
+static int vsock_connect(unsigned port)
+{
+    struct sockaddr_vm addr = {.svm_family = AF_VSOCK, .svm_cid = VMADDR_CID_HOST, .svm_port = port};
+    int sock = socket(AF_VSOCK, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (sock < 0 || connect(sock, (struct sockaddr *)&addr, sizeof addr) != 0)
+        return -1;
+    return sock;
+}
+
+/* Copies each way until both ends are done; an end of file goes on as a
+ * half close, which a client that waits for the last reply needs. */
+static void relay(int a, int b)
+{
+    int fds[2] = {a, b};
+    struct pollfd polls[2] = {{.fd = a, .events = POLLIN}, {.fd = b, .events = POLLIN}};
+    int open_ends = 2;
+    char buf[65536];
+    while (open_ends > 0) {
+        if (poll(polls, 2, -1) < 0) {
+            if (errno == EINTR)
+                continue;
+            return;
+        }
+        for (int i = 0; i < 2; i++) {
+            if (polls[i].fd < 0 || !polls[i].revents)
+                continue;
+            ssize_t got = read(fds[i], buf, sizeof buf);
+            if (got < 0 && errno == EINTR)
+                continue;
+            if (got <= 0) {
+                shutdown(fds[1 - i], SHUT_WR);
+                polls[i].fd = -1;
+                open_ends--;
+            } else if (write_all(fds[1 - i], buf, got) != 0) {
+                return;
+            }
+        }
+    }
+}
+
+/* A Unix socket bound through its directory: a build directory is longer
+ * than sun_path. */
+static int listen_at(const char *path, unsigned uid, unsigned gid)
+{
+    char *copy = strdup(path), *slash = strrchr(copy, '/');
+    *slash = '\0';
+    int dir = open(copy[0] ? copy : "/", O_PATH | O_DIRECTORY | O_CLOEXEC);
+    struct sockaddr_un addr = {.sun_family = AF_UNIX};
+    snprintf(addr.sun_path, sizeof addr.sun_path, "/proc/self/fd/%d/%s", dir, slash + 1);
+    int sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (dir < 0 || sock < 0 || bind(sock, (struct sockaddr *)&addr, sizeof addr) != 0 ||
+        fchownat(dir, slash + 1, uid, gid, 0) != 0 || fchmodat(dir, slash + 1, 0600, 0) != 0 || listen(sock, 64) != 0)
+        fail(path);
+    close(dir);
+    free(copy);
+    return sock;
+}
+
+/* The listener's own process, as the build's uid. Each connection gets a
+ * process of its own: a relay holds two descriptors and blocks in poll. */
+static void serve(int listener, unsigned port, unsigned uid, unsigned gid)
+{
+    pid_t pid = fork();
+    if (pid < 0)
+        fail("fork");
+    if (pid > 0) {
+        close(listener);
+        return;
+    }
+    if (setgroups(0, NULL) != 0 || setgid(gid) != 0 || setuid(uid) != 0)
+        fail("drop to the build's uid");
+    signal(SIGCHLD, SIG_IGN);
+    for (;;) {
+        int conn = accept4(listener, NULL, NULL, SOCK_CLOEXEC);
+        if (conn < 0) {
+            if (errno == EINTR || errno == ECONNABORTED)
+                continue;
+            fail("accept");
+        }
+        if (fork() == 0) {
+            int host = vsock_connect(port);
+            if (host >= 0)
+                relay(conn, host);
+            _exit(0);
+        }
+        close(conn);
+    }
+}
+
+/* Connects or listens for each line of the vsock file. The command's
+ * descriptors wait at PARKED_FD and up. */
+static int open_ports(unsigned uid, unsigned gid, int targets[MAX_PORTS])
+{
+    size_t len;
+    char *text = slurp(CONFIG "vsock", &len);
+    int n = 0;
+    for (char *line = strtok(text, "\n"); line; line = strtok(NULL, "\n")) {
+        unsigned port;
+        int fd;
+        char path[4096];
+        if (sscanf(line, "fd %u %d", &port, &fd) == 2 && n < MAX_PORTS) {
+            int sock = vsock_connect(port);
+            if (sock < 0 || dup3(sock, PARKED_FD + n, O_CLOEXEC) < 0)
+                fail(line);
+            close(sock);
+            targets[n++] = fd;
+        } else if (sscanf(line, "listen %u %4095s", &port, path) == 2) {
+            serve(listen_at(path, uid, gid), port, uid, gid);
+        } else {
+            errno = EINVAL;
+            fail(line);
+        }
+    }
+    free(text);
+    return n;
 }
 
 int main(void)
@@ -215,6 +347,8 @@ int main(void)
         errno = EINVAL;
         fail(CONFIG "ids");
     }
+    int targets[MAX_PORTS];
+    int nports = open_ports(uid, gid, targets);
 
     int master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
     if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0)
@@ -236,8 +370,16 @@ int main(void)
         dup2(slave, STDOUT_FILENO);
         dup2(slave, STDERR_FILENO);
         dup2(status_fd, 3);
-        for (int fd = 4; fd < 64; fd++)
-            close(fd);
+        for (int i = 0; i < nports; i++)
+            if (dup2(PARKED_FD + i, targets[i]) < 0)
+                fail("move a port to its descriptor");
+        for (int fd = 4; fd < PARKED_FD + MAX_PORTS; fd++) {
+            bool kept = false;
+            for (int i = 0; i < nports; i++)
+                kept |= targets[i] == fd;
+            if (!kept)
+                close(fd);
+        }
         if (setgroups(0, NULL) != 0 || setgid(gid) != 0 || setuid(uid) != 0)
             fail("drop to the build's uid");
         execv(argv[0], argv);

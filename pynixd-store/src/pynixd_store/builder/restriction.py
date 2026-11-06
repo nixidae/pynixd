@@ -6,12 +6,14 @@ import json
 from typing import TYPE_CHECKING, Protocol
 
 import anyio
+import anyio.to_thread
 from anyio.streams.buffered import BufferedByteReceiveStream
 
 from ..hintfmt import magenta
 
 if TYPE_CHECKING:
     import socket
+    from collections.abc import Callable
     from contextlib import AbstractAsyncContextManager
     from pathlib import Path
 
@@ -32,10 +34,20 @@ class SubmitError(Exception):
 class RestrictionContext:
     """The input closure, and the paths and outputs the builder added or built since (`isAllowed`, `:239`).
 
-    *submitting* is a `builder-rpc-v0` build: the builder submits its outputs (`RecursiveSubmitted`).
+    *submitting* is a `builder-rpc-v0` build: the builder submits its outputs (`RecursiveSubmitted`). *control*
+    is the helper's control socket; without one, `attach` gives it once the helper connects. *reveal* runs for
+    each path the builder adds, before the helper binds it.
     """
 
-    def __init__(self, inputs: set[str], control: SocketStream, real_store_dir: Path, *, submitting: bool) -> None:
+    def __init__(
+        self,
+        inputs: set[str],
+        control: SocketStream | None,
+        real_store_dir: Path,
+        *,
+        submitting: bool,
+        reveal: Callable[[str], None] | None = None,
+    ) -> None:
         self.inputs = frozenset(inputs)
         self.submitting = submitting
         self.added: set[str] = set()
@@ -43,10 +55,19 @@ class RestrictionContext:
         """Each `DrvOutput` a build of the builder realised, as its wire text (`addedDrvOutputs`)."""
         self.submitted: dict[str, str] = {}
         """The store path the builder submitted for each output (`submittedOutputs`)."""
+        self._control: SocketStream | None = None
+        self._replies: BufferedByteReceiveStream | None = None
+        self._attached = anyio.Event()
+        self._real_store_dir = real_store_dir
+        self._reveal = reveal
+        self._lock = anyio.Lock()
+        if control is not None:
+            self.attach(control)
+
+    def attach(self, control: SocketStream) -> None:
         self._control = control
         self._replies = BufferedByteReceiveStream(control)
-        self._real_store_dir = real_store_dir
-        self._lock = anyio.Lock()
+        self._attached.set()
 
     def is_allowed(self, path: str) -> bool:
         return path in self.inputs or path in self.added
@@ -65,6 +86,11 @@ class RestrictionContext:
                 return
             self.added.add(path)
             source = str(self._real_store_dir / path.rsplit("/", 1)[-1])
+            if self._reveal is not None:
+                await anyio.to_thread.run_sync(self._reveal, path)
+            await self._attached.wait()
+            if self._control is None or self._replies is None:
+                raise RuntimeError("the control socket is attached and missing")
             await self._control.send(json.dumps({"source": source, "target": path}).encode() + b"\n")
             reply = json.loads(await self._replies.receive_until(b"\n", 1 << 20))
         if reply["error"] is not None:

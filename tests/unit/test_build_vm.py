@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pynixd_store.builder.vm import BuildVm, returncode, status, unshareable
+from pynixd_store.builder.vm import BuildVm, allow, returncode, status, unshareable
 
 HELPER = "/nix/store/aaaa-venv"
 INPUT = "/nix/store/bbbb-input"
@@ -140,6 +140,43 @@ def test_a_file_inside_a_shared_directory_needs_no_share_of_its_own(tmp_path: Pa
     kinds = _kinds(_argv(tmp_path, tmp_path / "root/nix/store", sources=(str(cache / "conf"), str(cache))))
 
     assert kinds[str(cache)] == ("rw", None)
+
+
+def test_a_recursive_build_reaches_the_host_over_vsock_and_caches_no_missing_name(tmp_path: Path) -> None:
+    """The guest's init listens at the store's socket in the build directory, and the helper gets its control
+    socket as descriptor 4. A path the builder adds joins the store's allowlist, so no lookup may stay negative."""
+    (tmp_path / "top").mkdir()
+    real = tmp_path / "root/nix/store"
+    argv = _vm().argv(
+        top=tmp_path / "top",
+        chroot_parent=real / "ffff-x.drv.chroot",
+        real_store_dir=real,
+        visible=[INPUT],
+        sources=(),
+        spec_file=tmp_path / "top/spec.json",
+        build_dir=tmp_path / "top/build",
+        recursive=True,
+    )
+
+    assert "--negative-timeout=0" in argv
+    assert "--vsock-fd=4:vm-control.sock" in argv
+    assert f"--vsock-listen={tmp_path / 'top/build/.nix-socket'}:vm-builder.sock" in argv
+    assert argv[-2:] == ["3", "4"]
+    store = tmp_path / "top/vm-allowlist-store"
+    assert f"--ro={real}:{store}" in argv
+    allow(tmp_path / "top", real, "/nix/store/hhhh-added")
+    assert store.read_text().splitlines() == [
+        str(real / "bbbb-input"),
+        str(real / "ffff-x.drv.chroot"),
+        str(real / "hhhh-added"),
+    ]
+
+
+def test_a_build_without_the_socket_has_no_vsock(tmp_path: Path) -> None:
+    (tmp_path / "top").mkdir()
+    argv = _argv(tmp_path, tmp_path / "root/nix/store")
+    assert not [a for a in argv if a.startswith("--vsock")]
+    assert argv[-1] == "3"
 
 
 def test_only_a_file_in_the_root_is_unshareable(tmp_path: Path) -> None:
