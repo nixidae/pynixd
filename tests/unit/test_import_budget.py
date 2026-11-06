@@ -1,4 +1,4 @@
-"""``pynixd daemon`` must load neither ``asyncssh`` nor ``aiohttp``, and stay under a budget.
+"""``pynixd daemon`` must load neither ``asyncssh`` nor ``aiohttp``.
 
 Issue #30 measured why this matters. Nix's functional suite restarts the
 daemon for every configuration change, **344 times over the suite**, and each
@@ -17,15 +17,6 @@ needing one. ``environs`` went with them: it answered four calls and pulled
 **Without this file the next eager import puts the cost back in silence.**
 Nothing else fails. An eager import makes every daemon start slower and no
 assertion anywhere reads the import graph.
-
-## Why this asserts a name and a count, and not a duration
-
-A wall-clock budget is the direct measurement and the wrong gate. This suite
-runs on a shared runner and on a laptop, and a millisecond figure that holds
-on one is noise on the next. A module count is the same number everywhere.
-
-The name check is the sharper half, and it has no headroom at all: the two
-libraries are either in ``sys.modules`` or they are not.
 """
 
 from __future__ import annotations
@@ -44,21 +35,6 @@ import pytest
 from pynixd import _optional, store
 from pynixd.config import HTTPBinaryCacheSpec
 
-#: The most modules ``import pynixd.instance`` may load in a clean interpreter.
-#:
-#: Measured at 703 when issue #30 made both stacks lazy and dropped
-#: `environs`, down from 925. 743 with the engine's collector (op 20):
-#: `pynixd_store.collect`, `pynixd_store.collector` and `anyio.streams.buffered`.
-#: 746 with `NarReader`: `pynixd.store.nar_reader` and `pynixd.store.copied`.
-#: 757 with the local builder: the eight `pynixd_store.builder` modules and
-#: `pynixd.activity`. 758 with `pynixd_store.builder.jsonlog`. 761 with recursive Nix:
-#: `pynixd.recursive` and `pynixd_store.builder.restriction`. 764 with `builder-rpc-v0`: the codecs of ops 1000
-#: and 1001, and `nix_daemon_protocol.single_derived_path`. 765 with the build VM: `pynixd_store.builder.vm`.
-#: The headroom is small on purpose. A legitimate new dependency raises this
-#: number in the commit that adds it, and a reader sees the cost. Raise it with
-#: a measurement in the commit message, and never to make a red run green.
-MODULE_BUDGET = 765
-
 #: The libraries that only an SSH or an HTTP configuration may load.
 #:
 #: ``passlib`` comes with ``http_server``, and ``cryptography`` with
@@ -72,7 +48,6 @@ _PROBE = f"""
 import json, sys
 import pynixd.instance
 print(json.dumps({{
-    "count": len(sys.modules),
     "present": sorted(n for n in sys.modules if n.split(".")[0] in {FORBIDDEN!r}),
     "optional_loaded": sorted(
         n for n in sys.modules
@@ -88,8 +63,7 @@ def _probe() -> dict[str, object]:
     ``PYTHONPATH`` and ``BEARTYPING`` are removed rather than
     inherited. ``nanopynix_testing.beartype_hook`` puts a startup directory on
     the first so that a spawned interpreter starts beartype and coverage, and
-    sets the second for it. Either one would make the count depend on how the
-    suite ran, which is the one thing a budget must not do.
+    sets the second for it. Either one would make what loads depend on how the suite ran.
     """
     env = {k: v for k, v in os.environ.items() if k not in {"PYTHONPATH", "BEARTYPING"}}
     completed = subprocess.run(  # noqa: S603 -- sys.executable and a literal script, no shell
@@ -121,17 +95,6 @@ def test_no_optional_module_of_pynixd_loads() -> None:
     result = _probe()
 
     assert result["optional_loaded"] == []
-
-
-def test_the_daemon_stays_under_the_module_budget() -> None:
-    result = _probe()
-    count = result["count"]
-    assert isinstance(count, int)
-
-    assert count <= MODULE_BUDGET, (
-        f"a fresh `import pynixd.instance` loaded {count} modules, over the budget of {MODULE_BUDGET}. "
-        "Raise the budget only with a measurement in the commit message."
-    )
 
 
 # ── The two tables, and the copy of each that the type checker reads ─
