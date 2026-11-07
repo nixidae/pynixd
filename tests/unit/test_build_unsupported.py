@@ -57,6 +57,26 @@ def test_no_chroot_with_sandbox_true_goes_to_the_daemon() -> None:
     assert _reason(PLAIN, "true", relocated=True, no_chroot=True) == "__noChroot with sandbox = true"
 
 
+@pytest.mark.parametrize(
+    ("config", "reason"),
+    [
+        ({}, "auto-allocate-uids without the experimental feature"),
+        ({"experimental-features": "auto-allocate-uids"}, None),
+        ({"experimental-features": "auto-allocate-uids", "id-count": "65537"}, "start-id or id-count"),
+        ({"experimental-features": "auto-allocate-uids", "start-id": "0"}, "start-id or id-count"),
+    ],
+)
+def test_auto_allocate_uids_is_pynixds_where_nix_allocates(
+    monkeypatch: pytest.MonkeyPatch, config: dict[str, str], reason: str | None
+) -> None:
+    """`AutoUserLock::acquire` requires the feature and asserts on the ids (`user-lock.cc:176`)."""
+    monkeypatch.setattr("os.geteuid", lambda: 0)
+    entries = {name: {"value": value} for name, value in {"auto-allocate-uids": True, **config}.items()}
+    settings = BuildSettings.from_nix_config(entries, {"system": "x86_64-linux"})
+    got = unsupported(_drv(PLAIN), settings, store_dir="/nix/store", relocated=False)
+    assert got is None if reason is None else reason in (got or "")
+
+
 def test_a_git_hashed_output_needs_git_hashing() -> None:
     """`dumpBlobPrefix` requires `Xp::GitHashing` (`libutil/git.cc:233`); the daemon answers without it."""
     drv = BasicDerivation(

@@ -123,8 +123,15 @@ Nix's does (`useBuildUsers`, `user-lock.cc:237`):
 - An output, and each file in it, must belong to the build user; a hard link
   to a file of the same build passes (`canonicalisePathMetaData`).
 
-`auto-allocate-uids` and `uid-range` stay on the daemon. A build VM maps no
-build user yet, so as root with build users a build uses the namespaces.
+With `auto-allocate-uids`, a build takes a slot instead, as `AutoUserLock`
+does (`user-lock.cc:165`). pynixd locks `<nixStateDir>/userpool2/slot-<n>`,
+and the build's uid is `start-id + n * 65536`, with no account. In the
+sandbox the gid is that uid too; without the sandbox it is the group of
+`build-users-group`. Without the experimental feature, or with ids Nix
+asserts on, the build stays on the daemon.
+
+`uid-range` stays on the daemon. A build VM maps no build user yet, so as
+root with build users a build uses the namespaces.
 
 ## Without the sandbox
 

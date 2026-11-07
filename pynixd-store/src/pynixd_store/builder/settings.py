@@ -94,6 +94,10 @@ class BuildSettings:
     build_users_group: str = ""
     """The store's own: `useBuildUsers` (`user-lock.cc:237`) reads it once, so a client's never takes effect."""
     auto_allocate_uids: bool = False
+    auto_allocate_feature: bool = False
+    """`Xp::AutoAllocateUids`, which `AutoUserLock::acquire` requires (`user-lock.cc:176`)."""
+    start_id: int = 0x34000000
+    id_count: int = 128 << 16
 
     @classmethod
     def from_nix_config(
@@ -199,6 +203,9 @@ class BuildSettings:
             nix_version=nix_version,
             build_users_group=str(_own(config, "build-users-group", "") or ""),
             auto_allocate_uids=boolean(_own(config, "auto-allocate-uids", False)),
+            auto_allocate_feature="auto-allocate-uids" in features,
+            start_id=int(_own(config, "start-id", 0x34000000)),
+            id_count=int(_own(config, "id-count", 128 << 16)),
         )
 
 

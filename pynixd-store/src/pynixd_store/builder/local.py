@@ -150,7 +150,15 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
     if "uid-range" in features:
         return "the feature uid-range"
     if settings.auto_allocate_uids and build_users.use_build_users(settings.build_users_group, True):
-        return "auto-allocate-uids"
+        # `AutoUserLock::acquire` throws without the feature and asserts on the ids (`user-lock.cc:176`).
+        if not settings.auto_allocate_feature:
+            return "auto-allocate-uids without the experimental feature"
+        if (
+            settings.start_id <= 0
+            or settings.id_count % build_users.IDS_PER_BUILD
+            or settings.start_id + settings.id_count > 0xFFFFFFFF
+        ):
+            return "auto-allocate-uids with start-id or id-count that Nix asserts on"
     # `startDaemon` (`derivation-builder.cc:1155`) refuses the build in the daemon's own words.
     if "recursive-nix" in features and not settings.recursive_nix:
         return "recursive-nix without the experimental feature"
@@ -563,11 +571,23 @@ async def build(
     user: build_users.BuildUser | None = None
     try:
         if build_users.use_build_users(settings.build_users_group, settings.auto_allocate_uids):
-            pool = build_users.pool_dir(layout.state_dir, layout.relocated)
+            auto = settings.auto_allocate_uids
+            pool = build_users.pool_dir(layout.state_dir, layout.relocated, auto=auto)
+            # `getBuildUser`: the chroot builder allocates in a user namespace (`linux-derivation-builder.cc:443`).
+            take = (
+                functools.partial(
+                    build_users.acquire_auto,
+                    pool,
+                    settings.build_users_group,
+                    start_id=settings.start_id,
+                    id_count=settings.id_count,
+                    user_namespace=chroot,
+                )
+                if auto
+                else functools.partial(build_users.acquire, pool, settings.build_users_group)
+            )
             try:
-                while (
-                    user := await anyio.to_thread.run_sync(build_users.acquire, pool, settings.build_users_group)
-                ) is None:
+                while (user := await anyio.to_thread.run_sync(take)) is None:
                     await anyio.sleep(USER_POLL_SECONDS)
             except build_users.BuildUserError as e:
                 return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(str(e)))
