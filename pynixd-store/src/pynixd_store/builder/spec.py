@@ -58,8 +58,10 @@ class ChildSpec(TypedDict):
     builder: str
     args: list[str]
     env: dict[str, str]
+    chroot: bool
+    """`False` runs the builder on the host, with no namespace and no chroot (`LinuxDerivationBuilder`)."""
     root: str
-    """The chroot root, prepared by pynixd: `etc`, `tmp`, the store directory, `/dev` links."""
+    """With *chroot*, the chroot root, prepared by pynixd: `etc`, `tmp`, the store directory, `/dev` links."""
     binds: list[tuple[str, str, bool]]
     """(path in the sandbox, source on the host, optional)."""
     private_network: bool
@@ -85,6 +87,8 @@ class ChildSpec(TypedDict):
     """With *cgroup_report*, how often the helper samples the cgroup; 0 takes no samples."""
     build_user: tuple[int, int] | None
     """The build user's host uid and gid, as root; `None` maps the helper's own ids."""
+    build_groups: list[int]
+    """Without *chroot*, the build user's supplementary groups, which the builder keeps."""
     map_fd: int | None
     """With *build_user*: the helper writes a byte here after its `unshare`, and reads one back once pynixd has
     written its uid and gid maps. A process in the new namespace cannot map a uid other than its own."""

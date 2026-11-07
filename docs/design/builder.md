@@ -126,6 +126,34 @@ Nix's does (`useBuildUsers`, `user-lock.cc:237`):
 `auto-allocate-uids` and `uid-range` stay on the daemon. A build VM maps no
 build user yet, so as root with build users a build uses the namespaces.
 
+## Without the sandbox
+
+`sandbox = false`, and `sandbox = relaxed` for a `__noChroot` or fixed-output
+derivation, build without the chroot, as `makeDerivationBuilder` decides
+(`uses_sandbox`). A store whose real directory is not its logical one, every
+`?root=` store, always sandboxes.
+
+- The helper unshares nothing and binds nothing. The builder runs on the host,
+  in the host's build directory, as pynixd's user or as the build user itself,
+  with that user's supplementary groups (`setUser`).
+- No PID namespace ends what the builder leaves behind. With a build user, the
+  helper kills that user's processes after the builder too (`killSandbox`). A
+  build cgroup kills its processes as well, but Nix has none by default.
+- The builder gets no descriptor but the standard three (`closeExtraFDs`). A
+  leftover process that held a copy of the terminal would keep the build's log
+  open, and the build would wait for that process.
+- A fixed or impure output is copied before pynixd hashes it, because a
+  leftover process may still write to it (`moveOutputToTempDir`). An output at
+  its final path stays there.
+- The builder's directory is `build` in the top directory, as in the sandbox.
+  Nix gives it the top directory itself. The top directory holds the helper's
+  job, which the build user can reach but not list or replace.
+
+The daemon builds the rest without the sandbox: a check, a repair, a build
+with an output that is valid already (Nix builds those at a fallback path and
+rewrites the hashes), `recursive-nix`, and `__noChroot` under `sandbox = true`,
+which Nix refuses.
+
 ## The child: pynixd's own helper
 
 | | bubblewrap (`bwrap`, a Nix package) | a helper of pynixd's (`python -m pynixd_store.builder.child`) |

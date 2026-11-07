@@ -105,6 +105,21 @@ BUILDER_RPC = "builder-rpc-v0"
 """`drvFeatureBuilderRpcV0`: the builder submits its outputs over its daemon (`derivations.hh:24`)."""
 
 
+def uses_sandbox(drv: BasicDerivation, settings: BuildSettings, *, relocated: bool) -> bool:
+    """`makeDerivationBuilder` (`unix/build/derivation-builder.cc:1751`): whether the build gets the chroot.
+
+    *relocated* is `isRelocatedStore`: a store whose real directory is not its logical one always sandboxes.
+    `unsupported` leaves `__noChroot` under `sandbox = true` to the daemon, which refuses it.
+    """
+    if relocated or settings.sandbox == "true":
+        return True
+    if settings.sandbox == "false":
+        return False
+    return not bool_attr(drv.env, "__noChroot", default=False) and all(
+        o.kind not in (OutputKind.CA_FIXED, OutputKind.IMPURE) for o in drv.outputs.values()
+    )
+
+
 def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str, relocated: bool) -> str | None:
     """Why pynixd leaves this build to the daemon, or `None` when it builds it.
 
@@ -126,9 +141,12 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
         return "a build with a post-build-hook"
     if settings.keep_failed and not builtin:
         return "a build with keep-failed"
-    if settings.sandbox == "false" or bool_attr(drv.env, "__noChroot", default=False):
-        return "a build without the sandbox"
+    # `makeDerivationBuilder` (`derivation-builder.cc:1757`) throws before a build starts.
+    if settings.sandbox == "true" and bool_attr(drv.env, "__noChroot", default=False):
+        return "__noChroot with sandbox = true"
     features = set(drv.required_system_features)
+    if {"recursive-nix", BUILDER_RPC} & features and not uses_sandbox(drv, settings, relocated=relocated):
+        return "recursive-nix or builder-rpc-v0 without the sandbox"
     if "uid-range" in features:
         return "the feature uid-range"
     if settings.auto_allocate_uids and build_users.use_build_users(settings.build_users_group, True):
@@ -157,10 +175,6 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
         return "a deferred output"
     if len(kinds) != 1 or (OutputKind.CA_FIXED in kinds and len(drv.outputs) != 1):
         return f"the outputs {sorted(drv.outputs)} of kinds {sorted(k.name for k in kinds)}"
-    # `makeDerivationBuilder` (`derivation-builder.cc:1777`): relaxed builds an unsandboxed type without the
-    # chroot, unless the store is relocated. pynixd always builds in one.
-    if settings.sandbox == "relaxed" and not relocated and kinds & {OutputKind.CA_FIXED, OutputKind.IMPURE}:
-        return "an unsandboxed derivation with sandbox = relaxed"
     # `moveOutputToTempDir` (`derivation-builder.cc:1417`) restores a fixed output with fsync; pynixd's
     # restore has none, as its own writes leave this setting to the daemon (`write_router._fsync`).
     if OutputKind.CA_FIXED in kinds and settings.fsync_store_paths:
@@ -260,7 +274,7 @@ def _read_or_empty(path: str | None) -> str:
         return ""
 
 
-def _fetch_spec(drv: BasicDerivation, settings: BuildSettings, out: str) -> FetchSpec:
+def _fetch_spec(drv: BasicDerivation, settings: BuildSettings, out: str, build_dir: str) -> FetchSpec:
     transfer = settings.transfer
     return {
         "main_url": drv.env["url"],
@@ -268,7 +282,7 @@ def _fetch_spec(drv: BasicDerivation, settings: BuildSettings, out: str) -> Fetc
         "out": out,
         "unpack": drv.env.get("unpack", "") == "1",
         "executable": drv.env.get("executable") == "1",
-        "tmp_dir": SANDBOX_BUILD_DIR,
+        "tmp_dir": build_dir,
         "netrc_data": _read_or_empty(transfer.netrc_file),
         "netrc_file": transfer.netrc_file,
         "ca_data": _read_or_empty(transfer.ssl_cert_file),
@@ -323,12 +337,14 @@ class _Guest:
 class _Paths:
     top: Path
     tmp: Path
-    chroot_parent: Path
-    root: Path
+    chroot_parent: Path | None
+    root: Path | None
+    """The chroot's root; `None` for a build without the chroot."""
 
     def remove(self) -> None:
         for path in (self.chroot_parent, self.top):
-            delete_path(path)
+            if path is not None:
+                delete_path(path)
 
 
 def _drv_name(drv_path: str) -> str:
@@ -336,11 +352,23 @@ def _drv_name(drv_path: str) -> str:
 
 
 def _prepare(
-    engine: StoreEngine, drv_path: str, settings: BuildSettings, user: build_users.BuildUser | None = None
+    engine: StoreEngine,
+    drv_path: str,
+    settings: BuildSettings,
+    user: build_users.BuildUser | None = None,
+    *,
+    chroot: bool = True,
 ) -> _Paths:
-    """`startBuild` up to the environment, and `setupBuildChroot` (`unix/build/chroot.cc:12`).
+    """`startBuild` up to the environment, and `setupBuildChroot` (`unix/build/chroot.cc:12`) with *chroot*.
 
     With *user*, the build directory is the build user's, and the chroot's root and store its group's.
+
+    NIX-DEVIATION (#27): without the chroot, `setBuildTmpDir`
+    (`unix/build/derivation-builder-impl.hh:215`) gives the builder the top
+    directory itself. pynixd gives it the `build` directory in it, as in the
+    sandbox, because the top directory holds the helper's job and its usage
+    file, which the build user must not replace. Only the path differs; a
+    build that prints `$NIX_BUILD_TOP` shows it.
     """
     layout = engine.layout
     build_dir = Path(settings.build_dir) if settings.build_dir else layout.state_dir / "builds"
@@ -351,6 +379,11 @@ def _prepare(
     tmp = top / "build"
     tmp.mkdir(0o700)
     build_users.chown_to(user, tmp)
+    if not chroot:
+        if user is not None:
+            # The build user passes through the top directory, and lists or replaces nothing in it.
+            top.chmod(0o711)
+        return _Paths(top, tmp, None, None)
 
     chroot_parent = layout.real_store_dir / (drv_path.rsplit("/", 1)[-1] + ".chroot")
     delete_path(chroot_parent)
@@ -409,6 +442,9 @@ def _binds(
     In a store at `?root=` the source is absent and the build fails. pynixd
     binds the real path, as for the inputs; Lillecarl/nix#392 holds the report.
     """
+    root = paths.root
+    if root is None:
+        raise ValueError("a build without the chroot binds nothing")
     binds: dict[str, tuple[str, bool]] = {p.target: (p.source, p.optional) for p in settings.sandbox_paths}
     real = engine.layout.real_store_dir
     for path in sandbox_closure:
@@ -420,13 +456,13 @@ def _binds(
         for name in DEV_FILES:
             binds.setdefault(name, (name, False))
     if not sandboxed:
-        (paths.root / "etc/nsswitch.conf").write_text("hosts: files dns\nservices: files\n")
+        (root / "etc/nsswitch.conf").write_text("hosts: files dns\nservices: files\n")
         for name in ("/etc/resolv.conf", "/etc/services", "/etc/hosts"):
             if os.path.exists(name):
                 binds.setdefault(name, (os.path.realpath(name), False))
     else:
-        (paths.root / "etc/hosts").write_text("127.0.0.1 localhost\n::1 localhost\n")
-    (paths.root / "etc").chmod(0o555)
+        (root / "etc/hosts").write_text("127.0.0.1 localhost\n::1 localhost\n")
+    (root / "etc").chmod(0o555)
     return [(target, source, optional) for target, (source, optional) in sorted(binds.items())]
 
 
@@ -513,6 +549,7 @@ async def build(
     layout = engine.layout
     store_dir = str(layout.store_dir)
     drv_name = _drv_name(drv_path)
+    chroot = uses_sandbox(drv, settings, relocated=layout.store_dir != layout.real_store_dir)
     impure = any(o.kind is OutputKind.IMPURE for o in drv.outputs.values())
     known = {
         name: random_path(name, drv_name, store_dir) if impure else realised.get(name, o.path)
@@ -546,6 +583,7 @@ async def build(
             if path and path not in valid:
                 await anyio.to_thread.run_sync(delete_path, layout.real_store_dir / path.rsplit("/", 1)[-1])
         # The sandbox needs no hash rewrite, so a known path is its own scratch path (`derivation-builder.cc:417`).
+        # Without it, the caller sends a build with a valid output to the daemon, which rewrites the hashes.
         scratch = {name: path or fallback_path(drv_path, name, drv_name, store_dir) for name, path in known.items()}
         inputs = {str(p) for p in await engine.query_closure(sorted(str(p) for p in drv.input_srcs))}
         # An invalid path drops out of the closure, as Nix ignores `InvalidPath` here.
@@ -559,13 +597,16 @@ async def build(
         except PlainError as e:
             return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(str(e)))
         try:
-            paths = await anyio.to_thread.run_sync(_prepare, engine, drv_path, settings, user)
+            paths = await anyio.to_thread.run_sync(
+                functools.partial(_prepare, engine, drv_path, settings, user, chroot=chroot)
+            )
         except build_users.BuildUserError as e:
             return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(str(e)))
         fixed = any(o.kind is OutputKind.CA_FIXED for o in drv.outputs.values())
         sandboxed = not (fixed or impure)
         # `inputRewrites` (`derivation-builder.cc:435`): the sandbox builds each output at its scratch path.
         rewrites = {hash_placeholder(name): path for name, path in scratch.items()}
+        build_dir = SANDBOX_BUILD_DIR if chroot else str(paths.tmp)
         env = build_env(
             drv.env,
             outputs=drv.outputs,
@@ -576,11 +617,12 @@ async def build(
             sandboxed=sandboxed,
             impure_source={**os.environ, **settings.impure_env},
             exported=exported,
+            build_dir=build_dir,
         )
         for name, contents in env.files.items():
             (paths.tmp / name).write_text(contents, encoding="utf-8")
         fetch = (
-            await anyio.to_thread.run_sync(_fetch_spec, drv, settings, scratch["out"])
+            await anyio.to_thread.run_sync(_fetch_spec, drv, settings, scratch["out"], build_dir)
             if drv.builder == "builtin:fetchurl"
             else None
         )
@@ -588,14 +630,17 @@ async def build(
             "builder": drv.builder,
             "args": [rewrite_strings(arg, rewrites) for arg in drv.args],
             "env": env.variables,
-            "root": str(paths.root),
-            "binds": await anyio.to_thread.run_sync(
-                _binds, engine, paths, inputs, sandbox_closure, settings, sandboxed
+            "chroot": chroot,
+            "root": "" if paths.root is None else str(paths.root),
+            "binds": (
+                await anyio.to_thread.run_sync(_binds, engine, paths, inputs, sandbox_closure, settings, sandboxed)
+                if chroot
+                else []
             ),
             "private_network": sandboxed,
             "sandbox_uid": SANDBOX_UID,
             "sandbox_gid": SANDBOX_GID,
-            "work_dir": SANDBOX_BUILD_DIR,
+            "work_dir": build_dir,
             "shm_size": settings.sandbox_shm_size,
             "no_new_privileges": not settings.allow_new_privileges,
             "filter_syscalls": settings.filter_syscalls,
@@ -612,10 +657,18 @@ async def build(
             "cgroup_report": False,
             "sample_seconds": 0,
             "build_user": None if user is None else (user.uid, user.gid),
+            "build_groups": [] if user is None else list(user.groups),
             "map_fd": None,
         }
-        if os.path.exists(HOME_DIR):
-            raise ValueError(f"home directory '{HOME_DIR}' exists; please remove it to assure purity of builds")
+        # `startBuild` (`derivation-builder.cc:465`): only a build that rewrites hashes, one without the chroot.
+        if not chroot and os.path.exists(HOME_DIR):
+            return LocalBuildResult(
+                BuildResultStatus.MISC_FAILURE,
+                show_error(
+                    f"home directory {magenta(chr(34) + HOME_DIR + chr(34))} exists; please remove it to assure "
+                    "purity of builds without sandboxing"
+                ),
+            )
         start = int(time.time())
         log = bytearray()
         lines = BuildLog(settings.log_lines)
@@ -629,7 +682,9 @@ async def build(
         submitting = BUILDER_RPC in drv.required_system_features
         # The guest kernel has no binfmt handler and no IA32 emulation: another system builds on the host's kernel.
         # The guest maps no build user yet: as root with build users, the namespaces build.
-        in_vm = vm is not None and sandboxed and drv.platform in {settings.system, "builtin"} and user is None
+        in_vm = (
+            vm is not None and chroot and sandboxed and drv.platform in {settings.system, "builtin"} and user is None
+        )
         async with contextlib.AsyncExitStack() as stack:
             if submitting or "recursive-nix" in drv.required_system_features:
                 if recursive is None:
@@ -733,7 +788,7 @@ async def build(
                     drv.outputs,
                     scratch=scratch,
                     drv_name=drv_name,
-                    chroot_root=paths.root,
+                    chroot_root=Path("/") if paths.root is None else paths.root,
                     real_store_dir=layout.real_store_dir,
                     store_dir=store_dir,
                     input_paths=inputs,
@@ -743,6 +798,7 @@ async def build(
                     discard=discarded_references(drv.env),
                     check=check,
                     build_uid=None if user is None else user.uid,
+                    fresh=not chroot,
                 )
             )
         except BuildFailure as e:
@@ -886,16 +942,20 @@ async def _run(
     spec_file = paths.top / "spec.json"
     maps: socket.socket | None = None
     helper_maps: socket.socket | None = None
-    if user is not None:
+    if user is not None and spec["chroot"]:
         maps, helper_maps = socket.socketpair()
         spec = {**spec, "map_fd": helper_maps.fileno()}
-    spec_file.write_text(json.dumps(spec))
+    # 0600: without the chroot the build user can reach the top directory, and the job may hold a netrc.
+    with open(os.open(spec_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as job:
+        job.write(json.dumps(spec))
     master, slave = os.openpty()
     if user is not None:
         # `startBuild` (`derivation-builder.cc:491`).
         os.fchmod(slave, 0o600)
         os.fchown(slave, user.uid, 0)
     if guest is not None:
+        if paths.chroot_parent is None:
+            raise ValueError("a build VM runs the sandbox only")
         status_read = status_write = -1
         await guest.vm.make_disk(paths.top, paths.tmp)
         argv = guest.vm.argv(

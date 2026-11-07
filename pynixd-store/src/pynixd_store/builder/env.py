@@ -412,11 +412,13 @@ def build_env(
     sandboxed: bool,
     impure_source: Mapping[str, str],
     exported: Mapping[str, Sequence[ValidPathInfo]],
+    build_dir: str = SANDBOX_BUILD_DIR,
 ) -> BuildEnv:
     """The environment the builder runs with. A structured build must pass `structured_attrs_reason` first.
 
     *fixed_output* and *sandboxed* are `isFixed` and `isSandboxed` of the derivation's type: an impure
-    derivation is neither. *exported* is `exportReferences` of each `export_requests` name.
+    derivation is neither. *exported* is `exportReferences` of each `export_requests` name. *build_dir* is
+    `tmpDirInSandbox`: the host's build directory for a build without the chroot.
     """
     variables = {
         "PATH": "/path-not-set",
@@ -434,8 +436,8 @@ def build_env(
             attrs[key] = path_info_json(infos)
         files[".attrs.sh"] = rewrite_strings(write_shell(attrs), rewrites)
         files[".attrs.json"] = rewrite_strings(dump_json(attrs), rewrites)
-        variables["NIX_ATTRS_SH_FILE"] = f"{SANDBOX_BUILD_DIR}/.attrs.sh"
-        variables["NIX_ATTRS_JSON_FILE"] = f"{SANDBOX_BUILD_DIR}/.attrs.json"
+        variables["NIX_ATTRS_SH_FILE"] = f"{build_dir}/.attrs.sh"
+        variables["NIX_ATTRS_JSON_FILE"] = f"{build_dir}/.attrs.json"
         impure = list(attrs.get("impureEnvVars", ()))
     else:
         pass_as_file = set(env.get("passAsFile", "").split())
@@ -443,16 +445,16 @@ def build_env(
             if name in pass_as_file:
                 file_name = ".attr-" + nix32_encode(hashlib.sha256(name.encode()).digest())
                 files[file_name] = rewrite_strings(value, rewrites)
-                variables[name + "Path"] = f"{SANDBOX_BUILD_DIR}/{file_name}"
+                variables[name + "Path"] = f"{build_dir}/{file_name}"
             else:
                 variables[name] = value
         for file_name, infos in exported.items():
             files[file_name] = rewrite_strings(validity_registration(infos), rewrites)
         impure = env.get("impureEnvVars", "").split()
 
-    variables["NIX_BUILD_TOP"] = SANDBOX_BUILD_DIR
+    variables["NIX_BUILD_TOP"] = build_dir
     for name in ("TMPDIR", "TEMPDIR", "TMP", "TEMP", "PWD"):
-        variables[name] = SANDBOX_BUILD_DIR
+        variables[name] = build_dir
     if fixed_output:
         variables["NIX_OUTPUT_CHECKED"] = "1"
     if not sandboxed:

@@ -230,6 +230,7 @@ def collect_outputs(
     discard: set[str],
     check: bool = False,
     build_uid: int | None = None,
+    fresh: bool = False,
 ) -> Collected:
     """Each output the build made at its *scratch* path, moved into the store and described; nothing is registered yet.
 
@@ -238,6 +239,8 @@ def collect_outputs(
     *is_valid* asks the store about a path no output names. An output in
     *discard* is not scanned (`unsafeDiscardReferences`). Blocking: call it
     from a worker thread. *build_uid* is the build user's, whose files alone an output may hold.
+    With *fresh*, a fixed or impure output is copied before it is hashed: outside a PID namespace, a process
+    of the builder may still hold one of its files open for writing (`moveOutputToTempDir`, `derivation-builder.cc:1419`).
     """
     referenceable = input_paths | set(scratch.values())
     # One for every output, as Nix's: an output may hard-link a file of another (`derivation-builder.cc:1076`).
@@ -262,11 +265,19 @@ def collect_outputs(
     # `outputRewrites`: the final path of each output done so far, by its scratch path.
     final: dict[str, str] = {}
     locks: list[PathLock] = []
+    copies: list[TempDir] = []
     try:
         for name in _sorted(drv_path, scanned):
             output, s = outputs[name], scanned[name]
             actual = chroot_root / s.path.lstrip("/")
             path, references = s.path, s.references
+            if fresh and output.kind in (OutputKind.CA_FIXED, OutputKind.IMPURE):
+                copy = TempDir.create(real_store_dir)
+                copies.append(copy)
+                restore_path(copy.path / "x", _Reader(dump_path(actual)))
+                delete_path(actual)
+                actual = copy.path / "x"
+                canonicalise(actual)
             if output.method:
                 a = _content_addressed(
                     name, drv_name, output, s, actual, store_dir, real_store_dir, final, discard=name in discard
@@ -291,7 +302,7 @@ def collect_outputs(
                     locks.append(lock)
                 if path != s.path and is_valid(path):
                     delete_path(actual)
-                else:
+                elif actual != dest:
                     delete_path(dest)
                     _move(actual, dest)
                     canonicalise(dest)
@@ -312,6 +323,9 @@ def collect_outputs(
         for lock in locks:
             lock.release(delete=True)
         raise
+    finally:
+        for copy in copies:
+            copy.remove()
     failure = next((e for name in sorted(fixed) if (e := _check(drv_path, fixed[name])) is not None), None)
     return Collected(infos, [infos[name] for name in addressed], failure, locks)
 

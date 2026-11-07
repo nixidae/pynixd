@@ -14,6 +14,10 @@ With a third argument, *CONTROL_FD*, the helper serves `_add_path` on that socke
 Unprivileged, the helper maps its own uid and gid to the sandbox ids, as Nix does without build users. As
 root with a build user, pynixd writes the maps (`ChildSpec.map_fd`), and the helper sets up the sandbox as host
 root until it becomes the sandbox uid, as Nix's child does.
+
+Without the chroot (`ChildSpec.chroot`), the helper does what `LinuxDerivationBuilder` does: no namespace, and
+the builder runs as the build user itself. No PID namespace ends what the builder leaves, so the helper kills
+the build user's processes after the builder too (`killSandbox`, `unix/build/derivation-builder.cc:156`).
 """
 
 from __future__ import annotations
@@ -263,7 +267,28 @@ def _scope_abstract_sockets() -> None:
         os.close(ruleset)
 
 
-def _run_child(spec: ChildSpec) -> None:
+def _set_user(groups: list[int] | None, gid: int, uid: int) -> None:
+    """`setUser` within `preserveDeathSignal`: a change of credentials clears the parent death signal.
+
+    *groups* `None` keeps them: in a user namespace with `setgroups` denied, the call fails.
+    """
+    if groups is not None:
+        os.setgroups(groups)
+    os.setgid(gid)
+    os.setuid(uid)
+    _prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+    if os.getppid() == 1:
+        raise SetupError("the sandbox helper died")
+
+
+def _close_extra_fds(keep: int) -> None:
+    """`closeExtraFDs` (`unix/build/derivation-builder.cc:975`), but *keep*: the close-on-exec status pipe."""
+    limit = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+    os.closerange(3, keep)
+    os.closerange(keep + 1, limit if limit != resource.RLIM_INFINITY else 1 << 20)
+
+
+def _run_child(spec: ChildSpec, status_fd: int) -> None:
     """`runChild` (`unix/build/derivation-builder.cc:933`) after `commonChildInit` (`child.cc:10`)."""
     os.setsid()
     os.dup2(2, 1)
@@ -272,17 +297,22 @@ def _run_child(spec: ChildSpec) -> None:
     os.close(null)
     if spec["fetchurl"] is not None:
         fetchurl.preload_nss()
-    _enter_chroot(spec)
-    if spec["build_user"] is not None:
-        # `setUser` (`linux-derivation-builder.cc:930`): host root until here, so the binds read what root may.
-        os.setgid(spec["sandbox_gid"])
-        os.setuid(spec["sandbox_uid"])
+    user = spec["build_user"]
+    if spec["chroot"]:
+        _enter_chroot(spec)
+        if user is not None:
+            # `setUser` (`linux-derivation-builder.cc:930`): host root until here, so the binds read what root may.
+            _set_user(None, spec["sandbox_gid"], spec["sandbox_uid"])
+    elif user is not None:
+        # `DerivationBuilderImpl::setUser` (`derivation-builder.cc:1037`).
+        _set_user(spec["build_groups"], user[1], user[0])
     if spec["no_new_privileges"]:
         _prctl(PR_SET_NO_NEW_PRIVS, 1)
     if spec["filter_syscalls"]:
         _filter_syscalls(spec["no_new_privileges"])
     _scope_abstract_sockets()
     os.chdir(spec["work_dir"])
+    _close_extra_fds(status_fd)
     resource.setrlimit(resource.RLIMIT_CORE, (0, resource.RLIM_INFINITY))
     os.umask(0o022)
     if spec["fetchurl"] is not None:
@@ -382,16 +412,18 @@ def main() -> None:
         uid, gid = os.getuid(), os.getgid()
         if spec["build_user"] is not None:
             _kill_user(spec["build_user"][0])
-            # The supplementary groups stay with a process the gid map does not reach: drop root's.
-            os.setgroups([])
-        flags = os.CLONE_NEWUSER | os.CLONE_NEWPID | os.CLONE_NEWNS | os.CLONE_NEWIPC | os.CLONE_NEWUTS
-        if spec["private_network"]:
-            flags |= os.CLONE_NEWNET
-        os.unshare(flags)
-        if spec["map_fd"] is not None:
-            _await_maps(spec["map_fd"])
-        else:
-            _map_ids(spec, uid, gid)
+        if spec["chroot"]:
+            if spec["build_user"] is not None:
+                # The supplementary groups stay with a process the gid map does not reach: drop root's.
+                os.setgroups([])
+            flags = os.CLONE_NEWUSER | os.CLONE_NEWPID | os.CLONE_NEWNS | os.CLONE_NEWIPC | os.CLONE_NEWUTS
+            if spec["private_network"]:
+                flags |= os.CLONE_NEWNET
+            os.unshare(flags)
+            if spec["map_fd"] is not None:
+                _await_maps(spec["map_fd"])
+            else:
+                _map_ids(spec, uid, gid)
     except (OSError, SetupError) as e:
         _report(status_fd, f"setting up the sandbox: {e}")
         os._exit(1)
@@ -400,17 +432,22 @@ def main() -> None:
     if pid == 0:
         try:
             _prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
-            _run_child(spec)
+            _run_child(spec, status_fd)
             raise SetupError(f"executing '{spec['builder']}' returned")
         except (OSError, SetupError) as e:
             _report(status_fd, str(e))
         os._exit(1)
-    os.close(status_fd)
     # Only now an event loop: the `unshare` above refuses a process with a second thread, and a fork copies a loop.
     samples: list[UsageSample] = []
     anyio.run(_wait_serving, spec, pid, control, samples)
     # The sandbox's pid 1 reaps its orphans, so its usage holds theirs too.
     _pid, status, rusage = os.wait4(pid, 0)
+    if not spec["chroot"] and spec["build_user"] is not None:
+        try:
+            _kill_user(spec["build_user"][0])
+        except SetupError as e:
+            _report(status_fd, str(e))
+    os.close(status_fd)
     if spec["cgroup_report"] and spec["cgroup"] is not None:
         usage = replace(build_cgroup.read(Path(spec["cgroup"])), samples=tuple(samples))
         write_usage(Path(spec["usage_file"]), usage)

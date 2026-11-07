@@ -32,6 +32,7 @@ def _spec(root: Path, script: str, **over: object) -> ChildSpec:
         "builder": SH,
         "args": ["-c", script],
         "env": {"PATH": COREUTILS, "FOO": "bar"},
+        "chroot": True,
         "root": str(root),
         "binds": [
             ("/nix/store", "/nix/store", False),
@@ -42,6 +43,7 @@ def _spec(root: Path, script: str, **over: object) -> ChildSpec:
         "sandbox_uid": 1000,
         "sandbox_gid": 100,
         "build_user": None,
+        "build_groups": [],
         "map_fd": None,
         "work_dir": "/build",
         "shm_size": "50%",
@@ -60,13 +62,13 @@ def _spec(root: Path, script: str, **over: object) -> ChildSpec:
     return spec
 
 
-def _run(tmp_path: Path, spec: ChildSpec) -> tuple[int, str, str]:
+def _run(tmp_path: Path, spec: ChildSpec, extra_fds: tuple[int, ...] = ()) -> tuple[int, str, str]:
     spec_file = tmp_path / "spec.json"
     spec_file.write_text(json.dumps(spec))
     read, write = os.pipe()
     proc = subprocess.run(
         [sys.executable, "-m", "pynixd_store.builder.child", str(spec_file), str(write)],
-        pass_fds=(write,),
+        pass_fds=(write, *extra_fds),
         capture_output=True,
         text=True,
         timeout=30,
@@ -85,6 +87,40 @@ def test_the_builder_runs_as_the_sandbox_user_in_its_own_namespaces(tmp_path: Pa
     assert first == "bar 1000:100 1 /build localhost"
     assert "real-root" not in listing
     assert {"build", "dev", "etc", "nix", "proc", "tmp"} <= set(listing)
+
+
+def test_without_the_chroot_the_builder_runs_on_the_host_as_its_caller(tmp_path: Path) -> None:
+    """`LinuxDerivationBuilder` (`linux/build/linux-derivation-builder.hh:24`): no namespace, no chroot."""
+    work = tmp_path / "work"
+    work.mkdir()
+    script = 'echo "$FOO $(id -u):$(id -g) $PWD $(cat /proc/sys/kernel/hostname)"; [ $$ != 1 ] && echo own-pid'
+    spec = _spec(tmp_path / "root", script, chroot=False, binds=[], private_network=False, work_dir=str(work))
+    spec["root"] = ""
+    code, out, status = _run(tmp_path, spec)
+    assert (code, status) == (0, ""), out
+    assert out.splitlines() == [f"bar {os.getuid()}:{os.getgid()} {work} {socket.gethostname()}", "own-pid"]
+
+
+@pytest.mark.parametrize("chroot", [True, False])
+def test_the_builder_inherits_no_descriptor_but_its_standard_three(tmp_path: Path, chroot: bool) -> None:
+    """`closeExtraFDs` (`unix/build/derivation-builder.cc:975`): a descriptor the helper got stays out.
+
+    Without the chroot a leftover process that holds a copy of the terminal keeps the build's log open.
+    """
+    extra = os.open("/dev/null", os.O_RDONLY)
+    try:
+        script = f"[ -e /proc/self/fd/{extra} ] && echo leaked || echo closed"
+        over: dict[str, object] = {}
+        if not chroot:
+            work = tmp_path / "work"
+            work.mkdir()
+            over = {"chroot": False, "binds": [], "private_network": False, "work_dir": str(work)}
+        spec = _spec(tmp_path / "root", script, **over)
+        code, out, status = _run(tmp_path, spec, (extra,))
+    finally:
+        os.close(extra)
+    assert (code, status) == (0, ""), out
+    assert out.strip() == "closed"
 
 
 def test_the_builders_exit_code_reaches_the_caller(tmp_path: Path) -> None:

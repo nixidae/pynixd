@@ -6,7 +6,7 @@ import pytest
 
 from nix_daemon_protocol.basic_derivation import BasicDerivation
 from nix_daemon_protocol.derivation_output import DerivationOutput
-from pynixd_store.builder.local import unsupported
+from pynixd_store.builder.local import unsupported, uses_sandbox
 from pynixd_store.builder.settings import BuildSettings
 
 FIXED = DerivationOutput(path="/nix/store/00000000000000000000000000000000-x", method="r:sha256", hash_digest="00")
@@ -14,22 +14,47 @@ IMPURE = DerivationOutput(path="", method="r:sha256", hash_digest="impure")
 PLAIN = DerivationOutput(path="/nix/store/00000000000000000000000000000000-x")
 
 
-def _reason(output: DerivationOutput, sandbox: str, *, relocated: bool) -> str | None:
-    drv = BasicDerivation(outputs={"out": output}, platform="x86_64-linux", builder="/bin/sh")
-    settings = BuildSettings.from_nix_config({}, {"system": "x86_64-linux", "sandbox": sandbox})
-    return unsupported(drv, settings, store_dir="/nix/store", relocated=relocated)
+def _drv(output: DerivationOutput, *, no_chroot: bool = False) -> BasicDerivation:
+    env = {"__noChroot": "1"} if no_chroot else {}
+    return BasicDerivation(outputs={"out": output}, platform="x86_64-linux", builder="/bin/sh", env=env)
 
 
-@pytest.mark.parametrize("output", [FIXED, IMPURE])
-def test_relaxed_leaves_an_unsandboxed_derivation_to_the_daemon(output: DerivationOutput) -> None:
-    """`makeDerivationBuilder` (`derivation-builder.cc:1777`) builds it without the chroot."""
-    assert _reason(output, "relaxed", relocated=False) == "an unsandboxed derivation with sandbox = relaxed"
+def _settings(sandbox: str) -> BuildSettings:
+    return BuildSettings.from_nix_config({}, {"system": "x86_64-linux", "sandbox": sandbox})
 
 
-@pytest.mark.parametrize("output", [FIXED, IMPURE])
-def test_relaxed_in_a_relocated_store_still_sandboxes(output: DerivationOutput) -> None:
-    """`isRelocatedStore` forces the sandbox (`derivation-builder.cc:1782`)."""
-    assert _reason(output, "relaxed", relocated=True) is None
+def _reason(output: DerivationOutput, sandbox: str, *, relocated: bool, no_chroot: bool = False) -> str | None:
+    return unsupported(
+        _drv(output, no_chroot=no_chroot), _settings(sandbox), store_dir="/nix/store", relocated=relocated
+    )
+
+
+@pytest.mark.parametrize(
+    ("output", "sandbox", "no_chroot", "relocated", "sandboxed"),
+    [
+        (PLAIN, "true", False, False, True),
+        (FIXED, "true", False, False, True),
+        (PLAIN, "false", False, False, False),
+        (PLAIN, "false", False, True, True),
+        (PLAIN, "relaxed", False, False, True),
+        (PLAIN, "relaxed", True, False, False),
+        (PLAIN, "relaxed", True, True, True),
+        (FIXED, "relaxed", False, False, False),
+        (IMPURE, "relaxed", False, False, False),
+        (FIXED, "relaxed", False, True, True),
+    ],
+)
+def test_the_sandbox_is_where_nix_puts_it(
+    output: DerivationOutput, sandbox: str, no_chroot: bool, relocated: bool, sandboxed: bool
+) -> None:
+    """`makeDerivationBuilder` (`derivation-builder.cc:1751`): `isRelocatedStore` forces the sandbox (`:1782`)."""
+    assert uses_sandbox(_drv(output, no_chroot=no_chroot), _settings(sandbox), relocated=relocated) is sandboxed
+    assert _reason(output, sandbox, relocated=relocated, no_chroot=no_chroot) is None
+
+
+def test_no_chroot_with_sandbox_true_goes_to_the_daemon() -> None:
+    """`makeDerivationBuilder` (`derivation-builder.cc:1757`) throws, in the daemon's words."""
+    assert _reason(PLAIN, "true", relocated=True, no_chroot=True) == "__noChroot with sandbox = true"
 
 
 def test_a_git_hashed_output_needs_git_hashing() -> None:

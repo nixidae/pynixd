@@ -26,6 +26,8 @@ class BuildUser:
     uid: int
     gid: int
     fd: int
+    groups: tuple[int, ...] = ()
+    """The user's supplementary groups but *gid*, such as `kvm`: an unsandboxed builder keeps them (`setUser`)."""
 
     def release(self) -> None:
         os.close(self.fd)
@@ -60,9 +62,10 @@ def acquire(pool: Path, group: str) -> BuildUser | None:
     pool.mkdir(parents=True, exist_ok=True)
     for name in entry.gr_mem:
         try:
-            uid = pwd.getpwnam(name).pw_uid
+            user = pwd.getpwnam(name)
         except KeyError:
             raise BuildUserError(f"the user '{name}' in the group '{group}' does not exist") from None
+        uid = user.pw_uid
         fd = os.open(pool / str(uid), os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -74,7 +77,9 @@ def acquire(pool: Path, group: str) -> BuildUser | None:
         if uid in (os.getuid(), os.geteuid()):
             os.close(fd)
             raise BuildUserError(f"the Nix user should not be a member of '{group}'")
-        return BuildUser(uid, entry.gr_gid, fd)
+        # `SimpleUserLock::acquire` (`user-lock.cc:123`).
+        groups = tuple(g for g in os.getgrouplist(name, user.pw_gid) if g != entry.gr_gid)
+        return BuildUser(uid, entry.gr_gid, fd, groups)
     return None
 
 
