@@ -586,7 +586,8 @@ async def build(
         name: random_path(name, drv_name, store_dir) if impure else realised.get(name, o.path)
         for name, o in drv.outputs.items()
     }
-    locks = [PathLock(layout.real_store_dir / path.rsplit("/", 1)[-1]) for path in known.values() if path]
+    held = {path: PathLock(layout.real_store_dir / path.rsplit("/", 1)[-1]) for path in known.values() if path}
+    locks = list(held.values())
     for lock in locks:
         # Not cancellable: an abandoned `flock` would hold the lock with no owner to release it.
         await anyio.to_thread.run_sync(lock.acquire)
@@ -627,6 +628,13 @@ async def build(
         # repairs it. Lillecarl/nix#400.
         present = {path for path in known.values() if path and await engine.is_valid_path_uncached(path)}
         valid = {path for path in present if not repair or await engine.contents_good(path)}
+        repairing = repair and BUILDER_RPC in drv.required_system_features
+        if repairing:
+            # The builder adds each output itself, and an add that repairs locks the path it replaces: the build
+            # lets go of each output it repairs, or that add waits for it forever.
+            for path, lock in held.items():
+                if path not in valid:
+                    lock.release(delete=False)
         if valid == set(known.values()) and not check:
             settled = True
             return LocalBuildResult(BuildResultStatus.ALREADY_VALID, paths=known)
@@ -759,7 +767,7 @@ async def build(
                 if not chroot:
                     # `addDependencyImpl` (`derivation-builder.cc:901`) binds nothing: the builder sees the store.
                     restriction = RestrictionContext(
-                        inputs, None, layout.real_store_dir, submitting=submitting, binds=False
+                        inputs, None, layout.real_store_dir, submitting=submitting, repairing=repairing, binds=False
                     )
                     listener = await anyio.to_thread.run_sync(_listen, paths.tmp / SOCKET_NAME)
                     build_users.chown_to(user, paths.tmp / SOCKET_NAME)
@@ -770,6 +778,7 @@ async def build(
                         None,
                         layout.real_store_dir,
                         submitting=submitting,
+                        repairing=repairing,
                         reveal=functools.partial(vm_allow, paths.top, layout.real_store_dir),
                     )
                     controls = await anyio.to_thread.run_sync(_listen, paths.top / VM_CONTROL_SOCKET_NAME)
@@ -781,7 +790,9 @@ async def build(
                     ours, control = socket.socketpair()
                     stack.callback(control.close)
                     stream = await stack.enter_async_context(await SocketStream.from_socket(ours))
-                    restriction = RestrictionContext(inputs, stream, layout.real_store_dir, submitting=submitting)
+                    restriction = RestrictionContext(
+                        inputs, stream, layout.real_store_dir, submitting=submitting, repairing=repairing
+                    )
                     listener = await anyio.to_thread.run_sync(_listen, paths.tmp / SOCKET_NAME)
                     build_users.chown_to(user, paths.tmp / SOCKET_NAME)
                 await stack.enter_async_context(recursive(listener, restriction))

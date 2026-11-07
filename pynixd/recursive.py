@@ -140,6 +140,11 @@ class RestrictedProxy(DaemonProxy):
     pynixd_features = frozenset()
     """A builder is no pynixd peer."""
 
+    @property
+    def repairs_adds(self) -> bool:
+        """A builder that repairs its outputs adds them over the paths it repairs."""
+        return self.restriction.repairing
+
     def honourable_features(self) -> frozenset[str]:
         """`builderRpcV0` names its own features (`daemon.cc:1170`); recursive mode names those of the stores."""
         if self.restriction.submitting:
@@ -231,6 +236,7 @@ class RestrictedProxy(DaemonProxy):
                 frozenset(self.restriction.allowed),
                 frames,
                 root=self.add_temp_root,
+                repair=self.restriction.repairing,
                 scan=True,
             )
         except ValueError as e:

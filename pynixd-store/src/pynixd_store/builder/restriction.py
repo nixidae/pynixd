@@ -37,6 +37,7 @@ class RestrictionContext:
     *submitting* is a `builder-rpc-v0` build: the builder submits its outputs (`RecursiveSubmitted`). *control*
     is the helper's control socket; without one, `attach` gives it once the helper connects. *reveal* runs for
     each path the builder adds, before the helper binds it. Without *binds* (no sandbox) a path only joins.
+    With *repairing*, the build repairs its outputs, and each path the builder adds replaces what the store holds.
     """
 
     def __init__(
@@ -46,11 +47,13 @@ class RestrictionContext:
         real_store_dir: Path,
         *,
         submitting: bool,
+        repairing: bool = False,
         reveal: Callable[[str], None] | None = None,
         binds: bool = True,
     ) -> None:
         self.inputs = frozenset(inputs)
         self.submitting = submitting
+        self.repairing = repairing
         self.added: set[str] = set()
         self.added_drv_outputs: set[str] = set()
         """Each `DrvOutput` a build of the builder realised, as its wire text (`addedDrvOutputs`)."""

@@ -55,7 +55,12 @@ class AddToStoreNarHandler(Handler):
         frames = FramedReader(ctx.proxy.r)
         try:
             await write_router(ctx.proxy.local_store).add_to_store(
-                Write(op=req.name, version=ctx.proxy.version, repair=bool(req.repair), info=req.info),
+                Write(
+                    op=req.name,
+                    version=ctx.proxy.version,
+                    repair=bool(req.repair) or ctx.proxy.repairs_adds,
+                    info=req.info,
+                ),
                 frames,
                 dont_check_sigs=bool(req.dont_check_sigs),
                 client=write_client(ctx),

@@ -14,6 +14,7 @@ import socket as socket_module
 import sqlite3
 from typing import TYPE_CHECKING, Any
 
+import anyio
 import pytest
 from prometheus_client import REGISTRY
 
@@ -29,7 +30,7 @@ from tests._conftest.nix_config import for_test_store
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator
+    from collections.abc import AsyncIterator, Iterator, Mapping
     from pathlib import Path
 
 # What only a build outside the chroot sees: the host's name, and its real build directory.
@@ -76,11 +77,12 @@ async def _serve(
     *,
     experimental_features: tuple[str, ...] = (),
     nix_bin: Path = NIX_BIN,
+    routes: Mapping[str, OpRoute] | None = None,
     **spec_args: Any,
 ) -> AsyncIterator[tuple[list[str], dict[str, str], Path]]:
     """A fresh `NIX_STORE_DIR` store with `BuildDerivation` on *route*: the build command, its environment, the state.
 
-    *spec_args* go to `make_test_spec`.
+    *routes* routes other ops; *spec_args* go to `make_test_spec`.
     """
     # One directory for both routes, so that every store path is the same; a route's store replaces the other's.
     base = tmp_path / sandbox
@@ -94,7 +96,7 @@ async def _serve(
         store_path=base,
         no_probe=True,
         nix_config=nix_config,
-        op_routes={"BuildDerivation": route},
+        op_routes={"BuildDerivation": route, **(routes or {})},
         store_dir=store,
         state_dir=state,
         log_dir=logs,
@@ -606,3 +608,47 @@ async def test_a_check_of_a_builder_rpc_build_compares_what_it_submits(tmp_path:
         assert "but we already have another one locally." in there["errors"][0], there
         assert here["errors"][0].startswith("error: derivation '"), here
         assert "may not be deterministic: output" in here["errors"][0], here
+
+
+async def _rpc_repaired(tmp_path: Path, route: OpRoute, nix_bin: Path, adds: OpRoute) -> dict[str, Any]:
+    features = ("ca-derivations", "dynamic-derivations")
+    matrix = {system: set(fs) | {"builder-rpc-v0"} for system, fs in _NO_PROBE_FEATURE_MATRIX.items()}
+    expr = RPC_CHECKED.replace("@NIX@", _nix_dir(nix_bin)).replace("@NOISE@", "same")
+    routes = dict.fromkeys(("AddToStore", "AddToStoreNar", "AddMultipleToStore"), adds)
+    async with _serve(
+        tmp_path,
+        route,
+        "false",
+        experimental_features=features,
+        nix_bin=nix_bin,
+        feature_matrix=matrix,
+        routes=routes,
+    ) as (nix, env, state):
+        build = [*nix[:1], "build", *nix[1:], "--extra-experimental-features", " ".join(features), "--no-link"]
+        _rc, out, _err, _both = await run_subproc(
+            [*build, "--print-out-paths", "--expr", expr], env=dict(env), nix_config=ALONE
+        )
+        real = state.parent.parent / "store" / out.strip().rsplit("/", 1)[-1]
+        real.chmod(0o644)
+        real.write_text("corrupt\n")
+        with anyio.fail_after(60):
+            rc, _out, err, _both = await run_subproc(
+                [*build, "--repair", "--expr", expr], env=dict(env), nix_config=ALONE, expected_retcode=None
+            )
+        return {"rc": rc, "err": err, "contents": real.read_text() if real.exists() else None}
+
+
+async def test_a_repair_of_a_builder_rpc_build_replaces_what_the_builder_submits(tmp_path: Path) -> None:
+    """The builder adds its outputs itself. In a repair, pynixd lets go of each output's lock, and each add the
+    builder makes repairs its path; the daemon finds the output valid and repairs nothing (Lillecarl/nix#400)."""
+    if NIX_GIT_BIN is None:
+        pytest.skip("NIX_GIT_BIN names no Nix of the master branch")
+    for adds in (OpRoute.pynixd, OpRoute.daemon):
+        before = _fallthrough()
+        here = await _rpc_repaired(tmp_path, OpRoute.pynixd, NIX_GIT_BIN, adds)
+        assert _fallthrough() == before, f"the daemon repaired the pynixd route's builder-rpc-v0 build ({adds.name})"
+        assert here["rc"] == 0, here
+        assert here["contents"] == "same\n", here
+    there = await _rpc_repaired(tmp_path, OpRoute.daemon, NIX_GIT_BIN, OpRoute.pynixd)
+    assert there["rc"] == 0, there
+    assert there["contents"] == "corrupt\n", there

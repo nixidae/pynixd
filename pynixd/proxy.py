@@ -92,6 +92,11 @@ class DaemonProxy:
     immediately, keeping pool usage minimal.
     """
 
+    @property
+    def repairs_adds(self) -> bool:
+        """Whether each add op of the session repairs its path, whatever the client asks."""
+        return False
+
     def __init__(
         self,
         client_r: NixReader,

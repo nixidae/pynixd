@@ -684,8 +684,6 @@ class LocalDBStore(Store):
         features = set(request.derivation.required_system_features)
         if {"recursive-nix", local_builder.BUILDER_RPC} & features and self.recursive_server is None:
             return "recursive-nix or builder-rpc-v0 with no server for the builder"
-        if local_builder.BUILDER_RPC in features and request.build_mode == BuildMode.REPAIR:
-            return "builder-rpc-v0 in repair mode"
         return None
 
     async def _check_unsupported(self, request: BuildDerivationRequest, settings: BuildSettings) -> str | None:
