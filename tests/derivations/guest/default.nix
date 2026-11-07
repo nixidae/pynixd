@@ -88,6 +88,14 @@ let
       path = "tests/parity";
       flags = [ perTestTimeout ];
     };
+    # What pynixd does as root: build users, the store's owner. The other
+    # suites run as `tester`, and one of their tests needs a store that its
+    # user cannot write.
+    root = {
+      path = "tests/root";
+      flags = [ perTestTimeout ];
+      user = "root";
+    };
   };
 in
 vivariumLib.mkTest (
