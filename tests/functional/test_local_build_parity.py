@@ -1076,6 +1076,63 @@ IMPURE = (
 IMPURE_FEATURES = ("ca-derivations", "impure-derivations", "configurable-impure-env")
 
 
+async def _impure_rebuilt(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
+    """An impure derivation built, checked and repaired: each step's exit, lines, store and rows."""
+    seen: dict[str, Any] = {}
+    async with _serve(tmp_path, route, experimental_features=IMPURE_FEATURES) as (url, root):
+        store = root / "nix" / "store"
+        for step, args in (("built", ()), ("checked", ("--rebuild",)), ("repaired", ("--repair",))):
+            rc, out, err, _both = await run_subproc(
+                [
+                    NIX_BIN,
+                    "build",
+                    "--store",
+                    url,
+                    "--extra-experimental-features",
+                    " ".join(IMPURE_FEATURES),
+                    "--impure",
+                    "--no-link",
+                    "--print-out-paths",
+                    *args,
+                    "--expr",
+                    IMPURE,
+                ],
+                expected_retcode=None,
+            )
+            seen[step] = {
+                "rc": rc,
+                "out": len(out.split()),
+                "stderr": err.splitlines(),
+                "store": sorted(p.name for p in store.iterdir() if not p.name.endswith((".drv", ".lock"))),
+                "rows": len(_rows(root)[0]),
+            }
+    return seen
+
+
+async def test_a_check_or_repair_of_an_impure_derivation_builds_it_again(tmp_path: Path) -> None:
+    """`derivation-goal.cc:71`: an impure derivation has no valid output, so a check or a repair builds it.
+
+    A check then fails in `assertPathValidity` (`:417`), as the daemon's does. The daemon's repair fails to move
+    the old output into itself (Lillecarl/nix#404); pynixd's replaces it.
+    """
+    before = _fallthrough()
+    here = await _impure_rebuilt(tmp_path, OpRoute.pynixd)
+    assert _fallthrough() == before, "the daemon built a check or a repair of the pynixd route"
+    there = await _impure_rebuilt(tmp_path, OpRoute.daemon)
+
+    assert here["built"] == there["built"]
+    mine, theirs = dict(here["checked"]), dict(there["checked"])
+    # The whole request on the daemon prints this line once; on the daemon's `BuildDerivation` it comes back with
+    # its own `error: ` prefix, nixidae/nixidae#1204.
+    assert mine.pop("stderr")[-1] == "error: some outputs are unexpectedly invalid", here["checked"]
+    assert theirs.pop("stderr")[-1] == "error: error: some outputs are unexpectedly invalid", there["checked"]
+    assert mine == theirs
+    assert there["repaired"]["rc"] == 1
+    assert any("cannot rename: Not a directory" in line for line in there["repaired"]["stderr"]), there["repaired"]
+    assert here["repaired"]["rc"] == 0, here["repaired"]
+    assert (here["repaired"]["store"], here["repaired"]["rows"]) == (there["built"]["store"], there["built"]["rows"])
+
+
 async def _impure(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
     async with _serve(tmp_path, route, experimental_features=IMPURE_FEATURES) as (url, root):
         _rc, out, err, _both = await run_subproc(

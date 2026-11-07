@@ -708,17 +708,19 @@ class LocalDBStore(Store):
     async def _repair_unsupported(self, request: BuildDerivationRequest) -> str | None:
         """Why the daemon repairs *request*, or `None`; also `None` for a request that does not repair.
 
-        pynixd repairs an output whose path the derivation or a realisation names. An impure output goes to the
-        daemon.
+        pynixd repairs an output whose path the derivation or a realisation names, and builds an impure one again.
         """
         if request.build_mode != BuildMode.REPAIR:
             return None
         return "a repair of an output with no path" if await self._known_paths(request) is None else None
 
     async def _known_paths(self, request: BuildDerivationRequest) -> list[str] | None:
-        """Each output's path: the derivation's, else a floating output's realised one. `None` when one has none."""
+        """Each output's path: the derivation's, else a floating output's realised one. `None` when one has none.
+
+        An impure derivation has none to check or replace: it builds again (`derivation-goal.cc:71`).
+        """
         if request.derivation.has_impure:
-            return None
+            return []
         paths: list[str] = []
         for name, output in request.derivation.outputs.items():
             path = output.path

@@ -470,13 +470,15 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         checking = self.build_mode == BuildMode.CHECK
         if checking or repairing:
             early_outputs |= await self._realised_paths(parsed, early_outputs)
-        if repairing:
+        # `derivation-goal.cc:71`: an impure derivation has no valid output to check or repair, so it builds.
+        impure = parsed.is_impure
+        if repairing and not impure:
             repaired = await self._repair_if_valid(parsed, drv_path, early_outputs)
             if repaired is not None:
                 return repaired.with_dynamic_outputs(self.derived_path.base_store_path())
         substituted = None if repairing else await self._try_substitute_known_outputs(early_outputs)
         # `derivation-goal.cc:143`: a check builds again what the store holds, so each wanted output must be valid.
-        if checking:
+        if checking and not impure:
             if substituted is None:
                 return goal_failure(
                     f"some outputs of '{_magenta(str(drv_path))}' are not valid, so checking is not possible\n"
@@ -598,6 +600,9 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         await build_goal.wait_until_it_reached_the_queue()
         self._note_that_it_decided()
         result = await self.run_child(build_goal)
+        if checking and impure and result_succeeded(result.result):
+            # `assertPathValidity` (`derivation-goal.cc:417`): an impure output has no realisation to name.
+            return goal_failure("some outputs are unexpectedly invalid", BuildResultStatus.MISC_FAILURE)
         if repairing and result_succeeded(result.result):
             # `derivation-building-goal.cc:1075`.
             for path in basic.output_paths().values():

@@ -319,6 +319,10 @@ def collect_outputs(
                         raise _check(drv_path, fixed[name]) or RuntimeError(f"'{drv_path}' made '{path}' for '{name}'")
                     locks.append(lock)
                 if repair and actual != dest:
+                    # NIX-DEFECT (#23): `replaceValidPath` (`derivation-builder.cc:269`) moves the old path to
+                    # `makeTempPath(storePath, ".old")`, a path inside itself, so a repair that rebuilds an existing
+                    # output fails with a rename error. pynixd deletes the old path and moves the new one in, as
+                    # Nix means to; Lillecarl/nix#404.
                     delete_path(dest)
                     _move(actual, dest)
                     canonicalise(dest)
