@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import socket as socket_module
 import sqlite3
 from typing import TYPE_CHECKING, Any
@@ -652,3 +653,81 @@ async def test_a_repair_of_a_builder_rpc_build_replaces_what_the_builder_submits
     there = await _rpc_repaired(tmp_path, OpRoute.daemon, NIX_GIT_BIN, OpRoute.pynixd)
     assert there["rc"] == 0, there
     assert there["contents"] == "corrupt\n", there
+
+
+# A derivation that makes another: `nested-inner.drv` copies the inner derivation, which writes *noise*.
+NESTED = """
+let
+  inner = derivation {
+    name = "nested-inner"; system = builtins.currentSystem; builder = "/bin/sh";
+    args = [ "-c" "read u < /proc/sys/kernel/random/uuid; echo @NOISE@ > $out" ];
+  };
+in derivation {
+  name = "nested-inner.drv"; system = builtins.currentSystem; builder = "/bin/sh";
+  __contentAddressed = true; outputHashMode = "text"; outputHashAlgo = "sha256";
+  args = [ "-c" ''
+    while IFS= read -r l || [ -n "$l" ]; do printf '%s\\n' "$l"; done < ${builtins.unsafeDiscardOutputDependency inner.drvPath} > $out
+  '' ];
+}
+"""
+
+
+def _modes(err: str) -> list[str]:
+    """Each derivation a build checked or repaired, by name."""
+    return [
+        f"{m[1]} {m[2].rsplit('/', 1)[-1].split('-', 1)[1]}"
+        for line in err.splitlines()
+        if (m := re.match(r"(checking|repairing) outputs of '([^']+)'", line))
+    ]
+
+
+async def _nested(tmp_path: Path, route: OpRoute, noise: str) -> dict[str, Any]:
+    features = ("ca-derivations", "dynamic-derivations")
+    expr = NESTED.replace("@NOISE@", noise)
+    steps: dict[str, Any] = {}
+    async with _serve(tmp_path, route, "false", experimental_features=features) as (nix, env, state):
+        flags = ["--extra-experimental-features", " ".join(features)]
+        _rc, drv, _err, _both = await run_subproc(
+            [*nix[:1], "eval", *nix[1:], *flags, "--raw", "--expr", f"({expr}).drvPath"],
+            env=dict(env),
+            nix_config=ALONE,
+        )
+        build = [*nix[:1], "build", *nix[1:], *flags, "--no-link", "--print-out-paths", f"{drv.strip()}^out^out"]
+        _rc, out, _err, _both = await run_subproc(build, env=dict(env), nix_config=ALONE)
+        real = state.parent.parent / "store" / out.strip().rsplit("/", 1)[-1]
+        for step in ("--rebuild", "--repair"):
+            if step == "--repair":
+                real.chmod(0o644)
+                real.write_text("corrupt\n")
+            with anyio.fail_after(60):
+                rc, _out, err, _both = await run_subproc(
+                    [*build, step], env=dict(env), nix_config=ALONE, expected_retcode=None
+                )
+            steps[step] = {
+                "rc": rc,
+                "modes": _modes(err),
+                "errors": _errors(err) if "error:" in err else [],
+                "contents": real.read_text() if real.exists() else None,
+            }
+    return steps
+
+
+async def test_a_check_or_repair_of_a_nested_path_builds_the_derivation_it_ends_in(tmp_path: Path) -> None:
+    """`derivation-trampoline-goal.cc:103`: the derivation that makes the inner one builds in normal mode, and only
+    the inner one is checked or repaired. The daemon repairs nothing with `ca-derivations` (Lillecarl/nix#400)."""
+    for noise in ("same", "$u"):
+        before = _fallthrough()
+        here = await _nested(tmp_path, OpRoute.pynixd, noise)
+        assert _fallthrough() == before, f"the daemon built the pynixd route's nested path ({noise})"
+        there = await _nested(tmp_path, OpRoute.daemon, noise)
+        checked, rechecked = here["--rebuild"], there["--rebuild"]
+        assert checked["rc"] == rechecked["rc"] == (0 if noise == "same" else 1), (here, there)
+        assert checked["modes"] == rechecked["modes"] == ["checking nested-inner.drv"], (here, there)
+        assert checked["errors"] == rechecked["errors"], (here, there)
+        if noise != "same":
+            assert "may not be deterministic" in checked["errors"][0], here
+        repaired = here["--repair"]
+        assert repaired["rc"] == 0, here
+        assert repaired["modes"] == ["repairing nested-inner.drv"], here
+        assert repaired["contents"] not in (None, "corrupt\n"), here
+        assert there["--repair"]["contents"] == "corrupt\n", there

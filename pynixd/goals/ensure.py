@@ -384,9 +384,11 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         )
 
     async def _ensure_nested(self) -> GoalResult:
+        # `derivation-trampoline-goal.cc:103`: the goal that makes the derivation builds in normal mode, and only
+        # the derivation it makes is checked or repaired.
         outer_goal = await self.engine.get_ensure_derived_path_goal(
             self.derived_path.outer,
-            self.build_mode,
+            BuildMode.NORMAL,
             self.substituter_ids,
         )
         outer_goal.note_a_parent()

@@ -284,8 +284,9 @@ class GoalEngine:
     ) -> bool:
         """Whether the local store's daemon answers *request* whole, and the goal system stands aside.
 
-        A check or a repair goes through the goals when each derived path is
-        one derivation. `derivation-goal.cc:143` needs its outputs valid, a
+        A check or a repair goes through the goals when the store holds the
+        derivation of each derived path; a nested path checks or repairs only
+        the derivation it ends in. `derivation-goal.cc:143` needs its outputs valid, a
         floating output's path is its realisation's, and an impure one builds
         again with no check of validity (`derivation-goal.cc:71`). A
         repair also needs pynixd's own local store, which checks contents and
@@ -305,8 +306,6 @@ class GoalEngine:
             path = DerivedPath(wire_path.value)
             if path.is_opaque:
                 continue
-            if path.is_nested:
-                return True
             parsed = await self.ctx.local_store.read_derivation(path.drv_path)
             if parsed is None:
                 return True
