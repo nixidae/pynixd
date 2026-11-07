@@ -160,14 +160,135 @@ async def test_an_unsandboxed_build_runs_on_the_host_as_the_daemons_does(tmp_pat
         assert here["log"] == there["log"] == ["unsandboxed-probe> built on host"]
 
 
-async def test_a_rebuild_of_an_unsandboxed_build_goes_to_the_daemon(tmp_path: Path) -> None:
-    """A check builds at a fallback path and rewrites its hashes (`derivation-builder.cc:417`), which pynixd leaves."""
-    async with _serve(tmp_path, OpRoute.pynixd, "false") as (nix, env, _state):
-        build = [*nix[:1], "build", *nix[1:], "--no-link", "--expr", _drv("unsandboxed-rebuild", "echo same > $out")]
-        await run_subproc(build, env=dict(env))
-        before = _fallthrough()
-        await run_subproc([*build, "--rebuild"], env=dict(env))
-    assert _fallthrough() == before + 1
+# `dev` refers to itself, and `out` to itself and to `dev`: each hash the build sees moves back.
+# The builder has no PATH outside the sandbox, so it uses builtins alone.
+REWRITTEN = """echo $dev > $dev
+@NOISE@
+echo $out $dev $n > $out"""
+
+
+# The default client config names the machine's own daemon as a substituter. Under `NIX_STORE_DIR`, Nix takes
+# that store to have this store's directory, sends it these paths, and the daemon refuses each one with "is not
+# in the Nix store". nixidae/nixidae#1193.
+ALONE = {"substituters": ""}
+
+
+def _rewritten(name: str, noise: str) -> str:
+    return _drv(name, REWRITTEN.replace("@NOISE@", noise), 'outputs = [ "out" "dev" ];')
+
+
+def _tree(root: Path) -> dict[str, str]:
+    if root.is_file():
+        return {".": root.read_text()}
+    return {str(p.relative_to(root)): p.read_text() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def _normal(text: str, *paths: str) -> list[str]:
+    """The lines of *text* from the build on, with each build directory as `<build>`."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("note: keeping build directory"):
+            lines[i] = "note: keeping build directory <build>"
+    for path in paths:
+        lines = [line.replace(path, "<store>") for line in lines]
+    return lines
+
+
+async def _rebuilt(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
+    """A check, a check that differs, a build with one output valid, and a repair, all under `sandbox = false`."""
+    seen: dict[str, Any] = {}
+    async with _serve(tmp_path, route, "false", experimental_features=("ca-derivations",)) as (nix, env, state):
+        store = state.parent.parent / "store"
+
+        async def run(*args: str, expected: int = 0) -> str:
+            _rc, out, err, _both = await run_subproc(
+                [*nix[:1], *args[:1], *nix[1:], *args[1:]], expected_retcode=expected, env=dict(env), nix_config=ALONE
+            )
+            if expected != 0:
+                seen.setdefault("errors", []).append(_normal(err, str(store)))
+            return out
+
+        def look(step: str) -> None:
+            seen[step] = {
+                "store": sorted(p.name for p in store.iterdir() if not p.name.endswith(".drv")),
+                "trees": {
+                    p.name: _tree(p)
+                    for p in sorted(store.iterdir())
+                    if p.name != ".links" and not p.name.endswith((".drv", ".lock"))
+                },
+                "rows": _rows(state),
+            }
+
+        same = _rewritten("unsandboxed-rewrite", "n=same")
+        built = (await run("build", "--no-link", "--print-out-paths", "--expr", f"({same}).all")).split()
+        look("built")
+        await run("build", "--no-link", "--rebuild", "--expr", f"({same}).all")
+        look("checked")
+        differs = _rewritten("unsandboxed-differs", "read n < /proc/sys/kernel/random/uuid")
+        await run("build", "--no-link", "--expr", f"({differs}).all")
+        await run("build", "--no-link", "--rebuild", "--keep-failed", "--expr", f"({differs}).all", expected=1)
+        look("differed")
+        out = next(path for path in built if not path.endswith("-dev"))
+        await run_subproc([*nix[:1], "store", "delete", *nix[1:3], out], env=dict(env), nix_config=ALONE)
+        await run("build", "--no-link", "--expr", f"({same}).all")
+        look("one valid")
+        dev = store / next(path for path in built if path.endswith("-dev")).rsplit("/", 1)[-1]
+        dev.chmod(0o644)
+        dev.write_text("corrupt\n")
+        dev.chmod(0o444)
+        await run("build", "--no-link", "--repair", "--expr", f"({same}).all")
+        look("repaired")
+    return seen
+
+
+def _quiet(seen: Any) -> Any:
+    """*seen* without what the noise of `unsandboxed-differs` makes: its `out`'s contents and hash, on each route."""
+    if not isinstance(seen, dict) or "trees" not in seen:
+        return seen
+    noisy = ("-unsandboxed-differs", "-unsandboxed-differs.check")
+    valid, refs = seen["rows"]
+    return {
+        **seen,
+        "trees": {name: tree for name, tree in seen["trees"].items() if not name.endswith(noisy)},
+        "rows": ([row[:1] + row[3:] if row[0].endswith(noisy) else row for row in valid], refs),
+    }
+
+
+async def test_a_rebuild_without_the_sandbox_rewrites_hashes_as_the_daemon_does(tmp_path: Path) -> None:
+    """A valid output builds at `makeFallbackPath(path)`, and its hash moves back after (`derivation-builder.cc:417`).
+
+    That holds for a check, a repair, and a build with one output valid already. Each step compares the store
+    directory, every output's files and the database with the daemon's.
+    """
+    before = _fallthrough()
+    here = await _rebuilt(tmp_path, OpRoute.pynixd)
+    assert _fallthrough() == before, "the daemon built a rebuild of the pynixd route"
+    there = await _rebuilt(tmp_path, OpRoute.daemon)
+
+    dev = next(name for name in here["built"]["trees"] if name.endswith("-dev"))
+    # Lillecarl/nix#400: with `ca-derivations`, the daemon finds `dev` corrupt and repairs nothing; pynixd repairs it.
+    assert there["repaired"]["trees"][dev] == {".": "corrupt\n"}
+    assert here["repaired"]["trees"][dev] == here["built"]["trees"][dev]
+    there["repaired"]["trees"][dev] = here["repaired"]["trees"][dev]
+    # Lillecarl/nix#401: the failed check leaves the scratch path of `dev` beside `dev`.
+    assert sum(name.endswith("-unsandboxed-differs-dev") for name in there["differed"]["store"]) == 2
+    for step in ("built", "checked", "differed", "one valid", "repaired"):
+        mine, theirs = _quiet(here[step]), _quiet(there[step])
+        only = sorted(set(mine["store"]) ^ set(theirs["store"]))
+        assert mine["store"] == theirs["store"], (
+            step,
+            "pynixd's" if only[0] in mine["store"] else "the daemon's",
+            only,
+        )
+        trees = {
+            name: (tree, theirs["trees"].get(name))
+            for name, tree in mine["trees"].items()
+            if tree != theirs["trees"].get(name)
+        }
+        assert not trees, (step, "pynixd's file, the daemon's", trees)
+        assert mine == theirs, step
+    assert here["errors"] == there["errors"]
+    assert any("may not be deterministic" in line for line in here["errors"][0]), here["errors"]
 
 
 def _fod(name: str, mode: str, command: str, output_hash: str = FAKE_HASH) -> str:

@@ -1,9 +1,9 @@
 """`registerOutputs` (`unix/build/derivation-builder.cc:1069`) for input-addressed and content-addressed outputs.
 
-The builder wrote each output inside the chroot at its scratch path: the path
-it will have when the derivation names one, else `fallback_path`. Only a
-content-addressed output whose path differs from its scratch path has hashes
-rewritten.
+The builder wrote each output at its scratch path, inside the chroot or on the host: the path it
+will have when the derivation names one, else `fallback_path`. Without the chroot, an output that is
+valid already builds at `fallback_path_of` its path instead. An output whose path differs from its
+scratch path has hashes rewritten.
 """
 
 from __future__ import annotations
@@ -105,6 +105,11 @@ def fallback_path(drv_path: str, output: str, drv_name: str, store_dir: str) -> 
     return make_store_path(kind, "sha256", bytes(32), _output_path_name(drv_name, output), store_dir)
 
 
+def fallback_path_of(drv_path: str, path: str, store_dir: str) -> str:
+    """`makeFallbackPath(path)` (`derivation-builder.cc:1722`): where a valid output builds without the chroot."""
+    return make_store_path(f"rewrite:{_base(drv_path)}:{_base(path)}", "sha256", bytes(32), _base(path)[33:], store_dir)
+
+
 def random_path(output: str, drv_name: str, store_dir: str) -> str:
     """`StorePath::random(outputPathName(...))`: the known path of an impure output (`derivation-building-goal.cc:383`)."""
     return f"{store_dir}/{nix32_encode(os.urandom(20))}-{_output_path_name(drv_name, output)}"
@@ -188,13 +193,14 @@ class Collected:
     *early* are the content-addressed outputs, which Nix registers before it
     checks them, so a fixed output with the wrong hash stays valid under its
     real one. *locks* guard paths that are not the derivation's own: hold them
-    until *early* is registered, then `release`.
+    until *early* is registered, then `release`. *actual* is where each output is in check mode.
     """
 
     infos: dict[str, ValidPathInfo]
     early: list[ValidPathInfo]
     failure: BuildFailure | None
     locks: list[PathLock]
+    actual: dict[str, Path] = field(default_factory=dict)
 
     def release(self) -> None:
         for lock in self.locks:
@@ -221,6 +227,7 @@ def collect_outputs(
     outputs: Mapping[str, DerivationOutput],
     *,
     scratch: Mapping[str, str],
+    known: Mapping[str, str],
     drv_name: str,
     chroot_root: Path,
     real_store_dir: Path,
@@ -230,13 +237,16 @@ def collect_outputs(
     is_valid: Callable[[str], bool],
     discard: set[str],
     check: bool = False,
+    repair: bool = False,
     build_uids: tuple[int, int] | None = None,
     fresh: bool = False,
 ) -> Collected:
     """Each output the build made at its *scratch* path, moved into the store and described; nothing is registered yet.
 
-    An output whose scratch path is in *valid* is not looked at, as Nix does outside check mode.
-    With *check*, every output stays in the chroot to be compared (`derivation-builder.cc:1530`).
+    An output whose *known* path is in *valid* is not looked at, as Nix does outside check mode
+    (`AlreadyRegistered`, `derivation-builder.cc:1131`); a reference to its scratch path moves to its path.
+    With *check*, every output stays where the build made it, to be compared (`derivation-builder.cc:1530`).
+    With *repair*, an output replaces its valid path (`replaceValidPath`, `:1529`).
     *is_valid* asks the store about a path no output names. An output in
     *discard* is not scanned (`unsafeDiscardReferences`). Blocking: call it
     from a worker thread. *build_uids* are the first and last of the build user's ids, whose files alone an output may hold.
@@ -258,13 +268,14 @@ def collect_outputs(
             seen=seen,
         )
         for name, path in scratch.items()
-        if path not in valid
+        if known.get(name) not in valid
     }
     infos: dict[str, ValidPathInfo] = {}
+    actuals: dict[str, Path] = {}
     fixed: dict[str, _Fixed] = {}
     addressed: dict[str, ContentAddress] = {}
     # `outputRewrites`: the final path of each output done so far, by its scratch path.
-    final: dict[str, str] = {}
+    final: dict[str, str] = {scratch[name]: known[name] for name in scratch if name not in scanned}
     locks: list[PathLock] = []
     copies: list[TempDir] = []
     try:
@@ -287,11 +298,17 @@ def collect_outputs(
                 if output.kind is OutputKind.CA_FIXED:
                     wanted = fixed_output_address(output.method, output.hash_digest)
                     fixed[name] = _Fixed(wanted, a.got, a.path, a.references)
+            else:
+                path, references = _input_addressed(
+                    output.path, s, actual, real_store_dir, final, discard=name in discard
+                )
             final[s.path] = path
             dest = real_store_dir / _base(path)
             nar_hash, nar_size = _nar_hash(actual)
+            actuals[name] = actual
             if not check:
-                if path != s.path:
+                # `derivation-builder.cc:1506`: only a content-addressed output away from its known path is locked here.
+                if path not in (s.path, output.path):
                     lock = PathLock(dest)
                     # `derivation-builder.cc:1510`: a floating output waits for a build of the same path.
                     # A mismatched fixed output does not: a build with the right hash may hold the lock.
@@ -301,7 +318,11 @@ def collect_outputs(
                         delete_path(actual)
                         raise _check(drv_path, fixed[name]) or RuntimeError(f"'{drv_path}' made '{path}' for '{name}'")
                     locks.append(lock)
-                if path != s.path and is_valid(path):
+                if repair and actual != dest:
+                    delete_path(dest)
+                    _move(actual, dest)
+                    canonicalise(dest)
+                elif path != s.path and is_valid(path):
                     delete_path(actual)
                 elif actual != dest:
                     delete_path(dest)
@@ -328,7 +349,25 @@ def collect_outputs(
         for copy in copies:
             copy.remove()
     failure = next((e for name in sorted(fixed) if (e := _check(drv_path, fixed[name])) is not None), None)
-    return Collected(infos, [infos[name] for name in addressed], failure, locks)
+    return Collected(infos, [infos[name] for name in addressed], failure, locks, actuals if check else {})
+
+
+def _input_addressed(
+    path: str, s: Scanned, actual: Path, real_store_dir: Path, final: Mapping[str, str], *, discard: bool
+) -> tuple[str, frozenset[str]]:
+    """The input-addressed case of `registerOutputs` (`derivation-builder.cc:1393`): *path*, and what it refers to.
+
+    The scratch hash of this output and of each one done so far moves to its final hash in one pass.
+    """
+    moves = {**final, s.path: path}
+    moved = {
+        _hash_part(old): _hash_part(new)
+        for old, new in moves.items()
+        if old != new and (discard or old in s.references)
+    }
+    if moved:
+        _rewrite(actual, moved, real_store_dir)
+    return path, frozenset(moves.get(ref, ref) for ref in s.references)
 
 
 def _content_addressed(
@@ -393,16 +432,16 @@ def compare_outputs(
     registered: Mapping[str, ValidPathInfo | None],
     real_store_dir: Path,
     *,
-    rebuilt: Path | None = None,
+    rebuilt: Mapping[str, Path] | None = None,
 ) -> tuple[BuildFailure | None, list[ValidPathInfo], tuple[str, Path] | None]:
     """`registerOutputs` in check mode (`derivation-builder.cc:1546`): each rebuilt output against the valid one.
 
     Answers the first difference, the valid infos to mark `ultimate`, which a check verified, and the output that
-    moved. With *rebuilt*, the chroot root the outputs are in, a differing one moves to `<path>.check`
+    moved. With *rebuilt*, where each output is, a differing one moves to `<path>.check`
     (`keep-failed` or `diff-hook`), and the third value is its path and that real path. Blocking.
     """
     verified: list[ValidPathInfo] = []
-    for info in infos.values():
+    for name, info in infos.items():
         old = registered.get(info.path.path)
         if old is None:
             continue
@@ -411,7 +450,7 @@ def compare_outputs(
             if rebuilt is not None:
                 kept = real.with_name(real.name + ".check")
                 delete_path(kept)
-                _move(rebuilt / info.path.path.lstrip("/"), kept)
+                _move(rebuilt[name], kept)
                 return (
                     BuildFailure(
                         BuildResultStatus.NOT_DETERMINISTIC,

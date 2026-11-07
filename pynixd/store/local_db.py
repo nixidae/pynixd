@@ -685,33 +685,11 @@ class LocalDBStore(Store):
             or await self._check_unsupported(request, settings)
             or _repair_unsupported(request)
             or self._recursive_unsupported(request)
-            or await self._unsandboxed_unsupported(request, settings)
         )
         if reason is None:
             return settings
         log.info("build_left_to_the_daemon", drv=str(request.drv_path), reason=reason)
         metrics.OP_FALLTHROUGH.labels(store_id=self.store_id, op=request.name).inc()
-        return None
-
-    async def _unsandboxed_unsupported(self, request: BuildDerivationRequest, settings: BuildSettings) -> str | None:
-        """Why the daemon builds *request* without the sandbox, or `None`; also `None` for a sandboxed build.
-
-        Without the chroot, an output that is valid builds at a fallback path, and Nix rewrites the hashes in
-        what it builds (`derivation-builder.cc:417`). pynixd builds only where each output is its own scratch path.
-        """
-        layout = self.engine.layout
-        drv = request.derivation
-        if local_builder.uses_sandbox(drv, settings, relocated=layout.store_dir != layout.real_store_dir):
-            return None
-        if request.build_mode != BuildMode.NORMAL:
-            return "an unsandboxed build in check or repair mode"
-        for name, output in drv.outputs.items():
-            path = output.path
-            if not path and output.kind is OutputKind.CA_FLOATING and await self._ca_derivations():
-                found = await self.engine.query_realisation(request.drv_path.name, name, by_path=True)
-                path = "" if found is None else str(found[0])
-            if path and await self.engine.is_valid_path_uncached(path):
-                return "an unsandboxed build with a valid output"
         return None
 
     def _recursive_unsupported(self, request: BuildDerivationRequest) -> str | None:

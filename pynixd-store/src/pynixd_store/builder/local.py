@@ -57,6 +57,7 @@ from .outputs import (
     compare_outputs,
     discarded_references,
     fallback_path,
+    fallback_path_of,
     output_checks,
     random_path,
 )
@@ -369,6 +370,10 @@ class _Paths:
         self.tmp.chmod(0o755)
 
 
+def _hash_part(path: str) -> str:
+    return path.rsplit("/", 1)[-1][:32]
+
+
 def _drv_name(drv_path: str) -> str:
     return drv_path.rsplit("/", 1)[-1].split("-", 1)[1].removesuffix(".drv")
 
@@ -616,11 +621,13 @@ async def build(
                     await anyio.sleep(USER_POLL_SECONDS)
             except build_users.BuildUserError as e:
                 return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(str(e)))
-        valid = {
-            path
-            for path in known.values()
-            if path and await engine.is_valid_path_uncached(path) and (not repair or await engine.contents_good(path))
-        }
+        # `PathStatus` (`derivation-building-goal.cc:1340`): *present* is valid or corrupt, *valid* only valid.
+        # NIX-DEFECT (#23): `checkPathValidity` (`derivation-building-goal.cc:1356`) gives an output with a
+        # realisation `Valid` whenever its path is, so with `ca-derivations` a repair never checks its contents,
+        # says "someone beat us to it", and repairs nothing. pynixd checks every known path, realised or not, and
+        # repairs it. Lillecarl/nix#400.
+        present = {path for path in known.values() if path and await engine.is_valid_path_uncached(path)}
+        valid = {path for path in present if not repair or await engine.contents_good(path)}
         if valid == set(known.values()) and not check:
             settled = True
             return LocalBuildResult(BuildResultStatus.ALREADY_VALID, paths=known)
@@ -628,9 +635,17 @@ async def build(
         for path in known.values():
             if path and path not in valid:
                 await anyio.to_thread.run_sync(delete_path, layout.real_store_dir / path.rsplit("/", 1)[-1])
-        # The sandbox needs no hash rewrite, so a known path is its own scratch path (`derivation-builder.cc:417`).
-        # Without it, the caller sends a build with a valid output to the daemon, which rewrites the hashes.
-        scratch = {name: path or fallback_path(drv_path, name, drv_name, store_dir) for name, path in known.items()}
+        # `derivation-builder.cc:417`: the sandbox builds a known path in place. Without it, a present path builds
+        # at its fallback path, and the builder sees the fallback's hash for its own.
+        scratch = {
+            name: fallback_path_of(drv_path, path, store_dir)
+            if not chroot and path in present
+            else path or fallback_path(drv_path, name, drv_name, store_dir)
+            for name, path in known.items()
+        }
+        redirected = {path: scratch[name] for name, path in known.items() if path and path != scratch[name]}
+        for path in redirected.values():
+            await anyio.to_thread.run_sync(delete_path, layout.real_store_dir / path.rsplit("/", 1)[-1])
         inputs = {str(p) for p in await engine.query_closure(sorted(str(p) for p in drv.input_srcs))}
         # An invalid path drops out of the closure, as Nix ignores `InvalidPath` here.
         sandbox_closure = {
@@ -650,8 +665,10 @@ async def build(
             return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(str(e)))
         fixed = any(o.kind is OutputKind.CA_FIXED for o in drv.outputs.values())
         sandboxed = not (fixed or impure)
-        # `inputRewrites` (`derivation-builder.cc:435`): the sandbox builds each output at its scratch path.
-        rewrites = {hash_placeholder(name): path for name, path in scratch.items()}
+        # `inputRewrites` (`derivation-builder.cc:435`): each output builds at its scratch path.
+        rewrites = {hash_placeholder(name): path for name, path in scratch.items()} | {
+            _hash_part(path): _hash_part(fallback) for path, fallback in redirected.items()
+        }
         build_dir = SANDBOX_BUILD_DIR if chroot else str(paths.tmp)
         env = build_env(
             drv.env,
@@ -847,6 +864,7 @@ async def build(
                     drv_path,
                     drv.outputs,
                     scratch=scratch,
+                    known=known,
                     drv_name=drv_name,
                     chroot_root=Path("/") if paths.root is None else paths.root,
                     real_store_dir=layout.real_store_dir,
@@ -857,6 +875,7 @@ async def build(
                     is_valid=lambda path: anyio.from_thread.run(engine.is_valid_path_uncached, path),
                     discard=discarded_references(drv.env),
                     check=check,
+                    repair=repair,
                     build_uids=None if user is None else (user.uid, user.last_uid),
                     fresh=not chroot,
                 )
@@ -876,7 +895,6 @@ async def build(
                     known,
                     start,
                     stop,
-                    keep=paths.root,
                     user=user,
                     tmp=paths.tmp,
                     on_lines=on_lines,
@@ -919,6 +937,14 @@ async def build(
                     await on_lines([Message(Verbosity.ERROR, f'note: keeping build directory "{paths.tmp}"')])
                 else:
                     await anyio.to_thread.run_sync(paths.remove)
+            # NIX-DEFECT (#23): `cleanupBuild` (`derivation-builder.cc:1678`) deletes the scratch path of a valid
+            # output only with `force`, which a build that succeeded passes, so a failed rebuild without the
+            # sandbox leaves its scratch outputs in the store, unregistered, until a garbage collection. pynixd
+            # could delete them on every path; it copies Nix, as the parity run compares the store directory.
+            # Lillecarl/nix#401.
+            if built:
+                for path in redirected.values():
+                    await anyio.to_thread.run_sync(delete_path, layout.real_store_dir / path.rsplit("/", 1)[-1])
             for lock in locks:
                 lock.release(delete=built or settled)
             if user is not None:
@@ -976,7 +1002,6 @@ async def _compare(
     start: int,
     stop: int,
     *,
-    keep: Path | None,
     user: build_users.BuildUser | None,
     tmp: Path,
     on_lines: Callable[[list[Output]], Awaitable[None]],
@@ -984,7 +1009,7 @@ async def _compare(
     """The end of `registerOutputs` in check mode (`derivation-builder.cc:1546`, `:1633`).
 
     A valid output the check verified becomes `ultimate` and is signed again, even when a later one differs.
-    With `keep-failed` or a `diff-hook`, a rebuilt output that differs moves from the chroot at *keep* to
+    With `keep-failed` or a `diff-hook`, a rebuilt output that differs moves from where the build made it to
     `<path>.check`, and the hook compares the two as *user*, with the build directory *tmp* (`:1552`).
     """
     registered = {path: await engine.query_path_info(path) for path in known.values()}
@@ -994,7 +1019,7 @@ async def _compare(
             collected.infos,
             registered,
             engine.layout.real_store_dir,
-            rebuilt=keep if settings.keep_failed or settings.diff_hook else None,
+            rebuilt=collected.actual if settings.keep_failed or settings.diff_hook else None,
         )
     )
     if kept is not None and settings.diff_hook:
