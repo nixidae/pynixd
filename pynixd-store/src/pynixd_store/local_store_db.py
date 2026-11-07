@@ -493,6 +493,11 @@ class LocalStoreDB:
         that Nix's own tables are readable, which is a different question.
         """
 
+        self.synchronous: str | None = None
+        """`pragma synchronous` for a writing connection: `NORMAL`, or `OFF` without `fsync-metadata`
+        (`local-store.cc:536`). `None` until the engine reads its settings; SQLite's default stands until then."""
+        self._synchronous_of: dict[aiosqlite.Connection, str] = {}
+
         self._all_conns: list[aiosqlite.Connection] = []
         self._idle_conns: list[aiosqlite.Connection] = []
         self._pool_lock = anyio.Lock()
@@ -572,6 +577,7 @@ class LocalStoreDB:
                 conn = await aiosqlite.connect(uri, uri=True, timeout=30)
                 async with self._pool_lock:
                     self._all_conns.append(conn)
+            await self._apply_synchronous(conn)
 
             yield conn
             clean = True
@@ -582,6 +588,13 @@ class LocalStoreDB:
                 if conn is not None:
                     await self._checkin(conn, clean=clean)
                 self._sem.release()
+
+    async def _apply_synchronous(self, conn: aiosqlite.Connection) -> None:
+        """The pragma is the connection's own, so each writing connection takes it once."""
+        if self.read_only or self.synchronous is None or self._synchronous_of.get(conn) == self.synchronous:
+            return
+        await conn.execute(f"PRAGMA synchronous = {self.synchronous}")
+        self._synchronous_of[conn] = self.synchronous
 
     async def _checkin(self, conn: aiosqlite.Connection, *, clean: bool) -> None:
         """Pool *conn* when it is provably idle; otherwise close it.
@@ -609,6 +622,7 @@ class LocalStoreDB:
         async with self._pool_lock:
             with suppress(ValueError):
                 self._all_conns.remove(conn)
+            self._synchronous_of.pop(conn, None)
         with suppress(Exception):
             await conn.interrupt()
         try:
@@ -910,6 +924,8 @@ class LocalStoreDB:
         try:
             async with aiosqlite.connect(f"file:{self.db_path}?mode=rw", uri=True, isolation_level=None) as conn:
                 await conn.execute(f"PRAGMA busy_timeout = {_CHECKPOINT_BUSY_MS}")
+                if self.synchronous is not None:
+                    await conn.execute(f"PRAGMA synchronous = {self.synchronous}")
                 async with conn.execute("PRAGMA wal_checkpoint(TRUNCATE)") as cursor:
                     row = await cursor.fetchone()
         except aiosqlite.Error:

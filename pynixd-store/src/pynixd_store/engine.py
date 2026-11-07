@@ -112,7 +112,12 @@ class StoreEngine:
         """The store's Nix settings, `nix config show --json`. Read once, as the daemon reads them."""
         if self._config is None:
             self._config = await self._read_config()
+            self._apply_db_settings(self._config)
         return self._config
+
+    def _apply_db_settings(self, config: Mapping[str, Any]) -> None:
+        if "fsync-metadata" in config:
+            self.db.synchronous = "NORMAL" if config["fsync-metadata"]["value"] else "OFF"
 
     async def settings(self) -> add.ImportSettings:
         """What `addToStore` reads of the store's Nix settings."""
@@ -122,7 +127,9 @@ class StoreEngine:
 
     async def gc_settings(self, overrides: Mapping[str, str]) -> collect.GCSettings:
         """What `collectGarbage` reads of the settings, the session's overrides applied. Read per call: a collection is rare."""
-        return collect.GCSettings.from_nix_config(await self._read_config(), overrides)
+        config = await self._read_config()
+        self._apply_db_settings(config)
+        return collect.GCSettings.from_nix_config(config, overrides)
 
     @property
     def writable(self) -> bool:

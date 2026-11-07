@@ -30,6 +30,7 @@ from nix_daemon_protocol.ids import StoreId
 from pynixd import Server
 from pynixd.op_routes import OpRoute
 from pynixd.store import LocalDBStore
+from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.nar_fs import dump_path
 from tests._conftest.config import NIX_GIT_BIN
 from tests._conftest.constants import _NO_PROBE_FEATURE_MATRIX
@@ -940,6 +941,33 @@ async def test_sync_before_registering_syncs_before_each_registration(
     assert on == off
     # The added file, the derivation, and the build's output: one registration each.
     assert len(syncs) >= 3, syncs
+
+
+async def test_fsync_metadata_sets_the_databases_synchronous_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`pragma synchronous` is `normal`, or `off` without `fsync-metadata` (`local-store.cc:536`)."""
+    opened: list[LocalStoreDB] = []
+    original = LocalStoreDB.open
+
+    async def capture(*args: Any, **kwargs: Any) -> LocalStoreDB:
+        db = await original(*args, **kwargs)
+        opened.append(db)
+        return db
+
+    monkeypatch.setattr(LocalStoreDB, "open", capture)
+    modes = {}
+    for fsync_metadata in (True, False):
+        opened.clear()
+        settings = {"fsync_metadata": fsync_metadata}
+        root = tmp_path / str(fsync_metadata)
+        async with _serve(root, OpRoute.pynixd, ops=("AddToStore",), settings=settings) as (url, _root):
+            (root / "added").write_text("added\n")
+            await run_subproc([NIX_BIN, "store", "add-file", "--store", url, str(root / "added")])
+            async with opened[-1].acquire_conn() as conn, conn.execute("PRAGMA synchronous") as cursor:
+                row = await cursor.fetchone()
+        modes[fsync_metadata] = row[0] if row else None
+    assert modes == {True: 1, False: 0}, modes
 
 
 async def _flat_with_references(tmp_path: Path, route: OpRoute) -> tuple[int, list[str]]:
