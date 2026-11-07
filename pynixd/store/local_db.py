@@ -634,7 +634,28 @@ class LocalDBStore(Store):
     async def own_build_derivation(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """pynixd's sandbox builds it (`docs/design/builder.md`), or `None` and the daemon does."""
         options = client.options if client is not None else None
-        settings = await self.local_build_settings(request, options)
+        # The scheduler refuses what no store builds when it places it; op 36 here has no scheduler.
+        session = await self._session_build_settings(request, options)
+        if session is not None:
+            refusal = local_builder.rejection(str(request.drv_path), request.derivation, session)
+            if refusal is not None and not local_builder.hands_off(session):
+                return BuildDerivationResponse(
+                    result=BuildResult(
+                        status=int(BuildResultStatus.INPUT_REJECTED),
+                        error_msg=refusal,
+                        times_built=0,
+                        is_non_deterministic=0,
+                        start_time=0,
+                        stop_time=0,
+                        built_outputs={},
+                        built_outputs_by_name={},
+                    )
+                )
+            if refusal is not None:
+                # `execute` counts the fallthrough of an owned op that answers `None`.
+                self._left_to_the_daemon(request, "a build only the daemon's builders can run", count=False)
+                return None
+        settings = await self.local_build_settings(request, options, count=False)
         if settings is None:
             return None
 
@@ -646,22 +667,16 @@ class LocalDBStore(Store):
         return await self.build_here(request, settings, send, verbosity)
 
     async def local_build_settings(
-        self, request: BuildDerivationRequest, options: SetOptionsRequest | None
+        self, request: BuildDerivationRequest, options: SetOptionsRequest | None, *, count: bool = True
     ) -> BuildSettings | None:
         """The settings pynixd's sandbox builds *request* with, or `None` when the daemon builds it.
 
         What `unsupported`, `_check_unsupported` or `_repair_unsupported` names stays on the daemon.
         """
-        if self.routes.get(BuildDerivationRequest.op) is not OpRoute.pynixd or not self.engine.writable:
+        settings = await self._session_build_settings(request, options)
+        if settings is None:
             return None
         layout = self.engine.layout
-        # `builtin:fetchurl` sends `nixVersion` in its User-Agent.
-        if request.derivation.builder == "builtin:fetchurl" and self._nix_version is None:
-            nix_bin, extra_env = self._nix_version_command
-            self._nix_version = await read_nix_version(nix_bin, nix_environment(layout, extra_env))
-        settings = BuildSettings.from_nix_config(
-            await self.engine.nix_config(), _build_overrides(options), nix_version=self._nix_version or ""
-        )
         reason = (
             local_builder.unsupported(
                 request.derivation,
@@ -676,9 +691,27 @@ class LocalDBStore(Store):
         )
         if reason is None:
             return settings
-        log.info("build_left_to_the_daemon", drv=str(request.drv_path), reason=reason)
-        metrics.OP_FALLTHROUGH.labels(store_id=self.store_id, op=request.name).inc()
+        self._left_to_the_daemon(request, reason, count=count)
         return None
+
+    async def _session_build_settings(
+        self, request: BuildDerivationRequest, options: SetOptionsRequest | None
+    ) -> BuildSettings | None:
+        """The store's settings under the session's, or `None` when pynixd builds nothing here."""
+        if self.routes.get(BuildDerivationRequest.op) is not OpRoute.pynixd or not self.engine.writable:
+            return None
+        # `builtin:fetchurl` sends `nixVersion` in its User-Agent.
+        if request.derivation.builder == "builtin:fetchurl" and self._nix_version is None:
+            nix_bin, extra_env = self._nix_version_command
+            self._nix_version = await read_nix_version(nix_bin, nix_environment(self.engine.layout, extra_env))
+        return BuildSettings.from_nix_config(
+            await self.engine.nix_config(), _build_overrides(options), nix_version=self._nix_version or ""
+        )
+
+    def _left_to_the_daemon(self, request: BuildDerivationRequest, reason: str, *, count: bool) -> None:
+        log.info("build_left_to_the_daemon", drv=str(request.drv_path), reason=reason)
+        if count:
+            metrics.OP_FALLTHROUGH.labels(store_id=self.store_id, op=request.name).inc()
 
     def _recursive_unsupported(self, request: BuildDerivationRequest) -> str | None:
         features = set(request.derivation.required_system_features)

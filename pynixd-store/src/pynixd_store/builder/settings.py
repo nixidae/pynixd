@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -102,6 +103,12 @@ class BuildSettings:
     """`Xp::Cgroups`, which a build of 65536 ids requires (`linux-derivation-builder.cc:450`)."""
     session: tuple[tuple[str, str], ...] = ()
     """The session's settings in the order `ClientSettings::apply` sets them, which `NIX_CONFIG` shows."""
+    max_jobs: int = 1
+    system_features: frozenset[str] = frozenset()
+    """`Store::Config::systemFeatures` (`store-api.cc:381`): the store's own, read when it opens."""
+    builders: str = ""
+    build_hook: tuple[str, ...] = ()
+    external_builders: bool = False
 
     @classmethod
     def from_nix_config(
@@ -174,6 +181,20 @@ class BuildSettings:
                 retry_jitter=boolean(value("filetransfer-retry-jitter", d.retry_jitter)),
             )
 
+        def system_features() -> frozenset[str]:
+            own = set(words(_own(config, "system-features", ())))
+            xp = set(words(_own(config, "experimental-features", ())))
+            return frozenset(own | {feature for feature in ("ca-derivations", "recursive-nix") if feature in xp})
+
+        def max_jobs() -> int:
+            raw = value("max-jobs", 1)
+            return (os.cpu_count() or 1) if raw == "auto" else int(raw)
+
+        def external_builders() -> bool:
+            """`external-builders` is JSON: a list, or its text in an override."""
+            raw = value("external-builders", ())
+            return bool(json.loads(raw) if isinstance(raw, str) and raw.strip() else raw)
+
         sandbox = value("sandbox", True)
         features = words(value("experimental-features", ()))
         cores = int(value("cores", 0) or 0)
@@ -212,6 +233,11 @@ class BuildSettings:
             id_count=int(_own(config, "id-count", 128 << 16)),
             cgroups_feature="cgroups" in features,
             session=tuple(overrides.items()),
+            max_jobs=max_jobs(),
+            system_features=system_features(),
+            builders=str(value("builders", "") or ""),
+            build_hook=tuple(words(value("build-hook", ()))),
+            external_builders=external_builders(),
         )
 
 

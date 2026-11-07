@@ -194,6 +194,72 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
     return None
 
 
+def rejection(drv_path: str, drv: BasicDerivation, settings: BuildSettings) -> str | None:
+    """`reject` (`derivation-building-goal.cc:289`): why this store cannot build *drv*, in Nix's words, or `None`.
+
+    Each reason that applies adds its lines, in Nix's order. The hook comes first (`:620`), so a caller asks
+    `hands_off` before it answers with this.
+    """
+    reasons = ""
+    if settings.max_jobs == 0:
+        reasons += (
+            f"\nReason: {ANSI_RED}local builds are disabled{ANSI_NORMAL} (max-jobs = 0)"
+            "\nHint: set 'max-jobs' to a non-zero value to enable local builds, "
+            "or configure remote builders via 'builders'"
+        )
+    foreign = drv.platform != settings.system and drv.platform not in settings.extra_platforms
+    if foreign and not drv.builder.startswith("builtin:"):
+        reasons += (
+            f"\nReason: {ANSI_RED}platform mismatch{ANSI_NORMAL}"
+            f"\nRequired system: '{magenta(drv.platform)}'\nCurrent system: '{magenta(settings.system)}'"
+        )
+    required = set(drv.required_system_features)
+    # `getRequiredSystemFeatures` (`derivation-options.cc:361`): an output path not known yet needs the feature.
+    if any(o.kind in (OutputKind.CA_FLOATING, OutputKind.IMPURE, OutputKind.DEFERRED) for o in drv.outputs.values()):
+        required.add("ca-derivations")
+    if not required <= settings.system_features:
+        reasons += (
+            f"\nReason: {ANSI_RED}missing system features{ANSI_NORMAL}"
+            f"\nRequired features: {{{', '.join(sorted(required))}}}"
+            f"\nAvailable features: {{{', '.join(sorted(settings.system_features))}}}"
+        )
+    if not reasons:
+        return None
+    return f"Cannot build '{magenta(drv_path)}'.{reasons}"
+
+
+def hands_off(settings: BuildSettings) -> bool:
+    """Whether the daemon would offer a build to a builder before it refused it.
+
+    `findExternalDerivationBuilderIfSupported` (`derivation-building-goal.cc:411`) takes it first. Else the
+    hook declines at once with no machines (`build-remote.cc:116`); `expandBuilderLines` (`machines.cc:98`)
+    skips a missing `@file` and throws on any other error, which pynixd counts as machines.
+    """
+    if settings.external_builders:
+        return True
+    return bool(settings.build_hook) and bool(_builder_lines(settings.builders))
+
+
+def _builder_lines(builders: str) -> list[str]:
+    lines: list[str] = []
+    for line in builders.split("\n"):
+        for entry in line.split("#", 1)[0].split(";"):
+            entry = entry.strip()
+            if not entry:
+                continue
+            if not entry.startswith("@"):
+                lines.append(entry)
+                continue
+            try:
+                text = Path(entry[1:].strip()).read_text()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return [entry]
+            lines += _builder_lines(text)
+    return lines
+
+
 def _url_unsupported(url: str) -> str | None:
     """A URL whose transfer pynixd leaves to the daemon: S3 needs AWS credentials resolved on the host
     (`derivation-builder.cc:622`), and `displayUri` re-renders a URL with credentials (`filetransfer.cc:1280`)."""

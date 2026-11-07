@@ -175,6 +175,20 @@ with an output that is valid already (Nix builds those at a fallback path and
 rewrites the hashes), `recursive-nix`, and `__noChroot` under `sandbox = true`,
 which Nix refuses.
 
+## A build this store cannot run
+
+A `BuildDerivation` that no scheduler places, as in a reverse builder's
+`proxy` session, can ask for a platform this store does not have or a feature
+it lacks, or arrive with `max-jobs = 0`. Nix refuses it with InputRejected and
+names each reason that applies (`reject`, `derivation-building-goal.cc:289`);
+pynixd sends the same text (`rejection`). Nix first offers the build to its
+external builders and its build hook. With an external builder or a machine
+in `builders`, pynixd leaves the build to the daemon (`hands_off`).
+
+The scheduler sends a builder the client's options with `max-jobs = 1`, as
+Nix's hook does (`build-remote.cc:97`). The client's `--max-jobs 0` means "not
+here", and the builder would refuse the build if it got that value.
+
 ## A failed build with keep-failed
 
 With `keep-failed`, a build that does not succeed keeps its build directory,
