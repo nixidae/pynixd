@@ -861,7 +861,9 @@ async def build(
         if failure is not None:
             return LocalBuildResult(failure.status, failure.message, start, stop)
         if restriction is not None and restriction.submitting:
-            submitted = await _check_submitted(engine, drv_path, drv, restriction.submitted, start, stop)
+            submitted = await _check_submitted(
+                engine, drv_path, drv, restriction.submitted, start, stop, known=known if check else None
+            )
             built = submitted.status is BuildResultStatus.BUILT
             return submitted
         try:
@@ -965,12 +967,20 @@ async def build(
 
 
 async def _check_submitted(
-    engine: StoreEngine, drv_path: str, drv: BasicDerivation, submitted: Mapping[str, str], start: int, stop: int
+    engine: StoreEngine,
+    drv_path: str,
+    drv: BasicDerivation,
+    submitted: Mapping[str, str],
+    start: int,
+    stop: int,
+    *,
+    known: Mapping[str, str] | None = None,
 ) -> LocalBuildResult:
-    """`checkSubmittedOutputs` (`derivation-builder-impl.cc:715`) up to the realisations, which the caller registers.
+    """`checkSubmittedOutputs` (`derivation-builder-impl.cc:713`) up to the realisations, which the caller registers.
 
     The builder added each output already, so nothing moves and nothing is signed: a content-addressed output
-    needs only its realisation signed.
+    needs only its realisation signed. With *known*, the realised path of each output, the build is a check: it
+    compares each submitted path with it and registers nothing.
     """
     infos: dict[str, ValidPathInfo] = {}
     for name, path in submitted.items():
@@ -1000,6 +1010,25 @@ async def _check_submitted(
                 stop,
             )
     built = {name: infos[name] for name in drv.outputs}
+    if known is not None:
+        # NIX-DEFECT (#23): `checkSubmittedOutputs` (`derivation-builder-impl.cc:762`) has no check mode ("TODO:
+        # handle --check"). It registers the submitted realisation, so a rebuild that differs fails with "Trying
+        # to register a realisation ... but we already have another one locally" and status MiscFailure. pynixd
+        # answers what a check of any other output answers, NotDeterministic. Lillecarl/nix#405.
+        real_store_dir = engine.layout.real_store_dir
+        for name, info in built.items():
+            if info.path.path != known[name]:
+                old, new = (
+                    magenta('"' + str(real_store_dir / path.rsplit("/", 1)[-1]) + '"')
+                    for path in (known[name], info.path.path)
+                )
+                return LocalBuildResult(
+                    BuildResultStatus.NOT_DETERMINISTIC,
+                    f"derivation '{magenta(drv_path)}' may not be deterministic: output {old} differs from {new}",
+                    start,
+                    stop,
+                )
+        return LocalBuildResult(BuildResultStatus.BUILT, "", start, stop, paths=dict(known))
     return LocalBuildResult(
         BuildResultStatus.BUILT, "", start, stop, built, {name: info.path.path for name, info in built.items()}
     )

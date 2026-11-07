@@ -530,3 +530,79 @@ async def test_a_builder_rpc_build_without_the_sandbox_builds_what_the_daemon_bu
     assert "not allowed inside derivation" in here["contents"][out], lines
     assert "duplicate output" in here["contents"][out], lines
     assert {row[1] for row in here["trace"]} >= {"out", "dev"}, here["trace"]
+
+
+# A `builder-rpc-v0` build that writes *noise* in its output; `$u` makes each build differ.
+RPC_CHECKED = """
+derivation {
+  name = "unsandboxed-rpc-checked"; system = builtins.currentSystem; builder = "/bin/sh";
+  __contentAddressed = true; outputHashMode = "recursive"; outputHashAlgo = "sha256";
+  requiredSystemFeatures = [ "builder-rpc-v0" ];
+  PATH = "@NIX@/bin";
+  args = [ (builtins.toFile "unsandboxed-rpc-checked.sh" ''
+    set -e
+    o="--extra-experimental-features nix-command --extra-experimental-features dynamic-derivations"
+    read u < /proc/sys/kernel/random/uuid
+    echo "@NOISE@" > out
+    out=$(nix $o store add --name unsandboxed-rpc-checked ./out)
+    nix $o store submit-output $out out
+  '') ];
+}
+"""
+
+
+async def _rpc_checked(tmp_path: Path, route: OpRoute, nix_bin: Path, noise: str) -> dict[str, Any]:
+    features = ("ca-derivations", "dynamic-derivations")
+    matrix = {system: set(fs) | {"builder-rpc-v0"} for system, fs in _NO_PROBE_FEATURE_MATRIX.items()}
+    expr = RPC_CHECKED.replace("@NIX@", _nix_dir(nix_bin)).replace("@NOISE@", noise)
+    answers = []
+    async with _serve(
+        tmp_path, route, "false", experimental_features=features, nix_bin=nix_bin, feature_matrix=matrix
+    ) as (nix, env, state):
+        for flag in ((), ("--rebuild",)):
+            rc, _out, err, _both = await run_subproc(
+                [
+                    *nix[:1],
+                    "build",
+                    *nix[1:],
+                    "--extra-experimental-features",
+                    " ".join(features),
+                    "--no-link",
+                    *flag,
+                    "--expr",
+                    expr,
+                ],
+                env=dict(env),
+                nix_config=ALONE,
+                expected_retcode=None,
+            )
+            db = sqlite3.connect(f"file:{state}/db/db.sqlite?mode=ro", uri=True)
+            try:
+                trace = db.execute("SELECT drvPath, outputName, outputPath FROM BuildTraceV3").fetchall()
+            finally:
+                db.close()
+            answers.append((rc, err, trace))
+    (built, _err, trace), (rc, err, checked) = answers
+    assert built == 0, _err
+    return {"rc": rc, "errors": _errors(err) if rc else [], "trace": trace, "checked": checked}
+
+
+async def test_a_check_of_a_builder_rpc_build_compares_what_it_submits(tmp_path: Path) -> None:
+    """`checkSubmittedOutputs` (`derivation-builder-impl.cc:762`) has no check mode: a rebuild that differs fails to
+    register its realisation. pynixd answers that the derivation may not be deterministic."""
+    if NIX_GIT_BIN is None:
+        pytest.skip("NIX_GIT_BIN names no Nix of the master branch")
+    for noise in ("same", "$u"):
+        before = _fallthrough()
+        here = await _rpc_checked(tmp_path, OpRoute.pynixd, NIX_GIT_BIN, noise)
+        assert _fallthrough() == before, f"the daemon checked the pynixd route's builder-rpc-v0 build ({noise})"
+        there = await _rpc_checked(tmp_path, OpRoute.daemon, NIX_GIT_BIN, noise)
+        assert here["checked"] == here["trace"] and there["checked"] == there["trace"], (here, there)
+        if noise == "same":
+            assert here["trace"] == there["trace"], (here, there)
+            assert here["rc"] == there["rc"] == 0, (here, there)
+            continue
+        assert here["rc"] == there["rc"] == 1, (here, there)
+        assert "but we already have another one locally." in there["errors"][0], there
+        assert here["errors"][0].startswith("error: derivation '"), here
+        assert "may not be deterministic: output" in here["errors"][0], here
