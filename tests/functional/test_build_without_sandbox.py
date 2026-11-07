@@ -108,10 +108,9 @@ def _rows(state: Path) -> tuple[list[tuple[Any, ...]], list[tuple[str, str]]]:
 
 
 def _errors(err: str) -> list[str]:
-    """The build's error. The daemon route prints a line before the build starts (nixidae/nixidae#1193)."""
+    """The build's error: *err* from its first `error:` line."""
     lines = err.splitlines()
-    first = next(i for i, line in enumerate(lines) if line.startswith("building '")) + 1
-    return lines[next(i for i in range(first, len(lines)) if lines[i].startswith("error:")) :]
+    return lines[next(i for i, line in enumerate(lines) if line.startswith("error:")) :]
 
 
 async def _probe(tmp_path: Path, route: OpRoute, sandbox: str, extra: str) -> dict[str, Any]:
@@ -304,6 +303,7 @@ async def _fixed(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
                 [*nix[:1], "build", *nix[1:], "--no-link", "--print-out-paths", "--expr", expr],
                 expected_retcode=expected,
                 env=dict(env),
+                nix_config=ALONE,
             )
             return out if expected == 0 else "\n".join(_errors(err))
 
