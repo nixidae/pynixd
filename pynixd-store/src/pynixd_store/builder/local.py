@@ -590,6 +590,9 @@ async def build(
     user: build_users.BuildUser | None = None
     # Nix deletes the build directory only after a build that succeeded (`cleanupBuild(true)`, `:246`).
     built = False
+    # `derivation-building-goal.cc:496`, `:854`: the output locks' files go only once each output is valid.
+    settled = False
+    redirected: dict[str, str] = {}
     try:
         if build_users.use_build_users(settings.build_users_group, settings.auto_allocate_uids):
             auto = settings.auto_allocate_uids
@@ -619,6 +622,7 @@ async def build(
             if path and await engine.is_valid_path_uncached(path) and (not repair or await engine.contents_good(path))
         }
         if valid == set(known.values()) and not check:
+            settled = True
             return LocalBuildResult(BuildResultStatus.ALREADY_VALID, paths=known)
         # `derivation-building-goal.cc:503`: an output on disk that is not valid goes before the build.
         for path in known.values():
@@ -916,7 +920,7 @@ async def build(
                 else:
                     await anyio.to_thread.run_sync(paths.remove)
             for lock in locks:
-                lock.release(delete=True)
+                lock.release(delete=built or settled)
             if user is not None:
                 user.release()
 
