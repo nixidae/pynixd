@@ -389,6 +389,7 @@ async def add_nar(
     repair: bool,
     ignored_acls: frozenset[str] = IGNORED_ACLS,
     auto_optimise: bool | None = None,
+    fsync: bool | None = None,
 ) -> None:
     """`LocalStore::addToStore` after the signature check, for a path the client has temp-rooted.
 
@@ -410,7 +411,7 @@ async def add_nar(
             delete_lock = True
             return
         await _restore_into_place(
-            engine, info, real, source, await _placement(engine, ignored_acls, repair, auto_optimise)
+            engine, info, real, source, await _placement(engine, ignored_acls, repair, auto_optimise, fsync)
         )
         await engine.register_valid_paths([info])
         delete_lock = True
@@ -519,6 +520,7 @@ async def add_dump(
     ignored_acls: frozenset[str] = IGNORED_ACLS,
     scan: bool = False,
     auto_optimise: bool | None = None,
+    fsync: bool | None = None,
 ) -> str:
     """`LocalStore::addToStoreFromDump` (`local-store.cc:1151`) for a flat, text, NAR or Git dump.
 
@@ -558,7 +560,7 @@ async def add_dump(
         delete_lock = False
         try:
             if repair or not await engine.is_valid_path_uncached(path):
-                placement = await _placement(engine, ignored_acls, repair, auto_optimise)
+                placement = await _placement(engine, ignored_acls, repair, auto_optimise, fsync)
                 await anyio.to_thread.run_sync(_move_into_place, staged, real, placement)
                 # A NAR dump hashed with SHA-256 is the NAR hash already (`local-store.cc:1304`).
                 if method is Method.NAR and algo == "sha256":
@@ -588,15 +590,64 @@ async def add_dump(
 
 
 async def _placement(
-    engine: StoreEngine, ignored_acls: frozenset[str], repair: bool, auto_optimise: bool | None
+    engine: StoreEngine, ignored_acls: frozenset[str], repair: bool, auto_optimise: bool | None, fsync: bool | None
 ) -> Placement:
-    """`optimisePath` runs only with `auto-optimise-store`: the session's override, else the store's setting."""
-    optimising = (await engine.settings()).auto_optimise_store if auto_optimise is None else auto_optimise
-    return Placement(ignored_acls, engine.layout.links_dir if optimising else None, repair)
+    """`auto-optimise-store` and `fsync-store-paths`: each the session's override, else the store's setting."""
+    settings = await engine.settings()
+    optimising = settings.auto_optimise_store if auto_optimise is None else auto_optimise
+    return Placement(
+        ignored_acls,
+        engine.layout.links_dir if optimising else None,
+        repair,
+        settings.fsync_store_paths if fsync is None else fsync,
+    )
+
+
+def recursive_sync(path: Path) -> None:
+    """`recursiveSync` (`file-system.cc:336`): each regular file under *path*, then each directory, the last visited
+    first. A symlink is not synced."""
+    mode = os.lstat(path).st_mode
+    if stat.S_ISREG(mode):
+        _fsync(path, os.O_RDONLY)
+        return
+    if not stat.S_ISDIR(mode):
+        return
+    pending = [path]
+    directories: list[Path] = []
+    while pending:
+        current = pending.pop()
+        with os.scandir(current) as entries:
+            for entry in entries:
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(current / entry.name)
+                elif entry.is_file(follow_symlinks=False):
+                    _fsync(current / entry.name, os.O_RDONLY)
+        directories.append(current)
+    for directory in reversed(directories):
+        _fsync(directory, os.O_RDONLY | os.O_DIRECTORY)
+
+
+def sync_store_path(path: Path) -> None:
+    """`recursiveSync` and `syncParent` (`file-system.cc:326`), as `fsync-store-paths` asks before registration.
+
+    Nix also starts the writeback of each file as it restores (`startFsync`, `fs-sink.cc:233`). That is a hint
+    with no effect on what reaches the disk, and Python has no `sync_file_range`.
+    """
+    recursive_sync(path)
+    _fsync(path.parent, os.O_RDONLY | os.O_DIRECTORY, follow=True)
+
+
+def _fsync(path: Path, flags: int, *, follow: bool = False) -> None:
+    fd = os.open(path, flags | os.O_CLOEXEC | (0 if follow else os.O_NOFOLLOW))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _move_into_place(staged: Path, real: Path, settings: Placement) -> None:
-    """Into place, then `canonicalisePathMetaData` and `optimisePath` (`local-store.cc:1149`, `:1310`)."""
+    """Into place, then `canonicalisePathMetaData`, `optimisePath`, and with `fsync-store-paths` the sync
+    (`local-store.cc:1131`, `:1293`)."""
     # A path left by an import that crashed before it registered: Nix deletes it even without repair.
     delete_path(real)
     os.rename(staged, real)
@@ -611,12 +662,16 @@ def _move_into_place(staged: Path, real: Path, settings: Placement) -> None:
             stats=optimise.OptimiseStats(),
             repair=settings.repair,
         )
+    if settings.fsync:
+        sync_store_path(real)
 
 
 @dataclass(frozen=True)
 class Placement:
-    """What `_move_into_place` does after the rename. *links_dir* is set with `auto-optimise-store`."""
+    """What `_move_into_place` does after the rename. *links_dir* is set with `auto-optimise-store`, and *fsync*
+    with `fsync-store-paths`."""
 
     ignored_acls: frozenset[str]
     links_dir: Path | None = None
     repair: bool = False
+    fsync: bool = False

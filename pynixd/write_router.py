@@ -107,10 +107,6 @@ def _framing(write: Write, facts: Facts) -> str | None:
     return "the client sends the NAR unframed" if write.version < FRAMED_NAR else None
 
 
-def _fsync(write: Write, facts: Facts) -> str | None:
-    return "fsync-store-paths" if facts.settings.fsync_store_paths else None
-
-
 def _git_path(write: Write, facts: Facts) -> str | None:
     """Without `git-hashing` the daemon refuses a Git address, in Nix's words."""
     if facts.settings.git_hashing:
@@ -149,7 +145,6 @@ def pynixd_import(info: ValidPathInfo, *, repair: bool = False) -> Write:
 REASONS: tuple[Callable[[Write, Facts], str | None], ...] = (
     _database,
     _framing,
-    _fsync,
     _git_path,
     _dump,
 )
@@ -180,9 +175,9 @@ async def _client_log(conn: ClientConn | None, level: Verbosity, text: str) -> N
         await conn.send(LogNext(text=f"{text}\n"))
 
 
-def _auto_optimise(client: WriteClient) -> bool | None:
-    """The session's `auto-optimise-store`: `ClientSettings::apply` (`daemon.cc:233`) sets it for the worker's adds too."""
-    value = client.options.overrides.get("auto-optimise-store") if client.options is not None else None
+def _override(client: WriteClient, name: str) -> bool | None:
+    """The session's *name*: `ClientSettings::apply` (`daemon.cc:233`) sets it for the worker's adds too."""
+    value = client.options.overrides.get(name) if client.options is not None else None
     return {"true": True, "false": False}.get(value) if value is not None else None
 
 
@@ -303,7 +298,12 @@ class WriteRouter:
             if root:
                 await client.root(str(info.path))
             await engine.add_to_store(
-                info, source, repair=repair, ignored_acls=settings.ignored_acls, auto_optimise=_auto_optimise(client)
+                info,
+                source,
+                repair=repair,
+                ignored_acls=settings.ignored_acls,
+                auto_optimise=_override(client, "auto-optimise-store"),
+                fsync=_override(client, "fsync-store-paths"),
             )
         finally:
             engine.invalidate_path_info_cache_for(info.path)
@@ -376,7 +376,8 @@ class WriteRouter:
             root=client.root,
             repair=write.repair,
             ignored_acls=settings.ignored_acls,
-            auto_optimise=_auto_optimise(client),
+            auto_optimise=_override(client, "auto-optimise-store"),
+            fsync=_override(client, "fsync-store-paths"),
         )
         meter.finish()
         # `invalidatePathInfoCacheFor`: a path valid before this op may hold a negative entry.

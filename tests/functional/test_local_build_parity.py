@@ -136,9 +136,10 @@ async def _serve(
     diff_hook: Path | None = None,
     post_build_hook: Path | None = None,
     config_file: bool = False,
+    ops: tuple[str, ...] = ("BuildDerivation",),
     **spec_args: Any,
 ) -> AsyncIterator[tuple[str, Path]]:
-    """A fresh store with `BuildDerivation` on *route*: its URL and its root. *spec_args* go to `make_test_spec`.
+    """A fresh store with each of *ops* on *route*: its URL and its root. *spec_args* go to `make_test_spec`.
 
     With *config_file*, the daemon reads the store's settings from a file named by `NIX_USER_CONF_FILES`, and
     its environment holds no `NIX_CONFIG`.
@@ -156,7 +157,7 @@ async def _serve(
         store_path=root,
         no_probe=True,
         nix_config=nix_config,
-        op_routes={"BuildDerivation": route},
+        op_routes=dict.fromkeys(ops, route),
         **spec_args,
     )
     if config_file and spec.extra_env is not None:
@@ -801,28 +802,102 @@ async def test_impure_env_reaches_a_fixed_output_build_as_the_daemon_passes_it(t
     assert any(line.endswith("token=secret extra=") for line in here), here
 
 
-async def test_a_fixed_output_with_fsync_store_paths_goes_to_the_daemon(tmp_path: Path) -> None:
-    """`moveOutputToTempDir` fsyncs a fixed output (`derivation-builder.cc:1417`), and pynixd's restore cannot."""
-    before = _fallthrough()
-    async with _serve(tmp_path, OpRoute.pynixd) as (url, _root):
+def _all_fallthroughs() -> float:
+    return sum(
+        sample.value
+        for metric in REGISTRY.collect()
+        if metric.name == "pynixd_op_fallthrough"
+        for sample in metric.samples
+        if sample.name == "pynixd_op_fallthrough_total"
+    )
+
+
+async def _synced_writes(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
+    """Under `fsync-store-paths`: a dump (`nix store add`), a NAR (`nix copy`), and a fixed output built twice."""
+    tree = tmp_path / "tree"
+    if not tree.exists():
+        (tree / "a" / "b").mkdir(parents=True)
+        (tree / "top").write_text("top\n")
+        (tree / "a" / "middle").write_text("middle\n")
+        (tree / "a" / "b" / "deep").write_text("deep\n")
+        (tree / "link").symlink_to("top")
+    source = f"local?root={tmp_path / route.name / 'source'}"
+    sync = ("--option", "fsync-store-paths", "true")
+    ops = ("BuildDerivation", "AddToStore", "AddToStoreNar", "AddMultipleToStore")
+    async with _serve(tmp_path, route, ops=ops) as (url, root):
+        _rc, out, _err, _both = await run_subproc(
+            [NIX_BIN, "store", "add", "--store", url, *sync, "--name", "parity-synced-tree", str(tree)]
+        )
+        added = out.strip()
+        (tmp_path / "copied").write_text("copied\n")
+        _rc, out, _err, _both = await run_subproc(
+            [NIX_BIN, "store", "add-file", "--store", source, str(tmp_path / "copied")]
+        )
+        copied = out.strip()
+        await run_subproc([NIX_BIN, "copy", "--no-check-sigs", *sync, "--from", source, "--to", url, copied])
         _rc, _out, err, _both = await run_subproc(
+            [NIX_BIN, "build", "--store", url, *sync, "--impure", "--no-link", "--expr", FOD_FLAT],
+            expected_retcode=1,
+        )
+        got = next(line.split()[-1] for line in err.splitlines() if line.strip().startswith("got:"))
+        _rc, out, _err, _both = await run_subproc(
             [
                 NIX_BIN,
                 "build",
                 "--store",
                 url,
-                "--option",
-                "fsync-store-paths",
-                "true",
+                *sync,
                 "--impure",
                 "--no-link",
+                "--print-out-paths",
                 "--expr",
-                FOD_FLAT,
-            ],
-            expected_retcode=1,
+                _fod("parity-fod-flat", "flat", "echo flat > $out", got),
+            ]
         )
-    assert _fallthrough() == before + 1
-    assert any("hash mismatch in fixed-output derivation" in line for line in _errors(err)), err
+        built = out.strip()
+    valid, refs = _rows(root)
+    return {
+        "paths": {"added": added, "copied": copied, "built": built},
+        "errors": _errors(err),
+        "valid": valid,
+        "refs": refs,
+        "real": Path(os.path.realpath(root / "nix" / "store")),
+    }
+
+
+async def test_fsync_store_paths_syncs_each_path_before_pynixd_registers_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`recursiveSync` and `syncParent` before `registerValidPath` (`local-store.cc:1136`, `:1298`).
+
+    Nix does not sync a build output (Lillecarl/nix#402); pynixd does. Each write stays in pynixd, its result is
+    the daemon's, and every file and directory of each new path is synced, its symlink not.
+    """
+    synced: list[str] = []
+    fsync = os.fsync
+
+    def record(fd: int) -> None:
+        synced.append(os.readlink(f"/proc/self/fd/{fd}"))
+        fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", record)
+    before = _all_fallthroughs()
+    here = await _synced_writes(tmp_path, OpRoute.pynixd)
+    assert _all_fallthroughs() == before, "the daemon took a write of the pynixd route"
+    mine = list(synced)
+    there = await _synced_writes(tmp_path, OpRoute.daemon)
+
+    for key in ("paths", "errors", "valid", "refs"):
+        assert here[key] == there[key], (key, here[key], there[key])
+    real = here["real"]
+    tree = str(real / here["paths"]["added"].rsplit("/", 1)[-1])
+    expected = [f"{tree}/top", f"{tree}/a/middle", f"{tree}/a/b/deep", f"{tree}/a/b", f"{tree}/a", tree, str(real)]
+    assert [path for path in mine if path.startswith(tree) or path == str(real)][: len(expected)] == expected, mine
+    assert f"{tree}/link" not in mine, mine
+    for key in ("copied", "built"):
+        path = str(real / here["paths"][key].rsplit("/", 1)[-1])
+        assert path in mine, (f"pynixd did not sync the {key} path", mine)
+        assert mine[mine.index(path) + 1] == str(real), (key, mine)
 
 
 async def _flat_with_references(tmp_path: Path, route: OpRoute) -> tuple[int, list[str]]:

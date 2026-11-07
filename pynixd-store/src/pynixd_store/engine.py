@@ -306,12 +306,15 @@ class StoreEngine:
         repair: bool,
         ignored_acls: frozenset[str] = add.IGNORED_ACLS,
         auto_optimise: bool | None = None,
+        fsync: bool | None = None,
     ) -> None:
         """`LocalStore::addToStore` (`local-store.cc:1046`) after the signature check.
 
-        *auto_optimise* is the session's override; `None` reads the store's setting.
+        *auto_optimise* and *fsync* are the session's overrides; `None` reads the store's setting.
         """
-        await add.add_nar(self, info, source, repair=repair, ignored_acls=ignored_acls, auto_optimise=auto_optimise)
+        await add.add_nar(
+            self, info, source, repair=repair, ignored_acls=ignored_acls, auto_optimise=auto_optimise, fsync=fsync
+        )
 
     async def import_nar(
         self, info: ValidPathInfo, source: Source, *, dont_check_sigs: bool, repair: bool = False
@@ -332,6 +335,7 @@ class StoreEngine:
         ignored_acls: frozenset[str] = add.IGNORED_ACLS,
         scan: bool = False,
         auto_optimise: bool | None = None,
+        fsync: bool | None = None,
     ) -> str:
         """`LocalStore::addToStoreFromDump` (`local-store.cc:1151`); *scan* is `filterReferences`."""
         return await add.add_dump(
@@ -346,6 +350,7 @@ class StoreEngine:
             ignored_acls=ignored_acls,
             scan=scan,
             auto_optimise=auto_optimise,
+            fsync=fsync,
         )
 
     async def register_valid_paths(self, infos: Iterable[ValidPathInfo]) -> None:

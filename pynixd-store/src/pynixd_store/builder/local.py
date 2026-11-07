@@ -33,7 +33,7 @@ from nix_daemon_protocol.protocol import Verbosity
 from nix_daemon_protocol.signature import Signature
 
 from .. import optimise
-from ..add import PathLock, delete_path
+from ..add import PathLock, delete_path, sync_store_path
 from ..content_address import Method, fixed_output_address, output_method
 from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta, show_error
 from ..signing import SecretKey, fingerprint
@@ -188,10 +188,6 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
         return "a deferred output"
     if len(kinds) != 1 or (OutputKind.CA_FIXED in kinds and len(drv.outputs) != 1):
         return f"the outputs {sorted(drv.outputs)} of kinds {sorted(k.name for k in kinds)}"
-    # `moveOutputToTempDir` (`derivation-builder.cc:1417`) restores a fixed output with fsync; pynixd's
-    # restore has none, as its own writes leave this setting to the daemon (`write_router._fsync`).
-    if OutputKind.CA_FIXED in kinds and settings.fsync_store_paths:
-        return "a fixed output with fsync-store-paths"
     git = any(o.method and output_method(o.method)[0] is Method.GIT for o in drv.outputs.values())
     if git and not settings.git_hashing:
         return "a Git-hashed output without git-hashing"
@@ -538,6 +534,11 @@ def _optimise(real_store_dir: Path, links_dir: Path, names: Iterable[str]) -> No
             links_dir=links_dir,
             stats=optimise.OptimiseStats(),
         )
+
+
+def _sync(real_store_dir: Path, names: Iterable[str]) -> None:
+    for name in names:
+        sync_store_path(real_store_dir / name)
 
 
 def _sign(infos: Iterable[ValidPathInfo], secret_key_files: Sequence[str]) -> None:
@@ -906,14 +907,21 @@ async def build(
                 )
                 built = compared.status is BuildResultStatus.BUILT
                 return compared
+            # `registerOutputs` (`derivation-builder.cc:1600`) skips an output that is valid already.
+            fresh = [
+                info.path.path.rsplit("/", 1)[-1]
+                for info in collected.infos.values()
+                if not await engine.is_valid_path_uncached(info.path.path)
+            ]
             if settings.auto_optimise_store:
-                # `registerOutputs` (`derivation-builder.cc:1600`) skips an output that is valid already.
-                fresh = [
-                    info.path.path.rsplit("/", 1)[-1]
-                    for info in collected.infos.values()
-                    if not await engine.is_valid_path_uncached(info.path.path)
-                ]
                 await anyio.to_thread.run_sync(_optimise, layout.real_store_dir, layout.links_dir, fresh)
+            if settings.fsync_store_paths:
+                # NIX-DEFECT (#23): `registerOutputs` (`derivation-builder.cc:1600`) registers an output with no
+                # `recursiveSync`, so a crash after the build can leave a valid output with lost contents; only a
+                # fixed output's copy starts its writeback (`:1417`). `fsync-store-paths` promises the sync before
+                # registration, as `addToStore` does it (`local-store.cc:1136`). pynixd syncs each new output;
+                # Lillecarl/nix#402.
+                await anyio.to_thread.run_sync(_sync, layout.real_store_dir, fresh)
             await anyio.to_thread.run_sync(_sign, collected.infos.values(), settings.secret_key_files)
             failure = collected.failure or await anyio.to_thread.run_sync(
                 lambda: check_outputs(

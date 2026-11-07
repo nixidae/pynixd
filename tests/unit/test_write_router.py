@@ -109,6 +109,12 @@ async def test_the_engine_takes_a_plain_import() -> None:
     assert await _router().engine_takes(Write(op="AddToStoreNar", version=NEW, info=_info()))
 
 
+async def test_the_engine_syncs_an_import_itself() -> None:
+    """`fsync-store-paths` and `auto-optimise-store` are the engine's own steps (`add._move_into_place`)."""
+    router = _router(auto_optimise_store=True, fsync_store_paths=True)
+    assert await router.engine_takes(Write(op="AddToStoreNar", version=NEW, info=_info()))
+
+
 async def test_the_engine_repairs_a_nar_import() -> None:
     """`LocalStore::addToStore` restores over a valid path with repair (`local-store.cc:1054`)."""
     assert await _router().engine_takes(Write(op="AddToStoreNar", version=NEW, repair=True, info=_info()))
@@ -140,8 +146,6 @@ async def test_the_daemon_route_wins_and_counts_nothing() -> None:
     [
         ({"writable": False}, Write(op="AddToStoreNar", version=NEW, repair=True), "not writable"),
         ({}, Write(op="AddToStoreNar", version=proto(1, 22)), "NAR unframed"),
-        # The engine optimises an add itself (`add._placement`), so only `fsync-store-paths` is left.
-        ({"auto_optimise_store": True, "fsync_store_paths": True}, Write(op="AddToStoreNar", version=NEW), "fsync"),
         ({}, Write(op="AddMultipleToStore", version=NEW, info=_info("fixed:git:sha1:" + "0" * 40)), "Git"),
     ],
 )
