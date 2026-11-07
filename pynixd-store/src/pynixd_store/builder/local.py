@@ -151,6 +151,9 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
         return "the feature uid-range"
     if settings.auto_allocate_uids and build_users.use_build_users(settings.build_users_group, True):
         # `AutoUserLock::acquire` throws without the feature and asserts on the ids (`user-lock.cc:176`).
+        # NIX-DEFECT (#23): `unix/user-lock.cc:177` checks `start-id` and `id-count`, settings from
+        # `nix.conf`, with `assert`, so a typo aborts the process; an error naming the setting is what
+        # it should be. pynixd sends the build to the daemon and copies no abort; Lillecarl/nix#395.
         if not settings.auto_allocate_feature:
             return "auto-allocate-uids without the experimental feature"
         if (
