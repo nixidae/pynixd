@@ -123,6 +123,28 @@ let
   withDefaultNix = test: test.extend { modules = [ { defaults.nix.package = defaultNix; } ]; };
   vivarium-runner = vivariumLib.runner;
 
+  # The tree the test derivations copy, without the run directories `.gitignore` names (`/out/`,
+  # `/out-*/`, `/o/`): a guest copies its source to `/work`, and 1.9G of old runs filled a QEMU
+  # guest's disk.
+  testSrc = lib.cleanSourceWith {
+    src = lib.cleanSource ./.;
+    filter =
+      path: type:
+      let
+        relative = lib.removePrefix (toString ./. + "/") (toString path);
+      in
+      !(
+        type == "directory"
+        && (
+          lib.elem relative [
+            "out"
+            "o"
+          ]
+          || lib.hasPrefix "out-" relative && !(lib.hasInfix "/" relative)
+        )
+      );
+  };
+
   nanopynix = import sources.nanopynix { inherit sources; };
 
   /*
@@ -487,7 +509,7 @@ let
       pynixd-lib = library;
       nix = defaultNix;
       inherit nixvenv;
-      src = lib.cleanSource ./.;
+      src = testSrc;
     };
 
     # The performance benchmarks, in a guest. Not a gate: they print numbers
@@ -496,7 +518,7 @@ let
     benchmark = withDefaultNix (
       pkgs.callPackage ./tests/derivations/benchmark {
         inherit package;
-        src = lib.cleanSource ./.;
+        src = testSrc;
         inherit vivariumLib;
         devEnv = guestEnv;
       }
@@ -507,7 +529,7 @@ let
     guest = withDefaultNix (
       pkgs.callPackage ./tests/derivations/guest {
         pynixd-lib = library;
-        src = lib.cleanSource ./.;
+        src = testSrc;
         inherit vivariumLib;
         inherit agent krunVariables;
         devEnv = guestEnv;
@@ -522,7 +544,7 @@ let
     guest-nixft = withDefaultNix (
       pkgs.callPackage ./tests/derivations/guest-nixft {
         pynixd-lib = library;
-        src = lib.cleanSource ./.;
+        src = testSrc;
         inherit vivariumLib;
         nixft = nixFunctionalTests.${defaultNixName};
       }
