@@ -127,3 +127,32 @@ class BuildActivity:
 
     async def _result(self, act_id: int, kind: int, fields: Iterable[int | str]) -> None:
         await self._on_log(LogResult(act_id=act_id, result_type=kind, fields=_fields(fields)))
+
+
+class PostBuildHookActivity:
+    """`PostBuildHookState::act` (`derivation-building-goal.cc:118`): the hook's activity, one result per line."""
+
+    def __init__(self, hook: str, drv_path: str, on_log: Callable[[LogMessage], Awaitable[None]]) -> None:
+        self.hook = hook
+        self.drv_path = drv_path
+        self.id = next_activity_id()
+        self._on_log = on_log
+
+    async def start(self) -> None:
+        await self._on_log(
+            LogStartActivity(
+                act_id=self.id,
+                level=Verbosity.TALKATIVE,
+                type=ActivityType.POST_BUILD_HOOK,
+                text=f"running post-build-hook '{self.hook}'",
+                fields=_fields((self.drv_path,)),
+            )
+        )
+
+    async def line(self, line: str) -> None:
+        await self._on_log(
+            LogResult(act_id=self.id, result_type=ResultType.POST_BUILD_LOG_LINE, fields=_fields((line,)))
+        )
+
+    async def stop(self) -> None:
+        await self._on_log(LogStopActivity(act_id=self.id))

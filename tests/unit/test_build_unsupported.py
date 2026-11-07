@@ -116,18 +116,10 @@ def test_a_sandboxed_type_or_sandbox_true_stays_in_pynixd() -> None:
     assert _reason(FIXED, "true", relocated=False) is None
 
 
-@pytest.mark.parametrize(
-    ("setting", "value", "reason"),
-    [
-        ("post-build-hook", "/bin/hook", "a build with a post-build-hook"),
-        ("keep-failed", "true", None),
-    ],
-)
-def test_a_post_build_hook_goes_to_the_daemon_and_keep_failed_does_not(
-    setting: str, value: str, reason: str | None
-) -> None:
-    """`runPostBuildHook` (`derivation-building-goal.cc:1079`) is the daemon's; pynixd keeps a failed build's
+@pytest.mark.parametrize(("setting", "value"), [("post-build-hook", "/bin/hook"), ("keep-failed", "true")])
+def test_a_post_build_hook_and_keep_failed_stay_in_pynixd(setting: str, value: str) -> None:
+    """pynixd runs the hook (`runPostBuildHook`, `derivation-building-goal.cc:1105`) and keeps a failed build's
     directory itself (`cleanupBuild`, `derivation-builder.cc:1697`)."""
     drv = BasicDerivation(outputs={"out": PLAIN}, platform="x86_64-linux", builder="/bin/sh")
     settings = BuildSettings.from_nix_config({}, {"system": "x86_64-linux", setting: value})
-    assert unsupported(drv, settings, store_dir="/nix/store", relocated=True) == reason
+    assert unsupported(drv, settings, store_dir="/nix/store", relocated=True) is None

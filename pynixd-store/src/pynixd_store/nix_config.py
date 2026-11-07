@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 import anyio
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping, Sequence
 
     from .store_layout import StoreLayout
 
@@ -43,6 +43,28 @@ async def read_nix_config(nix_bin: str, env: Mapping[str, str]) -> dict[str, Any
         )
     config: dict[str, Any] = json.loads(result.stdout)
     return config
+
+
+async def read_nix_config_text(
+    nix_bin: str, env: Mapping[str, str], arguments: Sequence[str], session: Iterable[tuple[str, str]]
+) -> str:
+    """`GlobalConfig::toKeyValue` (`config-global.cc:46`): `nix config show` prints the same lines.
+
+    *arguments* are the daemon's own command line, and *session* the client's settings, which apply after them.
+    """
+    options = [arg for name, value in session for arg in ("--option", name, value)]
+    result = await anyio.run_process(
+        [nix_bin, "--extra-experimental-features", "nix-command", *arguments, *options, "config", "show"],
+        stdin=subprocess.DEVNULL,
+        env=dict(env),
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"`nix config show` failed with code {result.returncode}: {result.stderr.decode(errors='replace')}"
+        )
+    # `toKeyValue` ends each line with one line feed, and `nix config show` adds one more at the end.
+    return result.stdout.decode().rstrip("\n") + "\n"
 
 
 async def read_nix_version(nix_bin: str, env: Mapping[str, str]) -> str:

@@ -251,6 +251,19 @@ class LocalStore(DaemonStore):
             await self._kill_daemon()
             raise
 
+    def config_arguments(self) -> list[str]:
+        """What the managed daemon's command line sets of its settings; none for a daemon pynixd did not start."""
+        if not self.managed:
+            return []
+        return [
+            *self.layout.daemon_arguments(),
+            "--option",
+            "build-dir",
+            str(self.layout.build_dir),
+            *_sandbox_fallback_arguments(self.layout),
+            *self.extra_args,
+        ]
+
     async def ensure_daemon(self) -> None:
         """Ensure a daemon is reachable, spawning one if needed.
 
@@ -278,18 +291,7 @@ class LocalStore(DaemonStore):
         socket_dir = self.socket_path.parent
         socket_dir.mkdir(parents=True, exist_ok=True)
 
-        cmd = [
-            self.nix_bin,
-            "daemon",
-            *self.layout.daemon_arguments(),
-            "--option",
-            "build-dir",
-            str(self.layout.build_dir),
-            "--log-format",
-            "internal-json",
-            *_sandbox_fallback_arguments(self.layout),
-        ]
-        cmd.extend(self.extra_args)
+        cmd = [self.nix_bin, "daemon", *self.config_arguments(), "--log-format", "internal-json"]
 
         log.info(
             "spawning_managed_daemon",

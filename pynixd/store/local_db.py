@@ -21,16 +21,17 @@ from nix_daemon_protocol.opt_microseconds import OptMicroseconds
 from nix_daemon_protocol.protocol import Verbosity
 from nix_daemon_protocol.signature import Signature
 from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
-from pynixd_store.builder import local as local_builder
+from pynixd_store.builder import hooks, local as local_builder
 from pynixd_store.builder.settings import BuildSettings
 from pynixd_store.builder.vm import BuildVm
 from pynixd_store.engine import StoreEngine
+from pynixd_store.hintfmt import magenta, show_error
 from pynixd_store.local_store_db import LocalStoreDB
-from pynixd_store.nix_config import nix_environment, read_nix_config, read_nix_version
+from pynixd_store.nix_config import nix_environment, read_nix_config, read_nix_config_text, read_nix_version
 from pynixd_store.signing import SecretKey, realisation_fingerprint
 
 from .. import metrics
-from ..activity import BuildActivity
+from ..activity import BuildActivity, PostBuildHookActivity
 from ..op_routes import OpRoute, Owned
 from ..serde import (
     BuildDerivationRequest,
@@ -833,18 +834,23 @@ class LocalDBStore(Store):
                 on_usage=used.append,
                 sample_seconds=self.usage_sample_seconds,
             )
+            signed: dict[str, set[Signature]] = {}
+            if (
+                built.status is BuildResultStatus.BUILT
+                and not request.derivation.has_impure
+                and await self._ca_derivations()
+            ):
+                signed = await self._register_realisations(
+                    request, ((name, info.path.path) for name, info in built.outputs.items()), settings
+                )
+            # Inside `actBuild`, which the goal keeps until it ends (`derivation-building-goal.cc:1079`).
+            if settings.post_build_hook and built.status is BuildResultStatus.BUILT:
+                failure = await self._post_build_hook(settings, drv_path, built.paths.values(), on_log)
+                if failure is not None:
+                    built = dataclasses.replace(built, status=BuildResultStatus.MISC_FAILURE, error_msg=failure)
         finally:
             with anyio.CancelScope(shield=True):
                 await activity.stop()
-        signed: dict[str, set[Signature]] = {}
-        if (
-            built.status is BuildResultStatus.BUILT
-            and not request.derivation.has_impure
-            and await self._ca_derivations()
-        ):
-            signed = await self._register_realisations(
-                request, ((name, info.path.path) for name, info in built.outputs.items()), settings
-            )
         # `--print-out-paths` prints these; `GoalEngine` keys them by `DrvOutput`, and copies the signatures.
         by_name = {
             name: UnkeyedRealisation(out_path=StorePath(path), signatures=signed.get(name, set()))
@@ -869,6 +875,38 @@ class LocalDBStore(Store):
                 resources=_resources(used[0]) if used else BuildResources(),
             )
         )
+
+    async def _post_build_hook(
+        self,
+        settings: BuildSettings,
+        drv_path: str,
+        out_paths: Iterable[str],
+        on_log: Callable[[LogMessage], Awaitable[None]],
+    ) -> str | None:
+        """`runPostBuildHook` (`derivation-building-goal.cc:1105`) after a build or a check (`:1066`): its failure.
+
+        The hook gets the daemon's environment, and `NIX_CONFIG` holds every setting as the session set them.
+        """
+        nix_bin, extra_env = self._nix_version_command
+        env = nix_environment(self.engine.layout, extra_env)
+        # An inherited `NIX_CONFIG` wins (`hooks.post_build_hook`), so the dump would go unused.
+        config = (
+            env["NIX_CONFIG"]
+            if "NIX_CONFIG" in env
+            else await read_nix_config_text(nix_bin, env, self._daemon.config_arguments(), settings.session)
+        )
+        activity = PostBuildHookActivity(settings.post_build_hook, drv_path, on_log)
+        await activity.start()
+        try:
+            code = await hooks.post_build_hook(
+                settings.post_build_hook, env, drv_path, out_paths, config, on_line=activity.line
+            )
+        finally:
+            with anyio.CancelScope(shield=True):
+                await activity.stop()
+        if code == 0:
+            return None
+        return show_error(f'program "{magenta(settings.post_build_hook)}" {magenta(hooks.status_text(code))}')
 
     async def import_settings(self) -> ImportSettings:
         """What `addToStore` reads of this store's Nix settings. Read once, as the daemon reads them."""
@@ -1315,10 +1353,15 @@ def _build_overrides(options: SetOptionsRequest | None) -> dict[str, str]:
         return {}
     overrides = {
         "keep-failed": "true" if options.keep_failed else "false",
+        "keep-going": "true" if options.keep_going else "false",
+        "fallback": "true" if options.try_fallback else "false",
+        "max-jobs": str(options.max_build_jobs),
         "max-silent-time": str(int(options.max_silent_time)),
         "cores": str(options.build_cores),
+        "substitute": "true" if options.use_substitutes else "false",
     }
-    overrides.update((k, v) for k, v in options.overrides.items() if k not in _NEVER_APPLIED)
+    # `ClientSettings::overrides` is a `std::map`: `apply` walks it sorted.
+    overrides.update((k, v) for k, v in sorted(options.overrides.items()) if k not in _NEVER_APPLIED)
     if "build-timeout" in overrides:
         overrides.setdefault("timeout", overrides["build-timeout"])
     return overrides

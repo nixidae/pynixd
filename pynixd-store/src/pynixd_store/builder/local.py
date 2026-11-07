@@ -137,9 +137,6 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
         return f"the platform {drv.platform}"
     if "__json" in drv.env and (reason := structured_attrs_reason(drv.env)) is not None:
         return reason
-    # `runPostBuildHook` (`derivation-building-goal.cc:1079`) is the daemon's alone.
-    if settings.post_build_hook:
-        return "a build with a post-build-hook"
     # `makeDerivationBuilder` (`derivation-builder.cc:1757`) throws before a build starts.
     if settings.sandbox == "true" and bool_attr(drv.env, "__noChroot", default=False):
         return "__noChroot with sandbox = true"

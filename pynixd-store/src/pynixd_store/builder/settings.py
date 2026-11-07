@@ -100,6 +100,8 @@ class BuildSettings:
     id_count: int = 128 << 16
     cgroups_feature: bool = False
     """`Xp::Cgroups`, which a build of 65536 ids requires (`linux-derivation-builder.cc:450`)."""
+    session: tuple[tuple[str, str], ...] = ()
+    """The session's settings in the order `ClientSettings::apply` sets them, which `NIX_CONFIG` shows."""
 
     @classmethod
     def from_nix_config(
@@ -209,6 +211,7 @@ class BuildSettings:
             start_id=int(_own(config, "start-id", 0x34000000)),
             id_count=int(_own(config, "id-count", 128 << 16)),
             cgroups_feature="cgroups" in features,
+            session=tuple(overrides.items()),
         )
 
 

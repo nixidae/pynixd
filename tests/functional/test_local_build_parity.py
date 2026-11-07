@@ -134,15 +134,23 @@ async def _serve(
     *,
     experimental_features: tuple[str, ...] = (),
     diff_hook: Path | None = None,
+    post_build_hook: Path | None = None,
+    config_file: bool = False,
     **spec_args: Any,
 ) -> AsyncIterator[tuple[str, Path]]:
-    """A fresh store with `BuildDerivation` on *route*: its URL and its root. *spec_args* go to `make_test_spec`."""
+    """A fresh store with `BuildDerivation` on *route*: its URL and its root. *spec_args* go to `make_test_spec`.
+
+    With *config_file*, the daemon reads the store's settings from a file named by `NIX_USER_CONF_FILES`, and
+    its environment holds no `NIX_CONFIG`.
+    """
     root = tmp_path / route.name / "store"
     socket = tmp_path / f"{route.name}.sock"
     nix_config = for_test_store(substituters=(), experimental_features=experimental_features)
     if diff_hook is not None:
         nix_config.run_diff_hook = True
         nix_config.diff_hook = str(diff_hook)
+    if post_build_hook is not None:
+        nix_config.post_build_hook = str(post_build_hook)
     spec = make_test_spec(
         store_id="local",
         store_path=root,
@@ -151,6 +159,11 @@ async def _serve(
         op_routes={"BuildDerivation": route},
         **spec_args,
     )
+    if config_file and spec.extra_env is not None:
+        conf = tmp_path / f"{route.name}.conf"
+        conf.write_text(nix_config.to_nix_conf() + "\n")
+        del spec.extra_env["NIX_CONFIG"]
+        spec.extra_env["NIX_USER_CONF_FILES"] = str(conf)
     async with Server(stores={StoreId("local"): LocalDBStore(spec)}, unix_path=socket, ssh_port=None, http_port=None):
         yield f"unix://{socket}?root={root}", root
 
@@ -1482,6 +1495,95 @@ async def test_a_diff_hook_fails_as_the_daemon_fails_it_when_not_root(tmp_path: 
     assert here == there
     assert (here["rc"], here["checks"], here["ran"]) == (1, ["parity-keep-differs.check"], False), here
     assert any("diff hook execution failed" in line for line in here["lines"]), here
+
+
+HOOKED = (
+    'derivation { name = "parity-hooked"; system = builtins.currentSystem; builder = "/bin/sh"; '
+    'outputs = [ "out" "dev" ]; args = [ "-c" "echo out > $out; echo dev > $dev" ]; }'
+)
+HOOKED_FAILS = _script("parity-hooked-fails", "echo fails > $out")
+# Shell builtins only: the hook runs with the daemon's environment. The last line has no line feed.
+POST_BUILD_HOOK = """#!/bin/sh
+read code < {code}
+echo "$#|$DRV_PATH|$OUT_PATHS" >> {record}
+printf '%s\\n' "$NIX_CONFIG" > {record}.conf
+echo one
+echo two >&2
+printf tail
+exit $code
+"""
+POST_BUILD_CASES = {"builds": (0, HOOKED, ()), "checks": (0, HOOKED, ("--rebuild",)), "fails": (1, HOOKED_FAILS, ())}
+
+
+def _activities(err: str) -> list[dict[str, Any]]:
+    """The client's `internal-json` events of each post-build-hook activity, and the stop of each build's."""
+    events = [json.loads(line.removeprefix("@nix ")) for line in err.splitlines() if line.startswith("@nix ")]
+    builds = {e["id"] for e in events if e["action"] == "start" and e["type"] == 105}
+    hooks = {e["id"] for e in events if e["action"] == "start" and e["type"] == 110}
+
+    def name(act: int) -> str | int:
+        return "build" if act in builds else "hook" if act in hooks else act if act == 0 else "other"
+
+    return [
+        {k: name(v) if k in {"id", "parent"} else v for k, v in e.items()}
+        for e in events
+        if e.get("id") in hooks or (e["action"] == "stop" and e["id"] in builds)
+    ]
+
+
+async def _post_build_hooked(tmp_path: Path, route: OpRoute, *, inherited: bool) -> dict[str, Any]:
+    """Each case under a post-build-hook: its exit, its activities, its other lines and what the hook saw.
+
+    With *inherited*, the daemon's environment holds `NIX_CONFIG`.
+    """
+    here = tmp_path / route.name
+    code, record, hook = (
+        tmp_path / f"{route.name}-code",
+        tmp_path / f"{route.name}-record",
+        tmp_path / f"{route.name}-hook",
+    )
+    hook.write_text(POST_BUILD_HOOK.format(code=code, record=record))
+    hook.chmod(0o755)
+    results: dict[str, Any] = {}
+    async with _serve(tmp_path, route, post_build_hook=hook, config_file=not inherited) as (url, root):
+        common = [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--log-format", "internal-json", "-v"]
+        for name, (status, expr, extra) in POST_BUILD_CASES.items():
+            code.write_text(f"{status}\n")
+            rc, _out, err, _both = await run_subproc([*common, *extra, "--expr", expr], expected_retcode=None)
+            err = err.replace(str(hook), "<hook>").replace(str(here), "<here>")
+            lines = [line for line in err.splitlines() if not line.startswith("@nix ")]
+            config = Path(f"{record}.conf").read_text().replace(str(hook), "<hook>").replace(str(here), "<here>")
+            results[name] = rc, _activities(err), lines, config.splitlines()
+    results["record"] = record.read_text().splitlines()
+    results["valid"] = _rows(root)
+    return results
+
+
+@pytest.mark.parametrize("inherited", [False, True], ids=["dumped", "inherited"])
+async def test_a_post_build_hook_runs_as_the_daemon_runs_it(tmp_path: Path, inherited: bool) -> None:
+    """`runPostBuildHook` (`derivation-building-goal.cc:1105`) after a build and after a check (`:1066`).
+
+    The hook gets the derivation, its outputs and the settings in its environment, and each line it writes is
+    a result of its own activity. A `NIX_CONFIG` in the daemon's environment replaces the settings (`:1125`).
+    """
+    before = _fallthrough()
+    here = await _post_build_hooked(tmp_path, OpRoute.pynixd, inherited=inherited)
+    assert _fallthrough() == before, "the daemon built a post-build-hook build of the pynixd route"
+    there = await _post_build_hooked(tmp_path, OpRoute.daemon, inherited=inherited)
+
+    for name in POST_BUILD_CASES:
+        assert here[name][:3] == there[name][:3], name
+        mine, theirs = set(here[name][3]), set(there[name][3])
+        assert (sorted(mine - theirs), sorted(theirs - mine)) == ([], []), name
+        assert here[name][3] == there[name][3], name
+    assert (here["record"], here["valid"]) == (there["record"], there["valid"])
+    assert [here[name][0] for name in POST_BUILD_CASES] == [0, 0, 1], here
+    assert len(here["record"]) == 3, here["record"]
+    results = [e["fields"] for e in here["builds"][1] if e["action"] == "result"]
+    assert results == [["one"], ["two"], ["tail\n"]], here["builds"][1]
+    assert "post-build-hook = <hook>" in here["builds"][3], here["builds"][3]
+    # The session sets `keep-going`, and only the dump shows it.
+    assert ("keep-going = false" in here["builds"][3]) is not inherited, here["builds"][3]
 
 
 def _chain(tag: str) -> tuple[str, str]:

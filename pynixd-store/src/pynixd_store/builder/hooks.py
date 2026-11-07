@@ -1,4 +1,5 @@
-"""The programs a build runs outside its sandbox: `diff-hook` (`unix/build/derivation-builder.cc:121`)."""
+"""The programs a build runs outside its sandbox: `diff-hook` (`unix/build/derivation-builder.cc:121`) and
+`post-build-hook` (`build/derivation-building-goal.cc:1105`)."""
 
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ from ..hintfmt import magenta, show_error
 from .jsonlog import Message
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Iterable, Mapping
     from pathlib import Path
 
     from .buildlog import Output
@@ -78,3 +80,45 @@ async def diff_hook(
         return [Message(Verbosity.ERROR, show_error(f"diff hook execution failed: {magenta(inner)}"))]
     out = out.rstrip(" \n\r\t")
     return [Message(Verbosity.ERROR, out)] if out else []
+
+
+async def post_build_hook(
+    hook: str,
+    env: Mapping[str, str],
+    drv_path: str,
+    out_paths: Iterable[str],
+    config: str,
+    *,
+    on_line: Callable[[str], Awaitable[None]],
+) -> int:
+    """`runPostBuildHook`: run *hook* with stdout and stderr in one pipe, and answer its exit status.
+
+    *on_line* gets each line, as `LogSink` cuts them (`derivation-building-goal.cc:80`): a last line with no
+    line feed ends in one.
+    """
+    env = dict(env)
+    # NIX-DEFECT (#23): `derivation-building-goal.cc:1123` adds the three with `emplace`, which keeps a value the
+    # daemon's own environment holds, so a daemon started with `OUT_PATHS` set hands every hook those paths.
+    # Assigning them would always be right. pynixd keeps the inherited value too; Lillecarl/nix#399.
+    env.setdefault("DRV_PATH", drv_path)
+    env.setdefault("OUT_PATHS", " ".join(sorted(out_paths)).rstrip(" \n\r\t"))
+    env.setdefault("NIX_CONFIG", config)
+    line = b""
+    try:
+        async with await anyio.open_process(
+            [hook], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env
+        ) as process:
+            if process.stdout is None:
+                raise RuntimeError("the post-build-hook has no stdout pipe")
+            async for chunk in process.stdout:
+                *whole, line = (line + chunk).split(b"\n")
+                for piece in whole:
+                    await on_line(piece.decode(errors="replace"))
+            returncode = await process.wait()
+    except OSError as e:
+        # `startProcess`'s child prints the error and exits 1 (`unix/processes.cc:264`).
+        _log.warning("post_build_hook_not_started", hook=hook, error=str(e))
+        returncode = 1
+    if line:
+        await on_line(line.decode(errors="replace") + "\n")
+    return returncode
