@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import socket as socket_module
 import sqlite3
 from typing import TYPE_CHECKING, Any
@@ -21,6 +22,8 @@ from nix_daemon_protocol.store_dir import real_store_dir, set_real_store_dir, se
 from pynixd import Server
 from pynixd.op_routes import OpRoute
 from pynixd.store import LocalDBStore
+from tests._conftest.config import NIX_GIT_BIN
+from tests._conftest.constants import _NO_PROBE_FEATURE_MATRIX
 from tests._conftest.helpers import rmtree_robust
 from tests._conftest.nix_config import for_test_store
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
@@ -67,9 +70,18 @@ def _fallthrough() -> float:
 
 @contextlib.asynccontextmanager
 async def _serve(
-    tmp_path: Path, route: OpRoute, sandbox: str, *, experimental_features: tuple[str, ...] = ()
+    tmp_path: Path,
+    route: OpRoute,
+    sandbox: str,
+    *,
+    experimental_features: tuple[str, ...] = (),
+    nix_bin: Path = NIX_BIN,
+    **spec_args: Any,
 ) -> AsyncIterator[tuple[list[str], dict[str, str], Path]]:
-    """A fresh `NIX_STORE_DIR` store with `BuildDerivation` on *route*: the build command, its environment, the state."""
+    """A fresh `NIX_STORE_DIR` store with `BuildDerivation` on *route*: the build command, its environment, the state.
+
+    *spec_args* go to `make_test_spec`.
+    """
     # One directory for both routes, so that every store path is the same; a route's store replaces the other's.
     base = tmp_path / sandbox
     rmtree_robust(base)
@@ -86,10 +98,12 @@ async def _serve(
         store_dir=store,
         state_dir=state,
         log_dir=logs,
+        nix_bin=nix_bin,
+        **spec_args,
     )
     env = {"NIX_STORE_DIR": str(store), "NIX_STATE_DIR": str(base / "client"), "NIX_LOG_DIR": str(logs)}
     async with Server(stores={StoreId("local"): LocalDBStore(spec)}, unix_path=path, ssh_port=None, http_port=None):
-        yield [str(NIX_BIN), "--store", f"unix://{path}", "--impure"], env, state
+        yield [str(nix_bin), "--store", f"unix://{path}", "--impure"], env, state
 
 
 def _rows(state: Path) -> tuple[list[tuple[Any, ...]], list[tuple[str, str]]]:
@@ -326,3 +340,193 @@ async def test_an_unsandboxed_fixed_output_lands_where_the_daemon_puts_it(tmp_pa
     assert here == there
     assert here["contents"] == "flat\n"
     assert all(any("hash mismatch" in line for line in here["errors"][k]) for k in ("flat", "self")), here
+
+
+def _nix_dir(binary: Path) -> str:
+    """The store path of *binary*'s Nix: on the host, outside the test store, which the builder sees whole."""
+    return "/".join(os.path.realpath(binary).split("/")[:4])
+
+
+# `recursive.nix` of Nix's functional suite. The inner Nix finds the store through `NIX_STORE`.
+RECURSIVE = """
+let
+  inner = builtins.toFile "unsandboxed-inner.nix" ''
+    derivation { name = "unsandboxed-inner"; system = builtins.currentSystem; builder = "/bin/sh";
+      args = [ "-c" "echo $fnord blaat > $out" ]; fnord = builtins.toFile "fnord" "fnord"; }
+  '';
+in derivation {
+  name = "unsandboxed-recursive"; system = builtins.currentSystem; builder = "/bin/sh";
+  requiredSystemFeatures = [ "recursive-nix" ];
+  PATH = "@NIX@/bin";
+  dummy = builtins.toFile "dummy" "bla bla";
+  unreachable = builtins.unsafeDiscardStringContext (builtins.toFile "unreachable" "x");
+  inherit inner;
+  args = [ (builtins.toFile "unsandboxed-recursive.sh" ''
+    set -e
+    opts="--extra-experimental-features nix-command"
+    case $NIX_REMOTE in unix://$NIX_BUILD_TOP/.nix-socket) echo socket in the build directory;; esac
+    nix $opts path-info $dummy
+    nix $opts build --no-link $dummy
+    if nix $opts path-info $unreachable; then exit 10; fi
+    if nix $opts build --no-link $unreachable; then exit 11; fi
+    echo foobar > foobar
+    foobar=$(nix $opts store add-path ./foobar)
+    nix $opts path-info $foobar
+    n=0
+    for p in $(nix $opts path-info --all); do n=$((n+1)); done
+    inner1=$(nix $opts build --no-link --print-out-paths --file $inner)
+    read fnord blaat < $inner1
+    nix $opts key generate-secret --key-name k > key
+    signed=$(nix $opts store sign --key-file ./key $dummy 2>&1 || true)
+    echo "$foobar $inner1 $n $fnord" > $out
+    nix $opts path-info --json $inner1 >> $out
+    echo "$signed" >> $out
+  '') ];
+}
+"""
+
+
+async def _recursive(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
+    async with _serve(tmp_path, route, "false", experimental_features=("recursive-nix",)) as (nix, env, state):
+        store = state.parent.parent / "store"
+        _rc, out, err, _both = await run_subproc(
+            [
+                *nix[:1],
+                "build",
+                *nix[1:],
+                "--no-link",
+                "--print-out-paths",
+                "--print-build-logs",
+                "--expr",
+                RECURSIVE.replace("@NIX@", _nix_dir(NIX_BIN)),
+            ],
+            env=dict(env),
+            nix_config=ALONE,
+        )
+        top = out.strip()
+        _rc, info, _err, _both = await run_subproc(
+            [*nix[:1], "path-info", *nix[1:], "--json", "--recursive", top], env=dict(env), nix_config=ALONE
+        )
+        contents = (store / top.rsplit("/", 1)[-1]).read_text()
+    valid, refs = _rows(state)
+    return {
+        "top": top,
+        "contents": contents,
+        "info": _without_times(json.loads(info)),
+        "valid": valid,
+        "refs": refs,
+        "log": [line for line in err.splitlines() if line.startswith("unsandboxed-")],
+    }
+
+
+def _without_times(info: Any) -> Any:
+    for value in info.values() if isinstance(info, dict) else info:
+        if isinstance(value, dict):
+            value.pop("registrationTime", None)
+    return info
+
+
+async def test_a_recursive_nix_build_without_the_sandbox_builds_what_the_daemon_builds(tmp_path: Path) -> None:
+    """`startDaemon` (`derivation-builder.cc:802`) puts the socket in the real build directory, and
+    `addDependencyImpl` (`:901`) binds nothing: the builder sees the whole store, the restricted store does not."""
+    before = _fallthrough()
+    here = await _recursive(tmp_path, OpRoute.pynixd)
+    assert _fallthrough() == before, "the daemon built the pynixd route's recursive-nix build"
+    there = await _recursive(tmp_path, OpRoute.daemon)
+
+    for key in ("top", "contents", "info", "valid", "refs", "log"):
+        assert here[key] == there[key], (key, here[key], there[key])
+    assert "unsandboxed-recursive> socket in the build directory" in here["log"], here["log"]
+    first, *_info = here["contents"].splitlines()
+    foobar, inner1, count, fnord = first.split()
+    assert foobar.endswith("-foobar") and inner1.endswith("-unsandboxed-inner"), first
+    assert fnord.endswith("-fnord") and int(count) > 2, first
+    assert "operation 'addSignatures' is not supported by store" in here["contents"], here["contents"]
+    assert {foobar, inner1} <= set(here["info"][here["top"]]["references"]), here["info"]
+
+
+# `builder-rpc-v0` of Nix's master branch, as `test_local_build_parity.py` builds it in the sandbox.
+RPC = """
+derivation {
+  name = "unsandboxed-rpc"; system = builtins.currentSystem; builder = "/bin/sh";
+  __contentAddressed = true; outputHashMode = "recursive"; outputHashAlgo = "sha256";
+  outputs = [ "out" "dev" ];
+  requiredSystemFeatures = [ "builder-rpc-v0" ];
+  PATH = "@NIX@/bin";
+  dummy = builtins.toFile "dummy" "bla bla";
+  args = [ (builtins.toFile "unsandboxed-rpc.sh" ''
+    set -e
+    o="--extra-experimental-features nix-command --extra-experimental-features dynamic-derivations"
+    refused=$(nix $o path-info $dummy 2>&1 || true)
+    echo "dev of $dummy" > dev
+    dev=$(nix $o store add --scan --name unsandboxed-rpc-dev ./dev)
+    nix $o store submit-output $dev dev
+    duplicate=$(nix $o store submit-output $dev dev 2>&1 || true)
+    printf '%s\\n' "out:$out" "$dev" "$refused" "$duplicate" > out
+    out=$(nix $o store add --scan --name unsandboxed-rpc ./out)
+    nix $o store submit-output $out out
+  '') ];
+}
+"""
+
+
+async def _rpc(tmp_path: Path, route: OpRoute, nix_bin: Path) -> dict[str, Any]:
+    features = ("ca-derivations", "dynamic-derivations")
+    matrix = {system: set(fs) | {"builder-rpc-v0"} for system, fs in _NO_PROBE_FEATURE_MATRIX.items()}
+    async with _serve(
+        tmp_path, route, "false", experimental_features=features, nix_bin=nix_bin, feature_matrix=matrix
+    ) as (nix, env, state):
+        store = state.parent.parent / "store"
+        _rc, out, err, _both = await run_subproc(
+            [
+                *nix[:1],
+                "build",
+                *nix[1:],
+                "--extra-experimental-features",
+                " ".join(features),
+                "--no-link",
+                "--print-out-paths",
+                "--print-build-logs",
+                "--expr",
+                RPC.replace("@NIX@", _nix_dir(nix_bin)),
+            ],
+            env=dict(env),
+            nix_config=ALONE,
+        )
+        paths = out.split()
+        contents = {path: (store / path.rsplit("/", 1)[-1]).read_text() for path in paths}
+    db = sqlite3.connect(f"file:{state}/db/db.sqlite?mode=ro", uri=True)
+    try:
+        trace = db.execute(
+            "SELECT drvPath, outputName, outputPath, signatures FROM BuildTraceV3 ORDER BY drvPath, outputName"
+        ).fetchall()
+    finally:
+        db.close()
+    valid, refs = _rows(state)
+    return {
+        "paths": paths,
+        "contents": contents,
+        "valid": valid,
+        "refs": refs,
+        "trace": trace,
+        "log": [line for line in err.splitlines() if line.startswith("unsandboxed-")],
+    }
+
+
+async def test_a_builder_rpc_build_without_the_sandbox_builds_what_the_daemon_builds(tmp_path: Path) -> None:
+    """`RecursiveSubmitted` (`unix-derivation-builder.cc:672`) outside the chroot: the builder submits each output."""
+    if NIX_GIT_BIN is None:
+        pytest.skip("NIX_GIT_BIN names no Nix of the master branch")
+    before = _fallthrough()
+    here = await _rpc(tmp_path, OpRoute.pynixd, NIX_GIT_BIN)
+    assert _fallthrough() == before, "the daemon built the pynixd route's builder-rpc-v0 build"
+    there = await _rpc(tmp_path, OpRoute.daemon, NIX_GIT_BIN)
+
+    for key in ("paths", "contents", "valid", "refs", "trace", "log"):
+        assert here[key] == there[key], (key, here[key], there[key])
+    dev, out = sorted(here["paths"], key=lambda p: not p.endswith("-dev"))
+    lines = here["contents"][out].splitlines()
+    assert lines[:2] == ["out:", dev], lines
+    assert "not allowed inside derivation" in here["contents"][out], lines
+    assert "duplicate output" in here["contents"][out], lines
+    assert {row[1] for row in here["trace"]} >= {"out", "dev"}, here["trace"]

@@ -142,8 +142,6 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
     if settings.sandbox == "true" and bool_attr(drv.env, "__noChroot", default=False):
         return "__noChroot with sandbox = true"
     features = set(drv.required_system_features)
-    if {"recursive-nix", BUILDER_RPC} & features and not uses_sandbox(drv, settings, relocated=relocated):
-        return "recursive-nix or builder-rpc-v0 without the sandbox"
     if "uid-range" in features:
         # `makeDerivationBuilder` (`derivation-builder.cc:1810`), `setupBuildChroot` (`chroot.cc:52`) and
         # `prepareBuild` (`linux-derivation-builder.cc:450`) throw before the build starts, in the daemon's words.
@@ -756,8 +754,15 @@ async def build(
                 if recursive is None:
                     raise ValueError("a recursive-nix or builder-rpc-v0 build needs a server for its builder")
                 # `startDaemon` (`derivation-builder.cc:1171`): the socket is up before the builder starts.
-                spec["env"]["NIX_REMOTE"] = f"unix://{SANDBOX_BUILD_DIR}/{SOCKET_NAME}"
-                if in_vm:
+                spec["env"]["NIX_REMOTE"] = f"unix://{build_dir}/{SOCKET_NAME}"
+                if not chroot:
+                    # `addDependencyImpl` (`derivation-builder.cc:901`) binds nothing: the builder sees the store.
+                    restriction = RestrictionContext(
+                        inputs, None, layout.real_store_dir, submitting=submitting, binds=False
+                    )
+                    listener = await anyio.to_thread.run_sync(_listen, paths.tmp / SOCKET_NAME)
+                    build_users.chown_to(user, paths.tmp / SOCKET_NAME)
+                elif in_vm:
                     # The guest's init listens in the build directory, and the image holds no host socket.
                     restriction = RestrictionContext(
                         inputs,

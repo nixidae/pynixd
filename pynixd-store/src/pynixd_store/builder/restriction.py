@@ -36,7 +36,7 @@ class RestrictionContext:
 
     *submitting* is a `builder-rpc-v0` build: the builder submits its outputs (`RecursiveSubmitted`). *control*
     is the helper's control socket; without one, `attach` gives it once the helper connects. *reveal* runs for
-    each path the builder adds, before the helper binds it.
+    each path the builder adds, before the helper binds it. Without *binds* (no sandbox) a path only joins.
     """
 
     def __init__(
@@ -47,6 +47,7 @@ class RestrictionContext:
         *,
         submitting: bool,
         reveal: Callable[[str], None] | None = None,
+        binds: bool = True,
     ) -> None:
         self.inputs = frozenset(inputs)
         self.submitting = submitting
@@ -60,6 +61,7 @@ class RestrictionContext:
         self._attached = anyio.Event()
         self._real_store_dir = real_store_dir
         self._reveal = reveal
+        self._binds = binds
         self._lock = anyio.Lock()
         if control is not None:
             self.attach(control)
@@ -85,6 +87,8 @@ class RestrictionContext:
             if self.is_allowed(path):
                 return
             self.added.add(path)
+            if not self._binds:
+                return
             source = str(self._real_store_dir / path.rsplit("/", 1)[-1])
             if self._reveal is not None:
                 await anyio.to_thread.run_sync(self._reveal, path)
