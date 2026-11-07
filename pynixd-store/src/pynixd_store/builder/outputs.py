@@ -394,12 +394,12 @@ def compare_outputs(
     real_store_dir: Path,
     *,
     rebuilt: Path | None = None,
-) -> tuple[BuildFailure | None, list[ValidPathInfo]]:
+) -> tuple[BuildFailure | None, list[ValidPathInfo], tuple[str, Path] | None]:
     """`registerOutputs` in check mode (`derivation-builder.cc:1546`): each rebuilt output against the valid one.
 
-    Answers the first difference, and the valid infos to mark `ultimate`, which a check verified. With
-    *rebuilt*, the chroot root the outputs are in, a differing one moves to `<path>.check` (`keep-failed`).
-    Blocking.
+    Answers the first difference, the valid infos to mark `ultimate`, which a check verified, and the output that
+    moved. With *rebuilt*, the chroot root the outputs are in, a differing one moves to `<path>.check`
+    (`keep-failed` or `diff-hook`), and the third value is its path and that real path. Blocking.
     """
     verified: list[ValidPathInfo] = []
     for info in infos.values():
@@ -412,20 +412,28 @@ def compare_outputs(
                 kept = real.with_name(real.name + ".check")
                 delete_path(kept)
                 _move(rebuilt / info.path.path.lstrip("/"), kept)
-                return BuildFailure(
+                return (
+                    BuildFailure(
+                        BuildResultStatus.NOT_DETERMINISTIC,
+                        f"derivation '{magenta(drv_path)}' may not be deterministic: output "
+                        f"{_quoted(real)} differs from {_quoted(kept)}",
+                    ),
+                    verified,
+                    (info.path.path, kept),
+                )
+            return (
+                BuildFailure(
                     BuildResultStatus.NOT_DETERMINISTIC,
                     f"derivation '{magenta(drv_path)}' may not be deterministic: output "
-                    f"{_quoted(real)} differs from {_quoted(kept)}",
-                ), verified
-            return BuildFailure(
-                BuildResultStatus.NOT_DETERMINISTIC,
-                f"derivation '{magenta(drv_path)}' may not be deterministic: output "
-                f"{_quoted(real_store_dir / _base(info.path.path))} differs",
-            ), verified
+                    f"{_quoted(real_store_dir / _base(info.path.path))} differs",
+                ),
+                verified,
+                None,
+            )
         if not old.info.ultimate:
             old.info.ultimate = True
             verified.append(old)
-    return None, verified
+    return None, verified, None
 
 
 def _check(drv_path: str, f: _Fixed) -> BuildFailure | None:

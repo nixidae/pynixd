@@ -37,7 +37,7 @@ from ..add import PathLock, delete_path
 from ..content_address import Method, fixed_output_address, output_method
 from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta, show_error
 from ..signing import SecretKey, fingerprint
-from . import buildenv, cgroup as build_cgroup, users as build_users
+from . import buildenv, cgroup as build_cgroup, hooks, users as build_users
 from .buildlog import BuildLog
 from .env import (
     HOME_DIR,
@@ -867,7 +867,18 @@ async def build(
         try:
             if check:
                 compared = await _compare(
-                    engine, drv_path, drv, collected, settings, known, start, stop, keep=paths.root
+                    engine,
+                    drv_path,
+                    drv,
+                    collected,
+                    settings,
+                    known,
+                    start,
+                    stop,
+                    keep=paths.root,
+                    user=user,
+                    tmp=paths.tmp,
+                    on_lines=on_lines,
                 )
                 built = compared.status is BuildResultStatus.BUILT
                 return compared
@@ -965,22 +976,28 @@ async def _compare(
     stop: int,
     *,
     keep: Path | None,
+    user: build_users.BuildUser | None,
+    tmp: Path,
+    on_lines: Callable[[list[Output]], Awaitable[None]],
 ) -> LocalBuildResult:
     """The end of `registerOutputs` in check mode (`derivation-builder.cc:1546`, `:1633`).
 
     A valid output the check verified becomes `ultimate` and is signed again, even when a later one differs.
-    With `keep-failed`, a rebuilt output that differs moves from the chroot at *keep* to `<path>.check`.
+    With `keep-failed` or a `diff-hook`, a rebuilt output that differs moves from the chroot at *keep* to
+    `<path>.check`, and the hook compares the two as *user*, with the build directory *tmp* (`:1552`).
     """
     registered = {path: await engine.query_path_info(path) for path in known.values()}
-    failure, verified = await anyio.to_thread.run_sync(
+    failure, verified, kept = await anyio.to_thread.run_sync(
         lambda: compare_outputs(
             drv_path,
             collected.infos,
             registered,
             engine.layout.real_store_dir,
-            rebuilt=keep if settings.keep_failed else None,
+            rebuilt=keep if settings.keep_failed or settings.diff_hook else None,
         )
     )
+    if kept is not None and settings.diff_hook:
+        await on_lines(await hooks.diff_hook(settings.diff_hook, user, *kept, drv_path, tmp))
     if verified:
         await anyio.to_thread.run_sync(_sign, verified, settings.secret_key_files)
         await engine.register_valid_paths(verified)

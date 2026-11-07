@@ -129,16 +129,25 @@ def _without_times(value: Any) -> Any:
 
 @contextlib.asynccontextmanager
 async def _serve(
-    tmp_path: Path, route: OpRoute, *, experimental_features: tuple[str, ...] = (), **spec_args: Any
+    tmp_path: Path,
+    route: OpRoute,
+    *,
+    experimental_features: tuple[str, ...] = (),
+    diff_hook: Path | None = None,
+    **spec_args: Any,
 ) -> AsyncIterator[tuple[str, Path]]:
     """A fresh store with `BuildDerivation` on *route*: its URL and its root. *spec_args* go to `make_test_spec`."""
     root = tmp_path / route.name / "store"
     socket = tmp_path / f"{route.name}.sock"
+    nix_config = for_test_store(substituters=(), experimental_features=experimental_features)
+    if diff_hook is not None:
+        nix_config.run_diff_hook = True
+        nix_config.diff_hook = str(diff_hook)
     spec = make_test_spec(
         store_id="local",
         store_path=root,
         no_probe=True,
-        nix_config=for_test_store(substituters=(), experimental_features=experimental_features),
+        nix_config=nix_config,
         op_routes={"BuildDerivation": route},
         **spec_args,
     )
@@ -1443,6 +1452,36 @@ async def test_keep_failed_keeps_what_the_daemon_keeps(tmp_path: Path) -> None:
     assert here["differs"][4] == ["parity-keep-differs.check"], here["differs"]
     assert any("differs from" in line for line in here["differs"][1]), here["differs"]
     assert (here["builds"][0], here["builds"][2]) == (0, 0), here["builds"]
+
+
+async def _diff_hooked(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
+    record = tmp_path / f"{route.name}-record"
+    hook = tmp_path / f"{route.name}-hook"
+    hook.write_text(f'#!/bin/sh\necho "$@" > {record}\necho hook says hi\n')
+    hook.chmod(0o755)
+    async with _serve(tmp_path, route, diff_hook=hook) as (url, root):
+        common = [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--expr", KEEPS["differs"]]
+        await run_subproc(common)
+        rc, _out, err, _both = await run_subproc([*common, "--rebuild"], expected_retcode=None)
+    checks = sorted(p.name.split("-", 1)[1] for p in (root / "nix" / "store").glob("*.check"))
+    return {
+        "rc": rc,
+        "lines": err.replace(str(hook), "<hook>").replace(str(root), "<root>").splitlines(),
+        "checks": checks,
+        "ran": record.exists(),
+    }
+
+
+async def test_a_diff_hook_fails_as_the_daemon_fails_it_when_not_root(tmp_path: Path) -> None:
+    """`handleDiffHook` (`derivation-builder.cc:121`) drops the groups of a daemon that is not root, which fails."""
+    before = _fallthrough()
+    here = await _diff_hooked(tmp_path, OpRoute.pynixd)
+    assert _fallthrough() == before, "the daemon checked the pynixd route's build"
+    there = await _diff_hooked(tmp_path, OpRoute.daemon)
+
+    assert here == there
+    assert (here["rc"], here["checks"], here["ran"]) == (1, ["parity-keep-differs.check"], False), here
+    assert any("diff hook execution failed" in line for line in here["lines"]), here
 
 
 def _chain(tag: str) -> tuple[str, str]:

@@ -731,8 +731,6 @@ class LocalDBStore(Store):
         """
         if request.build_mode != BuildMode.CHECK:
             return None
-        if settings.diff_hook:
-            return "a check with a diff-hook"
         paths = [output.path for output in request.derivation.outputs.values()]
         if not all(paths) or request.derivation.has_impure:
             return "a check of an output with no path"
