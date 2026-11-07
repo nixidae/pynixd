@@ -105,6 +105,27 @@ Nothing moves out of the sandbox. A check or a repair goes to the daemon.
 Only Nix's master branch has the feature, so its parity test runs the
 `nix` of `NIX_GIT_BIN`.
 
+## Build users
+
+As root with `build-users-group`, a build runs as a member of that group, as
+Nix's does (`useBuildUsers`, `user-lock.cc:237`):
+
+- pynixd locks `<nixStateDir>/userpool/<uid>` with `flock`, the file Nix
+  locks, so a `nix-daemon` beside pynixd never takes the same user. When every
+  user builds already, the build waits.
+- The build directory is the build user's. The chroot's root and its store
+  directory belong to the group, as `setupBuildChroot` makes them.
+- The helper unshares as root, and pynixd writes its uid and gid maps
+  (`1000` to the build user): a process inside the new namespace can map no
+  uid but its own. The helper sets up the chroot as root, then becomes uid
+  1000 before it runs the builder. It kills the user's processes first
+  (`killUser`), and drops root's supplementary groups.
+- An output, and each file in it, must belong to the build user; a hard link
+  to a file of the same build passes (`canonicalisePathMetaData`).
+
+`auto-allocate-uids` and `uid-range` stay on the daemon. A build VM maps no
+build user yet, so as root with build users a build uses the namespaces.
+
 ## The child: pynixd's own helper
 
 | | bubblewrap (`bwrap`, a Nix package) | a helper of pynixd's (`python -m pynixd_store.builder.child`) |

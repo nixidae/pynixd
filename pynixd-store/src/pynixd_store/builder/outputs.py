@@ -25,7 +25,17 @@ from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 
-from ..add import AddError, PathLock, TempDir, _nar_hash, canonicalise, content_hash, delete_path, git_hash
+from ..add import (
+    AddError,
+    InvalidOwnership,
+    PathLock,
+    TempDir,
+    _nar_hash,
+    canonicalise,
+    content_hash,
+    delete_path,
+    git_hash,
+)
 from ..content_address import (
     ContentAddress,
     Method,
@@ -104,7 +114,17 @@ def _sri(algo: str, digest: bytes) -> str:
     return f"{algo}-{base64.b64encode(digest).decode()}"
 
 
-def _scan(drv_path: str, name: str, path: str, actual: Path, referenceable: set[str], *, discard: bool) -> Scanned:
+def _scan(
+    drv_path: str,
+    name: str,
+    path: str,
+    actual: Path,
+    referenceable: set[str],
+    *,
+    discard: bool,
+    build_uid: int | None = None,
+    seen: set[tuple[int, int]] | None = None,
+) -> Scanned:
     try:
         st = os.lstat(actual)
     except FileNotFoundError:
@@ -113,13 +133,21 @@ def _scan(drv_path: str, name: str, path: str, actual: Path, referenceable: set[
             f"builder for '{magenta(drv_path)}' failed to produce output path for output "
             f"'{magenta(name)}' at {_quoted(actual)}",
         ) from None
-    if not stat.S_ISLNK(st.st_mode) and st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+    # `registerOutputs` (`derivation-builder.cc:1153`): an output the build user does not own is suspicious too.
+    if (not stat.S_ISLNK(st.st_mode) and st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)) or (
+        build_uid is not None and st.st_uid != build_uid
+    ):
         raise BuildFailure(
             BuildResultStatus.OUTPUT_REJECTED,
             f"suspicious ownership or permission on {_quoted(actual)} for output "
             f"'{magenta(name)}'; rejecting this build output",
         )
-    canonicalise(actual)
+    try:
+        canonicalise(actual, uid_range=None if build_uid is None else (build_uid, build_uid), seen=seen)
+    except InvalidOwnership as e:
+        raise BuildFailure(
+            BuildResultStatus.OUTPUT_REJECTED, f"invalid ownership on file {_quoted(Path(e.path))}"
+        ) from None
     references = frozenset() if discard else frozenset(scan_for_references(actual, referenceable))
     return Scanned(path, references, st.st_mode)
 
@@ -201,6 +229,7 @@ def collect_outputs(
     is_valid: Callable[[str], bool],
     discard: set[str],
     check: bool = False,
+    build_uid: int | None = None,
 ) -> Collected:
     """Each output the build made at its *scratch* path, moved into the store and described; nothing is registered yet.
 
@@ -208,11 +237,22 @@ def collect_outputs(
     With *check*, every output stays in the chroot to be compared (`derivation-builder.cc:1530`).
     *is_valid* asks the store about a path no output names. An output in
     *discard* is not scanned (`unsafeDiscardReferences`). Blocking: call it
-    from a worker thread.
+    from a worker thread. *build_uid* is the build user's, whose files alone an output may hold.
     """
     referenceable = input_paths | set(scratch.values())
+    # One for every output, as Nix's: an output may hard-link a file of another (`derivation-builder.cc:1076`).
+    seen: set[tuple[int, int]] = set()
     scanned = {
-        name: _scan(drv_path, name, path, chroot_root / path.lstrip("/"), referenceable, discard=name in discard)
+        name: _scan(
+            drv_path,
+            name,
+            path,
+            chroot_root / path.lstrip("/"),
+            referenceable,
+            discard=name in discard,
+            build_uid=build_uid,
+            seen=seen,
+        )
         for name, path in scratch.items()
         if path not in valid
     }

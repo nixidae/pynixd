@@ -83,3 +83,8 @@ class ChildSpec(TypedDict):
     """The helper reads *cgroup* into *usage_file*: a VM's cgroup is out of the host's reach."""
     sample_seconds: float
     """With *cgroup_report*, how often the helper samples the cgroup; 0 takes no samples."""
+    build_user: tuple[int, int] | None
+    """The build user's host uid and gid, as root; `None` maps the helper's own ids."""
+    map_fd: int | None
+    """With *build_user*: the helper writes a byte here after its `unshare`, and reads one back once pynixd has
+    written its uid and gid maps. A process in the new namespace cannot map a uid other than its own."""

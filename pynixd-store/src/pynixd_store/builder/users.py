@@ -1,0 +1,92 @@
+"""Build users: `SimpleUserLock` (`unix/user-lock.cc`), one member of `build-users-group` per build.
+
+A lock is `flock` on `<state>/userpool/<uid>`, the file Nix's own lock takes, so a `nix-daemon` beside pynixd
+never picks the same user.
+"""
+
+from __future__ import annotations
+
+import errno
+import fcntl
+import grp
+import os
+import pwd
+from dataclasses import dataclass
+from pathlib import Path
+
+DEFAULT_STATE_DIR = Path("/nix/var/nix")
+
+
+class BuildUserError(Exception):
+    """A `build-users-group` Nix refuses, in Nix's words."""
+
+
+@dataclass
+class BuildUser:
+    uid: int
+    gid: int
+    fd: int
+
+    def release(self) -> None:
+        os.close(self.fd)
+
+
+def use_build_users(group: str, auto_allocate_uids: bool) -> bool:
+    """`useBuildUsers` (`user-lock.cc:237`)."""
+    return bool(group or auto_allocate_uids) and os.geteuid() == 0
+
+
+def pool_dir(state_dir: Path, relocated: bool) -> Path:
+    """`settings.nixStateDir / "userpool"`: the process's state directory, not a chroot store's.
+
+    `nix daemon --store <root>` reads no `NIX_STATE_DIR` for the root (nixidae/nixidae#210), so every chroot
+    store on a host shares one pool. A relocated store's daemon gets its `NIX_STATE_DIR`.
+    """
+    base = state_dir if relocated else Path(os.environ.get("NIX_STATE_DIR", DEFAULT_STATE_DIR))
+    return base / "userpool"
+
+
+def acquire(pool: Path, group: str) -> BuildUser | None:
+    """A free member of *group*, locked, or `None` when every one builds already.
+
+    Blocking: it reads the group and user databases.
+    """
+    try:
+        entry = grp.getgrnam(group)
+    except KeyError:
+        raise BuildUserError(f"the group '{group}' specified in 'build-users-group' does not exist") from None
+    if not entry.gr_mem:
+        raise BuildUserError(f"the build users group '{group}' has no members")
+    pool.mkdir(parents=True, exist_ok=True)
+    for name in entry.gr_mem:
+        try:
+            uid = pwd.getpwnam(name).pw_uid
+        except KeyError:
+            raise BuildUserError(f"the user '{name}' in the group '{group}' does not exist") from None
+        fd = os.open(pool / str(uid), os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as e:
+            os.close(fd)
+            if e.errno != errno.EWOULDBLOCK:
+                raise
+            continue
+        if uid in (os.getuid(), os.geteuid()):
+            os.close(fd)
+            raise BuildUserError(f"the Nix user should not be a member of '{group}'")
+        return BuildUser(uid, entry.gr_gid, fd)
+    return None
+
+
+def chown_to(user: BuildUser | None, path: Path) -> None:
+    """`chownToBuilder`: nothing without a build user."""
+    if user is not None:
+        os.chown(path, user.uid, user.gid)
+
+
+def check_not_world_writable(path: Path) -> None:
+    """`checkNotWorldWritable` (`derivation-builder.cc:356`): a build user must not share its parents."""
+    for at in (path, *path.parents):
+        # `lstat`: a symlink is mode 0777, so it fails too.
+        if at.lstat().st_mode & 0o002:
+            raise BuildUserError(f'Path "{at}" is world-writable or a symlink. That\'s not allowed for security.')

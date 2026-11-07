@@ -41,6 +41,8 @@ def _spec(root: Path, script: str, **over: object) -> ChildSpec:
         "private_network": True,
         "sandbox_uid": 1000,
         "sandbox_gid": 100,
+        "build_user": None,
+        "map_fd": None,
         "work_dir": "/build",
         "shm_size": "50%",
         "no_new_privileges": True,

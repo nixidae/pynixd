@@ -36,7 +36,7 @@ from ..add import PathLock, delete_path
 from ..content_address import Method, fixed_output_address, output_method
 from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta, show_error
 from ..signing import SecretKey, fingerprint
-from . import buildenv, cgroup as build_cgroup
+from . import buildenv, cgroup as build_cgroup, users as build_users
 from .buildlog import BuildLog
 from .env import (
     HOME_DIR,
@@ -90,6 +90,9 @@ _log = structlog.get_logger(__name__)
 SANDBOX_UID, SANDBOX_GID = 1000, 100
 """`sandboxUid` and `sandboxGid` without build users (`linux-derivation-builder.cc:430`)."""
 
+USER_POLL_SECONDS = 0.5
+"""How often a build that found every build user busy asks again; Nix's goal waits too (`waitForAWhile`)."""
+
 DISK_FULL_BYTES = 8 * 1024 * 1024
 """Less free space than this after a failure is a full disk (`decideWhetherDiskFull`, `derivation-builder.cc:304`)."""
 
@@ -128,6 +131,8 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
     features = set(drv.required_system_features)
     if "uid-range" in features:
         return "the feature uid-range"
+    if settings.auto_allocate_uids and build_users.use_build_users(settings.build_users_group, True):
+        return "auto-allocate-uids"
     # `startDaemon` (`derivation-builder.cc:1155`) refuses the build in the daemon's own words.
     if "recursive-nix" in features and not settings.recursive_nix:
         return "recursive-nix without the experimental feature"
@@ -330,25 +335,37 @@ def _drv_name(drv_path: str) -> str:
     return drv_path.rsplit("/", 1)[-1].split("-", 1)[1].removesuffix(".drv")
 
 
-def _prepare(engine: StoreEngine, drv_path: str, settings: BuildSettings) -> _Paths:
-    """`startBuild` up to the environment, and `setupBuildChroot` (`unix/build/chroot.cc:12`)."""
+def _prepare(
+    engine: StoreEngine, drv_path: str, settings: BuildSettings, user: build_users.BuildUser | None = None
+) -> _Paths:
+    """`startBuild` up to the environment, and `setupBuildChroot` (`unix/build/chroot.cc:12`).
+
+    With *user*, the build directory is the build user's, and the chroot's root and store its group's.
+    """
     layout = engine.layout
     build_dir = Path(settings.build_dir) if settings.build_dir else layout.state_dir / "builds"
     build_dir.mkdir(parents=True, exist_ok=True)
+    if user is not None:
+        build_users.check_not_world_writable(build_dir)
     top = Path(tempfile.mkdtemp(prefix="nix-", dir=build_dir))
     tmp = top / "build"
     tmp.mkdir(0o700)
+    build_users.chown_to(user, tmp)
 
     chroot_parent = layout.real_store_dir / (drv_path.rsplit("/", 1)[-1] + ".chroot")
     delete_path(chroot_parent)
     chroot_parent.mkdir(0o700)
     root = chroot_parent / "root"
     root.mkdir(0o750)
+    if user is not None:
+        os.chown(root, 0, user.gid)
     (root / "tmp").mkdir()
     (root / "tmp").chmod(0o1777)
     store = root / str(layout.store_dir).lstrip("/")
     store.mkdir(parents=True)
     store.chmod(0o1775)
+    if user is not None:
+        os.chown(store, 0, user.gid)
     etc = root / "etc"
     etc.mkdir()
     (etc / "passwd").write_text(
@@ -506,7 +523,17 @@ async def build(
         # Not cancellable: an abandoned `flock` would hold the lock with no owner to release it.
         await anyio.to_thread.run_sync(lock.acquire)
     paths: _Paths | None = None
+    user: build_users.BuildUser | None = None
     try:
+        if build_users.use_build_users(settings.build_users_group, settings.auto_allocate_uids):
+            pool = build_users.pool_dir(layout.state_dir, layout.relocated)
+            try:
+                while (
+                    user := await anyio.to_thread.run_sync(build_users.acquire, pool, settings.build_users_group)
+                ) is None:
+                    await anyio.sleep(USER_POLL_SECONDS)
+            except build_users.BuildUserError as e:
+                return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(str(e)))
         valid = {
             path
             for path in known.values()
@@ -531,7 +558,10 @@ async def build(
             return LocalBuildResult(e.status, e.message)
         except PlainError as e:
             return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(str(e)))
-        paths = await anyio.to_thread.run_sync(_prepare, engine, drv_path, settings)
+        try:
+            paths = await anyio.to_thread.run_sync(_prepare, engine, drv_path, settings, user)
+        except build_users.BuildUserError as e:
+            return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(str(e)))
         fixed = any(o.kind is OutputKind.CA_FIXED for o in drv.outputs.values())
         sandboxed = not (fixed or impure)
         # `inputRewrites` (`derivation-builder.cc:435`): the sandbox builds each output at its scratch path.
@@ -581,6 +611,8 @@ async def build(
             "cgroup": None,
             "cgroup_report": False,
             "sample_seconds": 0,
+            "build_user": None if user is None else (user.uid, user.gid),
+            "map_fd": None,
         }
         if os.path.exists(HOME_DIR):
             raise ValueError(f"home directory '{HOME_DIR}' exists; please remove it to assure purity of builds")
@@ -596,7 +628,8 @@ async def build(
         restriction: RestrictionContext | None = None
         submitting = BUILDER_RPC in drv.required_system_features
         # The guest kernel has no binfmt handler and no IA32 emulation: another system builds on the host's kernel.
-        in_vm = vm is not None and sandboxed and drv.platform in {settings.system, "builtin"}
+        # The guest maps no build user yet: as root with build users, the namespaces build.
+        in_vm = vm is not None and sandboxed and drv.platform in {settings.system, "builtin"} and user is None
         async with contextlib.AsyncExitStack() as stack:
             if submitting or "recursive-nix" in drv.required_system_features:
                 if recursive is None:
@@ -623,6 +656,7 @@ async def build(
                     stream = await stack.enter_async_context(await SocketStream.from_socket(ours))
                     restriction = RestrictionContext(inputs, stream, layout.real_store_dir, submitting=submitting)
                     listener = await anyio.to_thread.run_sync(_listen, paths.tmp / SOCKET_NAME)
+                    build_users.chown_to(user, paths.tmp / SOCKET_NAME)
                 await stack.enter_async_context(recursive(listener, restriction))
             guest: _Guest | None = None
             if in_vm and vm is not None:
@@ -650,7 +684,7 @@ async def build(
             stack.callback(sampler.cancel_scope.cancel)
             if cgroup is not None and sample_seconds > 0 and guest is None:
                 sampler.start_soon(build_cgroup.sample_every, cgroup, sample_seconds, samples)
-            failure = await _run(paths, spec, settings, drv_path, keep, control, guest, cgroup)
+            failure = await _run(paths, spec, settings, drv_path, keep, control, guest, cgroup, user)
             # Not `sampler.cancel_scope.cancel()` here: this body runs in that scope, and the read below would be
             # cancelled too. The stack's callback stops the sampler on the way out.
             taken = tuple(samples)
@@ -708,6 +742,7 @@ async def build(
                     is_valid=lambda path: anyio.from_thread.run(engine.is_valid_path_uncached, path),
                     discard=discarded_references(drv.env),
                     check=check,
+                    build_uid=None if user is None else user.uid,
                 )
             )
         except BuildFailure as e:
@@ -749,6 +784,8 @@ async def build(
                 await anyio.to_thread.run_sync(paths.remove)
             for lock in locks:
                 lock.release(delete=True)
+            if user is not None:
+                user.release()
 
 
 async def _check_submitted(
@@ -838,6 +875,7 @@ async def _run(
     control: socket.socket | None = None,
     guest: _Guest | None = None,
     cgroup: Path | None = None,
+    user: build_users.BuildUser | None = None,
 ) -> BuildFailure | _BuilderFailed | None:
     """Run the helper on a pseudoterminal, as `startBuild` does, and wait under the two timeouts.
 
@@ -846,8 +884,17 @@ async def _run(
     joins *cgroup*.
     """
     spec_file = paths.top / "spec.json"
+    maps: socket.socket | None = None
+    helper_maps: socket.socket | None = None
+    if user is not None:
+        maps, helper_maps = socket.socketpair()
+        spec = {**spec, "map_fd": helper_maps.fileno()}
     spec_file.write_text(json.dumps(spec))
     master, slave = os.openpty()
+    if user is not None:
+        # `startBuild` (`derivation-builder.cc:491`).
+        os.fchmod(slave, 0o600)
+        os.fchown(slave, user.uid, 0)
     if guest is not None:
         status_read = status_write = -1
         await guest.vm.make_disk(paths.top, paths.tmp)
@@ -873,6 +920,8 @@ async def _run(
     if control is not None:
         argv.append(str(control.fileno()))
         fds.append(control.fileno())
+    if helper_maps is not None:
+        fds.append(helper_maps.fileno())
     try:
         process = await anyio.open_process(argv, stdin=None, stdout=slave, stderr=slave, pass_fds=fds, cwd=cwd)
     finally:
@@ -881,6 +930,11 @@ async def _run(
             os.close(status_write)
         if control is not None:
             control.close()
+        if helper_maps is not None:
+            helper_maps.close()
+    if maps is not None and user is not None:
+        with maps:
+            await _map_build_user(maps, process.pid, user)
     timed_out: str | None = None
     try:
         with anyio.move_on_after(settings.timeout or None) as overall:
@@ -952,6 +1006,19 @@ async def _attach_control(listener: socket.socket, restriction: RestrictionConte
     async with await SocketStream.from_socket(connection) as stream:
         restriction.attach(stream)
         await anyio.sleep_forever()
+
+
+async def _map_build_user(maps: socket.socket, pid: int, user: build_users.BuildUser) -> None:
+    """The parent's half of `startChild` (`linux-derivation-builder.cc:627`): map the build user into the helper's
+    new user namespace once it says that namespace exists. A helper that failed first closes its end."""
+    await anyio.wait_readable(maps)
+    if maps.recv(1) != b"u":
+        return
+    proc = Path("/proc", str(pid))
+    (proc / "uid_map").write_text(f"{SANDBOX_UID} {user.uid} 1")
+    (proc / "setgroups").write_text("deny")
+    (proc / "gid_map").write_text(f"{SANDBOX_GID} {user.gid} 1")
+    maps.send(b"g")
 
 
 def _listen(path: Path) -> socket.socket:

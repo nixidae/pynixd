@@ -91,6 +91,9 @@ class BuildSettings:
     nix_command: bool = True
     transfer: TransferSettings = TransferSettings()
     nix_version: str = ""
+    build_users_group: str = ""
+    """The store's own: `useBuildUsers` (`user-lock.cc:237`) reads it once, so a client's never takes effect."""
+    auto_allocate_uids: bool = False
 
     @classmethod
     def from_nix_config(
@@ -194,4 +197,11 @@ class BuildSettings:
             nix_command="nix-command" in features,
             transfer=transfer(),
             nix_version=nix_version,
+            build_users_group=str(_own(config, "build-users-group", "") or ""),
+            auto_allocate_uids=boolean(_own(config, "auto-allocate-uids", False)),
         )
+
+
+def _own(config: Mapping[str, Any], name: str, default: Any) -> Any:
+    entry = config.get(name)
+    return entry["value"] if entry is not None else default

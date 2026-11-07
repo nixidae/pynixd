@@ -304,13 +304,38 @@ def _walk(path: str) -> Iterator[str]:
             yield from _walk(os.path.join(path, name))
 
 
-def canonicalise(path: Path, ignored_acls: frozenset[str] = IGNORED_ACLS) -> None:
-    """`canonicalisePathMetaData` with no uid range (`posix-fs-canonicalise.cc:42`), as `addToStore` calls it."""
+class InvalidOwnership(Exception):
+    """A file of a build's output that its build user does not own: `ln /etc/shadow $out/foo`."""
+
+    def __init__(self, path: str) -> None:
+        super().__init__(path)
+        self.path = path
+
+
+def canonicalise(
+    path: Path,
+    ignored_acls: frozenset[str] = IGNORED_ACLS,
+    *,
+    uid_range: tuple[int, int] | None = None,
+    seen: set[tuple[int, int]] | None = None,
+) -> None:
+    """`canonicalisePathMetaData` (`posix-fs-canonicalise.cc:42`).
+
+    With *uid_range*, a build's: a file owned outside it raises `InvalidOwnership`, unless it is a hard link to
+    an inode in *seen*, which this call or an earlier one over the same build chowned already (`:91`).
+    """
     euid, egid = os.geteuid(), os.getegid()
+    if seen is None:
+        seen = set()
     for at in _walk(os.fspath(path)):
         st = os.lstat(at)
         if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode)):
             raise AddError(f"file '{magenta(at)}' has an unsupported type")
+        if uid_range is not None and not uid_range[0] <= st.st_uid <= uid_range[1]:
+            if stat.S_ISDIR(st.st_mode) or (st.st_dev, st.st_ino) not in seen:
+                raise InvalidOwnership(at)
+            continue
+        seen.add((st.st_dev, st.st_ino))
         try:
             names = os.listxattr(at, follow_symlinks=False)
         except OSError as error:
