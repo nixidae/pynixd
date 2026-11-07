@@ -182,6 +182,9 @@ def _enter_chroot(spec: ChildSpec) -> None:
 
     (root / "proc").mkdir(exist_ok=True)
     _mount("none", str(root / "proc"), "proc", 0)
+    if spec["id_range"]:
+        (root / "sys").mkdir(exist_ok=True)
+        _mount("none", str(root / "sys"), "sysfs", 0)
     if Path("/dev/shm").exists():
         (root / "dev/shm").mkdir(parents=True, exist_ok=True)
         _mount("none", str(root / "dev/shm"), "tmpfs", 0, f"size={spec['shm_size']}")
@@ -419,6 +422,8 @@ def main() -> None:
             flags = os.CLONE_NEWUSER | os.CLONE_NEWPID | os.CLONE_NEWNS | os.CLONE_NEWIPC | os.CLONE_NEWUTS
             if spec["private_network"]:
                 flags |= os.CLONE_NEWNET
+            if spec["id_range"] and spec["cgroup"] is not None:
+                flags |= os.CLONE_NEWCGROUP
             os.unshare(flags)
             if spec["map_fd"] is not None:
                 _await_maps(spec["map_fd"])

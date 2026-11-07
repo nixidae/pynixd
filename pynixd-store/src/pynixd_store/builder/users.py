@@ -31,6 +31,12 @@ class BuildUser:
     fd: int
     groups: tuple[int, ...] = ()
     """The user's supplementary groups but *gid*, such as `kvm`: an unsandboxed builder keeps them (`setUser`)."""
+    count: int = 1
+    """`getUIDCount`: the ids from *uid* on that the build owns, 65536 for a `uid-range` build."""
+
+    @property
+    def last_uid(self) -> int:
+        return self.uid + self.count - 1
 
     def release(self) -> None:
         os.close(self.fd)
@@ -87,9 +93,12 @@ def acquire(pool: Path, group: str) -> BuildUser | None:
     return None
 
 
-def acquire_auto(pool: Path, group: str, *, start_id: int, id_count: int, user_namespace: bool) -> BuildUser | None:
+def acquire_auto(
+    pool: Path, group: str, *, start_id: int, id_count: int, user_namespace: bool, ids: int = 1
+) -> BuildUser | None:
     """`AutoUserLock::acquire` (`user-lock.cc:165`): a free slot of `userpool2`, locked, or `None` when each one
-    builds already. A slot's uid has no account; in a user namespace its gid is the uid too.
+    builds already. A slot's uid has no account; in a user namespace its gid is the uid too. The build owns
+    *ids* of the slot's ids: 65536 with `uid-range`, else 1 (`linux-derivation-builder.cc:444`).
 
     Blocking: it reads the user and group databases.
     """
@@ -112,13 +121,13 @@ def acquire_auto(pool: Path, group: str, *, start_id: int, id_count: int, user_n
             os.close(fd)
             raise BuildUserError(f"auto-allocated UID {uid} clashes with existing user account '{name}'")
         if user_namespace:
-            return BuildUser(uid, uid, fd)
+            return BuildUser(uid, uid, fd, count=ids)
         try:
             gid = grp.getgrnam(group).gr_gid
         except KeyError:
             os.close(fd)
             raise BuildUserError(f"the group '{group}' specified in 'build-users-group' does not exist") from None
-        return BuildUser(uid, gid, fd)
+        return BuildUser(uid, gid, fd, count=ids)
     return None
 
 

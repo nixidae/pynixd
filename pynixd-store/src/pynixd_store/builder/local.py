@@ -147,7 +147,14 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
     if {"recursive-nix", BUILDER_RPC} & features and not uses_sandbox(drv, settings, relocated=relocated):
         return "recursive-nix or builder-rpc-v0 without the sandbox"
     if "uid-range" in features:
-        return "the feature uid-range"
+        # `makeDerivationBuilder` (`derivation-builder.cc:1810`), `setupBuildChroot` (`chroot.cc:52`) and
+        # `prepareBuild` (`linux-derivation-builder.cc:450`) throw before the build starts, in the daemon's words.
+        if not uses_sandbox(drv, settings, relocated=relocated):
+            return "uid-range without the sandbox"
+        if not (settings.auto_allocate_uids and build_users.use_build_users(settings.build_users_group, True)):
+            return "uid-range without auto-allocate-uids as root"
+        if not settings.cgroups_feature:
+            return "uid-range without the experimental feature cgroups"
     if settings.auto_allocate_uids and build_users.use_build_users(settings.build_users_group, True):
         # `AutoUserLock::acquire` throws without the feature and asserts on the ids (`user-lock.cc:176`).
         # NIX-DEFECT (#23): `unix/user-lock.cc:177` checks `start-id` and `id-count`, settings from
@@ -407,9 +414,11 @@ def _prepare(
     delete_path(chroot_parent)
     chroot_parent.mkdir(0o700)
     root = chroot_parent / "root"
-    root.mkdir(0o750)
+    # `setupBuildChroot` (`chroot.cc:30`): the root of a build of many ids is its own.
+    id_range = user is not None and user.count != 1
+    root.mkdir(0o755 if id_range else 0o750)
     if user is not None:
-        os.chown(root, 0, user.gid)
+        os.chown(root, user.uid if id_range else 0, user.gid)
     (root / "tmp").mkdir()
     (root / "tmp").chmod(0o1777)
     store = root / str(layout.store_dir).lstrip("/")
@@ -419,12 +428,15 @@ def _prepare(
         os.chown(store, 0, user.gid)
     etc = root / "etc"
     etc.mkdir()
+    if id_range:
+        build_users.chown_to(user, etc)
+    uid, gid = (0, 0) if id_range else (SANDBOX_UID, SANDBOX_GID)
     (etc / "passwd").write_text(
         f"root:x:0:0:Nix build user:{SANDBOX_BUILD_DIR}:/noshell\n"
-        f"nixbld:x:{SANDBOX_UID}:{SANDBOX_GID}:Nix build user:{SANDBOX_BUILD_DIR}:/noshell\n"
+        f"nixbld:x:{uid}:{gid}:Nix build user:{SANDBOX_BUILD_DIR}:/noshell\n"
         "nobody:x:65534:65534:Nobody:/:/noshell\n"
     )
-    (etc / "group").write_text(f"root:x:0:\nnixbld:!:{SANDBOX_GID}:\nnogroup:x:65534:\n")
+    (etc / "group").write_text(f"root:x:0:\nnixbld:!:{gid}:\nnogroup:x:65534:\n")
     dev = root / "dev"
     dev.mkdir()
     (dev / "fd").symlink_to("/proc/self/fd")
@@ -594,6 +606,7 @@ async def build(
                     start_id=settings.start_id,
                     id_count=settings.id_count,
                     user_namespace=chroot,
+                    ids=build_users.IDS_PER_BUILD if "uid-range" in drv.required_system_features else 1,
                 )
                 if auto
                 else functools.partial(build_users.acquire, pool, settings.build_users_group)
@@ -658,6 +671,8 @@ async def build(
             if drv.builder == "builtin:fetchurl"
             else None
         )
+        # `getUIDCount() != 1`: the builder is root over the whole slot (`linux-derivation-builder.cc:430`).
+        id_range = user is not None and user.count != 1
         spec: ChildSpec = {
             "builder": drv.builder,
             "args": [rewrite_strings(arg, rewrites) for arg in drv.args],
@@ -670,8 +685,8 @@ async def build(
                 else []
             ),
             "private_network": sandboxed,
-            "sandbox_uid": SANDBOX_UID,
-            "sandbox_gid": SANDBOX_GID,
+            "sandbox_uid": 0 if id_range else SANDBOX_UID,
+            "sandbox_gid": 0 if id_range else SANDBOX_GID,
             "work_dir": build_dir,
             "shm_size": settings.sandbox_shm_size,
             "no_new_privileges": not settings.allow_new_privileges,
@@ -691,6 +706,7 @@ async def build(
             "build_user": None if user is None else (user.uid, user.gid),
             "build_groups": [] if user is None else list(user.groups),
             "map_fd": None,
+            "id_range": id_range,
         }
         # `startBuild` (`derivation-builder.cc:465`): only a build that rewrites hashes, one without the chroot.
         if not chroot and os.path.exists(HOME_DIR):
@@ -762,6 +778,15 @@ async def build(
             # A VM build's host cgroup holds the VMM, and the guest measures the build in a cgroup of its own.
             cgroup = await stack.enter_async_context(build_cgroup.build_cgroup())
             spec["cgroup"] = None if cgroup is None else str(cgroup)
+            if id_range and user is not None:
+                # `prepareBuild` (`linux-derivation-builder.cc:449`): a build of many ids needs its own cgroup,
+                # which its root manages (`:499`).
+                if cgroup is None:
+                    return LocalBuildResult(
+                        BuildResultStatus.MISC_FAILURE, show_error("cannot determine the cgroups file system")
+                    )
+                for owned in (cgroup, cgroup / "cgroup.procs", cgroup / "cgroup.threads"):
+                    build_users.chown_to(user, owned)
             if guest is not None:
                 spec["cgroup"] = str(build_cgroup.GUEST)
                 spec["cgroup_report"] = True
@@ -831,7 +856,7 @@ async def build(
                     is_valid=lambda path: anyio.from_thread.run(engine.is_valid_path_uncached, path),
                     discard=discarded_references(drv.env),
                     check=check,
-                    build_uid=None if user is None else user.uid,
+                    build_uids=None if user is None else (user.uid, user.last_uid),
                     fresh=not chroot,
                 )
             )
@@ -1130,9 +1155,11 @@ async def _map_build_user(maps: socket.socket, pid: int, user: build_users.Build
     if maps.recv(1) != b"u":
         return
     proc = Path("/proc", str(pid))
-    (proc / "uid_map").write_text(f"{SANDBOX_UID} {user.uid} 1")
-    (proc / "setgroups").write_text("deny")
-    (proc / "gid_map").write_text(f"{SANDBOX_GID} {user.gid} 1")
+    single = user.count == 1
+    (proc / "uid_map").write_text(f"{SANDBOX_UID if single else 0} {user.uid} {user.count}")
+    if single:
+        (proc / "setgroups").write_text("deny")
+    (proc / "gid_map").write_text(f"{SANDBOX_GID if single else 0} {user.gid} {user.count}")
     maps.send(b"g")
 
 

@@ -29,8 +29,8 @@ if TYPE_CHECKING:
 HERE = Path("/var/lib/pynixd-root-tests/auto-allocate-uids")
 IDS_PER_BUILD = 1 << 16
 START_ID = 40000
-"""Inside the guest's 65536 ids: the guest is a container, and `start-id`'s default (`0x34000000`,
-`local-settings.hh:145`) maps to no uid there, so a `chown` to it fails with `EINVAL`."""
+"""Inside a container guest's 65536 ids: `start-id`'s default (`0x34000000`, `local-settings.hh:145`)
+maps to no uid there, so a `chown` to it fails with `EINVAL`."""
 
 pytestmark = pytest.mark.skipif(os.geteuid() != 0, reason="build users need root")
 

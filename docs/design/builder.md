@@ -130,8 +130,22 @@ sandbox the gid is that uid too; without the sandbox it is the group of
 `build-users-group`. Without the experimental feature, or with ids Nix
 asserts on, the build stays on the daemon.
 
-`uid-range` stays on the daemon. A build VM maps no build user yet, so as
-root with build users a build uses the namespaces.
+A derivation that requires `uid-range` takes all 65536 ids of its slot, as
+Nix's chroot builder does (`linux-derivation-builder.cc:444`):
+
+- The builder is root in the sandbox, over the whole slot (`0 <uid> 65536`),
+  and its namespace may call `setgroups`.
+- The chroot's root (0755) and `/etc` belong to the slot's first uid, and
+  `/etc` stays writable. The sandbox has `/sys`.
+- The build needs a cgroup. pynixd gives it to the build's root, and the
+  builder sees it as the root of its own cgroup namespace.
+- An output belongs to the slot's first uid. A file in it may belong to any
+  uid of the slot.
+
+Without the sandbox, without `auto-allocate-uids` as root, or without the
+experimental feature `cgroups`, Nix refuses the build, and pynixd leaves it to
+the daemon. A build VM maps no build user yet, so as root with build users a
+build uses the namespaces.
 
 ## Without the sandbox
 

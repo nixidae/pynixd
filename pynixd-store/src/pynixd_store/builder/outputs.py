@@ -122,7 +122,7 @@ def _scan(
     referenceable: set[str],
     *,
     discard: bool,
-    build_uid: int | None = None,
+    build_uids: tuple[int, int] | None = None,
     seen: set[tuple[int, int]] | None = None,
 ) -> Scanned:
     try:
@@ -134,8 +134,9 @@ def _scan(
             f"'{magenta(name)}' at {_quoted(actual)}",
         ) from None
     # `registerOutputs` (`derivation-builder.cc:1153`): an output the build user does not own is suspicious too.
+    # The output itself is the first uid's, and a file in it may be any of the build's (`:1169`).
     if (not stat.S_ISLNK(st.st_mode) and st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)) or (
-        build_uid is not None and st.st_uid != build_uid
+        build_uids is not None and st.st_uid != build_uids[0]
     ):
         raise BuildFailure(
             BuildResultStatus.OUTPUT_REJECTED,
@@ -143,7 +144,7 @@ def _scan(
             f"'{magenta(name)}'; rejecting this build output",
         )
     try:
-        canonicalise(actual, uid_range=None if build_uid is None else (build_uid, build_uid), seen=seen)
+        canonicalise(actual, uid_range=build_uids, seen=seen)
     except InvalidOwnership as e:
         raise BuildFailure(
             BuildResultStatus.OUTPUT_REJECTED, f"invalid ownership on file {_quoted(Path(e.path))}"
@@ -229,7 +230,7 @@ def collect_outputs(
     is_valid: Callable[[str], bool],
     discard: set[str],
     check: bool = False,
-    build_uid: int | None = None,
+    build_uids: tuple[int, int] | None = None,
     fresh: bool = False,
 ) -> Collected:
     """Each output the build made at its *scratch* path, moved into the store and described; nothing is registered yet.
@@ -238,7 +239,7 @@ def collect_outputs(
     With *check*, every output stays in the chroot to be compared (`derivation-builder.cc:1530`).
     *is_valid* asks the store about a path no output names. An output in
     *discard* is not scanned (`unsafeDiscardReferences`). Blocking: call it
-    from a worker thread. *build_uid* is the build user's, whose files alone an output may hold.
+    from a worker thread. *build_uids* are the first and last of the build user's ids, whose files alone an output may hold.
     With *fresh*, a fixed or impure output is copied before it is hashed: outside a PID namespace, a process
     of the builder may still hold one of its files open for writing (`moveOutputToTempDir`, `derivation-builder.cc:1419`).
     """
@@ -253,7 +254,7 @@ def collect_outputs(
             chroot_root / path.lstrip("/"),
             referenceable,
             discard=name in discard,
-            build_uid=build_uid,
+            build_uids=build_uids,
             seen=seen,
         )
         for name, path in scratch.items()

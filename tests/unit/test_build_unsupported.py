@@ -77,6 +77,29 @@ def test_auto_allocate_uids_is_pynixds_where_nix_allocates(
     assert got is None if reason is None else reason in (got or "")
 
 
+@pytest.mark.parametrize(
+    ("config", "sandbox", "reason"),
+    [
+        ({"experimental-features": "auto-allocate-uids cgroups"}, "true", None),
+        ({"experimental-features": "auto-allocate-uids cgroups"}, "false", "uid-range without the sandbox"),
+        ({"auto-allocate-uids": False}, "true", "uid-range without auto-allocate-uids as root"),
+        ({"experimental-features": "auto-allocate-uids"}, "true", "uid-range without the experimental feature cgroups"),
+    ],
+)
+def test_uid_range_is_pynixds_where_nix_builds_it(
+    monkeypatch: pytest.MonkeyPatch, config: dict[str, object], sandbox: str, reason: str | None
+) -> None:
+    """`makeDerivationBuilder` (`derivation-builder.cc:1810`), `setupBuildChroot` (`chroot.cc:52`) and
+    `prepareBuild` (`linux-derivation-builder.cc:450`) refuse the rest."""
+    monkeypatch.setattr("os.geteuid", lambda: 0)
+    entries = {name: {"value": value} for name, value in {"auto-allocate-uids": True, **config}.items()}
+    settings = BuildSettings.from_nix_config(entries, {"system": "x86_64-linux", "sandbox": sandbox})
+    drv = BasicDerivation(
+        outputs={"out": PLAIN}, platform="x86_64-linux", builder="/bin/sh", env={"requiredSystemFeatures": "uid-range"}
+    )
+    assert unsupported(drv, settings, store_dir="/nix/store", relocated=False) == reason
+
+
 def test_a_git_hashed_output_needs_git_hashing() -> None:
     """`dumpBlobPrefix` requires `Xp::GitHashing` (`libutil/git.cc:233`); the daemon answers without it."""
     drv = BasicDerivation(

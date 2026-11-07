@@ -34,6 +34,20 @@ def test_each_build_takes_the_next_free_slot(tmp_path: Path) -> None:
     assert sorted(p.name for p in tmp_path.iterdir()) == ["slot-0", "slot-1"]
 
 
+def test_a_uid_range_build_owns_the_whole_slot(tmp_path: Path) -> None:
+    """`getUIDRange` (`user-lock.hh:20`): 65536 ids from the slot's uid with `uid-range`, one without."""
+    one = acquire_auto(tmp_path, "", start_id=START, id_count=2 * IDS_PER_BUILD, user_namespace=True)
+    whole = acquire_auto(
+        tmp_path, "", start_id=START, id_count=2 * IDS_PER_BUILD, user_namespace=True, ids=IDS_PER_BUILD
+    )
+    assert one is not None
+    assert whole is not None
+    assert (one.uid, one.last_uid) == (START, START)
+    assert (whole.uid, whole.last_uid) == (START + IDS_PER_BUILD, START + 2 * IDS_PER_BUILD - 1)
+    one.release()
+    whole.release()
+
+
 def test_without_a_user_namespace_the_gid_is_the_build_users_group(tmp_path: Path) -> None:
     """`AutoUserLock::acquire` (`user-lock.cc:207`) reads `build-users-group`, and names a missing one."""
     with pytest.raises(BuildUserError, match="the group 'no-such-group' specified in 'build-users-group'"):

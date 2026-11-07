@@ -187,6 +187,12 @@ vivariumLib.mkTest (
         diskSize = 8192;
         # `/dev/kvm` for the build VM's tests. UML has none to give.
         nestedVirtualization = name == "functional" && config.resolved.backend.value != "uml";
+      }
+      # A `uid-range` build mounts its own `/sys` (`tests/root/test_uid_range.py`). A container
+      # guest's `/sys` is read-only, and the kernel then refuses a writable one: EPERM, for Nix's
+      # daemon too.
+      // lib.optionalAttrs (name == "root" && config.resolved.backend.value == "container") {
+        backend = "qemu";
       };
 
       environment.variables = krunVariables;
