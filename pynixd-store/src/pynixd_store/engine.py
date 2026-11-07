@@ -364,6 +364,9 @@ class StoreEngine:
         if not self.writable:
             raise RuntimeError(f"store {self._name}: pynixd cannot write the store database")
         infos = list(infos)
+        if (await self.settings()).sync_before_registering:
+            # `registerValidPaths` (`local-store.cc:964`): the files reach the disk before SQLite says they are valid.
+            await anyio.to_thread.run_sync(os.sync)
         registrations = [await register.prepare(info, self.layout) for info in infos]
         async with self.db.acquire_conn() as conn:
             await register.register_valid_paths(conn, registrations)

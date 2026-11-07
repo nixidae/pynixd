@@ -37,7 +37,7 @@ from tests._conftest.nix_config import for_test_store
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterable
+    from collections.abc import AsyncIterator, Iterable, Mapping
 
 DEP = (
     'derivation { name = "parity-dep"; system = builtins.currentSystem; builder = "/bin/sh"; '
@@ -137,9 +137,12 @@ async def _serve(
     post_build_hook: Path | None = None,
     config_file: bool = False,
     ops: tuple[str, ...] = ("BuildDerivation",),
+    settings: Mapping[str, Any] | None = None,
     **spec_args: Any,
 ) -> AsyncIterator[tuple[str, Path]]:
     """A fresh store with each of *ops* on *route*: its URL and its root. *spec_args* go to `make_test_spec`.
+
+    *settings* are the store's own, by their `NixConfig` field names.
 
     With *config_file*, the daemon reads the store's settings from a file named by `NIX_USER_CONF_FILES`, and
     its environment holds no `NIX_CONFIG`.
@@ -152,6 +155,8 @@ async def _serve(
         nix_config.diff_hook = str(diff_hook)
     if post_build_hook is not None:
         nix_config.post_build_hook = str(post_build_hook)
+    for name, value in (settings or {}).items():
+        setattr(nix_config, name, value)
     spec = make_test_spec(
         store_id="local",
         store_path=root,
@@ -898,6 +903,43 @@ async def test_fsync_store_paths_syncs_each_path_before_pynixd_registers_it(
         path = str(real / here["paths"][key].rsplit("/", 1)[-1])
         assert path in mine, (f"pynixd did not sync the {key} path", mine)
         assert mine[mine.index(path) + 1] == str(real), (key, mine)
+
+
+async def _registrations(tmp_path: Path, sync: bool) -> list[str]:
+    """An add and a build on the pynixd route; the paths it registered, in order."""
+    settings = {"sync_before_registering": True} if sync else {}
+    ops = ("BuildDerivation", "AddToStore")
+    async with _serve(tmp_path / str(sync), OpRoute.pynixd, ops=ops, settings=settings) as (url, _root):
+        (tmp_path / "registered").write_text("registered\n")
+        _rc, out, _err, _both = await run_subproc(
+            [NIX_BIN, "store", "add-file", "--store", url, str(tmp_path / "registered")]
+        )
+        _rc, built, _err, _both = await run_subproc(
+            [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--print-out-paths", "--expr", DEP]
+        )
+    return [out.strip(), built.strip()]
+
+
+async def test_sync_before_registering_syncs_before_each_registration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`registerValidPaths` calls `sync()` first with `sync-before-registering` (`local-store.cc:964`)."""
+    syncs: list[None] = []
+    sync = os.sync
+
+    def record() -> None:
+        syncs.append(None)
+        sync()
+
+    monkeypatch.setattr(os, "sync", record)
+    before = _all_fallthroughs()
+    off = await _registrations(tmp_path, sync=False)
+    assert syncs == [], "pynixd synced with sync-before-registering off"
+    on = await _registrations(tmp_path, sync=True)
+    assert _all_fallthroughs() == before, "the daemon took a write of the pynixd route"
+    assert on == off
+    # The added file, the derivation, and the build's output: one registration each.
+    assert len(syncs) >= 3, syncs
 
 
 async def _flat_with_references(tmp_path: Path, route: OpRoute) -> tuple[int, list[str]]:

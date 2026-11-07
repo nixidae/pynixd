@@ -79,6 +79,7 @@ class ImportSettings:
     secret_key_files: tuple[str, ...] = ()
     auto_optimise_store: bool = False
     fsync_store_paths: bool = False
+    sync_before_registering: bool = False
     ignored_acls: frozenset[str] = IGNORED_ACLS
     #: The daemon's own `experimental-features`; a client's are ignored (`daemon.cc:278`).
     git_hashing: bool = False
@@ -94,6 +95,8 @@ class ImportSettings:
             secret_key_files=tuple(value("secret-key-files")),
             auto_optimise_store=bool(value("auto-optimise-store")),
             fsync_store_paths=bool(value("fsync-store-paths")),
+            # Not on Windows (`local-settings.hh:252`).
+            sync_before_registering=bool(config.get("sync-before-registering", {}).get("value", False)),
             ignored_acls=frozenset(value("ignored-acls")),
             git_hashing="git-hashing" in _words(value("experimental-features")),
         )
