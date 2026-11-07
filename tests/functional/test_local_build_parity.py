@@ -18,6 +18,7 @@ import os
 import sqlite3
 import tarfile
 import zipfile
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -37,7 +38,6 @@ from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable
-    from pathlib import Path
 
 DEP = (
     'derivation { name = "parity-dep"; system = builtins.currentSystem; builder = "/bin/sh"; '
@@ -1392,6 +1392,57 @@ async def test_a_rebuild_checks_what_the_daemon_checks(tmp_path: Path) -> None:
     assert any("may not be deterministic" in line for line in here["differs"][2]), here["differs"]
     assert any("checking is not possible" in line for line in here["never-built"][2]), here["never-built"]
     assert here["opaque"][0] == 0, here["opaque"]
+
+
+KEPT = "note: keeping build directory "
+KEEPS = {
+    "fails": _script("parity-keep-fails", "echo left > $NIX_BUILD_TOP/left; exit 1"),
+    "differs": _script(
+        "parity-keep-differs", "echo left > $NIX_BUILD_TOP/left; read u < /proc/sys/kernel/random/uuid; echo $u > $out"
+    ),
+    "builds": _script("parity-keep-builds", "echo left > $NIX_BUILD_TOP/left; echo built > $out"),
+}
+
+
+async def _keeps(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
+    """Each case under `--keep-failed`: its exit, its lines with the kept directory named `<kept>`, what it kept."""
+    results: dict[str, Any] = {}
+    async with _serve(tmp_path, route) as (url, root):
+        common = [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--keep-failed"]
+        for name, expr in KEEPS.items():
+            extra = []
+            if name == "differs":
+                await run_subproc([*common, "--expr", expr])
+                extra = ["--rebuild"]
+            rc, _out, err, _both = await run_subproc([*common, *extra, "--expr", expr], expected_retcode=None)
+            kept = [line.removeprefix(KEPT).strip('"') for line in err.splitlines() if line.startswith(KEPT)]
+            lines = err.replace(str(root), "<root>")
+            found: dict[str, Any] = {}
+            for directory in map(Path, kept):
+                lines = lines.replace(str(directory).replace(str(root), "<root>"), "<kept>")
+                found = {
+                    "left": (directory / "left").read_text(),
+                    "modes": [oct(p.stat().st_mode & 0o7777) for p in (directory.parent, directory)],
+                }
+            checks = sorted(p.name.split("-", 1)[1] for p in (root / "nix" / "store").glob("*.check"))
+            results[name] = rc, lines.splitlines(), len(kept), found, checks
+    return results
+
+
+async def test_keep_failed_keeps_what_the_daemon_keeps(tmp_path: Path) -> None:
+    """`cleanupBuild(false)` (`derivation-builder.cc:1697`): a failed build's directory stays, opened to 0755, and
+    a check that differs leaves the rebuilt output at `<path>.check` (`:1553`). A build that succeeds keeps none."""
+    before = _fallthrough()
+    here = await _keeps(tmp_path, OpRoute.pynixd)
+    assert _fallthrough() == before, "the daemon built a keep-failed build of the pynixd route"
+    there = await _keeps(tmp_path, OpRoute.daemon)
+
+    assert here == there
+    assert here["fails"][2:4] == (1, {"left": "left\n", "modes": ["0o755", "0o755"]}), here["fails"]
+    assert here["differs"][2] == 1, here["differs"]
+    assert here["differs"][4] == ["parity-keep-differs.check"], here["differs"]
+    assert any("differs from" in line for line in here["differs"][1]), here["differs"]
+    assert (here["builds"][0], here["builds"][2]) == (0, 0), here["builds"]
 
 
 def _chain(tag: str) -> tuple[str, str]:

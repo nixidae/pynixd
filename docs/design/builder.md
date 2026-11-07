@@ -161,6 +161,15 @@ with an output that is valid already (Nix builds those at a fallback path and
 rewrites the hashes), `recursive-nix`, and `__noChroot` under `sandbox = true`,
 which Nix refuses.
 
+## A failed build with keep-failed
+
+With `keep-failed`, a build that does not succeed keeps its build directory,
+as `cleanupBuild(false)` does (`derivation-builder.cc:1697`). pynixd removes
+the chroot, opens the top directory and `build` to 0755, and sends Nix's line
+`note: keeping build directory "<dir>"`. A builtin keeps nothing: its
+directory may hold a copy of netrc. A check whose output differs moves the
+rebuilt output to `<path>.check` and names it in the error (`:1553`).
+
 ## The child: pynixd's own helper
 
 | | bubblewrap (`bwrap`, a Nix package) | a helper of pynixd's (`python -m pynixd_store.builder.child`) |

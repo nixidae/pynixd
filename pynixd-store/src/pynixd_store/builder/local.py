@@ -29,6 +29,7 @@ from anyio.abc import SocketStream
 from nix_daemon_protocol.basic_derivation import bool_attr
 from nix_daemon_protocol.build_result import BuildResultStatus
 from nix_daemon_protocol.derivation_output import OutputKind
+from nix_daemon_protocol.protocol import Verbosity
 from nix_daemon_protocol.signature import Signature
 
 from .. import optimise
@@ -47,6 +48,7 @@ from .env import (
     rewrite_strings,
     structured_attrs_reason,
 )
+from .jsonlog import Message
 from .outputs import (
     BuildFailure,
     PlainError,
@@ -135,12 +137,9 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
         return f"the platform {drv.platform}"
     if "__json" in drv.env and (reason := structured_attrs_reason(drv.env)) is not None:
         return reason
-    # `runPostBuildHook` (`derivation-building-goal.cc:1079`) and the kept build directory
-    # (`cleanupBuild`, `derivation-builder.cc:1697`, never for a builtin) are the daemon's alone.
+    # `runPostBuildHook` (`derivation-building-goal.cc:1079`) is the daemon's alone.
     if settings.post_build_hook:
         return "a build with a post-build-hook"
-    if settings.keep_failed and not builtin:
-        return "a build with keep-failed"
     # `makeDerivationBuilder` (`derivation-builder.cc:1757`) throws before a build starts.
     if settings.sandbox == "true" and bool_attr(drv.env, "__noChroot", default=False):
         return "__noChroot with sandbox = true"
@@ -357,6 +356,14 @@ class _Paths:
             if path is not None:
                 delete_path(path)
 
+    def keep(self) -> None:
+        """`cleanupBuild(false)` with `keep-failed` (`derivation-builder.cc:1697`): the chroot goes, the build
+        directory stays for anyone to read."""
+        if self.chroot_parent is not None:
+            delete_path(self.chroot_parent)
+        self.top.chmod(0o755)
+        self.tmp.chmod(0o755)
+
 
 def _drv_name(drv_path: str) -> str:
     return drv_path.rsplit("/", 1)[-1].split("-", 1)[1].removesuffix(".drv")
@@ -572,6 +579,8 @@ async def build(
         await anyio.to_thread.run_sync(lock.acquire)
     paths: _Paths | None = None
     user: build_users.BuildUser | None = None
+    # Nix deletes the build directory only after a build that succeeded (`cleanupBuild(true)`, `:246`).
+    built = False
     try:
         if build_users.use_build_users(settings.build_users_group, settings.auto_allocate_uids):
             auto = settings.auto_allocate_uids
@@ -803,7 +812,9 @@ async def build(
         if failure is not None:
             return LocalBuildResult(failure.status, failure.message, start, stop)
         if restriction is not None and restriction.submitting:
-            return await _check_submitted(engine, drv_path, drv, restriction.submitted, start, stop)
+            submitted = await _check_submitted(engine, drv_path, drv, restriction.submitted, start, stop)
+            built = submitted.status is BuildResultStatus.BUILT
+            return submitted
         try:
             collected = await anyio.to_thread.run_sync(
                 lambda: collect_outputs(
@@ -830,7 +841,11 @@ async def build(
             return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(str(e)))
         try:
             if check:
-                return await _compare(engine, drv_path, drv, collected, settings, known, start, stop)
+                compared = await _compare(
+                    engine, drv_path, drv, collected, settings, known, start, stop, keep=paths.root
+                )
+                built = compared.status is BuildResultStatus.BUILT
+                return compared
             if settings.auto_optimise_store:
                 # `registerOutputs` (`derivation-builder.cc:1600`) skips an output that is valid already.
                 fresh = [
@@ -855,12 +870,18 @@ async def build(
             await engine.register_valid_paths(collected.infos.values())
         finally:
             collected.release()
-        built = {name: info.path.path for name, info in collected.infos.items()}
-        return LocalBuildResult(BuildResultStatus.BUILT, "", start, stop, collected.infos, known | built)
+        built = True
+        made = {name: info.path.path for name, info in collected.infos.items()}
+        return LocalBuildResult(BuildResultStatus.BUILT, "", start, stop, collected.infos, known | made)
     finally:
         with anyio.CancelScope(shield=True):
             if paths is not None:
-                await anyio.to_thread.run_sync(paths.remove)
+                # A builtin's directory may hold privileged files, such as a copy of netrc (`:1695`).
+                if settings.keep_failed and not built and not drv.builder.startswith("builtin:"):
+                    await anyio.to_thread.run_sync(paths.keep)
+                    await on_lines([Message(Verbosity.ERROR, f'note: keeping build directory "{paths.tmp}"')])
+                else:
+                    await anyio.to_thread.run_sync(paths.remove)
             for lock in locks:
                 lock.release(delete=True)
             if user is not None:
@@ -917,13 +938,24 @@ async def _compare(
     known: dict[str, str],
     start: int,
     stop: int,
+    *,
+    keep: Path | None,
 ) -> LocalBuildResult:
     """The end of `registerOutputs` in check mode (`derivation-builder.cc:1546`, `:1633`).
 
     A valid output the check verified becomes `ultimate` and is signed again, even when a later one differs.
+    With `keep-failed`, a rebuilt output that differs moves from the chroot at *keep* to `<path>.check`.
     """
     registered = {path: await engine.query_path_info(path) for path in known.values()}
-    failure, verified = compare_outputs(drv_path, collected.infos, registered, engine.layout.real_store_dir)
+    failure, verified = await anyio.to_thread.run_sync(
+        lambda: compare_outputs(
+            drv_path,
+            collected.infos,
+            registered,
+            engine.layout.real_store_dir,
+            rebuilt=keep if settings.keep_failed else None,
+        )
+    )
     if verified:
         await anyio.to_thread.run_sync(_sign, verified, settings.secret_key_files)
         await engine.register_valid_paths(verified)

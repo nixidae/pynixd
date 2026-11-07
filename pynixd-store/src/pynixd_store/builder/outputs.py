@@ -391,10 +391,14 @@ def compare_outputs(
     infos: Mapping[str, ValidPathInfo],
     registered: Mapping[str, ValidPathInfo | None],
     real_store_dir: Path,
+    *,
+    rebuilt: Path | None = None,
 ) -> tuple[BuildFailure | None, list[ValidPathInfo]]:
     """`registerOutputs` in check mode (`derivation-builder.cc:1546`): each rebuilt output against the valid one.
 
-    Answers the first difference, and the valid infos to mark `ultimate`, which a check verified.
+    Answers the first difference, and the valid infos to mark `ultimate`, which a check verified. With
+    *rebuilt*, the chroot root the outputs are in, a differing one moves to `<path>.check` (`keep-failed`).
+    Blocking.
     """
     verified: list[ValidPathInfo] = []
     for info in infos.values():
@@ -402,6 +406,16 @@ def compare_outputs(
         if old is None:
             continue
         if parse_any_sha256(str(old.info.nar_hash)) != parse_any_sha256(str(info.info.nar_hash)):
+            real = real_store_dir / _base(info.path.path)
+            if rebuilt is not None:
+                kept = real.with_name(real.name + ".check")
+                delete_path(kept)
+                _move(rebuilt / info.path.path.lstrip("/"), kept)
+                return BuildFailure(
+                    BuildResultStatus.NOT_DETERMINISTIC,
+                    f"derivation '{magenta(drv_path)}' may not be deterministic: output "
+                    f"{_quoted(real)} differs from {_quoted(kept)}",
+                ), verified
             return BuildFailure(
                 BuildResultStatus.NOT_DETERMINISTIC,
                 f"derivation '{magenta(drv_path)}' may not be deterministic: output "
