@@ -176,18 +176,6 @@ def referenced_paths(request: object) -> set[str]:
     return found
 
 
-def _repair_unsupported(request: BuildDerivationRequest) -> str | None:
-    """Why the daemon repairs *request*, or `None`; also `None` for a request that does not repair.
-
-    pynixd repairs an output whose path the derivation names. A floating or impure output goes to the daemon.
-    """
-    if request.build_mode != BuildMode.REPAIR:
-        return None
-    if not all(output.path for output in request.derivation.outputs.values()) or request.derivation.has_impure:
-        return "a repair of an output with no path"
-    return None
-
-
 def _resources(usage: BuildUsage) -> BuildResources:
     return BuildResources(
         measured=1,
@@ -683,7 +671,7 @@ class LocalDBStore(Store):
             )
             or await self._realisations_unsupported(request)
             or await self._check_unsupported(request, settings)
-            or _repair_unsupported(request)
+            or await self._repair_unsupported(request)
             or self._recursive_unsupported(request)
         )
         if reason is None:
@@ -710,12 +698,37 @@ class LocalDBStore(Store):
         """
         if request.build_mode != BuildMode.CHECK:
             return None
-        paths = [output.path for output in request.derivation.outputs.values()]
-        if not all(paths) or request.derivation.has_impure:
+        paths = await self._known_paths(request)
+        if paths is None:
             return "a check of an output with no path"
         if not all([await self.engine.is_valid_path_uncached(path) for path in paths]):
             return "a check of an output that is not valid"
         return None
+
+    async def _repair_unsupported(self, request: BuildDerivationRequest) -> str | None:
+        """Why the daemon repairs *request*, or `None`; also `None` for a request that does not repair.
+
+        pynixd repairs an output whose path the derivation or a realisation names. An impure output goes to the
+        daemon.
+        """
+        if request.build_mode != BuildMode.REPAIR:
+            return None
+        return "a repair of an output with no path" if await self._known_paths(request) is None else None
+
+    async def _known_paths(self, request: BuildDerivationRequest) -> list[str] | None:
+        """Each output's path: the derivation's, else a floating output's realised one. `None` when one has none."""
+        if request.derivation.has_impure:
+            return None
+        paths: list[str] = []
+        for name, output in request.derivation.outputs.items():
+            path = output.path
+            if not path and await self._ca_derivations():
+                found = await self.engine.query_realisation(request.drv_path.name, name, by_path=True)
+                path = str(found[0]) if found is not None else ""
+            if not path:
+                return None
+            paths.append(path)
+        return paths
 
     async def contents_good(self, path: str) -> bool:
         """`Worker::pathContentsGood` (`worker.cc:553`) without its cache and its lines."""

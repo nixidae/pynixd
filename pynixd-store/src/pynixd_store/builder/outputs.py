@@ -432,21 +432,27 @@ def compare_outputs(
     registered: Mapping[str, ValidPathInfo | None],
     real_store_dir: Path,
     *,
+    known: Mapping[str, str],
     rebuilt: Mapping[str, Path] | None = None,
 ) -> tuple[BuildFailure | None, list[ValidPathInfo], tuple[str, Path] | None]:
     """`registerOutputs` in check mode (`derivation-builder.cc:1546`): each rebuilt output against the valid one.
 
-    Answers the first difference, the valid infos to mark `ultimate`, which a check verified, and the output that
-    moved. With *rebuilt*, where each output is, a differing one moves to `<path>.check`
-    (`keep-failed` or `diff-hook`), and the third value is its path and that real path. Blocking.
+    *known* is each output's path before the build, the realised one for a floating output. Answers the first
+    difference, the valid infos to mark `ultimate`, which a check verified, and the output that moved. With
+    *rebuilt*, where each output is, a differing one moves to `<path>.check` (`keep-failed` or `diff-hook`), and
+    the third value is its path and that real path. Blocking.
     """
     verified: list[ValidPathInfo] = []
     for name, info in infos.items():
-        old = registered.get(info.path.path)
+        # NIX-DEFECT (#23): `derivation-builder.cc:1546` compares only when the rebuilt path is valid. A floating
+        # output's path is its contents' hash, so a rebuild that differs lands at a new path, nothing is compared,
+        # and the check passes. pynixd compares with the realised output; Lillecarl/nix#403.
+        path = known.get(name) or info.path.path
+        old = registered.get(path)
         if old is None:
             continue
         if parse_any_sha256(str(old.info.nar_hash)) != parse_any_sha256(str(info.info.nar_hash)):
-            real = real_store_dir / _base(info.path.path)
+            real = real_store_dir / _base(path)
             if rebuilt is not None:
                 kept = real.with_name(real.name + ".check")
                 delete_path(kept)
@@ -458,13 +464,12 @@ def compare_outputs(
                         f"{_quoted(real)} differs from {_quoted(kept)}",
                     ),
                     verified,
-                    (info.path.path, kept),
+                    (path, kept),
                 )
             return (
                 BuildFailure(
                     BuildResultStatus.NOT_DETERMINISTIC,
-                    f"derivation '{magenta(drv_path)}' may not be deterministic: output "
-                    f"{_quoted(real_store_dir / _base(info.path.path))} differs",
+                    f"derivation '{magenta(drv_path)}' may not be deterministic: output {_quoted(real)} differs",
                 ),
                 verified,
                 None,

@@ -668,6 +668,75 @@ async def _floating(tmp_path: Path, route: OpRoute, key: Path) -> dict[str, Any]
     }
 
 
+async def _floating_rebuilt(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
+    """A check of a floating output that builds the same, one that differs, and a repair of a corrupt one."""
+    seen: dict[str, Any] = {}
+    async with _serve(tmp_path, route, experimental_features=("ca-derivations",)) as (url, root):
+        store = root / "nix" / "store"
+
+        async def run(step: str, *args: str) -> str:
+            rc, out, err, _both = await run_subproc(
+                [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--print-out-paths", *args],
+                expected_retcode=None,
+            )
+            seen[step] = {
+                "rc": rc,
+                "errors": _errors(err) if rc else [],
+                "stderr": err.splitlines(),
+                "store": sorted(p.name for p in store.iterdir() if not p.name.endswith((".drv", ".lock"))),
+                "rows": _rows(root),
+            }
+            return out.strip()
+
+        same = _ca("parity-floating-same", "echo same > $out")
+        differs = _ca("parity-floating-differs", "read n < /proc/sys/kernel/random/uuid; echo $n > $out")
+        path = await run("built", "--expr", same)
+        await run("checked", "--rebuild", "--expr", same)
+        await run("differs built", "--expr", differs)
+        await run("differs checked", "--rebuild", "--expr", differs)
+        await run("differs kept", "--rebuild", "--keep-failed", "--expr", differs)
+        real = store / path.rsplit("/", 1)[-1]
+        real.chmod(0o644)
+        real.write_text("corrupt\n")
+        real.chmod(0o444)
+        await run("repaired", "--repair", "--expr", same)
+        seen["contents"] = real.read_text()
+    return seen
+
+
+async def test_a_check_or_repair_of_a_floating_output_compares_with_its_realisation(tmp_path: Path) -> None:
+    """A floating output's realisation names the path a check compares and a repair replaces (`derivation-goal.cc:93`).
+
+    Two of Nix's answers are wrong, and pynixd's differ there alone. A check that builds something else passes
+    (Lillecarl/nix#403), and a repair finds the output corrupt and leaves it so (Lillecarl/nix#400).
+    """
+    before = _fallthrough()
+    here = await _floating_rebuilt(tmp_path, OpRoute.pynixd)
+    assert _fallthrough() == before, "the daemon built a check or a repair of the pynixd route"
+    there = await _floating_rebuilt(tmp_path, OpRoute.daemon)
+
+    for step in ("built", "checked"):
+        assert here[step] == there[step], (step, here[step], there[step])
+    kept = [name for name in here["differs kept"]["store"] if name.endswith(".check")]
+    assert len(kept) == 1 and kept[0].endswith("-parity-floating-differs.check"), here["differs kept"]["store"]
+    assert not any(name.endswith(".check") for name in there["differs kept"]["store"])
+    # The random contents of `parity-floating-differs` give it a path of its own on each route.
+    noisy = ("-parity-floating-differs", "-parity-floating-differs.check")
+    for step in ("differs built", "differs checked", "differs kept", "repaired"):
+        for seen in (here[step], there[step]):
+            valid, refs = seen["rows"]
+            seen["store"] = [name for name in seen["store"] if not name.endswith(noisy)]
+            seen["rows"] = ([row for row in valid if not row[0].endswith(noisy)], refs)
+        assert (here[step]["store"], here[step]["rows"]) == (there[step]["store"], there[step]["rows"]), step
+    assert here["differs built"]["rc"] == there["differs built"]["rc"] == 0
+    for step in ("differs checked", "differs kept"):
+        assert there[step]["rc"] == 0, there[step]
+        assert here[step]["rc"] == 1, here[step]
+        assert any("may not be deterministic" in line for line in here[step]["errors"]), here[step]
+    assert there["contents"] == "corrupt\n"
+    assert here["contents"] == "same\n"
+
+
 async def test_a_floating_output_lands_where_the_daemon_puts_it(tmp_path: Path) -> None:
     """`newInfoFromCA` (`derivation-builder.cc:1341`) and the realisations `registerOutputs` signs (`:1656`)."""
     key = tmp_path / "secret"

@@ -467,13 +467,15 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
 
         early_outputs = {name: path for name, path in parsed.output_paths().items() if name in selected_outputs}
         repairing = self.build_mode == BuildMode.REPAIR
+        checking = self.build_mode == BuildMode.CHECK
+        if checking or repairing:
+            early_outputs |= await self._realised_paths(parsed, early_outputs)
         if repairing:
             repaired = await self._repair_if_valid(parsed, drv_path, early_outputs)
             if repaired is not None:
                 return repaired.with_dynamic_outputs(self.derived_path.base_store_path())
         substituted = None if repairing else await self._try_substitute_known_outputs(early_outputs)
         # `derivation-goal.cc:143`: a check builds again what the store holds, so each wanted output must be valid.
-        checking = self.build_mode == BuildMode.CHECK
         if checking:
             if substituted is None:
                 return goal_failure(
@@ -491,7 +493,8 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             substituted = await self._say_what_it_produced(substituted, parsed, selected_outputs)
             return substituted.with_dynamic_outputs(self.derived_path.base_store_path())
 
-        realised = await self._already_realised(parsed, selected_outputs)
+        # A check or a repair builds the realised outputs again.
+        realised = None if checking or repairing else await self._already_realised(parsed, selected_outputs)
         if realised is not None:
             log.debug("ensure_derivation_already_realised", drv_path=str(drv_path), outputs=sorted(selected_outputs))
             return realised.with_dynamic_outputs(self.derived_path.base_store_path())
@@ -688,6 +691,23 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             produced_paths=result.produced_paths,
             dynamic_paths=result.dynamic_paths,
         )
+
+    async def _realised_paths(
+        self, parsed: Derivation, outputs: Mapping[str, StorePath | None]
+    ) -> dict[str, StorePath]:
+        """`checkPathValidity` (`derivation-goal.cc:405`): each floating output's path, from its realisation.
+
+        An output whose realisation the store lacks keeps no path, so a check refuses it and a repair builds it.
+        """
+        floating = {name for name, path in outputs.items() if path is None or not path.base()}
+        if not floating or parsed.is_impure:
+            return {}
+        built = await realisations_of(
+            parsed, floating, self.engine.ctx.local_store, self.derived_path.base_store_path()
+        )
+        if built is None:
+            return {}
+        return {key.rsplit("!", 1)[1]: StorePath(str(realisation.out_path)) for key, realisation in built.items()}
 
     async def _already_realised(self, parsed: Derivation, wanted: set[str]) -> GoalResult | None:
         """The realisation of each wanted output, when the store holds one for all of them.

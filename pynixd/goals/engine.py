@@ -285,9 +285,10 @@ class GoalEngine:
         """Whether the local store's daemon answers *request* whole, and the goal system stands aside.
 
         A check or a repair goes through the goals when each derived path is
-        one derivation whose outputs it names (`derivation-goal.cc:143` needs
-        them valid). A repair also needs pynixd's own local store, which
-        checks contents and builds, and pynixd's substituters: the daemon's
+        one derivation that is not impure. `derivation-goal.cc:143` needs its
+        outputs valid, and a floating output's path is its realisation's. A
+        repair also needs pynixd's own local store, which checks contents and
+        builds, and pynixd's substituters: the daemon's
         `EnsurePath` cannot repair. A daemon that builds under repair checks
         each output's contents again, and its client would read the lines
         twice. An opaque path is a substitution, with repair under repair
@@ -306,7 +307,7 @@ class GoalEngine:
             if path.is_nested:
                 return True
             parsed = await self.ctx.local_store.read_derivation(path.drv_path)
-            if parsed is None or parsed.is_impure or not all(str(p) for p in parsed.output_paths().values()):
+            if parsed is None or parsed.is_impure:
                 return True
         return False
 

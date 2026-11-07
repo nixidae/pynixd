@@ -1032,6 +1032,7 @@ async def _compare(
             collected.infos,
             registered,
             engine.layout.real_store_dir,
+            known=known,
             rebuilt=collected.actual if settings.keep_failed or settings.diff_hook else None,
         )
     )
