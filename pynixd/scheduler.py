@@ -182,6 +182,18 @@ def expected_build_seconds(build: QueuedBuild, local_id: StoreId) -> float | Non
     return min(known) if known else None
 
 
+def builder_options(
+    options: SetOptionsRequest | None, store: DaemonStore, local_builder: DaemonStore | None
+) -> SetOptionsRequest | None:
+    """The client's options, with `max-jobs = 1` for a builder, as the hook sends them (`build-remote.cc:97`).
+
+    The client's `--max-jobs 0` means "not here"; forwarded, it makes the builder refuse the build.
+    """
+    if options is None or store is local_builder:
+        return options
+    return options.model_copy(update={"max_build_jobs": 1})
+
+
 def build_decision_seeds(drv_path: str, input_srcs: Iterable[str]) -> set[str]:
     """The seed set a build decision records, as build-kind.
 
@@ -1201,7 +1213,7 @@ class Scheduler:
                     await self._build_here(build, store, self.local_store, settings)
                     return
             async with contextlib.AsyncExitStack() as held:
-                async with store.build_conn(build.options) as conn:
+                async with store.build_conn(builder_options(build.options, store, self.local_builder)) as conn:
                     observation = build.observation = BuildObservation(
                         store_id=str(store.store_id),
                         status=-1,
@@ -1454,7 +1466,7 @@ class Scheduler:
         resp: BuildDerivationResponse = await conn.call(
             build.request,
             client=cast("ClientConn", _OutputClock(build)),
-            options=build.options,
+            options=builder_options(build.options, store, self.local_builder),
             keep_logs=True,
         )
         if resp.logs.messages:
