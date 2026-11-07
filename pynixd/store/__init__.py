@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from .local_daemon import LocalStore as LocalStore
     from .local_db import LocalDBStore as LocalDBStore
     from .reverse import ReverseStore as ReverseStore
+    from .s3_binary_cache import S3BinaryCacheStore as S3BinaryCacheStore
     from .ssh import (
         SSHSocketStore as SSHSocketStore,
         SSHSubprocessStore as SSHSubprocessStore,
@@ -54,6 +55,7 @@ ORIGIN: dict[str, str] = {
     "LocalStore": "local_daemon",
     "ProbeState": "daemon",
     "ReverseStore": "reverse",
+    "S3BinaryCacheStore": "s3_binary_cache",
     "SSHSocketStore": "ssh",
     "SSHSubprocessStore": "ssh",
     "Store": "base",
@@ -72,6 +74,7 @@ __all__ = [
     "LocalStore",
     "ProbeState",
     "ReverseStore",
+    "S3BinaryCacheStore",
     "SSHSocketStore",
     "SSHSubprocessStore",
     "Store",

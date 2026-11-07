@@ -51,7 +51,7 @@ if TYPE_CHECKING:
     from nix_daemon_protocol.wire_ops import WireRequest
     from pynixd_store.drv_parser import Derivation
 
-    from ..config import HTTPBinaryCacheSpec, LocalBinaryCacheSpec
+    from ..config import HTTPBinaryCacheSpec, LocalBinaryCacheSpec, S3BinaryCacheSpec
     from ..connection import ClientConn, Connection
 
 log = structlog.get_logger(__name__)
@@ -80,7 +80,7 @@ class NarInfo:
 class BinaryCacheStore(Store):
     """A read-only store that answers from `.narinfo` files and streams NARs."""
 
-    def __init__(self, spec: HTTPBinaryCacheSpec | LocalBinaryCacheSpec) -> None:
+    def __init__(self, spec: HTTPBinaryCacheSpec | LocalBinaryCacheSpec | S3BinaryCacheSpec) -> None:
         super().__init__(spec)
         self.max_fail_ratio = spec.max_fail_ratio
         self.cache_info: dict[str, str] = {}

@@ -73,7 +73,7 @@ Nine sites go and four stay. The narinfo race is a cache ability, as Nix's
 
 ## What pynixd does not take
 
-- `ssh://` (`LegacySSHStore`), `mounted-ssh-ng://`, `s3://`, the overlay store.
+- `ssh://` (`LegacySSHStore`), `mounted-ssh-ng://`, the overlay store.
   User's decision, 2026-11-04. Each stays on the daemon.
 - The `Config`/`Store` class pair: the spec already is the config.
 - Virtual multiple inheritance.

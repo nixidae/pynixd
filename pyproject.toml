@@ -44,6 +44,8 @@ dependencies = [
     "pydantic>=2",
     "pydantic-settings",
     "zstandard",
+    # `s3://` substituters: credentials and SigV4 signing only; aiohttp carries the transfers.
+    "botocore",
 ]
 
 [project.optional-dependencies]
@@ -57,6 +59,13 @@ test = [
     # `marshmallow` and `python-dotenv` into every daemon start for 64 ms.
     # Issue #290.
     "environs",
+    # An S3 server for the `s3://` substituter tests. moto's `s3` and `server` extras by name: the environment
+    # resolves no extra of a lifted nixpkgs package, and `server` would add docker and cfn-lint.
+    "moto",
+    "pyyaml",
+    "py-partiql-parser",
+    "flask",
+    "flask-cors",
 ]
 # What `nix/docs.nix` builds the manual with. Declared here so that the
 # development environment resolves them from this file rather than from a

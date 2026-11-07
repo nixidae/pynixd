@@ -149,6 +149,7 @@ def test_a_substituter_is_covered_by_the_backend_the_registry_made() -> None:
         "https://cache.other/?want-mass-query=1",
         "file:///cache",
         "s3://bucket",
+        "s3://bucket?versionId=1",
         "daemon",
     ]
     settings = PynixdSettings()
@@ -156,7 +157,12 @@ def test_a_substituter_is_covered_by_the_backend_the_registry_made() -> None:
     _add_substituter_stores(stores, urls, settings)
     queue = SubstitutionQueue(cast("PynixdContext", SimpleNamespace(settings=settings, stores=stores)))
     queue.note_daemon_substituters(urls)
-    assert queue.uncovered == ("https://cache.other/?want-mass-query=1", "file:///cache", "s3://bucket", "daemon")
+    assert queue.uncovered == (
+        "https://cache.other/?want-mass-query=1",
+        "file:///cache",
+        "s3://bucket?versionId=1",
+        "daemon",
+    )
 
 
 async def test_a_substituter_only_the_daemon_reaches_sends_every_client_there() -> None:

@@ -10,13 +10,14 @@ import aiohttp
 import anyio
 import structlog
 
+from ..config import HTTPBinaryCacheSpec
 from ..exceptions import CacheFault, NarGone
 from .binary_cache import BinaryCacheStore, default_cache_info, open_codec, parse_cache_info, pull
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Buffer
+    from collections.abc import AsyncGenerator, Buffer, Mapping
 
-    from ..config import HTTPBinaryCacheSpec
+    from ..config import S3BinaryCacheSpec
     from .binary_cache import NarInfo
 
 log = structlog.get_logger(__name__)
@@ -27,9 +28,14 @@ _HTTP_CHUNK_SIZE = 1024 * 256
 class HTTPBinaryCacheStore(BinaryCacheStore):
     """Read-only Store backed by the Nix HTTP binary cache protocol."""
 
-    def __init__(self, spec: HTTPBinaryCacheSpec) -> None:
+    def __init__(self, spec: HTTPBinaryCacheSpec | S3BinaryCacheSpec, url: str | None = None) -> None:
+        """*url* is the cache's base URL, and an `HTTPBinaryCacheSpec` gives its own."""
         super().__init__(spec)
-        self.url = _normalise_base_url(spec.url)
+        if url is None:
+            if not isinstance(spec, HTTPBinaryCacheSpec):
+                raise TypeError(f"{type(spec).__name__} names no URL of its own")
+            url = spec.url
+        self.url = _normalise_base_url(url)
         self.max_concurrent = spec.max_concurrent
         self.health_window = spec.health_window
         self._session: aiohttp.ClientSession | None = None
@@ -69,6 +75,7 @@ class HTTPBinaryCacheStore(BinaryCacheStore):
         nar_url = self.nar_url(narinfo)
         async with session.get(
             nar_url,
+            headers=await self._headers(nar_url),
             raise_for_status=False,
             timeout=aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=60),
         ) as response:
@@ -93,11 +100,13 @@ class HTTPBinaryCacheStore(BinaryCacheStore):
 
         try:
             session = self._require_session()
-            async with session.get(urljoin(self.url, "nix-cache-info"), raise_for_status=False) as response:
+            url = urljoin(self.url, "nix-cache-info")
+            async with session.get(url, headers=await self._headers(url), raise_for_status=False) as response:
                 _check_response(response.status)
                 text = await response.text()
-        except (TimeoutError, aiohttp.ClientError, OSError, RuntimeError):
-            log.warning("http_cache_info_fetch_failed", store_id=self.store_id, url=self.url, exc_info=True)
+        except (TimeoutError, aiohttp.ClientError, OSError, RuntimeError) as e:
+            # structlog renders `exc_info` on a warning as a bare `True`, not as a traceback.
+            log.warning("http_cache_info_fetch_failed", store_id=self.store_id, url=self.url, error=repr(e))
             return default_cache_info(self.priority)
         return parse_cache_info(text, self.priority)
 
@@ -106,7 +115,12 @@ class HTTPBinaryCacheStore(BinaryCacheStore):
         url = urljoin(self.url, name)
         async with self._semaphore:
             try:
-                async with session.get(url, raise_for_status=False, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                async with session.get(
+                    url,
+                    headers=await self._headers(url),
+                    raise_for_status=False,
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as response:
                     if response.status == 404:
                         return None
                     if response.status != 200:
@@ -114,6 +128,10 @@ class HTTPBinaryCacheStore(BinaryCacheStore):
                     return await response.text()
             except (TimeoutError, aiohttp.ClientError, OSError) as ex:
                 raise CacheFault(f"{url}: {ex!r}") from ex
+
+    async def _headers(self, url: str) -> Mapping[str, str]:
+        """The headers of a GET of *url*; a cache that signs its requests adds them here."""
+        return {}
 
     def _require_session(self) -> aiohttp.ClientSession:
         if self._session is None:

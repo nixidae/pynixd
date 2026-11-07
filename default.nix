@@ -256,6 +256,8 @@ let
     packages = ps: [
       library
       ps.pytest
+      # `tests/functional/test_substitute_on_the_engine.py` serves its S3 bucket with it.
+      ps.moto
       # The phase scripts in `tests/guest/` import it, and the type gate
       # reads them.
       # `devEnv` gets the same package from its own pyproject root, because

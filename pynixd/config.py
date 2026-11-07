@@ -20,6 +20,7 @@ from pynixd_store.store_layout import StoreLayout
 from .constants import STALL_TRACEBACK_MAX_BYTES
 from .nix_config import NixConfig
 from .op_routes import OPERATION_NAMES, OpRoute
+from .s3_url import https_url
 
 
 class ScheduleMode(StrEnum):
@@ -55,6 +56,7 @@ if TYPE_CHECKING:
         LocalBinaryCacheStore,
         LocalDBStore,
         LocalStore,
+        S3BinaryCacheStore,
         SSHSocketStore,
         SSHSubprocessStore,
         Store,
@@ -897,6 +899,53 @@ class LocalBinaryCacheSpec(BinaryCacheSpecBase):
         )
 
 
+class S3BinaryCacheSpec(BinaryCacheSpecBase):
+    """A binary cache in an S3 bucket, Nix's `s3://` store: HTTP with SigV4 signatures (`filetransfer.cc:728`)."""
+
+    type: Literal["s3-binary-cache"] = "s3-binary-cache"
+    bucket: str
+    key: str = ""
+    """The prefix inside the bucket that holds the cache."""
+    region: str | None = None
+    scheme: str | None = None
+    endpoint: str | None = None
+    addressing_style: Literal["auto", "path", "virtual"] = "auto"
+    profile: str | None = None
+    """The AWS configuration profile the credentials come from; `None` is botocore's default chain."""
+    max_concurrent: int | None = None
+
+    def url(self) -> str:
+        """The HTTP base URL of the cache; `ValueError` with Nix's text for an address Nix refuses."""
+        return https_url(
+            self.bucket,
+            self.key,
+            region=self.region,
+            scheme=self.scheme,
+            endpoint=self.endpoint,
+            style=self.addressing_style,
+        )
+
+    def reference_key(self) -> object | None:
+        """Every setting the URL names, and the trust."""
+        return (
+            "s3",
+            self.bucket,
+            self.key.strip("/"),
+            self.region,
+            self.scheme,
+            self.endpoint,
+            self.addressing_style,
+            self.profile,
+            self.trusted,
+        )
+
+    def to_store(self, store_id: str) -> S3BinaryCacheStore:
+        """Build an ``S3BinaryCacheStore`` from this spec."""
+        from .store import S3BinaryCacheStore
+
+        return S3BinaryCacheStore(self.model_copy(update={"store_id": StoreId(store_id)}))
+
+
 StoreSpec = Annotated[
     LocalSocketStoreSpec
     | ExternalUnixStoreSpec
@@ -904,7 +953,8 @@ StoreSpec = Annotated[
     | SSHSocketStoreSpec
     | ReverseStoreSpec
     | HTTPBinaryCacheSpec
-    | LocalBinaryCacheSpec,
+    | LocalBinaryCacheSpec
+    | S3BinaryCacheSpec,
     Field(discriminator="type"),
 ]
 

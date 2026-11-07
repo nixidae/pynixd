@@ -195,7 +195,7 @@ class SubstitutionQueue:
         )
         """The path behind each hash `negative` holds, so a `.narinfo` request can find it."""
         self.uncovered: tuple[str, ...] = ()
-        """The daemon's substituters that no backend stands for: `s3://`, `ssh://`, a `file://` cache pynixd cannot read."""
+        """The daemon's substituters that no backend stands for: `ssh://`, a `file://` cache pynixd cannot read."""
         self.client_substituters = ClientSubstituters(settings)
 
     def note_daemon_substituters(self, substituters: Iterable[str]) -> None:

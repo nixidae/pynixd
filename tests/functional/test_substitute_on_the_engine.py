@@ -3,35 +3,43 @@
 Every test store takes the `pynixd` route of EnsurePath (`TEST_OP_ROUTES`),
 so the goal engine fetches here and the daemon does not. A cache written by
 `nix copy` stands for the substituter, served over HTTP and read as a
-`file://` directory, configured in pynixd or named by the client: a fake
+`file://` directory, or written to an S3 bucket, configured in pynixd or named by the client: a fake
 answer proves nothing about what a remote holds.
 """
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+import contextlib
+import json
+import urllib.request
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import botocore.session
 import pytest
 from aiohttp import web
+from moto import settings as moto_settings
+from moto.core.authorization import ActionAuthenticatorMixin
+from moto.server import ThreadedMotoServer
 
 from nix_daemon_protocol.ensure_path import EnsurePathRequest
 from nix_daemon_protocol.ids import StoreId
 from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest
 from nix_daemon_protocol.store_path import StorePath
 from pynixd import Server
-from pynixd.config import HTTPBinaryCacheSpec, LocalBinaryCacheSpec
+from pynixd.config import HTTPBinaryCacheSpec, LocalBinaryCacheSpec, S3BinaryCacheSpec
 from pynixd.connection import Connection
 from pynixd.exceptions import BackendError
 from pynixd.serde import SetOptionsRequest, TimeSpan, Verbosity
 from pynixd.store import LocalDBStore, Store
+from pynixd.store_url import spec_for
 from pynixd.unix_socket import open_unix_connection
 from pynixd.wire import UnixNixReader, UnixNixWriter
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Iterator
     from pathlib import Path
 
     from pynixd.substitution_queue import SubstitutionQueue
@@ -61,6 +69,8 @@ class _Lab:
     unique: str
     """A path in the cache that nothing references."""
     queue: SubstitutionQueue | None = None
+    s3_url: str | None = None
+    """The `s3://` URL of the bucket, for the `s3` transports."""
 
 
 async def _valid(store_path: Path) -> set[str]:
@@ -70,11 +80,63 @@ async def _valid(store_path: Path) -> set[str]:
     return {line.strip() for line in stdout.splitlines() if line.strip()}
 
 
-@pytest.fixture(params=["http", "file", "client-http", "client-file"])
-async def lab(tmp_path_factory: pytest.TempPathFactory, request: pytest.FixtureRequest) -> _Lab:
+@contextmanager
+def _s3_bucket(monkeypatch: pytest.MonkeyPatch, cache_home: Path) -> Iterator[str]:
+    """An S3 server that checks each signature, a bucket `cache`, and keys for it in the environment: the endpoint.
+
+    moto checks a signature only once its first requests are spent (`INITIAL_NO_AUTH_ACTION_COUNT`): those make
+    the user and its key. A request without a valid signature then gets 403, so a pass proves pynixd signed.
+
+    *cache_home* holds Nix's narinfo disk cache. Nix keys it by `s3://cache` alone, whatever the endpoint
+    (`http-binary-cache-store.cc:76`), so with a shared one `nix copy` takes the last test's bucket for this one
+    and uploads nothing (Lillecarl/nix#406).
+    """
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_home))
+    monkeypatch.setattr(moto_settings, "INITIAL_NO_AUTH_ACTION_COUNT", 3)
+    monkeypatch.setattr(ActionAuthenticatorMixin, "request_count", 0)
+    for name, value in {
+        "AWS_ACCESS_KEY_ID": "bootstrap",
+        "AWS_SECRET_ACCESS_KEY": "bootstrap",
+        "AWS_EC2_METADATA_DISABLED": "true",
+        "AWS_CONFIG_FILE": "/dev/null",
+        "AWS_SHARED_CREDENTIALS_FILE": "/dev/null",
+    }.items():
+        monkeypatch.setenv(name, value)
+    server = ThreadedMotoServer(ip_address="127.0.0.1", port=0, verbose=False)
+    server.start()
+    host, port = server.get_host_and_port()
+    endpoint = f"http://{host}:{port}"
+    # moto's accounts live in the process, past the server: each bucket starts from none.
+    reset = urllib.request.Request(f"{endpoint}/moto-api/reset", method="POST")
+    try:
+        urllib.request.urlopen(reset).close()  # noqa: S310 -- the test's own loopback server
+        iam = botocore.session.get_session().create_client("iam", endpoint_url=endpoint, region_name="us-east-1")
+        iam.create_user(UserName="cache")
+        statement = {"Effect": "Allow", "Action": "s3:*", "Resource": "*"}
+        iam.put_user_policy(
+            UserName="cache",
+            PolicyName="cache",
+            PolicyDocument=json.dumps({"Version": "2012-10-17", "Statement": [statement]}),
+        )
+        key = iam.create_access_key(UserName="cache")["AccessKey"]
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", key["AccessKeyId"])
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", key["SecretAccessKey"])
+        s3 = botocore.session.get_session().create_client("s3", endpoint_url=endpoint, region_name="us-east-1")
+        s3.create_bucket(Bucket="cache")
+        yield endpoint
+    finally:
+        urllib.request.urlopen(reset).close()  # noqa: S310 -- as above
+        server.stop()
+
+
+@pytest.fixture(params=["http", "file", "s3", "client-http", "client-file", "client-s3"])
+async def lab(
+    tmp_path_factory: pytest.TempPathFactory, request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[_Lab]:
     """A cache that holds `parent`, `child` and `unique`, and an empty store to fetch them into.
 
-    Not `tmp_path`: the parameter puts a `[` into its name, and Nix cannot parse that in a `file://` URL.
+    Not `tmp_path`: the parameter puts a `[` into its name, and Nix cannot parse that in a `file://` URL. The
+    `s3` caches are a bucket that Nix's own S3 store writes.
     """
     tmp_path = tmp_path_factory.mktemp(f"substitute-{request.param}")
     source, target, cache_dir = tmp_path / "source", tmp_path / "target", tmp_path / "cache"
@@ -93,18 +155,25 @@ async def lab(tmp_path_factory: pytest.TempPathFactory, request: pytest.FixtureR
     unique = stdout.strip()
     held = await _valid(source)
     child = next(path for path in held if path not in {parent, unique})
-    await run_subproc(
-        [str(NIX_BIN), "copy", "--no-check-sigs", "--from", str(source), "--to", f"file://{cache_dir}", *sorted(held)]
-    )
-    return _Lab(
-        target=target,
-        cache_dir=cache_dir,
-        transport=request.param,
-        socket=tmp_path / "pynixd.sock",
-        parent=parent,
-        child=child,
-        unique=unique,
-    )
+    with contextlib.ExitStack() as stack:
+        cache_url = f"file://{cache_dir}"
+        s3_url = None
+        if request.param.endswith("s3"):
+            endpoint = stack.enter_context(_s3_bucket(monkeypatch, tmp_path / "xdg-cache"))
+            s3_url = cache_url = f"s3://cache?endpoint={endpoint}&region=us-east-1"
+        await run_subproc(
+            [str(NIX_BIN), "copy", "--no-check-sigs", "--from", str(source), "--to", cache_url, *sorted(held)]
+        )
+        yield _Lab(
+            target=target,
+            cache_dir=cache_dir,
+            transport=request.param,
+            socket=tmp_path / "pynixd.sock",
+            parent=parent,
+            child=child,
+            unique=unique,
+            s3_url=s3_url,
+        )
 
 
 def _options(**overrides: str) -> SetOptionsRequest:
@@ -137,7 +206,13 @@ async def _client(lab: _Lab) -> AsyncIterator[Connection]:
     await site.start()
     host, port = runner.addresses[0][:2]
     # Trusted: `nix copy` signs nothing, and the signature check is not what this tests.
-    url = f"http://{host}:{port}/" if lab.transport.endswith("http") else f"file://{lab.cache_dir}"
+    url = (
+        f"http://{host}:{port}/"
+        if lab.transport.endswith("http")
+        else lab.s3_url
+        if lab.s3_url is not None
+        else f"file://{lab.cache_dir}"
+    )
     stores: dict[StoreId, Store] = {
         StoreId("local"): LocalDBStore(make_test_spec(store_id="local", store_path=lab.target, no_probe=True)),
     }
@@ -145,13 +220,18 @@ async def _client(lab: _Lab) -> AsyncIterator[Connection]:
         stores[StoreId("upstream")] = HTTPBinaryCacheSpec(url=url, trusted=True).to_store("upstream")
     elif lab.transport == "file":
         stores[StoreId("upstream")] = LocalBinaryCacheSpec(path=lab.cache_dir, trusted=True).to_store("upstream")
+    elif lab.transport == "s3":
+        spec = spec_for(f"{url}&trusted=1")
+        assert isinstance(spec, S3BinaryCacheSpec)
+        stores[StoreId("upstream")] = spec.to_store("upstream")
     try:
         async with Server(stores=stores, unix_path=lab.socket, ssh_port=None, http_port=None) as server:
             link = await open_unix_connection(lab.socket)
             conn = Connection(UnixNixReader(link, identifier="t"), UnixNixWriter(link, identifier="t"), "t")
             await conn.connect()
             if lab.transport.startswith("client"):
-                await conn.call(_options(substituters=f"{url}?trusted=1"), raise_on_error=True)
+                trusted = "&trusted=1" if "?" in url else "?trusted=1"
+                await conn.call(_options(substituters=f"{url}{trusted}"), raise_on_error=True)
             lab.queue = server.ctx.scheduler.substitution_queue if server.ctx.scheduler is not None else None
             try:
                 yield conn

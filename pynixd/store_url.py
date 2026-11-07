@@ -23,7 +23,13 @@ import structlog
 
 from nix_daemon_protocol.ids import StoreId
 
-from .config import ExternalUnixStoreSpec, HTTPBinaryCacheSpec, LocalBinaryCacheSpec, SSHSubprocessStoreSpec
+from .config import (
+    ExternalUnixStoreSpec,
+    HTTPBinaryCacheSpec,
+    LocalBinaryCacheSpec,
+    S3BinaryCacheSpec,
+    SSHSubprocessStoreSpec,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -110,6 +116,43 @@ def _unix(ref: StoreReference) -> StoreSpecBase | None:
     )
 
 
+_S3_PARAMS: Final = frozenset({"profile", "region", "scheme", "endpoint", "addressing-style"})
+"""What `S3BinaryCacheStoreConfig` reads on a read (`s3-binary-cache-store.hh`); `versionId` stays with the daemon."""
+
+
+def _s3(ref: StoreReference) -> StoreSpecBase | None:
+    settings = _substituter_settings(ref, _S3_PARAMS)
+    style = ref.params.get("addressing-style", "auto")
+    if settings is None or not ref.authority or style not in ("auto", "path", "virtual"):
+        return None
+    key = ref.path.strip("/")
+    # NIX-DEFECT (#23): `HttpBinaryCacheStore` keys its narinfo disk cache by the reference without parameters
+    # (`http-binary-cache-store.cc:76`), so `s3://cache` on two endpoints shares one cache, and a path in one
+    # reads as present in the other. pynixd names the store by every parameter that picks the bucket.
+    # Lillecarl/nix#406.
+    where = (ref.params.get(param, "") for param in ("endpoint", "region", "profile"))
+    name = _name("s3", ref.authority, key, *where, "trusted" if settings["trusted"] else "")
+    spec = S3BinaryCacheSpec.model_validate(
+        {
+            "store_id": StoreId(name),
+            "bucket": ref.authority,
+            "key": key,
+            "region": ref.params.get("region"),
+            "scheme": ref.params.get("scheme"),
+            "endpoint": ref.params.get("endpoint"),
+            "addressing_style": style,
+            "profile": ref.params.get("profile"),
+            **settings,
+        }
+    )
+    try:
+        spec.url()
+    except ValueError:
+        # Nix refuses the address when it opens the store, and drops the substituter with a warning.
+        return None
+    return spec
+
+
 _SSH_NG_PARAMS: Final = frozenset(
     {"ssh-key", "base64-ssh-public-host-key", "compress", "remote-program", "remote-store"}
 )
@@ -194,6 +237,7 @@ SCHEMES: Final[Mapping[str, Callable[[StoreReference], StoreSpecBase | None]]] =
         "file": _file,
         "unix": _unix,
         "ssh-ng": _ssh_ng,
+        "s3": _s3,
     }
 )
 """Each scheme pynixd opens a store for. Any other stays with the daemon."""

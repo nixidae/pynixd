@@ -8,6 +8,7 @@
   pytest,
   # dependencies
   aiohttp,
+  botocore,
   pyinstrument,
   aiosqlite,
   environs,
@@ -67,6 +68,7 @@ pythonBuilder (finalAttrs: {
     asyncssh
     structlog
     aiohttp
+    botocore
     pyinstrument
     aiosqlite
     environs
