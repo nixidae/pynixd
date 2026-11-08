@@ -30,13 +30,14 @@ from pynixd_store.builder import hooks, local as local_builder
 from pynixd_store.builder.settings import BuildSettings
 from pynixd_store.builder.vm import BuildVm
 from pynixd_store.create_store import open_local_store
-from pynixd_store.drv_parser import from_basic_derivation
+from pynixd_store.drv_parser import drv_bytes, from_basic_derivation
 from pynixd_store.engine import StoreEngine, hashes_self_reference_positions
 from pynixd_store.hintfmt import magenta, show_error
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.nix_config import nix_environment, read_nix_config, read_nix_config_text, read_nix_version
 from pynixd_store.overlay_engine import LowerPathNeedsSync, OverlayEngine
 from pynixd_store.signing import SecretKey, hash_keyed_realisation_fingerprint, realisation_fingerprint
+from pynixd_store.source import Pieces
 
 from .. import metrics
 from ..activity import BuildActivity, PostBuildHookActivity
@@ -49,7 +50,7 @@ from ..serde import (
     BuildResultStatus,
     StorePath,
 )
-from ..write_router import WriteRouter
+from ..write_router import Dump, Write, WriteClient, WriteRouter
 from .base import Store
 from .daemon_writes import DaemonWrites
 from .local_daemon import LocalStore
@@ -398,7 +399,22 @@ class LocalDBStore(Store):
         return await self._daemon.read_derivation(drv_store_path)
 
     async def add_text_to_store(self, name: str, text: str, references: AbstractSet[str]) -> str:
-        return await self._daemon.add_text_to_store(name, text, references)
+        """`Store::addTextToStore`: an AddToStore of `text:sha256`, on that op's route."""
+
+        async def body() -> AsyncIterator[bytes]:
+            yield drv_bytes(text)
+
+        async def unsigned(info: ValidPathInfo, conn: Connection | None) -> ValidPathInfo:
+            return info
+
+        async with Pieces(body()) as source:
+            info = await self.router.add_to_store_from_dump(
+                Write(op="AddToStore", dump=Dump(name, "text:sha256", frozenset(references))),
+                source,
+                client=WriteClient(),
+                sign=unsigned,
+            )
+        return str(info.path)
 
     async def retire_idle_connections(self) -> int:
         return await self._daemon.retire_idle_connections()
