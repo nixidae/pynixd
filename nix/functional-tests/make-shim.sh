@@ -116,6 +116,14 @@ upstream=$socks/$(printf '%s' "$work" | cksum | cut -d' ' -f1).socket
 # runs a deployment's defaults instead, where every write goes to the daemon.
 routes=${NIXFT_OP_ROUTES:-'{"NarFromPath": "shadow", "QuerySubstitutablePathInfo": "shadow", "QuerySubstitutablePathInfos": "shadow", "AddToStore": "pynixd", "AddToStoreNar": "pynixd", "AddMultipleToStore": "pynixd", "AddIndirectRoot": "pynixd", "AddPermRoot": "pynixd", "AddSignatures": "pynixd", "RegisterDrvOutput": "pynixd", "AddBuildLog": "pynixd", "OptimiseStore": "pynixd", "VerifyStore": "pynixd", "CollectGarbage": "pynixd", "EnsurePath": "pynixd"}'}
 
+# `NIXFT_NO_DAEMON=1`: no Nix daemon under pynixd. pynixd opens the store and
+# answers every operation itself; a shadow route needs the daemon, so none is set.
+daemon=true
+if [[ "${NIXFT_NO_DAEMON:-}" == 1 ]]; then
+    daemon=false
+    routes='{}'
+fi
+
 config=$work/pynixd-test-config.json
 cat > "$config" <<JSON
 {
@@ -131,6 +139,7 @@ cat > "$config" <<JSON
       "monitor": false,
       "probe": false,
       "pynixd_writes": true,
+      "daemon": $daemon,
       "op_routes": $routes
     }
   },

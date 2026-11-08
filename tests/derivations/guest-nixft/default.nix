@@ -19,12 +19,14 @@
   src,
   vivariumLib,
   nixft,
+  # pynixd runs no Nix daemon under it: `NIXFT_NO_DAEMON=1` of the shim. Issue #1155.
+  noDaemon ? false,
 }:
 
 vivariumLib.mkTest (
   { config, ... }:
   {
-    name = "nixft";
+    name = if noDaemon then "nixft-no-daemon" else "nixft";
 
     backend = "qemu";
 
@@ -38,6 +40,7 @@ vivariumLib.mkTest (
     */
     settings = {
       nixft = lib.getExe nixft;
+      noDaemon = if noDaemon then "1" else "";
     };
 
     phases = {
@@ -45,7 +48,7 @@ vivariumLib.mkTest (
         script = ../../guest/nixft.py;
         after = [ "boot" ];
         nodes = [ "nixft" ];
-        description = "nix functional suite, both arms";
+        description = "nix functional suite, both arms${lib.optionalString noDaemon ", pynixd with no daemon"}";
       };
     };
 

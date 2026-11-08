@@ -27,7 +27,10 @@ about 4.5 minutes for the pynixd arm."""
 async def test(vms: Machines) -> None:
     [vm] = vms.values()
     nixft = vms.settings["nixft"]
-    command = f"mkdir -p /work-nixft && JOBS={JOBS} NIXFT_WORK=/work-nixft {nixft} all > /artifacts/nixft.log 2>&1"
+    no_daemon = "NIXFT_NO_DAEMON=1 " if vms.settings.get("noDaemon") else ""
+    command = (
+        f"mkdir -p /work-nixft && {no_daemon}JOBS={JOBS} NIXFT_WORK=/work-nixft {nixft} all > /artifacts/nixft.log 2>&1"
+    )
     rc, _ = await vm.execute(command, timeout=TIMEOUT, label="nixft all")
     tail = (await vm.succeed("tail -n 30 /artifacts/nixft.log")).strip()
     print(f"[test] nixft all: exit {rc}\n[test]   {tail}")

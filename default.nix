@@ -553,6 +553,18 @@ let
       }
     );
 
+    # The same suite with no Nix daemon under pynixd: pynixd opens and writes
+    # each test store itself. Issue #1155.
+    guest-nixft-no-daemon = withDefaultNix (
+      pkgs.callPackage ./tests/derivations/guest-nixft {
+        pynixd-lib = library;
+        src = testSrc;
+        inherit vivariumLib;
+        nixft = nixFunctionalTests.${defaultNixName};
+        noDaemon = true;
+      }
+    );
+
     # pynixd as the Nix daemon of a guest, against nix-daemon on another,
     # over the paths a user takes: a local build, `ssh-ng://` and
     # `--builders`.

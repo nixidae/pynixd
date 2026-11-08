@@ -270,6 +270,7 @@ writeShellApplication {
     Environment:
       NIXFT_WORK   the work directory. Default /tmp/nanopynix-nixft/$NIXFT_VERSION
       JOBS         tests at a time. Default 1.
+      NIXFT_NO_DAEMON=1  pynixd runs no Nix daemon and answers every operation.
       NIXFT_CONTROL_CACHE  where \`all\` keeps the control log. Empty: off.
                    Default \''${XDG_CACHE_HOME:-~/.cache}/nanopynix-nixft/control,
                    or /var/cache/nanopynix-nixft/control with no HOME
@@ -304,6 +305,15 @@ writeShellApplication {
       if [ "$served" -eq 0 ]; then
         echo "ERROR: pynixd served no test at all. The result above is meaningless." >&2
         return 1
+      fi
+      if [ "''${NIXFT_NO_DAEMON:-}" = 1 ]; then
+        local with_daemon
+        with_daemon=$(find "$WORK/tmp" -name pynixd-test-config.json -exec grep -L '"daemon": false' {} + 2>/dev/null | wc -l)
+        echo "with a Nix daemon under pynixd: $with_daemon"
+        if [ "$with_daemon" -ne 0 ]; then
+          echo "ERROR: NIXFT_NO_DAEMON=1, and $with_daemon test store(s) ran a daemon." >&2
+          return 1
+        fi
       fi
     }
 
