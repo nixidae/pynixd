@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from ..nar_fs import dump_path
@@ -12,6 +11,8 @@ from ..utils import NIX32_CHARS
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
+
+    from nix_daemon_protocol.store_path import StorePath
 
 HASH_LEN = 32
 """`StorePath::HashLen`."""
@@ -46,17 +47,13 @@ class RefScanner:
         self._tail = buf[-(HASH_LEN - 1) :]
 
 
-def scan_for_references(path: Path, candidates: Iterable[str]) -> set[str]:
+def scan_for_references(path: Path, candidates: Iterable[StorePath]) -> set[StorePath]:
     """The store paths of *candidates* whose hash part occurs in the NAR of *path*.
 
     Blocking: call it from a worker thread.
     """
-    by_hash = {_hash_part(c): c for c in candidates}
+    by_hash = {c.hash_part(): c for c in candidates}
     scanner = RefScanner(by_hash)
     for piece in dump_path(path):
         scanner.feed(piece)
     return {by_hash[h] for h in scanner.seen}
-
-
-def _hash_part(store_path: str) -> str:
-    return PurePosixPath(store_path).name[:HASH_LEN]

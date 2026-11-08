@@ -686,7 +686,7 @@ class LocalDBStore(Store):
         # The scheduler refuses what no store builds when it places it; op 36 here has no scheduler.
         session = await self._session_build_settings(request, options)
         if session is not None:
-            refusal = local_builder.rejection(str(request.drv_path), request.derivation, session)
+            refusal = local_builder.rejection(request.drv_path, request.derivation, session)
             # With no daemon, no build hook takes what pynixd refuses.
             if refusal is not None and not (local_builder.hands_off(session) and self._daemon.runs_daemon):
                 return BuildDerivationResponse(
@@ -846,26 +846,26 @@ class LocalDBStore(Store):
         hashes = from_basic_derivation(request.derivation).hash_derivation_modulo(mask_outputs=True)
         return False, {name: f"sha256:{digest}" for name, digest in hashes.items()}
 
-    async def _realised(self, request: BuildDerivationRequest) -> dict[str, str]:
+    async def _realised(self, request: BuildDerivationRequest) -> dict[str, StorePath]:
         """`checkPathValidity` (`derivation-building-goal.cc:1329`): the realised path of each output.
 
         A valid static output with no realisation gets one, as Nix registers it there. An impure
         derivation has none.
         """
-        realised: dict[str, str] = {}
+        realised: dict[str, StorePath] = {}
         if request.derivation.has_impure or not await self._ca_derivations():
             return realised
         by_path, keys = self._realisation_keys(request)
         for name, output in request.derivation.outputs.items():
             found = await self.engine.query_realisation(keys[name], name, by_path=by_path)
             if found is not None:
-                realised[name] = str(found[0])
+                realised[name] = found[0]
             elif output.path and await self.engine.is_valid_path_uncached(output.path):
                 await self.engine.register_drv_output(keys[name], name, output.path, (), by_path=by_path)
         return realised
 
     async def _register_realisations(
-        self, request: BuildDerivationRequest, built: Iterable[tuple[str, str]], settings: BuildSettings
+        self, request: BuildDerivationRequest, built: Iterable[tuple[str, StorePath]], settings: BuildSettings
     ) -> dict[str, set[Signature]]:
         """The end of `registerOutputs` (`derivation-builder.cc:1656`): sign and register each built output.
 
@@ -876,9 +876,9 @@ class LocalDBStore(Store):
         keys = [SecretKey.from_file(Path(file)) for file in settings.secret_key_files]
         signed: dict[str, set[Signature]] = {}
         for name, path in built:
-            fp = fingerprint(drv_keys[name], name, path.rsplit("/", 1)[-1])
+            fp = fingerprint(drv_keys[name], name, path.name)
             sigs = signed[name] = {Signature(key.sign_fingerprint(fp)) for key in keys}
-            await self.engine.register_drv_output(drv_keys[name], name, path, sigs, by_path=by_path)
+            await self.engine.register_drv_output(drv_keys[name], name, str(path), sigs, by_path=by_path)
         return signed
 
     async def build_here(
@@ -903,7 +903,7 @@ class LocalDBStore(Store):
         try:
             built = await local_builder.build(
                 self.engine,
-                drv_path,
+                request.drv_path,
                 request.derivation,
                 settings,
                 on_lines=activity.emit,
@@ -922,11 +922,11 @@ class LocalDBStore(Store):
                 and await self._ca_derivations()
             ):
                 signed = await self._register_realisations(
-                    request, ((name, info.path.path) for name, info in built.outputs.items()), settings
+                    request, ((name, info.path) for name, info in built.outputs.items()), settings
                 )
             # Inside `actBuild`, which the goal keeps until it ends (`derivation-building-goal.cc:1079`).
             if settings.post_build_hook and built.status is BuildResultStatus.BUILT:
-                failure = await self._post_build_hook(settings, drv_path, built.paths.values(), on_log)
+                failure = await self._post_build_hook(settings, request.drv_path, built.paths.values(), on_log)
                 if failure is not None:
                     built = dataclasses.replace(built, status=BuildResultStatus.MISC_FAILURE, error_msg=failure)
         finally:
@@ -939,14 +939,14 @@ class LocalDBStore(Store):
         by_id: dict[str, Realisation] | None = None
         if by_path:
             by_name = {
-                name: UnkeyedRealisation(out_path=StorePath(path), signatures=signed.get(name, set()))
+                name: UnkeyedRealisation(out_path=path, signatures=signed.get(name, set()))
                 for name, path in built.paths.items()
             }
         else:
             by_id = {
                 f"{keys[name]}!{name}": Realisation(
                     id=DrvOutput(drv_hash=keys[name], output_name=name),
-                    out_path=StorePath(path.rsplit("/", 1)[-1]),
+                    out_path=path,
                     signatures=sorted(signed.get(name, set()), key=lambda s: (s.name, s.signature)),
                 )
                 for name, path in built.paths.items()
@@ -974,8 +974,8 @@ class LocalDBStore(Store):
     async def _post_build_hook(
         self,
         settings: BuildSettings,
-        drv_path: str,
-        out_paths: Iterable[str],
+        drv_path: StorePath,
+        out_paths: Iterable[StorePath],
         on_log: Callable[[LogMessage], Awaitable[None]],
     ) -> str | None:
         """`runPostBuildHook` (`derivation-building-goal.cc:1105`) after a build or a check (`:1066`): its failure.
@@ -990,7 +990,7 @@ class LocalDBStore(Store):
             if "NIX_CONFIG" in env
             else await read_nix_config_text(nix_bin, env, self._daemon.config_arguments(), settings.session)
         )
-        activity = PostBuildHookActivity(settings.post_build_hook, drv_path, on_log)
+        activity = PostBuildHookActivity(settings.post_build_hook, str(drv_path), on_log)
         await activity.start()
         try:
             code = await hooks.post_build_hook(

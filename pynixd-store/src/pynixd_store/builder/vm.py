@@ -20,11 +20,15 @@ from __future__ import annotations
 import os
 from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import anyio
 
 from .restriction import SOCKET_NAME
+
+if TYPE_CHECKING:
+    from nix_daemon_protocol.store_path import StorePath
 
 #: Where the helper's interpreter and its closure live: the store pynixd itself runs from.
 HOST_STORE = Path("/nix/store")
@@ -99,7 +103,7 @@ class BuildVm:
         top: Path,
         chroot_parent: Path,
         real_store_dir: Path,
-        visible: Iterable[str],
+        visible: Iterable[StorePath],
         sources: Iterable[str],
         spec_file: Path,
         build_dir: Path,
@@ -117,7 +121,7 @@ class BuildVm:
         *top*. The VMM joins *cgroup*, and the launcher writes the VMM's rusage to `top/vm-usage.json`.
         """
         shown: dict[Path, set[str]] = {
-            real_store_dir: {str(real_store_dir / PurePosixPath(path).name) for path in visible},
+            real_store_dir: {str(real_store_dir / path.name) for path in visible},
         }
         shown.setdefault(HOST_STORE, set()).update(self.helper_closure)
         writable: dict[Path, set[str] | None] = {}
@@ -195,10 +199,10 @@ class BuildVm:
         return argv
 
 
-def allow(top: Path, real_store_dir: Path, path: str) -> None:
+def allow(top: Path, real_store_dir: Path, path: StorePath) -> None:
     """Show the store path *path* in the guest: libkrun reads the allowlist again when a lookup misses."""
     with (top / STORE_ALLOWLIST_NAME).open("a") as file:
-        file.write(f"{real_store_dir / path.rsplit('/', 1)[-1]}\n")
+        file.write(f"{real_store_dir / path.name}\n")
 
 
 def _store_of(path: Path, real_store_dir: Path) -> Path | None:

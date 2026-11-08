@@ -19,7 +19,7 @@ import termios
 import time
 import tty
 from dataclasses import dataclass, field, replace
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import anyio
@@ -33,6 +33,7 @@ from nix_daemon_protocol.build_result import BuildResultStatus
 from nix_daemon_protocol.derivation_output import OutputKind
 from nix_daemon_protocol.protocol import Verbosity
 from nix_daemon_protocol.signature import Signature
+from nix_daemon_protocol.store_path import StorePath
 
 from .. import optimise
 from ..add import PathLock, delete_path, sync_store_path
@@ -196,7 +197,7 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
     return None
 
 
-def rejection(drv_path: str, drv: BasicDerivation, settings: BuildSettings) -> str | None:
+def rejection(drv_path: StorePath, drv: BasicDerivation, settings: BuildSettings) -> str | None:
     """`reject` (`derivation-building-goal.cc:289`): why this store cannot build *drv*, in Nix's words, or `None`.
 
     Each reason that applies adds its lines, in Nix's order. The hook comes first (`:620`), so a caller asks
@@ -386,7 +387,7 @@ class LocalBuildResult:
     start_time: int = 0
     stop_time: int = 0
     outputs: dict[str, ValidPathInfo] = field(default_factory=dict)
-    paths: dict[str, str] = field(default_factory=dict)
+    paths: dict[str, StorePath] = field(default_factory=dict)
     """The path of each output, on success: built, or valid before."""
 
 
@@ -403,7 +404,7 @@ class _Guest:
 
     vm: BuildVm
     real_store_dir: Path
-    visible: frozenset[str]
+    visible: frozenset[StorePath]
     sources: tuple[str, ...]
     """The `sandbox-paths` sources the helper binds."""
     recursive: bool
@@ -432,17 +433,9 @@ class _Paths:
         self.tmp.chmod(0o755)
 
 
-def _hash_part(path: str) -> str:
-    return PurePosixPath(path).name[:32]
-
-
-def _drv_name(drv_path: str) -> str:
-    return PurePosixPath(drv_path).name.split("-", 1)[1].removesuffix(".drv")
-
-
 def _prepare(
     engine: StoreEngine,
-    drv_path: str,
+    drv_path: StorePath,
     settings: BuildSettings,
     user: build_users.BuildUser | None = None,
     *,
@@ -523,8 +516,8 @@ def _sandbox_store_paths(settings: BuildSettings, store_dir: str) -> set[str]:
 def _binds(
     engine: StoreEngine,
     paths: _Paths,
-    inputs: set[str],
-    sandbox_closure: set[str],
+    inputs: set[StorePath],
+    sandbox_closure: set[StorePath],
     settings: BuildSettings,
     sandboxed: bool,
 ) -> list[tuple[str, str, bool]]:
@@ -542,10 +535,10 @@ def _binds(
         raise ValueError("a build without the chroot binds nothing")
     binds: dict[str, tuple[str, bool]] = {p.target: (p.source, p.optional) for p in settings.sandbox_paths}
     for path in sandbox_closure:
-        binds[path] = (str(engine.layout.real_path(path)), False)
+        binds[str(path)] = (str(engine.layout.real_path(path)), False)
     binds[SANDBOX_BUILD_DIR] = (str(paths.tmp), False)
     for path in inputs:
-        binds[path] = (str(engine.layout.real_path(path)), False)
+        binds[str(path)] = (str(engine.layout.real_path(path)), False)
     if "/dev" not in binds:
         for name in DEV_FILES:
             binds.setdefault(name, (name, False))
@@ -561,7 +554,7 @@ def _binds(
 
 
 async def _export_references(
-    engine: StoreEngine, requests: Mapping[str, Sequence[str]], inputs: set[str]
+    engine: StoreEngine, requests: Mapping[str, Sequence[StorePath]], inputs: set[StorePath]
 ) -> dict[str, list[ValidPathInfo]]:
     """`Store::exportReferences` (`store-api.cc:830`) of each name's paths, sorted as a `StorePathSet`."""
     exported: dict[str, list[ValidPathInfo]] = {}
@@ -573,21 +566,23 @@ async def _export_references(
                     f"cannot export references of path '{magenta(path)}' because it is not in the input closure "
                     "of the derivation",
                 )
-        paths = {p.path for p in await engine.query_closure(requested)}
-        outputs: set[str] = set()
-        for drv_path in sorted(p for p in paths if p.endswith(".drv")):
-            drv = await engine.read_derivation(drv_path)
+        paths = await engine.query_closure(str(p) for p in requested)
+        outputs: set[StorePath] = set()
+        for drv_path in sorted(p for p in paths if p.is_derivation()):
+            drv = await engine.read_derivation(str(drv_path))
             if drv is None:
                 raise ValueError(f"cannot read derivation '{drv_path}'")
             for output in drv.outputs:
                 if not output.path:
                     raise PlainError("exportReferences on CA derivations is not yet implemented")
-                outputs.add(output.path)
+                outputs.add(StorePath(output.path))
         # `computeFSClosure` throws `InvalidPath` where `query_closure` drops the path.
-        if missing := sorted(outputs - {p.path for p in await engine.query_valid_paths(outputs)}):
+        if missing := sorted(outputs - await engine.query_valid_paths(str(p) for p in outputs)):
             raise PlainError(f"path '{magenta(missing[0])}' is not valid")
-        paths |= {p.path for p in await engine.query_closure(sorted(outputs))}
-        exported[name] = sorted(await engine.query_path_infos(sorted(paths)), key=lambda info: info.path.path)
+        paths |= await engine.query_closure(str(p) for p in sorted(outputs))
+        exported[name] = sorted(
+            await engine.query_path_infos(str(p) for p in sorted(paths)), key=lambda info: info.path
+        )
     return exported
 
 
@@ -618,14 +613,27 @@ def _sign(infos: Iterable[ValidPathInfo], secret_key_files: Sequence[str]) -> No
             info.info.sigs.add(Signature(key.sign_fingerprint(fp)))
 
 
+def _known(drv: BasicDerivation, realised: Mapping[str, StorePath], drv_name: str) -> dict[str, StorePath]:
+    """The path of each output known before the build; an output with none is absent."""
+    if any(o.kind is OutputKind.IMPURE for o in drv.outputs.values()):
+        return {name: random_path(name, drv_name) for name in drv.outputs}
+    known: dict[str, StorePath] = {}
+    for name, output in drv.outputs.items():
+        if name in realised:
+            known[name] = realised[name]
+        elif output.path:
+            known[name] = StorePath(output.path)
+    return known
+
+
 async def build(
     engine: StoreEngine,
-    drv_path: str,
+    drv_path: StorePath,
     drv: BasicDerivation,
     settings: BuildSettings,
     *,
     on_lines: Callable[[list[Output]], Awaitable[None]],
-    realised: Mapping[str, str],
+    realised: Mapping[str, StorePath],
     check: bool = False,
     repair: bool = False,
     recursive: RecursiveServer | None = None,
@@ -647,14 +655,11 @@ async def build(
     """
     layout = engine.layout
     store_dir = str(layout.store_dir)
-    drv_name = _drv_name(drv_path)
+    drv_name = drv_path.base_name().removesuffix(".drv")
     chroot = uses_sandbox(drv, settings, relocated=layout.store_dir != layout.real_store_dir)
     impure = any(o.kind is OutputKind.IMPURE for o in drv.outputs.values())
-    known = {
-        name: random_path(name, drv_name, store_dir) if impure else realised.get(name, o.path)
-        for name, o in drv.outputs.items()
-    }
-    held = {path: PathLock(layout.real_path(path)) for path in known.values() if path}
+    known = _known(drv, realised, drv_name)
+    held = {path: PathLock(layout.real_path(path)) for path in known.values()}
     locks = list(held.values())
     for lock in locks:
         # Not cancellable: an abandoned `flock` would hold the lock with no owner to release it.
@@ -665,7 +670,7 @@ async def build(
     built = False
     # `derivation-building-goal.cc:496`, `:854`: the output locks' files go only once each output is valid.
     settled = False
-    redirected: dict[str, str] = {}
+    redirected: dict[StorePath, StorePath] = {}
     try:
         if build_users.use_build_users(settings.build_users_group, settings.auto_allocate_uids):
             auto = settings.auto_allocate_uids
@@ -694,8 +699,8 @@ async def build(
         # realisation `Valid` whenever its path is, so with `ca-derivations` a repair never checks its contents,
         # says "someone beat us to it", and repairs nothing. pynixd checks every known path, realised or not, and
         # repairs it. Lillecarl/nix#400.
-        present = {path for path in known.values() if path and await engine.is_valid_path_uncached(path)}
-        valid = {path for path in present if not repair or await engine.contents_good(path)}
+        present = {path for path in known.values() if await engine.is_valid_path_uncached(str(path))}
+        valid = {path for path in present if not repair or await engine.contents_good(str(path))}
         repairing = repair and BUILDER_RPC in drv.required_system_features
         if repairing:
             # The builder adds each output itself, and an add that repairs locks the path it replaces: the build
@@ -703,29 +708,29 @@ async def build(
             for path, lock in held.items():
                 if path not in valid:
                     lock.release(delete=False)
-        if valid == set(known.values()) and not check:
+        if len(known) == len(drv.outputs) and valid == set(known.values()) and not check:
             settled = True
             return LocalBuildResult(BuildResultStatus.ALREADY_VALID, paths=known)
         # `derivation-building-goal.cc:503`: an output on disk that is not valid goes before the build.
         for path in known.values():
-            if path and path not in valid:
+            if path not in valid:
                 await anyio.to_thread.run_sync(delete_path, layout.real_path(path))
         # `derivation-builder.cc:417`: the sandbox builds a known path in place. Without it, a present path builds
         # at its fallback path, and the builder sees the fallback's hash for its own.
-        scratch = {
-            name: fallback_path_of(drv_path, path, store_dir)
-            if not chroot and path in present
-            else path or fallback_path(drv_path, name, drv_name, store_dir)
-            for name, path in known.items()
-        }
-        redirected = {path: scratch[name] for name, path in known.items() if path and path != scratch[name]}
+        scratch: dict[str, StorePath] = {}
+        for name in drv.outputs:
+            if (own := known.get(name)) is None:
+                scratch[name] = fallback_path(drv_path, name, drv_name, store_dir)
+            elif not chroot and own in present:
+                scratch[name] = fallback_path_of(drv_path, own, store_dir)
+            else:
+                scratch[name] = own
+        redirected = {path: scratch[name] for name, path in known.items() if path != scratch[name]}
         for path in redirected.values():
             await anyio.to_thread.run_sync(delete_path, layout.real_path(path))
-        inputs = {str(p) for p in await engine.query_closure(sorted(str(p) for p in drv.input_srcs))}
+        inputs = await engine.query_closure(sorted(str(p) for p in drv.input_srcs))
         # An invalid path drops out of the closure, as Nix ignores `InvalidPath` here.
-        sandbox_closure = {
-            str(p) for p in await engine.query_closure(sorted(_sandbox_store_paths(settings, str(layout.store_dir))))
-        }
+        sandbox_closure = await engine.query_closure(sorted(_sandbox_store_paths(settings, store_dir)))
         try:
             exported = await _export_references(engine, export_requests(drv.env, store_dir), inputs)
         except BuildFailure as e:
@@ -741,8 +746,8 @@ async def build(
         fixed = any(o.kind is OutputKind.CA_FIXED for o in drv.outputs.values())
         sandboxed = not (fixed or impure)
         # `inputRewrites` (`derivation-builder.cc:435`): each output builds at its scratch path.
-        rewrites = {hash_placeholder(name): path for name, path in scratch.items()} | {
-            _hash_part(path): _hash_part(fallback) for path, fallback in redirected.items()
+        rewrites = {hash_placeholder(name): str(path) for name, path in scratch.items()} | {
+            path.hash_part(): fallback.hash_part() for path, fallback in redirected.items()
         }
         build_dir = SANDBOX_BUILD_DIR if chroot else str(paths.tmp)
         env = build_env(
@@ -760,7 +765,7 @@ async def build(
         for name, contents in env.files.items():
             (paths.tmp / name).write_text(contents, encoding="utf-8")
         fetch = (
-            await anyio.to_thread.run_sync(_fetch_spec, drv, settings, scratch["out"], build_dir)
+            await anyio.to_thread.run_sync(_fetch_spec, drv, settings, str(scratch["out"]), build_dir)
             if drv.builder == "builtin:fetchurl"
             else None
         )
@@ -785,9 +790,9 @@ async def build(
             "no_new_privileges": not settings.allow_new_privileges,
             "filter_syscalls": settings.filter_syscalls,
             "fetchurl": fetch,
-            "buildenv": _buildenv_spec(drv, scratch["out"]) if drv.builder == "builtin:buildenv" else None,
+            "buildenv": _buildenv_spec(drv, str(scratch["out"])) if drv.builder == "builtin:buildenv" else None,
             "unpack_channel": (
-                {"out": scratch["out"], "channel_name": drv.env.get("channelName"), "src": drv.env.get("src")}
+                {"out": str(scratch["out"]), "channel_name": drv.env.get("channelName"), "src": drv.env.get("src")}
                 if drv.builder == "builtin:unpack-channel"
                 else None
             ),
@@ -930,7 +935,7 @@ async def build(
         # Empty too: `openLogFile` (`derivation-building-goal.cc:793`) makes the file before a line arrives,
         # and none without `keep-build-log` (`:1184`).
         if settings.keep_build_log:
-            await engine.add_build_log(PurePosixPath(drv_path).name, bytes(log))
+            await engine.add_build_log(drv_path.name, bytes(log))
         if isinstance(failure, _BuilderFailed):
             disk_full = await anyio.to_thread.run_sync(_disk_full, layout.real_store_dir, paths.tmp)
             failure = BuildFailure(
@@ -961,7 +966,7 @@ async def build(
                     input_paths=inputs,
                     # `derivation-builder.cc:1131`: a check looks at every output.
                     valid=set() if check else valid,
-                    is_valid=lambda path: anyio.from_thread.run(engine.is_valid_path_uncached, path),
+                    is_valid=lambda path: anyio.from_thread.run(engine.is_valid_path_uncached, str(path)),
                     discard=discarded_references(drv.env),
                     check=check,
                     repair=repair,
@@ -995,7 +1000,7 @@ async def build(
             fresh = [
                 info.path.name
                 for info in collected.infos.values()
-                if not await engine.is_valid_path_uncached(info.path.path)
+                if not await engine.is_valid_path_uncached(str(info.path))
             ]
             if settings.auto_optimise_store:
                 await anyio.to_thread.run_sync(_optimise, layout.real_store_dir, layout.links_dir, fresh)
@@ -1013,7 +1018,7 @@ async def build(
                     output_checks(drv.env),
                     collected.infos,
                     store_dir=store_dir,
-                    path_info=lambda path: anyio.from_thread.run(engine.query_path_info, path),
+                    path_info=lambda path: anyio.from_thread.run(engine.query_path_info, str(path)),
                 )
             )
             if failure is not None:
@@ -1023,8 +1028,15 @@ async def build(
         finally:
             collected.release()
         built = True
-        made = {name: info.path.path for name, info in collected.infos.items()}
-        return LocalBuildResult(BuildResultStatus.BUILT, "", start, stop, collected.infos, known | made)
+        made = {name: info.path for name, info in collected.infos.items()}
+        return LocalBuildResult(
+            BuildResultStatus.BUILT,
+            "",
+            start,
+            stop,
+            collected.infos,
+            {name: out for name in drv.outputs if (out := made.get(name) or known.get(name)) is not None},
+        )
     finally:
         with anyio.CancelScope(shield=True):
             if paths is not None:
@@ -1050,13 +1062,13 @@ async def build(
 
 async def _check_submitted(
     engine: StoreEngine,
-    drv_path: str,
+    drv_path: StorePath,
     drv: BasicDerivation,
-    submitted: Mapping[str, str],
+    submitted: Mapping[str, StorePath],
     start: int,
     stop: int,
     *,
-    known: Mapping[str, str] | None = None,
+    known: Mapping[str, StorePath] | None = None,
 ) -> LocalBuildResult:
     """`checkSubmittedOutputs` (`derivation-builder-impl.cc:713`) up to the realisations, which the caller registers.
 
@@ -1066,7 +1078,7 @@ async def _check_submitted(
     """
     infos: dict[str, ValidPathInfo] = {}
     for name, path in submitted.items():
-        info = await engine.query_path_info(path)
+        info = await engine.query_path_info(str(path))
         if info is None:
             return LocalBuildResult(
                 BuildResultStatus.MISC_FAILURE, show_error(f"path '{magenta(path)}' is not valid"), start, stop
@@ -1078,7 +1090,7 @@ async def _check_submitted(
             output_checks(drv.env),
             infos,
             store_dir=str(engine.layout.store_dir),
-            path_info=lambda path: anyio.from_thread.run(engine.query_path_info, path),
+            path_info=lambda path: anyio.from_thread.run(engine.query_path_info, str(path)),
         )
     )
     if failure is not None:
@@ -1099,10 +1111,8 @@ async def _check_submitted(
         # answers what a check of any other output answers, NotDeterministic. Lillecarl/nix#405.
         real_store_dir = engine.layout.real_store_dir
         for name, info in built.items():
-            if info.path.path != known[name]:
-                old, new = (
-                    magenta(f'"{real_store_dir / PurePosixPath(path).name}"') for path in (known[name], info.path.path)
-                )
+            if info.path != known[name]:
+                old, new = (magenta(f'"{real_store_dir / path.name}"') for path in (known[name], info.path))
                 return LocalBuildResult(
                     BuildResultStatus.NOT_DETERMINISTIC,
                     f"derivation '{magenta(drv_path)}' may not be deterministic: output {old} differs from {new}",
@@ -1111,17 +1121,17 @@ async def _check_submitted(
                 )
         return LocalBuildResult(BuildResultStatus.BUILT, "", start, stop, paths=dict(known))
     return LocalBuildResult(
-        BuildResultStatus.BUILT, "", start, stop, built, {name: info.path.path for name, info in built.items()}
+        BuildResultStatus.BUILT, "", start, stop, built, {name: info.path for name, info in built.items()}
     )
 
 
 async def _compare(
     engine: StoreEngine,
-    drv_path: str,
+    drv_path: StorePath,
     drv: BasicDerivation,
     collected: Collected,
     settings: BuildSettings,
-    known: dict[str, str],
+    known: dict[str, StorePath],
     start: int,
     stop: int,
     *,
@@ -1135,7 +1145,7 @@ async def _compare(
     With `keep-failed` or a `diff-hook`, a rebuilt output that differs moves from where the build made it to
     `<path>.check`, and the hook compares the two as *user*, with the build directory *tmp* (`:1552`).
     """
-    registered = {path: await engine.query_path_info(path) for path in known.values()}
+    registered = {path: await engine.query_path_info(str(path)) for path in known.values()}
     failure, verified, kept = await anyio.to_thread.run_sync(
         lambda: compare_outputs(
             drv_path,
@@ -1160,7 +1170,7 @@ async def _compare(
                 output_checks(drv.env),
                 collected.infos,
                 store_dir=str(engine.layout.store_dir),
-                path_info=lambda path: anyio.from_thread.run(engine.query_path_info, path),
+                path_info=lambda path: anyio.from_thread.run(engine.query_path_info, str(path)),
             )
         )
     )
@@ -1173,7 +1183,7 @@ async def _run(
     paths: _Paths,
     spec: ChildSpec,
     settings: BuildSettings,
-    drv_path: str,
+    drv_path: StorePath,
     on_log: Callable[[bytes], Awaitable[None]],
     control: socket.socket | None = None,
     guest: _Guest | None = None,
@@ -1363,7 +1373,13 @@ def _free_bytes(path: Path) -> int:
 
 
 def builder_failure_message(
-    drv_path: str, drv: BasicDerivation, reason: str, tail: list[str], settings: BuildSettings, *, disk_full: bool
+    drv_path: StorePath,
+    drv: BasicDerivation,
+    reason: str,
+    tail: list[str],
+    settings: BuildSettings,
+    *,
+    disk_full: bool,
 ) -> str:
     """`fixupBuilderFailureErrorMessage` (`derivation-building-goal.cc:1157`).
 

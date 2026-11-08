@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping
     from pathlib import Path
 
+    from nix_daemon_protocol.store_path import StorePath
+
     from .buildlog import Output
     from .users import BuildUser
 
@@ -35,7 +37,7 @@ def status_text(returncode: int) -> str:
 
 
 async def diff_hook(
-    hook: str, user: BuildUser | None, valid: str, rebuilt: Path, drv_path: str, tmp: Path
+    hook: str, user: BuildUser | None, valid: StorePath, rebuilt: Path, drv_path: StorePath, tmp: Path
 ) -> list[Output]:
     """`handleDiffHook`: run *hook* on a check's two outputs, and answer the lines it logs.
 
@@ -58,7 +60,7 @@ async def diff_hook(
         done = await anyio.to_thread.run_sync(
             functools.partial(
                 subprocess.run,
-                [hook, valid, str(rebuilt), drv_path, str(tmp)],
+                [hook, str(valid), str(rebuilt), str(drv_path), str(tmp)],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 text=True,
@@ -85,8 +87,8 @@ async def diff_hook(
 async def post_build_hook(
     hook: str,
     env: Mapping[str, str],
-    drv_path: str,
-    out_paths: Iterable[str],
+    drv_path: StorePath,
+    out_paths: Iterable[StorePath],
     config: str,
     *,
     on_line: Callable[[str], Awaitable[None]],
@@ -100,8 +102,8 @@ async def post_build_hook(
     # NIX-DEFECT (#23): `derivation-building-goal.cc:1123` adds the three with `emplace`, which keeps a value the
     # daemon's own environment holds, so a daemon started with `OUT_PATHS` set hands every hook those paths.
     # Assigning them would always be right. pynixd keeps the inherited value too; Lillecarl/nix#399.
-    env.setdefault("DRV_PATH", drv_path)
-    env.setdefault("OUT_PATHS", " ".join(sorted(out_paths)).rstrip(" \n\r\t"))
+    env.setdefault("DRV_PATH", str(drv_path))
+    env.setdefault("OUT_PATHS", " ".join(sorted(map(str, out_paths))).rstrip(" \n\r\t"))
     env.setdefault("NIX_CONFIG", config)
     line = b""
     try:

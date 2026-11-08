@@ -14,7 +14,6 @@ import re
 import stat
 from collections import deque
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from nix_daemon_protocol.build_result import BuildResultStatus
@@ -77,13 +76,9 @@ class PlainError(Exception):
 
 @dataclass(frozen=True)
 class Scanned:
-    path: str
-    references: frozenset[str]
+    path: StorePath
+    references: frozenset[StorePath]
     mode: int
-
-
-def _base(path: str) -> str:
-    return PurePosixPath(path).name
 
 
 def _quoted(path: Path) -> str:
@@ -91,29 +86,26 @@ def _quoted(path: Path) -> str:
     return magenta(f'"{path}"')
 
 
-def _hash_part(path: str) -> str:
-    return _base(path)[:32]
-
-
 def _output_path_name(drv_name: str, output: str) -> str:
     """`outputPathName`."""
     return drv_name if output == "out" else f"{drv_name}-{output}"
 
 
-def fallback_path(drv_path: str, output: str, drv_name: str, store_dir: str) -> str:
+def fallback_path(drv_path: StorePath, output: str, drv_name: str, store_dir: str) -> StorePath:
     """`makeFallbackPath(outputName)` (`derivation-builder.cc:1708`): where an output with no known path builds."""
-    kind = f"rewrite:{_base(drv_path)}:name:{output}"
-    return make_store_path(kind, "sha256", bytes(32), _output_path_name(drv_name, output), store_dir)
+    kind = f"rewrite:{drv_path.name}:name:{output}"
+    return StorePath(make_store_path(kind, "sha256", bytes(32), _output_path_name(drv_name, output), store_dir))
 
 
-def fallback_path_of(drv_path: str, path: str, store_dir: str) -> str:
+def fallback_path_of(drv_path: StorePath, path: StorePath, store_dir: str) -> StorePath:
     """`makeFallbackPath(path)` (`derivation-builder.cc:1722`): where a valid output builds without the chroot."""
-    return make_store_path(f"rewrite:{_base(drv_path)}:{_base(path)}", "sha256", bytes(32), _base(path)[33:], store_dir)
+    kind = f"rewrite:{drv_path.name}:{path.name}"
+    return StorePath(make_store_path(kind, "sha256", bytes(32), path.base_name(), store_dir))
 
 
-def random_path(output: str, drv_name: str, store_dir: str) -> str:
+def random_path(output: str, drv_name: str) -> StorePath:
     """`StorePath::random(outputPathName(...))`: the known path of an impure output (`derivation-building-goal.cc:383`)."""
-    return f"{store_dir}/{nix32_encode(os.urandom(20))}-{_output_path_name(drv_name, output)}"
+    return StorePath(f"{nix32_encode(os.urandom(20))}-{_output_path_name(drv_name, output)}")
 
 
 def _sri(algo: str, digest: bytes) -> str:
@@ -121,11 +113,11 @@ def _sri(algo: str, digest: bytes) -> str:
 
 
 def _scan(
-    drv_path: str,
+    drv_path: StorePath,
     name: str,
-    path: str,
+    path: StorePath,
     actual: Path,
-    referenceable: set[str],
+    referenceable: set[StorePath],
     *,
     discard: bool,
     build_uids: tuple[int, int] | None = None,
@@ -159,7 +151,7 @@ def _scan(
     return Scanned(path, references, st.st_mode)
 
 
-def _sorted(drv_path: str, scanned: Mapping[str, Scanned]) -> list[str]:
+def _sorted(drv_path: StorePath, scanned: Mapping[str, Scanned]) -> list[str]:
     """`topoSort` over the references between outputs, dependencies first."""
     by_path = {s.path: name for name, s in scanned.items()}
     done: list[str] = []
@@ -212,30 +204,30 @@ class Collected:
 class _Fixed:
     wanted: ContentAddress
     got: ContentAddress
-    path: str
-    references: frozenset[str]
+    path: StorePath
+    references: frozenset[StorePath]
 
 
 @dataclass(frozen=True)
 class _Addressed:
     got: ContentAddress
-    path: str
-    references: frozenset[str]
+    path: StorePath
+    references: frozenset[StorePath]
 
 
 def collect_outputs(
-    drv_path: str,
+    drv_path: StorePath,
     outputs: Mapping[str, DerivationOutput],
     *,
-    scratch: Mapping[str, str],
-    known: Mapping[str, str],
+    scratch: Mapping[str, StorePath],
+    known: Mapping[str, StorePath],
     drv_name: str,
     chroot_root: Path,
     real_store_dir: Path,
     store_dir: str,
-    input_paths: set[str],
-    valid: set[str],
-    is_valid: Callable[[str], bool],
+    input_paths: set[StorePath],
+    valid: set[StorePath],
+    is_valid: Callable[[StorePath], bool],
     discard: set[str],
     check: bool = False,
     repair: bool = False,
@@ -245,6 +237,7 @@ def collect_outputs(
 ) -> Collected:
     """Each output the build made at its *scratch* path, moved into the store and described; nothing is registered yet.
 
+    *known* holds only the outputs whose path is known before the build.
     An output whose *known* path is in *valid* is not looked at, as Nix does outside check mode
     (`AlreadyRegistered`, `derivation-builder.cc:1131`); a reference to its scratch path moves to its path.
     With *check*, every output stays where the build made it, to be compared (`derivation-builder.cc:1530`).
@@ -264,7 +257,7 @@ def collect_outputs(
             drv_path,
             name,
             path,
-            chroot_root / path.lstrip("/"),
+            chroot_root / str(path).lstrip("/"),
             referenceable,
             discard=name in discard,
             build_uids=build_uids,
@@ -278,13 +271,14 @@ def collect_outputs(
     fixed: dict[str, _Fixed] = {}
     addressed: dict[str, ContentAddress] = {}
     # `outputRewrites`: the final path of each output done so far, by its scratch path.
-    final: dict[str, str] = {scratch[name]: known[name] for name in scratch if name not in scanned}
+    final: dict[StorePath, StorePath] = {scratch[name]: known[name] for name in scratch if name not in scanned}
     locks: list[PathLock] = []
     copies: list[TempDir] = []
     try:
         for name in _sorted(drv_path, scanned):
             output, s = outputs[name], scanned[name]
-            actual = chroot_root / s.path.lstrip("/")
+            output_path = StorePath(output.path) if output.path else None
+            actual = chroot_root / str(s.path).lstrip("/")
             path, references = s.path, s.references
             if fresh and output.kind in (OutputKind.CA_FIXED, OutputKind.IMPURE):
                 copy = TempDir.create(real_store_dir)
@@ -311,16 +305,18 @@ def collect_outputs(
                     wanted = fixed_output_address(output.method, output.hash_digest)
                     fixed[name] = _Fixed(wanted, a.got, a.path, a.references)
             else:
+                if output_path is None:
+                    raise ValueError(f"the input-addressed output '{name}' of '{drv_path}' has no path")
                 path, references = _input_addressed(
-                    output.path, s, actual, real_store_dir, final, discard=name in discard
+                    output_path, s, actual, real_store_dir, final, discard=name in discard
                 )
             final[s.path] = path
-            dest = real_store_dir / _base(path)
+            dest = real_store_dir / path.name
             nar_hash, nar_size = _nar_hash(actual)
             actuals[name] = actual
             if not check:
                 # `derivation-builder.cc:1506`: only a content-addressed output away from its known path is locked here.
-                if path not in (s.path, output.path):
+                if path not in (s.path, output_path):
                     lock = PathLock(dest)
                     # `derivation-builder.cc:1510`: a floating output waits for a build of the same path.
                     # A mismatched fixed output does not: a build with the right hash may hold the lock.
@@ -345,11 +341,11 @@ def collect_outputs(
                     _move(actual, dest)
                     canonicalise(dest)
             infos[name] = ValidPathInfo(
-                path=StorePath(path=path),
+                path=path,
                 info=UnkeyedValidPathInfo(
-                    deriver=StorePath(path=drv_path),
+                    deriver=drv_path,
                     nar_hash=NARHash(hash=nar_hash.hex()),
-                    references={StorePath(path=ref) for ref in references},
+                    references=set(references),
                     registration_time=Time(ts=0),
                     nar_size=nar_size,
                     ultimate=True,
@@ -369,15 +365,21 @@ def collect_outputs(
 
 
 def _input_addressed(
-    path: str, s: Scanned, actual: Path, real_store_dir: Path, final: Mapping[str, str], *, discard: bool
-) -> tuple[str, frozenset[str]]:
+    path: StorePath,
+    s: Scanned,
+    actual: Path,
+    real_store_dir: Path,
+    final: Mapping[StorePath, StorePath],
+    *,
+    discard: bool,
+) -> tuple[StorePath, frozenset[StorePath]]:
     """The input-addressed case of `registerOutputs` (`derivation-builder.cc:1393`): *path*, and what it refers to.
 
     The scratch hash of this output and of each one done so far moves to its final hash in one pass.
     """
     moves = {**final, s.path: path}
     moved = {
-        _hash_part(old): _hash_part(new)
+        old.hash_part(): new.hash_part()
         for old, new in moves.items()
         if old != new and (discard or old in s.references)
     }
@@ -394,7 +396,7 @@ def _content_addressed(
     actual: Path,
     store_dir: str,
     real_store_dir: Path,
-    final: Mapping[str, str],
+    final: Mapping[StorePath, StorePath],
     *,
     discard: bool,
     positions: bool,
@@ -413,13 +415,13 @@ def _content_addressed(
             "hashing is not enabled (one of outputHashMode={flat,text} is true)",
         )
     moved = {
-        _hash_part(old): _hash_part(new)
+        old.hash_part(): new.hash_part()
         for old, new in final.items()
         if old != new and (discard or old in s.references)
     }
     if moved:
         _rewrite(actual, moved, real_store_dir)
-    old_hash_part = _hash_part(s.path)
+    old_hash_part = s.path.hash_part()
     if method is Method.GIT:
         # `git::dumpHash` takes no modulo: the scratch hash part stays in what it hashes.
         try:
@@ -432,26 +434,32 @@ def _content_addressed(
     self_reference = s.path in s.references
     others = frozenset(final.get(ref, ref) for ref in s.references if ref != s.path)
     try:
-        path = content_addressed_path(
-            got, _output_path_name(drv_name, name), others, store_dir, self_reference=self_reference
+        path = StorePath(
+            content_addressed_path(
+                got,
+                _output_path_name(drv_name, name),
+                [str(ref) for ref in others],
+                store_dir,
+                self_reference=self_reference,
+            )
         )
     except ValueError as e:
         # `ContentAddressWithReferences::fromParts` and `makeFixedOutputPath` throw a plain `Error`.
         raise PlainError(str(e)) from e
     if path != s.path and (self_reference or discard):
-        _rewrite(actual, {old_hash_part: _hash_part(path)}, real_store_dir)
+        _rewrite(actual, {old_hash_part: path.hash_part()}, real_store_dir)
     return _Addressed(got, path, others | {path} if self_reference else others)
 
 
 def compare_outputs(
-    drv_path: str,
+    drv_path: StorePath,
     infos: Mapping[str, ValidPathInfo],
-    registered: Mapping[str, ValidPathInfo | None],
+    registered: Mapping[StorePath, ValidPathInfo | None],
     real_store_dir: Path,
     *,
-    known: Mapping[str, str],
+    known: Mapping[str, StorePath],
     rebuilt: Mapping[str, Path] | None = None,
-) -> tuple[BuildFailure | None, list[ValidPathInfo], tuple[str, Path] | None]:
+) -> tuple[BuildFailure | None, list[ValidPathInfo], tuple[StorePath, Path] | None]:
     """`registerOutputs` in check mode (`derivation-builder.cc:1546`): each rebuilt output against the valid one.
 
     *known* is each output's path before the build, the realised one for a floating output. Answers the first
@@ -464,12 +472,12 @@ def compare_outputs(
         # NIX-DEFECT (#23): `derivation-builder.cc:1546` compares only when the rebuilt path is valid. A floating
         # output's path is its contents' hash, so a rebuild that differs lands at a new path, nothing is compared,
         # and the check passes. pynixd compares with the realised output; Lillecarl/nix#403.
-        path = known.get(name) or info.path.path
+        path = known.get(name) or info.path
         old = registered.get(path)
         if old is None:
             continue
         if parse_any_sha256(str(old.info.nar_hash)) != parse_any_sha256(str(info.info.nar_hash)):
-            real = real_store_dir / _base(path)
+            real = real_store_dir / path.name
             if rebuilt is not None:
                 kept = real.with_name(real.name + ".check")
                 delete_path(kept)
@@ -497,7 +505,7 @@ def compare_outputs(
     return None, verified, None
 
 
-def _check(drv_path: str, f: _Fixed) -> BuildFailure | None:
+def _check(drv_path: StorePath, f: _Fixed) -> BuildFailure | None:
     """`checkCAFixedOutput` (`build/derivation-check.cc:10`)."""
     if f.got.digest != f.wanted.digest:
         return BuildFailure(
@@ -595,12 +603,12 @@ def discarded_references(env: Mapping[str, str]) -> set[str]:
 
 
 def check_outputs(
-    drv_path: str,
+    drv_path: StorePath,
     checks: OutputChecks | Mapping[str, OutputChecks],
     infos: Mapping[str, ValidPathInfo],
     *,
     store_dir: str,
-    path_info: Callable[[str], ValidPathInfo | None],
+    path_info: Callable[[StorePath], ValidPathInfo | None],
 ) -> BuildFailure | None:
     """`checkOutputs` (`build/derivation-check.cc:39`) after the fixed-output check.
 
@@ -608,10 +616,10 @@ def check_outputs(
     store path names a path, and any other word names an output.
     *path_info* blocks: call this from a worker thread.
     """
-    by_path = {info.path.path: info for info in infos.values()}
+    by_path = {info.path: info for info in infos.values()}
 
-    def closure(start: str) -> tuple[set[str], int]:
-        done: set[str] = set()
+    def closure(start: StorePath) -> tuple[set[StorePath], int]:
+        done: set[StorePath] = set()
         size = 0
         left = deque([start])
         while left:
@@ -623,17 +631,17 @@ def check_outputs(
             if info is None:
                 raise RuntimeError(f"path '{path}' is not valid")
             size += info.info.nar_size
-            left.extend(ref.path for ref in info.info.references)
+            left.extend(info.info.references)
         return done, size
 
-    def spec(output: str, words: Iterable[str]) -> set[str] | BuildFailure:
-        paths: set[str] = set()
+    def spec(output: str, words: Iterable[str]) -> set[StorePath] | BuildFailure:
+        paths: set[StorePath] = set()
         # `DrvRef` orders a store path before an output name.
         for word in sorted(words, key=lambda w: (not is_store_path(w, store_dir), w)):
             if is_store_path(word, store_dir):
-                paths.add(word)
+                paths.add(StorePath(word))
             elif word in infos:
-                paths.add(infos[word].path.path)
+                paths.add(infos[word].path)
             else:
                 return BuildFailure(
                     BuildResultStatus.OUTPUT_REJECTED,
@@ -644,7 +652,7 @@ def check_outputs(
         return paths
 
     def apply(name: str, info: ValidPathInfo, c: OutputChecks) -> BuildFailure | None:
-        path = info.path.path
+        path = info.path
         if c.max_size is not None and info.info.nar_size > c.max_size:
             return BuildFailure(
                 BuildResultStatus.OUTPUT_REJECTED,
@@ -675,10 +683,10 @@ def check_outputs(
                 if c.ignore_self_refs:
                     used.discard(path)
             else:
-                used = {ref.path for ref in info.info.references}
+                used = set(info.info.references)
             bad = {p for p in used if (p not in refs) == allowed}
             if bad:
-                listing = "".join(f"\n  {p}" for p in sorted(bad, key=_base))
+                listing = "".join(f"\n  {p}" for p in sorted(bad, key=lambda p: p.name))
                 return BuildFailure(
                     BuildResultStatus.OUTPUT_REJECTED,
                     f"output '{magenta(path)}' is not allowed to refer to the following paths:{magenta(listing)}",

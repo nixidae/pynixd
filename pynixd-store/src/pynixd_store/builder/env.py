@@ -10,6 +10,8 @@ import struct
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from nix_daemon_protocol.store_path import StorePath
+
 from ..signing import nar_hash_for_a_fingerprint
 from ..utils import nix32_encode
 
@@ -192,7 +194,7 @@ def _flatten(value: Any) -> Iterable[str]:
         raise _Unreproduced("a value that is not an array or a string")
 
 
-def export_requests(env: Mapping[str, str], store_dir: str) -> dict[str, list[str]]:
+def export_requests(env: Mapping[str, str], store_dir: str) -> dict[str, list[StorePath]]:
     """`DerivationOptions::exportReferencesGraph`: each name and its store paths, in Nix's `std::map` order.
 
     `ValueError` names what pynixd leaves to the daemon: what Nix refuses or
@@ -218,7 +220,7 @@ def export_requests(env: Mapping[str, str], store_dir: str) -> dict[str, list[st
     for paths in requests.values():
         if bad := sorted(path for path in paths if not is_store_path(path, store_dir)):
             raise _Unreproduced(f"the path {bad[0]!r}")
-    return {name: sorted(paths) for name, paths in sorted(requests.items())}
+    return {name: sorted(StorePath(path) for path in paths) for name, paths in sorted(requests.items())}
 
 
 def validity_registration(infos: Sequence[ValidPathInfo]) -> str:

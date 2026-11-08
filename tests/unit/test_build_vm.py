@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from nix_daemon_protocol.store_path import StorePath
 from pynixd_store.builder.vm import BuildVm, allow, returncode, status, unshareable
 
 HELPER = "/nix/store/aaaa-venv"
@@ -34,7 +35,7 @@ def _argv(tmp_path: Path, real_store: Path, sources: tuple[str, ...] = (), cgrou
         top=tmp_path / "top",
         chroot_parent=real_store / "ffff-x.drv.chroot",
         real_store_dir=real_store,
-        visible=[INPUT],
+        visible=[StorePath(INPUT)],
         sources=sources,
         spec_file=tmp_path / "top/spec.json",
         build_dir=tmp_path / "top/build",
@@ -164,7 +165,7 @@ def test_a_recursive_build_reaches_the_host_over_vsock_and_caches_no_missing_nam
         top=tmp_path / "top",
         chroot_parent=real / "ffff-x.drv.chroot",
         real_store_dir=real,
-        visible=[INPUT],
+        visible=[StorePath(INPUT)],
         sources=(),
         spec_file=tmp_path / "top/spec.json",
         build_dir=tmp_path / "top/build",
@@ -177,7 +178,7 @@ def test_a_recursive_build_reaches_the_host_over_vsock_and_caches_no_missing_nam
     assert argv[-2:] == ["3", "4"]
     store = tmp_path / "top/vm-allowlist-store"
     assert f"--ro={real}:{store}" in argv
-    allow(tmp_path / "top", real, "/nix/store/hhhh-added")
+    allow(tmp_path / "top", real, StorePath("/nix/store/hhhh-added"))
     assert store.read_text().splitlines() == [
         str(real / "bbbb-input"),
         str(real / "ffff-x.drv.chroot"),

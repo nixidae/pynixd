@@ -52,6 +52,7 @@ from nix_daemon_protocol.query_valid_derivers import QueryValidDeriversRequest, 
 from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest
 from nix_daemon_protocol.register_drv_output import RegisterDrvOutputRequest
 from nix_daemon_protocol.set_options import SetOptionsRequest, SetOptionsResponse
+from nix_daemon_protocol.store_dir import store_dir
 from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.submit_output import SubmitOutputRequest, SubmitOutputResponse
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
@@ -128,6 +129,14 @@ def _path_part(derived: str) -> str:
     return derived.split("!", 1)[0]
 
 
+def _path_of(derived: str) -> StorePath | None:
+    """The store path a derived path starts from, or `None` when its text names no path of this store."""
+    try:
+        return StorePath.in_store(_path_part(derived), store_dir())
+    except ValueError:
+        return None
+
+
 class RestrictedProxy(DaemonProxy):
     """One recursive-nix client of a build: an untrusted session that reaches only *restriction*."""
 
@@ -180,7 +189,7 @@ class RestrictedProxy(DaemonProxy):
             return await super().dispatch(op_num)
         if op_num == NarFromPathRequest.op:
             req = await NarFromPathRequest.from_reader(self._read_context())
-            if not self.restriction.is_allowed(str(req.path)):
+            if not self.restriction.is_allowed(req.path):
                 # NIX-DEVIATION (#27) of `NarFromPathHandler`: Nix throws after `stopWork` and closes the session.
                 raise ClosingError(f"cannot dump unknown path {_quoted(str(req.path))} in recursive Nix")
             await NarFromPathHandler().serve(self._request_context(), req)
@@ -208,13 +217,13 @@ class RestrictedProxy(DaemonProxy):
             with anyio.CancelScope(shield=True):
                 for path in added:
                     if await self._engine.is_valid_path_uncached(path):
-                        await self._add_dependency(path)
+                        await self._add_dependency(StorePath(path))
         return response
 
     def _submit(self, request: SubmitOutputRequest) -> SubmitOutputResponse:
         """`SubmitOutput` (`daemon.cc:1113`)."""
         try:
-            self.restriction.submit_output(str(request.path), request.output, opaque=request.path.is_opaque)
+            self.restriction.submit_output(request.path, request.output)
         except SubmitError as e:
             raise RestrictedError(str(e)) from e
         return SubmitOutputResponse(value=1)
@@ -233,7 +242,7 @@ class RestrictedProxy(DaemonProxy):
                 request.path_name,
                 method,
                 algo,
-                frozenset(self.restriction.allowed),
+                frozenset(str(p) for p in self.restriction.allowed),
                 frames,
                 root=self.add_temp_root,
                 repair=self.restriction.repairing,
@@ -244,13 +253,18 @@ class RestrictedProxy(DaemonProxy):
         finally:
             await frames.ensure_eof()
         self._engine.invalidate_path_info_cache_for(StorePath(path))
-        await self._add_dependency(path)
+        await self._add_dependency(StorePath(path))
         found = await self._path_info(QueryPathInfoRequest(path=StorePath(path)))
         if not isinstance(found, QueryPathInfoResponse) or found.info is None:
             raise RestrictedError(f"path '{magenta(path)}' is not valid")
         return AddToStoreScanningResponse(info=ValidPathInfo(path=StorePath(path), info=found.info))
 
-    async def _add_dependency(self, path: str) -> None:
+    def _knows(self, derived: str) -> bool:
+        """Whether the build may see the store path a derived path starts from."""
+        path = _path_of(derived)
+        return path is not None and self.restriction.is_allowed(path)
+
+    async def _add_dependency(self, path: StorePath) -> None:
         try:
             await self.restriction.add_dependency(path)
         except AddDependencyError as e:
@@ -280,11 +294,11 @@ class RestrictedProxy(DaemonProxy):
             case SetOptionsRequest():
                 # `daemon.cc:787`: recursive mode applies none of the settings.
                 return SetOptionsResponse()
-            case IsValidPathRequest() if not allowed(str(request.path)):
+            case IsValidPathRequest() if not allowed(request.path):
                 return IsValidPathResponse.fast(valid=False)
             case QueryValidPathsRequest():
                 # `substitutePaths` finds nothing to do: an allowed path is valid already.
-                paths = {p for p in request.paths if allowed(str(p))}
+                paths = {p for p in request.paths if allowed(p)}
                 return await self._next(request.model_copy(update={"paths": paths, "substitute": 0}))
             case QueryPathInfoRequest():
                 return await self._path_info(request)
@@ -293,8 +307,8 @@ class RestrictedProxy(DaemonProxy):
             case QueryValidDeriversRequest():
                 return QueryValidDeriversResponse()
             case QueryAllValidPathsRequest():
-                return QueryAllValidPathsResponse(paths={StorePath(p) for p in self.restriction.allowed})
-            case QueryDerivationOutputMapRequest() if not allowed(str(request.path)):
+                return QueryAllValidPathsResponse(paths=self.restriction.allowed)
+            case QueryDerivationOutputMapRequest() if not allowed(request.path):
                 raise RestrictedError(
                     f"cannot query output map for unknown path {_quoted(str(request.path))} in recursive Nix"
                 )
@@ -305,7 +319,7 @@ class RestrictedProxy(DaemonProxy):
             case AddSignaturesRequest():
                 raise _unsupported("addSignatures")
             case EnsurePathRequest():
-                if not allowed(str(request.path)):
+                if not allowed(request.path):
                     raise RestrictedError(
                         f"cannot substitute unknown path {_quoted(str(request.path))} in recursive Nix"
                     )
@@ -346,7 +360,7 @@ class RestrictedProxy(DaemonProxy):
 
     async def _path_info(self, request: QueryPathInfoRequest) -> WireResponse:
         """`queryPathInfoUncached` (`restricted-store.cc:179`): the impure fields censored."""
-        if not self.restriction.is_allowed(str(request.path)):
+        if not self.restriction.is_allowed(request.path):
             return QueryPathInfoResponse(valid=False)
         response = await self._next(request)
         if not isinstance(response, QueryPathInfoResponse) or response.info is None:
@@ -366,7 +380,7 @@ class RestrictedProxy(DaemonProxy):
         if request.build_mode != BuildMode.NORMAL:
             raise RestrictedError("unsupported build mode")
         for derived in request.derived_paths:
-            if not self.restriction.is_allowed(_path_part(str(derived))):
+            if not self._knows(str(derived)):
                 text = str(derived).replace("!", "^")
                 raise RestrictedError(f"cannot build {_quoted(text)} in recursive Nix because path is unknown")
         results = await self._next(
@@ -386,7 +400,7 @@ class RestrictedProxy(DaemonProxy):
                 if realisation.out_path is not None:
                     built.add(str(realisation.out_path))
                 self.restriction.added_drv_outputs.add(str(key))
-        for path in sorted(str(p) for p in await self._engine.query_closure(sorted(built))):
+        for path in sorted(await self._engine.query_closure(sorted(built))):
             await self._add_dependency(path)
         if isinstance(request, BuildPathsWithResultsRequest):
             return results
@@ -398,7 +412,7 @@ class RestrictedProxy(DaemonProxy):
 
     async def _missing(self, request: QueryMissingRequest) -> WireResponse:
         """`queryMissing` (`restricted-store.cc:283`): an unknown path is unknown, and the rest is asked."""
-        allowed = {d for d in request.derived_paths if self.restriction.is_allowed(_path_part(str(d)))}
+        allowed = {d for d in request.derived_paths if self._knows(str(d))}
         unknown = {StorePath(_path_part(str(d))) for d in request.derived_paths - allowed}
         response = await self._next(request.model_copy(update={"derived_paths": allowed}))
         if not isinstance(response, QueryMissingResponse):

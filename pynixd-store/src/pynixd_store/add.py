@@ -561,7 +561,9 @@ async def add_dump(
         else:
             digest = reader.hasher.digest()
         if scan:
-            references = frozenset(await anyio.to_thread.run_sync(scan_for_references, staged, references))
+            candidates = [StorePath(ref) for ref in references]
+            found = await anyio.to_thread.run_sync(scan_for_references, staged, candidates)
+            references = frozenset(str(ref) for ref in found)
         ca = ContentAddress(method, algo, digest)
         store_dir = str(engine.layout.store_dir)
         path = content_addressed_path(ca, name, references, store_dir)

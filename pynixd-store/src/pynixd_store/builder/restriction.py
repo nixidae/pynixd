@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Protocol
 
 import anyio
@@ -19,6 +18,9 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from anyio.abc import SocketStream
+
+    from nix_daemon_protocol.single_derived_path import SingleDerivedPath
+    from nix_daemon_protocol.store_path import StorePath
 
 SOCKET_NAME = ".nix-socket"
 """`startDaemon` (`derivation-builder.cc:1170`) puts the socket in the build directory under this name."""
@@ -43,22 +45,22 @@ class RestrictionContext:
 
     def __init__(
         self,
-        inputs: set[str],
+        inputs: set[StorePath],
         control: SocketStream | None,
         real_store_dir: Path,
         *,
         submitting: bool,
         repairing: bool = False,
-        reveal: Callable[[str], None] | None = None,
+        reveal: Callable[[StorePath], None] | None = None,
         binds: bool = True,
     ) -> None:
         self.inputs = frozenset(inputs)
         self.submitting = submitting
         self.repairing = repairing
-        self.added: set[str] = set()
+        self.added: set[StorePath] = set()
         self.added_drv_outputs: set[str] = set()
         """Each `DrvOutput` a build of the builder realised, as its wire text (`addedDrvOutputs`)."""
-        self.submitted: dict[str, str] = {}
+        self.submitted: dict[str, StorePath] = {}
         """The store path the builder submitted for each output (`submittedOutputs`)."""
         self._control: SocketStream | None = None
         self._replies: BufferedByteReceiveStream | None = None
@@ -75,14 +77,14 @@ class RestrictionContext:
         self._replies = BufferedByteReceiveStream(control)
         self._attached.set()
 
-    def is_allowed(self, path: str) -> bool:
+    def is_allowed(self, path: StorePath) -> bool:
         return path in self.inputs or path in self.added
 
     @property
-    def allowed(self) -> set[str]:
+    def allowed(self) -> set[StorePath]:
         return set(self.inputs | self.added)
 
-    async def add_dependency(self, path: str) -> None:
+    async def add_dependency(self, path: StorePath) -> None:
         """`addDependency`: a path not allowed yet becomes allowed, and the helper binds it into the sandbox.
 
         The path joins first, as `addDependencyPrep` inserts it before the bind (`chroot-derivation-builder.cc:180`).
@@ -93,24 +95,24 @@ class RestrictionContext:
             self.added.add(path)
             if not self._binds:
                 return
-            source = str(self._real_store_dir / PurePosixPath(path).name)
+            source = str(self._real_store_dir / path.name)
             if self._reveal is not None:
                 await anyio.to_thread.run_sync(self._reveal, path)
             await self._attached.wait()
             if self._control is None or self._replies is None:
                 raise RuntimeError("the control socket is attached and missing")
-            await self._control.send(json.dumps({"source": source, "target": path}).encode() + b"\n")
+            await self._control.send(json.dumps({"source": source, "target": str(path)}).encode() + b"\n")
             reply = json.loads(await self._replies.receive_until(b"\n", 1 << 20))
         if reply["error"] is not None:
             raise AddDependencyError(reply["error"])
 
-    def submit_output(self, path: str, output: str, *, opaque: bool) -> None:
-        """`submitOutput` (`unix-derivation-builder.cc:791`). *path* is `SingleDerivedPath::to_string`.
+    def submit_output(self, path: SingleDerivedPath, output: str) -> None:
+        """`submitOutput` (`unix-derivation-builder.cc:791`).
 
         It checks neither that the path is valid nor that the build may see it: `checkSubmittedOutputs` reads
         it after the builder exits.
         """
-        if not opaque:
+        if not path.is_opaque:
             raise SubmitError(
                 f"Attempted to submit Built path '{magenta(path)}' for output '{magenta(output)}'.\n"
                 " Only Opaque paths are supported, see https://github.com/NixOS/nix/issues/12727"
@@ -120,7 +122,7 @@ class RestrictionContext:
                 f"Attempted to submit duplicate output '{magenta(output)}' "
                 f"(old '{magenta(self.submitted[output])}', new '{magenta(path)}')"
             )
-        self.submitted[output] = path
+        self.submitted[output] = path.path
 
 
 class RecursiveServer(Protocol):

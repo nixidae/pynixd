@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from nix_daemon_protocol.store_path import StorePath
 from pynixd_store.builder.env import (
     build_env,
     dump_float,
@@ -157,9 +158,10 @@ B = "/nix/store/" + "b" * 32 + "-b"
 
 def test_export_references_graph_names_store_paths_by_file_name() -> None:
     """`DerivationOptions::exportReferencesGraph` (`derivation-options.cc:310`), both forms."""
-    assert export_requests({"exportReferencesGraph": f"z {A}\t\na {B}"}, "/nix/store") == {"a": [B], "z": [A]}
+    a, b = StorePath(A), StorePath(B)
+    assert export_requests({"exportReferencesGraph": f"z {A}\t\na {B}"}, "/nix/store") == {"a": [b], "z": [a]}
     raw = f'{{"exportReferencesGraph":{{"g":["{B}",["{A}"]]}}}}'
-    assert export_requests({"__json": raw}, "/nix/store") == {"g": [A, B]}
+    assert export_requests({"__json": raw}, "/nix/store") == {"g": [a, b]}
     assert export_requests({}, "/nix/store") == {}
 
 

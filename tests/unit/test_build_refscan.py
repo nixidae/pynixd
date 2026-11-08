@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
+from nix_daemon_protocol.store_path import StorePath
 from pynixd_store.builder.refscan import RefScanner, scan_for_references
 
 if TYPE_CHECKING:
@@ -47,4 +48,5 @@ def test_the_nar_names_file_contents_symlink_targets_and_names(tmp_path: Path) -
     (out / "lib").symlink_to(f"{B}/lib")
     (out / _hash(C)).write_text("")
     other = "/nix/store/9w0b4dw3hglzm1yv7m1q5w0lvlyk5shm-unused"
-    assert scan_for_references(out, [A, B, C, other]) == {A, B, C}
+    found = scan_for_references(out, [StorePath(p) for p in (A, B, C, other)])
+    assert found == {StorePath(A), StorePath(B), StorePath(C)}
