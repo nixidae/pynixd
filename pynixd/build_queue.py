@@ -178,6 +178,14 @@ class QueuedBuild:
         """The BUILD_WAITING activity open for each client that joined a build
         somebody else asked for. Per client, because the client that asked for
         the build reads no such activity. Issue #25."""
+        self.askers: set[ClientConn] = set()
+        """The clients whose request made this build. Each reads no BUILD_WAITING.
+
+        `BuildQueue.enqueue` fills it under its lock, before the scheduler can
+        start the build. An asker subscribes after `enqueue` returns, and a
+        local build can start in that gap, so `started_at` alone would name the
+        asker a stranger. Nix writes no `waiting for lock` there:
+        `cli-characterisation`, `gc-concurrent.sh:19`. nixidae/nixidae#1233."""
 
         # The goal requests that hold this build. `BuildQueue.release_request`
         # ends the build when the last one lets go. A request holds once,
@@ -363,7 +371,7 @@ class QueuedBuild:
             if client in self._subscriber_refs:
                 self._subscriber_refs[client] += 1
                 return
-            if self._waits_for_somebody_elses_build():
+            if client not in self.askers and self._waits_for_somebody_elses_build():
                 await self._say_it_is_waiting(client)
             if self._log_writer.tell():
                 try:
@@ -590,8 +598,12 @@ class BuildQueue:
         goal_request_id: RequestId | None = None,
         options: SetOptionsRequest | None = None,
         delegated: bool = False,
+        askers: Sequence[ClientConn] = (),
     ) -> tuple[BuildId, Answer[BuildDerivationResponse]]:
         """Add a build to the queue (deduplicates if already present).
+
+        *askers* are the clients of the request. They become `QueuedBuild.askers` of a new build; a
+        deduplicated build keeps its own, since those clients join it.
 
         Returns (build_id, answer) - caller awaits the answer for the response.
         Dedup only applies to builds that are still pending (not building/done).
@@ -660,6 +672,7 @@ class BuildQueue:
                 options=options,
             )
             build.from_goal_path = from_goal_path
+            build.askers.update(askers)
             if from_goal_path and goal_request_id is not None:
                 self._hold_locked(build, goal_request_id)
             if goal_request_id is None:

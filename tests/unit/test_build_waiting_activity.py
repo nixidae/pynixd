@@ -19,6 +19,7 @@ activity added here carries no `error:` line, and the count has to stay one.
 from __future__ import annotations
 
 import os
+import time
 from typing import TYPE_CHECKING, cast
 
 import pytest
@@ -145,6 +146,25 @@ class TestTheFirstClient:
         first, _, _ = await _two_clients()
 
         assert STDERR_START_ACTIVITY not in _codes(first)
+
+    @pytest.mark.anyio
+    async def test_reads_none_when_its_build_started_before_it_subscribed(self) -> None:
+        """A local build can start between `enqueue` and the asker's subscription.
+
+        Nix's `cli-characterisation/nix-env-install-bad-oti-elem.err.exp` and
+        `gc-concurrent.sh:19` read no `waiting for lock` there. nixidae/nixidae#1233.
+        """
+        build = _build()
+        first, second = FakeClient(), FakeClient()
+        build.askers.add(cast("ClientConn", first))
+        build.started_at = time.monotonic()
+        build._log_writer.write(b"building\n")  # noqa: SLF001 -- the replay after the activity is the symptom
+
+        await build.add_subscriber(cast("ClientConn", first))
+        await build.add_subscriber(cast("ClientConn", second))
+
+        assert STDERR_START_ACTIVITY not in _codes(first)
+        assert _codes(second)[0] == STDERR_START_ACTIVITY
 
     @pytest.mark.anyio
     async def test_gets_no_stop_either(self) -> None:

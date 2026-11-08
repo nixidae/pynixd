@@ -74,7 +74,10 @@ class BuildDerivationHandler(Handler):
         delegated = ctx.proxy.client is not None and ctx.proxy.client.delegated
         try:
             build_id, answer = await ctx.proxy.scheduler.build_derivation(
-                self_req, options=options, delegated=delegated
+                self_req,
+                options=options,
+                delegated=delegated,
+                askers=() if ctx.proxy.client is None else (ctx.proxy.client,),
             )
         except DelegationLoopError as exc:
             # A `BackendError` on the delegating side, which retries elsewhere.

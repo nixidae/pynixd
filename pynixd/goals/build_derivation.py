@@ -199,6 +199,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
                 goal_request_id=self.engine.request_id,
                 options=options,
                 delegated=any(c.delegated for c in self._subscribers),
+                askers=list(self._subscribers),
             )
         except DelegationLoopError as exc:
             return goal_failure(str(exc))

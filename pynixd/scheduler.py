@@ -72,7 +72,7 @@ from .system_features import BUILTIN_SYSTEM, effective_required_features
 from .wire import FEATURE_ADD_TEMP_ROOTS
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterable, Mapping
+    from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 
     from anyio.abc import TaskGroup
 
@@ -413,8 +413,9 @@ class Scheduler:
         goal_request_id: RequestId | None = None,
         options: SetOptionsRequest | None = None,
         delegated: bool = False,
+        askers: Sequence[ClientConn] = (),
     ) -> tuple[BuildId, Answer[BuildDerivationResponse]]:
-        """Add a build to the queue and trigger the scheduler."""
+        """Add a build to the queue and trigger the scheduler. *askers* go to `BuildQueue.enqueue`."""
         t0 = time.monotonic()
         hint = None
         peak = None
@@ -433,6 +434,7 @@ class Scheduler:
             goal_request_id=goal_request_id,
             options=options,
             delegated=delegated,
+            askers=askers,
         )
         queued = self.queue.by_id.get(res[0])
         if queued is not None and queued.expected_peak_bytes is None:
