@@ -198,11 +198,13 @@ def make_test_spec(
     # A store without its database has no answer of pynixd's to shadow.
     if kwargs.get("use_db", True):
         trial = {op: route for op, route in TEST_OP_ROUTES.items() if kwargs["pynixd_writes"] or op not in _WRITES}
-        kwargs["op_routes"] = {**trial, **kwargs.get("op_routes", {})}
         if os.environ.get("PYNIXD_NO_DAEMON") == "1" and kwargs["pynixd_writes"] and not asks_the_daemon:
             # `tests/guest/suite.py`: every store with no daemon, so each test that fails names a gap.
             kwargs["daemon"] = False
-            kwargs["op_routes"] = {op: OpRoute.pynixd for op in kwargs["op_routes"]}
+        if kwargs.get("daemon") is False:
+            # The caller's own routes stay, so one the store cannot take still refuses.
+            trial = dict.fromkeys(trial, OpRoute.pynixd)
+        kwargs["op_routes"] = {**trial, **kwargs.get("op_routes", {})}
 
     return LocalSocketStoreSpec(
         store_id=StoreId(store_id),

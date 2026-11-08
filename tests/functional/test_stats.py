@@ -258,7 +258,8 @@ async def test_scheduler_local_fasttrack(tmp_path: Path) -> None:
     pynixd_remote_path.mkdir(parents=True, exist_ok=True)
 
     pynixd_local = LocalDBStore(
-        make_test_spec(store_id="local", store_path=pynixd_local_path, no_probe=True),
+        # A derivation with no outputs only a daemon starts; pynixd's builder refuses it.
+        make_test_spec(daemon=True, store_id="local", store_path=pynixd_local_path, no_probe=True),
     )
     pynixd_remote = StatsTestStore(
         make_test_spec(daemon=True, store_id="remote", store_path=pynixd_remote_path, no_probe=True),
