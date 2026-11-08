@@ -201,7 +201,7 @@ class Collection:
 
     async def _visit_edges(self, path: str, enqueue: Callable[[str], None]) -> None:
         if path not in self.referrers:
-            self.referrers[path] = {referrer.path for referrer in await self.engine.query_referrers(path)}
+            self.referrers[path] = {referrer.path for referrer in await self.engine.query_gc_referrers(path)}
         for referrer in sorted(self.referrers[path], key=_base_name):
             enqueue(referrer)
         if not self.whole_store:
@@ -281,7 +281,7 @@ class Collection:
         """`invalidatePathChecked` (`local-store.cc:1357`): no valid referrer but itself, then invalidate."""
         if not await self.engine.is_valid_path_uncached(path):
             return
-        referrers = {referrer.path for referrer in await self.engine.query_referrers(path)} - {path}
+        referrers = {referrer.path for referrer in await self.engine.query_gc_referrers(path)} - {path}
         if referrers:
             names = ", ".join(f"'{referrer}'" for referrer in sorted(referrers, key=_base_name))
             raise PathInUse(f"cannot delete path '{magenta(path)}' because it is in use by {magenta(names)}")
@@ -304,7 +304,7 @@ class Collection:
             await self.report(Verbosity.INFO, f"deleting '{path}'")
             self.results.paths.add(path)
             try:
-                freed = await anyio.to_thread.run_sync(collect.delete_path, real_path)
+                freed = await self.engine.delete_store_path(base_name)
             except collect.DeleteError as exc:
                 what = "store path" if known else "garbage in store directory"
                 exc.with_trace(f"While deleting {what} {collect.path_fmt(real_path)}")

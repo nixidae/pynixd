@@ -84,9 +84,7 @@ def test_an_overlay_store_reads_the_lower_store_too() -> None:
     assert store.engine.lower.writes is False
 
 
-@pytest.mark.parametrize("op", ["CollectGarbage", "OptimiseStore", "VerifyStore", "BuildDerivation"])
-def test_an_overlay_store_leaves_each_delete_to_the_daemon(op: str) -> None:
-    """`LocalOverlayStore::deleteStorePath` (`local-overlay-store.cc:228`) deletes through the upper layer."""
-    spec = _spec().model_copy(update={"pynixd_writes": True, "op_routes": {op: "pynixd"}})
-    with pytest.raises(ValueError, match="only the daemon does that"):
+def test_an_overlay_store_leaves_builds_to_the_daemon() -> None:
+    spec = _spec().model_copy(update={"pynixd_writes": True, "op_routes": {"BuildDerivation": "pynixd"}})
+    with pytest.raises(ValueError, match="the daemon alone answers BuildDerivation"):
         LocalDBStore(spec)

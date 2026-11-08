@@ -198,6 +198,17 @@ class StoreEngine:
         """`LocalStore::queryReferrers`: the paths whose references name *path*."""
         return await self._paths(QUERY_REFERRERS, (path,))
 
+    async def query_gc_referrers(self, path: str) -> set[StorePath]:
+        """`queryGCReferrers`, and the referrers `invalidatePathChecked` reads: this store's own database alone.
+
+        An overlay store's `query_referrers` adds the lower store's; this never does (`local-overlay-store.cc:167`).
+        """
+        return await StoreEngine.query_referrers(self, path)
+
+    async def delete_store_path(self, base_name: str) -> int:
+        """`LocalStore::deleteStorePath` (`local-store.cc:408`): delete one name of the store directory; the bytes freed."""
+        return await anyio.to_thread.run_sync(collect.delete_path, self.layout.real_store_dir / base_name)
+
     async def query_valid_derivers(self, path: str) -> set[StorePath]:
         """`LocalStore::queryValidDerivers`: the valid derivations that name *path* as an output."""
         return await self._paths(QUERY_VALID_DERIVERS, (path,), column=1)
@@ -440,13 +451,16 @@ class StoreEngine:
         """
         await anyio.to_thread.run_sync(build_log.add_build_log, self.layout.log_dir, drv, log)
 
-    async def optimise_store(self, *, hold: Callable[[str], Awaitable[None]]) -> optimise.OptimiseStats:
+    async def optimise_store(
+        self, *, hold: Callable[[str], Awaitable[None]], report: Report | None = None
+    ) -> optimise.OptimiseStats:
         """`LocalStore::optimiseStore` (`optimise-store.cc`): hard-link identical store files into `.links`.
 
         *hold* is the session's `addTempRoot`. Nix takes a temporary root on
         each path before it reads it, so a concurrent collector does not remove
         a path mid-walk. The daemon's collector (op 20) reads the same temproots
-        files, so the hold protects against it too.
+        files, so the hold protects against it too. *report* gets the summary
+        line Nix prints (`optimise-store.cc:328`).
         """
         if not self.writes:
             raise RuntimeError(f"store {self._name}: pynixd_writes is off, so pynixd optimises no store")
@@ -470,6 +484,11 @@ class StoreEngine:
                     links_dir=links_dir,
                     stats=stats,
                 )
+            )
+        if report is not None:
+            await report(
+                Verbosity.INFO,
+                f"{optimise.render_size(stats.bytes_freed)} freed by hard-linking {stats.files_linked} files",
             )
         return stats
 

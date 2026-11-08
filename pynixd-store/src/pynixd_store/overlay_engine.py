@@ -15,11 +15,20 @@ closure of the rest, and walks no path across the two.
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
+import anyio
+import anyio.to_thread
+
+from nix_daemon_protocol.protocol import Verbosity
 from nix_daemon_protocol.store_path import StorePath
 
+from . import collect, optimise
+from .builder.hooks import status_text
 from .engine import StoreEngine
+from .errors import PynixdError
+from .hintfmt import WARNING_PREFIX
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping
@@ -28,8 +37,9 @@ if TYPE_CHECKING:
     from nix_daemon_protocol.signature import Signature
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
+    from .engine import Report
     from .local_store_db import SyncReader
-    from .store_layout import StoreLayout
+    from .store_layout import Overlay, StoreLayout
 
 
 class LowerPathNeedsSync(Exception):
@@ -43,6 +53,10 @@ class LowerPathNeedsSync(Exception):
 
 def _forget_nothing(_path: StorePath) -> None:
     """The lower store changes no path the cache above the engine holds."""
+
+
+async def _say_nothing(_level: Verbosity, _text: str) -> None:
+    """A caller that takes no lines."""
 
 
 class OverlayEngine(StoreEngine):
@@ -60,12 +74,15 @@ class OverlayEngine(StoreEngine):
         super().__init__(layout, writes=writes, read_config=read_config, on_change=on_change, name=name)
         if layout.overlay is None:
             raise ValueError(f"store {name}: an overlay engine needs an overlay layout")
+        self.overlay: Overlay = layout.overlay
         self.lower = StoreEngine(
             layout.overlay.lower, writes=False, read_config=read_config, on_change=_forget_nothing, name=f"{name} lower"
         )
+        #: `_remountRequired`: a delete went through the upper layer, and the mount does not see it yet.
+        self.remount_required = False
 
     async def is_valid_path_uncached(self, path: str) -> bool:
-        """`LocalOverlayStore::isValidPathUncached` (`local-overlay-store.cc:157`)."""
+        """`LocalOverlayStore::isValidPathUncached` (`local-overlay-store.cc:143`)."""
         return await super().is_valid_path_uncached(path) or await self._sync_from_lower([path]) == {path}
 
     async def is_valid_path(self, path: str, *, reader: SyncReader | None = None) -> bool:
@@ -104,27 +121,27 @@ class OverlayEngine(StoreEngine):
         return held
 
     async def query_path_info(self, path: str, *, reader: SyncReader | None = None) -> ValidPathInfo | None:
-        """`LocalOverlayStore::queryPathInfoUncached` (`local-overlay-store.cc:93`): the upper store, then the lower."""
+        """`LocalOverlayStore::queryPathInfoUncached` (`local-overlay-store.cc:92`): the upper store, then the lower."""
         found = await super().query_path_info(path, reader=reader)
         return found if found is not None else await self.lower.query_path_info(path)
 
     async def query_referrers(self, path: str) -> set[StorePath]:
-        """`LocalOverlayStore::queryReferrers` (`local-overlay-store.cc:174`): both stores."""
+        """`LocalOverlayStore::queryReferrers` (`local-overlay-store.cc:161`): both stores."""
         return await super().query_referrers(path) | await self.lower.query_referrers(path)
 
     async def query_valid_derivers(self, path: str) -> set[StorePath]:
-        """`LocalOverlayStore::queryValidDerivers` (`local-overlay-store.cc:185`): both stores."""
+        """`LocalOverlayStore::queryValidDerivers` (`local-overlay-store.cc:172`): both stores."""
         return await super().query_valid_derivers(path) | await self.lower.query_valid_derivers(path)
 
     async def query_path_from_hash_part(self, hash_part: str) -> StorePath | None:
-        """`LocalOverlayStore::queryPathFromHashPart` (`local-overlay-store.cc:193`): the upper store, then the lower."""
+        """`LocalOverlayStore::queryPathFromHashPart` (`local-overlay-store.cc:180`): the upper store, then the lower."""
         found = await super().query_path_from_hash_part(hash_part)
         return found if found is not None else await self.lower.query_path_from_hash_part(hash_part)
 
     async def query_realisation(
         self, drv: str, output_name: str, *, by_path: bool
     ) -> tuple[StorePath, list[Signature]] | None:
-        """`LocalOverlayStore::queryRealisationUncached` (`local-overlay-store.cc:120`): the upper store, then the lower."""
+        """`LocalOverlayStore::queryRealisationUncached` (`local-overlay-store.cc:117`): the upper store, then the lower."""
         found = await super().query_realisation(drv, output_name, by_path=by_path)
         return found if found is not None else await self.lower.query_realisation(drv, output_name, by_path=by_path)
 
@@ -162,7 +179,7 @@ class OverlayEngine(StoreEngine):
         return [*await super().query_path_infos(upper), *await self.lower.query_path_infos(rest)]
 
     async def register_valid_paths(self, infos: Iterable[ValidPathInfo]) -> None:
-        """`LocalOverlayStore::registerValidPaths` (`local-overlay-store.cc:203`): the lower info first, then *infos*.
+        """`LocalOverlayStore::registerValidPaths` (`local-overlay-store.cc:189`): the lower info first, then *infos*.
 
         A path the lower store holds and the upper does not takes the lower
         info first, so the request updates that row.
@@ -183,3 +200,71 @@ class OverlayEngine(StoreEngine):
             lower_path, lower_sigs = found
             await super().register_drv_output(drv, output_name, str(lower_path), lower_sigs, by_path=by_path)
         await super().register_drv_output(drv, output_name, out_path, sigs, by_path=by_path)
+
+    async def delete_store_path(self, base_name: str) -> int:
+        """`LocalOverlayStore::deleteStorePath` (`local-overlay-store.cc:214`).
+
+        A path the upper layer lacks keeps its files. A path both layers hold
+        goes from the upper layer, so OverlayFS writes no whiteout, and the
+        store then needs a remount. Any other path goes through the mount.
+
+        NIX-DEFECT (#23): with no upper copy, Nix sets no `bytesFreed`, and
+        `deleteFromStore` (`gc.cc:564`) declares it without a value, so the
+        collector adds an undefined number to the bytes freed. Setting it to
+        0 there would fix it. pynixd counts 0; Lillecarl/nix#407.
+        """
+        if not await anyio.to_thread.run_sync(os.path.lexists, self.overlay.upper_path(base_name)):
+            return 0
+        if await self.lower.is_valid_path_uncached(f"{self.layout.store_dir}/{base_name}"):
+            freed = await anyio.to_thread.run_sync(collect.delete_path, self.overlay.upper_path(base_name))
+            self.remount_required = True
+            return freed
+        return await super().delete_store_path(base_name)
+
+    async def remount_if_necessary(self, report: Report) -> None:
+        """`LocalOverlayStore::remountIfNecessary` (`local-overlay-store.cc:284`): run `remount-hook` with the store directory.
+
+        A hook that fails keeps the flag, as Nix's exception does.
+        """
+        if not self.remount_required:
+            return
+        real_store_dir = self.layout.real_store_dir
+        hook = self.overlay.remount_hook
+        if hook is None:
+            await report(
+                Verbosity.WARN,
+                f"{WARNING_PREFIX}{collect.path_fmt(real_store_dir)} needs remounting, "
+                "set remount-hook to do this automatically",
+            )
+        else:
+            # `runProgram` reads the hook's output and passes its errors through.
+            done = await anyio.run_process([str(hook), str(real_store_dir)], check=False, stderr=None)
+            if done.returncode != 0:
+                raise PynixdError(f"program {collect.path_fmt(hook)} {status_text(done.returncode)}")
+        self.remount_required = False
+
+    async def optimise_store(
+        self, *, hold: Callable[[str], Awaitable[None]], report: Report | None = None
+    ) -> optimise.OptimiseStats:
+        """`LocalOverlayStore::optimiseStore` (`local-overlay-store.cc:240`): drop each upper copy of a lower path.
+
+        It hard-links nothing, takes no temporary root and prints no summary.
+        """
+        if not self.writes:
+            raise RuntimeError(f"store {self._name}: pynixd_writes is off, so pynixd optimises no store")
+        if not self.writable:
+            raise RuntimeError(f"store {self._name}: pynixd cannot write the store")
+        stats = optimise.OptimiseStats()
+        for path in await self.query_all_valid_paths():
+            if await self.lower.is_valid_path_uncached(path.path):
+                await self.delete_store_path(path.name)
+        await self.remount_if_necessary(report or _say_nothing)
+        return stats
+
+    async def collect_garbage(
+        self, options: collect.GCOptions, *, settings: collect.GCSettings, report: Report
+    ) -> collect.GCResults:
+        """`LocalOverlayStore::collectGarbage` (`local-overlay-store.cc:207`): collect, then remount."""
+        results = await super().collect_garbage(options, settings=settings, report=report)
+        await self.remount_if_necessary(report)
+        return results

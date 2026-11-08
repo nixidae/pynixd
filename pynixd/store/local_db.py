@@ -75,9 +75,8 @@ _OP_CODES = {op.name: op.code for op in STANDARD_OPERATIONS}
 _OP_NAMES = {op.code: op.name for op in STANDARD_OPERATIONS}
 _HASH_PART_LENGTH = 32  # `StorePath::HashLen`
 
-#: GC, optimise, verify and builds: on an overlay store each deletes through the upper layer, and the engine does not
-#: yet (nixidae/nixidae#1155).
-_OVERLAY_DAEMON_ONLY = frozenset({20, 34, 35, 36})
+#: Builds: pynixd's builder is untested on an overlay store (nixidae/nixidae#1155).
+_OVERLAY_DAEMON_ONLY = frozenset({36})
 
 #: The most of one value a shadow mismatch logs: `QueryAllValidPaths` answers the whole store.
 _LOGGED_CHARACTERS = 2000
@@ -222,7 +221,8 @@ class LocalDBStore(Store):
     An overlay store (`StoreLayout.overlay`) gets an `OverlayEngine`, which
     reads the lower store's database too. A read that must copy a lower path
     up, with `pynixd_writes` off, raises `LowerPathNeedsSync`, and the daemon
-    answers. `_OVERLAY_DAEMON_ONLY` stays the daemon's.
+    answers. A collection and an optimisation delete through the upper
+    layer and run the remount hook. `_OVERLAY_DAEMON_ONLY` stays the daemon's.
     """
 
     #: pynixd's answer to each operation it can answer, by op code.
@@ -321,10 +321,7 @@ class LocalDBStore(Store):
             if owned.writes and not spec.pynixd_writes:
                 raise ValueError(f"op_routes: {_OP_NAMES[op]} writes the store, and pynixd_writes is off")
             if op in _OVERLAY_DAEMON_ONLY and self.layout.overlay is not None:
-                raise ValueError(
-                    f"op_routes: {_OP_NAMES[op]} on an overlay store deletes through the upper layer, "
-                    f"and only the daemon does that"
-                )
+                raise ValueError(f"op_routes: on an overlay store, the daemon alone answers {_OP_NAMES[op]}")
         #: Whether pynixd itself may change the store (`LocalSocketStoreSpec.pynixd_writes`).
         self.pynixd_writes = spec.pynixd_writes
         # An answer that writes defaults to the daemon even with writes on: only a route set by hand takes it.
