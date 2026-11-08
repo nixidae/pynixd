@@ -10,23 +10,26 @@ import structlog
 from anyio.lowlevel import checkpoint
 
 from nix_daemon_protocol.add_multiple_to_store import AddMultipleToStoreRequest, AddMultipleToStoreResponse
+from pynixd_store.source import Pieces
 from pynixd_store.store_path import StorePath
 
 from .. import metrics
 from ..daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from ..exceptions import BackendError, leaves
 from ..serde.context import ReadContext
+from ..write_router import Write, WriteClient
 from .copied import as_copied
+from .local_db import LocalDBStore
 from .nar_reader import NarReader
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import AsyncIterator, Iterable
 
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
+    from pynixd_store.source import Source
 
     from ..connection import Connection
     from .daemon import DaemonStore
-    from .local_db import LocalDBStore
 
     type TransferEnd = DaemonStore | LocalDBStore
 
@@ -41,6 +44,8 @@ Enough to see a pattern, and not the whole closure in one log line."""
 _SELF_HEAL_ROUNDS: Final[int] = 4
 """Sends of one copy: the first, and one per path the destination refused
 after it reported the path valid. Issue #887."""
+
+_ADD_MULTIPLE: Final = Write(op="AddMultipleToStore")
 
 _INVALID_PATH = re.compile(r"path '(?:\x1b\[[0-9;]*m)?([^'\x1b]+)(?:\x1b\[[0-9;]*m)?' is not valid")
 """`InvalidPath` of Nix (`src/libstore/store-api.cc`), coloured or not."""
@@ -216,10 +221,20 @@ async def _stream_checked(
     log.debug("stream_paths_acquire_src", src=src.store_id, dst=dst.store_id)
     async with NarReader(src) as nars:
         log.debug("stream_paths_acquired_src", src=src.store_id, dst=dst.store_id, route=nars.route)
-        log.debug("stream_paths_acquire_dst", src=src.store_id, dst=dst.store_id)
-        async with dst.transfer_conn() as dst_conn:
-            log.debug("stream_paths_acquired_dst", src=src.store_id, dst=dst.store_id, conn_id=dst_conn.id)
-            await _stream_paths_over_conns(nars, dst_conn, to_transfer, cancel_event)
+        if isinstance(dst, LocalDBStore) and await dst.router.engine_takes(_ADD_MULTIPLE):
+            # The copy is an AddMultipleToStore into *dst*, so it takes that op's route.
+            await dst.router.add_multiple_to_store(
+                _ADD_MULTIPLE,
+                len(to_transfer),
+                _nars_of(nars, to_transfer, cancel_event),
+                dont_check_sigs=True,
+                client=WriteClient(),
+            )
+        else:
+            log.debug("stream_paths_acquire_dst", src=src.store_id, dst=dst.store_id)
+            async with dst.transfer_conn() as dst_conn:
+                log.debug("stream_paths_acquired_dst", src=src.store_id, dst=dst.store_id, conn_id=dst_conn.id)
+                await _stream_paths_over_conns(nars, dst_conn, to_transfer, cancel_event)
 
     moved = sum(info.info.nar_size for info in to_transfer)
     if peer_store_id is not None and direction is not None:
@@ -229,6 +244,17 @@ async def _stream_checked(
     # it: a copy is never `ultimate` (`daemon.cc:516`). nixidae/nixidae#1008.
     dst.add_path_infos([as_copied(info) for info in to_transfer])
     return moved
+
+
+async def _nars_of(
+    nars: NarReader, to_transfer: list[ValidPathInfo], cancel_event: anyio.Event | None
+) -> AsyncIterator[tuple[ValidPathInfo, Source]]:
+    for info in to_transfer:
+        if cancel_event and cancel_event.is_set():
+            log.info("stream_paths_transfer_cancelled")
+            return
+        async with Pieces(nars.read(info.path, info.info.nar_size)) as nar:
+            yield info, nar
 
 
 async def _stream_paths_over_conns(
