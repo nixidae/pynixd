@@ -320,6 +320,8 @@ class DaemonStore(Store):
         self.read_timeout = spec.read_timeout
         self.version: int = wire.PROTOCOL_VERSION
         self.nix_version: str = ""
+        #: Whether a Nix daemon answers this store. `LocalStore` turns it off for `LocalSocketStoreSpec.daemon`.
+        self.runs_daemon = True
         self.conn_counter = 0
 
         fm = spec._effective_feature_matrix()

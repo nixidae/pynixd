@@ -20,6 +20,8 @@ from nix_daemon_protocol.wire_time import Time
 from pynixd.op_routes import OpRoute
 from pynixd.write_router import Dump, Write, WriteClient, WriteRouter, _client_log, pynixd_import
 from pynixd_store.add import ImportSettings
+from pynixd_store.errors import PynixdError
+from pynixd_store.hintfmt import magenta
 from pynixd_store.source import Source
 
 STORE = "router-test"
@@ -61,6 +63,8 @@ class _Engine:
 
 
 class _Daemon:
+    runs = True
+
     def __init__(self) -> None:
         self.added: list[tuple[str, object]] = []
 
@@ -154,6 +158,27 @@ async def test_the_first_reason_sends_it_to_the_daemon(engine: dict[str, Any], w
     assert reason in why
     assert not await router.engine_takes(write)
     assert _fallthroughs(write.op) == before + 1
+
+
+@pytest.mark.parametrize(
+    ("engine", "write", "refusal"),
+    [
+        ({"writable": False}, Write(op="AddToStoreNar", repair=True), "the store database is not writable"),
+        (
+            {},
+            Write(op="AddMultipleToStore", info=_info("fixed:git:sha1:" + "0" * 40)),
+            f"experimental Nix feature '{magenta('git-hashing')}' is disabled; "
+            f"add '--extra-experimental-features {magenta('git-hashing')}' to enable it",
+        ),
+    ],
+)
+async def test_with_no_daemon_the_first_reason_refuses(engine: dict[str, Any], write: Write, refusal: str) -> None:
+    """`content-address.cc:17` and `experimental-features.cc:342`: Nix's own refusal of a Git address."""
+    daemon = _Daemon()
+    daemon.runs = False
+    with pytest.raises(PynixdError) as raised:
+        await _router(daemon=daemon, **engine).engine_takes(write)
+    assert str(raised.value) == refusal
 
 
 async def test_pynixd_imports_follow_add_to_store_nar() -> None:

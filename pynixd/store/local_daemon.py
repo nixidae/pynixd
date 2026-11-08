@@ -197,7 +197,6 @@ class LocalStore(DaemonStore):
             self.socket_path = self.layout.socket_path(socket_path.name)
 
         self.nix_bin = spec.nix_bin
-        #: `LocalSocketStoreSpec.daemon`: off, this client starts no daemon and opens no connection.
         self.runs_daemon = spec.daemon
         if not self.runs_daemon:
             self._features = set(_NO_DAEMON_FEATURES)

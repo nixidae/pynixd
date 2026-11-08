@@ -31,6 +31,8 @@ from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.verify_store import VerifyStoreResponse
 from pynixd_store.collect import GCOptions
 from pynixd_store.content_address import ContentAddress, Method, content_addressed_path, parse_method_algo
+from pynixd_store.errors import PynixdError
+from pynixd_store.hintfmt import magenta
 from pynixd_store.source import Metered
 
 from . import metrics
@@ -92,12 +94,15 @@ def _database(write: Write, facts: Facts) -> str | None:
     return None if facts.writable else "the store database is not writable"
 
 
+_NO_GIT_HASHING = "a Git content address without git-hashing"
+
+
 def _git_path(write: Write, facts: Facts) -> str | None:
     """Without `git-hashing` the daemon refuses a Git address, in Nix's words."""
     if facts.settings.git_hashing:
         return None
     if write.info is not None and str(write.info.info.ca).startswith("fixed:git:"):
-        return "a Git content address without git-hashing"
+        return _NO_GIT_HASHING
     return None
 
 
@@ -114,8 +119,24 @@ def _dump(write: Write, facts: Facts) -> str | None:
     except ValueError as error:
         return str(error)
     if method is Method.GIT and not facts.settings.git_hashing:
-        return "a Git content address without git-hashing"
+        return _NO_GIT_HASHING
     return None
+
+
+def _refusal(reason: str) -> str:
+    """What a store with no daemon answers a write that a daemon would take for *reason*.
+
+    For a Git address, Nix's own refusal: `ContentAddressMethod::parse`
+    requires the feature (`content-address.cc:17`), and `MissingExperimentalFeature`
+    words it (`experimental-features.cc:342`).
+    """
+    if reason == _NO_GIT_HASHING:
+        feature = magenta("git-hashing")
+        return (
+            f"experimental Nix feature '{feature}' is disabled; "
+            f"add '--extra-experimental-features {feature}' to enable it"
+        )
+    return reason
 
 
 def pynixd_import(info: ValidPathInfo, *, repair: bool = False) -> Write:
@@ -241,6 +262,8 @@ class WriteRouter:
         reason = await self.why_the_daemon(write)
         if reason is None:
             return True
+        if not self.daemon.runs:
+            raise PynixdError(_refusal(reason))
         subject = str(write.info.path) if write.info is not None else write.dump.name if write.dump else None
         log.info("write_fallthrough", op=write.op, subject=subject, reason=reason)
         metrics.OP_FALLTHROUGH.labels(store_id=self.store_id, op=write.op).inc()

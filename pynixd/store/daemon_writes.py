@@ -55,6 +55,11 @@ class DaemonWrites:
     def __init__(self, store: DaemonStore) -> None:
         self.store = store
 
+    @property
+    def runs(self) -> bool:
+        """Whether a daemon is there to take a write (`DaemonStore.runs_daemon`)."""
+        return self.store.runs_daemon
+
     async def add_indirect_root(self, path: str) -> AddIndirectRootResponse:
         """AddIndirectRoot (op 12). The answer carries the daemon's log lines."""
         response: AddIndirectRootResponse = await self.store.call(AddIndirectRootRequest(path=path))
