@@ -32,6 +32,7 @@ from pynixd_store.engine import StoreEngine, hashes_self_reference_positions
 from pynixd_store.hintfmt import magenta, show_error
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.nix_config import nix_environment, read_nix_config, read_nix_config_text, read_nix_version
+from pynixd_store.overlay_engine import LowerPathNeedsSync, OverlayEngine
 from pynixd_store.signing import SecretKey, hash_keyed_realisation_fingerprint, realisation_fingerprint
 
 from .. import metrics
@@ -73,6 +74,10 @@ log = structlog.get_logger(__name__)
 _OP_CODES = {op.name: op.code for op in STANDARD_OPERATIONS}
 _OP_NAMES = {op.code: op.name for op in STANDARD_OPERATIONS}
 _HASH_PART_LENGTH = 32  # `StorePath::HashLen`
+
+#: GC, optimise, verify and builds: on an overlay store each deletes through the upper layer, and the engine does not
+#: yet (nixidae/nixidae#1155).
+_OVERLAY_DAEMON_ONLY = frozenset({20, 34, 35, 36})
 
 #: The most of one value a shadow mismatch logs: `QueryAllValidPaths` answers the whole store.
 _LOGGED_CHARACTERS = 2000
@@ -214,18 +219,10 @@ class LocalDBStore(Store):
     and returns `None` when it is not. `execute` then asks the daemon, so a
     database pynixd cannot open costs correctness nothing.
 
-    **The fast paths are valid for a plain local store only. A
-    `local-overlay-store` must not use this class.** They read one database,
-    and an overlay store keeps its lower store's paths in a second one:
-    `LocalOverlayStore::isValidPathUncached` asks `LocalStore` first, then
-    `lowerStore`, and only then copies the lower path's info up with
-    `LocalStore::registerValidPath`. Reading the upper database alone would
-    report a valid lower path as invalid *and* skip the sync that would have
-    made it valid. The same applies to `queryPathInfoUncached`,
-    `queryReferrers`, `queryValidPaths` and `queryPathFromHashPart`, each of
-    which overlay overrides for the same reason.
-
-    `_refuses_a_database` is what keeps that from happening quietly.
+    An overlay store (`StoreLayout.overlay`) gets an `OverlayEngine`, which
+    reads the lower store's database too. A read that must copy a lower path
+    up, with `pynixd_writes` off, raises `LowerPathNeedsSync`, and the daemon
+    answers. `_OVERLAY_DAEMON_ONLY` stays the daemon's.
     """
 
     #: pynixd's answer to each operation it can answer, by op code.
@@ -287,7 +284,7 @@ class LocalDBStore(Store):
         self.gc_target_usage = spec.gc_target_usage
         self.gc_allow_execute = spec.gc_allow_execute
         #: pynixd's own local store (`docs/design/store-engine.md`).
-        self.engine = StoreEngine(
+        self.engine = (OverlayEngine if self.layout.overlay is not None else StoreEngine)(
             self.layout,
             writes=spec.pynixd_writes,
             read_config=lambda: read_nix_config(spec.nix_bin, nix_environment(self.layout, spec.extra_env)),
@@ -323,6 +320,11 @@ class LocalDBStore(Store):
                 raise ValueError(f"op_routes: {_OP_NAMES[op]} writes, so it cannot run beside the daemon in shadow")
             if owned.writes and not spec.pynixd_writes:
                 raise ValueError(f"op_routes: {_OP_NAMES[op]} writes the store, and pynixd_writes is off")
+            if op in _OVERLAY_DAEMON_ONLY and self.layout.overlay is not None:
+                raise ValueError(
+                    f"op_routes: {_OP_NAMES[op]} on an overlay store deletes through the upper layer, "
+                    f"and only the daemon does that"
+                )
         #: Whether pynixd itself may change the store (`LocalSocketStoreSpec.pynixd_writes`).
         self.pynixd_writes = spec.pynixd_writes
         # An answer that writes defaults to the daemon even with writes on: only a route set by hand takes it.
@@ -462,11 +464,6 @@ class LocalDBStore(Store):
                 f"the daemon is started with {overlay!r}; the store spec's `overlay` names an overlay "
                 f"store, so that pynixd reads the lower store too"
             )
-        if self.layout.overlay is not None:
-            return (
-                "the store is an overlay store, and the SQLite fast paths read one database. "
-                "It keeps its lower paths in another one, so a fast path would call a valid path invalid."
-            )
         return None
 
     @contextlib.asynccontextmanager
@@ -483,13 +480,22 @@ class LocalDBStore(Store):
             self.engine.db = LocalStoreDB.inactive(self.layout)
         else:
             self.engine.db = await LocalStoreDB.open(self.layout)
+            if isinstance(self.engine, OverlayEngine) and self.engine.db.active:
+                self.engine.lower.db = await LocalStoreDB.open(self.engine.lower.layout, read_only=True)
+                if not self.engine.lower.db.active:
+                    # The upper database alone would call each lower path invalid.
+                    log.warning("lower_store_db_unavailable", store_id=str(self.store_id))
+                    await self.engine.db.close()
+                    self.engine.db = LocalStoreDB.inactive(self.layout)
         self._refuse_routes_without_a_database()
         self.engine.hashes_self_reference_positions = hashes_self_reference_positions(self._daemon.nix_version)
         self.db.start(self._background)
 
     async def close(self) -> None:
-        """Close the SQLite database."""
+        """Close the SQLite databases."""
         await self.db.close()
+        if isinstance(self.engine, OverlayEngine):
+            await self.engine.lower.db.close()
 
     async def execute(
         self,
@@ -553,7 +559,10 @@ class LocalDBStore(Store):
         if not self.db.active:
             return None
         method = getattr(self, owned.method)
-        return await method(request, client=client, suppress_last=suppress_last)
+        try:
+            return await method(request, client=client, suppress_last=suppress_last)
+        except LowerPathNeedsSync:
+            return None
 
     async def _shadow(self, owned: Owned, request: WireRequest, client: ClientConn | None, theirs: Any) -> None:
         """Compute pynixd's answer beside the daemon's, and count how they compare.

@@ -668,6 +668,8 @@ class LocalStoreDB:
         cls,
         layout: StoreLayout,
         reference_flush_interval: float = _DEFAULT_REFERENCE_FLUSH_INTERVAL,
+        *,
+        read_only: bool = False,
     ) -> LocalStoreDB:
         """Open the Nix store database. Returns an instance (possibly with no DB).
 
@@ -675,14 +677,15 @@ class LocalStoreDB:
         inactive instance, every fast path of `LocalDBStore` declines, and
         `DaemonStore.execute` uses the wire. That is what lets `use_db` default
         to true.
+
+        *read_only* opens a database pynixd must not change even where it
+        can, such as the lower store of an overlay: no migration writes to it.
         """
         db_path = resolve_db_path(layout)
         if db_path is None:
             return cls.inactive(layout, reference_flush_interval=reference_flush_interval)
 
-        db_dir = db_path.parent
-        can_write = os.access(db_dir, os.W_OK)
-        read_only = not can_write
+        read_only = read_only or not os.access(db_path.parent, os.W_OK)
 
         instance = cls(
             db_path=db_path,

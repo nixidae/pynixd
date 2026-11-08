@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from nix_daemon_protocol.ids import StoreId
 from pynixd.config import LocalSocketStoreSpec, OverlaySpec
 from pynixd.store.local_db import LocalDBStore
+from pynixd_store.overlay_engine import OverlayEngine
 
 
 def _spec(*, check_mount: bool = True, remount_hook: Path | None = None) -> LocalSocketStoreSpec:
@@ -75,7 +76,17 @@ def test_a_relocated_store_takes_no_overlay() -> None:
         )
 
 
-def test_an_overlay_store_uses_no_fast_path_yet() -> None:
-    refusal = LocalDBStore(_spec())._refuses_a_database()
-    assert refusal is not None
-    assert "overlay store" in refusal
+def test_an_overlay_store_reads_the_lower_store_too() -> None:
+    store = LocalDBStore(_spec())
+    assert store._refuses_a_database() is None
+    assert isinstance(store.engine, OverlayEngine)
+    assert store.engine.lower.layout.real_store_dir == Path("/s/lower/nix/store")
+    assert store.engine.lower.writes is False
+
+
+@pytest.mark.parametrize("op", ["CollectGarbage", "OptimiseStore", "VerifyStore", "BuildDerivation"])
+def test_an_overlay_store_leaves_each_delete_to_the_daemon(op: str) -> None:
+    """`LocalOverlayStore::deleteStorePath` (`local-overlay-store.cc:228`) deletes through the upper layer."""
+    spec = _spec().model_copy(update={"pynixd_writes": True, "op_routes": {op: "pynixd"}})
+    with pytest.raises(ValueError, match="only the daemon does that"):
+        LocalDBStore(spec)
