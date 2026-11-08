@@ -82,9 +82,3 @@ def test_an_overlay_store_reads_the_lower_store_too() -> None:
     assert isinstance(store.engine, OverlayEngine)
     assert store.engine.lower.layout.real_store_dir == Path("/s/lower/nix/store")
     assert store.engine.lower.writes is False
-
-
-def test_an_overlay_store_leaves_builds_to_the_daemon() -> None:
-    spec = _spec().model_copy(update={"pynixd_writes": True, "op_routes": {"BuildDerivation": "pynixd"}})
-    with pytest.raises(ValueError, match="the daemon alone answers BuildDerivation"):
-        LocalDBStore(spec)

@@ -51,7 +51,8 @@ async def stores() -> AsyncIterator[Stores]:
     volume = HERE / "volume"
     volume.mkdir(parents=True, exist_ok=True)
     # One file system for lowerdir, upperdir and workdir, as `setupStoreDirs` makes one.
-    await run_subproc(["mount", "-t", "tmpfs", "tmpfs", volume])
+    # A tmpfs is 1777 by default, and a chroot build refuses a world-writable store parent.
+    await run_subproc(["mount", "-t", "tmpfs", "-o", "mode=0755", "tmpfs", volume])
     try:
         found = Stores(lower=volume / "lower", upper=volume / "upper", merged=volume / "merged")
         for directory in (found.lower / "nix" / "store", found.upper, found.merged / "nix" / "store", volume / "work"):
@@ -84,9 +85,8 @@ async def _serve(
         store_id="local",
         store_path=stores.merged,
         no_probe=True,
-        nix_config=for_test_store(substituters=()),
+        nix_config=spec.pop("nix_config", None) or for_test_store(substituters=()),
         overlay=OverlaySpec(lower_store=stores.lower, upper_layer=stores.upper, remount_hook=remount_hook),
-        op_routes={"BuildDerivation": "daemon", **spec.pop("op_routes", {})},
         **spec,
     )
     async with Server(
@@ -233,3 +233,45 @@ async def test_delete_goes_through_the_layer_that_holds_the_path(
     assert not (stores.upper / Path(upper).name).exists()
     assert not (stores.merged / "nix" / "store" / Path(upper).name).exists()
     assert (stores.lower / "nix" / "store" / Path(duplicate).name).exists()
+
+
+def _build_fallthroughs() -> float:
+    return (
+        REGISTRY.get_sample_value("pynixd_op_fallthrough_total", {"store_id": "local", "op": "BuildDerivation"}) or 0.0
+    )
+
+
+@pytest.mark.parametrize(
+    ("route", "spec"),
+    [
+        ("pynixd", {"pynixd_writes": True, "op_routes": {"BuildDerivation": "pynixd"}}),
+        ("daemon", {"use_db": False}),
+    ],
+)
+async def test_a_build_writes_its_output_to_the_upper_layer(
+    tmp_path: Path, stores: Stores, route: str, spec: dict[str, Any]
+) -> None:
+    """A build on an overlay store is a `LocalStore` build into the merged directory.
+
+    Its input stays in the lower layer. The client's `builtins.storePath`
+    copies the input's info into the upper database first, through
+    `isValidPathUncached` (`local-overlay-store.cc:157`).
+    """
+    _outer, inner = await _lower_closure(stores)
+    expr = (
+        'derivation { name = "over-lower"; system = builtins.currentSystem; builder = "/bin/sh"; '
+        f'args = [ "-c" "echo ${{builtins.storePath "{inner}"}} > $out" ]; }}'
+    )
+    nix_config = for_test_store(substituters=())
+    nix_config.sandbox = "false"
+    before = _build_fallthroughs()
+
+    async with _serve(tmp_path, stores, nix_config=nix_config, **spec) as url:
+        out = await _nix("build", "--store", url, "--impure", "--no-link", "--print-out-paths", "--expr", expr)
+        assert await _nix("store", "cat", "--store", url, out) == inner
+
+    assert _build_fallthroughs() == before, "the daemon built the pynixd route's build"
+    assert (stores.upper / Path(out).name).is_file()
+    assert not (stores.upper / Path(inner).name).exists()
+    assert (out, inner) in _upper_rows(stores)
+    assert (inner, None) in _upper_rows(stores)
