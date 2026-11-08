@@ -45,14 +45,14 @@ async def test_stream_nar() -> None:
 
     # Source store is the system store (/)
     src_store = LocalSocketStore(
-        make_test_spec(store_id="system", store_path=Path("/"), no_probe=True),
+        make_test_spec(daemon=True, store_id="system", store_path=Path("/"), no_probe=True),
     )
 
     # Destination store is a temporary store
     dst_path = STORE_PREFIX / "test-stream-nar"
     rmtree_robust(dst_path)
     dst_store = LocalSocketStore(
-        make_test_spec(store_id="test-stream-nar", store_path=dst_path, no_probe=True),
+        make_test_spec(daemon=True, store_id="test-stream-nar", store_path=dst_path, no_probe=True),
     )
 
     async with src_store, dst_store:

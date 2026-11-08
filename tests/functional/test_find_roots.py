@@ -27,7 +27,8 @@ if TYPE_CHECKING:
 
 @asynccontextmanager
 async def _pynixd(store_path: Path) -> AsyncIterator[Server]:
-    spec = make_test_spec(store_id="local", store_path=store_path, no_probe=True)
+    # The daemon's answer is the reference.
+    spec = make_test_spec(store_id="local", store_path=store_path, no_probe=True, daemon=True)
     stores: dict[StoreId, Store] = {StoreId("local"): LocalDBStore(spec)}
     async with Server(stores=stores, ssh_port=None, http_port=None) as server:
         yield server

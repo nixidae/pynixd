@@ -37,6 +37,7 @@ async def test_feature_probe_in_memory() -> None:
     rmtree_robust(store_path)
     store = LocalSocketStore(
         make_test_spec(
+            daemon=True,
             store_id="feature-probe",
             store_path=store_path,
             nix_config=FEATURE_NIX_CONFIG,

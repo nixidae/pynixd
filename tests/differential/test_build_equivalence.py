@@ -493,6 +493,7 @@ async def test_a_client_fetches_a_backend_built_output_through_pynixd(
     builder_spec = make_test_spec(
         store_id="builder",
         store_path=roots.builder,
+        daemon=True,
         extra_env=extra_env,
         no_probe=True,
     )

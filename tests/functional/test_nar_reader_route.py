@@ -43,7 +43,7 @@ async def test_a_copy_reads_the_source_on_the_route_of_op_38(tmp_path: Path, rou
     src = LocalDBStore(
         make_test_spec(store_id=store_id, store_path=src_root, no_probe=True, op_routes={"NarFromPath": route})
     )
-    dst = LocalSocketStore(make_test_spec(store_id=f"{store_id}-dst", store_path=dst_root, no_probe=True))
+    dst = LocalSocketStore(make_test_spec(daemon=True, store_id=f"{store_id}-dst", store_path=dst_root, no_probe=True))
     async with src, dst:
         _, written_before = src.daemon_client.transfer_pool.traffic_totals()
         matches_before = _shadow_matches(store_id)

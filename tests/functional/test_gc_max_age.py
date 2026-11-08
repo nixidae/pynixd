@@ -116,7 +116,10 @@ async def _pynixd(lab: _Lab, op_routes: dict[str, OpRoute] | None = None) -> Asy
     the store, and the plan would then be measured against a store that grew
     under it.
     """
+    # A route to the daemon needs one: `PYNIXD_NO_DAEMON` must not take it.
+    daemon_route: dict[str, Any] = {"daemon": True} if OpRoute.daemon in (op_routes or {}).values() else {}
     spec = make_test_spec(
+        **daemon_route,
         store_id="local",
         store_path=lab.store_path,
         no_probe=True,

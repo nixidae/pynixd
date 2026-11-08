@@ -106,6 +106,6 @@ def _local_controller(tmp_path: Path, builder_pub: Path) -> tuple[PynixdSettings
     store_path = STORE_PREFIX / "state-controller"
     rmtree_robust(store_path)
     local = LocalSocketStore(
-        make_test_spec(store_id="local", store_path=store_path, no_probe=True),
+        make_test_spec(daemon=True, store_id="local", store_path=store_path, no_probe=True),
     )
     return _controller_settings(tmp_path, builder_pub), local

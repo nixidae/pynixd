@@ -66,7 +66,7 @@ def _builder_settings(
     builder_path = STORE_PREFIX / store_id
     rmtree_robust(builder_path)
     builder_local = LocalSocketStore(
-        make_test_spec(store_id="local", store_path=builder_path, no_probe=True),
+        make_test_spec(daemon=True, store_id="local", store_path=builder_path, no_probe=True),
     )
     settings = PynixdSettings(
         ssh_port=None,
@@ -183,7 +183,7 @@ def _controller_without_local_builds(tmp_path: Path, builder_pub: Path) -> tuple
     store_path = STORE_PREFIX / "delegation-controller"
     rmtree_robust(store_path)
     local = LocalSocketStore(
-        make_test_spec(store_id="local", store_path=store_path, no_probe=True, feature_matrix={}),
+        make_test_spec(daemon=True, store_id="local", store_path=store_path, no_probe=True, feature_matrix={}),
     )
     return _controller_settings(tmp_path, builder_pub), local
 

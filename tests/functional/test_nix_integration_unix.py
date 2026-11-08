@@ -32,7 +32,7 @@ async def pynixd_server(tmp_path: Path) -> AsyncIterator[tuple[Server, Path, Pat
     socket_path = tmp_path / "pynixd.sock"
 
     local_store = LocalSocketStore(
-        make_test_spec(store_id="local", store_path=store_path, no_probe=True),
+        make_test_spec(daemon=True, store_id="local", store_path=store_path, no_probe=True),
     )
 
     async with Server(

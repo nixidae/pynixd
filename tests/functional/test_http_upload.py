@@ -75,7 +75,7 @@ async def test_http_upload(
 
     # Get its NAR and narinfo from root store
     root_store = LocalSocketStore(
-        make_test_spec(store_id="root", store_path=Path("/"), no_probe=True),
+        make_test_spec(daemon=True, store_id="root", store_path=Path("/"), no_probe=True),
     )
     info_resp = await root_store.execute(QueryPathInfoRequest(path=serde_path(path)))
     assert info_resp.valid
