@@ -80,6 +80,7 @@ if TYPE_CHECKING:
     from nix_daemon_protocol.ids import BuildId, RequestId, StoreId
     from nix_daemon_protocol.logs import LogMessage
     from pynixd_store.builder.settings import BuildSettings
+    from pynixd_store.temp_roots import TempRoots
 
     from .answer import Answer
     from .connection import ClientConn, Connection
@@ -103,6 +104,8 @@ _MISSING_BYTES_TIMEOUT = 5.0
 _PULL_BACKOFF_SECONDS = 2.0
 """The first wait before a pull again; it doubles. A test sets 0, not a
 patched `anyio.sleep`: nixidae/nixidae#1019."""
+_ROOTS_CLOSE_SECONDS = 10.0
+"""The bound on releasing a build's roots on a store with no daemon, under a shield."""
 
 
 _MACHINE_FAULTS = (
@@ -159,6 +162,13 @@ def output_paths(build: QueuedBuild, resp: BuildDerivationResponse) -> StorePath
     ca_paths = {StorePath(str(r.out_path)).with_store_prefix() for r in realised.values() if r.out_path}
     static_paths = {p for p in build.request.derivation.output_paths().values() if p != StorePath("")}
     return static_paths | ca_paths
+
+
+async def _hold(roots: TempRoots, paths: Iterable[StorePath], store_id: StoreId) -> None:
+    """Hold *paths* on a store with no daemon, which has no other way to hold them."""
+    for path in paths:
+        if not await roots.add(path):
+            raise BackendError(f"pynixd: store {store_id} cannot hold '{path}' against its collector")
 
 
 async def add_temp_roots(conn: Connection, paths: StorePathSet) -> None:
@@ -1253,8 +1263,13 @@ class Scheduler:
                     raise BackendError(
                         f"pynixd: store {store.store_id} runs no Nix daemon, and pynixd cannot build there"
                     )
-                await self._send_inputs(build, other)
-                await self._build_here(build, store, other, settings)
+                roots = other.engine.temp_roots()
+                try:
+                    await self._send_inputs(build, other, roots)
+                    await self._build_here(build, store, other, settings, roots)
+                finally:
+                    with anyio.CancelScope(shield=True), anyio.move_on_after(_ROOTS_CLOSE_SECONDS):
+                        await roots.close()
                 return
             async with contextlib.AsyncExitStack() as held:
                 async with store.build_conn(builder_options(build.options, store, self.local_builder)) as conn:
@@ -1330,14 +1345,19 @@ class Scheduler:
             self.trigger()
 
     async def _build_here(
-        self, build: QueuedBuild, store: DaemonStore, local: LocalDBStore, settings: BuildSettings
+        self,
+        build: QueuedBuild,
+        store: DaemonStore,
+        local: LocalDBStore,
+        settings: BuildSettings,
+        roots: TempRoots | None = None,
     ) -> None:
         """pynixd's own sandbox builds it into *local* (`docs/design/builder.md`).
 
         Into the local store, nothing is pulled and no worker of the daemon
-        holds a root. Into another local store, which has no daemon, the
-        outputs are pulled as from a builder. The log is fanned out after the
-        build, as `_execute` does.
+        holds a root. Into another local store, which has no daemon, *roots*
+        hold the outputs there, and they are pulled as from a builder. The
+        log is fanned out after the build, as `_execute` does.
         """
         observation = build.observation = BuildObservation(
             store_id=str(store.store_id), status=-1, queued_ms=_ms_since(build.enqueued_at)
@@ -1363,8 +1383,10 @@ class Scheduler:
         observation.build_ms = _ms_since(build.started_at)
         for message in messages:
             await build.post_log_and_fanout(message)
-        if result_succeeded(resp.result) and local is not self.local_store:
+        if result_succeeded(resp.result) and roots is not None:
             try:
+                # Until the pull ends, as `_hold_outputs` holds them on a builder.
+                await _hold(roots, output_paths(build, resp), local.store_id)
                 await stream_paths_store_to_store(
                     local, self.local_store, output_paths(build, resp), peer_store_id=store.store_id, direction="in"
                 )
@@ -1385,13 +1407,17 @@ class Scheduler:
         await self.queue.complete(build.build_id, resp)
         self.trigger()
 
-    async def _send_inputs(self, build: QueuedBuild, to: LocalDBStore) -> None:
+    async def _send_inputs(self, build: QueuedBuild, to: LocalDBStore, roots: TempRoots) -> None:
         """Copy the input closure that *to* lacks, before pynixd builds into it.
 
-        No substitution, unlike a push to a builder (nixidae/nixidae#1074): the
-        local store holds every input, and both stores share this machine's disk.
+        *roots* hold the whole closure on *to* first, as `_hold_inputs_on` does
+        on a builder. No substitution, unlike a push to a builder
+        (nixidae/nixidae#1074): the local store holds every input, and both
+        stores share this machine's disk.
         """
         inputs = {StorePath(path=str(p)) for p in build.request.derivation.input_srcs}
+        closure = await self.local_store.execute(QueryClosureWithInfoRequest(paths=inputs), client=None)
+        await _hold(roots, inputs | {info.path for info in closure.infos}, to.store_id)
         sent = await stream_paths_store_to_store(
             self.local_store, to, inputs, peer_store_id=to.store_id, direction="out"
         )
