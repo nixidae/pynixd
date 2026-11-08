@@ -499,7 +499,7 @@ class LocalDBStore(Store):
             if not self._daemon.runs_daemon:
                 # A daemon opens its store when it starts; with none, pynixd opens it.
                 self._big_lock = await anyio.to_thread.run_sync(
-                    open_local_store, self.layout, await self.engine.nix_config()
+                    open_local_store, self.layout, await self.engine.nix_config(), self._daemon.nix_version
                 )
             self.engine.db = await LocalStoreDB.open(self.layout)
             if isinstance(self.engine, OverlayEngine) and self.engine.db.active:

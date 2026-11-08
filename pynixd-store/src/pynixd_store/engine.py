@@ -32,6 +32,7 @@ from .drv_parser import read_drv_file
 from .hintfmt import WARNING_PREFIX, magenta, show_error
 from .liveness import unlink_stale_auto_roots, walk_roots
 from .local_store_db import LocalStoreDB
+from .nix_config import nix_at_least
 from .queries import (
     IS_VALID_PATH,
     QUERY_ALL_VALID_PATHS,
@@ -90,10 +91,7 @@ def hashes_self_reference_positions(nix_version: str) -> bool:
 
     A version that does not parse counts as a new one.
     """
-    parts = nix_version.split(".")[:2]
-    if len(parts) < 2 or not all(part.isdigit() for part in parts):
-        return True
-    return (int(parts[0]), int(parts[1])) >= (2, 35)
+    return nix_at_least(nix_version, 2, 35)
 
 
 class StoreEngine:

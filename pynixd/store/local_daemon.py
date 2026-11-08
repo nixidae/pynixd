@@ -22,7 +22,7 @@ import structlog
 
 from nix_daemon_protocol.constants import FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS, FEATURE_REALISATION_WITH_PATH
 from nix_daemon_protocol.store_dir import on_disk
-from pynixd_store.nix_config import nix_environment, read_nix_config, read_nix_version
+from pynixd_store.nix_config import nix_at_least, nix_environment, read_nix_config, read_nix_version
 from pynixd_store.store_path import StorePath
 
 from ..agent import local_monitor
@@ -76,9 +76,9 @@ _DAEMON_POLL_INTERVAL = 0.05
 _NO_DAEMON_FEATURES = frozenset({FEATURE_REALISATION_WITH_PATH, FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS})
 """What a store with no daemon offers: `WorkerProto::latest` of Nix 2.35 (`worker-protocol.cc:20`).
 
-`open_local_store` gives the store Nix 2.35's schema, so its realisations are in
-`BuildTraceV3`, keyed by derivation path. Without the first feature pynixd reads
-the `Realisations` table of Nix 2.34, which that schema lacks.
+`open_local_store` gives a store of Nix 2.35 its schema, so its realisations are
+in `BuildTraceV3`, keyed by derivation path. A store of Nix 2.34 offers none: its
+schema has the `Realisations` table, keyed by the derivation's hash.
 """
 
 # `_SUN_PATH_MAX` lives in `..unix_socket`, which owns the length policy:
@@ -243,6 +243,9 @@ class LocalStore(DaemonStore):
         await self.ensure_daemon()
         if not self.runs_daemon:
             self.nix_version = await read_nix_version(self.nix_bin, nix_environment(self.layout, self.extra_env))
+            # `WorkerProto::latest` of Nix 2.34 has no features (`worker-protocol.cc:17` of 2.34).
+            if not nix_at_least(self.nix_version, 2, 35):
+                self._features = set()
         if (
             (not self.managed or not self.runs_daemon)
             and self._feature_matrix is None

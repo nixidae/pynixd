@@ -2,7 +2,9 @@
 
 A daemon makes its store when it starts. A store with no daemon under it gets
 the same directories, database, schema and lock from pynixd. Nix 2.35 is the
-reference: schema version 10 and its two migrations.
+reference: schema version 10 and its two migrations. A store of Nix 2.34 keeps
+`IndexReferrer` and takes 2.34's one migration, whose realisations are keyed by
+the derivation's hash.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from .errors import PynixdError
+from .nix_config import nix_at_least
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -82,6 +85,54 @@ create table if not exists BuildTraceV3 (
 create index if not exists IndexBuildTraceV3 on BuildTraceV3(drvPath, outputName);
 """
 
+#: `ca-specific-schema.sql`, as Nix 2.34 ships it.
+CA_SCHEMA_2_34 = """
+-- Extension of the sql schema for content-addressing derivations.
+-- Won't be loaded unless the experimental feature `ca-derivations`
+-- is enabled
+
+create table if not exists Realisations (
+    id integer primary key autoincrement not null,
+    drvPath text not null,
+    outputName text not null, -- symbolic output id, usually "out"
+    outputPath integer not null,
+    signatures text, -- space-separated list
+    foreign key (outputPath) references ValidPaths(id) on delete cascade
+);
+
+create index if not exists IndexRealisations on Realisations(drvPath, outputName);
+
+-- We can end-up in a weird edge-case where a path depends on itself because
+-- it’s an output of a CA derivation, that happens to be the same as one of its
+-- dependencies.
+-- In that case we have a dependency loop (path -> realisation1 -> realisation2
+-- -> path) that we need to break by removing the dependencies between the
+-- realisations
+create trigger if not exists DeleteSelfRefsViaRealisations before delete on ValidPaths
+  begin
+    delete from RealisationsRefs where realisationReference in (
+      select id from Realisations where outputPath = old.id
+    );
+  end;
+
+create table if not exists RealisationsRefs (
+    referrer integer not null,
+    realisationReference integer,
+    foreign key (referrer) references Realisations(id) on delete cascade,
+    foreign key (realisationReference) references Realisations(id) on delete restrict
+);
+-- used by deletion trigger
+create index if not exists IndexRealisationsRefsRealisationReference on RealisationsRefs(realisationReference);
+
+-- used by QueryRealisationReferences
+create index if not exists IndexRealisationsRefs on RealisationsRefs(referrer);
+-- used by cascade deletion when ValidPaths is deleted
+create index if not exists IndexRealisationsRefsOnOutputPath on Realisations(outputPath);
+"""  # noqa: RUF001 -- Nix 2.34's file, byte for byte
+
+#: The index of `schema.sql` in Nix 2.34 that Nix 2.35 drops (`20260309-drop-redundant-indexreferrer`).
+INDEX_REFERRER_2_34 = "create index if not exists IndexReferrer on Refs(referrer);"
+
 _RESERVED_SIZE = 8 * 1024 * 1024  # `gc-reserved-space` (`local-settings.hh:46`)
 
 
@@ -90,10 +141,13 @@ def _value(config: Mapping[str, Any], name: str, default: Any) -> Any:
     return default if entry is None else entry["value"]
 
 
-def _migrations(config: Mapping[str, Any]) -> list[tuple[str, str]]:
-    """`upgradeDBSchema` (`local-store.cc:582`): each migration Nix runs on this configuration."""
+def _migrations(config: Mapping[str, Any], nix_version: str) -> list[tuple[str, str]]:
+    """`upgradeDBSchema` (`local-store.cc:582`): each migration a Nix of *nix_version* runs on this configuration."""
+    ca = "ca-derivations" in _value(config, "experimental-features", ())
+    if not nix_at_least(nix_version, 2, 35):
+        return [("20220326-ca-derivations", CA_SCHEMA_2_34)] if ca else []
     found = []
-    if "ca-derivations" in _value(config, "experimental-features", ()):
+    if ca:
         found.append(("20251017-ca-derivations", CA_SCHEMA))
     found.append(("20260309-drop-redundant-indexreferrer", "drop index if exists IndexReferrer"))
     return found
@@ -161,7 +215,7 @@ def _schema(path: Path) -> int:
     return int(text)
 
 
-def _open_db(layout: StoreLayout, config: Mapping[str, Any], *, create: bool) -> sqlite3.Connection:
+def _open_db(layout: StoreLayout, config: Mapping[str, Any], nix_version: str, *, create: bool) -> sqlite3.Connection:
     """`openDB` (`local-store.cc:503`): the pragmas Nix sets, and the schema on *create*."""
     uri = f"file:{layout.db_path}" + ("" if create else "?mode=rw")
     db = sqlite3.connect(uri, uri=True, isolation_level=None)
@@ -175,21 +229,23 @@ def _open_db(layout: StoreLayout, config: Mapping[str, Any], *, create: bool) ->
         db.execute("pragma wal_autocheckpoint = 40000")
     if create:
         db.executescript(SCHEMA)
+        if not nix_at_least(nix_version, 2, 35):
+            db.executescript(INDEX_REFERRER_2_34)
     return db
 
 
-def _upgrade(db: sqlite3.Connection, config: Mapping[str, Any]) -> list[tuple[str, str]]:
+def _upgrade(db: sqlite3.Connection, config: Mapping[str, Any], nix_version: str) -> list[tuple[str, str]]:
     """The migrations of `upgradeDBSchema` this database lacks, with `SchemaMigrations` made."""
     if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='SchemaMigrations'").fetchone() is None:
         db.execute("create table SchemaMigrations (migration text primary key not null)")
     done = {row[0] for row in db.execute("select migration from SchemaMigrations")}
-    return [(name, statement) for name, statement in _migrations(config) if name not in done]
+    return [(name, statement) for name, statement in _migrations(config, nix_version) if name not in done]
 
 
-def open_local_store(layout: StoreLayout, config: Mapping[str, Any]) -> int:
+def open_local_store(layout: StoreLayout, config: Mapping[str, Any], nix_version: str) -> int:
     """Make what the store lacks, and return the big lock, held shared for as long as the store is open.
 
-    *config* is `nix config show --json` of the store's Nix. It blocks: run it in a thread.
+    *config* is `nix config show --json` of the store's Nix, and *nix_version* its version. It blocks: run it in a thread.
     """
     _create_dirs(layout, config)
     db_dir = layout.db_path.parent
@@ -204,13 +260,13 @@ def open_local_store(layout: StoreLayout, config: Mapping[str, Any]) -> int:
         if 0 < current < SCHEMA_VERSION:
             # Nix upgrades such a store under the big lock; only a Nix older than 2.4 leaves one.
             raise PynixdError(f"pynixd opens no store of schema version {current}; open it once with Nix")
-        db = _open_db(layout, config, create=current == 0)
+        db = _open_db(layout, config, nix_version, create=current == 0)
         try:
             if current == 0:
                 _write_synced(schema_path, f"{SCHEMA_VERSION}".encode())
-            if pending := _upgrade(db, config):
+            if pending := _upgrade(db, config, nix_version):
                 fcntl.flock(lock, fcntl.LOCK_EX)
-                for name, statement in _upgrade(db, config):
+                for name, statement in _upgrade(db, config, nix_version):
                     db.executescript(
                         f"begin;\n{statement};\ninsert or ignore into SchemaMigrations values('{name}');\ncommit;"
                     )

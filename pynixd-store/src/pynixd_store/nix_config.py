@@ -75,3 +75,11 @@ async def read_nix_version(nix_bin: str, env: Mapping[str, str]) -> str:
             f"`nix --version` failed with code {result.returncode}: {result.stderr.decode(errors='replace')}"
         )
     return result.stdout.decode().split()[-1]
+
+
+def nix_at_least(nix_version: str, major: int, minor: int) -> bool:
+    """Whether a Nix of *nix_version* is *major*.*minor* or newer. A version that does not parse counts as a new one."""
+    parts = nix_version.split(".")[:2]
+    if len(parts) < 2 or not all(part.isdigit() for part in parts):
+        return True
+    return (int(parts[0]), int(parts[1])) >= (major, minor)
