@@ -332,8 +332,8 @@ class LocalDBStore(Store):
             )
             for op, owned in self.OWNED.items()
         }
-        #: The big lock (`open_local_store`), held shared while a store with no daemon is open.
-        self._big_lock: int | None = None
+        #: Each layer's big lock (`open_local_store`), held shared while a store with no daemon is open.
+        self._big_locks: list[int] = []
         #: Who writes: the engine or the daemon (`write_router.py`).
         self.router = WriteRouter(
             self.routes, self.engine, DaemonWrites(self._daemon), str(self.store_id), self.add_path_info
@@ -497,10 +497,16 @@ class LocalDBStore(Store):
             self.engine.db = LocalStoreDB.inactive(self.layout)
         else:
             if not self._daemon.runs_daemon:
-                # A daemon opens its store when it starts; with none, pynixd opens it.
-                self._big_lock = await anyio.to_thread.run_sync(
-                    open_local_store, self.layout, await self.engine.nix_config(), self._daemon.nix_version
-                )
+                # A daemon opens its store when it starts; with none, pynixd opens it. An overlay
+                # opens its lower store as a plain local store, which makes it (`local-overlay-store.cc:50`).
+                config = await self.engine.nix_config()
+                layouts = [self.layout]
+                if isinstance(self.engine, OverlayEngine):
+                    layouts.append(self.engine.lower.layout)
+                for layout in layouts:
+                    self._big_locks.append(
+                        await anyio.to_thread.run_sync(open_local_store, layout, config, self._daemon.nix_version)
+                    )
             self.engine.db = await LocalStoreDB.open(self.layout)
             if isinstance(self.engine, OverlayEngine) and self.engine.db.active:
                 self.engine.lower.db = await LocalStoreDB.open(self.engine.lower.layout, read_only=True)
@@ -518,9 +524,8 @@ class LocalDBStore(Store):
         await self.db.close()
         if isinstance(self.engine, OverlayEngine):
             await self.engine.lower.db.close()
-        if self._big_lock is not None:
-            os.close(self._big_lock)
-            self._big_lock = None
+        while self._big_locks:
+            os.close(self._big_locks.pop())
 
     async def execute(
         self,
