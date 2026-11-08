@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from itertools import batched
 from typing import TYPE_CHECKING
 
@@ -58,6 +58,7 @@ from .store.local_db import LocalDBStore
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
+    from contextlib import AbstractAsyncContextManager
 
     from nix_daemon_protocol.collect_garbage import CollectGarbageResponse
 
@@ -73,6 +74,13 @@ _MAX_FREED = 2**63 - 1
 _DELETE_BATCH_SIZE = 100
 _DELETE_TIMEOUT_S = 60
 """Bound each delete and recovery query; cancelled connections are discarded."""
+
+
+def _wire(conn: Connection | None) -> Connection:
+    """The connection of a pass that the daemon collects: only an engine pass runs with none."""
+    if conn is None:
+        raise RuntimeError("a pass that the daemon collects runs on a connection")
+    return conn
 
 
 def _request(action: GCAction, paths: set[StorePath]) -> CollectGarbageRequest:
@@ -553,14 +561,17 @@ class Collector:
             if client is not None:
                 await client.send(line)
 
-        async def recheck(conn: Connection, paths: Sequence[str]) -> list[str]:
-            # Bypass SQLite and caches: a failed delete can already invalidate paths.
+        async def recheck(conn: Connection | None, paths: Sequence[str]) -> list[str]:
+            # Bypass the caches: a failed delete can already invalidate paths.
             with anyio.fail_after(_DELETE_TIMEOUT_S):
-                response = await conn.call(
-                    QueryValidPathsRequest(paths={StorePath(path) for path in paths}, substitute=0),
-                    raise_on_error=True,
-                )
-            valid = {str(path) for path in response.paths}
+                if collecting is not None:
+                    valid = {str(path) for path in await collecting.engine.query_valid_paths(paths)}
+                else:
+                    response = await _wire(conn).call(
+                        QueryValidPathsRequest(paths={StorePath(path) for path in paths}, substitute=0),
+                        raise_on_error=True,
+                    )
+                    valid = {str(path) for path in response.paths}
             gone = set(paths) - valid
             deleted.update(gone)
             recovered.update(gone)
@@ -569,14 +580,18 @@ class Collector:
             return [path for path in paths if path in valid]
 
         await local.probe()
-        engine = local.router if isinstance(local, LocalDBStore) and local.router.engine_collects() else None
+        collecting = local if isinstance(local, LocalDBStore) and local.router.engine_collects() else None
 
-        async def delete(conn: Connection, group: list[str]) -> CollectGarbageResponse:
+        def connection() -> AbstractAsyncContextManager[Connection | None]:
+            # The engine deletes and rechecks with no connection, and a store with no daemon has none to give.
+            return nullcontext() if collecting is not None else local.transfer_conn()
+
+        async def delete(conn: Connection | None, group: list[str]) -> CollectGarbageResponse:
             request = _request(GCAction.DELETE_SPECIFIC, {StorePath(path) for path in group})
             with anyio.fail_after(_DELETE_TIMEOUT_S):
-                if engine is not None:
-                    return await engine.collect_garbage(request)
-                response: CollectGarbageResponse = await conn.call(request, raise_on_error=True)
+                if collecting is not None:
+                    return await collecting.router.collect_garbage(request)
+                response: CollectGarbageResponse = await _wire(conn).call(request, raise_on_error=True)
                 return response
 
         pending = list(dict.fromkeys(batch))
@@ -588,7 +603,7 @@ class Collector:
             queue = deque(list(group) for group in batched(pending, _DELETE_BATCH_SIZE, strict=False))
             retry: list[str] = []
             while queue:
-                async with local.transfer_conn() as conn:
+                async with connection() as conn:
                     while queue:
                         group = queue.popleft()
                         await say(f"deleting '{group[0]}'" if len(group) == 1 else f"deleting {len(group)} paths")
@@ -602,7 +617,8 @@ class Collector:
                             except (BackendError, TimeoutError, ConnectionError, EOFError):
                                 log.warning("gc_chunk_recheck_failed", paths=len(group), exc_info=True)
                                 uncertain.update(group)
-                                conn.dirty = True
+                                if conn is not None:
+                                    conn.dirty = True
                                 break
                             if len(group) == 1:
                                 retry.extend(remaining)
@@ -617,7 +633,8 @@ class Collector:
                             uncertain.update(group)
                             if isinstance(exc, TimeoutError):
                                 timed_out.update(group)
-                            conn.dirty = True
+                            if conn is not None:
+                                conn.dirty = True
                             break
                         finally:
                             for path in group:
@@ -639,12 +656,13 @@ class Collector:
             pending = [path for path in retry if path not in deleted]
 
         for group in (list(members) for members in batched(sorted(uncertain), _DELETE_BATCH_SIZE, strict=False)):
-            async with local.transfer_conn() as conn:
+            async with connection() as conn:
                 try:
                     await recheck(conn, group)
                 except (BackendError, TimeoutError, ConnectionError, EOFError):
                     log.warning("gc_chunk_recheck_failed", paths=len(group), exc_info=True)
-                    conn.dirty = True
+                    if conn is not None:
+                        conn.dirty = True
 
         refused = len(set(pending) - deleted)
         if physical is not None and deleted == set(batch):
