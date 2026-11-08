@@ -67,6 +67,7 @@ class FakeScheduler:
         self.raised = raised
         self.local_store = SimpleNamespace(db=None)
         self.local_builder = None
+        self.ctx = SimpleNamespace(stores={})
 
     def trigger(self) -> None:
         return

@@ -1245,6 +1245,17 @@ class Scheduler:
                 if settings is not None:
                     await self._build_here(build, store, self.local_store, settings)
                     return
+            # A local store with no daemon has none to delegate to: pynixd builds into it itself.
+            other = self.ctx.stores.get(store.store_id)
+            if isinstance(other, LocalDBStore) and other is not self.local_store and not store.runs_daemon:
+                settings = await other.local_build_settings(build.request, build.options)
+                if settings is None:
+                    raise BackendError(
+                        f"pynixd: store {store.store_id} runs no Nix daemon, and pynixd cannot build there"
+                    )
+                await self._send_inputs(build, other)
+                await self._build_here(build, store, other, settings)
+                return
             async with contextlib.AsyncExitStack() as held:
                 async with store.build_conn(builder_options(build.options, store, self.local_builder)) as conn:
                     observation = build.observation = BuildObservation(
@@ -1321,11 +1332,12 @@ class Scheduler:
     async def _build_here(
         self, build: QueuedBuild, store: DaemonStore, local: LocalDBStore, settings: BuildSettings
     ) -> None:
-        """pynixd's own sandbox builds it (`docs/design/builder.md`).
+        """pynixd's own sandbox builds it into *local* (`docs/design/builder.md`).
 
-        The outputs register in the local store itself, so nothing is pulled
-        and no worker of the daemon holds a root. The log is fanned out after
-        the build, as `_execute` does.
+        Into the local store, nothing is pulled and no worker of the daemon
+        holds a root. Into another local store, which has no daemon, the
+        outputs are pulled as from a builder. The log is fanned out after the
+        build, as `_execute` does.
         """
         observation = build.observation = BuildObservation(
             store_id=str(store.store_id), status=-1, queued_ms=_ms_since(build.enqueued_at)
@@ -1351,6 +1363,18 @@ class Scheduler:
         observation.build_ms = _ms_since(build.started_at)
         for message in messages:
             await build.post_log_and_fanout(message)
+        if result_succeeded(resp.result) and local is not self.local_store:
+            try:
+                await stream_paths_store_to_store(
+                    local, self.local_store, output_paths(build, resp), peer_store_id=store.store_id, direction="in"
+                )
+            except Exception as e:
+                log.exception("output_pull_failed", build_id=build.build_id, store_id=store.store_id)
+                reason = f"built on {store.store_id}, but pynixd could not collect the outputs: {e}"
+                await build.post_log_and_fanout(LogNext(text=f"pynixd: {reason}\n"))
+                await self.queue.fail(build.build_id, reason)
+                self.trigger()
+                return
         if result_succeeded(resp.result):
             await self._record_observation(build, resp)
             for path in output_paths(build, resp):
@@ -1360,6 +1384,18 @@ class Scheduler:
             return
         await self.queue.complete(build.build_id, resp)
         self.trigger()
+
+    async def _send_inputs(self, build: QueuedBuild, to: LocalDBStore) -> None:
+        """Copy the input closure that *to* lacks, before pynixd builds into it.
+
+        No substitution, unlike a push to a builder (nixidae/nixidae#1074): the
+        local store holds every input, and both stores share this machine's disk.
+        """
+        inputs = {StorePath(path=str(p)) for p in build.request.derivation.input_srcs}
+        sent = await stream_paths_store_to_store(
+            self.local_store, to, inputs, peer_store_id=to.store_id, direction="out"
+        )
+        log.debug("build_inputs_sent", build_id=build.build_id, store_id=to.store_id, bytes=sent)
 
     async def _retry_elsewhere(
         self, build: QueuedBuild, store: DaemonStore, resp: BuildDerivationResponse, fault: str

@@ -99,6 +99,7 @@ class FakeQueue:
 class FakeContext:
     def __init__(self) -> None:
         self.output_locations: dict[str, StoreId] = {}
+        self.stores: dict[StoreId, object] = {}
 
 
 class FakeScheduler:
