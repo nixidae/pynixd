@@ -284,13 +284,69 @@ let
   */
   fix = pkgs.writeShellApplication {
     name = "pynixd-fix";
-    runtimeInputs = [
-      pyinstance
-      pkgs.ruff
-    ];
+    runtimeInputs = [ pkgs.ruff ];
     text = ''
       ruff format .
       ruff check --fix .
+    '';
+  };
+
+  /*
+    The third-party packages of pynixd, nix-daemon-protocol and pynixd-store,
+    without the three. zuban reads the three from the tree it checks
+    (`mypy_path` in each `mypy.ini`), so a changed `.py` file builds no package.
+  */
+  typeEnv = nixvenv {
+    python = pkgs.python3;
+    packages =
+      ps:
+      let
+        firstParty = [
+          library
+          daemon-protocol
+          store
+        ];
+        dependencies = lib.concatMap (package: package.propagatedBuildInputs) firstParty;
+      in
+      lib.subtractLists firstParty (
+        lib.filter (package: package ? pythonModule) (lib.unique dependencies)
+      )
+      ++ [
+        ps.pytest
+        ps.moto
+        vivarium-runner
+      ];
+  };
+
+  # One zuban run for each `mypy.ini`: nix-daemon-protocol and pynixd-store
+  # are distributions of their own, each with its own `src/`. Each run's status
+  # counts: a loop alone answers the last one's, and `check` runs this where
+  # errexit is off.
+  typeCheck = ''
+    failed=0
+    for project in . nix-daemon-protocol pynixd-store; do
+      (cd "$project" && env -u PYTHONPATH zuban mypy --python-executable ${typeEnv}/lib/venv/bin/python) || failed=1
+    done
+    test "$failed" = 0
+  '';
+
+  /*
+    `checks.format`, `checks.lint` and `checks.types` against the working tree,
+    from `pynixd/`: `nix run --file . internal.check`. It runs each gate and
+    exits 1 when any failed. `fix` rewrites what ruff can.
+  */
+  check = pkgs.writeShellApplication {
+    name = "pynixd-check";
+    runtimeInputs = [
+      pkgs.ruff
+      pkgs.zuban
+    ];
+    text = ''
+      status=0
+      ruff format --check . || status=1
+      ruff check . || status=1
+      (${typeCheck}) || status=1
+      exit "$status"
     '';
   };
 
@@ -299,7 +355,7 @@ let
   mkCheck =
     name: deps: text:
     pkgs.runCommand "pynixd-check-${name}" { nativeBuildInputs = deps; } ''
-      cp -r ${lib.cleanSource ./.} src
+      cp -r ${testSrc} src
       chmod -R +w src
       cd src
       ${text}
@@ -445,13 +501,7 @@ let
     '';
     format = mkCheck "format" [ pkgs.ruff ] "ruff format --check .";
     lint = mkCheck "lint" [ pkgs.ruff ] "ruff check .";
-    # One zuban run for each `mypy.ini`: nix-daemon-protocol and pynixd-store
-    # are distributions of their own, each with its own `src/`.
-    types = mkCheck "types" [ pkgs.zuban ] ''
-      for project in . nix-daemon-protocol pynixd-store; do
-        (cd "$project" && env -u PYTHONPATH zuban mypy --python-executable ${pyinstance}/lib/venv/bin/python)
-      done
-    '';
+    types = mkCheck "types" [ pkgs.zuban ] typeCheck;
 
     # Does each committed workflow still say what its ci/workflows/*.nix says?
     #
@@ -630,6 +680,7 @@ in
       krun
       specifictest
       fix
+      check
       ciWorkflows
       ciWorkflowFiles
       ci-workflow-update
