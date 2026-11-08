@@ -799,6 +799,10 @@ SIZES = {StorePath("/nix/store/00000000000000000000000000000001-a"): 10 * MB}
 SIZES[StorePath("/nix/store/00000000000000000000000000000002-b")] = 30 * MB
 
 
+def _with_stores(**stores: Any) -> Any:
+    return SimpleNamespace(ctx=SimpleNamespace(stores={StoreId(k): v for k, v in stores.items()}))
+
+
 class TestTheMissingInputBytes:
     """The bytes a delegation sends are the input closure the remote lacks,
     as `QueryValidPaths` answers it."""
@@ -807,7 +811,7 @@ class TestTheMissingInputBytes:
     async def test_are_what_the_store_lacks(self) -> None:
         store = ValidityStore({"/nix/store/00000000000000000000000000000001-a"})
 
-        missing = await Scheduler._missing_input_bytes(cast("Any", None), cast("Any", store), SIZES)  # noqa: SLF001 -- the estimate is the unit
+        missing = await Scheduler._missing_input_bytes(_with_stores(), cast("Any", store), SIZES)  # noqa: SLF001 -- the estimate is the unit
 
         assert missing == 30 * MB
 
@@ -815,4 +819,14 @@ class TestTheMissingInputBytes:
     async def test_are_unknown_when_the_store_does_not_answer(self) -> None:
         store = ValidityStore(set(), broken=True)
 
-        assert await Scheduler._missing_input_bytes(cast("Any", None), cast("Any", store), SIZES) is None  # noqa: SLF001 -- the estimate is the unit
+        assert await Scheduler._missing_input_bytes(_with_stores(), cast("Any", store), SIZES) is None  # noqa: SLF001 -- the estimate is the unit
+
+    @pytest.mark.anyio
+    async def test_are_what_the_store_answers_and_not_its_daemon_client(self) -> None:
+        """A store with no daemon: its client refuses, and its own database answers."""
+        client = ValidityStore(set(), broken=True)
+        store = ValidityStore({"/nix/store/00000000000000000000000000000002-b"})
+
+        missing = await Scheduler._missing_input_bytes(_with_stores(**{REMOTE: store}), cast("Any", client), SIZES)  # noqa: SLF001 -- the estimate is the unit
+
+        assert missing == 10 * MB

@@ -968,12 +968,14 @@ class Scheduler:
         `man-paths` had never run on sg1-n3, a round trip alone priced it
         under a second, and it sent 9.3 GB in 648 s for a 0.3 s build.
         `None` when the store does not answer in time; the cost is then unknown.
+        The store answers, not its daemon client: a store with no daemon reads its own database.
         """
         if not sizes:
             return 0
+        answers = self.ctx.stores.get(store.store_id, store)
         try:
             with anyio.fail_after(_MISSING_BYTES_TIMEOUT):
-                valid = await store.execute(QueryValidPathsRequest(paths=set(sizes), substitute=0))
+                valid = await answers.execute(QueryValidPathsRequest(paths=set(sizes), substitute=0))
         except (TimeoutError, BackendError, InfrastructureError, OSError, EOFError, *ssh_errors()):
             log.debug("missing_input_bytes_unknown", store_id=store.store_id, exc_info=True)
             return None
