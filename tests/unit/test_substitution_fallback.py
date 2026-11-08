@@ -47,7 +47,7 @@ def _goal(*, fallback: bool) -> EnsureDerivedPathGoal:
     )
     goal._watchers.append(cast("Any", SimpleNamespace(options=SimpleNamespace(try_fallback=int(fallback)))))  # noqa: SLF001 -- the client of the goal
 
-    async def failed_copy(_path: StorePath) -> GoalResult | None:
+    async def failed_copy(_path: StorePath, _ca: object = None) -> GoalResult | None:
         return goal_failure("pynixd: failed to substitute: 0 bytes read", BuildResultStatus.TRANSIENT_FAILURE)
 
     goal._try_substitute_path = failed_copy  # type: ignore[method-assign, assignment]  # noqa: SLF001 -- the substitute is the input

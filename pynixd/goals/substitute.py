@@ -16,6 +16,7 @@ from .results import GoalResult, goal_failure, goal_success
 
 if TYPE_CHECKING:
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
+    from pynixd_store.content_address import ContentAddress
 
     from .engine import GoalEngine
 
@@ -43,16 +44,25 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
     """
 
     def __init__(
-        self, engine: GoalEngine, path: StorePath, substituter_ids: tuple[str, ...], *, repair: bool = False
+        self,
+        engine: GoalEngine,
+        path: StorePath,
+        substituter_ids: tuple[str, ...],
+        *,
+        repair: bool = False,
+        ca: ContentAddress | None = None,
     ) -> None:
         """Initialize the goal with the path to substitute and eligible substituter IDs.
 
         With *repair*, a valid path is substituted again (`substitution-goal.cc:36`); its references are not.
+        *ca* is the path's content address, which lets a substituter of another store directory hold it
+        (`substitution-goal.cc:66`).
         """
         super().__init__(engine)
         self.path = path
         self.substituter_ids = substituter_ids
         self.repair = repair
+        self.ca = ca
 
     async def _run(self) -> SubstituteAttempt:
         log.debug("substitute_path_start", path=str(self.path), substituters=self.substituter_ids)
@@ -74,7 +84,7 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
 
         queue = scheduler.substitution_queue
         stores = queue.stores_with_ids(self.substituter_ids)
-        candidate = await queue.get_substituter(self.path, stores)
+        candidate = await queue.get_substituter(self.path, stores, ca=self.ca)
         if candidate is None:
             log.info("substitute_path_miss", path=str(self.path))
             return SubstituteAttempt(
@@ -114,7 +124,7 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
                 return SubstituteAttempt(found=True, result=reference_result.result)
 
         log.info("substitute_path_import_start", path=str(self.path), store_id=candidate.store.store_id)
-        import_result = await queue.substitute(self.path, stores, repair=self.repair)
+        import_result = await queue.substitute(self.path, stores, repair=self.repair, ca=self.ca)
         if not import_result.substituted:
             # A substitute the daemon refused for its signature is one Nix
             # never takes (`substitution-goal.cc:116`): no substituter, not a

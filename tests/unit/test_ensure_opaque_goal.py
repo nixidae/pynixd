@@ -62,8 +62,10 @@ class FakeEngine:
         self.ctx = ctx
         self.substitutions_attempted = 0
 
-    async def get_substitute_path_goal(self, path: StorePath, substituter_ids: tuple[str, ...]) -> Any:
-        del path, substituter_ids
+    async def get_substitute_path_goal(
+        self, path: StorePath, substituter_ids: tuple[str, ...], *, ca: object = None
+    ) -> Any:
+        del path, substituter_ids, ca
         self.substitutions_attempted += 1
         raise AssertionError("the goal must answer from `output_locations` before it asks a substituter")
 

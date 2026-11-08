@@ -77,7 +77,7 @@ async def test_a_collected_realised_path_is_substituted_first(asked: list[str]) 
     goal = _goal(Store(valid=False))
     substituted: list[str] = []
 
-    async def substitute(path: StorePath) -> Any:
+    async def substitute(path: StorePath, ca: object = None) -> Any:
         substituted.append(str(path))
         return goal_success()
 

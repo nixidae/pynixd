@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 
     from nix_daemon_protocol.ids import BuildId
+    from pynixd_store.content_address import ContentAddress
 
     from ..connection import ClientConn
     from ..context import PynixdContext
@@ -404,13 +405,17 @@ class GoalEngine:
         substituter_ids: tuple[str, ...],
         *,
         repair: bool = False,
+        ca: ContentAddress | None = None,
     ) -> SubstitutePathGoal:
-        """Return a deduplicated SubstitutePathGoal for the given store path."""
+        """Return a deduplicated SubstitutePathGoal for the given store path.
+
+        The first caller's *ca* holds, as in `Worker::makePathSubstitutionGoal` (`worker.cc:110`).
+        """
         key = SubstitutePathKey(str(path), substituter_fingerprint(substituter_ids), repair)
         async with self._lock:
             goal = self._goals.get(key)
             if goal is None:
-                goal = SubstitutePathGoal(self, path, substituter_ids, repair=repair)
+                goal = SubstitutePathGoal(self, path, substituter_ids, repair=repair, ca=ca)
                 self._goals[key] = goal
             if not isinstance(goal, SubstitutePathGoal):
                 raise TypeError(f"goal key collision for {key}")

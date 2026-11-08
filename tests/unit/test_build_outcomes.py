@@ -127,7 +127,7 @@ async def test_an_opaque_path_no_substituter_has_is_no_substituters() -> None:
         substituter_ids=(),
     )
 
-    async def nothing(_path: StorePath) -> GoalResult | None:
+    async def nothing(_path: StorePath, _ca: object = None) -> GoalResult | None:
         return None
 
     goal._try_substitute_path = nothing  # type: ignore[method-assign, assignment]  # noqa: SLF001 -- no substituter

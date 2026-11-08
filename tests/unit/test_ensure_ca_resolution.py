@@ -211,8 +211,10 @@ class FakeEngine:
         del dp, build_mode, substituter_ids
         return FakeChildGoal()
 
-    async def get_substitute_path_goal(self, path: StorePath, substituter_ids: tuple[str, ...]) -> Any:
-        del path, substituter_ids
+    async def get_substitute_path_goal(
+        self, path: StorePath, substituter_ids: tuple[str, ...], *, ca: object = None
+    ) -> Any:
+        del path, substituter_ids, ca
         return FakeSubstituteGoal()
 
 

@@ -345,6 +345,35 @@ async def test_a_builder_that_does_not_exist_fails_as_the_builder(tmp_path: Path
     assert any("failed with exit code 1" in line for line in here), here
 
 
+async def _from_another_store_dir(tmp_path: Path, route: OpRoute) -> tuple[int, str, str]:
+    """A fixed output that only a cache of `/fnord/store` holds, and a URL that names no file."""
+    content = tmp_path / "fetched"
+    content.write_text("held by a cache of another store directory\n")
+    other = f"file://{tmp_path / route.name}-fnord?store=/fnord/store"
+    await run_subproc([NIX_BIN, "--store", other, "store", "add-file", str(content)])
+    sha256 = hashlib.sha256(content.read_bytes()).hexdigest()
+    expr = f'import <nix/fetchurl.nix> {{ url = "file:///no-such-dir/fetched"; sha256 = "{sha256}"; }}'
+    async with _serve(tmp_path, route) as (url, root):
+        rc, out, _err, both = await run_subproc(
+            [
+                *(NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--print-out-paths"),
+                *("--option", "substituters", other, "--expr", expr),
+            ],
+            expected_retcode=None,
+        )
+        fetched = (root / out.strip().removeprefix("/")).read_text() if rc == 0 else both
+    return rc, out.strip(), fetched
+
+
+async def test_a_fixed_output_substitutes_from_a_cache_of_another_store_directory(tmp_path: Path) -> None:
+    """`fetchurl.sh:47`: the path is made again for the cache's store directory (`substitution-goal.cc:66`)."""
+    for route in (OpRoute.pynixd, OpRoute.daemon):
+        rc, out, fetched = await _from_another_store_dir(tmp_path, route)
+        assert (route, rc) == (route, 0), fetched
+        assert fetched == "held by a cache of another store directory\n"
+        assert out.startswith("/nix/store/") and out.endswith("-fetched")
+
+
 async def _json(tmp_path: Path, route: OpRoute) -> list[str]:
     async with _serve(tmp_path, route) as (url, _root):
         _rc, _out, err, _both = await run_subproc(

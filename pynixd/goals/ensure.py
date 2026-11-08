@@ -50,6 +50,7 @@ from .results import GoalResult, goal_failure, goal_success, result_succeeded
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
+    from pynixd_store.content_address import ContentAddress
     from pynixd_store.drv_parser import Derivation
 
     from ..connection import ClientConn
@@ -478,7 +479,9 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             repaired = await self._repair_if_valid(parsed, drv_path, early_outputs)
             if repaired is not None:
                 return repaired.with_dynamic_outputs(self.derived_path.base_store_path())
-        substituted = None if repairing else await self._try_substitute_known_outputs(early_outputs)
+        substituted = (
+            None if repairing else await self._try_substitute_known_outputs(early_outputs, parsed.fixed_out_address())
+        )
         # `derivation-goal.cc:143`: a check builds again what the store holds, so each wanted output must be valid.
         if checking and not impure:
             if substituted is None:
@@ -554,7 +557,11 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         # request for `drv^out` and a request for `drv^bin` made two builds of
         # one derivation. Issue nixidae/nixidae#217.
         selected_paths = {name: path for name, path in basic.output_paths().items() if name in selected_outputs}
-        substituted = None if checking or repairing else await self._try_substitute_known_outputs(selected_paths)
+        substituted = (
+            None
+            if checking or repairing
+            else await self._try_substitute_known_outputs(selected_paths, parsed.fixed_out_address())
+        )
         if substituted is not None:
             log.debug("ensure_derivation_substituted", drv_path=str(drv_path), outputs=sorted(selected_outputs))
             await self._record_under_the_resolved_one(parsed, basic, drv_path, selected_paths)
@@ -1584,8 +1591,12 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         """`derivation-resolution-goal.cc:46`: an input builds normally, unless the request repairs."""
         return BuildMode.NORMAL if self.build_mode == BuildMode.CHECK else self.build_mode
 
-    async def _try_substitute_known_outputs(self, output_paths: Mapping[str, StorePath | None]) -> GoalResult | None:
+    async def _try_substitute_known_outputs(
+        self, output_paths: Mapping[str, StorePath | None], ca: ContentAddress | None = None
+    ) -> GoalResult | None:
         """Substitute each output whose path the derivation already names.
+
+        *ca* is the derivation's fixed address, as `derivation-goal.cc:122` passes it.
 
         **A content-addressed output has no path here, and the empty path is
         not a store path.** `output_paths` of `drv_parser.py` answers
@@ -1618,7 +1629,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
                     produced_paths={path},
                 )
                 continue
-            substituted = await self._try_substitute_path(path)
+            substituted = await self._try_substitute_path(path, ca)
             if substituted is None:
                 return None
             if not result_succeeded(substituted.result):
@@ -1699,8 +1710,8 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         answer.result = answer.result.model_copy(update={"built_outputs": built})
         return answer
 
-    async def _try_substitute_path(self, path: StorePath) -> GoalResult | None:
-        substitute_goal = await self.engine.get_substitute_path_goal(path, self.substituter_ids)
+    async def _try_substitute_path(self, path: StorePath, ca: ContentAddress | None = None) -> GoalResult | None:
+        substitute_goal = await self.engine.get_substitute_path_goal(path, self.substituter_ids, ca=ca)
         attempt = await self.run_child(substitute_goal)
         if attempt.found:
             return attempt.result
