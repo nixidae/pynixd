@@ -171,6 +171,11 @@ async def _hold(roots: TempRoots, paths: Iterable[StorePath], store_id: StoreId)
             raise BackendError(f"pynixd: store {store_id} cannot hold '{path}' against its collector")
 
 
+def _cannot_build_there(store_id: StoreId) -> BackendError:
+    """A build pynixd's builder leaves to a daemon, on a store that runs none. The log names the reason."""
+    return BackendError(f"pynixd: store {store_id} runs no Nix daemon, and pynixd cannot build there")
+
+
 async def add_temp_roots(conn: Connection, paths: StorePathSet) -> None:
     """Root *paths* on *conn*'s daemon for the connection's life. The pool closes *conn* when it comes back."""
     if not paths:
@@ -1255,14 +1260,14 @@ class Scheduler:
                 if settings is not None:
                     await self._build_here(build, store, self.local_store, settings)
                     return
+                if not store.runs_daemon:
+                    raise _cannot_build_there(store.store_id)
             # A local store with no daemon has none to delegate to: pynixd builds into it itself.
             other = self.ctx.stores.get(store.store_id)
             if isinstance(other, LocalDBStore) and other is not self.local_store and not store.runs_daemon:
                 settings = await other.local_build_settings(build.request, build.options)
                 if settings is None:
-                    raise BackendError(
-                        f"pynixd: store {store.store_id} runs no Nix daemon, and pynixd cannot build there"
-                    )
+                    raise _cannot_build_there(store.store_id)
                 roots = other.engine.temp_roots()
                 try:
                     await self._send_inputs(build, other, roots)

@@ -71,8 +71,14 @@ def _fallthrough() -> float:
 
 
 @contextlib.asynccontextmanager
-async def _client(tmp_path: Path, route: OpRoute, name: str, **settings: Any) -> AsyncIterator[ExternalUnixStore]:
-    """A `proxy` session on a fresh store with BuildDerivation on *route*, and a client of it."""
+async def _client(
+    tmp_path: Path, route: OpRoute, name: str, daemon: bool | None, **settings: Any
+) -> AsyncIterator[ExternalUnixStore]:
+    """A `proxy` session on a fresh store with BuildDerivation on *route*, and a client of it.
+
+    *daemon* `None` leaves the store's daemon to `make_test_spec`.
+    """
+    pinned: dict[str, Any] = {} if daemon is None else {"daemon": daemon}
     root = tmp_path / f"{route.name}-{name}" / "store"
     socket = tmp_path / f"{route.name}-{name}.sock"
     nix_config = for_test_store(substituters=())
@@ -84,6 +90,7 @@ async def _client(tmp_path: Path, route: OpRoute, name: str, **settings: Any) ->
         no_probe=True,
         nix_config=nix_config,
         op_routes={"BuildDerivation": route},
+        **pinned,
     )
     async with (
         Server(
@@ -98,7 +105,9 @@ async def _client(tmp_path: Path, route: OpRoute, name: str, **settings: Any) ->
         yield c
 
 
-async def _answers(tmp_path: Path, route: OpRoute, name: str, **settings: Any) -> dict[str, tuple[int, str]]:
+async def _answers(
+    tmp_path: Path, route: OpRoute, name: str, daemon: bool | None = None, **settings: Any
+) -> dict[str, tuple[int, str]]:
     native = get_current_system()
     cases = {
         "foreign": (FOREIGN, ""),
@@ -106,7 +115,7 @@ async def _answers(tmp_path: Path, route: OpRoute, name: str, **settings: Any) -
         "neither": (FOREIGN, MISSING),
     }
     seen: dict[str, tuple[int, str]] = {}
-    async with _client(tmp_path, route, name, **settings) as client:
+    async with _client(tmp_path, route, name, daemon, **settings) as client:
         for case, (system, features) in cases.items():
             response = await client.call(_request(f"rejection-{case}", system, features), skip_probe=True)
             seen[case] = response.result.status, response.result.error_msg
@@ -151,9 +160,19 @@ async def test_max_jobs_zero_refuses_every_build_as_the_daemon_refuses_it(tmp_pa
 async def test_a_build_the_daemons_builders_may_take_is_left_to_the_daemon(tmp_path: Path) -> None:
     """With a machine, the hook answers first: here it finds none of the right type and declines."""
     before = _fallthrough()
-    here = await _answers(tmp_path, OpRoute.pynixd, "machine", builders=[A_MACHINE])
+    here = await _answers(tmp_path, OpRoute.pynixd, "machine", daemon=True, builders=[A_MACHINE])
     assert _fallthrough() == before + 3, "pynixd refused a build the daemon's builders could take"
     there = await _answers(tmp_path, OpRoute.daemon, "machine", builders=[A_MACHINE])
 
     assert here == there
     assert all(status == BuildResultStatus.INPUT_REJECTED for status, _msg in here.values()), here
+
+
+async def test_with_no_daemon_a_build_its_builders_may_take_is_refused_as_the_daemon_refuses_it(tmp_path: Path) -> None:
+    """No daemon runs the build hook, so pynixd refuses what it leaves to one. nixidae/nixidae#1155."""
+    before = _fallthrough()
+    here = await _answers(tmp_path, OpRoute.pynixd, "machine-alone", daemon=False, builders=[A_MACHINE])
+    assert _fallthrough() == before, "pynixd left a build to a daemon it does not run"
+    there = await _answers(tmp_path, OpRoute.daemon, "machine", builders=[A_MACHINE])
+
+    assert here == there
