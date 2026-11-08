@@ -30,13 +30,19 @@ vivariumLib.mkTest (
 
     backend = "qemu";
 
+    # Every path `settings` names is one the guests read.
+    defaults =
+      { settings, ... }:
+      {
+        vivarium.lateClosure = vivariumLib.pathsIn settings;
+      };
     /*
       What the scripts need that only Nix knows.
 
-      `mkTest` registers the closure of everything here with the guest's
-      Nix database, so the harness is a valid path in there rather than a
-      file Nix goes looking for a substituter for. The host store behind
-      it arrives through `hostStore` on the node below.
+      The guest registers the closure of everything here with its Nix
+      database (`lateClosure`), so the harness is a valid path in there
+      rather than a file Nix goes looking for a substituter for. The host
+      store behind it arrives through `hostStore` on the node below.
     */
     settings = {
       nixft = lib.getExe nixft;

@@ -23,10 +23,16 @@ vivariumLib.mkTest {
   # guest pays for a kernel of its own.
   backend = "container";
 
+  # Every path `settings` names is one the guests read.
+  defaults =
+    { settings, ... }:
+    {
+      vivarium.lateClosure = vivariumLib.pathsIn settings;
+    };
   settings = {
     src = "${src}";
     # `tests/benchmark/system.nix` imports <nixpkgs>, and the phase names this
-    # as NIX_PATH. In `settings`, the guest's Nix database covers it.
+    # as NIX_PATH. In `lateClosure`, the guest's Nix database covers it.
     nixpkgs = "${pkgs.path}";
     # `replace` mode: pynixd takes `socket`, nix-daemon moves to `upstream`
     # (`nix/common.nix`).

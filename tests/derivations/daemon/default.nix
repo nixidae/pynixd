@@ -32,8 +32,8 @@ let
     expression gives the same derivation on every guest, so the two
     servers' answers compare byte for byte.
 
-    Not a `.drv` named here: `mkTest` registers the closure of
-    `settings` with each guest, and a `.drv`'s closure is every input
+    Not a `.drv` named here: each guest registers the closure of
+    `settings` (`lateClosure`), and a `.drv`'s closure is every input
     derivation's `.drv`, which a garbage-collected host no longer has.
     Measured: `keyutils-1.6.3.drv does not exist`. busybox's output is the
     whole of the builder, and a valid path in every guest.
@@ -106,6 +106,12 @@ vivariumLib.mkTest (
 
     pythonPath = [ ../../daemon/helpers ];
 
+    # Every path `settings` names is one the guests read.
+    defaults =
+      { settings, ... }:
+      {
+        vivarium.lateClosure = vivariumLib.pathsIn settings;
+      };
     settings = {
       busybox = "${pkgs.busybox}";
       system = pkgs.stdenv.hostPlatform.system;

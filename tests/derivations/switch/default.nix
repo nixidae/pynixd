@@ -82,6 +82,12 @@ vivariumLib.mkTest {
     ../../switch
   ];
 
+  # Every path `settings` names is one the guests read.
+  defaults =
+    { settings, ... }:
+    {
+      vivarium.lateClosure = vivariumLib.pathsIn settings;
+    };
   settings = {
     busybox = "${pkgs.busybox}";
     system = pkgs.stdenv.hostPlatform.system;

@@ -112,12 +112,18 @@ vivariumLib.mkTest (
     };
     backend = config.resolved.backend.value;
 
+    # Every path `settings` names is one the guests read.
+    defaults =
+      { settings, ... }:
+      {
+        vivarium.lateClosure = vivariumLib.pathsIn settings;
+      };
     /*
       What the scripts need that only Nix knows.
 
-      `mkTest` registers the closure of everything here with the guest's
-      Nix database, so these are valid paths in there rather than files Nix
-      goes looking for a substituter for.
+      Each guest registers the closure of everything here with its Nix
+      database (`lateClosure`), so these are valid paths in there rather
+      than files Nix goes looking for a substituter for.
     */
     settings = {
       src = "${src}";
