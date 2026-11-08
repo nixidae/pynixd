@@ -162,9 +162,13 @@ def make_test_spec(
 ) -> LocalSocketStoreSpec:
     """Create a LocalSocketStoreSpec with test defaults.
 
-    An explicit `daemon` keeps `PYNIXD_NO_DAEMON` off the spec. A bare daemon
-    client (`LocalStore`) passes `daemon=True`: it has no answer of its own.
+    An explicit `daemon`, or an op the caller routes to the daemon or its
+    shadow, keeps `PYNIXD_NO_DAEMON` off the spec. A bare daemon client
+    (`LocalStore`) passes `daemon=True`: it has no answer of its own.
     """
+    asks_the_daemon = "daemon" in kwargs or any(
+        OpRoute(route) is not OpRoute.pynixd for route in kwargs.get("op_routes", {}).values()
+    )
     if nix_config is None:
         nix_config = for_test_store()
     daemon_args = nix_config.to_daemon_args()
@@ -195,7 +199,7 @@ def make_test_spec(
     if kwargs.get("use_db", True):
         trial = {op: route for op, route in TEST_OP_ROUTES.items() if kwargs["pynixd_writes"] or op not in _WRITES}
         kwargs["op_routes"] = {**trial, **kwargs.get("op_routes", {})}
-        if os.environ.get("PYNIXD_NO_DAEMON") == "1" and kwargs["pynixd_writes"] and "daemon" not in kwargs:
+        if os.environ.get("PYNIXD_NO_DAEMON") == "1" and kwargs["pynixd_writes"] and not asks_the_daemon:
             # `tests/guest/suite.py`: every store with no daemon, so each test that fails names a gap.
             kwargs["daemon"] = False
             kwargs["op_routes"] = {op: OpRoute.pynixd for op in kwargs["op_routes"]}

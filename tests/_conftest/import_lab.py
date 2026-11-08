@@ -118,10 +118,7 @@ async def server(
     root: Path, socket: Path, route: str, *, upstream: str | None = None, **config: Any
 ) -> AsyncIterator[LocalDBStore]:
     """A local store whose import ops take *route*; *upstream* is a binary cache pynixd substitutes from."""
-    # The daemon route is the reference: `PYNIXD_NO_DAEMON` must not take its daemon.
-    reference: dict[str, Any] = {"daemon": True} if route == "daemon" else {}
     spec = make_test_spec(
-        **reference,
         store_id="local",
         store_path=root,
         no_probe=True,
