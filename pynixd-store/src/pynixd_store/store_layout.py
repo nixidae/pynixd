@@ -26,7 +26,7 @@ directory, which no codec needs.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import quote, urlencode
 
 DEFAULT_STORE_DIR = Path("/nix/store")
@@ -145,6 +145,10 @@ class StoreLayout:
             log_dir=Path(log_dir) if log_dir is not None else DEFAULT_LOG_DIR,
             relocated=True,
         )
+
+    def real_path(self, path: str | PurePosixPath) -> Path:
+        """`toRealPath` (`local-fs-store.hh:115`): where the files of store path *path* are on this machine."""
+        return self.real_store_dir / PurePosixPath(path).name
 
     @property
     def db_path(self) -> Path:

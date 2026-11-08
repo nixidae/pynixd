@@ -14,6 +14,7 @@ import re
 import stat
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from nix_daemon_protocol.build_result import BuildResultStatus
@@ -82,7 +83,7 @@ class Scanned:
 
 
 def _base(path: str) -> str:
-    return path.rsplit("/", 1)[-1]
+    return PurePosixPath(path).name
 
 
 def _quoted(path: Path) -> str:

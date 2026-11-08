@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Protocol
 
 import anyio
@@ -92,7 +93,7 @@ class RestrictionContext:
             self.added.add(path)
             if not self._binds:
                 return
-            source = str(self._real_store_dir / path.rsplit("/", 1)[-1])
+            source = str(self._real_store_dir / PurePosixPath(path).name)
             if self._reveal is not None:
                 await anyio.to_thread.run_sync(self._reveal, path)
             await self._attached.wait()

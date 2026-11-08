@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import anyio
 
@@ -117,7 +117,7 @@ class BuildVm:
         *top*. The VMM joins *cgroup*, and the launcher writes the VMM's rusage to `top/vm-usage.json`.
         """
         shown: dict[Path, set[str]] = {
-            real_store_dir: {str(real_store_dir / path.rsplit("/", 1)[-1]) for path in visible},
+            real_store_dir: {str(real_store_dir / PurePosixPath(path).name) for path in visible},
         }
         shown.setdefault(HOST_STORE, set()).update(self.helper_closure)
         writable: dict[Path, set[str] | None] = {}

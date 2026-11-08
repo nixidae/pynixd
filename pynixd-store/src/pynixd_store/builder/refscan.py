@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from ..nar_fs import dump_path
@@ -58,4 +59,4 @@ def scan_for_references(path: Path, candidates: Iterable[str]) -> set[str]:
 
 
 def _hash_part(store_path: str) -> str:
-    return store_path.rsplit("/", 1)[-1][:HASH_LEN]
+    return PurePosixPath(store_path).name[:HASH_LEN]

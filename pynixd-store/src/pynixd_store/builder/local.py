@@ -19,7 +19,7 @@ import termios
 import time
 import tty
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 import anyio
@@ -433,11 +433,11 @@ class _Paths:
 
 
 def _hash_part(path: str) -> str:
-    return path.rsplit("/", 1)[-1][:32]
+    return PurePosixPath(path).name[:32]
 
 
 def _drv_name(drv_path: str) -> str:
-    return drv_path.rsplit("/", 1)[-1].split("-", 1)[1].removesuffix(".drv")
+    return PurePosixPath(drv_path).name.split("-", 1)[1].removesuffix(".drv")
 
 
 def _prepare(
@@ -474,7 +474,8 @@ def _prepare(
             top.chmod(0o711)
         return _Paths(top, tmp, None, None)
 
-    chroot_parent = layout.real_store_dir / (drv_path.rsplit("/", 1)[-1] + ".chroot")
+    real = layout.real_path(drv_path)
+    chroot_parent = real.with_name(f"{real.name}.chroot")
     delete_path(chroot_parent)
     chroot_parent.mkdir(0o700)
     root = chroot_parent / "root"
@@ -540,12 +541,11 @@ def _binds(
     if root is None:
         raise ValueError("a build without the chroot binds nothing")
     binds: dict[str, tuple[str, bool]] = {p.target: (p.source, p.optional) for p in settings.sandbox_paths}
-    real = engine.layout.real_store_dir
     for path in sandbox_closure:
-        binds[path] = (str(real / path.rsplit("/", 1)[-1]), False)
+        binds[path] = (str(engine.layout.real_path(path)), False)
     binds[SANDBOX_BUILD_DIR] = (str(paths.tmp), False)
     for path in inputs:
-        binds[path] = (str(real / path.rsplit("/", 1)[-1]), False)
+        binds[path] = (str(engine.layout.real_path(path)), False)
     if "/dev" not in binds:
         for name in DEV_FILES:
             binds.setdefault(name, (name, False))
@@ -654,7 +654,7 @@ async def build(
         name: random_path(name, drv_name, store_dir) if impure else realised.get(name, o.path)
         for name, o in drv.outputs.items()
     }
-    held = {path: PathLock(layout.real_store_dir / path.rsplit("/", 1)[-1]) for path in known.values() if path}
+    held = {path: PathLock(layout.real_path(path)) for path in known.values() if path}
     locks = list(held.values())
     for lock in locks:
         # Not cancellable: an abandoned `flock` would hold the lock with no owner to release it.
@@ -709,7 +709,7 @@ async def build(
         # `derivation-building-goal.cc:503`: an output on disk that is not valid goes before the build.
         for path in known.values():
             if path and path not in valid:
-                await anyio.to_thread.run_sync(delete_path, layout.real_store_dir / path.rsplit("/", 1)[-1])
+                await anyio.to_thread.run_sync(delete_path, layout.real_path(path))
         # `derivation-builder.cc:417`: the sandbox builds a known path in place. Without it, a present path builds
         # at its fallback path, and the builder sees the fallback's hash for its own.
         scratch = {
@@ -720,7 +720,7 @@ async def build(
         }
         redirected = {path: scratch[name] for name, path in known.items() if path and path != scratch[name]}
         for path in redirected.values():
-            await anyio.to_thread.run_sync(delete_path, layout.real_store_dir / path.rsplit("/", 1)[-1])
+            await anyio.to_thread.run_sync(delete_path, layout.real_path(path))
         inputs = {str(p) for p in await engine.query_closure(sorted(str(p) for p in drv.input_srcs))}
         # An invalid path drops out of the closure, as Nix ignores `InvalidPath` here.
         sandbox_closure = {
@@ -928,7 +928,7 @@ async def build(
         if not (isinstance(failure, BuildFailure) and failure.status is BuildResultStatus.TIMED_OUT):
             await on_lines(lines.flush())
         # Empty too: `openLogFile` (`derivation-building-goal.cc:793`) makes the file before a line arrives.
-        await engine.add_build_log(drv_path.rsplit("/", 1)[-1], bytes(log))
+        await engine.add_build_log(PurePosixPath(drv_path).name, bytes(log))
         if isinstance(failure, _BuilderFailed):
             disk_full = await anyio.to_thread.run_sync(_disk_full, layout.real_store_dir, paths.tmp)
             failure = BuildFailure(
@@ -991,7 +991,7 @@ async def build(
                 return compared
             # `registerOutputs` (`derivation-builder.cc:1600`) skips an output that is valid already.
             fresh = [
-                info.path.path.rsplit("/", 1)[-1]
+                info.path.name
                 for info in collected.infos.values()
                 if not await engine.is_valid_path_uncached(info.path.path)
             ]
@@ -1039,7 +1039,7 @@ async def build(
             # Lillecarl/nix#401.
             if built:
                 for path in redirected.values():
-                    await anyio.to_thread.run_sync(delete_path, layout.real_store_dir / path.rsplit("/", 1)[-1])
+                    await anyio.to_thread.run_sync(delete_path, layout.real_path(path))
             for lock in locks:
                 lock.release(delete=built or settled)
             if user is not None:
@@ -1099,8 +1099,7 @@ async def _check_submitted(
         for name, info in built.items():
             if info.path.path != known[name]:
                 old, new = (
-                    magenta('"' + str(real_store_dir / path.rsplit("/", 1)[-1]) + '"')
-                    for path in (known[name], info.path.path)
+                    magenta(f'"{real_store_dir / PurePosixPath(path).name}"') for path in (known[name], info.path.path)
                 )
                 return LocalBuildResult(
                     BuildResultStatus.NOT_DETERMINISTIC,
