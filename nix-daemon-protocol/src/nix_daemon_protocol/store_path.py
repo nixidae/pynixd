@@ -73,6 +73,19 @@ class StorePath:
             raise ValueError(f"{path!r} is not a path of the store at {store_dir()!r}")
         return path
 
+    @classmethod
+    def in_store(cls, path: str, directory: str) -> Self:
+        """*path* of the store at *directory*, as `StoreDirConfig::parseStorePath`; `ValueError` for another store.
+
+        A binary cache may serve another store directory than pynixd's (`?store=`), and its narinfo names its paths
+        in that directory.
+        """
+        prefix = directory.rstrip("/") + "/"
+        base = path.removeprefix(prefix)
+        if base == path or not base or "/" in base:
+            raise ValueError(f"{path!r} is not a path of the store at {directory!r}")
+        return cls(base)
+
     # ── the wire ───────────────────────────────────────────────────
 
     @classmethod

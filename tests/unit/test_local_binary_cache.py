@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 
 from pynixd.config import LocalBinaryCacheSpec, PynixdSettings
-from pynixd.exceptions import CacheFault, NarGone
+from pynixd.exceptions import CacheFault, NarGone, StoreDirMismatch
 from pynixd.instance import _add_substituter_stores
 from pynixd.serde import DrvOutput
 from pynixd.store.local_binary_cache import LocalBinaryCacheStore
@@ -99,6 +99,50 @@ def test_a_file_url_names_its_directory_and_parameters() -> None:
     assert spec.trusted
     assert spec.priority == 10
     assert spec_for("file://relative") is None
+
+
+def test_a_store_parameter_names_the_caches_store_directory() -> None:
+    """`?store=` is `StoreDirConfig::storeDir`, and another one is another store (`StoreConfig::getReference`)."""
+    spec = spec_for("file:///srv/cache?store=/fnord/store")
+    plain = spec_for("file:///srv/cache")
+    assert isinstance(spec, LocalBinaryCacheSpec)
+    assert plain is not None
+    assert spec.store_dir == "/fnord/store"
+    assert spec.reference_key() != plain.reference_key()
+    same = spec_for("file:///srv/cache?store=/nix/store/")
+    assert same is not None
+    assert same.reference_key() == plain.reference_key()
+    assert spec_for("file:///srv/cache?store=fnord") is None
+
+
+def _fnord_cache(root: Path) -> Path:
+    _cache(root)
+    (root / "nix-cache-info").write_text("StoreDir: /fnord/store\n")
+    (root / f"{PATH.hash_part()}.narinfo").write_text(
+        _narinfo("nar/abc.nar.xz", "xz").replace(str(PATH), f"/fnord/store/{PATH.name}")
+    )
+    return root
+
+
+async def test_a_cache_of_another_store_directory_reads_its_narinfo(tmp_path: Path) -> None:
+    """`NarInfo` parses `StorePath:` against the cache's own store directory (`nar-info.cc:50`)."""
+    root = _fnord_cache(tmp_path / "cache")
+    store = spec_for(f"file://{root}?store=/fnord/store")
+    assert store is not None
+    cache = store.to_store("fnord")
+    await cache.start()
+    assert isinstance(cache, LocalBinaryCacheStore)
+    narinfo = await cache.get_narinfo(PATH)
+    assert narinfo is not None
+    assert narinfo.path == PATH
+    assert narinfo.valid_path_info.path == PATH
+
+
+async def test_a_cache_of_another_store_directory_does_not_open_as_ours(tmp_path: Path) -> None:
+    """`BinaryCacheStore::init` (`binary-cache-store.cc:58`) refuses a `StoreDir` that is not the store's."""
+    root = _fnord_cache(tmp_path / "cache")
+    with pytest.raises(StoreDirMismatch, match="is for Nix stores with prefix '/fnord/store', not '/nix/store'"):
+        await _store(root)
 
 
 def test_a_readable_directory_gets_a_backend(tmp_path: Path) -> None:

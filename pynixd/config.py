@@ -902,6 +902,8 @@ class BinaryCacheSpecBase(StoreSpecBase):
     trusted: bool = False
     """`False` lets the local daemon check each path against its own
     `trusted-public-keys`, as Nix does for a substituter (`substitution-goal.cc:236`)."""
+    store_dir: str | None = None
+    """`?store=`: the store directory the cache serves (`StoreDirConfig::storeDir`); `None` is pynixd's own."""
     max_fail_ratio: float = 0.5
     health_window: int = 10
     scheduleable: bool = False
@@ -917,8 +919,8 @@ class HTTPBinaryCacheSpec(BinaryCacheSpecBase):
     max_concurrent: int | None = None
 
     def reference_key(self) -> object | None:
-        """The URL with no trailing slash, and the trust."""
-        return ("http", self.url.rstrip("/"), self.trusted)
+        """The URL with no trailing slash, the store directory and the trust."""
+        return ("http", self.url.rstrip("/"), self.store_dir, self.trusted)
 
     def to_store(self, store_id: str) -> HTTPBinaryCacheStore:
         """Build an ``HTTPBinaryCacheStore`` from this spec."""
@@ -936,8 +938,8 @@ class LocalBinaryCacheSpec(BinaryCacheSpecBase):
     path: Path
 
     def reference_key(self) -> object | None:
-        """The directory, and the trust."""
-        return ("file", self.path, self.trusted)
+        """The directory, the store directory and the trust."""
+        return ("file", self.path, self.store_dir, self.trusted)
 
     def to_store(self, store_id: str) -> LocalBinaryCacheStore:
         """Build a ``LocalBinaryCacheStore`` from this spec."""
@@ -985,6 +987,7 @@ class S3BinaryCacheSpec(BinaryCacheSpecBase):
             self.endpoint,
             self.addressing_style,
             self.profile,
+            self.store_dir,
             self.trusted,
         )
 

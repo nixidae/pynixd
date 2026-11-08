@@ -35,7 +35,7 @@ class ValidPathInfo(WireModel):
         return buf.bytes()
 
     @classmethod
-    def from_narinfo(cls, content: str) -> ValidPathInfo:
+    def from_narinfo(cls, content: str, store_dir: str | None = None) -> ValidPathInfo:
         data: dict[str, Any] = {
             "references": set(),
             "sigs": set(),
@@ -49,7 +49,8 @@ class ValidPathInfo(WireModel):
             val = val.strip()
 
             if key == "StorePath":
-                data["path"] = StorePath(path=val)
+                # `nar-info.cc:50`: the cache's own store directory, which *store_dir* names.
+                data["path"] = StorePath(path=val) if store_dir is None else StorePath.in_store(val, store_dir)
             elif key == "NarHash":
                 data["nar_hash"] = NARHash(hash=val.removeprefix("sha256:"))
             elif key == "NarSize":

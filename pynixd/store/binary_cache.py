@@ -28,7 +28,7 @@ from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from pynixd_store.store_path import StorePath
 
 from .. import metrics
-from ..exceptions import CacheFault, OpNotImplementedError
+from ..exceptions import CacheFault, OpNotImplementedError, StoreDirMismatch
 from ..serde import (
     DrvOutput,
     IsValidPathRequest,
@@ -86,12 +86,19 @@ class BinaryCacheStore(Store):
         self.cache_info: dict[str, str] = {}
         self._priority_given = "priority" in spec.model_fields_set
         self._recent_results: deque[bool] = deque(maxlen=spec.health_window)
+        self.store_dir: str = spec.store_dir or store_dir()
+        """The store directory whose paths the cache holds (`?store=`)."""
 
     def _take_cache_info(self, info: dict[str, str]) -> None:
         """Keep *info*, and rank by its `Priority` unless the spec names one.
 
         `nix-cache-info` only sets the default priority; `?priority=` wins (`binary-cache-store.cc:67`).
+        A cache of another store directory does not open (`binary-cache-store.cc:58`).
         """
+        if info["StoreDir"] != self.store_dir:
+            raise StoreDirMismatch(
+                f"binary cache '{self.store_id}' is for Nix stores with prefix '{info['StoreDir']}', not '{self.store_dir}'"
+            )
         self.cache_info = info
         self.want_mass_query = info.get("WantMassQuery") == "1"
         if not self._priority_given:
@@ -281,7 +288,7 @@ class BinaryCacheStore(Store):
         raw = await self._get_narinfo_raw(hash_part)
         if raw is None:
             return None
-        info = parse_narinfo(raw, expected_path=None)
+        info = parse_narinfo(raw, expected_path=None, store_dir=self.store_dir)
         if info is None:
             return None
         return raw, info
@@ -290,7 +297,7 @@ class BinaryCacheStore(Store):
         self._recent_results.append(success)
 
 
-def parse_cache_info(text: str, priority: float) -> dict[str, str]:
+def parse_cache_info(text: str, priority: float, store_dir: str) -> dict[str, str]:
     """`nix-cache-info` as a dict, with Nix's defaults for the keys it lacks."""
     result: dict[str, str] = {}
     for line in text.splitlines():
@@ -298,11 +305,11 @@ def parse_cache_info(text: str, priority: float) -> dict[str, str]:
             continue
         key, _, value = line.partition(":")
         result[key.strip()] = value.strip()
-    return default_cache_info(priority) | result
+    return default_cache_info(priority, store_dir) | result
 
 
-def default_cache_info(priority: float) -> dict[str, str]:
-    return {"WantMassQuery": "0", "Priority": str(int(priority)), "StoreDir": store_dir()}
+def default_cache_info(priority: float, store_dir: str) -> dict[str, str]:
+    return {"WantMassQuery": "0", "Priority": str(int(priority)), "StoreDir": store_dir}
 
 
 class _Codec(Protocol):
@@ -346,7 +353,8 @@ async def pull(codec: _Codec) -> AsyncGenerator[bytes]:
         codec.close()
 
 
-def parse_narinfo(text: str, expected_path: StorePath | None) -> NarInfo | None:
+def parse_narinfo(text: str, expected_path: StorePath | None, store_dir: str | None = None) -> NarInfo | None:
+    """*text* as a narinfo of the store at *store_dir*, pynixd's own when `None`."""
     fields: dict[str, str] = {}
     for line in text.splitlines():
         match = _NARINFO_KEY_RE.match(line)
@@ -369,11 +377,11 @@ def parse_narinfo(text: str, expected_path: StorePath | None) -> NarInfo | None:
         )
         return None
 
-    path = StorePath(path_raw)
+    path = StorePath(path_raw) if store_dir is None else StorePath.in_store(path_raw, store_dir)
     if expected_path is not None and path != expected_path:
         return None
 
-    valid_path_info = ValidPathInfo.from_narinfo(text)
+    valid_path_info = ValidPathInfo.from_narinfo(text, store_dir)
     if not str(valid_path_info.path):
         return None
 

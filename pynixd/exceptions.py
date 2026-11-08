@@ -66,6 +66,10 @@ class CacheFault(PynixdError):
     """A binary cache file that exists but could not be read: a transport error, a bad status, a bad body."""
 
 
+class StoreDirMismatch(PynixdError):
+    """A binary cache whose `nix-cache-info` names another store directory than the store's (`binary-cache-store.cc:58`)."""
+
+
 class InfrastructureError(PynixdError):
     """Transport/connection failure (SSH down, EOF, timeout)."""
 

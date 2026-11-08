@@ -13,6 +13,7 @@ import base64
 import binascii
 import hashlib
 import os
+import posixpath
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -22,6 +23,7 @@ from urllib.parse import parse_qs, urlsplit
 import structlog
 
 from nix_daemon_protocol.ids import StoreId
+from nix_daemon_protocol.store_dir import store_dir
 
 from .config import (
     ExternalUnixStoreSpec,
@@ -40,6 +42,8 @@ log = structlog.get_logger(__name__)
 
 _LOOPBACK_HOSTS: Final = frozenset({"127.0.0.1", "::1", "localhost"})
 _SUBSTITUTER_PARAMS: Final = frozenset({"trusted", "priority"})
+_BINARY_CACHE_PARAMS: Final = frozenset({"store"})
+"""What each binary cache reads beside a substituter's own: `StoreDirConfig::storeDir`."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +76,13 @@ def _substituter_settings(ref: StoreReference, known: frozenset[str]) -> dict[st
     if trusted is None:
         return None
     settings: dict[str, object] = {"trusted": trusted}
+    if (directory := ref.params.get("store")) is not None:
+        if not directory.startswith("/"):
+            return None
+        # Nix canonicalises the setting, so `/nix/store/` is pynixd's own directory and the same store.
+        directory = posixpath.normpath(directory)
+        if directory != store_dir():
+            settings["store_dir"] = directory
     # Unset here: a cache takes its `nix-cache-info` priority, any other store Nix's 0 (`store-api.hh:286`).
     if (priority := ref.params.get("priority")) is not None:
         try:
@@ -86,21 +97,25 @@ def _name(*parts: str) -> str:
     return "-".join(part for part in stripped if part)[:120]
 
 
+def _store_dir_part(settings: Mapping[str, object]) -> str:
+    return str(settings.get("store_dir") or "")
+
+
 def _http(ref: StoreReference) -> StoreSpecBase | None:
-    settings = _substituter_settings(ref, frozenset())
+    settings = _substituter_settings(ref, _BINARY_CACHE_PARAMS)
     if settings is None:
         return None
     url = f"{ref.scheme}://{ref.authority}{ref.path}"
-    name = _name("http", ref.authority, ref.path, "trusted" if settings["trusted"] else "")
+    name = _name("http", ref.authority, ref.path, _store_dir_part(settings), "trusted" if settings["trusted"] else "")
     return HTTPBinaryCacheSpec.model_validate({"store_id": StoreId(name), "url": url, **settings})
 
 
 def _file(ref: StoreReference) -> StoreSpecBase | None:
     path = Path(ref.authority + ref.path)
-    settings = _substituter_settings(ref, frozenset())
+    settings = _substituter_settings(ref, _BINARY_CACHE_PARAMS)
     if settings is None or not path.is_absolute():
         return None
-    name = _name("file", str(path), "trusted" if settings["trusted"] else "")
+    name = _name("file", str(path), _store_dir_part(settings), "trusted" if settings["trusted"] else "")
     return LocalBinaryCacheSpec.model_validate({"store_id": StoreId(name), "path": path, **settings})
 
 
@@ -121,7 +136,7 @@ _S3_PARAMS: Final = frozenset({"profile", "region", "scheme", "endpoint", "addre
 
 
 def _s3(ref: StoreReference) -> StoreSpecBase | None:
-    settings = _substituter_settings(ref, _S3_PARAMS)
+    settings = _substituter_settings(ref, _S3_PARAMS | _BINARY_CACHE_PARAMS)
     style = ref.params.get("addressing-style", "auto")
     if settings is None or not ref.authority or style not in ("auto", "path", "virtual"):
         return None
@@ -131,7 +146,7 @@ def _s3(ref: StoreReference) -> StoreSpecBase | None:
     # reads as present in the other. pynixd names the store by every parameter that picks the bucket.
     # Lillecarl/nix#406.
     where = (ref.params.get(param, "") for param in ("endpoint", "region", "profile"))
-    name = _name("s3", ref.authority, key, *where, "trusted" if settings["trusted"] else "")
+    name = _name("s3", ref.authority, key, *where, _store_dir_part(settings), "trusted" if settings["trusted"] else "")
     spec = S3BinaryCacheSpec.model_validate(
         {
             "store_id": StoreId(name),

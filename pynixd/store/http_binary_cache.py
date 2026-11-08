@@ -107,8 +107,8 @@ class HTTPBinaryCacheStore(BinaryCacheStore):
         except (TimeoutError, aiohttp.ClientError, OSError, RuntimeError) as e:
             # structlog renders `exc_info` on a warning as a bare `True`, not as a traceback.
             log.warning("http_cache_info_fetch_failed", store_id=self.store_id, url=self.url, error=repr(e))
-            return default_cache_info(self.priority)
-        return parse_cache_info(text, self.priority)
+            return default_cache_info(self.priority, self.store_dir)
+        return parse_cache_info(text, self.priority, self.store_dir)
 
     async def _get_file(self, name: str) -> str | None:
         session = self._require_session()
