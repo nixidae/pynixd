@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import random
 from typing import TYPE_CHECKING
 
 import aiohttp
 import structlog
 
-from pynixd.serde import QueryAllValidPathsRequest, QueryPathInfoRequest, StorePath as StorePath
+from pynixd.serde import StorePath
 from tests.conftest import (
     CLIENT_BIN,
     SESSION_HTTP_PASS,
@@ -16,47 +15,32 @@ from tests.conftest import (
     STORE_PREFIX,
     rmtree_robust,
     run_subproc,
+    server_uri,
 )
 
 if TYPE_CHECKING:
-    from nix_daemon_protocol.query_all_valid_paths import QueryAllValidPathsResponse
+    from pathlib import Path
+
     from pynixd import Server
-    from pynixd.store import Store
 
 log = structlog.get_logger(__name__)
 
 
-async def _pick_random_path(store: Store) -> StorePath:
-    """Pick an arbitrary valid path from the store."""
-    resp: QueryAllValidPathsResponse = await store.execute(QueryAllValidPathsRequest())
-    all_paths = list(resp.paths)
-    assert all_paths, "Store has no paths?!"
-
-    # Shuffle to avoid always hitting the same slow-to-find paths
-    random.shuffle(all_paths)
-
-    # Filter for something that likely has metadata
-    count = 0
-    for p in all_paths:
-        count += 1
-        if count > 100:  # Don't try too many
-            break
-        if p.endswith(".drv"):
-            continue
-        # Also ensure it has some size
-        info_resp = await store.execute(QueryPathInfoRequest(path=p))
-        if info_resp.valid and info_resp.info and info_resp.info.nar_size > 0:
-            return p
-
-    return all_paths[0]
+async def _add_path(server: Server, tmp_path: Path) -> StorePath:
+    """A path of the test's own: with `PYNIXD_NO_DAEMON=1` the session store starts empty."""
+    content = tmp_path / "served"
+    content.write_text(f"served by the HTTP cache from {tmp_path.name}\n")
+    _rc, out, _err, _ = await run_subproc(
+        [str(CLIENT_BIN), "store", "add-file", "--store", server_uri(server), str(content)]
+    )
+    return StorePath(out.strip())
 
 
-async def test_narinfo(pynixd_server: Server) -> None:
+async def test_narinfo(pynixd_server: Server, tmp_path: Path) -> None:
     """Test fetching .narinfo from the HTTP cache."""
-    local_store = pynixd_server.local_store
     base_url = f"http://127.0.0.1:{pynixd_server.http_bound_port}"
 
-    path = await _pick_random_path(local_store)
+    path = await _add_path(pynixd_server, tmp_path)
     hash_part = path.hash_part()
     log.info("test_narinfo", path=path, hash_part=hash_part, url=base_url)
 
@@ -70,12 +54,11 @@ async def test_narinfo(pynixd_server: Server) -> None:
             assert "URL: nar/" in text
 
 
-async def test_nar_streaming(pynixd_server: Server) -> None:
+async def test_nar_streaming(pynixd_server: Server, tmp_path: Path) -> None:
     """Test streaming a NAR from the HTTP cache."""
-    local_store = pynixd_server.local_store
     base_url = f"http://127.0.0.1:{pynixd_server.http_bound_port}"
 
-    path = await _pick_random_path(local_store)
+    path = await _add_path(pynixd_server, tmp_path)
     hash_part = path.hash_part()
 
     auth = aiohttp.BasicAuth(SESSION_HTTP_USER, SESSION_HTTP_PASS)
@@ -104,11 +87,9 @@ async def test_nar_streaming(pynixd_server: Server) -> None:
             assert total_bytes > 0
 
 
-async def test_cache_as_substituter(pynixd_server: Server) -> None:
+async def test_cache_as_substituter(pynixd_server: Server, tmp_path: Path) -> None:
     """Test using pynixd HTTP cache as a substituter."""
-    local_store = pynixd_server.local_store
-
-    target_path = await _pick_random_path(local_store)
+    target_path = await _add_path(pynixd_server, tmp_path)
     base_url = f"http://{SESSION_HTTP_USER}:{SESSION_HTTP_PASS}@127.0.0.1:{pynixd_server.http_bound_port}"
 
     # Use a fresh temporary store for substitution
