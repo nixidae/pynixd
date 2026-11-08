@@ -1,5 +1,6 @@
 {
   lib,
+  stdenv,
   pythonBuilder,
   hatchling,
   aiosqlite,
@@ -33,10 +34,11 @@ pythonBuilder (finalAttrs: {
     libarchive-c
     pycurl
     pynacl
-    seccomp
     structlog
     nix-daemon-protocol
-  ];
+  ]
+  # The builder's seccomp filter is Linux's alone; libseccomp builds nowhere else.
+  ++ lib.optionals stdenv.hostPlatform.isLinux [ seccomp ];
 
   meta = {
     description = "A local Nix store in Python: the file system, the database, the roots";

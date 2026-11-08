@@ -20,7 +20,7 @@ dependencies = [
     "nix-daemon-protocol>=0.1.0",
     "pycurl",
     "pynacl",
-    "seccomp",
+    "seccomp; sys_platform == 'linux'",
     "structlog",
 ]
 
