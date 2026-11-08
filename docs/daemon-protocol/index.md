@@ -4,11 +4,11 @@ The reusable `nix_daemon_protocol` package implements the [Nix daemon wire proto
 
 ## Supported protocol versions
 
-The codec package supports the contiguous **1.32 through 1.38** interval. Fast
-in-memory compatibility tests run every protocol boundary in that interval.
-Expensive real-daemon tests remain anchored at 1.32 (nixbuild.net) and the
-current Nix protocol. 1.35 (Lix) is supported, and no real-daemon test runs
-it. Requests also declare their introduction
+The codec package supports the contiguous **1.35 through 1.38** interval. 1.35
+is the floor for a client, a store and a builder alike: Lix and nixbuild.net
+speak it. Fast in-memory compatibility tests run every protocol boundary in
+that interval. Real-daemon tests run the current Nix protocol, and no
+real-daemon test runs 1.35. Requests also declare their introduction
 version and reject attempts to send an operation to an older negotiated daemon.
 
 ## Deserialization diagnostics

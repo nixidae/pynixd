@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from pynixd.constants import proto
 from pynixd.write_router import Dump, Facts, Write, first_reason
 from pynixd_store.add import ImportSettings
 from pynixd_store.content_address import Method, parse_method_algo
 
-NEW = proto(1, 38)
 REF = "/nix/store/" + "a" * 32 + "-ref"
 FACTS = Facts(writable=True, settings=ImportSettings())
 
@@ -34,38 +32,35 @@ def test_parse_method_algo_refuses(text: str) -> None:
         parse_method_algo(text)
 
 
-def _why(name: str, method: str, refs: list[str], *, version: int) -> str | None:
+def _why(name: str, method: str, refs: list[str]) -> str | None:
     dump = Dump(name, method, frozenset(refs))
-    return first_reason(Write(op="AddToStore", version=version, dump=dump), FACTS)
+    return first_reason(Write(op="AddToStore", dump=dump), FACTS)
 
 
 def test_pynixd_adds_what_it_can_hash() -> None:
-    assert _why("drv.drv", "text:sha256", [REF], version=NEW) is None
-    assert _why("src", "fixed:r:sha256", [REF], version=NEW) is None
-    assert _why("f", "fixed:sha1", [], version=NEW) is None
+    assert _why("drv.drv", "text:sha256", [REF]) is None
+    assert _why("src", "fixed:r:sha256", [REF]) is None
+    assert _why("f", "fixed:sha1", []) is None
 
 
 def test_pynixd_adds_a_git_dump_with_git_hashing() -> None:
     dump = Dump("f", "fixed:git:sha1", frozenset())
     facts = Facts(writable=True, settings=ImportSettings(git_hashing=True))
-    assert first_reason(Write(op="AddToStore", version=NEW, dump=dump), facts) is None
+    assert first_reason(Write(op="AddToStore", dump=dump), facts) is None
 
 
 @pytest.mark.parametrize(
-    ("name", "method", "refs", "version", "reason"),
+    ("name", "method", "refs", "reason"),
     [
-        ("f", "fixed:r:sha256", [], proto(1, 24), "unframed"),
-        ("f", "fixed:git:sha1", [], NEW, "Git"),
-        ("f", "fixed:blake3", [], NEW, "unknown hash algorithm"),
-        ("f", "text:sha1", [], NEW, "text hashing requires sha256"),
-        ("f", "fixed:sha256", [REF], NEW, "not allowed to refer to other store paths"),
-        ("bad name", "fixed:r:sha256", [], NEW, "illegal character"),
+        ("f", "fixed:git:sha1", [], "Git"),
+        ("f", "fixed:blake3", [], "unknown hash algorithm"),
+        ("f", "text:sha1", [], "text hashing requires sha256"),
+        ("f", "fixed:sha256", [REF], "not allowed to refer to other store paths"),
+        ("bad name", "fixed:r:sha256", [], "illegal character"),
     ],
 )
-def test_the_daemon_adds_what_pynixd_does_not_reproduce(
-    name: str, method: str, refs: list[str], version: int, reason: str
-) -> None:
+def test_the_daemon_adds_what_pynixd_does_not_reproduce(name: str, method: str, refs: list[str], reason: str) -> None:
     """Nix's refusal of each comes after `startWork`, and only the daemon gives its words."""
-    why = _why(name, method, refs, version=version)
+    why = _why(name, method, refs)
     assert why is not None
     assert reason in why

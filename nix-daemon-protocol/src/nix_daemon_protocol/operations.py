@@ -1,11 +1,11 @@
-"""The non-deprecated Nix daemon operation contract for protocol 1.32+."""
+"""The non-deprecated Nix daemon operation contract for protocol 1.35+."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Final
 
-from .constants import MINIMUM_REMOTE_PROTOCOL, proto
+from .constants import MINIMUM_PROTOCOL, proto
 
 
 @dataclass(frozen=True)
@@ -14,7 +14,7 @@ class StandardOperation:
 
     code: int
     name: str
-    min_protocol: int = MINIMUM_REMOTE_PROTOCOL
+    min_protocol: int = MINIMUM_PROTOCOL
 
 
 # Source of truth: Nix's WorkerProto::Op enum, excluding entries Nix marks
@@ -48,9 +48,9 @@ STANDARD_OPERATIONS: Final[tuple[StandardOperation, ...]] = (
     StandardOperation(41, "QueryDerivationOutputMap"),
     StandardOperation(42, "RegisterDrvOutput"),
     StandardOperation(43, "QueryRealisation"),
-    StandardOperation(44, "AddMultipleToStore", proto(1, 32)),
-    StandardOperation(45, "AddBuildLog", proto(1, 32)),
-    StandardOperation(46, "BuildPathsWithResults", proto(1, 34)),
+    StandardOperation(44, "AddMultipleToStore"),
+    StandardOperation(45, "AddBuildLog"),
+    StandardOperation(46, "BuildPathsWithResults"),
     StandardOperation(47, "AddPermRoot", proto(1, 36)),
     StandardOperation(49, "AddTempRoots", proto(1, 38)),
     # A builder's own daemon alone serves these two (`daemon.cc:349`).

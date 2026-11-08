@@ -35,7 +35,6 @@ from pynixd_store.optimise import render_size
 from pynixd_store.source import Metered
 
 from . import metrics
-from .constants import proto
 from .derived_path import check_output_name
 from .op_routes import OpRoute
 from .store.copied import as_copied
@@ -59,12 +58,6 @@ log = structlog.get_logger(__name__)
 
 _OP_CODES = {op.name: op.code for op in STANDARD_OPERATIONS}
 
-FRAMED_NAR = proto(1, 23)
-"""`daemon.cc:943`: from 1.23 the NAR of AddToStoreNar comes framed."""
-
-FRAMED_DUMP = proto(1, 25)
-"""`daemon.cc:406`: from 1.25 AddToStore names its method and references, and frames the dump."""
-
 
 @dataclass(frozen=True)
 class Dump:
@@ -83,7 +76,6 @@ class Write:
     """
 
     op: str
-    version: int
     repair: bool = False
     info: ValidPathInfo | None = None
     dump: Dump | None = None
@@ -99,12 +91,6 @@ class Facts:
 
 def _database(write: Write, facts: Facts) -> str | None:
     return None if facts.writable else "the store database is not writable"
-
-
-def _framing(write: Write, facts: Facts) -> str | None:
-    if write.dump is not None:
-        return "the client sends the dump unframed" if write.version < FRAMED_DUMP else None
-    return "the client sends the NAR unframed" if write.version < FRAMED_NAR else None
 
 
 def _git_path(write: Write, facts: Facts) -> str | None:
@@ -139,12 +125,11 @@ def pynixd_import(info: ValidPathInfo, *, repair: bool = False) -> Write:
     It follows AddToStoreNar's route, so a deployment that keeps that op on
     the daemon keeps these imports there too.
     """
-    return Write(op="AddToStoreNar", version=FRAMED_NAR, repair=repair, info=info)
+    return Write(op="AddToStoreNar", repair=repair, info=info)
 
 
 REASONS: tuple[Callable[[Write, Facts], str | None], ...] = (
     _database,
-    _framing,
     _git_path,
     _dump,
 )

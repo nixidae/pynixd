@@ -299,7 +299,7 @@ DAEMON_SESSIONS_TOTAL = Counter(
 #
 # Which op a client sends, `remote-store.cc`: `nix copy` at protocol 1.32 and
 # above is AddMultipleToStore, line 508. A single-path add -- `nix store
-# add-path`, `nix-store --import`, any client below 1.32 -- is AddToStoreNar,
+# add-path`, `nix-store --import` -- is AddToStoreNar,
 # line 451. A pull is NarFromPath.
 #
 # **So the split is also the discriminator.** Given a push whose op nobody

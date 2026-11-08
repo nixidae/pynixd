@@ -168,10 +168,10 @@ class BuildResult(WireModel):
     """
 
     # Protocol 1.29 fields
-    times_built: int | None = WireField(default=None, min_version=proto(1, 29))
-    is_non_deterministic: int | None = WireField(default=None, min_version=proto(1, 29))
-    start_time: int | None = WireField(default=None, min_version=proto(1, 29))
-    stop_time: int | None = WireField(default=None, min_version=proto(1, 29))
+    times_built: int | None = WireField(default=None)
+    is_non_deterministic: int | None = WireField(default=None)
+    start_time: int | None = WireField(default=None)
+    stop_time: int | None = WireField(default=None)
 
     # Protocol 1.37 fields
     cpu_user: OptMicroseconds = WireField(default_factory=OptMicroseconds, min_version=proto(1, 37))
@@ -187,7 +187,6 @@ class BuildResult(WireModel):
     # version alone cannot separate them. Issue #14.
     built_outputs: dict[str, Realisation] | None = WireField(
         default=None,
-        min_version=proto(1, 28),
         unless_features=[FEATURE_REALISATION_WITH_PATH],
     )
     built_outputs_by_name: dict[str, UnkeyedRealisation] | None = WireField(

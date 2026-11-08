@@ -17,14 +17,12 @@ from nix_daemon_protocol.protocol import Verbosity
 from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
-from pynixd.constants import proto
 from pynixd.op_routes import OpRoute
-from pynixd.write_router import FRAMED_NAR, Dump, Write, WriteClient, WriteRouter, _client_log, pynixd_import
+from pynixd.write_router import Dump, Write, WriteClient, WriteRouter, _client_log, pynixd_import
 from pynixd_store.add import ImportSettings
 from pynixd_store.source import Source
 
 STORE = "router-test"
-NEW = proto(1, 38)
 NAR_OPS = {39: OpRoute.pynixd, 44: OpRoute.pynixd}
 
 
@@ -106,36 +104,36 @@ def _fallthroughs(op: str) -> float:
 
 
 async def test_the_engine_takes_a_plain_import() -> None:
-    assert await _router().engine_takes(Write(op="AddToStoreNar", version=NEW, info=_info()))
+    assert await _router().engine_takes(Write(op="AddToStoreNar", info=_info()))
 
 
 async def test_the_engine_syncs_an_import_itself() -> None:
     """`fsync-store-paths` and `auto-optimise-store` are the engine's own steps (`add._move_into_place`)."""
     router = _router(auto_optimise_store=True, fsync_store_paths=True)
-    assert await router.engine_takes(Write(op="AddToStoreNar", version=NEW, info=_info()))
+    assert await router.engine_takes(Write(op="AddToStoreNar", info=_info()))
 
 
 async def test_the_engine_repairs_a_nar_import() -> None:
     """`LocalStore::addToStore` restores over a valid path with repair (`local-store.cc:1054`)."""
-    assert await _router().engine_takes(Write(op="AddToStoreNar", version=NEW, repair=True, info=_info()))
+    assert await _router().engine_takes(Write(op="AddToStoreNar", repair=True, info=_info()))
 
 
 async def test_the_engine_repairs_a_dump() -> None:
     """`addToStoreFromDump` restores over a valid path with repair (`local-store.cc:1249`)."""
     router = _router({7: OpRoute.pynixd})
-    write = Write(op="AddToStore", version=NEW, repair=True, dump=Dump("x", "fixed:r:sha256", frozenset()))
+    write = Write(op="AddToStore", repair=True, dump=Dump("x", "fixed:r:sha256", frozenset()))
     assert await router.engine_takes(write)
 
 
 async def test_the_engine_imports_a_git_path_with_git_hashing() -> None:
-    write = Write(op="AddToStoreNar", version=NEW, info=_info("fixed:git:sha1:" + "0" * 40))
+    write = Write(op="AddToStoreNar", info=_info("fixed:git:sha1:" + "0" * 40))
     assert await _router(git_hashing=True).engine_takes(write)
 
 
 async def test_the_daemon_route_wins_and_counts_nothing() -> None:
     before = _fallthroughs("AddToStoreNar")
     router = _router({39: OpRoute.daemon})
-    write = Write(op="AddToStoreNar", version=NEW, info=_info())
+    write = Write(op="AddToStoreNar", info=_info())
     assert not await router.engine_takes(write)
     assert await router.why_the_daemon(write) == "AddToStoreNar takes the daemon route"
     assert _fallthroughs("AddToStoreNar") == before
@@ -144,9 +142,8 @@ async def test_the_daemon_route_wins_and_counts_nothing() -> None:
 @pytest.mark.parametrize(
     ("engine", "write", "reason"),
     [
-        ({"writable": False}, Write(op="AddToStoreNar", version=NEW, repair=True), "not writable"),
-        ({}, Write(op="AddToStoreNar", version=proto(1, 22)), "NAR unframed"),
-        ({}, Write(op="AddMultipleToStore", version=NEW, info=_info("fixed:git:sha1:" + "0" * 40)), "Git"),
+        ({"writable": False}, Write(op="AddToStoreNar", repair=True), "not writable"),
+        ({}, Write(op="AddMultipleToStore", info=_info("fixed:git:sha1:" + "0" * 40)), "Git"),
     ],
 )
 async def test_the_first_reason_sends_it_to_the_daemon(engine: dict[str, Any], write: Write, reason: str) -> None:
@@ -162,7 +159,6 @@ async def test_the_first_reason_sends_it_to_the_daemon(engine: dict[str, Any], w
 async def test_pynixd_imports_follow_add_to_store_nar() -> None:
     write = pynixd_import(_info())
     assert write.op == "AddToStoreNar"
-    assert write.version == FRAMED_NAR
     assert await _router().engine_takes(write)
     assert not await _router({39: OpRoute.daemon, 44: OpRoute.pynixd}).engine_takes(write)
 
@@ -191,7 +187,7 @@ async def test_add_multiple_sends_a_path_the_engine_refuses_to_the_daemon_alone(
     conn = object()
     client = WriteClient(conn=conn, root=root)  # type: ignore[arg-type]  # a stand-in connection
     await router.add_multiple_to_store(
-        Write(op="AddMultipleToStore", version=NEW), 2, _paths(git, plain), dont_check_sigs=True, client=client
+        Write(op="AddMultipleToStore"), 2, _paths(git, plain), dont_check_sigs=True, client=client
     )
     engine = router.engine
     assert isinstance(engine, _Engine)

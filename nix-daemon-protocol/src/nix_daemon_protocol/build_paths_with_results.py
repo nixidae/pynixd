@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from .constants import proto
 from .derived_path import DerivedPath
 from .keyed_build_result import KeyedBuildResult
 from .wire_message import WireField
@@ -25,7 +24,6 @@ class BuildPathsWithResultsRequest(WireRequest):
     """
 
     op: ClassVar[int] = 46
-    min_protocol: ClassVar[int] = proto(1, 34)
     forward: ClassVar[bool] = False
     response_type = BuildPathsWithResultsResponse
     derived_paths: list[DerivedPath] = WireField(default_factory=list)

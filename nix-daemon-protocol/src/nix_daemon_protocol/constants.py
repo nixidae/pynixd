@@ -21,10 +21,16 @@ def proto_str(version: int) -> str:
 WORKER_MAGIC_1: Final[int] = 0x6E697863
 WORKER_MAGIC_2: Final[int] = 0x6478696F
 PROTOCOL_VERSION: Final[int] = proto(1, 38)
-MINIMUM_REMOTE_PROTOCOL: Final[int] = proto(1, 32)
-MINIMUM_CLIENT_PROTOCOL: Final[int] = proto(1, 18)
-"""`WorkerProto::minimum` (`worker-protocol.cc:35`): an older client is refused at the handshake."""
-SUPPORTED_PROTOCOL_VERSIONS: Final[tuple[int, ...]] = tuple(proto(1, minor) for minor in range(32, 39))
+MINIMUM_PROTOCOL: Final[int] = proto(1, 35)
+"""The oldest protocol of a client, a store and a builder: Lix speaks 1.35, nixbuild.net 1.35 (probed 2026-11-08).
+
+NIX-DEVIATION (#27): `WorkerProto::minimum` (`worker-protocol.cc:35`) admits
+a client from 1.18, and `daemon.cc:1048` refuses an older one. pynixd refuses
+a client below 1.35 there, in the same words. Below 1.25 a client sends
+AddToStore and AddToStoreNar unframed (`daemon.cc:406`, `daemon.cc:931`), and
+no handler here reads that. Reverse it when a supported client speaks less.
+"""
+SUPPORTED_PROTOCOL_VERSIONS: Final[tuple[int, ...]] = tuple(proto(1, minor) for minor in range(35, 39))
 
 
 def is_supported_protocol(version: int) -> bool:

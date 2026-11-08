@@ -66,7 +66,7 @@ def test_the_manifest_leaves_out_only_what_no_client_sends() -> None:
     (`pynixd/recursive.py`), and every other session closes on them.
     """
     left_out = {
-        8: "AddTextToStore, obsolete since protocol 1.25; the floor is 1.32",
+        8: "AddTextToStore, obsolete since protocol 1.25; the floor is 1.35",
         13: "SyncWithGC; no current RemoteStore sends it",
         18: "QueryDeriver, obsolete",
         22: "QueryDerivationOutputs, obsolete",

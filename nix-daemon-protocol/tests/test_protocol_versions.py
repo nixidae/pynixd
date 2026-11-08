@@ -21,35 +21,34 @@ from nix_daemon_protocol.io import BytesWriter
 from nix_daemon_protocol.wire_ops import WireRequest  # noqa: TC001
 
 
-@pytest.mark.parametrize("minor", range(32, 39))
+@pytest.mark.parametrize("minor", range(35, 39))
 def test_every_declared_protocol_version_is_supported(minor: int) -> None:
-    """The compatibility contract is the contiguous 1.32 through 1.38 range."""
+    """The compatibility contract is the contiguous 1.35 through 1.38 range."""
     assert is_supported_protocol(proto(1, minor))
 
 
 def test_protocol_support_has_explicit_floor_and_ceiling() -> None:
-    assert tuple(proto(1, minor) for minor in range(32, 39)) == SUPPORTED_PROTOCOL_VERSIONS
-    assert not is_supported_protocol(proto(1, 31))
+    assert tuple(proto(1, minor) for minor in range(35, 39)) == SUPPORTED_PROTOCOL_VERSIONS
+    assert not is_supported_protocol(proto(1, 34))
     assert not is_supported_protocol(proto(1, 39))
 
 
 @pytest.mark.parametrize(
     ("wire_request", "first_supported_minor"),
     [
-        (AddMultipleToStoreRequest(repair=0, dont_check_sigs=0), 32),
-        (AddBuildLogRequest(path="example-log"), 32),
-        (BuildPathsWithResultsRequest(derived_paths=[], build_mode=0), 34),
+        (AddMultipleToStoreRequest(repair=0, dont_check_sigs=0), 35),
+        (AddBuildLogRequest(path="example-log"), 35),
+        (BuildPathsWithResultsRequest(derived_paths=[], build_mode=0), 35),
         (AddPermRootRequest(store_path="/nix/store/example-root", gc_root="/tmp/root"), 36),
     ],
 )
 async def test_operation_availability_respects_its_protocol_boundary(
     wire_request: WireRequest, first_supported_minor: int
 ) -> None:
-    """Operations added after 1.32 cannot be sent to an older daemon."""
+    """No operation goes to a daemon below the floor, or below the version that added it."""
     writer = BytesWriter()
-    if first_supported_minor > 32:
-        with pytest.raises(UnsupportedProtocolVersion):
-            await wire_request.to_writer(WriteContext(writer=writer, version=proto(1, first_supported_minor - 1)))
+    with pytest.raises(UnsupportedProtocolVersion):
+        await wire_request.to_writer(WriteContext(writer=writer, version=proto(1, first_supported_minor - 1)))
 
     await wire_request.to_writer(WriteContext(writer=writer, version=proto(1, first_supported_minor)))
 

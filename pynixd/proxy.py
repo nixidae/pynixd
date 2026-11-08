@@ -381,7 +381,7 @@ class DaemonProxy:
         await self.w.drain()
 
         client_version = await self.r.read_uint64()
-        if client_version < wire.MINIMUM_CLIENT_PROTOCOL:
+        if client_version < wire.MINIMUM_PROTOCOL:
             raise ValueError("the Nix client version is too old")
         self.version = min(server_version, client_version)
         log.info(
@@ -418,11 +418,8 @@ class DaemonProxy:
             await self.r.read_uint64()  # cpuAffinity (ignored)
         await self.r.read_uint64()  # reserveSpace (ignored)
 
-        # Server conditions these on clientVersion
-        if client_version >= wire.proto(1, 33):
-            self.w.write_string(self._version_for_the_client())
-            if client_version >= wire.proto(1, 35):
-                self.w.write_uint64(OptTrusted.TRUSTED if self.role == Role.ADMIN else OptTrusted.NOT_TRUSTED)
+        self.w.write_string(self._version_for_the_client())
+        self.w.write_uint64(OptTrusted.TRUSTED if self.role == Role.ADMIN else OptTrusted.NOT_TRUSTED)
         self.w.write_uint64(wire.STDERR_LAST)
         await self.w.drain()
 

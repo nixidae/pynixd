@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar, Self
 
-from .constants import MINIMUM_REMOTE_PROTOCOL, proto_str
+from .constants import MINIMUM_PROTOCOL, proto_str
 from .exceptions import UnsupportedProtocolVersion
 from .logs import WireLogs
 from .wire_message import WireField, WireModel, _compiled_or_none, _wire_plan
@@ -33,7 +33,7 @@ class WireRequest(WireModel):
     op: ClassVar[int]
     name: ClassVar[str]
     response_type: ClassVar[type]
-    min_protocol: ClassVar[int] = MINIMUM_REMOTE_PROTOCOL
+    min_protocol: ClassVar[int] = MINIMUM_PROTOCOL
     forward: ClassVar[bool] = True
     is_extension: ClassVar[bool] = False
     is_query: ClassVar[bool] = False

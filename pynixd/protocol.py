@@ -1,6 +1,6 @@
 """
 Nix daemon protocol types and operation codes.
-Protocol versions 1.32+ are supported (negotiated per connection).
+Protocol versions 1.35+ are supported (negotiated per connection).
 """
 
 from nix_daemon_protocol.wire_ops import WIRE_REGISTRY

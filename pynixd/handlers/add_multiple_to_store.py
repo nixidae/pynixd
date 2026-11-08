@@ -58,7 +58,7 @@ class AddMultipleToStoreHandler(Handler):
             count = await frames.read_uint64()
             async with contextlib.aclosing(_paths(frames, count)) as paths:
                 await write_router(ctx.proxy.local_store).add_multiple_to_store(
-                    Write(op=req.name, version=ctx.proxy.version, repair=bool(req.repair) or ctx.proxy.repairs_adds),
+                    Write(op=req.name, repair=bool(req.repair) or ctx.proxy.repairs_adds),
                     count,
                     paths,
                     dont_check_sigs=bool(req.dont_check_sigs),

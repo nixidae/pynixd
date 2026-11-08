@@ -435,10 +435,10 @@ class Connection:
 
         server_version = await self.r.read_uint64()
         self.version = min(wire.PROTOCOL_VERSION, server_version)
-        if self.version < wire.MINIMUM_REMOTE_PROTOCOL:
+        if self.version < wire.MINIMUM_PROTOCOL:
             msg = (
                 f"Store {self.id} negotiated protocol {wire.proto_str(self.version)}, "
-                f"but we require >= {wire.proto_str(wire.MINIMUM_REMOTE_PROTOCOL)}"
+                f"but we require >= {wire.proto_str(wire.MINIMUM_PROTOCOL)}"
             )
             log.error("protocol_version_too_low", store_id=self.id, error=msg)
             raise InfrastructureError(msg)
@@ -477,12 +477,9 @@ class Connection:
         self.w.write_uint64(0)  # reserveSpace
         await w.drain()
 
-        # Server conditions these on clientVersion, not negotiated version
-        if server_version >= wire.proto(1, 33):
-            self.nix_version = await self.r.read_string()
-            log.debug("daemon_nix_version", nix_version=self.nix_version)
-            if server_version >= wire.proto(1, 35):
-                await self.r.read_uint64()
+        self.nix_version = await self.r.read_string()
+        log.debug("daemon_nix_version", nix_version=self.nix_version)
+        await self.r.read_uint64()
 
         # Drain initial STDERR_LAST
         await self.r.drain_stderr()

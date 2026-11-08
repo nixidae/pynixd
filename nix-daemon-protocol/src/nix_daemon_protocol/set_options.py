@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from .constants import proto
 from .protocol import Verbosity
 from .wire_message import WireField
 from .wire_ops import WireRequest, WireResponse
@@ -32,4 +31,4 @@ class SetOptionsRequest(WireRequest):
     obsolete_print_build_trace: int
     build_cores: int
     use_substitutes: int
-    overrides: dict[str, str] = WireField(default_factory=dict, min_version=proto(1, 12))
+    overrides: dict[str, str] = WireField(default_factory=dict)

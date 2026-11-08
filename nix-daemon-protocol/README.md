@@ -1,7 +1,7 @@
 # nix-daemon-protocol
 
 Declarative, transport-neutral Python codecs for Nix daemon protocol versions
-1.32 through 1.38.
+1.35 through 1.38.
 
 This subproject is independently buildable and releasable. It deliberately
 contains only standard Nix daemon protocol types, serialization, and

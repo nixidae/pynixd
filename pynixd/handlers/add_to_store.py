@@ -60,9 +60,7 @@ class AddToStoreHandler(Handler):
         frames = FramedReader(ctx.proxy.r)
         try:
             info = await write_router(ctx.proxy.local_store).add_to_store_from_dump(
-                Write(
-                    op=req.name, version=ctx.proxy.version, repair=bool(req.repair) or ctx.proxy.repairs_adds, dump=dump
-                ),
+                Write(op=req.name, repair=bool(req.repair) or ctx.proxy.repairs_adds, dump=dump),
                 frames,
                 client=write_client(ctx),
                 sign=sign,

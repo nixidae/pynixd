@@ -257,12 +257,8 @@ async def _read_handshake(client: BytesReader, server: BytesReader) -> Handshake
         await client.read_uint64()  # cpuAffinity, which the daemon ignores
     await client.read_uint64()  # reserveSpace, which the daemon ignores
 
-    nix_version = None
-    trusted = None
-    if client_version >= proto(1, 33):
-        nix_version = (await server.read_bytes()).decode()
-        if client_version >= proto(1, 35):
-            trusted = await server.read_uint64()
+    nix_version = (await server.read_bytes()).decode()
+    trusted = await server.read_uint64()
     await server.read_uint64()  # STDERR_LAST
 
     return Handshake(

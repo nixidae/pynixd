@@ -57,7 +57,6 @@ class AddToStoreNarHandler(Handler):
             await write_router(ctx.proxy.local_store).add_to_store(
                 Write(
                     op=req.name,
-                    version=ctx.proxy.version,
                     repair=bool(req.repair) or ctx.proxy.repairs_adds,
                     info=req.info,
                 ),

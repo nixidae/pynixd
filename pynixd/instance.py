@@ -20,7 +20,7 @@ from pynixd_store.background import Background
 from pynixd_store.gc import LivenessWatch, pressure_usage
 from pynixd_store.store_layout import DEFAULT_STORE_DIR
 
-from . import _optional, metrics, wire
+from . import _optional, metrics
 from .config import (
     LocalSocketStoreSpec,
     PynixdSettings,
@@ -672,13 +672,6 @@ class Server:
         local_store = self.ctx.local_store
 
         await self._background.start(self._host_store, local_store, False, None, True)
-
-        if local_store.version < wire.proto(1, 35):
-            raise RuntimeError(
-                f"Local store {local_store.store_id} uses protocol {wire.proto_str(local_store.version)}, "
-                "but pynixd requires at least 1.35 for the local store. "
-                "Please upgrade your Nix daemon.",
-            )
 
         self.ctx.trust = await local_store.trust_policy()
         log.info(
