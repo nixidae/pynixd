@@ -166,6 +166,11 @@ def _flatten(value: object, prefix: str, out: dict[str, str]) -> None:
                 continue
             _flatten(getattr(value, name), f"{prefix}.{name}" if prefix else name, out)
         return
+    # One name per item, so an exemption reaches a field inside it: `results.0.result.start_time`.
+    if isinstance(value, list) and value and all(isinstance(item, WireModel) for item in value):
+        for index, item in enumerate(value):
+            _flatten(item, f"{prefix}.{index}", out)
+        return
     if isinstance(value, (set, frozenset)):
         out[prefix] = repr(sorted(str(item) for item in value))
         return
