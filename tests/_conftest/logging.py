@@ -75,20 +75,28 @@ def _format_exception_for_json(logger: Any, method_name: str, event_dict: Any) -
     if exc_info is True:
         exc_info = sys.exc_info()
     if exc_info and not isinstance(exc_info, str):
-        event_dict["exception"] = {
-            "type": type(exc_info[1]).__name__,
-            "message": str(exc_info[1]),
-            "traceback": [
-                {
-                    "file": frame.filename,
-                    "line": frame.lineno or 0,
-                    "function": frame.name,
-                    "code": linecache.getline(frame.filename, frame.lineno or 0).strip() or None,
-                }
-                for frame in traceback.extract_tb(exc_info[2])
-            ],
-        }
+        event_dict["exception"] = _exception_dict(exc_info[1])
     return event_dict
+
+
+def _exception_dict(ex: BaseException) -> dict[str, Any]:
+    """*ex* as JSON, with each exception a group holds: a task group's own frames name no cause."""
+    found: dict[str, Any] = {
+        "type": type(ex).__name__,
+        "message": str(ex),
+        "traceback": [
+            {
+                "file": frame.filename,
+                "line": frame.lineno or 0,
+                "function": frame.name,
+                "code": linecache.getline(frame.filename, frame.lineno or 0).strip() or None,
+            }
+            for frame in traceback.extract_tb(ex.__traceback__)
+        ],
+    }
+    if isinstance(ex, BaseExceptionGroup):
+        found["exceptions"] = [_exception_dict(inner) for inner in ex.exceptions]
+    return found
 
 
 # ── Foreign stdlib log enrichment ─────────────────────────────────
