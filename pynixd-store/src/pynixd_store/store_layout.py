@@ -29,6 +29,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote, urlencode
 
+from nix_daemon_protocol.store_path import StorePath
+
 DEFAULT_STORE_DIR = Path("/nix/store")
 DEFAULT_STATE_DIR = Path("/nix/var/nix")
 DEFAULT_LOG_DIR = Path("/nix/var/log/nix")
@@ -146,9 +148,9 @@ class StoreLayout:
             relocated=True,
         )
 
-    def real_path(self, path: str | PurePosixPath) -> Path:
+    def real_path(self, path: StorePath | str | PurePosixPath) -> Path:
         """`toRealPath` (`local-fs-store.hh:115`): where the files of store path *path* are on this machine."""
-        return self.real_store_dir / PurePosixPath(path).name
+        return self.real_store_dir / (path.name if isinstance(path, StorePath) else PurePosixPath(path).name)
 
     @property
     def db_path(self) -> Path:

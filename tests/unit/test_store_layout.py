@@ -17,6 +17,7 @@ from pydantic import ValidationError
 
 from pynixd.config import LocalSocketStoreSpec
 from pynixd_store.store_layout import DEFAULT_STATE_DIR, DEFAULT_STORE_DIR, StoreLayout
+from pynixd_store.store_path import StorePath
 
 ROOT = Path("/srv/chroot")
 STORE = Path("/srv/relocated/store")
@@ -161,3 +162,14 @@ def test_the_two_shapes_are_not_the_same_layout() -> None:
     assert chroot != relocated
     assert chroot.real_store_dir != relocated.real_store_dir
     assert chroot.store_dir != relocated.store_dir
+
+
+# ── Store paths ─────────────────────────────────────────────────────
+
+BASE = "00000000000000000000000000000000-hello"
+
+
+def test_the_real_path_of_a_store_path() -> None:
+    """`toRealPath` (`local-fs-store.hh:115`): a chroot store keeps the files under its root."""
+    assert StoreLayout.chroot(ROOT).real_path(StorePath(BASE)) == ROOT / "nix" / "store" / BASE
+    assert StoreLayout.relocated_store(STORE, STATE, LOG).real_path(StorePath(BASE)) == STORE / BASE
