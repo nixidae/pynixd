@@ -165,8 +165,10 @@ def output_paths(build: QueuedBuild, resp: BuildDerivationResponse) -> StorePath
 
 
 async def _hold(roots: TempRoots, paths: Iterable[StorePath], store_id: StoreId) -> None:
-    """Hold *paths* on a store with no daemon, which has no other way to hold them."""
+    """Hold *paths* against the collector of a store pynixd builds into itself. No daemon worker holds them."""
     for path in paths:
+        if path == StorePath(""):
+            continue
         if not await roots.add(path):
             raise BackendError(f"pynixd: store {store_id} cannot hold '{path}' against its collector")
 
@@ -1258,7 +1260,19 @@ class Scheduler:
             if store is self.local_builder and isinstance(self.local_store, LocalDBStore):
                 settings = await self.local_store.local_build_settings(build.request, build.options)
                 if settings is not None:
-                    await self._build_here(build, store, self.local_store, settings)
+                    # `derivation-building-goal.cc:44`, `derivation-goal.cc:67`: the derivation and its outputs.
+                    # The collector matches hash parts, so the `.lock` and `.drv.chroot` beside them stay too.
+                    roots = self.local_store.engine.temp_roots()
+                    try:
+                        await _hold(
+                            roots,
+                            [build.request.drv_path, *build.request.derivation.output_paths().values()],
+                            self.local_store.store_id,
+                        )
+                        await self._build_here(build, store, self.local_store, settings)
+                    finally:
+                        with anyio.CancelScope(shield=True), anyio.move_on_after(_ROOTS_CLOSE_SECONDS):
+                            await roots.close()
                     return
                 if not store.runs_daemon:
                     raise _cannot_build_there(store.store_id)

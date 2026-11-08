@@ -203,6 +203,61 @@ async def _build(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
     }
 
 
+GC_SYNC = "/gc-sync"
+# `gc-concurrent.sh` of Nix: the builder waits on a fifo while the collector runs.
+GC_MID_BUILD = _script(
+    "parity-gc-mid-build",
+    f"""echo > {GC_SYNC}/started
+read go < {GC_SYNC}/go
+echo done > $out""",
+)
+
+
+async def _collected_mid_build(tmp_path: Path, route: OpRoute) -> tuple[int, int, str]:
+    """The build's exit code, and whether its derivation is still valid after a collection ran under it."""
+    sync = tmp_path / f"{route.name}-sync"
+    sync.mkdir()
+    for name in ("started", "go"):
+        os.mkfifo(sync / name)
+    nix_store = NIX_BIN.with_name("nix-store")
+    async with _serve(tmp_path, route, ops=("BuildDerivation", "CollectGarbage")) as (url, _root):
+        # Another process instantiates it, so no root of the realising client holds the derivation.
+        _rc, drv, _err, _both = await run_subproc(
+            [NIX_BIN, "eval", "--store", url, "--impure", "--raw", "--expr", f"({GC_MID_BUILD}).drvPath"]
+        )
+        drv = drv.strip()
+        realise = [nix_store, "--store", url, "--realise", drv, "--option", "extra-sandbox-paths", f"{GC_SYNC}={sync}"]
+        built: list[tuple[int, str, str, str]] = []
+
+        async def build() -> None:
+            built.append(await run_subproc(realise, expected_retcode=None))
+
+        started = os.open(sync / "started", os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(build)
+                with anyio.fail_after(60):
+                    await anyio.wait_readable(started)
+                await run_subproc([NIX_BIN, "store", "gc", "--store", url])
+                go = os.open(sync / "go", os.O_RDWR)
+                os.write(go, b"\n")
+                os.close(go)
+        finally:
+            os.close(started)
+        valid, _out, _err, _both = await run_subproc(
+            [nix_store, "--store", url, "--check-validity", drv], expected_retcode=None
+        )
+    rc, _out, _err, both = built[0]
+    return rc, valid, both
+
+
+async def test_a_collection_keeps_what_a_running_build_needs(tmp_path: Path) -> None:
+    """A build roots its derivation (`derivation-building-goal.cc:44`), as `gc-concurrent.sh:31` checks."""
+    for route in (OpRoute.pynixd, OpRoute.daemon):
+        rc, valid, both = await _collected_mid_build(tmp_path, route)
+        assert (route, rc, valid) == (route, 0, 0), both
+
+
 async def test_pynixd_builds_what_the_daemon_builds(tmp_path: Path) -> None:
     here = await _build(tmp_path, OpRoute.pynixd)
     there = await _build(tmp_path, OpRoute.daemon)
