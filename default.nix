@@ -123,26 +123,56 @@ let
   withDefaultNix = test: test.extend { modules = [ { defaults.nix.package = defaultNix; } ]; };
   vivarium-runner = vivariumLib.runner;
 
-  # The tree the test derivations copy, without the run directories `.gitignore` names (`/out/`,
-  # `/out-*/`, `/o/`): a guest copies its source to `/work`, and 1.9G of old runs filled a QEMU
-  # guest's disk.
-  testSrc = lib.cleanSourceWith {
-    src = lib.cleanSource ./.;
-    filter =
-      path: type:
-      let
-        relative = lib.removePrefix (toString ./. + "/") (toString path);
-      in
-      !(
-        type == "directory"
-        && (
-          lib.elem relative [
-            "out"
-            "o"
-          ]
-          || lib.hasPrefix "out-" relative && !(lib.hasInfix "/" relative)
-        )
-      );
+  # Allow-lists, by extension, under the directories that hold source. The run
+  # directories of old guests sit beside them (`out-*`, 5.2G in one checkout),
+  # and a copy of `./.` took the gates five minutes and filled a QEMU guest's disk.
+  sourceDirs = [
+    ./pynixd
+    ./tests
+    ./nix
+    ./docs
+    ./nix-daemon-protocol
+    ./pynixd-store
+  ];
+  filesOf =
+    extensions:
+    lib.fileset.unions (
+      [
+        ./pyproject.toml
+        ./ruff.toml
+        ./ruff-strict.toml
+        ./mypy.ini
+      ]
+      ++ map (lib.fileset.fileFilter (
+        file: lib.any file.hasExt extensions || file.name == "py.typed"
+      )) sourceDirs
+    );
+  pythonExtensions = [
+    "py"
+    "pyi"
+    "toml"
+    "ini"
+  ];
+
+  # What ruff and zuban read.
+  checkSrc = lib.fileset.toSource {
+    root = ./.;
+    fileset = filesOf pythonExtensions;
+  };
+
+  # What the suites read beside it: Nix expressions, the scripts they run, and
+  # the documents a test holds to the code.
+  testSrc = lib.fileset.toSource {
+    root = ./.;
+    fileset = filesOf (
+      pythonExtensions
+      ++ [
+        "nix"
+        "sh"
+        "md"
+        "c"
+      ]
+    );
   };
 
   nanopynix = import sources.nanopynix { inherit sources; };
@@ -355,7 +385,7 @@ let
   mkCheck =
     name: deps: text:
     pkgs.runCommand "pynixd-check-${name}" { nativeBuildInputs = deps; } ''
-      cp -r ${testSrc} src
+      cp -r ${checkSrc} src
       chmod -R +w src
       cd src
       ${text}

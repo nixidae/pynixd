@@ -50,13 +50,15 @@ async def test_extension_delegation(tmp_path: Path) -> None:
     )
 
     # Add a path to store B
+    added = tmp_path / "added"
+    added.write_text("a path only store B holds\n")
     cmd = [
         str(NIX_BIN),
         "store",
         "add-path",
         "--store",
         str(store_b_path),
-        "README.md",
+        str(added),
     ]
     rc, stdout, _stderr, _ = await run_subproc(cmd)
     assert rc == 0
