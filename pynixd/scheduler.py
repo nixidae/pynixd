@@ -787,7 +787,13 @@ class Scheduler:
                 for s in self.stores.values()
                 if s.supports_derivation(build.request.derivation.platform, build_features)
             ]
-            if all_compatible and all(build.is_blacklisted(s.store_id) for s in all_compatible):
+            # A builder of a dynamic platform can still register, and its
+            # registration runs a pass (`on_store_added`) that places the build.
+            if (
+                all_compatible
+                and all(build.is_blacklisted(s.store_id) for s in all_compatible)
+                and not self._dynamic_supports(build.request.derivation.platform, build_features)
+            ):
                 notes.end(Outcome.FAILED, "every capable store failed it too often")
                 await self._fail_all_compatible_blacklisted(build, build_features, all_compatible)
                 return False

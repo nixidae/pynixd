@@ -2,6 +2,7 @@ import anyio
 import pytest
 
 from nix_daemon_protocol.ids import StoreId
+from pynixd.build_queue import MAX_STORE_RETRIES
 from pynixd.config import PynixdSettings
 from pynixd.context import PynixdContext
 from pynixd.scheduler import Scheduler
@@ -520,3 +521,37 @@ async def test_dynamic_feature_matrix_survives_store_removal() -> None:
 
     build = scheduler.queue.by_id[build_id]
     assert not build.is_done
+
+
+async def test_a_build_every_registered_builder_failed_waits_for_the_next_builder() -> None:
+    """A builder of a dynamic platform can still register, so the build waits for it, and its registration places it.
+
+    On sg1 a builder Pod's Job was killed mid-build. The build failed with "All
+    compatible stores failed for aarch64-linux" instead of waiting for the next
+    builder (nixidae/nixidae#1129).
+    """
+    local_store = MockStore("local", feature_matrix={"x86_64-linux": set()})
+    first = MockStore("first", feature_matrix={"aarch64-linux": set()})
+    ctx = PynixdContext(settings=PynixdSettings(), _stores={StoreId("local"): local_store})
+    scheduler = Scheduler(ctx)
+    ctx._stores[StoreId("first")] = first
+    scheduler.on_store_added(first, dynamic=True)
+
+    request = BuildDerivationRequest(
+        drv_path=serde_path(StorePath("/nix/store/00000000000000000000000000000001-test.drv")),
+        derivation=BasicDerivation(platform="aarch64-linux", builder=""),
+        build_mode=BuildMode.NORMAL,
+    )
+    build_id, _ = await scheduler.build_derivation(request)
+    build = scheduler.queue.by_id[build_id]
+    for _ in range(MAX_STORE_RETRIES):
+        build.reset_for_retry(StoreId("first"), "SSH connection lost")
+
+    await _one_pass(scheduler)
+    assert not build.is_done, "the build failed although a builder of its platform can still register"
+
+    second = MockStore("second", feature_matrix={"aarch64-linux": set()})
+    ctx._stores[StoreId("second")] = second
+    scheduler.on_store_added(second, dynamic=True)
+    await _one_pass(scheduler)
+    assert build.assigned_store_id == "second"
