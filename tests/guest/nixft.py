@@ -9,6 +9,9 @@ without opening the log. Issue #45.
 
 from __future__ import annotations
 
+import os
+import shlex
+
 from vivarium_runner import Machines
 
 TIMEOUT = 21600
@@ -23,13 +26,18 @@ test per processor failed two tests of the pynixd arm that pass alone
 (`ca:build-cache`, `main:fetchTree-file`); four at a time failed none, at
 about 4.5 minutes for the pynixd arm."""
 
+SELECT_ENV = "PYNIXD_NIXFT_ARGS"
+"""Arguments for `meson test` in both arms, such as `gc-concurrent cli-characterisation`. Empty runs every test."""
+
 
 async def test(vms: Machines) -> None:
     [vm] = vms.values()
     nixft = vms.settings["nixft"]
     no_daemon = "NIXFT_NO_DAEMON=1 " if vms.settings.get("noDaemon") else ""
+    select = shlex.join(shlex.split(os.environ.get(SELECT_ENV, "")))
     command = (
-        f"mkdir -p /work-nixft && {no_daemon}JOBS={JOBS} NIXFT_WORK=/work-nixft {nixft} all > /artifacts/nixft.log 2>&1"
+        f"mkdir -p /work-nixft && {no_daemon}JOBS={JOBS} NIXFT_WORK=/work-nixft {nixft} all {select} "
+        "> /artifacts/nixft.log 2>&1"
     )
     rc, _ = await vm.execute(command, timeout=TIMEOUT, label="nixft all")
     tail = (await vm.succeed("tail -n 30 /artifacts/nixft.log")).strip()
