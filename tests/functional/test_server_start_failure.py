@@ -25,31 +25,39 @@ start timeout instead of the failure.
 The test below fails `trust_policy` -- late enough that the store fully
 started, the same shape as the original report -- and asserts the start
 error propagates, the server reads as stopped, and no non-daemon thread
-the start created is still alive.
+the start created outlives the event loop. The check runs after
+`anyio.run` returns: anyio's thread pool belongs to the loop, and its
+idle workers stop only when the loop's root task ends.
 """
 
 
-async def test_start_failure_tears_down_started_state(tmp_path: Path) -> None:
+def test_start_failure_tears_down_started_state(tmp_path: Path) -> None:
     store_path = tmp_path / "store"
     store_path.mkdir()
-    local_store = LocalDBStore(
-        make_test_spec(store_id="local", store_path=store_path, no_probe=True),
-    )
-    server = Server(
-        stores={StoreId("local"): local_store},
-        ssh_port=None,
-        http_port=None,
-    )
     before = {t.ident for t in threading.enumerate() if not t.daemon}
+    servers: list[Server] = []
 
     async def boom() -> None:
         raise RuntimeError("repro61: trust_policy failed")
 
-    with mock.patch.object(local_store, "trust_policy", boom), pytest.raises(RuntimeError, match="repro61"):
-        async with server:
-            pass
+    async def start() -> None:
+        local_store = LocalDBStore(
+            make_test_spec(store_id="local", store_path=store_path, no_probe=True),
+        )
+        server = Server(
+            stores={StoreId("local"): local_store},
+            ssh_port=None,
+            http_port=None,
+        )
+        servers.append(server)
+        with mock.patch.object(local_store, "trust_policy", boom), anyio.fail_after(120):
+            async with server:
+                pass
 
-    assert not server._started
+    with pytest.raises(RuntimeError, match="repro61"):
+        anyio.run(start, backend="asyncio", backend_options={"use_uvloop": True})
+
+    assert not servers[0]._started
 
     leaked: list[threading.Thread] = []
     deadline = time.monotonic() + 10
@@ -61,5 +69,5 @@ async def test_start_failure_tears_down_started_state(tmp_path: Path) -> None:
         ]
         if not leaked:
             break
-        await anyio.sleep(0.2)
+        time.sleep(0.2)
     assert not leaked, f"start left non-daemon threads behind: {[t.name for t in leaked]}"
