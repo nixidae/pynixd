@@ -28,6 +28,8 @@ from pynixd.wire import BytesWriter
 from tests.goal_group import goals_running
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from pynixd.context import PynixdContext
     from pynixd.goals.engine import GoalEngine
 
@@ -51,8 +53,9 @@ class FakeScheduler:
         goal_request_id: RequestId | None = None,
         options: SetOptionsRequest | None = None,
         delegated: bool = False,
+        askers: Sequence[ClientConn] = (),
     ) -> tuple[BuildId, Answer[BuildDerivationResponse]]:
-        del request, options, delegated
+        del request, options, delegated, askers
         self.goal_request_id = goal_request_id
         if not from_goal_path:
             raise RuntimeError("BuildDerivationGoal must mark scheduler builds as goal-owned")

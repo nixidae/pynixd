@@ -47,6 +47,9 @@ from pynixd_store.background import Background
 from tests.goal_group import goals_running
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from pynixd.connection import ClientConn
     from pynixd.goals.engine import GoalEngine
 
 VERSION = PROTOCOL_VERSION
@@ -219,8 +222,9 @@ class FakeScheduler:
         goal_request_id: RequestId | None = None,
         options: SetOptionsRequest | None = None,
         delegated: bool = False,
+        askers: Sequence[ClientConn] = (),
     ) -> tuple[BuildId, Answer[BuildDerivationResponse]]:
-        del request, from_goal_path, goal_request_id, delegated
+        del request, from_goal_path, goal_request_id, delegated, askers
         self.options = options
         self.answer = Answer()
         self.started.set()

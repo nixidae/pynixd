@@ -36,6 +36,9 @@ from tests.goal_group import goals_running, result_of
 from tests.unit.test_build_derivation_goal import FakeEngine
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from pynixd.connection import ClientConn
     from pynixd.goals.engine import GoalEngine
 
 
@@ -107,12 +110,14 @@ class _QueueScheduler:
         goal_request_id: RequestId,
         options: SetOptionsRequest | None,
         delegated: bool = False,
+        askers: Sequence[ClientConn] = (),
     ) -> object:
         return await self.queue.enqueue(
             request,
             from_goal_path=from_goal_path,
             goal_request_id=goal_request_id,
             options=options,
+            askers=askers,
             delegated=delegated,
         )
 
