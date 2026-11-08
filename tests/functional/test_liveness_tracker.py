@@ -31,7 +31,8 @@ _MAX_FREED = 2**63 - 1
 @asynccontextmanager
 async def _pynixd(store_path: Path) -> AsyncIterator[Server]:
     """A server over the lab store. Its opening migrates pynixd's tables in."""
-    spec = make_test_spec(store_id="local", store_path=store_path, no_probe=True)
+    # Nix's daemon gives the reference answer.
+    spec = make_test_spec(store_id="local", store_path=store_path, no_probe=True, daemon=True)
     stores: dict[StoreId, Store] = {StoreId("local"): LocalDBStore(spec)}
     async with Server(stores=stores, ssh_port=None, http_port=None) as server:
         yield server
