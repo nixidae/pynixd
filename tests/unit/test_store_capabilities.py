@@ -12,7 +12,8 @@ from tests.conftest import make_test_spec
 
 
 def test_daemon_store_without_handshake_advertises_nothing() -> None:
-    store = LocalSocketStore(make_test_spec(store_id="cap"))
+    # A store with no daemon offers features with no handshake, so `PYNIXD_NO_DAEMON` must not reach this one.
+    store = LocalSocketStore(make_test_spec(store_id="cap", daemon=True))
     assert store.features == set()
     assert "PynixdState" not in store.features
 
