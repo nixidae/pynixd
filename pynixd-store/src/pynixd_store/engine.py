@@ -111,15 +111,26 @@ class StoreEngine:
         self.layout = layout
         #: Whether pynixd itself may change the store (`LocalSocketStoreSpec.pynixd_writes`).
         self.writes = writes
+        self._config: Mapping[str, Any] | None = None
         # The owner replaces it at start. A start that fails before then still reaches `close`.
         self.db = LocalStoreDB.inactive(layout)
         self._read_config = read_config
         self._on_change = on_change
         self._name = name
         self._settings: add.ImportSettings | None = None
-        self._config: Mapping[str, Any] | None = None
         #: Whether the store's Nix hashes the offset of each self-reference (`add.HashModulo`); not Nix 2.34.
         self.hashes_self_reference_positions = True
+
+    @property
+    def db(self) -> LocalStoreDB:
+        """The store's database. Settings read before it opens reach it when it is set: a store with no daemon reads them first."""
+        return self._db
+
+    @db.setter
+    def db(self, db: LocalStoreDB) -> None:
+        self._db = db
+        if self._config is not None:
+            self._apply_db_settings(self._config)
 
     async def nix_config(self) -> Mapping[str, Any]:
         """The store's Nix settings, `nix config show --json`. Read once, as the daemon reads them."""
