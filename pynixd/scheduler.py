@@ -173,6 +173,31 @@ async def add_temp_roots(conn: Connection, paths: StorePathSet) -> None:
         await conn.call(AddTempRootRequest(path=path), raise_on_error=True)
 
 
+def with_build_times(resp: BuildDerivationResponse, start: int, stop: int) -> BuildDerivationResponse:
+    """*resp* with the times pynixd measured where a builder left Nix's zero.
+
+    NIX-DEFECT (#23): `Store::buildDerivation` (`entry-points.cc:85`) runs a `DerivationTrampolineGoal`,
+    whose `doneSuccess` (`derivation-trampoline-goal.cc:227`) answers with a new `BuildResult` that holds the
+    status and the outputs alone. A build that ran answers `timesBuilt`, `startTime` and `stopTime` of 0, so
+    a client cannot tell how long it took. pynixd fills each field that still holds 0, and only for `Built`:
+    a builder that fills one keeps its own value, so pynixd follows Nix again once Nix fixes it.
+    Lillecarl/nix#283 merges the stats in the trampoline goal. nixidae/nixidae#1217.
+    """
+    result = resp.result
+    if result.status != BuildResultStatus.BUILT:
+        return resp
+    update: dict[str, int] = {}
+    if not result.times_built:
+        update["times_built"] = 1
+    if not result.start_time:
+        update["start_time"] = start
+    if not result.stop_time:
+        update["stop_time"] = stop
+    if not update:
+        return resp
+    return resp.model_copy(update={"result": result.model_copy(update=update)})
+
+
 def expected_build_seconds(build: QueuedBuild, local_id: StoreId) -> float | None:
     """The build alone: its local estimate, else the shortest any store has."""
     local = build.estimates.get(local_id)
@@ -1463,12 +1488,14 @@ class Scheduler:
         if build.wait_time is not None:
             metrics.QUEUE_WAIT_DURATION.observe(build.wait_time)
 
+        start = int(time.time())
         resp: BuildDerivationResponse = await conn.call(
             build.request,
             client=cast("ClientConn", _OutputClock(build)),
             options=builder_options(build.options, store, self.local_builder),
             keep_logs=True,
         )
+        resp = with_build_times(resp, start, int(time.time()))
         if resp.logs.messages:
             # The count, so a run can tell one fan-out of many messages from
             # many fan-outs of one message.

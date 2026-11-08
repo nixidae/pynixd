@@ -45,6 +45,17 @@ class Exemption:
 
 
 EXEMPTIONS: tuple[Exemption, ...] = (
+    *(
+        Exemption(
+            field=f"response.*.{name}",
+            reason=(
+                "Nix answers a build that ran with 0 here (`derivation-trampoline-goal.cc:227`), and pynixd "
+                "fills the time it measured. A clock time differs between any two runs anyway. "
+                "nixidae/nixidae#1217."
+            ),
+        )
+        for name in ("times_built", "start_time", "stop_time")
+    ),
     Exemption(
         field="handshake.nix_version",
         reason=(
