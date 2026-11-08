@@ -41,6 +41,7 @@ from .queries import (
     QUERY_DERIVATION_OUTPUT_MAP_BATCH,
     QUERY_DERIVATION_OUTPUTS,
     QUERY_PATH_FROM_HASH_PART,
+    QUERY_PATH_FROM_NAR_HASH,
     QUERY_PATH_INFO_WITH_REFS,
     QUERY_PATH_INFOS_BATCH,
     QUERY_REALISATION_BY_HASH,
@@ -227,6 +228,12 @@ class StoreEngine:
         prefix = f"{self.layout.store_dir}/{hash_part}"
         upper = prefix[:-1] + chr(ord(prefix[-1]) + 1)
         async with self.db.execute(QUERY_PATH_FROM_HASH_PART, (prefix, upper)) as cursor:
+            row = await cursor.fetchone()
+        return None if row is None else StorePath(path=row[0])
+
+    async def query_path_from_nar_hash(self, nar_hash: str) -> StorePath | None:
+        """A valid path whose NAR has this base-16 SHA-256 hash. Nix writes `ValidPaths.hash` as `sha256:<base16>`."""
+        async with self.db.execute(QUERY_PATH_FROM_NAR_HASH, (f"sha256:{nar_hash}",)) as cursor:
             row = await cursor.fetchone()
         return None if row is None else StorePath(path=row[0])
 

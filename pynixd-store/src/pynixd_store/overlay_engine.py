@@ -138,6 +138,11 @@ class OverlayEngine(StoreEngine):
         found = await super().query_path_from_hash_part(hash_part)
         return found if found is not None else await self.lower.query_path_from_hash_part(hash_part)
 
+    async def query_path_from_nar_hash(self, nar_hash: str) -> StorePath | None:
+        """The upper store, then the lower, as `query_path_from_hash_part`."""
+        found = await super().query_path_from_nar_hash(nar_hash)
+        return found if found is not None else await self.lower.query_path_from_nar_hash(nar_hash)
+
     async def query_realisation(
         self, drv: str, output_name: str, *, by_path: bool
     ) -> tuple[StorePath, list[Signature]] | None:

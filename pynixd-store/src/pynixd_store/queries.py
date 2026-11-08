@@ -64,6 +64,8 @@ QUERY_PATH_FROM_HASH_PART = """
 SELECT path FROM ValidPaths WHERE path >= ? AND path < ? LIMIT 1
 """
 
+QUERY_PATH_FROM_NAR_HASH = "SELECT path FROM ValidPaths WHERE hash = ? LIMIT 1"
+
 QUERY_CLOSURE = """
 WITH RECURSIVE closure(id) AS (
     SELECT id FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))

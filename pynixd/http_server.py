@@ -43,7 +43,7 @@ from .serde import (
     QueryPathFromHashPartRequest,
     QueryPathInfoRequest,
 )
-from .store.local_db import write_router
+from .store.local_db import LocalDBStore, write_router
 from .store.nar_reader import NarReader
 
 if TYPE_CHECKING:
@@ -51,7 +51,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from .health import HealthReport
-    from .store import LocalDBStore, LocalStore
+    from .store import LocalStore
     from .substitution_queue import SubstitutionQueue
 
 log = structlog.get_logger(__name__)
@@ -566,19 +566,14 @@ class PynixdHttpServer:
 
     async def resolve_path(self, hash_part: str) -> StorePath | None:
         """Resolve a store hash or NAR hash to a full store path."""
-        # 1. Try resolving as a NAR hash (SHA256, 64 chars) if we have a DB
-        if len(hash_part) == 64 and (db := self.store.db) is not None:
-            for prefix in ["sha256:", ""]:
-                full_hash = f"{prefix}{hash_part}"
-                async with db.execute(
-                    "SELECT path FROM ValidPaths WHERE hash = ?",
-                    (full_hash,),
-                ) as cursor:
-                    row = await cursor.fetchone()
-                if row:
-                    return StorePath(row[0])
+        if (
+            len(hash_part) == 64
+            and isinstance(self.store, LocalDBStore)
+            and self.store.db.active
+            and (found := await self.store.engine.query_path_from_nar_hash(hash_part)) is not None
+        ):
+            return found
 
-        # 2. Fall back to standard QueryPathFromHashPart
         resp = await self.store.execute(
             QueryPathFromHashPartRequest(path=hash_part),
         )
