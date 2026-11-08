@@ -16,6 +16,7 @@ import structlog
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from pynixd_store.background import Background
 
+from .exceptions import StoreDirMismatch
 from .store_url import reference_key, substituter_spec
 
 if TYPE_CHECKING:
@@ -42,6 +43,7 @@ class ClientSubstituters:
     def __init__(self, settings: PynixdSettings) -> None:
         self._settings = settings
         self._made: dict[object, Store] = {}
+        self._dropped: set[object] = set()
         self._lock = anyio.Lock()
         self._held = Background("ClientSubstituters")
 
@@ -64,7 +66,12 @@ class ClientSubstituters:
         }
         resolved: list[Store] = []
         for url in urls:
-            store = await self._backend(url, backends)
+            if reference_key(url) in self._dropped:
+                continue
+            try:
+                store = await self._backend(url, backends)
+            except StoreDirMismatch:
+                continue
             if store is None:
                 log.debug("client_substituter_only_the_daemon_reaches", url=url)
                 return None
@@ -88,6 +95,12 @@ class ClientSubstituters:
             store = spec.to_store(str(spec.store_id))
             try:
                 await self._held.start(self._hold, key, store, url)
+            except StoreDirMismatch:
+                # Nix's own refusal (`binary-cache-store.cc:58`): `getDefaultSubstituters` drops the cache
+                # with a warning (`store-registration.cc:88`), so the daemon answers without it too.
+                log.warning("client_substituter_dropped", url=url, exc_info=True)
+                self._dropped.add(key)
+                raise
             except Exception:
                 # Nix drops a substituter it cannot open, with a warning
                 # (`store-registration.cc:114`); the daemon answers for this one.

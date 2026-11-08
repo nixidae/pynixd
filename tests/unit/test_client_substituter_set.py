@@ -121,6 +121,21 @@ async def test_a_named_substituter_with_no_backend_sends_the_client_to_the_daemo
     assert await queue.substituters_for(_client(substituters=f"file://{tmp_path}/missing")) is None
 
 
+async def test_a_named_cache_of_another_store_directory_is_dropped(tmp_path: Path) -> None:
+    """`BinaryCacheStore::init` (`binary-cache-store.cc:58`) refuses it, and `getDefaultSubstituters`
+    (`store-registration.cc:88`) drops it with a warning. The daemon would answer no better."""
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "nix-cache-info").write_text("StoreDir: /other/store\n")
+    root = _cache(tmp_path / "cache")
+    queue = _queue()
+    async with queue.running():
+        stores = await queue.substituters_for(_client(substituters=f"file://{other} file://{root}"))
+    assert stores is not None
+    assert [store.path for store in stores if isinstance(store, LocalBinaryCacheStore)] == [root]
+    assert len(stores) == 1
+
+
 async def test_pynixds_own_cache_named_by_a_client_goes_to_the_daemon() -> None:
     queue = _queue(settings=PynixdSettings(http_port=8080))
     assert await queue.substituters_for(_client(substituters="http://127.0.0.1:8080")) is None
