@@ -68,7 +68,7 @@ async def test_a_build_in_the_sandbox_records_its_cpu_time(tmp_path: Path) -> No
     assert isinstance(user_us, int)
     assert user_us > 50_000, "500000 shell iterations take well over 50 ms of user time"
     assert system_us is not None
-    # The guest suite delegates a cgroup to the tests (`tests/guest/suite.py`); a host without one measures rusage.
+    # The guest suite delegates a cgroup to the tests (`delegateCgroup` in `tests/derivations/guest`); a host without one measures rusage.
     assert source in {"rusage", "cgroup"}
     assert isinstance(peak, int)
     assert peak > 1 << 20, "a shell holds more than 1 MiB"

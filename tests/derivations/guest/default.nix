@@ -110,6 +110,11 @@ vivariumLib.mkTest (
       default = "container";
       description = "container, qemu, or uml";
     };
+    knobs.noDaemon = {
+      env = "PYNIXD_NO_DAEMON";
+      default = "";
+      description = "1 runs every test store with no Nix daemon under it";
+    };
     backend = config.resolved.backend.value;
 
     # Every path `settings` names is one the guests read.
@@ -128,7 +133,6 @@ vivariumLib.mkTest (
     settings = {
       src = "${src}";
       nixpkgs = "${pkgs.path}";
-      inherit suites;
       # `HELLO` in tests/_conftest/constants.py: the same `hello` that
       # `<nixpkgs>` evaluates to in the guest, so it is already valid.
       hello = "${pkgs.hello}";
@@ -174,15 +178,56 @@ vivariumLib.mkTest (
         always = true;
         description = "no process outlived its suite";
       };
-    }
-    // lib.mapAttrs (name: suite: {
-      script = ../../guest/suite.py;
+    };
+
+    /*
+      One phase per suite, each in the guest named after it, so the suites
+      run at once. `prepare` and `leaks` name no guest, so they hold all.
+      One process per suite: `tests/unit` and `nix-daemon-protocol/tests`
+      interfere, and one process for both is how 57 failures once hid
+      behind a green run of 684 (pynixd issue #33).
+
+      `-- -k name` on the driver selects inside every suite; pair it with
+      `--only`, because a suite the selection does not reach exits 5 and
+      fails its phase.
+    */
+    vivarium.recipes.suites = lib.mapAttrs (name: suite: {
+      tests = suite.path;
+      # The environment installs both packages editable from /work:
+      # `tests/differential` refuses a pynixd from one tree and a
+      # nix_daemon_protocol from another.
+      directory = "/work";
+      args = [
+        "--tb=short"
+        "-q"
+      ]
+      ++ suite.flags;
+      user = suite.user or "tester";
+      # pynixd makes a cgroup per build (`builder/cgroup.py`). Root needs
+      # one too: in the agent's cgroup, pynixd would move the agent into
+      # its leaf.
+      delegateCgroup = true;
+      environment = {
+        NIX_BIN = "$(command -v nix)";
+        NIX_GIT_BIN = "${nixGit}/bin/nix";
+        NIX_FLOOR_BIN = "${nixFloor}/bin/nix";
+        # Without it a failure names `/tmp/pynixd-logs/...`, which dies
+        # with the guest.
+        PYNIXD_TEST_LOG_DIR = "/artifacts/${name}-logs";
+      }
+      // lib.optionalAttrs (config.resolved.noDaemon.value == "1") {
+        # Every test store with no Nix daemon under it
+        # (`LocalSocketStoreSpec.daemon`), to measure the gap.
+        PYNIXD_NO_DAEMON = "1";
+      };
       after = [ "prepare" ];
-      # A guest each, so the suites run at once: the session starts phases
-      # whose guests do not overlap together. `prepare` and `leaks` name no
-      # guest, so they hold all three.
-      nodes = [ name ];
-      description = suite.path;
+      /*
+        Measured in a QEMU guest on an idle host: `tests/unit` 27.2s,
+        `nix-daemon-protocol/tests` 4.8s, `tests/parity` 122.2s.
+        `tests/unit` takes 87s under UML. The rest is for a loaded
+        builder.
+      */
+      timeout = 2400;
     }) suites;
 
     # One guest per suite, named after it, so events.jsonl says

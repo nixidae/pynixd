@@ -42,7 +42,7 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     # default. A run inside a guest or a build sandbox needs these files
     # somewhere that outlives it: `/tmp` there is thrown away with the
     # machine, and a parity failure says nothing but "logs: /tmp/..." --
-    # a path to a file that no longer exists. See tests/guest/suite.py.
+    # a path to a file that no longer exists. See `PYNIXD_TEST_LOG_DIR` in tests/derivations/guest.
     root = Path(os.environ.get("PYNIXD_TEST_LOG_DIR", "/tmp/pynixd-logs"))
     log_dir = root / run_id
     log_dir.mkdir(parents=True, exist_ok=True)
