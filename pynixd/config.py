@@ -540,6 +540,15 @@ class LocalSocketStoreSpec(StoreSpecBase):
     reaping a dead process's temporary roots file) leaves that to the
     daemon. The test suites turn it on; a deployment turns it on by hand.
     """
+    daemon: bool = True
+    """Whether a Nix daemon runs under pynixd for this store.
+
+    Off, pynixd opens the store itself (`pynixd_store.create_store`), starts
+    no daemon and connects to none, and every operation takes the `pynixd`
+    route. A request that only the daemon can answer fails with an error that
+    names it. It needs `use_db`, `pynixd_writes` and a store pynixd manages.
+    nixidae/nixidae#1155.
+    """
     build_vm: BuildVmSpec | None = None
     """Run pynixd's sandboxed builds in a microVM; `None` runs them in the namespace helper alone."""
     usage_sample_seconds: float = Field(default=5.0, ge=0)
@@ -552,6 +561,15 @@ class LocalSocketStoreSpec(StoreSpecBase):
             raise ValueError(f"op_routes names no operation of the protocol: {', '.join(unknown)}")
         if not self.use_db and any(route is not OpRoute.daemon for route in self.op_routes.values()):
             raise ValueError("op_routes: a store with use_db = false answers every operation through the daemon")
+        if not self.daemon:
+            if not self.use_db:
+                raise ValueError("daemon = false needs use_db: with no daemon, pynixd reads the database itself")
+            if not self.pynixd_writes:
+                raise ValueError("daemon = false needs pynixd_writes: with no daemon, pynixd writes the store itself")
+            if self.managed is False:
+                raise ValueError("daemon = false needs a store pynixd manages, not the machine's own daemon")
+            if routed := sorted(op for op, route in self.op_routes.items() if route is not OpRoute.pynixd):
+                raise ValueError(f"op_routes: with daemon = false, every route is pynixd, not for {', '.join(routed)}")
         return self
 
     @model_validator(mode="after")

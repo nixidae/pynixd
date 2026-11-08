@@ -21,26 +21,29 @@ import anyio
 import structlog
 
 from nix_daemon_protocol.store_dir import on_disk
-from pynixd_store.nix_config import nix_environment, read_nix_config
+from pynixd_store.nix_config import nix_environment, read_nix_config, read_nix_version
 from pynixd_store.store_path import StorePath
 
 from ..agent import local_monitor
 from ..config import LocalSocketStoreSpec, PynixdSettings
 from ..connection import Connection
+from ..exceptions import NoDaemonError
 from ..line_reader import LineReader
 from ..monitor import DummyResourceMonitor, local_disk
 from ..trust import TrustPolicy
 from ..unix_socket import _SUN_PATH_MAX, open_unix_connection
 from ..wire import UnixNixReader, UnixNixWriter
 from .base import get_current_system
-from .daemon import DaemonStore
+from .daemon import DaemonStore, ProbeState
 
 if TYPE_CHECKING:
     from anyio.abc import ByteReceiveStream, Process
 
+    from nix_daemon_protocol.wire_ops import WireRequest
     from pynixd_store.drv_parser import Derivation
     from pynixd_store.store_layout import StoreLayout
 
+    from ..connection import ClientConn
     from ..monitor import ResourceMonitor
 
 log = structlog.get_logger(__name__)
@@ -185,6 +188,8 @@ class LocalStore(DaemonStore):
             self.socket_path = self.layout.socket_path(socket_path.name)
 
         self.nix_bin = spec.nix_bin
+        #: `LocalSocketStoreSpec.daemon`: off, this client starts no daemon and opens no connection.
+        self.runs_daemon = spec.daemon
         self.monitor_enabled = spec.monitor
         self.daemon_proc: Process | None = None
         self.daemon_ready: anyio.Event | None = None
@@ -205,7 +210,7 @@ class LocalStore(DaemonStore):
 
         # Register atexit handler to ensure a private daemon is killed even
         # if close() is never called. The system daemon is never ours to kill.
-        if self.managed:
+        if self.managed and self.runs_daemon:
             atexit.register(self._atexit_kill_daemon)
 
         monitor: ResourceMonitor = (
@@ -226,8 +231,14 @@ class LocalStore(DaemonStore):
     async def start(self, sync_paths: bool = True) -> None:
         """Spawn managed daemon and initialize the store."""
         await self.ensure_daemon()
-        if not self.managed and self._feature_matrix is None and self._probe_requested is None:
-            # The machine's own daemon: its nix.conf says what it builds.
+        if not self.runs_daemon:
+            self.nix_version = await read_nix_version(self.nix_bin, nix_environment(self.layout, self.extra_env))
+        if (
+            (not self.managed or not self.runs_daemon)
+            and self._feature_matrix is None
+            and self._probe_requested is None
+        ):
+            # The machine's own daemon, or none: nix.conf says what it builds.
             # Probing it with builds waits for free build slots before
             # READY=1, and missed systemd's start timeout on a busy machine
             # (#58).
@@ -271,6 +282,8 @@ class LocalStore(DaemonStore):
         Always spawns a private nix-daemon subprocess.  Uses an Event
         to coordinate concurrent callers.
         """
+        if not self.runs_daemon:
+            return
         if self.daemon_proc is not None:
             if self.daemon_ready is not None:
                 await self.daemon_ready.wait()
@@ -466,8 +479,33 @@ class LocalStore(DaemonStore):
         await conn.close()
         return True
 
+    async def probe(self) -> None:
+        """With no daemon there is nothing to probe: `start` read what the store builds from nix.conf."""
+        if self.runs_daemon:
+            await super().probe()
+            return
+        self.probe_state = ProbeState.PROBED
+        self._probe_event.set()
+
+    async def call(
+        self,
+        request: WireRequest,
+        client: ClientConn | None = None,
+        suppress_last: bool = False,
+        raise_on_error: bool = False,
+        skip_probe: bool = False,
+    ) -> Any:
+        """Send *request* to the daemon; with no daemon, refuse it by name."""
+        if not self.runs_daemon:
+            raise NoDaemonError(str(self.store_id), type(request).__name__)
+        return await super().call(
+            request, client=client, suppress_last=suppress_last, raise_on_error=raise_on_error, skip_probe=skip_probe
+        )
+
     async def create_conn(self) -> Connection:
         """Connect to the (managed or system) Nix daemon via Unix socket."""
+        if not self.runs_daemon:
+            raise NoDaemonError(str(self.store_id), "a connection to the daemon")
         await self.ensure_daemon()
         conn_id = f"{self.store_id}-{self.conn_counter}"
         log.debug(

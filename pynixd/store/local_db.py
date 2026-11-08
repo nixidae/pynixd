@@ -5,12 +5,14 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import functools
+import os
 import types
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Union, get_args, get_origin
 
 import anyio
+import anyio.to_thread
 import structlog
 from pydantic import BaseModel
 
@@ -27,6 +29,7 @@ from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
 from pynixd_store.builder import hooks, local as local_builder
 from pynixd_store.builder.settings import BuildSettings
 from pynixd_store.builder.vm import BuildVm
+from pynixd_store.create_store import open_local_store
 from pynixd_store.drv_parser import from_basic_derivation
 from pynixd_store.engine import StoreEngine, hashes_self_reference_positions
 from pynixd_store.hintfmt import magenta, show_error
@@ -321,10 +324,15 @@ class LocalDBStore(Store):
         #: Whether pynixd itself may change the store (`LocalSocketStoreSpec.pynixd_writes`).
         self.pynixd_writes = spec.pynixd_writes
         # An answer that writes defaults to the daemon even with writes on: only a route set by hand takes it.
+        # With no daemon, every answer is pynixd's.
         self.routes = {
-            op: self.configured_routes.get(op, OpRoute.daemon if owned.writes else owned.default)
+            op: self.configured_routes.get(
+                op, OpRoute.pynixd if not spec.daemon else OpRoute.daemon if owned.writes else owned.default
+            )
             for op, owned in self.OWNED.items()
         }
+        #: The big lock (`open_local_store`), held shared while a store with no daemon is open.
+        self._big_lock: int | None = None
         #: Who writes: the engine or the daemon (`write_router.py`).
         self.router = WriteRouter(
             self.routes, self.engine, DaemonWrites(self._daemon), str(self.store_id), self.add_path_info
@@ -472,6 +480,11 @@ class LocalDBStore(Store):
             log.warning("local_store_db_refused", store_id=str(self.store_id), reason=refusal)
             self.engine.db = LocalStoreDB.inactive(self.layout)
         else:
+            if not self._daemon.runs_daemon:
+                # A daemon opens its store when it starts; with none, pynixd opens it.
+                self._big_lock = await anyio.to_thread.run_sync(
+                    open_local_store, self.layout, await self.engine.nix_config()
+                )
             self.engine.db = await LocalStoreDB.open(self.layout)
             if isinstance(self.engine, OverlayEngine) and self.engine.db.active:
                 self.engine.lower.db = await LocalStoreDB.open(self.engine.lower.layout, read_only=True)
@@ -485,10 +498,13 @@ class LocalDBStore(Store):
         self.db.start(self._background)
 
     async def close(self) -> None:
-        """Close the SQLite databases."""
+        """Close the SQLite databases, and let go of the big lock."""
         await self.db.close()
         if isinstance(self.engine, OverlayEngine):
             await self.engine.lower.db.close()
+        if self._big_lock is not None:
+            os.close(self._big_lock)
+            self._big_lock = None
 
     async def execute(
         self,

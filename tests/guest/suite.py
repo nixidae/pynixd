@@ -31,6 +31,9 @@ Not the driver's own `-- ...`: vivarium hands those to the pytest that runs
 this file, and a `-k` there deselects `test` below. Pair it with `--only`, as
 a suite that the selection does not reach exits 5 and fails its phase."""
 
+NO_DAEMON_ENV = "PYNIXD_NO_DAEMON"
+"""`1` runs every test store with no Nix daemon under it (`LocalSocketStoreSpec.daemon`), to measure the gap."""
+
 
 async def test(vms: Machines) -> None:
     # The phase declares one guest, named after the suite, and `vms`
@@ -41,6 +44,7 @@ async def test(vms: Machines) -> None:
         raise RuntimeError(f"no suite for phase {name!r}; settings.suites has {list(vms.settings['suites'])}")
     suite = vms.settings["suites"][name]
     select = shlex.join(shlex.split(os.environ.get(SELECT_ENV, "")))
+    no_daemon = f"{NO_DAEMON_ENV}=1 " if os.environ.get(NO_DAEMON_ENV) == "1" else ""
 
     # Redirected to /artifacts rather than returned: pytest's output is
     # thousands of lines and the way back is a serial line.
@@ -55,6 +59,7 @@ async def test(vms: Machines) -> None:
         f"NIX_GIT_BIN={vms.settings['nixGit']}/bin/nix "
         f"NIX_FLOOR_BIN={vms.settings['nixFloor']}/bin/nix "
         f"PYNIXD_TEST_LOG_DIR=/artifacts/{name}-logs "
+        f"{no_daemon}"
         f"pytest -p no:cacheprovider --tb=short -q {' '.join(suite['flags'])} "
         f"--junitxml=/artifacts/junit/{name}.xml {suite['path']} {select} "
         f"> /artifacts/{name}.log 2>&1"

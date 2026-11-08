@@ -77,6 +77,13 @@ class BackendError(PynixdError):
     """
 
 
+class NoDaemonError(PynixdError):
+    """A request that only a Nix daemon answers, on a store with no daemon (`LocalSocketStoreSpec.daemon`)."""
+
+    def __init__(self, store_id: str, what: str) -> None:
+        super().__init__(f"pynixd: store {store_id} runs no Nix daemon, and pynixd has no answer of its own to {what}")
+
+
 class ClosingError(PynixdError):
     """An error that ends the session after the client reads it.
 
