@@ -325,6 +325,26 @@ async def test_a_failed_build_says_what_the_daemon_says(tmp_path: Path) -> None:
     assert not any("@nix" in line for line in here), here
 
 
+NO_BUILDER = 'derivation { name = "parity-no-builder"; system = builtins.currentSystem; builder = "not-a-real-file"; }'
+
+
+async def _no_builder(tmp_path: Path, route: OpRoute) -> list[str]:
+    async with _serve(tmp_path, route) as (url, _root):
+        _rc, _out, err, _both = await run_subproc(
+            [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--expr", NO_BUILDER], expected_retcode=1
+        )
+    return _errors(err)
+
+
+async def test_a_builder_that_does_not_exist_fails_as_the_builder(tmp_path: Path) -> None:
+    """`runChild` (`derivation-builder.cc:1377`) logs a failed `execve` and exits 1, as `check.sh:205` reads."""
+    here = await _no_builder(tmp_path, OpRoute.pynixd)
+    there = await _no_builder(tmp_path, OpRoute.daemon)
+
+    assert here == there
+    assert any("failed with exit code 1" in line for line in here), here
+
+
 async def _json(tmp_path: Path, route: OpRoute) -> list[str]:
     async with _serve(tmp_path, route) as (url, _root):
         _rc, _out, err, _both = await run_subproc(

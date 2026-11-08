@@ -326,7 +326,12 @@ def _run_child(spec: ChildSpec, status_fd: int) -> None:
         unpack_channel.run(spec["unpack_channel"])
     builder = spec["builder"]
     argv = [os.path.basename(builder), *spec["args"]]
-    os.execve(builder, argv, spec["env"])
+    try:
+        os.execve(builder, argv, spec["env"])
+    except OSError as e:
+        # `runChild` (`derivation-builder.cc:1377`): set-up is over, so the error goes to the log, not STATUS_FD.
+        os.write(2, f"error: executing '{builder}': {e.strerror}\n".encode(errors="surrogateescape"))
+        os._exit(1)
 
 
 def _report(status_fd: int, message: str) -> None:
