@@ -288,6 +288,24 @@ async def test_a_stored_build_log_holds_what_the_builder_wrote(tmp_path: Path) -
         assert (route, await _stored_log(tmp_path, route)) == (route, "FOO\n")
 
 
+SILENT = _script("parity-silent", "echo > $out")
+
+
+async def _silent_log(tmp_path: Path, route: OpRoute) -> tuple[int, str]:
+    async with _serve(tmp_path, route) as (url, _root):
+        _rc, out, _err, _both = await run_subproc(
+            [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--print-out-paths", "--expr", SILENT]
+        )
+        rc, log, _err, _both = await run_subproc([NIX_BIN, "log", "--store", url, out.strip()], expected_retcode=None)
+    return rc, log
+
+
+async def test_a_build_that_writes_nothing_keeps_an_empty_log(tmp_path: Path) -> None:
+    """`openLogFile` (`derivation-building-goal.cc:793`) opens the file before a line arrives: `logging.sh:28`."""
+    for route in (OpRoute.pynixd, OpRoute.daemon):
+        assert (route, await _silent_log(tmp_path, route)) == (route, (0, ""))
+
+
 async def _fail(tmp_path: Path, route: OpRoute) -> list[str]:
     async with _serve(tmp_path, route) as (url, _root):
         _rc, _out, err, _both = await run_subproc(
