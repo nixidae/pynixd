@@ -85,6 +85,17 @@ def path_info(row: tuple[Any, ...], references: Iterable[str]) -> ValidPathInfo:
     )
 
 
+def hashes_self_reference_positions(nix_version: str) -> bool:
+    """Whether a Nix of *nix_version* hashes the offset of each self-reference: from 2.35 (`add.HashModulo`).
+
+    A version that does not parse counts as a new one.
+    """
+    parts = nix_version.split(".")[:2]
+    if len(parts) < 2 or not all(part.isdigit() for part in parts):
+        return True
+    return (int(parts[0]), int(parts[1])) >= (2, 35)
+
+
 class StoreEngine:
     """The operations of a local store that pynixd runs itself, with Nix's names."""
 
@@ -107,6 +118,8 @@ class StoreEngine:
         self._name = name
         self._settings: add.ImportSettings | None = None
         self._config: Mapping[str, Any] | None = None
+        #: Whether the store's Nix hashes the offset of each self-reference (`add.HashModulo`); not Nix 2.34.
+        self.hashes_self_reference_positions = True
 
     async def nix_config(self) -> Mapping[str, Any]:
         """The store's Nix settings, `nix config show --json`. Read once, as the daemon reads them."""

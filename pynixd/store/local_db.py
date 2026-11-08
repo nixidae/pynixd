@@ -15,20 +15,24 @@ import structlog
 from pydantic import BaseModel
 
 from nix_daemon_protocol.build_resources import BuildResources, ResourceSample
+from nix_daemon_protocol.constants import FEATURE_REALISATION_WITH_PATH
 from nix_daemon_protocol.derivation_output import OutputKind
+from nix_daemon_protocol.drv_output import DrvOutput
 from nix_daemon_protocol.operations import STANDARD_OPERATIONS
 from nix_daemon_protocol.opt_microseconds import OptMicroseconds
 from nix_daemon_protocol.protocol import Verbosity
+from nix_daemon_protocol.realisation import Realisation
 from nix_daemon_protocol.signature import Signature
 from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
 from pynixd_store.builder import hooks, local as local_builder
 from pynixd_store.builder.settings import BuildSettings
 from pynixd_store.builder.vm import BuildVm
-from pynixd_store.engine import StoreEngine
+from pynixd_store.drv_parser import from_basic_derivation
+from pynixd_store.engine import StoreEngine, hashes_self_reference_positions
 from pynixd_store.hintfmt import magenta, show_error
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.nix_config import nix_environment, read_nix_config, read_nix_config_text, read_nix_version
-from pynixd_store.signing import SecretKey, realisation_fingerprint
+from pynixd_store.signing import SecretKey, hash_keyed_realisation_fingerprint, realisation_fingerprint
 
 from .. import metrics
 from ..activity import BuildActivity, PostBuildHookActivity
@@ -476,6 +480,7 @@ class LocalDBStore(Store):
         else:
             self.engine.db = await LocalStoreDB.open(self.layout)
         self._refuse_routes_without_a_database()
+        self.engine.hashes_self_reference_positions = hashes_self_reference_positions(self._daemon.nix_version)
         self.db.start(self._background)
 
     async def close(self) -> None:
@@ -752,10 +757,11 @@ class LocalDBStore(Store):
         if request.derivation.has_impure:
             return []
         paths: list[str] = []
+        by_path, keys = self._realisation_keys(request)
         for name, output in request.derivation.outputs.items():
             path = output.path
             if not path and await self._ca_derivations():
-                found = await self.engine.query_realisation(request.drv_path.name, name, by_path=True)
+                found = await self.engine.query_realisation(keys[name], name, by_path=by_path)
                 path = str(found[0]) if found is not None else ""
             if not path:
                 return None
@@ -774,20 +780,26 @@ class LocalDBStore(Store):
 
         Without `ca-derivations` the daemon refuses a floating output when it
         reads the derivation, and without `impure-derivations` an impure one
-        (`derivations.cc:325`). pynixd writes `BuildTraceV3` only, the table of
-        Nix 2.35 and later.
+        (`derivations.cc:325`).
         """
-        from nix_daemon_protocol.constants import FEATURE_REALISATION_WITH_PATH
-
         kinds = {o.kind for o in request.derivation.outputs.values()}
         features = (await self.trust_policy()).experimental_features
         if OutputKind.IMPURE in kinds and "impure-derivations" not in features:
             return "an impure output without impure-derivations"
         if not await self._ca_derivations():
             return "a floating output without ca-derivations" if OutputKind.CA_FLOATING in kinds else None
-        if FEATURE_REALISATION_WITH_PATH not in self.features:
-            return "realisations keyed by the derivation's hash"
         return None
+
+    def _realisation_keys(self, request: BuildDerivationRequest) -> tuple[bool, dict[str, str]]:
+        """Whether this store keys a realisation by the derivation's path, and each output's key.
+
+        Nix 2.34 keys it by `staticOutputHashes` of the derivation the daemon read (`derivation-building-goal.cc:307`
+        of 2.34), which has no input derivation.
+        """
+        if FEATURE_REALISATION_WITH_PATH in self.features:
+            return True, dict.fromkeys(request.derivation.outputs, request.drv_path.name)
+        hashes = from_basic_derivation(request.derivation).hash_derivation_modulo(mask_outputs=True)
+        return False, {name: f"sha256:{digest}" for name, digest in hashes.items()}
 
     async def _realised(self, request: BuildDerivationRequest) -> dict[str, str]:
         """`checkPathValidity` (`derivation-building-goal.cc:1329`): the realised path of each output.
@@ -798,13 +810,13 @@ class LocalDBStore(Store):
         realised: dict[str, str] = {}
         if request.derivation.has_impure or not await self._ca_derivations():
             return realised
-        drv = request.drv_path.name
+        by_path, keys = self._realisation_keys(request)
         for name, output in request.derivation.outputs.items():
-            found = await self.engine.query_realisation(drv, name, by_path=True)
+            found = await self.engine.query_realisation(keys[name], name, by_path=by_path)
             if found is not None:
                 realised[name] = str(found[0])
             elif output.path and await self.engine.is_valid_path_uncached(output.path):
-                await self.engine.register_drv_output(drv, name, output.path, (), by_path=True)
+                await self.engine.register_drv_output(keys[name], name, output.path, (), by_path=by_path)
         return realised
 
     async def _register_realisations(
@@ -814,13 +826,14 @@ class LocalDBStore(Store):
 
         Answers each output's signatures, which `builtOutputs` carries too.
         """
-        drv = request.drv_path.name
+        by_path, drv_keys = self._realisation_keys(request)
+        fingerprint = realisation_fingerprint if by_path else hash_keyed_realisation_fingerprint
         keys = [SecretKey.from_file(Path(file)) for file in settings.secret_key_files]
         signed: dict[str, set[Signature]] = {}
         for name, path in built:
-            fp = realisation_fingerprint(drv, name, path.rsplit("/", 1)[-1])
+            fp = fingerprint(drv_keys[name], name, path.rsplit("/", 1)[-1])
             sigs = signed[name] = {Signature(key.sign_fingerprint(fp)) for key in keys}
-            await self.engine.register_drv_output(drv, name, path, sigs, by_path=True)
+            await self.engine.register_drv_output(drv_keys[name], name, path, sigs, by_path=by_path)
         return signed
 
     async def build_here(
@@ -875,10 +888,24 @@ class LocalDBStore(Store):
             with anyio.CancelScope(shield=True):
                 await activity.stop()
         # `--print-out-paths` prints these; `GoalEngine` keys them by `DrvOutput`, and copies the signatures.
-        by_name = {
-            name: UnkeyedRealisation(out_path=StorePath(path), signatures=signed.get(name, set()))
-            for name, path in built.paths.items()
-        }
+        # `BuildResult.for_the_wire` fills the shape the client reads from the one this store's Nix writes.
+        by_path, keys = self._realisation_keys(request)
+        by_name: dict[str, UnkeyedRealisation] | None = None
+        by_id: dict[str, Realisation] | None = None
+        if by_path:
+            by_name = {
+                name: UnkeyedRealisation(out_path=StorePath(path), signatures=signed.get(name, set()))
+                for name, path in built.paths.items()
+            }
+        else:
+            by_id = {
+                f"{keys[name]}!{name}": Realisation(
+                    id=DrvOutput(drv_hash=keys[name], output_name=name),
+                    out_path=StorePath(path.rsplit("/", 1)[-1]),
+                    signatures=sorted(signed.get(name, set()), key=lambda s: (s.name, s.signature)),
+                )
+                for name, path in built.paths.items()
+            }
         return BuildDerivationResponse(
             result=BuildResult(
                 status=int(built.status),
@@ -887,7 +914,7 @@ class LocalDBStore(Store):
                 is_non_deterministic=int(built.status is BuildResultStatus.NOT_DETERMINISTIC),
                 start_time=built.start_time,
                 stop_time=built.stop_time,
-                built_outputs={},
+                built_outputs=by_id,
                 built_outputs_by_name=by_name,
                 # NIX-DEVIATION (#27): `linux-derivation-builder.cc:950` fills `cpuUser` and `cpuSystem`
                 # from the build's cgroup alone, so without `use-cgroups` Nix sends neither. pynixd sends

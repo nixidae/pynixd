@@ -217,9 +217,16 @@ class HashModulo:
 
     `RewritingSink` keeps the last `len - 1` bytes back, so a match across two
     pieces is found; matches never overlap, since zeros are not Nix32.
+
+    NIX-DEFECT (#23): Nix 2.34's `RewritingSink::operator()` calls `rewriteStrings(s, rewrites)` without its
+    `matches` (`references.cc:77` of 2.34), so `HashModuloSink::finish` hashes no offset. A tree with its
+    self-references zeroed and one where they are already zeros then share a hash, which the offsets exist to
+    prevent. Nix 2.35 records them. Without *positions* pynixd copies 2.34, so a 2.34 store's outputs land
+    where its own Nix puts them and its imports pass its own check. Fixed upstream since 2.35.
     """
 
-    def __init__(self, algo: str, modulus: bytes) -> None:
+    def __init__(self, algo: str, modulus: bytes, *, positions: bool = True) -> None:
+        self._positions = positions
         self._hash = hashlib.new(algo)
         self._modulus = modulus
         self._zero = b"\0" * len(modulus)
@@ -244,12 +251,14 @@ class HashModulo:
         self._pos += len(self._prev)
         self._hash.update(self._prev)
         self._prev = b""
-        for pos in sorted(set(self._matches)):
+        for pos in sorted(set(self._matches)) if self._positions else ():
             self._hash.update(f"|{pos}".encode())
         return self._hash.digest()
 
 
-def content_hash(ca: ContentAddress, path: Path, hash_part: str, dump: Callable[[Path], Iterable[bytes]]) -> bytes:
+def content_hash(
+    ca: ContentAddress, path: Path, hash_part: str, dump: Callable[[Path], Iterable[bytes]], *, positions: bool = True
+) -> bytes:
     """The hash `addToStore` takes of the restored tree to check its address (`local-store.cc:1099`).
 
     *dump* is `nar_fs.dump_path`; a flat or text address hashes the file's bytes, and a Git
@@ -257,7 +266,7 @@ def content_hash(ca: ContentAddress, path: Path, hash_part: str, dump: Callable[
     """
     if ca.method is Method.GIT:
         return git_hash(path, ca.algo)[1]
-    sink = HashModulo(ca.algo, hash_part.encode())
+    sink = HashModulo(ca.algo, hash_part.encode(), positions=positions)
     if ca.method is Method.NAR:
         for piece in dump(path):
             sink.update(piece)
@@ -480,7 +489,10 @@ async def _restore_into_place(
         if info.info.ca:
             specified_ca = ContentAddress.parse(str(info.info.ca))
             hash_part = path.rsplit("/", 1)[-1][:32]
-            actual = await anyio.to_thread.run_sync(content_hash, specified_ca, staged, hash_part, dump_path)
+            positions = engine.hashes_self_reference_positions
+            actual = await anyio.to_thread.run_sync(
+                lambda: content_hash(specified_ca, staged, hash_part, dump_path, positions=positions)
+            )
             if actual != specified_ca.digest:
                 raise AddError(
                     f"ca hash mismatch importing path '{magenta(path)}';\n"

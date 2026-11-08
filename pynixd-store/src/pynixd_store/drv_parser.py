@@ -1131,6 +1131,21 @@ async def to_basic_derivation(
     )
 
 
+def from_basic_derivation(basic: BasicDerivation) -> Derivation:
+    """The `Derivation` a daemon makes of a `BuildDerivation` request: no input derivation (`daemon.cc:596`)."""
+    return Derivation(
+        outputs=[
+            DrvOutput(hash_algo=output.method, hash_value=output.hash_digest, output_name=name, path=output.path)
+            for name, output in sorted(basic.outputs.items())
+        ],
+        input_srcs={StorePath(path=str(path)) for path in basic.input_srcs},
+        platform=basic.platform,
+        builder=basic.builder,
+        args=list(basic.args),
+        env=dict(basic.env),
+    )
+
+
 def parse_drv(content: str) -> Derivation:
     """Parse a .drv file's content into a Derivation."""
     return _Parser(content).parse_derivation()

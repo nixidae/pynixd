@@ -537,6 +537,7 @@ let
         devEnv = guestEnv;
         nix = defaultNix;
         nixGit = pkgs.nixVersions.git;
+        nixFloor = pkgs.nixVersions."nix_${lib.replaceStrings [ "." ] [ "_" ] supportedNixFloor}";
       }
     );
 

@@ -32,7 +32,7 @@ from pynixd.op_routes import OpRoute
 from pynixd.store import LocalDBStore
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.nar_fs import dump_path
-from tests._conftest.config import NIX_GIT_BIN
+from tests._conftest.config import NIX_FLOOR_BIN, NIX_GIT_BIN
 from tests._conftest.constants import _NO_PROBE_FEATURE_MATRIX
 from tests._conftest.nix_config import for_test_store
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
@@ -625,11 +625,26 @@ def _fallthrough() -> float:
     )
 
 
-async def _floating(tmp_path: Path, route: OpRoute, key: Path) -> dict[str, Any]:
-    async with _serve(tmp_path, route, experimental_features=("ca-derivations",)) as (url, root):
+# Nix 2.34 keys a realisation by the derivation's hash, and its `outputPath` is a `ValidPaths` id.
+TRACE = "SELECT drvPath, outputName, outputPath, signatures FROM BuildTraceV3 ORDER BY drvPath, outputName"
+HASH_KEYED_TRACE = (
+    "SELECT drvPath, outputName, ValidPaths.path, signatures FROM Realisations "
+    "JOIN ValidPaths ON ValidPaths.id = Realisations.outputPath ORDER BY drvPath, outputName"
+)
+
+
+async def _floating(
+    tmp_path: Path,
+    route: OpRoute,
+    key: Path,
+    nix_bin: Path = NIX_BIN,
+    trace_query: str = TRACE,
+    client_args: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    async with _serve(tmp_path, route, experimental_features=("ca-derivations",), nix_bin=nix_bin) as (url, root):
         _rc, out, err, _both = await run_subproc(
             [
-                NIX_BIN,
+                nix_bin,
                 "build",
                 "--store",
                 url,
@@ -642,19 +657,18 @@ async def _floating(tmp_path: Path, route: OpRoute, key: Path) -> dict[str, Any]
                 "--no-link",
                 "--print-out-paths",
                 "--print-build-logs",
+                *client_args,
                 "--expr",
                 CA_TOP,
             ]
         )
         paths = out.split()
         _rc, info, _err, _both = await run_subproc(
-            [NIX_BIN, "path-info", "--store", url, "--json", "--recursive", *paths]
+            [nix_bin, "path-info", "--store", url, "--json", "--recursive", *paths]
         )
     db = sqlite3.connect(f"file:{root}/nix/var/nix/db/db.sqlite?mode=ro", uri=True)
     try:
-        trace = db.execute(
-            "SELECT drvPath, outputName, outputPath, signatures FROM BuildTraceV3 ORDER BY drvPath, outputName"
-        ).fetchall()
+        trace = db.execute(trace_query).fetchall()
     finally:
         db.close()
     valid, refs = _rows(root)
@@ -756,6 +770,28 @@ async def test_a_floating_output_lands_where_the_daemon_puts_it(tmp_path: Path) 
     assert len(here["paths"]) == 2, here["paths"]
     built = {row[2].split("-", 1)[1] for row in here["trace"]}
     assert {"parity-ca-dep", "parity-ca-flat", "parity-ca-text", "parity-ca-top", "parity-ca-top-dev"} <= built
+    assert any(row[3].startswith("parity-1:") for row in here["trace"]), here["trace"]
+
+
+async def test_a_floating_output_on_a_nix_2_34_store_is_keyed_by_the_derivations_hash(tmp_path: Path) -> None:
+    """`registerOutputs` of Nix 2.34 keys each realisation by `staticOutputHashes` (`derivation-builder.cc:1990`
+    of 2.34) and signs `Realisation`'s JSON (`realisation.cc:28` of 2.34)."""
+    if NIX_FLOOR_BIN is None:
+        pytest.skip("NIX_FLOOR_BIN names no Nix 2.34")
+    key = tmp_path / "secret"
+    _rc, secret, _err, _both = await run_subproc([NIX_BIN, "key", "generate-secret", "--key-name", "parity-1"])
+    key.write_text(secret)
+    before = _fallthrough()
+    # The guest's own daemon is Nix 2.35. A 2.34 daemon that asks it for a realisation fails the build: 2.35
+    # cannot read the hash-keyed id (`worker-protocol.cc:491`). That is no part of what this test compares.
+    alone = ("--option", "substituters", "")
+    here = await _floating(tmp_path, OpRoute.pynixd, key, NIX_FLOOR_BIN, HASH_KEYED_TRACE, alone)
+    assert _fallthrough() == before, "the daemon built a floating derivation of a Nix 2.34 store"
+    there = await _floating(tmp_path, OpRoute.daemon, key, NIX_FLOOR_BIN, HASH_KEYED_TRACE, alone)
+
+    for name in ("paths", "info", "valid", "refs", "trace", "log"):
+        assert here[name] == there[name], (name, here[name], there[name])
+    assert all(row[0].startswith("sha256:") for row in here["trace"]), here["trace"]
     assert any(row[3].startswith("parity-1:") for row in here["trace"]), here["trace"]
 
 

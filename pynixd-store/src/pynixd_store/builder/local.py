@@ -963,6 +963,7 @@ async def build(
                     repair=repair,
                     build_uids=None if user is None else (user.uid, user.last_uid),
                     fresh=not chroot,
+                    positions=engine.hashes_self_reference_positions,
                 )
             )
         except BuildFailure as e:

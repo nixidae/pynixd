@@ -169,6 +169,15 @@ def realisation_fingerprint(drv_name: str, output_name: str, out_name: str) -> s
     return f'{{"key":{key},"value":{{"outPath":{json.dumps(out_name)}}}}}'
 
 
+def hash_keyed_realisation_fingerprint(drv_hash: str, output_name: str, out_name: str) -> str:
+    """Nix 2.34's `UnkeyedRealisation::fingerprint` (`realisation.cc:28` of 2.34): `Realisation`'s JSON, no signatures.
+
+    *drv_hash* is `sha256:<hex>`. `dependentRealisations` is always empty (`realisation.cc:105` of 2.34).
+    """
+    drv_output = json.dumps(f"{drv_hash}!{output_name}")
+    return f'{{"dependentRealisations":{{}},"id":{drv_output},"outPath":{json.dumps(out_name)}}}'
+
+
 def sign_path_info(
     key: SecretKey,
     info: ValidPathInfo,

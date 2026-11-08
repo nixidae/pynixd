@@ -240,6 +240,7 @@ def collect_outputs(
     repair: bool = False,
     build_uids: tuple[int, int] | None = None,
     fresh: bool = False,
+    positions: bool = True,
 ) -> Collected:
     """Each output the build made at its *scratch* path, moved into the store and described; nothing is registered yet.
 
@@ -252,6 +253,7 @@ def collect_outputs(
     from a worker thread. *build_uids* are the first and last of the build user's ids, whose files alone an output may hold.
     With *fresh*, a fixed or impure output is copied before it is hashed: outside a PID namespace, a process
     of the builder may still hold one of its files open for writing (`moveOutputToTempDir`, `derivation-builder.cc:1419`).
+    *positions* is `StoreEngine.hashes_self_reference_positions`.
     """
     referenceable = input_paths | set(scratch.values())
     # One for every output, as Nix's: an output may hard-link a file of another (`derivation-builder.cc:1076`).
@@ -292,7 +294,16 @@ def collect_outputs(
                 canonicalise(actual)
             if output.method:
                 a = _content_addressed(
-                    name, drv_name, output, s, actual, store_dir, real_store_dir, final, discard=name in discard
+                    name,
+                    drv_name,
+                    output,
+                    s,
+                    actual,
+                    store_dir,
+                    real_store_dir,
+                    final,
+                    discard=name in discard,
+                    positions=positions,
                 )
                 path, references, addressed[name] = a.path, a.references, a.got
                 if output.kind is OutputKind.CA_FIXED:
@@ -385,6 +396,7 @@ def _content_addressed(
     final: Mapping[str, str],
     *,
     discard: bool,
+    positions: bool,
 ) -> _Addressed:
     """`newInfoFromCA` (`unix/build/derivation-builder.cc:1341`): the path the content has.
 
@@ -414,7 +426,7 @@ def _content_addressed(
         except AddError as e:
             raise PlainError(str(e)) from e
     else:
-        digest = content_hash(ContentAddress(method, algo, b""), actual, old_hash_part, dump_path)
+        digest = content_hash(ContentAddress(method, algo, b""), actual, old_hash_part, dump_path, positions=positions)
     got = ContentAddress(method, algo, digest)
     self_reference = s.path in s.references
     others = frozenset(final.get(ref, ref) for ref in s.references if ref != s.path)

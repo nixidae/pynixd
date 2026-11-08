@@ -25,6 +25,8 @@
   nix,
   # Nix's master branch, as `NIX_GIT_BIN`: only `builder-rpc-v0`'s parity test runs it.
   nixGit,
+  # The oldest Nix pynixd supports, as `NIX_FLOOR_BIN`: its store keys a realisation by the derivation's hash.
+  nixFloor,
   # The build VM's launcher and helper, which `tests/functional/test_build_vm.py` runs.
   krunVariables,
 }:
@@ -125,6 +127,7 @@ vivariumLib.mkTest (
       # `<nixpkgs>` evaluates to in the guest, so it is already valid.
       hello = "${pkgs.hello}";
       nixGit = "${nixGit}";
+      nixFloor = "${nixFloor}";
 
       /*
         What a build with each nixpkgs builder the suites use needs,

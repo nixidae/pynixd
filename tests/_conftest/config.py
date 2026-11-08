@@ -91,6 +91,9 @@ NIX_BIN: Path = env.path("NIX_BIN", None) or Path(shutil.which("nix") or "nix")
 # Nix's master branch, for what no release has yet: `builder-rpc-v0`. `None` where nothing pins it.
 NIX_GIT_BIN: Path | None = env.path("NIX_GIT_BIN", None)
 
+# The oldest Nix pynixd supports, `supportedNixFloor`. `None` where nothing pins it.
+NIX_FLOOR_BIN: Path | None = env.path("NIX_FLOOR_BIN", None)
+
 # One binary, for the client, for the local store and for the builder. No
 # test runs Lix, though pynixd supports its protocol, 1.35.
 CLIENT_BIN: Path = NIX_BIN
