@@ -55,15 +55,18 @@ def test_another_builtin_goes_to_the_daemon() -> None:
     assert _reason(drv) == "the builtin builder 'builtin:other'"
 
 
-def test_a_plain_output_is_nixs_own_refusal_and_goes_to_the_daemon() -> None:
-    """`builtinFetchurl` throws for a derivation neither fixed nor impure (`builtins/fetchurl.cc:29`)."""
+def test_a_plain_output_builds_here_and_the_helper_refuses_it() -> None:
+    """`builtinFetchurl` throws for a derivation neither fixed nor impure (`builtins/fetchurl.cc:29`).
+
+    With no daemon nothing else runs it, so pynixd's helper throws in Nix's words (`fetchurl.sh:90`).
+    """
     drv = BasicDerivation(
         outputs={"out": DerivationOutput(path="/nix/store/00000000000000000000000000000000-f")},
         platform="builtin",
         builder="builtin:fetchurl",
         env={"url": "https://example.org/f"},
     )
-    assert _reason(drv) == "builtin:fetchurl with no fixed or impure output 'out'"
+    assert _reason(drv) is None
 
 
 def test_hashed_mirrors_serve_a_flat_output_only() -> None:

@@ -432,6 +432,8 @@ def run(spec: FetchSpec) -> None:
             _write_private(Path(spec["netrc_file"]), spec["netrc_data"])
         spec["ca_file"] = str(tmp / "ca-certificates.crt")
         _write_private(Path(spec["ca_file"]), spec["ca_data"])
+        if not spec["fixed_or_impure"]:
+            raise RuntimeError("'builtin:fetchurl' must be a fixed-output or impure derivation")
         rng = random.Random()
         for url in spec["mirrors"]:
             try:

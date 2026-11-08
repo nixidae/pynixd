@@ -315,12 +315,11 @@ def _buildenv_spec(drv: BasicDerivation, out: str) -> BuildenvSpec:
 
 
 def _fetchurl_unsupported(drv: BasicDerivation, settings: BuildSettings) -> str | None:
-    """Why the daemon runs this builtin. Nix's own refusals (`builtins/fetchurl.cc:25`) stay there too."""
+    """Why the daemon runs this builtin. The helper refuses a plain output in Nix's words (`builtins/fetchurl.cc:28`)."""
     if "__json" in drv.env:
         return "builtin:fetchurl with structured attrs"
-    out = drv.outputs.get("out")
-    if out is None or out.kind not in (OutputKind.CA_FIXED, OutputKind.IMPURE):
-        return "builtin:fetchurl with no fixed or impure output 'out'"
+    if "out" not in drv.outputs:
+        return "builtin:fetchurl with no output 'out'"
     if "url" not in drv.env:
         return "builtin:fetchurl with no url"
     for url in (drv.env["url"], *(_mirror_urls(drv, settings))):
@@ -354,6 +353,7 @@ def _read_or_empty(path: str | None) -> str:
 def _fetch_spec(drv: BasicDerivation, settings: BuildSettings, out: str, build_dir: str) -> FetchSpec:
     transfer = settings.transfer
     return {
+        "fixed_or_impure": drv.outputs["out"].kind in (OutputKind.CA_FIXED, OutputKind.IMPURE),
         "main_url": drv.env["url"],
         "mirrors": _mirror_urls(drv, settings),
         "out": out,

@@ -345,6 +345,33 @@ async def test_a_builder_that_does_not_exist_fails_as_the_builder(tmp_path: Path
     assert any("failed with exit code 1" in line for line in here), here
 
 
+async def _floating_fetchurl(tmp_path: Path, route: OpRoute) -> list[str]:
+    fetched = tmp_path / "fetched"
+    fetched.write_text("never read\n")
+    expr = (
+        'builtins.derivation { name = "nix-cache-info"; system = builtins.currentSystem; '
+        f'builder = "builtin:fetchurl"; url = "file://{fetched}"; outputHashMode = "flat"; }}'
+    )
+    async with _serve(tmp_path, route) as (url, _root):
+        _rc, _out, err, _both = await run_subproc(
+            [
+                *(NIX_BIN, "build", "--store", url, "--impure", "--no-link"),
+                *("--extra-experimental-features", "ca-derivations", "--expr", expr),
+            ],
+            expected_retcode=1,
+        )
+    return _errors(err)
+
+
+async def test_a_fetchurl_with_no_fixed_output_fails_in_nix_words(tmp_path: Path) -> None:
+    """`fetchurl.sh:90`: `builtinFetchurl` (`builtins/fetchurl.cc:28`) refuses an output that is not fixed."""
+    here = await _floating_fetchurl(tmp_path, OpRoute.pynixd)
+    there = await _floating_fetchurl(tmp_path, OpRoute.daemon)
+
+    assert here == there
+    assert any("must be a fixed-output or impure derivation" in line for line in here), here
+
+
 async def _from_another_store_dir(tmp_path: Path, route: OpRoute) -> tuple[int, str, str]:
     """A fixed output that only a cache of `/fnord/store` holds, and a URL that names no file."""
     content = tmp_path / "fetched"

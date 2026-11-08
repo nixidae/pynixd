@@ -12,6 +12,8 @@ class FetchSpec(TypedDict):
     """`builtin:fetchurl`: the derivation's attributes, the file transfer settings, and what `runChild` reads
     on the host (`unix/build/derivation-builder.cc:956`)."""
 
+    fixed_or_impure: bool
+    """`isFixed() || isImpure()`: `builtinFetchurl` refuses any other derivation (`builtins/fetchurl.cc:28`)."""
     main_url: str
     mirrors: list[str]
     """The hashed-mirror URLs to try first, in order."""
