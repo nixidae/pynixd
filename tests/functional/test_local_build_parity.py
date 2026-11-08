@@ -288,6 +288,24 @@ async def test_a_stored_build_log_holds_what_the_builder_wrote(tmp_path: Path) -
         assert (route, await _stored_log(tmp_path, route)) == (route, "FOO\n")
 
 
+async def _unkept_log(tmp_path: Path, route: OpRoute) -> int:
+    async with _serve(tmp_path, route) as (url, _root):
+        _rc, out, _err, _both = await run_subproc(
+            [
+                *(NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--print-out-paths"),
+                *("--option", "keep-build-log", "false", "--expr", FOO),
+            ]
+        )
+        rc, _log, _err, _both = await run_subproc([NIX_BIN, "log", "--store", url, out.strip()], expected_retcode=None)
+    return rc
+
+
+async def test_keep_build_log_false_stores_no_log(tmp_path: Path) -> None:
+    """`LogFile::LogFile` (`derivation-building-goal.cc:1184`) opens nothing without `keep-build-log`."""
+    for route in (OpRoute.pynixd, OpRoute.daemon):
+        assert (route, await _unkept_log(tmp_path, route)) == (route, 1)
+
+
 SILENT = _script("parity-silent", "echo > $out")
 
 

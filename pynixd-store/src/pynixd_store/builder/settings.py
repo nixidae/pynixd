@@ -89,6 +89,7 @@ class BuildSettings:
     diff_hook: str = ""
     """`diff-hook`, which a check runs only with `run-diff-hook` (`local-settings.hh:551`); empty otherwise."""
     log_lines: int = 25
+    keep_build_log: bool = True
     nix_command: bool = True
     transfer: TransferSettings = TransferSettings()
     nix_version: str = ""
@@ -223,6 +224,7 @@ class BuildSettings:
             post_build_hook=str(value("post-build-hook", "") or ""),
             diff_hook=str(value("diff-hook", "") or "") if boolean(value("run-diff-hook", False)) else "",
             log_lines=int(value("log-lines", 25)),
+            keep_build_log=boolean(value("keep-build-log", True, alias="build-keep-log")),
             nix_command="nix-command" in features,
             transfer=transfer(),
             nix_version=nix_version,

@@ -927,8 +927,10 @@ async def build(
         # Nix flushes at the builder's end of file, which a timeout never reaches.
         if not (isinstance(failure, BuildFailure) and failure.status is BuildResultStatus.TIMED_OUT):
             await on_lines(lines.flush())
-        # Empty too: `openLogFile` (`derivation-building-goal.cc:793`) makes the file before a line arrives.
-        await engine.add_build_log(PurePosixPath(drv_path).name, bytes(log))
+        # Empty too: `openLogFile` (`derivation-building-goal.cc:793`) makes the file before a line arrives,
+        # and none without `keep-build-log` (`:1184`).
+        if settings.keep_build_log:
+            await engine.add_build_log(PurePosixPath(drv_path).name, bytes(log))
         if isinstance(failure, _BuilderFailed):
             disk_full = await anyio.to_thread.run_sync(_disk_full, layout.real_store_dir, paths.tmp)
             failure = BuildFailure(
