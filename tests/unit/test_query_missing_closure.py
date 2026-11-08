@@ -66,7 +66,9 @@ class Queue:
             return ()
         return None if client_names_a_substituter(client) or self.uncovered else (self,)
 
-    async def can_substitute(self, path: StorePath, stores: object = None) -> SubstitutionAvailability:
+    async def can_substitute(
+        self, path: StorePath, stores: object = None, *, ca: object = None
+    ) -> SubstitutionAvailability:
         return self.known.get(str(path), SubstitutionAvailability.unavailable())
 
 

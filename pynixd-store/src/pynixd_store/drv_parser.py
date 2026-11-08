@@ -43,6 +43,7 @@ import anyio
 from nix_daemon_protocol.basic_derivation import BasicDerivation, bool_attr, required_features_of
 from nix_daemon_protocol.derivation_output import DerivationOutput, OutputKind
 
+from .content_address import ContentAddress, fixed_output_address
 from .store_path import DrvOutput, StorePath
 from .utils import compress_hash, nix32_encode
 
@@ -224,6 +225,14 @@ class Derivation:
             )
             result.append(dop.kind)
         return result
+
+    def fixed_out_address(self) -> ContentAddress | None:
+        """`getDerivationCA` (`misc.cc:91`): the address of the output `out`, when it is fixed."""
+        for o in self.outputs:
+            output = DerivationOutput(path=o.path, method=o.hash_algo, hash_digest=o.hash_value)
+            if o.output_name == "out" and output.kind is OutputKind.CA_FIXED:
+                return fixed_output_address(o.hash_algo, o.hash_value)
+        return None
 
     @property
     def is_fixed_output(self) -> bool:

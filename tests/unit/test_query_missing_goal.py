@@ -22,6 +22,7 @@ from pynixd.serde import (
     StorePath,
 )
 from pynixd.substitution_queue import SubstitutionAvailability
+from pynixd_store.content_address import ContentAddress, Method
 from pynixd_store.drv_parser import ChildMapNode, Derivation
 from pynixd_store.store_path import DrvOutput
 
@@ -69,9 +70,16 @@ class FakeSubstitutionQueue:
     store_id = "fake-backend"
     priority = 1.0
 
-    def __init__(self, substitutable: dict[str, SubstitutionAvailability]) -> None:
+    def __init__(
+        self,
+        substitutable: dict[str, SubstitutionAvailability],
+        needs_address: dict[str, SubstitutionAvailability] | None = None,
+    ) -> None:
+        """*needs_address* holds what only a question with a content address finds: a cache of another store directory."""
         self.substitutable = substitutable
+        self.needs_address = needs_address or {}
         self.queries: list[str] = []
+        self.addresses: list[ContentAddress | None] = []
 
     async def substituters_for(self, client: Any) -> tuple[object, ...] | None:
         """The daemon for a client naming no backend's substituter or an uncovered one; else this fake, as pynixd's backends."""
@@ -80,8 +88,13 @@ class FakeSubstitutionQueue:
             return ()
         return None if client_names_a_substituter(client) or self.uncovered else (self,)
 
-    async def can_substitute(self, path: StorePath, stores: object = None) -> SubstitutionAvailability:
+    async def can_substitute(
+        self, path: StorePath, stores: object = None, *, ca: ContentAddress | None = None
+    ) -> SubstitutionAvailability:
         self.queries.append(str(path))
+        self.addresses.append(ca)
+        if ca is not None and str(path) in self.needs_address:
+            return self.needs_address[str(path)]
         return self.substitutable.get(str(path), SubstitutionAvailability.unavailable())
 
     async def find_realisation(self, key: Any, drv_path: Any, *, by_path: bool) -> None:
@@ -111,7 +124,9 @@ class BlockingSubstitutionQueue:
         """As one of pynixd's backends, this fake holds no realisation."""
         del key, drv_path, by_path
 
-    async def can_substitute(self, path: StorePath, stores: object = None) -> SubstitutionAvailability:
+    async def can_substitute(
+        self, path: StorePath, stores: object = None, *, ca: ContentAddress | None = None
+    ) -> SubstitutionAvailability:
         path_str = str(path)
         self.queries.append(path_str)
         if path_str == self.releasing_path:
@@ -244,6 +259,33 @@ async def test_query_missing_reports_substitutable_derivation_output() -> None:
     assert not response.will_build
     assert not response.unknown
     assert response.nar_size == 42
+
+
+@pytest.mark.anyio
+async def test_a_fixed_output_is_asked_for_with_its_content_address() -> None:
+    """`checkOutput` (`misc.cc:157`) asks with the derivation's address, which a cache of another store directory
+    needs. The opaque step after it (`misc.cc:284`) asks with none, so Nix plans the output as unknown."""
+    drv_path = "/nix/store/11111111111111111111111111111111-fixed.drv"
+    out_path = "/nix/store/22222222222222222222222222222222-fixed"
+    digest = "ab" * 32
+    substitution_queue = FakeSubstitutionQueue(
+        {}, needs_address={out_path: SubstitutionAvailability(available=True, nar_size=7, download_size=7)}
+    )
+    fixed = Derivation(outputs=[DrvOutput(output_name="out", path=out_path, hash_algo="sha256", hash_value=digest)])
+    ctx = cast(
+        "PynixdContext",
+        SimpleNamespace(
+            local_store=FakeLocalStore(valid_paths=set(), derivations={drv_path: fixed}),
+            scheduler=SimpleNamespace(substitution_queue=substitution_queue),
+        ),
+    )
+    request = QueryMissingRequest(derived_paths=_derived_path_set(f"{drv_path}!out"))
+
+    response = await GoalEngine(ctx).query_missing(request)
+
+    assert not response.will_build
+    assert {str(path) for path in response.unknown} == {out_path}
+    assert substitution_queue.addresses == [ContentAddress(Method.FLAT, "sha256", bytes.fromhex(digest)), None]
 
 
 @pytest.mark.anyio

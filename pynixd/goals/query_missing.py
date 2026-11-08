@@ -15,7 +15,7 @@ from pynixd_store.store_path import StorePath
 from ..derived_path import DerivedPath
 from ..exceptions import BackendError
 from ..serde import (
-    ContentAddress,
+    ContentAddress as WireAddress,
     DerivedPath as SerdeDerivedPath,
     IsValidPathRequest,
     LogNext,
@@ -30,6 +30,7 @@ from .realisations import realisations_of, substitutable_realisations
 if TYPE_CHECKING:
     from anyio.abc import TaskGroup
 
+    from pynixd_store.content_address import ContentAddress
     from pynixd_store.drv_parser import ChildMapNode, Derivation
 
     from ..connection import ClientConn
@@ -324,8 +325,9 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         if not allowed:
             self._must_build(drv_path, parsed, walk)
             return
+        address = parsed.fixed_out_address()
         for path in invalid:
-            if not (await self._can_substitute(path)).available:
+            if not (await self._can_substitute(path, address)).available:
                 self._must_build(drv_path, parsed, walk)
                 return
         for path in invalid:
@@ -464,7 +466,8 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         )
         return bool(response.valid)
 
-    async def _can_substitute(self, path: StorePath) -> SubstitutionAvailability:
+    async def _can_substitute(self, path: StorePath, ca: ContentAddress | None = None) -> SubstitutionAvailability:
+        """*ca* is the derivation's fixed address, which `checkOutput` passes (`misc.cc:157`) and the opaque step does not."""
         # `querySubstitutablePathInfos` answers nothing with `useSubstitutes`
         # off (`misc.cc:92`).
         options = self.client.options if self.client is not None else None
@@ -474,12 +477,12 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         if scheduler is not None:
             queue = scheduler.substitution_queue
             stores = await queue.substituters_for(self.client)
-            availability = await queue.can_substitute(path, stores)
+            availability = await queue.can_substitute(path, stores, ca=ca)
             if availability.available or stores is not None:
                 return availability
-        return await self._can_substitute_upstream(path)
+        return await self._can_substitute_upstream(path, ca)
 
-    async def _can_substitute_upstream(self, path: StorePath) -> SubstitutionAvailability:
+    async def _can_substitute_upstream(self, path: StorePath, ca: ContentAddress | None) -> SubstitutionAvailability:
         """Ask the daemon behind pynixd, when the client named a substituter.
 
         **This runs only when the client names one.** A client that names none
@@ -503,7 +506,9 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
             return SubstitutionAvailability.unavailable()
         wire_path = StorePath(path=str(path))
         response = await self.engine.ctx.local_store.execute(
-            QuerySubstitutablePathInfosRequest(paths={wire_path: ContentAddress("")}), client=self.client, mark=False
+            QuerySubstitutablePathInfosRequest(paths={wire_path: WireAddress(ca.render() if ca else "")}),
+            client=self.client,
+            mark=False,
         )
         info = next((one for one in response.infos if one.path == wire_path), None)
         if info is None:
