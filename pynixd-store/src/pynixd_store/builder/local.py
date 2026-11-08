@@ -15,7 +15,9 @@ import signal
 import socket
 import sys
 import tempfile
+import termios
 import time
+import tty
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -1193,6 +1195,10 @@ async def _run(
     with open(os.open(spec_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as job:
         job.write(json.dumps(spec))
     master, slave = os.openpty()
+    # `openSlave` (`derivation-builder.cc:980`): raw, so no `\n` becomes `\r\n` in the log.
+    mode = termios.tcgetattr(slave)
+    tty.cfmakeraw(mode)
+    termios.tcsetattr(slave, termios.TCSANOW, mode)
     if user is not None:
         # `startBuild` (`derivation-builder.cc:491`).
         os.fchmod(slave, 0o600)

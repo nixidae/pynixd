@@ -270,6 +270,24 @@ async def test_pynixd_builds_what_the_daemon_builds(tmp_path: Path) -> None:
     assert any(line.endswith("100%") for line in here["log"]), here["log"]
 
 
+FOO = _script("parity-foo", "echo FOO\necho > $out")
+
+
+async def _stored_log(tmp_path: Path, route: OpRoute) -> str:
+    async with _serve(tmp_path, route) as (url, _root):
+        _rc, out, _err, _both = await run_subproc(
+            [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--print-out-paths", "--expr", FOO]
+        )
+        _rc, log, _err, _both = await run_subproc([NIX_BIN.with_name("nix-store"), "--store", url, "-l", out.strip()])
+    return log
+
+
+async def test_a_stored_build_log_holds_what_the_builder_wrote(tmp_path: Path) -> None:
+    """The builder's terminal is raw (`derivation-builder.cc:980`), so `logging.sh:10` reads `FOO` back."""
+    for route in (OpRoute.pynixd, OpRoute.daemon):
+        assert (route, await _stored_log(tmp_path, route)) == (route, "FOO\n")
+
+
 async def _fail(tmp_path: Path, route: OpRoute) -> list[str]:
     async with _serve(tmp_path, route) as (url, _root):
         _rc, _out, err, _both = await run_subproc(
