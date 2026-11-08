@@ -17,6 +17,7 @@ import anyio
 import structlog
 from cachetools import TTLCache
 
+from nix_daemon_protocol.store_dir import store_dir
 from pynixd_store.background import Background
 
 from ..trust import TrustPolicy
@@ -116,6 +117,11 @@ class Store(ABC):
         `no_schedule`, not by the absence of this property.
         """
         return frozenset()
+
+    @property
+    def store_dir(self) -> str:
+        """The store directory whose paths this store names (`StoreDirConfig::storeDir`): pynixd's own here."""
+        return store_dir()
 
     @property
     def db(self) -> LocalStoreDB | None:

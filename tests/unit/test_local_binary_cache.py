@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import lzma
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
+from nix_daemon_protocol.store_dir import store_dir
 from pynixd.config import LocalBinaryCacheSpec, PynixdSettings
 from pynixd.exceptions import CacheFault, NarGone, StoreDirMismatch
 from pynixd.instance import _add_substituter_stores
@@ -16,6 +18,7 @@ from pynixd.serde import DrvOutput
 from pynixd.store.local_binary_cache import LocalBinaryCacheStore
 from pynixd.store_url import spec_for
 from pynixd.substitution_queue import SubstitutionQueue
+from pynixd_store.content_address import ContentAddress, Method, content_addressed_path
 from pynixd_store.store_path import StorePath
 
 if TYPE_CHECKING:
@@ -186,6 +189,50 @@ def test_a_directory_with_a_backend_is_covered(tmp_path: Path) -> None:
     queue = SubstitutionQueue(cast("PynixdContext", SimpleNamespace(settings=PynixdSettings(), stores=stores)))
     queue.note_daemon_substituters([f"file://{root}", "file:///elsewhere"])
     assert queue.uncovered == ("file:///elsewhere",)
+
+
+FILE_CA = ContentAddress(Method.FLAT, "sha256", hashlib.sha256(b"a fixed output").digest())
+HERE = StorePath(content_addressed_path(FILE_CA, "file", (), store_dir()))
+THERE = StorePath.in_store(content_addressed_path(FILE_CA, "file", (), "/fnord/store"), "/fnord/store")
+
+
+async def _fnord_queue(tmp_path: Path, references: str = "") -> tuple[SubstitutionQueue, LocalBinaryCacheStore]:
+    """A queue over a `/fnord/store` cache that holds `FILE_CA` under the name it has there."""
+    root = _fnord_cache(tmp_path / "cache")
+    (root / f"{THERE.hash_part()}.narinfo").write_text(
+        f"StorePath: /fnord/store/{THERE.name}\nURL: nar/abc.nar.xz\nCompression: xz\n"
+        "NarHash: sha256:1b8m03r63zqhnjf7l5wnldhh7c134ap5vpj0850ymkq1iyzicy5s\n"
+        f"NarSize: {len(NAR)}\nReferences: {references}\nCA: {FILE_CA.render()}\n"
+    )
+    spec = spec_for(f"file://{root}?store=/fnord/store")
+    assert spec is not None
+    cache = spec.to_store("fnord")
+    assert isinstance(cache, LocalBinaryCacheStore)
+    await cache.start()
+    queue = SubstitutionQueue(cast("PynixdContext", SimpleNamespace(settings=PynixdSettings(), stores={})))
+    return queue, cache
+
+
+async def test_a_cache_of_another_store_directory_holds_a_content_address_under_its_own_name(tmp_path: Path) -> None:
+    """`store-api.cc:461`: the path is made again for the substituter's store directory."""
+    queue, cache = await _fnord_queue(tmp_path)
+    assert HERE != THERE
+    candidate = await queue.get_substituter(HERE, [cache], ca=FILE_CA)
+    assert candidate is not None
+    assert candidate.path_info.path == HERE
+    assert candidate.store_path == THERE
+
+
+async def test_a_cache_of_another_store_directory_has_no_path_without_its_address(tmp_path: Path) -> None:
+    """`store-api.cc:471`: a path with no content address is not looked for there."""
+    queue, cache = await _fnord_queue(tmp_path)
+    assert await queue.get_substituter(HERE, [cache]) is None
+
+
+async def test_a_cache_of_another_store_directory_has_no_path_with_references(tmp_path: Path) -> None:
+    """`store-api.cc:481`: across store directories only a content-addressed path with no references."""
+    queue, cache = await _fnord_queue(tmp_path, references=PATH.name)
+    assert await queue.get_substituter(HERE, [cache], ca=FILE_CA) is None
 
 
 async def test_a_daemon_cache_ranks_by_its_nix_cache_info_unless_a_priority_is_given(tmp_path: Path) -> None:

@@ -86,8 +86,12 @@ class BinaryCacheStore(Store):
         self.cache_info: dict[str, str] = {}
         self._priority_given = "priority" in spec.model_fields_set
         self._recent_results: deque[bool] = deque(maxlen=spec.health_window)
-        self.store_dir: str = spec.store_dir or store_dir()
-        """The store directory whose paths the cache holds (`?store=`)."""
+        self._store_dir = spec.store_dir or store_dir()
+
+    @property
+    def store_dir(self) -> str:
+        """The store directory the cache holds paths of: `?store=`, else pynixd's own."""
+        return self._store_dir
 
     def _take_cache_info(self, info: dict[str, str]) -> None:
         """Keep *info*, and rank by its `Priority` unless the spec names one.

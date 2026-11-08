@@ -56,7 +56,7 @@ from .daemon_writes import DaemonWrites
 from .local_daemon import LocalStore
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Set as AbstractSet
+    from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Set as AbstractSet
     from contextlib import AbstractAsyncContextManager
 
     from nix_daemon_protocol.logs import LogMessage
@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     from pynixd_store.add import ImportSettings
     from pynixd_store.builder.restriction import RecursiveServer
     from pynixd_store.builder.usage import BuildUsage
+    from pynixd_store.content_address import ContentAddress
     from pynixd_store.drv_parser import Derivation
 
     from ..config import LocalSocketStoreSpec
@@ -1200,7 +1201,7 @@ class LocalDBStore(Store):
             UnkeyedSubstitutablePathInfo,
         )
 
-        found = await self._substitutable_path_infos([request.path], client)
+        found = await self._substitutable_path_infos({request.path: None}, client)
         if found is None:
             return None
         if not found:
@@ -1221,20 +1222,20 @@ class LocalDBStore(Store):
     ) -> Any:
         """QuerySubstitutablePathInfos (`daemon.cc:837`): what a substituter knows of each path it holds.
 
-        A path that names a content address goes to the daemon: Nix then
-        makes the path again for each substituter's store directory
-        (`misc.cc:106`), and pynixd's backends know no store directory.
+        A content address lets a substituter of another store directory hold the path (`store-api.cc:461`).
         """
         from nix_daemon_protocol.query_substitutable_path_infos import QuerySubstitutablePathInfosResponse
+        from pynixd_store.content_address import ContentAddress
 
-        if any(str(ca) for ca in request.paths.values()):
-            return None
-        found = await self._substitutable_path_infos(list(request.paths), client)
+        addresses = {path: ContentAddress.parse(str(ca)) if ca else None for path, ca in request.paths.items()}
+        found = await self._substitutable_path_infos(addresses, client)
         if found is None:
             return None
         return QuerySubstitutablePathInfosResponse.fast(infos=found)
 
-    async def _substitutable_path_infos(self, paths: list[StorePath], client: Any) -> list[Any] | None:
+    async def _substitutable_path_infos(
+        self, paths: Mapping[StorePath, ContentAddress | None], client: Any
+    ) -> list[Any] | None:
         """What the highest-priority backend holding each path knows of it, in Nix's map order.
 
         `querySubstitutablePathInfos` (`misc.cc:90`) walks the substituters
@@ -1262,8 +1263,8 @@ class LocalDBStore(Store):
 
         found: list[SubstitutablePathInfo] = []
 
-        async def ask(path: StorePath) -> None:
-            candidate = await queue.get_substituter(path, stores)
+        async def ask(path: StorePath, ca: ContentAddress | None) -> None:
+            candidate = await queue.get_substituter(path, stores, ca=ca)
             if candidate is None:
                 return
             info = candidate.path_info.info
@@ -1278,8 +1279,8 @@ class LocalDBStore(Store):
             )
 
         async with anyio.create_task_group() as tg:
-            for path in paths:
-                tg.start_soon(ask, path)
+            for path, ca in paths.items():
+                tg.start_soon(ask, path, ca)
         return sorted(found, key=lambda info: info.path.name)
 
     async def own_find_roots(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:

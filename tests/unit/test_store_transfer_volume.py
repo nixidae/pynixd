@@ -212,7 +212,7 @@ async def test_substitution_import_counts_in_for_its_store(monkeypatch: pytest.M
         )
     )
 
-    async def _candidate(path: object, stores: object = None) -> SubstitutionCandidate:
+    async def _candidate(path: object, stores: object = None, *, ca: object = None) -> SubstitutionCandidate:
         return candidate
 
     async def _import(path: object, cand: object, *, repair: bool = False) -> None:

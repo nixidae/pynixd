@@ -13,8 +13,10 @@ import structlog
 from cachetools import TTLCache
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID
+from nix_daemon_protocol.store_dir import store_dir
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from pynixd_store.background import Background
+from pynixd_store.content_address import content_addressed_path, is_content_addressed, store_path_name
 from pynixd_store.source import Pieces
 
 from . import metrics
@@ -32,6 +34,7 @@ if TYPE_CHECKING:
     from anyio.abc import TaskStatus
 
     from nix_daemon_protocol.ids import StoreId
+    from pynixd_store.content_address import ContentAddress
     from pynixd_store.store_path import StorePath
 
     from .config import PynixdSettings
@@ -44,6 +47,20 @@ log = structlog.get_logger(__name__)
 _NAR_CHUNK_SIZE = 1024 * 256
 
 
+def path_in_store(path: StorePath, store: Store, ca: ContentAddress | None) -> StorePath | None:
+    """The name *path* has in *store*, or `None` when Nix does not look for it there.
+
+    `querySubstitutablePathInfos` (`store-api.cc:457`) makes a content-addressed path again for the substituter's
+    store directory, and skips a substituter of another directory for any other path.
+    """
+    if store.store_dir == store_dir():
+        return path
+    if ca is None:
+        return None
+    there = content_addressed_path(ca, store_path_name(str(path)), (), store.store_dir)
+    return StorePath.in_store(there, store.store_dir)
+
+
 @dataclass(frozen=True)
 class SubstitutionQueryResult:
     """Cached path-info query result for one path on one substituter."""
@@ -53,6 +70,8 @@ class SubstitutionQueryResult:
     query_succeeded: bool
     download_size: int = 0
     """The narinfo's `FileSize`; 0 for a store that serves no narinfo, as `misc.cc:139` reads it."""
+    store_path: StorePath | None = None
+    """The name the substituter holds the path under, when its store directory gives another (`path_in_store`)."""
 
     @property
     def found(self) -> bool:
@@ -94,6 +113,8 @@ class SubstitutionCandidate:
     path_info: ValidPathInfo
     download_size: int = 0
     """The narinfo's `FileSize`, as `SubstitutionQueryResult.download_size`."""
+    store_path: StorePath | None = None
+    """As `SubstitutionQueryResult.store_path`."""
 
 
 @dataclass(frozen=True)
@@ -243,9 +264,14 @@ class SubstitutionQueue:
         await self._probes.aclose()
         await self.client_substituters.close()
 
-    async def can_substitute(self, path: StorePath, stores: Iterable[Store] | None = None) -> SubstitutionAvailability:
-        """Whether one of *stores*, the daemon's list without it, holds *path*: the first to say so wins."""
-        stores = list(self.substituter_stores() if stores is None else stores)
+    async def can_substitute(
+        self, path: StorePath, stores: Iterable[Store] | None = None, *, ca: ContentAddress | None = None
+    ) -> SubstitutionAvailability:
+        """Whether one of *stores*, the daemon's list without it, holds *path*: the first to say so wins.
+
+        *ca* is the path's content address, which a substituter of another store directory needs.
+        """
+        stores = self._reaching(path, self.substituter_stores() if stores is None else stores, ca)
         cached = self._cached_positive(path, stores)
         if cached is not None:
             return SubstitutionAvailability.from_query_result(cached)
@@ -264,7 +290,7 @@ class SubstitutionQueue:
 
         async def probe_store(store: Store) -> None:
             nonlocal first_positive
-            result = await self._query_store(path, store)
+            result = await self._query_store(path, store, ca)
             self.record_query_result(path, result)
             async with lock:
                 if result.found and first_positive is None:
@@ -286,21 +312,29 @@ class SubstitutionQueue:
         return SubstitutionAvailability.unavailable()
 
     async def get_substituter(
-        self, path: StorePath, stores: Iterable[Store] | None = None
+        self, path: StorePath, stores: Iterable[Store] | None = None, *, ca: ContentAddress | None = None
     ) -> SubstitutionCandidate | None:
-        """The highest-priority of *stores*, the daemon's list without it, that holds *path*; the first listed wins a tie."""
-        stores = list(self.substituter_stores() if stores is None else stores)
+        """The highest-priority of *stores*, the daemon's list without it, that holds *path*; the first listed wins a tie.
+
+        *ca* as for `can_substitute`.
+        """
+        stores = self._reaching(path, self.substituter_stores() if stores is None else stores, ca)
         if not stores:
             return None
 
         stale_stores = [store for store in stores if not self._has_cached_result(path, store.store_id)]
         if stale_stores:
-            await self._query_stores_for_selection(path, stale_stores)
+            await self._query_stores_for_selection(path, stale_stores, ca)
 
         return self._best_candidate_from_cache(path, stores)
 
     async def substitute(
-        self, path: StorePath, stores: Iterable[Store] | None = None, *, repair: bool = False
+        self,
+        path: StorePath,
+        stores: Iterable[Store] | None = None,
+        *,
+        repair: bool = False,
+        ca: ContentAddress | None = None,
     ) -> SubstitutionImportResult:
         """Import *path* from *stores*, the daemon's list without it, once for every caller that asks while it runs.
 
@@ -312,7 +346,7 @@ class SubstitutionQueue:
         answer = self._active_imports.get(key)
         if answer is None:
             answer = Answer()
-            self._probes.spawn(self._answer_the_import, path, chosen, key, answer)
+            self._probes.spawn(self._answer_the_import, path, chosen, key, answer, ca)
             self._active_imports[key] = answer
         return await answer.wait()
 
@@ -322,9 +356,10 @@ class SubstitutionQueue:
         stores: tuple[Store, ...],
         key: tuple[StorePath, tuple[StoreId, ...], bool],
         answer: Answer[SubstitutionImportResult],
+        ca: ContentAddress | None,
     ) -> None:
         try:
-            answer.set(await self._substitute_uncached(path, stores, repair=key[2]))
+            answer.set(await self._substitute_uncached(path, stores, repair=key[2], ca=ca))
         except Exception as e:
             answer.set_exception(e)
         finally:
@@ -369,9 +404,12 @@ class SubstitutionQueue:
         """Binary cache substituters, HTTP or a directory: the only ones a narinfo race can ask.
 
         A daemon substituter answers the wire protocol, not `.narinfo`,
-        so the race leaves it out. Issue #85.
+        so the race leaves it out. Issue #85. So does a cache of another store
+        directory: the race serves its narinfo text, which names paths there.
         """
-        return [store for store in self.substituter_stores() if is_binary_cache(store)]
+        return [
+            store for store in self.substituter_stores() if is_binary_cache(store) and store.store_dir == store_dir()
+        ]
 
     async def race_http_narinfo(self, hash_part: str) -> UpstreamNarinfo | None:
         """Answer one `.narinfo` hash from the fastest HTTP substituter.
@@ -434,7 +472,7 @@ class SubstitutionQueue:
             if not self._has_cached_result(path, store.store_id) and self.should_wait_for(store.store_id)
         ]
         if stale:
-            await self._query_stores_for_selection(path, stale)
+            await self._query_stores_for_selection(path, stale, None)
 
         positive = self.positive.get(path, {})
         ranked = sorted(
@@ -515,16 +553,19 @@ class SubstitutionQueue:
                 if race.remaining <= 0:
                     race.event.set()
 
-    async def _query_store(self, path: StorePath, store: Store) -> SubstitutionQueryResult:
+    async def _query_store(self, path: StorePath, store: Store, ca: ContentAddress | None) -> SubstitutionQueryResult:
         # `store_id` is a label, and it comes from the configuration, so the
         # series count is the number of substituters. The path does not appear.
         def counted(result: str) -> None:
             metrics.SUBSTITUTER_QUERIES.labels(store_id=store.store_id, result=result).inc()
 
+        there = path_in_store(path, store, ca)
+        if there is None:
+            return SubstitutionQueryResult(store_id=store.store_id, path_info=None, query_succeeded=True)
         started = time.monotonic()
         try:
             with anyio.fail_after(self.ctx.settings.substitution_query_timeout):
-                response = await store.execute(QueryPathInfoRequest(path=StorePath(path=str(path))))
+                response = await store.execute(QueryPathInfoRequest(path=there))
         except OpNotImplementedError:
             counted("unsupported")
             return SubstitutionQueryResult(store_id=store.store_id, path_info=None, query_succeeded=False)
@@ -542,24 +583,36 @@ class SubstitutionQueue:
         finally:
             metrics.SUBSTITUTER_QUERY_DURATION.labels(store_id=store.store_id).observe(time.monotonic() - started)
 
-        if not response.valid or response.info is None:
+        info = response.info if response.valid else None
+        if info is not None and there != path:
+            # `store-api.cc:481`: from another store directory, only a path its address gives, with no references.
+            whole = f"{store.store_dir}/{there.base()}"
+            if info.references or not is_content_addressed(whole, str(info.ca or ""), (), store.store_dir):
+                info = None
+        if info is None:
             counted("miss")
             return SubstitutionQueryResult(store_id=store.store_id, path_info=None, query_succeeded=True)
 
         counted("hit")
 
-        path_info = ValidPathInfo(path=StorePath(path=str(path)), info=response.info)
-        download_size = await store.download_size(StorePath(path=str(path)))
+        path_info = ValidPathInfo(path=StorePath(path=str(path)), info=info)
+        download_size = await store.download_size(there)
         return SubstitutionQueryResult(
-            store_id=store.store_id, path_info=path_info, query_succeeded=True, download_size=download_size
+            store_id=store.store_id,
+            path_info=path_info,
+            query_succeeded=True,
+            download_size=download_size,
+            store_path=None if there == path else there,
         )
 
-    async def _query_stores_for_selection(self, path: StorePath, stores: list[Store]) -> None:
+    async def _query_stores_for_selection(
+        self, path: StorePath, stores: list[Store], ca: ContentAddress | None
+    ) -> None:
         healthy_stores = [store for store in stores if self.should_wait_for(store.store_id)]
         background_stores = [store for store in stores if store not in healthy_stores]
 
         async def query_and_record(store: Store) -> None:
-            self.record_query_result(path, await self._query_store(path, store))
+            self.record_query_result(path, await self._query_store(path, store, ca))
 
         async with anyio.create_task_group() as tg:
             for store in healthy_stores:
@@ -582,10 +635,10 @@ class SubstitutionQueue:
             self._import_limit.total_tokens = self._import_slots
 
     async def _substitute_uncached(
-        self, path: StorePath, stores: tuple[Store, ...], *, repair: bool = False
+        self, path: StorePath, stores: tuple[Store, ...], *, repair: bool = False, ca: ContentAddress | None = None
     ) -> SubstitutionImportResult:
         started = time.monotonic()
-        candidate = await self.get_substituter(path, stores)
+        candidate = await self.get_substituter(path, stores, ca=ca)
         if candidate is None:
             metrics.SUBSTITUTIONS.labels(result="no_candidate").inc()
             metrics.SUBSTITUTION_DURATION.observe(time.monotonic() - started)
@@ -629,19 +682,30 @@ class SubstitutionQueue:
 
     async def _nar_pieces(self, path: StorePath, candidate: SubstitutionCandidate) -> AsyncGenerator[bytes]:
         """The NAR of *path* from *candidate*, piece by piece."""
-        async for chunk in candidate.store.read_nar(StorePath(path=str(path)), candidate.path_info.info.nar_size):
+        there = candidate.store_path or path
+        async for chunk in candidate.store.read_nar(there, candidate.path_info.info.nar_size):
             yield chunk
 
     def _best_candidate_from_cache(self, path: StorePath, stores: list[Store]) -> SubstitutionCandidate | None:
         positive = self.positive.get(path, {})
         candidates = [
-            SubstitutionCandidate(store=store, path_info=result.path_info, download_size=result.download_size)
+            SubstitutionCandidate(
+                store=store,
+                path_info=result.path_info,
+                download_size=result.download_size,
+                store_path=result.store_path,
+            )
             for store in stores
             if (result := positive.get(store.store_id)) is not None and result.path_info is not None
         ]
         if not candidates:
             return None
         return min(candidates, key=lambda candidate: candidate.store.priority)
+
+    @staticmethod
+    def _reaching(path: StorePath, stores: Iterable[Store], ca: ContentAddress | None) -> list[Store]:
+        """*stores* that may hold *path*: no negative answer is cached for a store Nix does not ask."""
+        return [store for store in stores if path_in_store(path, store, ca) is not None]
 
     def _cached_positive(self, path: StorePath, stores: list[Store]) -> SubstitutionQueryResult | None:
         positive = self.positive.get(path, {})

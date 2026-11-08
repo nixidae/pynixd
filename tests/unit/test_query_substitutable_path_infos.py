@@ -25,6 +25,7 @@ from pynixd.goals.query_missing import client_names_a_substituter
 from pynixd.serde import ContentAddress, NARHash, StorePath, Time
 from pynixd.store.local_db import LocalDBStore
 from pynixd.substitution_queue import SubstitutionCandidate
+from pynixd_store.content_address import ContentAddress as CA
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -58,6 +59,7 @@ class _Queue:
 
     def __init__(self, *uncovered: str) -> None:
         self.asked: list[StorePath] = []
+        self.addresses: dict[StorePath, CA | None] = {}
         self.all_asked = anyio.Event()
         self.uncovered = uncovered
         self.expected = 3
@@ -69,8 +71,11 @@ class _Queue:
             return ()
         return None if client_names_a_substituter(client) or self.uncovered else (self,)
 
-    async def get_substituter(self, path: StorePath, stores: object = None) -> SubstitutionCandidate | None:
+    async def get_substituter(
+        self, path: StorePath, stores: object = None, *, ca: CA | None = None
+    ) -> SubstitutionCandidate | None:
         self.asked.append(path)
+        self.addresses[path] = ca
         if len(self.asked) == self.expected:
             self.all_asked.set()
         if path == SLOW:
@@ -114,11 +119,13 @@ class TestQuerySubstitutablePathInfos:
         assert answer.infos == []
         assert queue.asked == []
 
-    async def test_a_content_address_gets_the_daemon(self, tmp_path: Path) -> None:
-        """Nix makes the path again for each substituter's store directory (`misc.cc:106`)."""
+    async def test_a_content_address_reaches_the_backends(self, tmp_path: Path) -> None:
+        """Nix makes the path again for each substituter's store directory (`store-api.cc:461`)."""
         queue = _Queue()
-        assert await _infos(_store(tmp_path, queue), _client(), ca="text:sha256:" + "0" * 52) is None
-        assert queue.asked == []
+        address = "text:sha256:" + "0" * 52
+        answer = await _infos(_store(tmp_path, queue), _client(), ca=address)
+        assert [info.path for info in answer.infos] == [SLOW, HELD]
+        assert queue.addresses == {HELD: None, SLOW: CA.parse(address), MISSING: None}
 
     async def test_a_client_that_names_substituters_gets_the_daemon(self, tmp_path: Path) -> None:
         queue = _Queue()

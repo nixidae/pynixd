@@ -12,6 +12,7 @@ from nix_daemon_protocol.content_address import ContentAddress
 from nix_daemon_protocol.ids import StoreId
 from nix_daemon_protocol.nar_hash import NARHash
 from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
+from nix_daemon_protocol.store_dir import store_dir
 from nix_daemon_protocol.wire_time import Time
 from pynixd.config import PynixdSettings
 from pynixd.serde import QueryPathInfoResponse
@@ -31,6 +32,7 @@ if TYPE_CHECKING:
 
 class FakeSubstituter:
     no_schedule = True
+    store_dir = store_dir()
 
     def __init__(
         self,
