@@ -262,6 +262,7 @@ class LocalStore(DaemonStore):
             str(self.layout.build_dir),
             *_sandbox_fallback_arguments(self.layout),
             *self.extra_args,
+            *self.layout.daemon_features(),
         ]
 
     async def ensure_daemon(self) -> None:

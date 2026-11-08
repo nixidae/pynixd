@@ -25,13 +25,38 @@ directory, which no codec needs.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+from urllib.parse import quote, urlencode
 
 DEFAULT_STORE_DIR = Path("/nix/store")
 DEFAULT_STATE_DIR = Path("/nix/var/nix")
 DEFAULT_LOG_DIR = Path("/nix/var/log/nix")
 """Nix's compiled `logDir` fallback (`store-api.cc:1271`), for a relocated store with no `NIX_LOG_DIR`."""
+
+
+@dataclass(frozen=True)
+class Overlay:
+    """What a `local-overlay://` store adds to its own layout (`local-overlay-store.hh:26-74`).
+
+    The store's own layout is the merged directory: an OverlayFS mount over
+    *lower*'s real store directory, with *upper_layer* as its upper layer.
+    Nix mounts nothing itself; `check_mount` makes it check the mount.
+    """
+
+    lower: StoreLayout
+    """The lower store, a plain local store: `lower-store` names its root."""
+
+    upper_layer: Path
+    """`upper-layer`: OverlayFS's upper directory. It holds store paths, and it is no store."""
+
+    check_mount: bool = True
+    remount_hook: Path | None = None
+    """`remount-hook`: run with the store directory after a delete under the upper layer."""
+
+    def upper_path(self, base_name: str) -> Path:
+        """`toUpperPath` (`local-overlay-store.cc:40`): where a path's files are when the upper layer holds them."""
+        return self.upper_layer / base_name
 
 
 @dataclass(frozen=True)
@@ -63,6 +88,17 @@ class StoreLayout:
     chroot store of `/` and a relocated store of `/nix/store` name the same
     three.
     """
+
+    overlay: Overlay | None = None
+    """The lower store and the upper layer, for a `local-overlay://` store of a chroot root."""
+
+    def with_overlay(self, overlay: Overlay) -> StoreLayout:
+        """This chroot store as the merged directory of *overlay*."""
+        if self.relocated:
+            raise ValueError("an overlay store takes a root, and a relocated store has none")
+        if overlay.lower.relocated or overlay.lower.overlay is not None:
+            raise ValueError("the lower store of an overlay store is a plain local store of a root")
+        return replace(self, overlay=overlay)
 
     @classmethod
     def chroot(cls, root: Path | None) -> StoreLayout:
@@ -151,7 +187,25 @@ class StoreLayout:
         if self.relocated:
             return []
         root = self.chroot_root()
-        return ["--store", str(root)]
+        if self.overlay is None:
+            return ["--store", str(root)]
+        params = {
+            "root": str(root),
+            "lower-store": str(self.overlay.lower.chroot_root()),
+            "upper-layer": str(self.overlay.upper_layer),
+            "check-mount": "true" if self.overlay.check_mount else "false",
+        }
+        if self.overlay.remount_hook is not None:
+            params["remount-hook"] = str(self.overlay.remount_hook)
+        return ["--store", f"local-overlay://?{urlencode(params, quote_via=quote, safe='/')}"]
+
+    def daemon_features(self) -> list[str]:
+        """The experimental features this store needs, as the last arguments of `nix daemon`.
+
+        Last, because an `experimental-features` setting after them would replace the set.
+        `LocalOverlayStoreConfig::experimentalFeature` (`local-overlay-store.hh:81`): the daemon refuses the URI without it.
+        """
+        return [] if self.overlay is None else ["--extra-experimental-features", "local-overlay-store"]
 
     def daemon_environment(self) -> dict[str, str]:
         """What `nix daemon` needs in its environment to serve this store.

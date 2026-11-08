@@ -15,7 +15,7 @@ from pydantic_settings import (
 )
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
-from pynixd_store.store_layout import StoreLayout
+from pynixd_store.store_layout import Overlay, StoreLayout
 
 from .constants import STALL_TRACEBACK_MAX_BYTES
 from .nix_config import NixConfig
@@ -437,6 +437,22 @@ class BuildVmSpec(BaseModel):
     and a 64 MiB log. A build that fills it fails with ENOSPC; the host's memory never holds it."""
 
 
+class OverlaySpec(BaseModel):
+    """A `local-overlay://` store: `store_path` is the merged directory, an OverlayFS mount that pynixd does not make.
+
+    pynixd builds the daemon's store URI from these, as it does `--store <root>` for a chroot store.
+    """
+
+    lower_store: Path
+    """The root of the lower store, a plain local store: its paths are at `<lower_store>/nix/store`."""
+    upper_layer: Path
+    """OverlayFS's upper directory."""
+    check_mount: bool = True
+    """`check-mount`: the daemon refuses to start when the mount's lowerdir or upperdir is not these."""
+    remount_hook: Path | None = None
+    """`remount-hook`: run with the store directory after a delete under the upper layer."""
+
+
 class LocalSocketStoreSpec(StoreSpecBase):
     """A local Nix daemon accessed via Unix domain socket.
 
@@ -446,6 +462,9 @@ class LocalSocketStoreSpec(StoreSpecBase):
     """
 
     type: Literal["local-socket"] = "local-socket"
+
+    overlay: OverlaySpec | None = None
+    """A `local-overlay://` store over a lower store, for a chroot root (`pynixd_store.store_layout.Overlay`)."""
 
     store_dir: Path | None = None
     """The directory in a store path, for a relocated store.
@@ -551,13 +570,25 @@ class LocalSocketStoreSpec(StoreSpecBase):
             raise ValueError("log_dir needs store_dir: it describes a relocated store")
         if self.store_dir is not None and self.log_dir is None:
             raise ValueError("store_dir needs log_dir: Nix reads NIX_LOG_DIR independent of the state")
+        if self.overlay is not None and self.store_dir is not None:
+            raise ValueError("overlay needs a chroot root: a relocated store has none")
         return self
 
     def layout(self) -> StoreLayout:
         """The three directories of the store that this spec names."""
         if self.store_dir is not None and self.state_dir is not None:
             return StoreLayout.relocated_store(self.store_dir, self.state_dir, self.log_dir)
-        return StoreLayout.chroot(self.store_path)
+        layout = StoreLayout.chroot(self.store_path)
+        if self.overlay is None:
+            return layout
+        return layout.with_overlay(
+            Overlay(
+                lower=StoreLayout.chroot(self.overlay.lower_store),
+                upper_layer=self.overlay.upper_layer,
+                check_mount=self.overlay.check_mount,
+                remount_hook=self.overlay.remount_hook,
+            )
+        )
 
     def to_store(self, store_id: str) -> LocalStore | LocalDBStore:
         """Build a ``LocalStore`` or ``LocalDBStore`` from this spec."""

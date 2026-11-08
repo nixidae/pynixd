@@ -459,9 +459,13 @@ class LocalDBStore(Store):
         overlay = next((arg for arg in self._daemon.extra_args if "local-overlay" in arg), None)
         if overlay is not None:
             return (
-                f"the daemon is started with {overlay!r}, and the SQLite fast paths read one "
-                f"database. An overlay store keeps its lower paths in another one, so a fast "
-                f"path would call a valid path invalid."
+                f"the daemon is started with {overlay!r}; the store spec's `overlay` names an overlay "
+                f"store, so that pynixd reads the lower store too"
+            )
+        if self.layout.overlay is not None:
+            return (
+                "the store is an overlay store, and the SQLite fast paths read one database. "
+                "It keeps its lower paths in another one, so a fast path would call a valid path invalid."
             )
         return None
 
