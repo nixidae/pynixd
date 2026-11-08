@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from nix_daemon_protocol.constants import FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS, FEATURE_REALISATION_WITH_PATH
 from nix_daemon_protocol.ids import StoreId
 from pynixd.config import LocalSocketStoreSpec
 from pynixd.exceptions import NoDaemonError
@@ -49,3 +50,11 @@ async def test_the_daemon_client_refuses_by_name_and_starts_nothing() -> None:
         await store.call(IsValidPathRequest(path=StorePath(path="/nix/store/" + "a" * 32 + "-x")))
     with pytest.raises(NoDaemonError, match="a connection to the daemon"):
         await store.create_conn()
+
+
+def test_the_store_offers_what_nix_2_35_offers() -> None:
+    """pynixd reads realisations from `BuildTraceV3`, the table of the schema `open_local_store` creates."""
+    assert LocalDBStore(_spec()).features == {
+        FEATURE_REALISATION_WITH_PATH,
+        FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS,
+    }

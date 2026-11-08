@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 import anyio
 import structlog
 
+from nix_daemon_protocol.constants import FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS, FEATURE_REALISATION_WITH_PATH
 from nix_daemon_protocol.store_dir import on_disk
 from pynixd_store.nix_config import nix_environment, read_nix_config, read_nix_version
 from pynixd_store.store_path import StorePath
@@ -71,6 +72,14 @@ once, and not after the whole budget.
 
 _DAEMON_POLL_INTERVAL = 0.05
 """Seconds between two checks. It is the granularity, and not the budget."""
+
+_NO_DAEMON_FEATURES = frozenset({FEATURE_REALISATION_WITH_PATH, FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS})
+"""What a store with no daemon offers: `WorkerProto::latest` of Nix 2.35 (`worker-protocol.cc:20`).
+
+`open_local_store` gives the store Nix 2.35's schema, so its realisations are in
+`BuildTraceV3`, keyed by derivation path. Without the first feature pynixd reads
+the `Realisations` table of Nix 2.34, which that schema lacks.
+"""
 
 # `_SUN_PATH_MAX` lives in `..unix_socket`, which owns the length policy:
 # the guard below refuses what no connect can reach, and
@@ -190,6 +199,8 @@ class LocalStore(DaemonStore):
         self.nix_bin = spec.nix_bin
         #: `LocalSocketStoreSpec.daemon`: off, this client starts no daemon and opens no connection.
         self.runs_daemon = spec.daemon
+        if not self.runs_daemon:
+            self._features = set(_NO_DAEMON_FEATURES)
         self.monitor_enabled = spec.monitor
         self.daemon_proc: Process | None = None
         self.daemon_ready: anyio.Event | None = None
