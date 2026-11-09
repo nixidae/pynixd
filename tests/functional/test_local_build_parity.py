@@ -1343,10 +1343,10 @@ async def test_a_check_or_repair_of_an_impure_derivation_builds_it_again(tmp_pat
 
     assert here["built"] == there["built"]
     mine, theirs = dict(here["checked"]), dict(there["checked"])
-    # The whole request on the daemon prints this line once; on the daemon's `BuildDerivation` it comes back with
-    # its own `error: ` prefix, nixidae/nixidae#1204.
+    # The daemon's `BuildDerivation` answers with its own `error: ` prefix, and pynixd removes it
+    # (`scheduler.without_error_prefix`), so both print the line once. nixidae/nixidae#1204.
     assert mine.pop("stderr")[-1] == "error: some outputs are unexpectedly invalid", here["checked"]
-    assert theirs.pop("stderr")[-1] == "error: error: some outputs are unexpectedly invalid", there["checked"]
+    assert theirs.pop("stderr")[-1] == "error: some outputs are unexpectedly invalid", there["checked"]
     assert mine == theirs
     assert there["repaired"]["rc"] == 1
     assert any("cannot rename: Not a directory" in line for line in there["repaired"]["stderr"]), there["repaired"]

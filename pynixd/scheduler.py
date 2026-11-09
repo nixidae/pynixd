@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import random
+import re
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
@@ -213,6 +214,28 @@ def with_build_times(resp: BuildDerivationResponse, start: int, stop: int) -> Bu
     if not update:
         return resp
     return resp.model_copy(update={"result": result.model_copy(update=update)})
+
+
+_ERROR_PREFIX = re.compile(r"\x1b\[31;1merror(?: \[[^\]]*\])?:\x1b\[0m ")
+"""What `showErrorInfo` writes before an error's message (`error.cc:223`, `:262`)."""
+
+
+def without_error_prefix(resp: BuildDerivationResponse) -> BuildDerivationResponse:
+    """*resp* with the `error: ` prefix taken off the front of its `errorMsg`.
+
+    NIX-DEFECT (#23): `Store::buildDerivation` (`entry-points.cc:95`) answers an `Error` that escapes the goal
+    with `.msg = e.msg()`, the whole formatted text, prefix and all, where `message()` (`error.hh:164`) is the
+    message alone. The client adds its own prefix, so it prints `error: error: ...`; Nix's own remote builds
+    embed the doubled text the same way. pynixd removes the leading prefix from a daemon's answer and from its
+    own builder's, which copies `e.msg()`, so the client prints one, as the daemon alone prints it. A client that
+    sends `BuildDerivation` to pynixd gets the message without the prefix too. Lillecarl/nix#409.
+    nixidae/nixidae#1204.
+    """
+    message = resp.result.error_msg
+    prefix = _ERROR_PREFIX.match(message)
+    if prefix is None:
+        return resp
+    return resp.model_copy(update={"result": resp.result.model_copy(update={"error_msg": message[prefix.end() :]})})
 
 
 def expected_build_seconds(build: QueuedBuild, local_id: StoreId) -> float | None:
@@ -1395,7 +1418,7 @@ class Scheduler:
 
         verbosity = build.options.verbosity if build.options is not None else Verbosity.INFO
         try:
-            resp = await local.build_here(build.request, settings, keep, verbosity)
+            resp = without_error_prefix(await local.build_here(build.request, settings, keep, verbosity))
         except Exception as e:
             # pynixd's own builder raised: a bug, or this machine (a full disk). Either way not a
             # lost connection, so the same store gets no second try; another store may.
@@ -1586,7 +1609,7 @@ class Scheduler:
             options=builder_options(build.options, store, self.local_builder),
             keep_logs=True,
         )
-        resp = with_build_times(resp, start, int(time.time()))
+        resp = without_error_prefix(with_build_times(resp, start, int(time.time())))
         if resp.logs.messages:
             # The count, so a run can tell one fan-out of many messages from
             # many fan-outs of one message.
