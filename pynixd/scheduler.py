@@ -34,7 +34,6 @@ from pynixd_store.build_stats import (
     StoreEstimate,
     StoreLink,
     identity_of,
-    slot_wait_seconds,
     transfer_seconds,
 )
 from pynixd_store.hintfmt import ANSI_NORMAL, ANSI_RED, magenta
@@ -60,6 +59,7 @@ from .config import NoLocalJobs
 from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from .exceptions import BackendError, InfrastructureError, error_text, leaves
 from .goals.results import failure, result_succeeded
+from .placement import client_forbids_local, local_slot_is_full, request_has_a_local_slot, slot_wait
 from .placement_trace import CandidateTrace, Outcome, PlacementDecision, PlacementTrace
 from .serde import (
     AddTempRootRequest,
@@ -1080,12 +1080,7 @@ class Scheduler:
         return self._slot_wait_seconds(self.local_store.store_id)
 
     def _slot_wait_seconds(self, store_id: StoreId) -> float | None:
-        running = [
-            (build.expected_duration, build.started_at)
-            for build in self.queue.by_id.values()
-            if build.is_building and build.assigned_store_id == store_id
-        ]
-        return slot_wait_seconds(running, time.monotonic())
+        return slot_wait(self.queue, store_id)
 
     async def _link(self, store_id: StoreId) -> StoreLink:
         if not isinstance(self.local_store, LocalDBStore):
@@ -1113,76 +1108,10 @@ class Scheduler:
         running_builds: Mapping[StoreId, int],
         assigned_this_pass: Mapping[StoreId, int],
     ) -> bool:
-        """Answer whether `max-jobs` of the client leaves no local slot.
-
-        This is `Worker::waitForBuildSlot` at `worker.cc:261`, which counts
-        `getNrLocalBuilds()` against `settings.maxBuildJobs` and starts no
-        further local build until one ends. A build on a backend costs no
-        slot, and this method reaches only the local store for that reason.
-
-        **The option set of the build decides, and not a setting of pynixd.**
-        `QueuedBuild.options` holds the set of the client that made the build,
-        which is the same rule that `store.build_conn` takes. A build with no
-        options is one that pynixd made itself, and it takes no limit: the
-        request behind it named none.
-
-        `main:build` of the functional suite reads this. It builds four
-        fixed-output derivations that give the wrong hash, with `-j1`, and it
-        asserts one `error:` line. `_build_slots` of `goals/requests.py`
-        limited the root goals of one request already, and that is not the
-        whole fan-out: a root goal realises the input derivations of its
-        derivation at the same time, and each one is a separate build. Three
-        builds ran together under `-j1` for that reason. Issue nixidae/nixidae#235.
-
-        **`running_builds` counts builds, and not connections.**
-        `DaemonStore.in_flight` answers `pool.active_connections`, which one
-        `QueryPathInfo` raises. This method read that number first, so a
-        single query filled the one slot of `-j1`, every build waited, and no
-        build was running to end and trigger the next pass. The `ca` suite
-        went from about a minute to more than ten. `_filter_schedulable`
-        answers the build count beside it.
-
-        **Each request counts its own builds.** `getNrLocalBuilds()` is the
-        count of one worker, and Nix runs a worker per connection, so the
-        builds of another client take none of this client's slots. A build
-        that several requests want starts when any of them has a slot, as the
-        first of two Nix workers would. Counting every local build against
-        the first client's limit held an `ekn render` with `-j2` behind two
-        hung test builds of other clients for 58 hours. Issue #89.
-
-        A session runs one request at a time, so the goal request is the
-        connection here. A build with no goal request -- a standalone
-        `BuildDerivation` -- keeps the shared count below.
-        """
-        wanters = self.queue.live_wanters(build)
-        if wanters:
-            return not any(self.request_has_a_local_slot(request_id) for request_id in wanters)
-        options = build.options
-        if options is None:
-            return False
-        slots = max(1, int(options.max_build_jobs))
-        local_id = self.local_store.store_id
-        running = running_builds.get(local_id, 0) + assigned_this_pass.get(local_id, 0)
-        if running < slots:
-            return False
-        log.debug(
-            "build_waits_for_a_local_slot",
-            build_id=build.build_id,
-            running=running,
-            max_build_jobs=slots,
-        )
-        return True
+        return local_slot_is_full(self.queue, self.local_store.store_id, build, running_builds, assigned_this_pass)
 
     def _client_forbids_local(self, build: QueuedBuild) -> bool:
-        """Whether every client that wants *build* sent `--max-jobs 0`.
-
-        A build that several requests want may run locally when any of them
-        allows it, as `_local_slot_is_full` counts.
-        """
-        wanters = self.queue.live_wanters(build)
-        if wanters:
-            return all(self.queue.max_jobs_of(request_id) == 0 for request_id in wanters)
-        return build.options is not None and int(build.options.max_build_jobs) == 0
+        return client_forbids_local(self.queue, build)
 
     async def _fail_with_no_local_jobs(self, build: QueuedBuild) -> None:
         """Nix 2.35's refusal of a `-j0` build that no builder takes (`derivation-building-goal.cc:300`)."""
@@ -1195,25 +1124,8 @@ class Scheduler:
         await self.queue.fail(build.build_id, error_msg, BuildResultStatus.INPUT_REJECTED)
 
     def request_has_a_local_slot(self, request_id: RequestId) -> bool:
-        """Whether *request_id* runs fewer local builds than its `max-jobs`.
-
-        Counted from the queue on each call, not from the pass: a build that
-        this pass assigned already has its task, so it counts as building.
-        A walk of the queue per check is cheap at the queue sizes pynixd sees.
-        """
-        jobs = self.queue.max_jobs_of(request_id)
-        if jobs is None:
-            return True
-        local_id = self.local_store.store_id
-        running = sum(
-            1
-            for b in self.queue.by_id.values()
-            if b.is_building and b.assigned_store_id == local_id and request_id in b.holders
-        )
-        if running < max(1, jobs):
-            return True
-        log.debug("request_waits_for_a_local_slot", request_id=int(request_id), running=running, max_build_jobs=jobs)
-        return False
+        """Whether *request_id* runs fewer local builds than its `max-jobs`."""
+        return request_has_a_local_slot(self.queue, self.local_store.store_id, request_id)
 
     def _stores_of(self, build: QueuedBuild) -> list[DaemonStore]:
         """The stores *build* may use: the local store, and the remote ones `outside_the_session` keeps."""

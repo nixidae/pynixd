@@ -14,15 +14,17 @@ under `-j1`. Issue nixidae/nixidae#235.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 import anyio
 import pytest
 
-from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId, StoreId
+from nix_daemon_protocol.ids import LOCAL_STORE_ID, BuildId, RequestId, StoreId
 from pynixd.allocator import RankedStore
-from pynixd.build_queue import BuildQueue
+from pynixd.answer import Answer
+from pynixd.build_queue import BuildQueue, QueuedBuild
 from pynixd.config import PlacementTraceSettings, StoreRankingSettings
+from pynixd.placement import local_slot_is_full
 from pynixd.placement_trace import PlacementTrace
 from pynixd.scheduler import Scheduler
 from pynixd.serde import (
@@ -38,9 +40,6 @@ from pynixd.serde import (
     Verbosity,
 )
 from tests._conftest.placement import FakeStore as PlacedStore
-
-if TYPE_CHECKING:
-    from pynixd.build_queue import QueuedBuild
 
 _BUILDER = StoreId("builder1")
 
@@ -98,34 +97,29 @@ def _is_full(
     running: dict[StoreId, int],
     this_pass: dict[StoreId, int],
 ) -> bool:
-    scheduler: Any = type("S", (), {"local_store": FakeStore(LOCAL_STORE_ID), "queue": BuildQueue()})()
-    return Scheduler._local_slot_is_full(  # noqa: SLF001 -- the limit is the unit under test
-        scheduler,
-        cast("QueuedBuild", FakeBuild(options)),
-        running,
-        this_pass,
-    )
+    build = QueuedBuild(BuildId(1), _request("1"), Answer(), options=options)
+    return local_slot_is_full(BuildQueue(), LOCAL_STORE_ID, build, running, this_pass)
 
 
-def test_one_job_leaves_no_slot_for_a_second_build() -> None:
+async def test_one_job_leaves_no_slot_for_a_second_build() -> None:
     assert _is_full(_options(1), {LOCAL_STORE_ID: 1}, {}) is True
 
 
-def test_one_job_leaves_the_first_slot_free() -> None:
+async def test_one_job_leaves_the_first_slot_free() -> None:
     assert _is_full(_options(1), {}, {}) is False
 
 
-def test_a_build_assigned_in_this_pass_takes_the_slot() -> None:
+async def test_a_build_assigned_in_this_pass_takes_the_slot() -> None:
     """Two builds of one pass must not both take the single slot."""
     assert _is_full(_options(1), {}, {LOCAL_STORE_ID: 1}) is True
 
 
-def test_four_jobs_leave_a_slot_while_three_run() -> None:
+async def test_four_jobs_leave_a_slot_while_three_run() -> None:
     assert _is_full(_options(4), {LOCAL_STORE_ID: 2}, {LOCAL_STORE_ID: 1}) is False
     assert _is_full(_options(4), {LOCAL_STORE_ID: 3}, {LOCAL_STORE_ID: 1}) is True
 
 
-def test_zero_jobs_still_leaves_one_slot() -> None:
+async def test_zero_jobs_still_leaves_one_slot() -> None:
     """`max-jobs = 0` of Nix means "run no build here", and pynixd has no
     other place to run one. One at a time is the nearest answer, and
     `_build_slots` of `goals/requests.py` takes the same one."""
@@ -133,17 +127,17 @@ def test_zero_jobs_still_leaves_one_slot() -> None:
     assert _is_full(_options(0), {LOCAL_STORE_ID: 1}, {}) is True
 
 
-def test_a_build_of_pynixd_itself_takes_no_limit() -> None:
+async def test_a_build_of_pynixd_itself_takes_no_limit() -> None:
     """No client asked for it, so no client named `max-jobs`."""
     assert _is_full(None, {LOCAL_STORE_ID: 99}, {}) is False
 
 
-def test_a_build_on_a_backend_costs_no_local_slot() -> None:
+async def test_a_build_on_a_backend_costs_no_local_slot() -> None:
     """The count of the backend does not reach the local limit."""
     assert _is_full(_options(1), {_BUILDER: 5}, {_BUILDER: 5}) is False
 
 
-def test_the_count_that_reaches_the_limit_is_the_count_of_builds() -> None:
+async def test_the_count_that_reaches_the_limit_is_the_count_of_builds() -> None:
     """`_filter_schedulable` counts builds, not the connections of `DaemonStore.in_flight`.
 
     One `QueryPathInfo` raises the connection count. Read as builds, a single
@@ -175,14 +169,6 @@ def test_the_count_that_reaches_the_limit_is_the_count_of_builds() -> None:
 # ── Each client counts its own builds. Issue #89 ──────────────────────────
 
 
-class _SlotScheduler:
-    request_has_a_local_slot = Scheduler.request_has_a_local_slot
-
-    def __init__(self, queue: BuildQueue) -> None:
-        self.queue = queue
-        self.local_store = FakeStore(LOCAL_STORE_ID)
-
-
 async def _local_build(queue: BuildQueue, name: str, request: RequestId, jobs: int, *, running: bool) -> QueuedBuild:
     build_id, _ = await queue.enqueue(
         _request(name), from_goal_path=True, goal_request_id=request, options=_options(jobs)
@@ -195,11 +181,8 @@ async def _local_build(queue: BuildQueue, name: str, request: RequestId, jobs: i
 
 
 def _waits(queue: BuildQueue, build: QueuedBuild) -> bool:
-    return Scheduler._local_slot_is_full(  # noqa: SLF001 -- the limit is the unit under test
-        cast("Any", _SlotScheduler(queue)),
-        build,
-        {LOCAL_STORE_ID: sum(1 for b in queue.by_id.values() if b.is_building)},
-        {},
+    return local_slot_is_full(
+        queue, LOCAL_STORE_ID, build, {LOCAL_STORE_ID: sum(1 for b in queue.by_id.values() if b.is_building)}, {}
     )
 
 
