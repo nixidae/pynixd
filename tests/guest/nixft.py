@@ -35,10 +35,10 @@ async def test(vms: Machines) -> None:
     nixft = vms.settings["nixft"]
     no_daemon = "NIXFT_NO_DAEMON=1 " if vms.settings.get("noDaemon") else ""
     select = shlex.join(shlex.split(os.environ.get(SELECT_ENV, "")))
-    command = (
-        f"mkdir -p /work-nixft && {no_daemon}JOBS={JOBS} NIXFT_WORK=/work-nixft {nixft} all {select} "
-        "> /artifacts/nixft.log 2>&1"
-    )
+    # Under HOME: the harness removes and remakes its work directory, which needs a parent the user can write.
+    run = f"{no_daemon}JOBS={JOBS} NIXFT_WORK=$HOME/nixft {nixft} all {select}"
+    # `su -` for the user's own HOME. The redirect stays root's: `/artifacts` is a host directory.
+    command = f"su - tester -c {shlex.quote(run)} > /artifacts/nixft.log 2>&1"
     rc, _ = await vm.execute(command, timeout=TIMEOUT, label="nixft all")
     tail = (await vm.succeed("tail -n 30 /artifacts/nixft.log")).strip()
     print(f"[test] nixft all: exit {rc}\n[test]   {tail}")

@@ -66,6 +66,14 @@ vivariumLib.mkTest (
           hostStore.enable = true;
         };
 
+        # The suite runs as this user. As root, `-w` holds on a read-only
+        # output, and `simple.sh:15` and ten more tests fail in both arms.
+        # Issue #1159.
+        users.users.tester = {
+          isNormalUser = true;
+          uid = 1000;
+        };
+
         environment.systemPackages = [
           pkgs.bash
           pkgs.coreutils
@@ -79,7 +87,10 @@ vivariumLib.mkTest (
             "dynamic-derivations"
             "recursive-nix"
           ];
-          trusted-users = [ "root" ];
+          trusted-users = [
+            "root"
+            "tester"
+          ];
         };
 
         # `nix.nixPath` names the nixpkgs the suite evaluates against,
