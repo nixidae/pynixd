@@ -37,11 +37,18 @@ class Monitor(Protocol):
     def health(self) -> SystemHealth: ...
 
 
-class Candidate(Protocol):
-    """What the allocator reads of a store."""
+class SessionMember(Protocol):
+    """What `outside_the_session` reads of a store."""
 
     @property
     def store_id(self) -> StoreId: ...
+    @property
+    def session_only(self) -> bool: ...
+
+
+class Candidate(SessionMember, Protocol):
+    """What the allocator reads of a store."""
+
     @property
     def cpu_util(self) -> CpuUtil | None: ...
     @property
@@ -58,8 +65,6 @@ class Candidate(Protocol):
     def no_schedule(self) -> bool: ...
     @property
     def last_resort(self) -> bool: ...
-    @property
-    def session_only(self) -> bool: ...
     @property
     def disk_full_until(self) -> float: ...
     def supports_derivation(self, system: str, features: set[str], /) -> bool: ...
@@ -446,7 +451,7 @@ def _mib(count: int | None) -> int:
     return (count or 0) // MIB
 
 
-def outside_the_session(store: Candidate, build: Placeable) -> str | None:
+def outside_the_session(store: SessionMember, build: Placeable) -> str | None:
     """Why remote *store* is not one of the stores *build* may use, or `None` (`pynixd/session_builders.py`)."""
     if build.builders is not None:
         return None if store.store_id in build.builders else "not one of the client's builders"

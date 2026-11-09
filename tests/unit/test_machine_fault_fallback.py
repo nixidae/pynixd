@@ -7,14 +7,14 @@ full-disk failure `TransientFailure` (`derivation-builder.cc:242-250`).
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any, cast
-
 import pytest
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
-from pynixd.scheduler import Scheduler, machine_fault
-from pynixd.serde import BasicDerivation, BuildResult, BuildResultStatus
+from pynixd.build_queue import BuildQueue
+from pynixd.execution import machine_fault
+from pynixd.serde import BuildDerivationResponse, BuildResult, BuildResultStatus
+from tests._conftest.execution import fake_executor, queued
+from tests._conftest.placement import FakeStore, options
 
 FULL = "cp: cannot create symbolic link '/nix/store/x': No space left on device"
 
@@ -33,78 +33,41 @@ def test_a_machine_fault_is_told_from_a_build_error(status: BuildResultStatus, m
     assert machine_fault(BuildResult(status=int(status), error_msg=message)) == fault
 
 
-class Store:
-    def __init__(self, store_id: str) -> None:
-        self.store_id = StoreId(store_id)
-        self.session_only = False
-
-    def supports_derivation(self, *_args: Any) -> bool:
-        return True
+SG1 = StoreId("sg1-n1")
+STORES = {store_id: FakeStore(store_id) for store_id in (LOCAL_STORE_ID, SG1, StoreId("sg1-n2"))}
 
 
-def _scheduler(*, forbids_local: bool = False) -> Any:
-    stores = {StoreId(n): Store(n) for n in ("local", "sg1-n1", "sg1-n2")}
-    return SimpleNamespace(
-        local_store=stores[LOCAL_STORE_ID], stores=stores, _client_forbids_local=lambda _build: forbids_local
+async def _retry(failed: dict[str, int], on: StoreId, message: str, *, forbids_local: bool = False) -> str | None:
+    """Whether a build that failed with *message* on *on* moves on, after failing on each store in *failed*."""
+    queue = BuildQueue()
+    build = await queued(queue, options=options(0) if forbids_local else None)
+    build.store_failures = {StoreId(k): v for k, v in failed.items()}
+    resp = BuildDerivationResponse(
+        result=BuildResult(status=int(BuildResultStatus.PERMANENT_FAILURE), error_msg=message)
     )
+    return fake_executor(queue, STORES).retryable_elsewhere(build, STORES[on], resp)
 
 
-def _build(failed: dict[str, int]) -> Any:
-    return SimpleNamespace(
-        request=SimpleNamespace(derivation=BasicDerivation(platform="x86_64-linux", builder="/bin/sh")),
-        store_failures={StoreId(k): v for k, v in failed.items()},
-        builders=None,
-    )
+async def test_a_full_disk_is_retried_while_another_remote_has_not_tried() -> None:
+    assert await _retry({}, SG1, FULL) == "No space left on device"
 
 
-def _resp(message: str) -> Any:
-    return SimpleNamespace(result=BuildResult(status=int(BuildResultStatus.PERMANENT_FAILURE), error_msg=message))
-
-
-def test_a_full_disk_is_retried_while_another_remote_has_not_tried() -> None:
-    scheduler = _scheduler()
-    retry = Scheduler._retryable_elsewhere(  # noqa: SLF001 -- the decision is the unit
-        cast("Any", scheduler), _build({}), scheduler.stores[StoreId("sg1-n1")], _resp(FULL)
-    )
-    assert retry == "No space left on device"
-
-
-def test_the_local_store_is_tried_after_every_remote() -> None:
+async def test_the_local_store_is_tried_after_every_remote() -> None:
     """User: trying locally should also happen, not only the remotes."""
-    scheduler = _scheduler()
-    retry = Scheduler._retryable_elsewhere(  # noqa: SLF001
-        cast("Any", scheduler), _build({"sg1-n2": 1}), scheduler.stores[StoreId("sg1-n1")], _resp(FULL)
-    )
-    assert retry == "No space left on device"
+    assert await _retry({"sg1-n2": 1}, SG1, FULL) == "No space left on device"
 
 
-def test_a_local_fault_moves_to_a_remote() -> None:
-    scheduler = _scheduler()
-    retry = Scheduler._retryable_elsewhere(  # noqa: SLF001
-        cast("Any", scheduler), _build({}), scheduler.stores[LOCAL_STORE_ID], _resp(FULL)
-    )
-    assert retry == "No space left on device"
+async def test_a_local_fault_moves_to_a_remote() -> None:
+    assert await _retry({}, LOCAL_STORE_ID, FULL) == "No space left on device"
 
 
-def test_it_stops_once_every_store_has_failed() -> None:
-    scheduler = _scheduler()
-    retry = Scheduler._retryable_elsewhere(  # noqa: SLF001
-        cast("Any", scheduler), _build({"sg1-n2": 1, "local": 1}), scheduler.stores[StoreId("sg1-n1")], _resp(FULL)
-    )
-    assert retry is None
+async def test_it_stops_once_every_store_has_failed() -> None:
+    assert await _retry({"sg1-n2": 1, "local": 1}, SG1, FULL) is None
 
 
-def test_max_jobs_zero_keeps_the_local_store_out() -> None:
-    scheduler = _scheduler(forbids_local=True)
-    retry = Scheduler._retryable_elsewhere(  # noqa: SLF001
-        cast("Any", scheduler), _build({"sg1-n2": 1}), scheduler.stores[StoreId("sg1-n1")], _resp(FULL)
-    )
-    assert retry is None
+async def test_max_jobs_zero_keeps_the_local_store_out() -> None:
+    assert await _retry({"sg1-n2": 1}, SG1, FULL, forbids_local=True) is None
 
 
-def test_a_compile_error_is_not_retried() -> None:
-    scheduler = _scheduler()
-    retry = Scheduler._retryable_elsewhere(  # noqa: SLF001
-        cast("Any", scheduler), _build({}), scheduler.stores[StoreId("sg1-n1")], _resp("error: expected ';'")
-    )
-    assert retry is None
+async def test_a_compile_error_is_not_retried() -> None:
+    assert await _retry({}, SG1, "error: expected ';'") is None

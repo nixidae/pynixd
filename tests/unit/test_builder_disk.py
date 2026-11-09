@@ -17,6 +17,7 @@ import pytest
 from nix_daemon_protocol.constants import PROTOCOL_VERSION
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from pynixd.allocator import BuildAllocator, TelemetryStoreRanker, short_of_disk
+from pynixd.build_queue import BuildQueue
 from pynixd.config import PressureSettings, StoreRankingSettings
 from pynixd.daemon_extensions.pynixd_host_health import (
     PynixdHostHealthRequest,
@@ -25,10 +26,10 @@ from pynixd.daemon_extensions.pynixd_host_health import (
 from pynixd.handlers.pynixd_host_health import PynixdHostHealthHandler
 from pynixd.monitor import PeerHealthMonitor
 from pynixd.psi import DiskSpace, SystemHealth
-from pynixd.scheduler import Scheduler
 from pynixd.serde.auth import Role
 from pynixd.serde.context import WriteContext
 from pynixd.wire import BytesReader, BytesWriter
+from tests._conftest.execution import fake_executor
 from tests._conftest.placement import FakeBuild, FakeMonitor, FakeStore
 
 if TYPE_CHECKING:
@@ -81,9 +82,8 @@ def test_the_allocator_skips_a_full_store() -> None:
 )
 def test_no_space_left_holds_the_store_back(message: str, held: bool) -> None:
     store = _store(None)
-    scheduler = SimpleNamespace(ranker=SimpleNamespace(settings=SETTINGS))
 
-    Scheduler._note_disk_full(cast("Any", scheduler), cast("Any", store), message)  # noqa: SLF001 -- the hold-back is the unit
+    fake_executor(BuildQueue(), {SG1: store}, settings=SETTINGS).note_disk_full(store, message)
 
     assert short_of_disk(store, SETTINGS, now=time.monotonic()) is held
 

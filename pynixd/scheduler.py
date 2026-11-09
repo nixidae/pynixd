@@ -37,16 +37,15 @@ from ._lazy import ssh_errors
 from .allocator import (
     BuildAllocator,
     TelemetryStoreRanker,
-    outside_the_session,
 )
 from .build_queue import BuildQueue, QueuedBuild
 from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from .exceptions import BackendError, InfrastructureError, error_text, leaves
+from .execution import Executor
 from .goals.results import failure, result_succeeded
 from .placement import (
     Placer,
     TransferEstimator,
-    client_forbids_local,
     ms_since,
     request_has_a_local_slot,
 )
@@ -64,7 +63,6 @@ from .store.base import get_current_system
 from .store.local_db import write_router
 from .store.transfer import stream_paths_store_to_store
 from .substitution_queue import SubstitutionQueue
-from .system_features import effective_required_features
 from .trust import warning_text
 from .wire import FEATURE_ADD_TEMP_ROOTS
 
@@ -86,7 +84,6 @@ if TYPE_CHECKING:
     from .psi import SystemHealth
     from .serde import (
         BuildDerivationRequest,
-        BuildResult,
         SetOptionsRequest,
     )
 
@@ -99,37 +96,6 @@ _PULL_BACKOFF_SECONDS = 2.0
 patched `anyio.sleep`: nixidae/nixidae#1019."""
 _ROOTS_CLOSE_SECONDS = 10.0
 """The bound on releasing a build's roots on a store with no daemon, under a shield."""
-
-
-_MACHINE_FAULTS = (
-    "No space left on device",
-    "Disk quota exceeded",
-    "Cannot allocate memory",
-    "Too many open files",
-    "Read-only file system",
-    "Input/output error",
-    "getting status of",
-    "is not valid",
-    "Killed",
-)
-"""Words in a failed build's message that blame the builder's machine, not the derivation."""
-
-
-def machine_fault(result: BuildResult) -> str | None:
-    """Why a failed result is the machine's fault, or `None` for the derivation's own failure.
-
-    Nix marks a build that failed with a full disk, or any unsandboxed build,
-    `TransientFailure` (`derivation-builder.cc:242-250`), and an error outside
-    the builder `MiscFailure` (`derivation-building-goal.cc:805`). The text
-    catches a disk that filled and emptied again before Nix looked.
-    """
-    if result_succeeded(result):
-        return None
-    status = BuildResultStatus(result.status)
-    if status in (BuildResultStatus.TRANSIENT_FAILURE, BuildResultStatus.MISC_FAILURE):
-        return status.name.lower()
-    message = str(result.error_msg)
-    return next((words for words in _MACHINE_FAULTS if words in message), None)
 
 
 class _OutputClock:
@@ -329,6 +295,13 @@ class Scheduler:
             rng=random.Random(),  # noqa: S311 -- placement, not cryptography
             dynamic=self._dynamic_feature_matrix,
             spawn=self._spawn_worker,
+        )
+        self.executor: Executor[DaemonStore] = Executor(
+            queue=self.queue,
+            local_id=self.local_store.store_id,
+            stores=lambda: self.stores,
+            settings=self.ranker.settings,
+            trigger=self.trigger,
         )
         for client in [*self.stores.values(), self.local_builder]:
             client.on_capacity = self.trigger
@@ -616,9 +589,6 @@ class Scheduler:
 
         return schedulable, assigned_count
 
-    def _client_forbids_local(self, build: QueuedBuild) -> bool:
-        return client_forbids_local(self.queue, build)
-
     def request_has_a_local_slot(self, request_id: RequestId) -> bool:
         """Whether *request_id* runs fewer local builds than its `max-jobs`."""
         return request_has_a_local_slot(self.queue, self.local_store.store_id, request_id)
@@ -733,8 +703,8 @@ class Scheduler:
                     # until the builder collected it. nixidae/nixidae#998.
                     if result_succeeded(build_resp.result):
                         await self._hold_outputs(held, build, store, build_resp)
-                    elif (fault := self._retryable_elsewhere(build, store, build_resp)) is not None:
-                        await self._retry_elsewhere(build, store, build_resp, fault)
+                    elif (fault := self.executor.retryable_elsewhere(build, store, build_resp)) is not None:
+                        await self.executor.retry_elsewhere(build, store, build_resp, fault)
                         build_resp = None
                     if build_resp is not None and store is not self.local_builder:
                         await self._keep_log(build, build_resp)
@@ -775,7 +745,7 @@ class Scheduler:
             retryable = (BackendError, InfrastructureError, EOFError, OSError, *ssh_errors())
             if all(isinstance(leaf, retryable) for leaf in leaves(e)):
                 log.warning("build_failed_retryable", build_id=build.build_id, error=reason)
-                self._note_disk_full(store, reason)
+                self.executor.note_disk_full(store, reason)
                 await build.post_log_and_fanout(
                     LogNext(text=f"pynixd: build failed on {store.store_id}, retrying: {reason}\n")
                 )
@@ -847,8 +817,8 @@ class Scheduler:
             await self._record_observation(build, resp)
             for path in output_paths(build, resp):
                 self.ctx.output_locations[str(path)] = store.store_id
-        elif (fault := self._retryable_elsewhere(build, store, resp)) is not None:
-            await self._retry_elsewhere(build, store, resp, fault)
+        elif (fault := self.executor.retryable_elsewhere(build, store, resp)) is not None:
+            await self.executor.retry_elsewhere(build, store, resp, fault)
             return
         await self.queue.complete(build.build_id, resp)
         self.trigger()
@@ -868,52 +838,6 @@ class Scheduler:
             self.local_store, to, inputs, peer_store_id=to.store_id, direction="out"
         )
         log.debug("build_inputs_sent", build_id=build.build_id, store_id=to.store_id, bytes=sent)
-
-    async def _retry_elsewhere(
-        self, build: QueuedBuild, store: DaemonStore, resp: BuildDerivationResponse, fault: str
-    ) -> None:
-        """The builder's machine failed, not the derivation: try another store.
-
-        The local one is included, as a crashed connection already does.
-        nixidae/nixidae#1015.
-        """
-        log.warning("build_failed_on_the_machine", build_id=build.build_id, store_id=store.store_id, fault=fault)
-        self._note_disk_full(store, str(resp.result.error_msg))
-        await build.post_log_and_fanout(
-            LogNext(text=f"pynixd: build failed on {store.store_id} ({fault}), retrying elsewhere\n")
-        )
-        build.reset_for_retry(store.store_id, str(resp.result.error_msg) or fault)
-        self.trigger()
-
-    def _note_disk_full(self, store: DaemonStore, message: str) -> None:
-        """Hold *store* back from builds when it ran out of disk. nixidae/nixidae#1013."""
-        if "No space left on device" in message:
-            store.disk_full_until = time.monotonic() + self.ranker.settings.disk_full_hold_seconds
-            log.warning("store_held_back_for_disk", store_id=store.store_id)
-
-    def _retryable_elsewhere(self, build: QueuedBuild, store: DaemonStore, resp: BuildDerivationResponse) -> str | None:
-        """The machine fault behind a failed result, when another store has not tried yet.
-
-        The local store is a store like the others here: a remote's fault
-        may fall back to it, and its own fault may move to a remote. It stays
-        out when the client forbids local builds (`--max-jobs 0`).
-        """
-        fault = machine_fault(resp.result)
-        if fault is None:
-            return None
-        platform = build.request.derivation.platform
-        features = effective_required_features(build.request.derivation)
-        local_forbidden = self._client_forbids_local(build)
-        untried = [
-            other
-            for other in self.stores.values()
-            if other.store_id != store.store_id
-            and (other.store_id == self.local_store.store_id or outside_the_session(other, build) is None)
-            and other.store_id not in build.store_failures
-            and not (other.store_id == self.local_store.store_id and local_forbidden)
-            and other.supports_derivation(platform, features)
-        ]
-        return fault if untried else None
 
     async def _prepare_build(
         self,
