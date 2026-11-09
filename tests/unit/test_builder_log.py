@@ -40,9 +40,10 @@ def test_the_builder_lines_make_the_log() -> None:
         _line("hi-input1"),
         _line(""),
         _line("post-build", ResultType.POST_BUILD_LOG_LINE),
+        _line("buildPhase", ResultType.SET_PHASE),
         _line("done"),
     )
-    assert builder_log(_build(), resp) == b"hi-input1\n\ndone\n"
+    assert builder_log(_build(), resp) == b'hi-input1\n\n@nix {"action":"setPhase","phase":"buildPhase"}\ndone\n'
 
 
 def test_a_silent_build_keeps_an_empty_log() -> None:

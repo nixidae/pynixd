@@ -14,6 +14,7 @@ they are pulled automatically.
 from __future__ import annotations
 
 import contextlib
+import json
 import random
 import re
 import time
@@ -173,19 +174,24 @@ def builder_log(build: QueuedBuild, resp: BuildDerivationResponse) -> bytes | No
     """The log a build on another store leaves in the local store, or None under `keep-build-log = false`.
 
     `buildWithHook` (`derivation-building-goal.cc:619`) opens a local `LogFile` for a build on a
-    builder too, and writes each line the hook relays. The builder sends a line as a
-    `BUILD_LOG_LINE` result without its newline. `build-remote.sh:74` reads the log back with
-    `nix log`.
+    builder too. From an `ssh-ng://` builder it writes each `BUILD_LOG_LINE` result with a
+    newline, and each `SET_PHASE` result as the `@nix` line stdenv prints
+    (`derivation-building-goal.cc:671`). `build-remote.sh:74` reads the log back with `nix log`.
     """
     overrides = build.options.overrides if build.options is not None else {}
     if overrides.get("keep-build-log") == "false":
         return None
-    lines = (
-        message.fields[0].valstr
-        for message in resp.logs.messages
-        if isinstance(message, LogResult) and message.result_type == ResultType.BUILD_LOG_LINE and message.fields
-    )
-    return "".join(f"{line}\n" for line in lines if line is not None).encode()
+    lines: list[str] = []
+    for message in resp.logs.messages:
+        if not isinstance(message, LogResult):
+            continue
+        first = message.fields[0].valstr if message.fields else None
+        if message.result_type == ResultType.BUILD_LOG_LINE:
+            lines.append(f"{first or ''}\n")
+        elif message.result_type == ResultType.SET_PHASE and first is not None:
+            phase = json.dumps({"action": "setPhase", "phase": first}, separators=(",", ":"), ensure_ascii=False)
+            lines.append(f"@nix {phase}\n")
+    return "".join(lines).encode()
 
 
 async def _hold(roots: TempRoots, paths: Iterable[StorePath], store_id: StoreId) -> None:
