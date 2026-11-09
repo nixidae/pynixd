@@ -274,6 +274,8 @@ def fake_executor(
     stream: Streamed | None = None,
     logs: Logs | None = None,
     output_locations: dict[str, StoreId] | None = None,
+    silent_build_probe: float = 600.0,
+    handshake_timeout: float = 60.0,
 ) -> Executor[FakeStore, FakeLocal, FakeSandbox]:
     """An executor over fake stores. The local builder is `stores["local"]`, or a fresh one."""
     return Executor(
@@ -293,6 +295,8 @@ def fake_executor(
         output_locations={} if output_locations is None else output_locations,
         trace=PlacementTrace(None, PlacementTraceSettings()),
         pull_backoff=0.0,
+        silent_build_probe=silent_build_probe,
+        handshake_timeout=handshake_timeout,
     )
 
 

@@ -534,6 +534,12 @@ class DaemonStore(Store):
         self.add_path_info(info)
         return str(info.path)
 
+    async def answer_handshake(self) -> None:
+        """Open one new session outside the pools and close it; this raises when the daemon does not answer."""
+        conn = await self.create_conn()
+        with anyio.CancelScope(shield=True), anyio.move_on_after(10):
+            await conn.close()
+
     async def _create_conn_with_counter(self) -> Connection:
         self.conn_counter += 1
         return await self.create_conn()

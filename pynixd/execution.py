@@ -9,6 +9,7 @@ phase. nixidae/nixidae#1246.
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import re
 import time
@@ -27,7 +28,7 @@ from . import metrics
 from ._lazy import ssh_errors
 from .allocator import outside_the_session
 from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
-from .exceptions import BackendError, InfrastructureError, error_text, leaves
+from .exceptions import BackendError, BuilderGone, InfrastructureError, error_text, leaves
 from .goals.results import failure, result_succeeded
 from .placement import client_forbids_local, ms_since
 from .serde import (
@@ -67,6 +68,10 @@ _PULL_ATTEMPTS = 3
 PULL_BACKOFF_SECONDS = 2.0
 """The first wait before a pull again; it doubles. A test passes 0, not a
 patched `anyio.sleep`: nixidae/nixidae#1019."""
+SILENT_BUILD_PROBE = 600.0
+"""How long a build on a builder is silent before pynixd asks its daemon for a fresh handshake."""
+HANDSHAKE_TIMEOUT = 60.0
+"""How long that handshake may take before pynixd moves the build to another store."""
 _ROOTS_CLOSE_SECONDS = 10.0
 """The bound on releasing a build's roots on a store with no daemon, under a shield."""
 
@@ -141,6 +146,7 @@ class Builder(Answers, Protocol):
     def supports_derivation(self, system: str, features: set[str], /) -> bool: ...
     def build_conn(self, options: SetOptionsRequest | None = None, /) -> AbstractAsyncContextManager[BuildConn]: ...
     def transfer_conn(self) -> AbstractAsyncContextManager[BuildConn]: ...
+    async def answer_handshake(self) -> None: ...
 
 
 class Marks(Protocol):
@@ -416,6 +422,8 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         output_locations: MutableMapping[str, StoreId],
         trace: PlacementTrace,
         pull_backoff: float = PULL_BACKOFF_SECONDS,
+        silent_build_probe: float = SILENT_BUILD_PROBE,
+        handshake_timeout: float = HANDSHAKE_TIMEOUT,
     ) -> None:
         self.queue = queue
         self.local = local
@@ -435,6 +443,8 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         self.output_locations = output_locations
         self.trace = trace
         self.pull_backoff = pull_backoff
+        self.silent_build_probe = silent_build_probe
+        self.handshake_timeout = handshake_timeout
 
     async def run(self, build: QueuedBuild, store: S) -> None:
         """Run *build* on *store*: its inputs there, the build, and its outputs back.
@@ -563,7 +573,8 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
                 await build.post_log_and_fanout(
                     LogNext(text=f"pynixd: build failed on {store.store_id}, retrying: {reason}\n")
                 )
-                build.reset_for_retry(store.store_id, reason)
+                gone = any(isinstance(leaf, BuilderGone) for leaf in leaves(e))
+                build.reset_for_retry(store.store_id, reason, elsewhere=gone)
             else:
                 log.exception("build_crashed", build_id=build.build_id)
                 await build.post_log_and_fanout(LogNext(text=f"pynixd: internal error, failing build: {reason}\n"))
@@ -665,12 +676,14 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
             metrics.QUEUE_WAIT_DURATION.observe(build.wait_time)
 
         start = int(time.time())
-        resp: BuildDerivationResponse = await conn.call(
+        call = functools.partial(
+            conn.call,
             build.request,
             client=cast("ClientConn", _OutputClock(build)),
             options=builder_options(build.options, store, self.local_builder),
             keep_logs=True,
         )
+        resp: BuildDerivationResponse = await self._while_the_builder_answers(build, store, call)
         resp = without_error_prefix(with_build_times(resp, start, int(time.time())))
         if resp.logs.messages:
             # The count, so a run can tell one fan-out of many messages from
@@ -691,6 +704,59 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         # nixidae/nixidae#227.
         log.debug("build_executed", build_id=build.build_id, status=resp.result.status)
         return resp
+
+    async def _while_the_builder_answers[T](self, build: QueuedBuild, store: S, call: Callable[[], Awaitable[T]]) -> T:
+        """*call*, or `BuilderGone` once *build* is silent and *store* does not answer a fresh handshake.
+
+        NIX-DEVIATION (#27): `Worker::waitForInput` at `worker.cc:499-501`
+        ends a silent build only at `max-silent-time`, and then fails it. A
+        builder whose SSH answers keepalives while its daemon hangs held 48
+        builds for 55 min (nixidae/nixidae#1063). Silence alone is no proof:
+        a busy builder compiles for minutes with no output, and its health
+        stream stalls too. So pynixd asks the daemon for a new session, and
+        moves the build to another store only when that fails. To reverse
+        it, measure a build moved off a builder that would have finished it.
+        """
+        gone: list[str] = []
+        result: list[T] = []
+        try:
+            async with anyio.create_task_group() as tg:
+
+                async def run() -> None:
+                    result.append(await call())
+                    tg.cancel_scope.cancel()
+
+                tg.start_soon(self._watch_silence, build, store, tg.cancel_scope, gone)
+                tg.start_soon(run)
+        except BaseExceptionGroup as group:
+            # The watcher never raises: the one error is the call's, and a caller matches it by its class.
+            if len(group.exceptions) == 1:
+                raise group.exceptions[0] from None
+            raise
+        if gone:
+            log.warning("builder_gone", build_id=build.build_id, store_id=store.store_id, error=gone[0])
+            raise BuilderGone(
+                f"{store.store_id} sent nothing for {self.silent_build_probe:g} s"
+                f" and did not answer a new session: {gone[0]}"
+            )
+        return result[0]
+
+    async def _watch_silence(self, build: QueuedBuild, store: S, scope: anyio.CancelScope, gone: list[str]) -> None:
+        """Ask *store* for a handshake each time *build* is silent for `silent_build_probe`; cancel *scope* when it fails."""
+        answered_at = time.monotonic()
+        while True:
+            heard = max(answered_at, build.last_output_at or answered_at)
+            if (left := heard + self.silent_build_probe - time.monotonic()) > 0:
+                await anyio.sleep(left)
+                continue
+            try:
+                with anyio.fail_after(self.handshake_timeout):
+                    await store.answer_handshake()
+            except Exception as e:
+                gone.append(error_text(e))
+                scope.cancel()
+                return
+            answered_at = time.monotonic()
 
     async def post_build_hook_here(
         self, build: QueuedBuild, store: S, resp: BuildDerivationResponse

@@ -115,6 +115,14 @@ class FakeStore:
         """Each connection taken and given back, when a test watches the order."""
         self.conn = FakeConn()
         """The connection `build_conn` and `transfer_conn` hand out."""
+        self.handshake: Callable[[], Awaitable[None]] | None = None
+        """What a fresh session does; `None` answers at once."""
+        self.handshakes = 0
+
+    async def answer_handshake(self) -> None:
+        self.handshakes += 1
+        if self.handshake is not None:
+            await self.handshake()
 
     def supports_derivation(self, system: str, features: set[str]) -> bool:
         del features

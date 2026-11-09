@@ -74,6 +74,10 @@ class InfrastructureError(PynixdError):
     """Transport/connection failure (SSH down, EOF, timeout)."""
 
 
+class BuilderGone(InfrastructureError):
+    """A build on a store was silent, and the store's daemon did not answer a fresh handshake."""
+
+
 class BackendError(PynixdError):
     """Raised when the backend sends STDERR_ERROR.
 
