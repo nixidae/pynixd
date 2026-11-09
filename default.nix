@@ -687,6 +687,7 @@ let
 
   shell = pkgs.callPackage ./nix/shell.nix {
     inherit agent;
+    inherit (vivarium.packages) vivarium;
     nix = defaultNix;
     nixGit = pkgs.nixVersions.git;
     devEnv = shellEnv;

@@ -17,6 +17,8 @@
   nixpkgsPath,
   # `pynixd-agent`, which `tests/unit/test_agent.py` runs. Issue #98.
   agent,
+  # The `vivarium` CLI, for the guest suite: `vivarium ctl`, `monitor`, `run`.
+  vivarium,
 }:
 mkShell {
   packages = [
@@ -34,6 +36,7 @@ mkShell {
     # `NIX_PATH` note below.
     nix
     agent
+    vivarium
     zuban
     ruff
     sqlite
