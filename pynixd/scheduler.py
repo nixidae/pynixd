@@ -1688,7 +1688,8 @@ class Scheduler:
         if text is None:
             return
         try:
-            await write_router(self.local_store).add_build_log(str(build.request.drv_path), text)
+            # The base name, as `AddBuildLog` carries it (`daemon.cc:1013`).
+            await write_router(self.local_store).add_build_log(StorePath(build.request.drv_path).name, text)
         except Exception:
             # `LogFile` failing ends Nix's goal; pynixd keeps the build, which has its outputs.
             log.warning("build_log_not_kept", build_id=build.build_id, exc_info=True)
