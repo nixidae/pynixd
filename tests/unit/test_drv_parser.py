@@ -387,6 +387,38 @@ class TestDrvWithVersion:
 
         assert parsed.dynamic_input_drvs[StorePath("/nix/store/dep.drv")] == ChildMapNode()
 
+    @pytest.mark.parametrize(
+        "inputs",
+        [
+            # The input of `c76rw2g4…-jj-hunk.drv`, one of 8,710 store files that failed the round trip.
+            '[("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-jj-hunk.drv.drv",([],[("out",["out"])]))]',
+            '[("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-p.drv.drv",(["dev"],[("out",(["a"],[("b",["c","d"])]))]))'
+            ',("/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-simple.drv",["lib","out"])]',
+        ],
+        ids=["leaf-child", "nested"],
+    )
+    def test_unparse_writes_a_leaf_as_nix_does(self, inputs: str) -> None:
+        """`unparseDerivedPathMapNode` (`derivations.cc:598`) writes a node with no children as a bare list, at every depth.
+
+        nixidae/nixidae#1141.
+        """
+        text = (
+            'DrvWithVersion("xp-dyn-drv",[("out","/nix/store/cccccccccccccccccccccccccccccccc-x","","")],'
+            f'{inputs},[],"x86_64-linux","/bin/sh",["-c","true"],[("name","x")])'
+        )
+        assert parse_drv(text).unparse() == text
+
+    def test_an_input_with_no_children_is_not_dynamic(self) -> None:
+        """`hasDynamicDrvDep` (`derivations.cc:632`) asks for a node with children, so Nix writes `Derive(`."""
+        parsed = parse_drv(
+            'DrvWithVersion("xp-dyn-drv",[("out","/nix/store/cccccccccccccccccccccccccccccccc-x","","")],'
+            '[("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-dep.drv",([],[]))],[],"x86_64-linux","/bin/sh",[],[])'
+        )
+        assert parsed.unparse() == (
+            'Derive([("out","/nix/store/cccccccccccccccccccccccccccccccc-x","","")],'
+            '[("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-dep.drv",[])],[],"x86_64-linux","/bin/sh",[],[])'
+        )
+
 
 class TestDerivationProperties:
     """Tests for Derivation property methods with explicit data."""

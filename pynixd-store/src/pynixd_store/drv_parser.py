@@ -71,13 +71,8 @@ def drv_bytes(text: str) -> bytes:
     return text.encode("utf-8", DRV_TEXT_ERRORS)
 
 
-# Recursive type for input drv nodes in unparse.
-# (output_names, child_map, is_dynamic) where:
-# - output_names: output names referenced from this input
-# - child_map: {output_name: (nested_names, child_map, is_dynamic)} for dynamic deps
-# - is_dynamic: True if this entry was in DrvWithVersion dynamic format,
-#   even when child_map is empty (``([], [])`` vs simple ``[]``)
-type _DrvInputNode = tuple[list[str], dict[str, "_DrvInputNode"], bool]
+# An input drv node for unparse: (output_names, {output_name: child node}).
+type _DrvInputNode = tuple[list[str], dict[str, "_DrvInputNode"]]
 
 
 def _child_map_to_drv_node(node: ChildMapNode, prefix_outputs: list[str] | None = None) -> _DrvInputNode:
@@ -86,9 +81,10 @@ def _child_map_to_drv_node(node: ChildMapNode, prefix_outputs: list[str] | None 
     Combines ``prefix_outputs`` (flat outputs from ``input_drvs``) with
     the node's own outputs and recursively converts children.
     """
-    all_outputs = (prefix_outputs or []) + node.outputs
+    # `DerivedPathMap<StringSet>` holds a set: sorted, each name once.
+    all_outputs = sorted({*(prefix_outputs or []), *node.outputs})
     children = {name: _child_map_to_drv_node(child) for name, child in node.children.items()}
-    return (all_outputs, children, True)
+    return (all_outputs, children)
 
 
 @dataclass
@@ -453,9 +449,10 @@ class Derivation:
     def _has_dynamic_drv_dep(self) -> bool:
         """Check if this derivation depends on outputs of dynamic derivations.
 
-        Corresponds to the C++ hasDynamicDrvDep helper.
+        `hasDynamicDrvDep` (`derivations.cc:632`) asks for a node with
+        children: an input written `([],[])` holds none. nixidae/nixidae#1141.
         """
-        return bool(self.dynamic_input_drvs)
+        return any(node.children for node in self.dynamic_input_drvs.values())
 
     @staticmethod
     def _format_output_hash_algo(o: DrvOutput) -> str:
@@ -473,15 +470,17 @@ class Derivation:
         """Serialize a derived path map node (like C++ unparseDerivedPathMapNode).
 
         Produces the part after the path/name within an input drv entry.
-        Simple: ``,[\"out\"]``
-        Dynamic: ``,([\"out\"],[(\"a\",[...]),(\"b\",[...])])``
+        No children: ``,[\"out\"]``
+        Children: ``,([\"out\"],[(\"a\",[...]),(\"b\",[...])])``
 
         The leading comma separates from the preceding path string.
+        `derivations.cc:602` picks the form by whether the node has
+        children, at every depth: a leaf under a dynamic input is a bare
+        list too. nixidae/nixidae#1141.
         """
-        output_names, child_map, is_dynamic = node
-        if not child_map and not is_dynamic:
+        output_names, child_map = node
+        if not child_map:
             return "," + self._print_unquoted_strings(output_names)
-        # Dynamic entry wraps output names and child map
         inner = self._print_unquoted_strings(output_names)
         child_parts = []
         for out_name, child_node in sorted(child_map.items()):
@@ -504,7 +503,7 @@ class Derivation:
                 is used for ``hashDerivationModulo``.
             actualInputs: If provided, replaces the input drvs entirely.
                 Keys are already-string identifiers (e.g., hash modulo
-                values). Values are ``(output_names, child_map)`` tuples
+                values). Values are ``(output_names, child_map)`` pairs
                 matching the ``_DrvInputNode`` type.
 
         Returns:
@@ -579,7 +578,7 @@ class Derivation:
                         prefix_outputs=outputs,
                     )
                 else:
-                    node = (outputs, {}, False)
+                    node = (outputs, {})
                 parts.append(self._unparse_derived_path_node(node))
                 parts.append(")")
         parts.append("],")
@@ -679,7 +678,7 @@ class Derivation:
         # Floating / deferred / input-addressed: unparse + single hash
         actual: dict[str, _DrvInputNode] | None = None
         if input_drv_hashes is not None:
-            actual = {h: (outs, {}, False) for h, outs in input_drv_hashes.items()}
+            actual = {h: (outs, {}) for h, outs in input_drv_hashes.items()}
 
         aterm = self.unparse(maskOutputs=mask_outputs, actualInputs=actual)
         h = hashlib.sha256(drv_bytes(aterm)).hexdigest()
