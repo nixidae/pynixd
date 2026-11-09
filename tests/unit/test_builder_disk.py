@@ -26,23 +26,24 @@ from pynixd.handlers.pynixd_host_health import PynixdHostHealthHandler
 from pynixd.monitor import PeerHealthMonitor
 from pynixd.psi import DiskSpace, SystemHealth
 from pynixd.scheduler import Scheduler
-from pynixd.serde import BasicDerivation
 from pynixd.serde.auth import Role
 from pynixd.serde.context import WriteContext
 from pynixd.wire import BytesReader, BytesWriter
+from tests._conftest.placement import FakeBuild, FakeMonitor, FakeStore
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 GIB = 1024**3
 SETTINGS = StoreRankingSettings(min_free_bytes=2 * GIB)
+SG1 = StoreId("sg1-n1")
 
 
-def _store(free: int | None, held_until: float = 0.0) -> Any:
+def _store(free: int | None, held_until: float = 0.0, store_id: StoreId = SG1) -> FakeStore:
     health = SystemHealth(disk=None if free is None else DiskSpace(free_bytes=free, total_bytes=100 * GIB))
-    return SimpleNamespace(
-        store_id=StoreId("sg1-n1"), monitor=SimpleNamespace(health=health), disk_full_until=held_until
-    )
+    store = FakeStore(store_id, monitor=FakeMonitor(health))
+    store.disk_full_until = held_until
+    return store
 
 
 class TestShortOfDisk:
@@ -61,35 +62,12 @@ class TestShortOfDisk:
         assert not short_of_disk(_store(10 * GIB, held_until=100.0), SETTINGS, now=50.0)
 
 
-def _candidate(store_id: str, free: int | None) -> Any:
-    store = _store(free)
-    store.__dict__.update(
-        store_id=StoreId(store_id),
-        cpu_util=None,
-        in_flight=0,
-        score_penalty=0,
-        priority=1.0,
-        is_healthy=True,
-        draining=False,
-        no_schedule=False,
-        last_resort=False,
-        session_only=False,
-        supports_derivation=lambda *_a: True,
-    )
-    return store
-
-
 def test_the_allocator_skips_a_full_store() -> None:
-    local = _candidate(LOCAL_STORE_ID, 10 * GIB)
-    stores = {LOCAL_STORE_ID: local, StoreId("sg1-n1"): _candidate("sg1-n1", GIB)}
-    ranker = TelemetryStoreRanker(cast("Any", SimpleNamespace(ranking=SETTINGS)))
-    build = SimpleNamespace(
-        request=SimpleNamespace(derivation=BasicDerivation(platform="x86_64-linux", builder="/bin/sh")),
-        is_blacklisted=lambda _store_id: False,
-        builders=None,
-    )
+    local = _store(10 * GIB, store_id=LOCAL_STORE_ID)
+    stores = {LOCAL_STORE_ID: local, SG1: _store(GIB)}
+    ranker = TelemetryStoreRanker(SETTINGS)
 
-    ranked = BuildAllocator(cast("Any", stores), local, ranker).rank_stores(cast("Any", build), {})
+    ranked = BuildAllocator(stores, local, ranker).rank_stores(FakeBuild(), {})
 
     assert [candidate.store_id for candidate in ranked] == [LOCAL_STORE_ID]
 
@@ -105,7 +83,7 @@ def test_no_space_left_holds_the_store_back(message: str, held: bool) -> None:
     store = _store(None)
     scheduler = SimpleNamespace(ranker=SimpleNamespace(settings=SETTINGS))
 
-    Scheduler._note_disk_full(cast("Any", scheduler), store, message)  # noqa: SLF001 -- the hold-back is the unit
+    Scheduler._note_disk_full(cast("Any", scheduler), cast("Any", store), message)  # noqa: SLF001 -- the hold-back is the unit
 
     assert short_of_disk(store, SETTINGS, now=time.monotonic()) is held
 

@@ -30,23 +30,12 @@ from pynixd.serde import (
     TimeSpan,
     Verbosity,
 )
+from tests._conftest.placement import FakeStore
 
 if TYPE_CHECKING:
     from pynixd.build_queue import QueuedBuild
 
 REMOTE = StoreId("sg1-n1")
-
-
-class FakeStore:
-    def __init__(self, store_id: StoreId) -> None:
-        self.store_id = store_id
-        self.is_healthy = True
-        self.draining = False
-        self.daemon_client = self
-
-    def supports_derivation(self, platform: str, features: set[str]) -> bool:
-        del platform, features
-        return True
 
 
 class NoLocalJobsScheduler:
@@ -63,9 +52,9 @@ class NoLocalJobsScheduler:
     def __init__(self, queue: BuildQueue, mode: NoLocalJobs, *, remote: bool, configured: bool) -> None:
         self.queue = queue
         self.local_store = FakeStore(LOCAL_STORE_ID)
-        ranked = [RankedStore(LOCAL_STORE_ID, 0.0, cast("Any", self.local_store))]
+        ranked = [RankedStore(LOCAL_STORE_ID, 0.0, self.local_store)]
         if remote:
-            ranked.append(RankedStore(REMOTE, 0.0, cast("Any", FakeStore(REMOTE))))
+            ranked.append(RankedStore(REMOTE, 0.0, FakeStore(REMOTE)))
         self.allocator = SimpleNamespace(rank_stores=lambda *_a, **_k: list(ranked))
         self.ranker = SimpleNamespace(settings=StoreRankingSettings(no_local_jobs=mode))
         self.remote = remote

@@ -37,6 +37,7 @@ from pynixd.serde import (
     TimeSpan,
     Verbosity,
 )
+from tests._conftest.placement import FakeStore as PlacedStore
 
 if TYPE_CHECKING:
     from pynixd.build_queue import QueuedBuild
@@ -246,21 +247,6 @@ async def test_a_shared_build_starts_when_any_client_wanting_it_has_a_slot() -> 
 # ── A build that no live request wants takes no slot. Issue nixidae/nixidae#325 ─────
 
 
-class _LocalStore:
-    """Enough of the local store for `_assign_to_stores` to pick it."""
-
-    def __init__(self) -> None:
-        self.store_id = LOCAL_STORE_ID
-        self.is_healthy = True
-        self.draining = False
-        self.in_flight = 0
-        self.daemon_client = self
-
-    def supports_derivation(self, platform: str, features: set[str]) -> bool:
-        del platform, features
-        return True
-
-
 class _AssignScheduler:
     """Enough of `Scheduler` for `_assign_to_stores` to run against a real queue.
 
@@ -271,9 +257,9 @@ class _AssignScheduler:
 
     def __init__(self, queue: BuildQueue) -> None:
         self.queue = queue
-        self.local_store = _LocalStore()
+        self.local_store = PlacedStore(LOCAL_STORE_ID)
         # The local store is ranked like the others (nixidae/nixidae#1001).
-        local = RankedStore(self.local_store.store_id, 0.0, cast("Any", self.local_store))
+        local = RankedStore(self.local_store.store_id, 0.0, self.local_store)
         self.allocator = type("A", (), {"rank_stores": lambda *a, **k: [local]})()
         self.stores: dict[StoreId, object] = {}
         self.executed: list[object] = []

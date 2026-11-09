@@ -355,7 +355,7 @@ class Scheduler:
         """The daemon client that builds for the local store; `local_store` answers its reads."""
         self._dynamic_feature_matrix: dict[str, set[str]] = {}
 
-        self.ranker = TelemetryStoreRanker(ctx.settings)
+        self.ranker = TelemetryStoreRanker(ctx.settings.ranking)
         self.rng = random.Random()  # noqa: S311 -- placement, not cryptography
         """Draws for `explore_share`; a test seeds or replaces it."""
         self.allocator = BuildAllocator(self.stores, self.local_builder, self.ranker)

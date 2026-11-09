@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import structlog
 
@@ -19,13 +19,76 @@ if TYPE_CHECKING:
     from pynixd_store.build_stats import StoreEstimate
 
     from .build_queue import QueuedBuild
-    from .config import PynixdSettings
-    from .store import DaemonStore
+    from .psi import CpuUtil, SystemHealth
+    from .serde import BasicDerivation
 
 log = structlog.get_logger(__name__)
 
 # Duration threshold for tiny-build heuristics (2.5s).
 TINY_BUILD_THRESHOLD_MS = 2500
+
+
+# The Protocols name what the allocator reads, so the type checker holds a
+# test's fake to the same members as `DaemonStore` and `QueuedBuild`. Each
+# member is a property: a read-only member accepts a plain attribute of a
+# narrower type, as a fake's `monitor = None`.
+class Monitor(Protocol):
+    @property
+    def health(self) -> SystemHealth: ...
+
+
+class Candidate(Protocol):
+    """What the allocator reads of a store."""
+
+    @property
+    def store_id(self) -> StoreId: ...
+    @property
+    def cpu_util(self) -> CpuUtil | None: ...
+    @property
+    def monitor(self) -> Monitor | None: ...
+    @property
+    def score_penalty(self) -> float: ...
+    @property
+    def priority(self) -> float: ...
+    @property
+    def is_healthy(self) -> bool: ...
+    @property
+    def draining(self) -> bool: ...
+    @property
+    def no_schedule(self) -> bool: ...
+    @property
+    def last_resort(self) -> bool: ...
+    @property
+    def session_only(self) -> bool: ...
+    @property
+    def disk_full_until(self) -> float: ...
+    def supports_derivation(self, system: str, features: set[str], /) -> bool: ...
+
+
+class Derived(Protocol):
+    @property
+    def derivation(self) -> BasicDerivation: ...
+
+
+class Placeable(Protocol):
+    """What the allocator reads of a build it places."""
+
+    @property
+    def request(self) -> Derived: ...
+    @property
+    def builders(self) -> frozenset[StoreId] | None: ...
+    def is_blacklisted(self, store_id: StoreId, /) -> bool: ...
+
+
+class Running(Protocol):
+    """What `reserved_memory` reads of a build."""
+
+    @property
+    def is_building(self) -> bool: ...
+    @property
+    def assigned_store_id(self) -> StoreId | None: ...
+    @property
+    def expected_peak_bytes(self) -> int | None: ...
 
 
 @dataclass(frozen=True)
@@ -57,7 +120,7 @@ class ScoreBreakdown:
 
 
 def score_store(
-    store: DaemonStore,
+    store: Candidate,
     settings: StoreRankingSettings,
     in_flight: int,
     assigned_this_pass: int,
@@ -141,12 +204,12 @@ def score_store(
 
 
 @dataclass
-class RankedStore:
+class RankedStore[S: Candidate]:
     """A store with its allocation score."""
 
     store_id: StoreId
     score: float
-    store: DaemonStore
+    store: S
     breakdown: ScoreBreakdown | None = None
 
 
@@ -159,14 +222,14 @@ class ExcludedStore:
     breakdown: ScoreBreakdown | None = None
 
 
-class RankedStores:
+class RankedStores[S: Candidate]:
     """Ordered collection of ranked stores, and the stores the ranking left out."""
 
-    def __init__(self, stores: list[RankedStore], excluded: list[ExcludedStore] | None = None) -> None:
+    def __init__(self, stores: list[RankedStore[S]], excluded: list[ExcludedStore] | None = None) -> None:
         self._stores = stores
         self.excluded = excluded or []
 
-    def __iter__(self) -> Iterator[RankedStore]:
+    def __iter__(self) -> Iterator[RankedStore[S]]:
         return iter(self._stores)
 
     def __len__(self) -> int:
@@ -175,18 +238,18 @@ class RankedStores:
     def __bool__(self) -> bool:
         return bool(self._stores)
 
-    def sort(self) -> RankedStores:
+    def sort(self) -> RankedStores[S]:
         """Return a new instance sorted by score descending."""
         return RankedStores(sorted(self._stores, key=lambda s: s.score, reverse=True), self.excluded)
 
 
-def pick_store(
-    ranked: list[RankedStore],
+def pick_store[S: Candidate](
+    ranked: list[RankedStore[S]],
     local_id: StoreId,
     *,
     local_slot_full: bool,
     prefer_local: PreferLocal | None = None,
-) -> RankedStore | None:
+) -> RankedStore[S] | None:
     """The store a build goes to, from the ranked stores with room; `None` waits.
 
     NIX-DEVIATION (#27): `DerivationBuildingGoal` at
@@ -214,16 +277,16 @@ def pick_store(
     return remote if prefer_local.wait_seconds > remote_seconds * prefer_local.weight else None
 
 
-def explore_store(
-    ranked: list[RankedStore],
-    chosen: RankedStore,
+def explore_store[S: Candidate](
+    ranked: list[RankedStore[S]],
+    chosen: RankedStore[S],
     local_id: StoreId,
     *,
     local_slot_full: bool,
     share: float,
     draw: float,
     pick: float,
-) -> RankedStore | None:
+) -> RankedStore[S] | None:
     """A candidate other than `chosen` when `draw` falls under `share`; `pick` in [0, 1) selects which."""
     if draw >= share:
         return None
@@ -248,17 +311,20 @@ class PreferLocal:
 class StoreRanker(ABC):
     """Abstract base for store ranking strategies."""
 
+    def __init__(self, settings: StoreRankingSettings) -> None:
+        self.settings = settings
+
     @abstractmethod
-    def rank_stores(
+    def rank_stores[S: Candidate](
         self,
-        build: QueuedBuild,
-        stores: list[DaemonStore],
+        build: Placeable,
+        stores: list[S],
         assigned_this_pass: Mapping[StoreId, int],
         running_builds: Mapping[StoreId, int] | None = None,
         transfer_seconds: Mapping[StoreId, float] | None = None,
         estimates: Mapping[StoreId, StoreEstimate] | None = None,
         expected_build_seconds: float | None = None,
-    ) -> RankedStores:
+    ) -> RankedStores[S]:
         """Score and sort available stores for the given build."""
         ...
 
@@ -266,21 +332,18 @@ class StoreRanker(ABC):
 class TelemetryStoreRanker(StoreRanker):
     """Ranks stores using telemetry-driven heuristic scoring."""
 
-    def __init__(self, settings: PynixdSettings) -> None:
-        self.settings = settings.ranking
-
-    def rank_stores(
+    def rank_stores[S: Candidate](
         self,
-        build: QueuedBuild,
-        stores: list[DaemonStore],
+        build: Placeable,
+        stores: list[S],
         assigned_this_pass: Mapping[StoreId, int],
         running_builds: Mapping[StoreId, int] | None = None,
         transfer_seconds: Mapping[StoreId, float] | None = None,
         estimates: Mapping[StoreId, StoreEstimate] | None = None,
         expected_build_seconds: float | None = None,
-    ) -> RankedStores:
+    ) -> RankedStores[S]:
         """Score stores by CPU, pressure, running builds, herd and transfer penalties."""
-        ranked: list[RankedStore] = []
+        ranked: list[RankedStore[S]] = []
         excluded: list[ExcludedStore] = []
         for store in stores:
             estimate = estimates.get(store.store_id) if estimates else None
@@ -301,7 +364,7 @@ class TelemetryStoreRanker(StoreRanker):
         return RankedStores(ranked, excluded).sort()
 
 
-def short_of_disk(store: DaemonStore, settings: StoreRankingSettings, now: float) -> bool:
+def short_of_disk(store: Candidate, settings: StoreRankingSettings, now: float) -> bool:
     """Whether *store* has too little disk for a build. nixidae/nixidae#1013.
 
     A measured figure decides when the store's monitor has one. A store that
@@ -319,7 +382,7 @@ def short_of_disk(store: DaemonStore, settings: StoreRankingSettings, now: float
 MIB = 1024 * 1024
 
 
-def memory_room(store: DaemonStore, reserved_bytes: int) -> int | None:
+def memory_room(store: Candidate, reserved_bytes: int) -> int | None:
     """The store's available memory less what its running builds are expected to peak at; `None` when unmeasured."""
     monitor = store.monitor
     meminfo = monitor.health.meminfo if monitor is not None else None
@@ -328,7 +391,7 @@ def memory_room(store: DaemonStore, reserved_bytes: int) -> int | None:
     return meminfo.mem_available * 1024 - reserved_bytes
 
 
-def reserved_memory(builds: Iterable[QueuedBuild]) -> dict[StoreId, int]:
+def reserved_memory(builds: Iterable[Running]) -> dict[StoreId, int]:
     """The expected peak bytes of the running builds, summed per store."""
     reserved: dict[StoreId, int] = {}
     for build in builds:
@@ -338,19 +401,19 @@ def reserved_memory(builds: Iterable[QueuedBuild]) -> dict[StoreId, int]:
 
 
 @dataclass(frozen=True)
-class MemoryFit:
+class MemoryFit[S: Candidate]:
     """The candidates with room for a build's expected peak memory, best first."""
 
-    stores: list[RankedStore]
+    stores: list[RankedStore[S]]
     short: dict[StoreId, str]
     """The candidates left out, each with why."""
     reason: str | None = None
     """Set when no candidate fits and the most room decides instead."""
 
 
-def fit_memory(
-    ranked: list[RankedStore], expected_peak_bytes: int | None, reserved: Mapping[StoreId, int]
-) -> MemoryFit:
+def fit_memory[S: Candidate](
+    ranked: list[RankedStore[S]], expected_peak_bytes: int | None, reserved: Mapping[StoreId, int]
+) -> MemoryFit[S]:
     """Leave out each candidate whose room is below the build's expected peak.
 
     A store with no memory figure fits: an unmeasured store is no reason to
@@ -383,14 +446,14 @@ def _mib(count: int | None) -> int:
     return (count or 0) // MIB
 
 
-def outside_the_session(store: DaemonStore, build: QueuedBuild) -> str | None:
+def outside_the_session(store: Candidate, build: Placeable) -> str | None:
     """Why remote *store* is not one of the stores *build* may use, or `None` (`pynixd/session_builders.py`)."""
     if build.builders is not None:
         return None if store.store_id in build.builders else "not one of the client's builders"
     return "another client's builder" if store.session_only else None
 
 
-def incapable_reason(store: DaemonStore, build: QueuedBuild, features: set[str]) -> str | None:
+def incapable_reason(store: Candidate, build: Placeable, features: set[str]) -> str | None:
     """Why *store* cannot take *build* at all, or `None` when it can."""
     if not store.is_healthy:
         return "unhealthy"
@@ -405,20 +468,20 @@ def incapable_reason(store: DaemonStore, build: QueuedBuild, features: set[str])
     return None
 
 
-class BuildAllocator:
+class BuildAllocator[S: Candidate]:
     """Orchestrates ranking and selection of stores for builds."""
 
     def __init__(
         self,
-        stores: dict[StoreId, DaemonStore],
-        local_store: DaemonStore,
+        stores: dict[StoreId, S],
+        local_store: S,
         ranker: StoreRanker,
     ) -> None:
         self.stores = stores
         self.local_store = local_store
         self.ranker = ranker
 
-    def add_store(self, store: DaemonStore) -> None:
+    def add_store(self, store: S) -> None:
         """Register a store that arrived after construction.
 
         The mapping passed in holds the stores of scheduler start; a dynamic
@@ -435,13 +498,13 @@ class BuildAllocator:
 
     def rank_stores(
         self,
-        build: QueuedBuild,
+        build: Placeable,
         assigned_this_pass: Mapping[StoreId, int],
         running_builds: Mapping[StoreId, int] | None = None,
         transfer_seconds: Mapping[StoreId, float] | None = None,
         estimates: Mapping[StoreId, StoreEstimate] | None = None,
         expected_build_seconds: float | None = None,
-    ) -> RankedStores:
+    ) -> RankedStores[S]:
         """Rank stores for a build using the injected ranker."""
         build_features = effective_required_features(build.request.derivation)
 
@@ -451,8 +514,8 @@ class BuildAllocator:
         # `local_wins_ties`.
         remotes = [store for store_id, store in self.stores.items() if store_id != self.local_store.store_id]
         excluded: list[ExcludedStore] = []
-        capable: list[DaemonStore] = []
-        settings = getattr(self.ranker, "settings", StoreRankingSettings())
+        capable: list[S] = []
+        settings = self.ranker.settings
         order = [self.local_store, *remotes] if settings.local_wins_ties else [*remotes, self.local_store]
         for store in order:
             reason = (None if store is self.local_store else outside_the_session(store, build)) or incapable_reason(
@@ -472,7 +535,7 @@ class BuildAllocator:
             ]
             capable = [store for store in capable if not store.last_resort]
         now = time.monotonic()
-        candidates: list[DaemonStore] = []
+        candidates: list[S] = []
         for store in capable:
             if short_of_disk(store, settings, now):
                 excluded.append(ExcludedStore(store.store_id, "short of disk"))

@@ -6,54 +6,38 @@ last resort (for capability not offloading)". nixidae/nixidae#1018.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any, cast
-
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from pynixd.allocator import BuildAllocator, TelemetryStoreRanker
 from pynixd.config import StoreRankingSettings
 from pynixd.psi import DiskSpace, SystemHealth
-from pynixd.serde import BasicDerivation
+from tests._conftest.placement import FakeBuild, FakeMonitor, FakeStore
 
 DARWIN = StoreId("darwin-build-box")
 GIB = 1024**3
 
 
-class Store:
+class Store(FakeStore):
     def __init__(
         self, store_id: StoreId, systems: set[str], *, last_resort: bool = False, free: int = 100 * GIB
     ) -> None:
-        self.store_id = store_id
-        self.systems = systems
-        self.last_resort = last_resort
-        self.cpu_util = None
-        self.monitor = SimpleNamespace(health=SystemHealth(disk=DiskSpace(free_bytes=free, total_bytes=100 * GIB)))
-        self.disk_full_until = 0.0
-        self.in_flight = 0
-        self.score_penalty = 0
-        self.priority = 1.0
-        self.is_healthy = True
-        self.draining = False
-        self.no_schedule = False
-        self.session_only = False
+        disk = DiskSpace(free_bytes=free, total_bytes=100 * GIB)
+        super().__init__(
+            store_id, systems=systems, last_resort=last_resort, monitor=FakeMonitor(SystemHealth(disk=disk))
+        )
 
-    def supports_derivation(self, platform: str, features: set[str]) -> bool:
-        del features
+    def supports_derivation(self, system: str, features: set[str]) -> bool:
         # Every machine takes `builtin`, as `machines.cc:42` says.
-        return platform == "builtin" or platform in self.systems
+        return system == "builtin" or super().supports_derivation(system, features)
 
 
 def _rank(platform: str, *, local_free: int = 100 * GIB, failed_on: set[StoreId] | None = None) -> list[StoreId]:
     local = Store(LOCAL_STORE_ID, {"x86_64-linux"}, free=local_free)
     darwin = Store(DARWIN, {"aarch64-darwin"}, last_resort=True)
-    build = SimpleNamespace(
-        request=SimpleNamespace(derivation=BasicDerivation(platform=platform, builder="/bin/sh")),
-        is_blacklisted=lambda store_id: store_id in (failed_on or set()),
-        builders=None,
-    )
-    ranker = TelemetryStoreRanker(cast("Any", SimpleNamespace(ranking=StoreRankingSettings())))
-    allocator = BuildAllocator(cast("Any", {LOCAL_STORE_ID: local, DARWIN: darwin}), cast("Any", local), ranker)
-    return [candidate.store_id for candidate in allocator.rank_stores(cast("Any", build), {})]
+    build = FakeBuild.on(platform)
+    build.failed_on = frozenset(failed_on or ())
+    ranker = TelemetryStoreRanker(StoreRankingSettings())
+    allocator = BuildAllocator({LOCAL_STORE_ID: local, DARWIN: darwin}, local, ranker)
+    return [candidate.store_id for candidate in allocator.rank_stores(build, {})]
 
 
 def test_builds_what_only_it_can() -> None:

@@ -8,8 +8,7 @@ machine Nix's suite builds on. nixidae/nixidae#1242.
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -18,9 +17,9 @@ from pynixd.allocator import BuildAllocator, TelemetryStoreRanker, outside_the_s
 from pynixd.config import LocalSocketStoreSpec, PynixdSettings, SSHSubprocessStoreSpec, StoreRankingSettings
 from pynixd.machines import parse_config
 from pynixd.psi import DiskSpace, SystemHealth
-from pynixd.serde import BasicDerivation
 from pynixd.session_builders import SessionBuilderError, SessionBuilders, builder_spec
 from pynixd.store.local_daemon import LocalStore
+from tests._conftest.placement import FakeBuild, FakeMonitor, FakeStore
 
 SYSTEM = "x86_64-linux"
 GIB = 1024**3
@@ -88,24 +87,9 @@ def test_mandatory_features_hold_back_other_builds(tmp_path: Path) -> None:
     assert store.supports_derivation(SYSTEM, {"benchmark"})
 
 
-class Store:
-    def __init__(self, store_id: StoreId, *, session_only: bool = False) -> None:
-        self.store_id = store_id
-        self.session_only = session_only
-        self.last_resort = False
-        self.cpu_util = None
-        self.monitor = SimpleNamespace(health=SystemHealth(disk=DiskSpace(free_bytes=100 * GIB, total_bytes=100 * GIB)))
-        self.disk_full_until = 0.0
-        self.in_flight = 0
-        self.score_penalty = 0
-        self.priority = 1.0
-        self.is_healthy = True
-        self.draining = False
-        self.no_schedule = False
-
-    def supports_derivation(self, platform: str, features: set[str]) -> bool:
-        del platform, features
-        return True
+def _store(store_id: StoreId, *, session_only: bool = False) -> FakeStore:
+    disk = DiskSpace(free_bytes=100 * GIB, total_bytes=100 * GIB)
+    return FakeStore(store_id, session_only=session_only, monitor=FakeMonitor(SystemHealth(disk=disk)))
 
 
 FLEET = StoreId("fleet")
@@ -114,21 +98,16 @@ THEIRS = StoreId("session-theirs")
 
 
 def _rank(builders: frozenset[StoreId] | None) -> set[StoreId]:
-    local = Store(LOCAL_STORE_ID)
+    local = _store(LOCAL_STORE_ID)
     stores = {
         LOCAL_STORE_ID: local,
-        FLEET: Store(FLEET),
-        MINE: Store(MINE, session_only=True),
-        THEIRS: Store(THEIRS, session_only=True),
+        FLEET: _store(FLEET),
+        MINE: _store(MINE, session_only=True),
+        THEIRS: _store(THEIRS, session_only=True),
     }
-    build = SimpleNamespace(
-        request=SimpleNamespace(derivation=BasicDerivation(platform=SYSTEM, builder="/bin/sh")),
-        is_blacklisted=lambda _store_id: False,
-        builders=builders,
-    )
-    ranker = TelemetryStoreRanker(cast("Any", SimpleNamespace(ranking=StoreRankingSettings())))
-    allocator = BuildAllocator(cast("Any", stores), cast("Any", local), ranker)
-    return {candidate.store_id for candidate in allocator.rank_stores(cast("Any", build), {})}
+    ranker = TelemetryStoreRanker(StoreRankingSettings())
+    allocator = BuildAllocator(stores, local, ranker)
+    return {candidate.store_id for candidate in allocator.rank_stores(FakeBuild.on(SYSTEM, builders=builders), {})}
 
 
 def test_a_client_with_builders_builds_on_them_and_locally() -> None:
@@ -141,10 +120,9 @@ def test_another_client_never_builds_on_a_session_store() -> None:
 
 
 def test_outside_the_session_names_why() -> None:
-    build = cast("Any", SimpleNamespace(builders=frozenset({MINE})))
-    assert outside_the_session(cast("Any", Store(FLEET)), build) == "not one of the client's builders"
-    other = cast("Any", SimpleNamespace(builders=None))
-    assert outside_the_session(cast("Any", Store(THEIRS, session_only=True)), other) == "another client's builder"
+    build = FakeBuild(builders=frozenset({MINE}))
+    assert outside_the_session(_store(FLEET), build) == "not one of the client's builders"
+    assert outside_the_session(_store(THEIRS, session_only=True), FakeBuild()) == "another client's builder"
 
 
 async def test_one_store_per_machine_for_every_session(tmp_path: Path) -> None:

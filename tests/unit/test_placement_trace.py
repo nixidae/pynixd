@@ -8,8 +8,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from contextlib import closing
-from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
 import aiosqlite
 import pytest
@@ -18,11 +17,13 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from pynixd.allocator import BuildAllocator, TelemetryStoreRanker, score_store
 from pynixd.config import PlacementTraceSettings, PynixdSettings, StoreRankingSettings
 from pynixd.placement_trace import CandidateTrace, Outcome, PlacementDecision, PlacementTrace
+from pynixd.psi import PsiMetric, PsiSnapshot, SystemHealth
 from pynixd_store.build_stats import BuildEstimateSource, BuildObservation, DerivationIdentity, StoreEstimate, StoreLink
 from pynixd_store.db_migrations import PLACEMENT_CANDIDATE_TABLE, PLACEMENT_DECISION_TABLE
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.store_layout import StoreLayout
-from tests.unit.test_store_choice import REMOTE, FakeBuild, FakeStore
+from tests._conftest.placement import FakeBuild, FakeMonitor, FakeStore, cpu
+from tests.unit.test_store_choice import REMOTE
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -34,9 +35,9 @@ HELLO = DerivationIdentity(name="hello", system="x86_64-linux", shape="0" * 16, 
 
 def _monitored(store_id: StoreId, *, utilization: float, cpu_psi: float = 0.0, io_psi: float = 0.0) -> FakeStore:
     store = FakeStore(store_id)
-    store.cpu_util = SimpleNamespace(utilization=utilization)
-    psi = SimpleNamespace(cpu=SimpleNamespace(some_avg10=cpu_psi), io=SimpleNamespace(some_avg10=io_psi))
-    store.monitor = cast("Any", SimpleNamespace(health=SimpleNamespace(psi=psi, cores=None)))
+    store.cpu_util = cpu(utilization)
+    psi = PsiSnapshot(cpu=PsiMetric(some_avg10=cpu_psi), io=PsiMetric(some_avg10=io_psi))
+    store.monitor = FakeMonitor(SystemHealth(psi=psi))
     return store
 
 
@@ -46,7 +47,7 @@ class TestTheScore:
         store.score_penalty = 5
         store.priority = 2.0
 
-        terms = score_store(cast("Any", store), StoreRankingSettings(), 1, 1, 3.0)
+        terms = score_store(store, StoreRankingSettings(), 1, 1, 3.0)
 
         assert terms.cpu_idle_points == pytest.approx(60.0)
         # PSI is a percent: 1 % and 2 % of a 50-point penalty.
@@ -60,16 +61,16 @@ class TestTheScore:
         assert not terms.passed
 
     def test_an_unmonitored_store_passes_with_its_penalty(self) -> None:
-        terms = score_store(cast("Any", FakeStore(REMOTE)), StoreRankingSettings(), 0, 0, None)
+        terms = score_store(FakeStore(REMOTE), StoreRankingSettings(), 0, 0, None)
 
         assert terms.unmonitored_points == -1000.0
         assert terms.passed
 
     def test_a_store_under_the_threshold_is_left_out_with_its_terms(self) -> None:
         busy = _monitored(REMOTE, utilization=100.0, cpu_psi=50.0)
-        ranker = TelemetryStoreRanker(cast("Any", SimpleNamespace(ranking=StoreRankingSettings())))
+        ranker = TelemetryStoreRanker(StoreRankingSettings())
 
-        ranked = ranker.rank_stores(cast("Any", FakeBuild()), [cast("Any", busy)], {})
+        ranked = ranker.rank_stores(FakeBuild(), [busy], {})
 
         assert list(ranked) == []
         assert [(e.store_id, e.reason) for e in ranked.excluded] == [(REMOTE, "score under min_schedule_score")]
@@ -82,10 +83,10 @@ class TestTheScore:
         draining = FakeStore(StoreId("draining"))
         draining.draining = True
         stores = {LOCAL_STORE_ID: local, sick.store_id: sick, draining.store_id: draining}
-        ranker = TelemetryStoreRanker(cast("Any", SimpleNamespace(ranking=StoreRankingSettings())))
-        allocator = BuildAllocator(cast("Any", stores), cast("Any", local), ranker)
+        ranker = TelemetryStoreRanker(StoreRankingSettings())
+        allocator = BuildAllocator(stores, local, ranker)
 
-        ranked = allocator.rank_stores(cast("Any", FakeBuild()), {})
+        ranked = allocator.rank_stores(FakeBuild(), {})
 
         assert [c.store_id for c in ranked] == [LOCAL_STORE_ID]
         assert {e.store_id: e.reason for e in ranked.excluded} == {"sick": "unhealthy", "draining": "draining"}
@@ -145,7 +146,7 @@ def _decision(
                 rank=0,
                 chosen=outcome is Outcome.ASSIGNED,
                 roomy=True,
-                breakdown=score_store(cast("Any", FakeStore(REMOTE)), StoreRankingSettings(), 0, 0, 2.0),
+                breakdown=score_store(FakeStore(REMOTE), StoreRankingSettings(), 0, 0, 2.0),
                 estimate=StoreEstimate(
                     inputs_bytes=100 * MB,
                     link=StoreLink(send_bytes_per_s=10 * MB),

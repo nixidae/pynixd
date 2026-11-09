@@ -29,6 +29,7 @@ from pynixd.psi import MemInfo, SystemHealth
 from pynixd.scheduler import Scheduler
 from pynixd.serde import BasicDerivation, BuildDerivationRequest, BuildMode, StorePath
 from pynixd_store.build_stats import ExpectedBytes, StoreEstimate, StoreLink, slot_wait_seconds, transfer_seconds
+from tests._conftest.placement import FakeBuild, FakeMonitor, FakeStore, cpu
 
 if TYPE_CHECKING:
     from pynixd.build_queue import QueuedBuild
@@ -38,47 +39,16 @@ OTHER = StoreId("sg1-n2")
 MB = 1_000_000
 
 
-class FakeStore:
-    def __init__(self, store_id: StoreId) -> None:
-        self.store_id = store_id
-        self.cpu_util: object | None = None
-        self.monitor = None
-        self.in_flight = 0
-        self.score_penalty = 0
-        self.priority = 1.0
-        self.is_healthy = True
-        self.draining = False
-        self.no_schedule = False
-        self.last_resort = False
-        self.session_only = False
-        self.disk_full_until = 0.0
-        self.daemon_client = self
-
-    def supports_derivation(self, platform: str, features: set[str]) -> bool:
-        del platform, features
-        return True
-
-
-class FakeBuild:
-    request = SimpleNamespace(derivation=BasicDerivation(platform="x86_64-linux", builder="/bin/sh"))
-    builders = None
-
-    @staticmethod
-    def is_blacklisted(store_id: StoreId) -> bool:
-        del store_id
-        return False
-
-
-def _ranked(*store_ids: StoreId) -> list[RankedStore]:
-    return [RankedStore(store_id, 0.0, cast("Any", FakeStore(store_id))) for store_id in store_ids]
+def _ranked(*store_ids: StoreId) -> list[RankedStore[FakeStore]]:
+    return [RankedStore(store_id, 0.0, FakeStore(store_id)) for store_id in store_ids]
 
 
 def _rank(transfer: dict[StoreId, float] | None = None) -> list[StoreId]:
     local = FakeStore(LOCAL_STORE_ID)
     stores = {LOCAL_STORE_ID: local, REMOTE: FakeStore(REMOTE)}
-    ranker = TelemetryStoreRanker(cast("Any", SimpleNamespace(ranking=StoreRankingSettings())))
-    allocator = BuildAllocator(cast("Any", stores), cast("Any", local), ranker)
-    ranked = allocator.rank_stores(cast("Any", FakeBuild()), {}, transfer_seconds=transfer)
+    ranker = TelemetryStoreRanker(StoreRankingSettings())
+    allocator = BuildAllocator(stores, local, ranker)
+    ranked = allocator.rank_stores(FakeBuild(), {}, transfer_seconds=transfer)
     return [candidate.store_id for candidate in ranked]
 
 
@@ -109,18 +79,18 @@ def test_the_setup_keeps_a_trivial_build_local(setup: float, expected: list[Stor
     expected at 230 ms on sg1, whose measured phases priced no round trip.
     All 20 of 20 went to sg1. nixidae/nixidae#1125."""
     local = FakeStore(LOCAL_STORE_ID)
-    local.cpu_util = SimpleNamespace(utilization=14.0)
+    local.cpu_util = cpu(14.0)
     remote = FakeStore(REMOTE)
-    remote.cpu_util = SimpleNamespace(utilization=1.0)
+    remote.cpu_util = cpu(1.0)
     settings = StoreRankingSettings(time_penalty_per_second=50.0, cpu_reference_seconds=5.0)
-    ranker = TelemetryStoreRanker(cast("Any", SimpleNamespace(ranking=settings)))
-    allocator = BuildAllocator(cast("Any", {LOCAL_STORE_ID: local, REMOTE: remote}), cast("Any", local), ranker)
+    ranker = TelemetryStoreRanker(settings)
+    allocator = BuildAllocator({LOCAL_STORE_ID: local, REMOTE: remote}, local, ranker)
     estimates = {
         LOCAL_STORE_ID: StoreEstimate(inputs_bytes=0, pull_bytes=0, build_ms=318),
         REMOTE: StoreEstimate(inputs_bytes=0, pull_bytes=0, build_ms=230, setup_seconds=setup),
     }
 
-    ranked = allocator.rank_stores(cast("Any", FakeBuild()), {}, estimates=estimates, expected_build_seconds=0.318)
+    ranked = allocator.rank_stores(FakeBuild(), {}, estimates=estimates, expected_build_seconds=0.318)
 
     assert [candidate.store_id for candidate in ranked] == expected
 
@@ -160,11 +130,11 @@ class TestTheMinimumScore:
         local = FakeStore(LOCAL_STORE_ID)
         local.no_schedule = True
         remote = FakeStore(REMOTE)
-        remote.cpu_util = SimpleNamespace(utilization=utilization)
+        remote.cpu_util = cpu(utilization)
         stores = {LOCAL_STORE_ID: local, REMOTE: remote}
-        ranker = TelemetryStoreRanker(cast("Any", SimpleNamespace(ranking=StoreRankingSettings())))
-        ranked = BuildAllocator(cast("Any", stores), cast("Any", local), ranker).rank_stores(
-            cast("Any", FakeBuild()), {}, running_builds={REMOTE: busy}, transfer_seconds=transfer
+        ranker = TelemetryStoreRanker(StoreRankingSettings())
+        ranked = BuildAllocator(stores, local, ranker).rank_stores(
+            FakeBuild(), {}, running_builds={REMOTE: busy}, transfer_seconds=transfer
         )
         return [candidate.store_id for candidate in ranked]
 
@@ -178,11 +148,11 @@ class TestTheMinimumScore:
     def test_connections_without_builds_cost_nothing(self) -> None:
         """Client queries hold the local store's connections; they are no load. nixidae/nixidae#1125."""
         local = FakeStore(LOCAL_STORE_ID)
-        local.cpu_util = SimpleNamespace(utilization=0.0)
+        local.cpu_util = cpu(0.0)
         local.in_flight = 9
-        ranker = TelemetryStoreRanker(cast("Any", SimpleNamespace(ranking=StoreRankingSettings())))
-        ranked = BuildAllocator(cast("Any", {LOCAL_STORE_ID: local}), cast("Any", local), ranker).rank_stores(
-            cast("Any", FakeBuild()), {}, running_builds={LOCAL_STORE_ID: 0}
+        ranker = TelemetryStoreRanker(StoreRankingSettings())
+        ranked = BuildAllocator({LOCAL_STORE_ID: local}, local, ranker).rank_stores(
+            FakeBuild(), {}, running_builds={LOCAL_STORE_ID: 0}
         )
         assert [(candidate.store_id, candidate.score) for candidate in ranked] == [(LOCAL_STORE_ID, 100.0)]
 
@@ -196,14 +166,10 @@ class TestAStoreNobodyCanMonitor:
         local = FakeStore(LOCAL_STORE_ID)
         local.no_schedule = True
         seen = FakeStore(OTHER)
-        seen.cpu_util = SimpleNamespace(utilization=100.0)
+        seen.cpu_util = cpu(100.0)
         stores = {LOCAL_STORE_ID: local, REMOTE: FakeStore(REMOTE), OTHER: seen}
-        ranker = TelemetryStoreRanker(
-            cast("Any", SimpleNamespace(ranking=StoreRankingSettings(min_schedule_score=min_score)))
-        )
-        ranked = BuildAllocator(cast("Any", stores), cast("Any", local), ranker).rank_stores(
-            cast("Any", FakeBuild()), {}, running_builds={OTHER: busy}
-        )
+        ranker = TelemetryStoreRanker(StoreRankingSettings(min_schedule_score=min_score))
+        ranked = BuildAllocator(stores, local, ranker).rank_stores(FakeBuild(), {}, running_builds={OTHER: busy})
         return [candidate.store_id for candidate in ranked]
 
     def test_ranks_under_a_fully_busy_monitored_store(self) -> None:
@@ -228,12 +194,12 @@ class TestTheExpectedTime:
         cpu_reference: float | None = 5.0,
     ) -> list[StoreId]:
         local = FakeStore(LOCAL_STORE_ID)
-        local.cpu_util = SimpleNamespace(utilization=local_cpu)
+        local.cpu_util = cpu(local_cpu)
         remote = FakeStore(REMOTE)
-        remote.cpu_util = SimpleNamespace(utilization=0.0)
+        remote.cpu_util = cpu(0.0)
         settings = StoreRankingSettings(time_penalty_per_second=time_penalty, cpu_reference_seconds=cpu_reference)
-        ranker = TelemetryStoreRanker(cast("Any", SimpleNamespace(ranking=settings)))
-        ranked = BuildAllocator(cast("Any", {LOCAL_STORE_ID: local, REMOTE: remote}), cast("Any", local), ranker)
+        ranker = TelemetryStoreRanker(settings)
+        ranked = BuildAllocator({LOCAL_STORE_ID: local, REMOTE: remote}, local, ranker)
         estimates = {
             LOCAL_STORE_ID: StoreEstimate(inputs_bytes=0, pull_bytes=0, build_ms=200),
             REMOTE: StoreEstimate(inputs_bytes=0, pull_bytes=0, build_ms=600),
@@ -241,7 +207,7 @@ class TestTheExpectedTime:
         return [
             candidate.store_id
             for candidate in ranked.rank_stores(
-                cast("Any", FakeBuild()),
+                FakeBuild(),
                 {},
                 estimates=estimates,
                 expected_build_seconds=expected_build_seconds,
@@ -263,10 +229,10 @@ class TestTheExpectedTime:
     def test_the_threshold_reads_the_unscaled_load(self) -> None:
         """A full store stays full, however short the build."""
         busy = FakeStore(REMOTE)
-        busy.cpu_util = SimpleNamespace(utilization=100.0)
+        busy.cpu_util = cpu(100.0)
         settings = StoreRankingSettings(cpu_reference_seconds=5.0)
 
-        terms = score_store(cast("Any", busy), settings, 1, 0, None, expected_build_seconds=0.1)
+        terms = score_store(busy, settings, 1, 0, None, expected_build_seconds=0.1)
 
         assert terms.cpu_scale == pytest.approx(0.02)
         assert terms.load_score == pytest.approx(-50.0)
@@ -275,11 +241,11 @@ class TestTheExpectedTime:
     def test_a_short_build_barely_feels_the_herd(self) -> None:
         """A burst of 20 trivial probes spread to sg1 once eight sat locally. nixidae/nixidae#1125."""
         store = FakeStore(REMOTE)
-        store.cpu_util = SimpleNamespace(utilization=0.0)
+        store.cpu_util = cpu(0.0)
         settings = StoreRankingSettings(cpu_reference_seconds=5.0)
 
-        alone = score_store(cast("Any", store), settings, 0, 0, None, expected_build_seconds=0.1)
-        herded = score_store(cast("Any", store), settings, 0, 1, None, expected_build_seconds=0.1)
+        alone = score_store(store, settings, 0, 0, None, expected_build_seconds=0.1)
+        herded = score_store(store, settings, 0, 1, None, expected_build_seconds=0.1)
 
         assert herded.herd_points == pytest.approx(-100.0)
         assert herded.final_score - alone.final_score == pytest.approx(-2.0)
@@ -292,14 +258,14 @@ class TestPerCoreLoad:
     @staticmethod
     def _store(cores: float | None) -> FakeStore:
         store = FakeStore(REMOTE)
-        store.cpu_util = SimpleNamespace(utilization=0.0)
-        store.monitor = cast("Any", SimpleNamespace(health=SimpleNamespace(cores=cores, psi=None)))
+        store.cpu_util = cpu(0.0)
+        store.monitor = FakeMonitor(SystemHealth(cores=cores))
         return store
 
     def test_a_large_store_takes_a_build_per_core(self) -> None:
         settings = StoreRankingSettings(per_core_load=True)
 
-        terms = score_store(cast("Any", self._store(16.0)), settings, 8, 4, None)
+        terms = score_store(self._store(16.0), settings, 8, 4, None)
 
         assert terms.concurrency_points == pytest.approx(-50.0)
         assert terms.herd_points == pytest.approx(-25.0)
@@ -308,7 +274,7 @@ class TestPerCoreLoad:
     def test_a_store_of_unknown_cores_keeps_the_fixed_prices(self) -> None:
         settings = StoreRankingSettings(per_core_load=True)
 
-        terms = score_store(cast("Any", self._store(None)), settings, 1, 1, None)
+        terms = score_store(self._store(None), settings, 1, 1, None)
 
         assert terms.concurrency_points == pytest.approx(-settings.concurrency_penalty)
         assert terms.herd_points == pytest.approx(-settings.thundering_herd_penalty)
@@ -320,9 +286,9 @@ class TestLocalWinsTies:
         local = FakeStore(LOCAL_STORE_ID)
         stores = {LOCAL_STORE_ID: local, REMOTE: FakeStore(REMOTE)}
         settings = StoreRankingSettings(local_wins_ties=local_wins_ties)
-        ranker = TelemetryStoreRanker(cast("Any", SimpleNamespace(ranking=settings)))
-        allocator = BuildAllocator(cast("Any", stores), cast("Any", local), ranker)
-        return [candidate.store_id for candidate in allocator.rank_stores(cast("Any", FakeBuild()), {})]
+        ranker = TelemetryStoreRanker(settings)
+        allocator = BuildAllocator(stores, local, ranker)
+        return [candidate.store_id for candidate in allocator.rank_stores(FakeBuild(), {})]
 
     def test_a_remote_wins_a_tie_by_default(self) -> None:
         assert self._rank(local_wins_ties=False) == [REMOTE, LOCAL_STORE_ID]
@@ -425,7 +391,7 @@ class AssignScheduler:
     def __init__(self, queue: BuildQueue) -> None:
         self.queue = queue
         self.local_store = LocalStore(LOCAL_STORE_ID)
-        remote = RankedStore(REMOTE, 0.0, cast("Any", FakeStore(REMOTE)))
+        remote = RankedStore(REMOTE, 0.0, FakeStore(REMOTE))
         self.allocator = SimpleNamespace(rank_stores=lambda *_a, **_k: [remote])
         self.ranker = SimpleNamespace(settings=StoreRankingSettings())
         self.rng: FixedRng | None = None
@@ -539,7 +505,7 @@ class OnePressuredPoolScheduler(AssignScheduler):
 
     def __init__(self, queue: BuildQueue, blocked: BuildId) -> None:
         super().__init__(queue)
-        remote = RankedStore(REMOTE, 0.0, cast("Any", FakeStore(REMOTE)))
+        remote = RankedStore(REMOTE, 0.0, FakeStore(REMOTE))
         self.allocator = SimpleNamespace(
             rank_stores=lambda build, *_a, **_k: [] if build.build_id == blocked else [remote]
         )
@@ -613,8 +579,8 @@ class TwoRemotesScheduler(AssignScheduler):
     def __init__(self, queue: BuildQueue) -> None:
         super().__init__(queue)
         ranked = [
-            RankedStore(REMOTE, 0.0, cast("Any", FakeStore(REMOTE))),
-            RankedStore(OTHER, 0.0, cast("Any", FakeStore(OTHER))),
+            RankedStore(REMOTE, 0.0, FakeStore(REMOTE)),
+            RankedStore(OTHER, 0.0, FakeStore(OTHER)),
         ]
         self.allocator = SimpleNamespace(rank_stores=lambda *_a, **_k: list(ranked))
 
@@ -635,13 +601,13 @@ async def test_a_retry_goes_to_a_store_the_build_has_not_failed_on() -> None:
 GIB = 1024 * 1024 * 1024
 
 
-def _with_memory(store_id: StoreId, available: int | None) -> RankedStore:
+def _with_memory(store_id: StoreId, available: int | None) -> RankedStore[FakeStore]:
     """A candidate whose monitor reports *available* bytes, or no monitor at all."""
     store = FakeStore(store_id)
     if available is not None:
         meminfo = MemInfo(mem_total=64 * GIB // 1024, mem_available=available // 1024)
-        store.monitor = cast("Any", SimpleNamespace(health=SimpleNamespace(meminfo=meminfo)))
-    return RankedStore(store_id, 0.0, cast("Any", store))
+        store.monitor = FakeMonitor(SystemHealth(meminfo=meminfo))
+    return RankedStore(store_id, 0.0, store)
 
 
 class TestTheMemoryFit:
