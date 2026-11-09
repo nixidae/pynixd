@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 import pytest
 import structlog
 
-from pynixd.store import LocalSocketStore
+from nix_daemon_protocol.ids import StoreId
+from pynixd import Server
+from pynixd.store import LocalDBStore, LocalSocketStore
+from tests._conftest.constants import SESSION_NIX_CONFIG
 from tests._conftest.nix_config import for_ca_derivations, for_dynamic_derivations
 from tests.conftest import (
     CLIENT_BIN,
@@ -22,9 +26,10 @@ from tests.conftest import (
 )
 
 if TYPE_CHECKING:
-    import pyinstrument
+    from collections.abc import AsyncIterator
+    from pathlib import Path
 
-    from pynixd import Server
+    import pyinstrument
 
 log = structlog.get_logger(__name__)
 
@@ -537,6 +542,63 @@ async def test_dynamic_drv_trampoline(profiler: pyinstrument.Profiler, dyn_env: 
     out_path = stdout.strip()
     assert out_path.startswith("/nix/store/"), f"Unexpected output: {out_path}"
     assert not out_path.endswith(".drv"), f"Expected non-.drv output from trampoline, got: {out_path}"
+
+
+@asynccontextmanager
+async def _writes_on_the_daemon(tmp_path: Path) -> AsyncIterator[str]:
+    """A server whose local store sends its writes to the nix-daemon, as a deployment does by default."""
+    store = tmp_path / "store"
+    socket = tmp_path / "pynixd.sock"
+    local = LocalDBStore(
+        make_test_spec(
+            store_id="local", store_path=store, nix_config=SESSION_NIX_CONFIG, no_probe=True, pynixd_writes=False
+        )
+    )
+    async with Server(stores={StoreId("local"): local}, unix_path=socket, ssh_port=None, http_port=None):
+        yield f"unix://{socket}?root={store}"
+
+
+@pytest.mark.ca_derivations
+@pytest.mark.parametrize("writes", ["pynixd", "daemon"])
+@pytest.mark.parametrize("target", ["nested", "wrapper"])
+@pytest.mark.parametrize("also_the_output", [False, True], ids=["drv", "drv-and-output"])
+async def test_dynamic_drv_after_its_produced_drv_is_deleted(
+    dyn_env: tuple[Server, str], tmp_path: Path, writes: str, target: str, also_the_output: bool
+) -> None:
+    """The build trace still names a produced `.drv` that a collection removed: Nix builds the producer again.
+
+    nixidae/nixidae#1245.
+    """
+    if writes == "daemon":
+        async with _writes_on_the_daemon(tmp_path) as uri:
+            await _build_after_the_delete(uri, target=target, also_the_output=also_the_output)
+    else:
+        await _build_after_the_delete(dyn_env[1], target=target, also_the_output=also_the_output)
+
+
+async def _build_after_the_delete(uri: str, *, target: str, also_the_output: bool) -> None:
+    store = ["--option", "builders", "", "--store", uri]
+    rc, drv_out, _, _ = await run_subproc(
+        [str(CLIENT_BIN), "eval", *store, "--impure", "--file", str(TEST_NIX), "dyn.producingDrv.drvPath", "--raw"],
+        nix_config=DYN_NIX_CONFIG,
+    )
+    assert rc == 0, "drvPath eval failed"
+    drv_path = drv_out.strip()
+    build = [str(CLIENT_BIN), "build", *store, "--no-link", "--print-out-paths"]
+    _, produced, _, _ = await run_subproc([*build, f"{drv_path}^out"], nix_config=DYN_NIX_CONFIG, expected_retcode=0)
+    produced = produced.strip()
+    assert produced.endswith(".drv"), produced
+    _, inner, _, _ = await run_subproc([*build, f"{drv_path}^out^out"], nix_config=DYN_NIX_CONFIG, expected_retcode=0)
+    doomed = [produced, inner.strip()] if also_the_output else [produced]
+    rc, _, _, deleted = await run_subproc(
+        [str(CLIENT_BIN), "store", "delete", *store, *doomed], nix_config=DYN_NIX_CONFIG
+    )
+    assert rc == 0, f"could not delete {doomed}:\n{deleted}"
+
+    again = [f"{drv_path}^out^out"] if target == "nested" else ["--impure", "--file", str(TEST_NIX), "dyn.wrapper"]
+    rc, stdout, _, stdboth = await run_subproc([*build, *again], nix_config=DYN_NIX_CONFIG)
+    assert rc == 0, f"the build after the delete failed:\n{stdboth}"
+    assert not stdout.strip().endswith(".drv"), stdout
 
 
 DYN_NIX_CONFIG = for_dynamic_derivations(
