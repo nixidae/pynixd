@@ -31,7 +31,7 @@ from difflib import SequenceMatcher
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Mapping, Set
 
     from .decode import Handshake, Operation, Session
 
@@ -118,6 +118,16 @@ EXEMPTIONS: tuple[Exemption, ...] = (
             "A log line that starts with `pynixd: ` is a note of pynixd about itself, "
             "and the daemon writes none. nixidae's `CLAUDE.md` (pynixd) asks for these: "
             "a cached answer says so, and a build says where it goes."
+        ),
+    ),
+    Exemption(
+        field="logs.collect_garbage_order",
+        reason=(
+            "`collectGarbage` walks the store directory in `readdir` order (`gc.cc:727`), and each "
+            "closure in `topoSortPaths` order (`gc.cc:679`). The two runs have two store directories, and "
+            "a filesystem lists each by its own history: ext4 by reused slots, tmpfs by creation. Any "
+            "order that deletes a referrer before each path it references is correct, so the comparison "
+            "accepts one when the caller gives the references. Every other line keeps its order."
         ),
     ),
     Exemption(
@@ -294,7 +304,36 @@ def _readable_logs(logs: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(line for line in logs if not line.startswith(PYNIXD_NOTE) and STALE_TEMP_ROOT not in line)
 
 
-def _compare_logs(where: str, control: Operation, candidate: Operation) -> list[Difference]:
+DELETING = "deleting '"
+"""The start of a line that `collectGarbage` writes for each path it deletes (`gc.cc:558`)."""
+
+
+def _deleted(line: str) -> str | None:
+    if line.startswith(DELETING) and line.endswith("'\n"):
+        return line[len(DELETING) : -2]
+    return None
+
+
+def _deletes_in_a_valid_order(
+    control: tuple[str, ...], candidate: tuple[str, ...], references: Mapping[str, Set[str]]
+) -> bool:
+    """The candidate deletes a referrer before each path it references, and its other lines keep their order."""
+    if [line for line in control if _deleted(line) is None] != [line for line in candidate if _deleted(line) is None]:
+        return False
+    deleted: set[str] = set()
+    for line in candidate:
+        path = _deleted(line)
+        if path is None:
+            continue
+        if (references.get(path, set()) - {path}) & deleted:
+            return False
+        deleted.add(path)
+    return True
+
+
+def _compare_logs(
+    where: str, control: Operation, candidate: Operation, references: Mapping[str, Set[str]] | None = None
+) -> list[Difference]:
     """The log messages of one operation, line by line.
 
     `nix-daemon` writes these as `STDERR_NEXT`, and a person reads them. A
@@ -309,11 +348,20 @@ def _compare_logs(where: str, control: Operation, candidate: Operation) -> list[
     only_control = [line for line in one if line not in two]
     only_candidate = [line for line in two if line not in one]
     if not only_control and not only_candidate:
+        if (
+            control.name == "CollectGarbage"
+            and references is not None
+            and sorted(one) == sorted(two)
+            and _deletes_in_a_valid_order(one, two, references)
+        ):
+            return []
         return [Difference(f"{where} logs (a different order)", repr(one), repr(two))]
     return [Difference(f"{where} logs", repr(only_control), repr(only_candidate))]
 
 
-def _compare_operation(control: Operation, candidate: Operation) -> list[Difference]:
+def _compare_operation(
+    control: Operation, candidate: Operation, references: Mapping[str, Set[str]] | None = None
+) -> list[Difference]:
     where = f"operation {control.index} {control.name}"
     found: list[Difference] = []
 
@@ -334,7 +382,7 @@ def _compare_operation(control: Operation, candidate: Operation) -> list[Differe
         found.extend(_compare_response(where, control, candidate))
     if (control.error is None) != (candidate.error is None):
         found.append(Difference(f"{where} error", repr(control.error), repr(candidate.error)))
-    found.extend(_compare_logs(where, control, candidate))
+    found.extend(_compare_logs(where, control, candidate, references))
     return found
 
 
@@ -392,8 +440,12 @@ def _one_sided(run: list[tuple[Operation, str]]) -> Difference:
     return Difference(f"{where}: the client sent these to the {role} alone", sent, silent)
 
 
-def compare(control: Session, candidate: Session) -> list[Difference]:
-    """Every difference between two recordings of one workload."""
+def compare(control: Session, candidate: Session, references: Mapping[str, Set[str]] | None = None) -> list[Difference]:
+    """Every difference between two recordings of one workload.
+
+    *references* maps a store path to the paths it references. With it, a `CollectGarbage` that deletes
+    in another valid order agrees (`EXEMPTIONS`: `logs.collect_garbage_order`).
+    """
     found: list[Difference] = []
 
     for session, role in ((control, "daemon"), (candidate, "pynixd")):
@@ -424,7 +476,7 @@ def compare(control: Session, candidate: Session) -> list[Difference]:
             found.append(_one_sided(run))
             run = []
         if one is not None and two is not None:
-            found.extend(_compare_operation(one, two))
+            found.extend(_compare_operation(one, two, references))
     if run:
         found.append(_one_sided(run))
 

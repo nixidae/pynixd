@@ -64,6 +64,7 @@ import json
 import os
 import shutil
 import signal
+import sqlite3
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -516,8 +517,28 @@ async def _impure(run: Runner, root: Path, work: Path) -> None:
         await run([str(NIX), "build", "--no-link", "--json", *IMPURE_FLAGS, "--file", str(recipe), attribute])
 
 
-async def _record(role: str, root: Path, workload: Workload) -> Path:
-    """Run the workload once, and answer the directory of the recording."""
+def _references(db: Path) -> dict[str, set[str]]:
+    """Each valid path of the store database at *db*, and the paths it references (`schema.sql:13`)."""
+    if not db.exists():
+        return {}
+    with contextlib.closing(sqlite3.connect(f"file:{db}?mode=ro", uri=True)) as conn:
+        rows = conn.execute(
+            "SELECT a.path, b.path FROM Refs JOIN ValidPaths a ON a.id = Refs.referrer"
+            " JOIN ValidPaths b ON b.id = Refs.reference"
+        ).fetchall()
+        paths = conn.execute("SELECT path FROM ValidPaths").fetchall()
+    graph: dict[str, set[str]] = {path: set() for (path,) in paths}
+    for referrer, reference in rows:
+        graph[referrer].add(reference)
+    return graph
+
+
+async def _record(role: str, root: Path, workload: Workload, graph: dict[str, set[str]]) -> Path:
+    """Run the workload once, and answer the directory of the recording.
+
+    *graph* gains the references of every path the store held after each command. A path's references
+    never change, and both runs make the same paths, so one graph serves both recordings.
+    """
     work = BASE / role
     out = BASE / f"rec-{role}"
     for path in (work, out, root / "store", root / "var/nix"):
@@ -557,6 +578,9 @@ async def _record(role: str, root: Path, workload: Workload) -> Path:
             # A command may fail, and a failure is a fine thing to record: the
             # two daemons must fail the same way.
             done = await anyio.run_process(words, env=client, check=False)
+            known = await anyio.to_thread.run_sync(_references, root / "var/nix/db/db.sqlite")
+            for path, references in known.items():
+                graph.setdefault(path, set()).update(references)
             lines = done.stdout.decode(errors="replace").strip().splitlines()
             return lines[-1] if lines else ""
 
@@ -646,11 +670,12 @@ async def test_the_two_daemons_answer_the_same_bytes(workload: Workload) -> None
     key = (await anyio.run_process([str(NIX), "key", "generate-secret", "--key-name", "probe"])).stdout.decode()
 
     recordings: dict[str, Path] = {}
+    graph: dict[str, set[str]] = {}
     for role in ("control", "pynixd"):
         shutil.rmtree(root, ignore_errors=True)
         await anyio.Path(root).mkdir(parents=True)
         await anyio.Path(root / "probe.key").write_text(key.strip())
-        recordings[role] = await _record(role, root, workload)
+        recordings[role] = await _record(role, root, workload, graph)
 
     control = sorted(p.relative_to(recordings["control"]) for p in recordings["control"].rglob("conn-*.wire"))
     candidate = sorted(p.relative_to(recordings["pynixd"]) for p in recordings["pynixd"].rglob("conn-*.wire"))
@@ -662,7 +687,7 @@ async def test_the_two_daemons_answer_the_same_bytes(workload: Workload) -> None
         two = await decode(recordings["pynixd"] / name)
         assert one.problem is None, one.problem
         assert two.problem is None, two.problem
-        differences = compare(one, two)
+        differences = compare(one, two, graph)
         assert differences == [], f"{name}\n{report(differences)}"
 
 

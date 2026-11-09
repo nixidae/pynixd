@@ -8,6 +8,7 @@ gate. Issue nixidae/nixidae#214.
 
 from __future__ import annotations
 
+import dataclasses
 import shutil
 import tempfile
 from pathlib import Path
@@ -37,6 +38,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from nix_daemon_protocol.wire_ops import WireRequest
+    from nix_daemon_protocol.wirelog.decode import Session
 
 VERSION = proto(1, 38)
 PATH_A = StorePath("/nix/store/00000000000000000000000000000000-a")
@@ -288,6 +290,48 @@ async def test_the_same_lines_in_another_order_say_so(workdir: Path) -> None:
 
     assert len(differences) == 1
     assert differences[0].where == "operation 0 IsValidPath logs (a different order)"
+
+
+_TOP = "/s/aaaa-top"
+_MID = "/s/bbbb-mid"
+_LEAF = "/s/cccc-leaf"
+_OTHER = "/s/dddd-other"
+_GRAPH: dict[str, set[str]] = {_TOP: {_MID}, _MID: {_LEAF}, _LEAF: set(), _OTHER: set()}
+
+
+async def _gc(path: Path, *deleted: str) -> Session:
+    """A `CollectGarbage` that deletes *deleted* in that order, between Nix's first and last lines."""
+    lines = ("deleting garbage...\n", *(f"deleting '{p}'\n" for p in deleted), "deleting unused links...\n")
+    session = await decode(await build_tape(path, logs=lines))
+    session.operations = [dataclasses.replace(op, name="CollectGarbage") for op in session.operations]
+    return session
+
+
+@pytest.mark.anyio
+async def test_a_collector_that_deletes_in_another_topological_order_agrees(workdir: Path) -> None:
+    """`readdir` order differs between two store directories (`gc.cc:727`); a referrer still goes first."""
+    control = await _gc(workdir / "a.wire", _OTHER, _TOP, _MID, _LEAF)
+    candidate = await _gc(workdir / "b.wire", _TOP, _MID, _OTHER, _LEAF)
+
+    assert compare(control, candidate, _GRAPH) == []
+
+
+@pytest.mark.anyio
+async def test_a_collector_that_deletes_a_reference_before_its_referrer_differs(workdir: Path) -> None:
+    control = await _gc(workdir / "a.wire", _TOP, _MID, _LEAF)
+    candidate = await _gc(workdir / "b.wire", _TOP, _LEAF, _MID)
+
+    differences = compare(control, candidate, _GRAPH)
+
+    assert [d.where for d in differences] == ["operation 0 CollectGarbage logs (a different order)"]
+
+
+@pytest.mark.anyio
+async def test_a_collector_order_without_references_is_compared_strictly(workdir: Path) -> None:
+    control = await _gc(workdir / "a.wire", _OTHER, _TOP)
+    candidate = await _gc(workdir / "b.wire", _TOP, _OTHER)
+
+    assert [d.where for d in compare(control, candidate)] == ["operation 0 CollectGarbage logs (a different order)"]
 
 
 @pytest.mark.anyio
