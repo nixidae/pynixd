@@ -123,10 +123,7 @@ async def run_subproc(
         # `nix_config.host_daemon_substituters`: named on a machine without
         # that socket, it is a substituter that answers every query with
         # `cannot connect to socket`. Issue #47.
-        default_config = {
-            "substituters": " ".join(("https://nixkube.cachix.org", *host_daemon_substituters())),
-            "trusted-public-keys": "nixkube.cachix.org-1:H8UE0jlI9pxHexK/NhDmEoLDarJXp1WTymQrsajlh7M=",
-        }
+        default_config = {"substituters": " ".join(host_daemon_substituters())}
         merged = default_config | nix_config
         config_str = "\n".join(f"{k} = {v}" for k, v in merged.items())
     else:

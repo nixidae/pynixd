@@ -29,7 +29,7 @@ from pynixd.serde import (
 from pynixd.store import LocalSocketStore
 from pynixd_store.drv_parser import read_drv_file, to_basic_derivation
 from pynixd_store.store_path import DrvOutput, StorePath
-from tests._conftest.nix_config import for_dynamic_derivations
+from tests._conftest.nix_config import for_dynamic_derivations, host_daemon_substituters
 from tests.conftest import (
     NIX_BIN,
     STORE_PREFIX,
@@ -40,11 +40,7 @@ from tests.conftest import (
 
 DYN_NIX = Path(__file__).resolve().parent.parent / "nix"
 DYN_NIX_CONFIG = for_dynamic_derivations(
-    substituters=(
-        "https://nixkube.cachix.org/",
-        "unix:///nix/var/nix/daemon-socket/socket?root=/",
-    ),
-    trusted_public_keys=("nixkube.cachix.org-1:H8UE0jlI9pxHexK/NhDmEoLDarJXp1WTymQrsajlh7M=",),
+    substituters=host_daemon_substituters(),
 )
 
 

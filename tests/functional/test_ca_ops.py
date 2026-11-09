@@ -13,7 +13,7 @@ from nix_daemon_protocol.ids import StoreId
 from pynixd import Server
 from pynixd.store import LocalDBStore, LocalSocketStore
 from tests._conftest.constants import SESSION_NIX_CONFIG
-from tests._conftest.nix_config import for_ca_derivations, for_dynamic_derivations
+from tests._conftest.nix_config import for_ca_derivations, for_dynamic_derivations, host_daemon_substituters
 from tests.conftest import (
     CLIENT_BIN,
     SESSION_STORE_PREFIX,
@@ -35,11 +35,7 @@ log = structlog.get_logger(__name__)
 
 
 CA_NIX_CONFIG = for_ca_derivations(
-    substituters=(
-        "https://nixkube.cachix.org/",
-        "unix:///nix/var/nix/daemon-socket/socket?root=/",
-    ),
-    trusted_public_keys=("nixkube.cachix.org-1:H8UE0jlI9pxHexK/NhDmEoLDarJXp1WTymQrsajlh7M=",),
+    substituters=host_daemon_substituters(),
 )
 
 
@@ -602,11 +598,7 @@ async def _build_after_the_delete(uri: str, *, target: str, also_the_output: boo
 
 
 DYN_NIX_CONFIG = for_dynamic_derivations(
-    substituters=(
-        "https://nixkube.cachix.org/",
-        "unix:///nix/var/nix/daemon-socket/socket?root=/",
-    ),
-    trusted_public_keys=("nixkube.cachix.org-1:H8UE0jlI9pxHexK/NhDmEoLDarJXp1WTymQrsajlh7M=",),
+    substituters=host_daemon_substituters(),
 )
 
 

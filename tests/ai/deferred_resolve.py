@@ -36,7 +36,7 @@ from pynixd.store import LocalSocketStore
 from pynixd.store.transfer import stream_paths_store_to_store
 from pynixd_store.drv_parser import Derivation, read_drv_file
 from pynixd_store.store_path import StorePath
-from tests._conftest.nix_config import for_ca_derivations
+from tests._conftest.nix_config import for_ca_derivations, host_daemon_substituters
 from tests.conftest import (
     NIX_BIN,
     STORE_PREFIX,
@@ -47,11 +47,7 @@ from tests.conftest import (
 
 CA_NIX = Path(__file__).resolve().parent.parent / "nix"
 CA_NIX_CONFIG = for_ca_derivations(
-    substituters=(
-        "https://nixkube.cachix.org/",
-        "unix:///nix/var/nix/daemon-socket/socket?root=/",
-    ),
-    trusted_public_keys=("nixkube.cachix.org-1:H8UE0jlI9pxHexK/NhDmEoLDarJXp1WTymQrsajlh7M=",),
+    substituters=host_daemon_substituters(),
 )
 STORE_DIR = "/nix/store"
 

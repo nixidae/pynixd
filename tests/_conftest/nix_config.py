@@ -30,11 +30,9 @@ def host_daemon_substituters() -> tuple[str, ...]:
     return (HOST_DAEMON_SUBSTITUTER,) if HOST_DAEMON_SOCKET.exists() else ()
 
 
-DEFAULT_SUBSTITUTERS = (
-    "https://nixkube.cachix.org/",
-    *host_daemon_substituters(),
-)
-DEFAULT_TRUSTED_PUBLIC_KEYS = ("nixkube.cachix.org-1:H8UE0jlI9pxHexK/NhDmEoLDarJXp1WTymQrsajlh7M=",)
+DEFAULT_SUBSTITUTERS = host_daemon_substituters()
+"""No network cache: a test guest has no network, and each query to one waits out its timeout. nixidae/nixidae#1119."""
+DEFAULT_TRUSTED_PUBLIC_KEYS: tuple[str, ...] = ()
 
 
 def for_test_store(
