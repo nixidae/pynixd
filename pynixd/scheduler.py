@@ -49,6 +49,7 @@ from .allocator import (
     TelemetryStoreRanker,
     explore_store,
     fit_memory,
+    outside_the_session,
     pick_store,
     reserved_memory,
 )
@@ -449,6 +450,11 @@ class Scheduler:
             peak = await self.local_store.db.expected_peak_memory(identity)
         t_hint = time.monotonic()
 
+        builders = None
+        value = options.overrides.get("builders") if options is not None else None
+        if value and self.ctx.session_builders is not None:
+            builders = await self.ctx.session_builders.stores_for(value)
+
         res = await self.queue.enqueue(
             request,
             expected_duration=hint,
@@ -459,6 +465,7 @@ class Scheduler:
             options=options,
             delegated=delegated,
             askers=askers,
+            builders=builders,
         )
         queued = self.queue.by_id.get(res[0])
         if queued is not None and queued.expected_peak_bytes is None:
@@ -827,7 +834,7 @@ class Scheduler:
             # All compatible stores are busy, or this build can't be placed
             all_compatible = [
                 s
-                for s in self.stores.values()
+                for s in self._stores_of(build)
                 if s.supports_derivation(build.request.derivation.platform, build_features)
             ]
             # A builder of a dynamic platform can still register, and its
@@ -835,7 +842,7 @@ class Scheduler:
             if (
                 all_compatible
                 and all(build.is_blacklisted(s.store_id) for s in all_compatible)
-                and not self._dynamic_supports(build.request.derivation.platform, build_features)
+                and not self._dynamic_supports_build(build, build_features)
             ):
                 notes.end(Outcome.FAILED, "every capable store failed it too often")
                 await self._fail_all_compatible_blacklisted(build, build_features, all_compatible)
@@ -1164,18 +1171,26 @@ class Scheduler:
         log.debug("request_waits_for_a_local_slot", request_id=int(request_id), running=running, max_build_jobs=jobs)
         return False
 
+    def _stores_of(self, build: QueuedBuild) -> list[DaemonStore]:
+        """The stores *build* may use: the local store, and the remote ones `outside_the_session` keeps."""
+        local_id = self.local_store.store_id
+        return [s for s in self.stores.values() if s.store_id == local_id or outside_the_session(s, build) is None]
+
+    def _dynamic_supports_build(self, build: QueuedBuild, build_features: set[str] | None) -> bool:
+        """`_dynamic_supports`, for a build that may use pynixd's own stores; a client's builders register none."""
+        return build.builders is None and self._dynamic_supports(build.request.derivation.platform, build_features)
+
     def _has_compatible_store(
         self,
         build: QueuedBuild,
         build_features: set[str] | None,
     ) -> bool:
         """Check if any live or dynamic store could ever support this build."""
-        all_stores = list(self.stores.values())
         return any(
             s.store_id != self.local_store.store_id
             and s.supports_derivation(build.request.derivation.platform, build_features)
-            for s in all_stores
-        ) or self._dynamic_supports(build.request.derivation.platform, build_features)
+            for s in self._stores_of(build)
+        ) or self._dynamic_supports_build(build, build_features)
 
     async def _fail_no_compatible_store(
         self,
@@ -1194,7 +1209,7 @@ class Scheduler:
         """
         platform = build.request.derivation.platform
         offered: dict[str, set[str]] = {}
-        for store in self.stores.values():
+        for store in self._stores_of(build):
             for system, features in (store._feature_matrix or {}).items():
                 offered.setdefault(system, set()).update(features)
         required = build_features or set()
@@ -1515,6 +1530,7 @@ class Scheduler:
             other
             for other in self.stores.values()
             if other.store_id != store.store_id
+            and (other.store_id == self.local_store.store_id or outside_the_session(other, build) is None)
             and other.store_id not in build.store_failures
             and not (other.store_id == self.local_store.store_id and local_forbidden)
             and other.supports_derivation(platform, features)

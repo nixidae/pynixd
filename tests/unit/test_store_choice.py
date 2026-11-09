@@ -50,6 +50,7 @@ class FakeStore:
         self.draining = False
         self.no_schedule = False
         self.last_resort = False
+        self.session_only = False
         self.disk_full_until = 0.0
         self.daemon_client = self
 
@@ -60,6 +61,7 @@ class FakeStore:
 
 class FakeBuild:
     request = SimpleNamespace(derivation=BasicDerivation(platform="x86_64-linux", builder="/bin/sh"))
+    builders = None
 
     @staticmethod
     def is_blacklisted(store_id: StoreId) -> bool:
@@ -435,6 +437,11 @@ class AssignScheduler:
     _trace_decision = Scheduler._trace_decision  # noqa: SLF001 -- a trace with no database returns at once
     trace = PlacementTrace(None, PlacementTraceSettings())
     _client_forbids_local = Scheduler._client_forbids_local  # noqa: SLF001 -- part of the assignment
+    _stores_of = Scheduler._stores_of  # noqa: SLF001 -- part of the assignment
+    _dynamic_supports_build = Scheduler._dynamic_supports_build  # noqa: SLF001 -- part of the assignment
+
+    def _dynamic_supports(self, *_args: Any) -> bool:
+        return False
 
     def _has_compatible_store(self, *_args: Any) -> bool:
         return True

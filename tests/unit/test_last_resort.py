@@ -35,6 +35,7 @@ class Store:
         self.is_healthy = True
         self.draining = False
         self.no_schedule = False
+        self.session_only = False
 
     def supports_derivation(self, platform: str, features: set[str]) -> bool:
         del features
@@ -48,6 +49,7 @@ def _rank(platform: str, *, local_free: int = 100 * GIB, failed_on: set[StoreId]
     build = SimpleNamespace(
         request=SimpleNamespace(derivation=BasicDerivation(platform=platform, builder="/bin/sh")),
         is_blacklisted=lambda store_id: store_id in (failed_on or set()),
+        builders=None,
     )
     ranker = TelemetryStoreRanker(cast("Any", SimpleNamespace(ranking=StoreRankingSettings())))
     allocator = BuildAllocator(cast("Any", {LOCAL_STORE_ID: local, DARWIN: darwin}), cast("Any", local), ranker)

@@ -318,6 +318,8 @@ class StoreSpecBase(BaseModel):
     URL's `trusted`, false when absent, as in Nix (`store_url`).
     """
     score_penalty: int = 0
+    mandatory_features: set[str] = Field(default_factory=set)
+    """Features a derivation must require to build here: column 7 of a machines line (`Machine::mandatoryMet`)."""
     last_resort: bool = False
     """Build here only what no other store can: capability, never offload.
 

@@ -133,6 +133,11 @@ class QueuedBuild:
         """What this build is expected to cost on each store, by phase."""
         self.placement: PlacementDecision | None = None
         """The decision that started the running attempt, for the trace."""
+        self.builders: frozenset[StoreId] | None = None
+        """The stores of the client's `builders`, the only remote stores this build may use; `None` is pynixd's own.
+
+        The first client to ask decides, as for `options`.
+        """
         self.last_traced: tuple[tuple[object, ...], float] | None = None
         """The key of the last decision traced for this build, and when."""
         self.last_output_at: float | None = None
@@ -599,6 +604,7 @@ class BuildQueue:
         options: SetOptionsRequest | None = None,
         delegated: bool = False,
         askers: Sequence[ClientConn] = (),
+        builders: frozenset[StoreId] | None = None,
     ) -> tuple[BuildId, Answer[BuildDerivationResponse]]:
         """Add a build to the queue (deduplicates if already present).
 
@@ -672,6 +678,7 @@ class BuildQueue:
                 options=options,
             )
             build.from_goal_path = from_goal_path
+            build.builders = builders
             build.askers.update(askers)
             if from_goal_path and goal_request_id is not None:
                 self._hold_locked(build, goal_request_id)

@@ -36,6 +36,7 @@ def test_a_machine_fault_is_told_from_a_build_error(status: BuildResultStatus, m
 class Store:
     def __init__(self, store_id: str) -> None:
         self.store_id = StoreId(store_id)
+        self.session_only = False
 
     def supports_derivation(self, *_args: Any) -> bool:
         return True
@@ -52,6 +53,7 @@ def _build(failed: dict[str, int]) -> Any:
     return SimpleNamespace(
         request=SimpleNamespace(derivation=BasicDerivation(platform="x86_64-linux", builder="/bin/sh")),
         store_failures={StoreId(k): v for k, v in failed.items()},
+        builders=None,
     )
 
 

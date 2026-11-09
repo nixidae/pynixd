@@ -20,6 +20,7 @@ from pynixd.serde import BasicDerivation, BuildResultStatus
 class Store:
     def __init__(self, store_id: str) -> None:
         self.store_id = StoreId(store_id)
+        self.session_only = False
 
     def supports_derivation(self, *_args: Any) -> bool:
         return True
@@ -65,6 +66,7 @@ def _build() -> Any:
         request=SimpleNamespace(derivation=BasicDerivation(platform="x86_64-linux", builder="/bin/sh")),
         store_failures={},
         options=None,
+        builders=None,
         post_log_and_fanout=post,
     )
 

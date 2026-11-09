@@ -73,6 +73,7 @@ def _candidate(store_id: str, free: int | None) -> Any:
         draining=False,
         no_schedule=False,
         last_resort=False,
+        session_only=False,
         supports_derivation=lambda *_a: True,
     )
     return store
@@ -85,6 +86,7 @@ def test_the_allocator_skips_a_full_store() -> None:
     build = SimpleNamespace(
         request=SimpleNamespace(derivation=BasicDerivation(platform="x86_64-linux", builder="/bin/sh")),
         is_blacklisted=lambda _store_id: False,
+        builders=None,
     )
 
     ranked = BuildAllocator(cast("Any", stores), local, ranker).rank_stores(cast("Any", build), {})

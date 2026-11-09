@@ -79,6 +79,8 @@ class Store(ABC):
         self.want_mass_query = False
         """Nix's `want-mass-query`: false on every store, and a binary cache reads it from `nix-cache-info`."""
         self.no_schedule = spec.no_schedule
+        self.session_only = False
+        """A store of a client's `builders`: only that client's builds go here (`pynixd/session_builders.py`)."""
         self.reference_key: object | None = spec.reference_key()
         """The key of the substituter URL this store stands for: `StoreSpecBase.reference_key`."""
         self.gc_defer = spec.gc_defer

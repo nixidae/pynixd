@@ -33,6 +33,7 @@ from .liveness_watch import DirtyFlag, StableRootsWatch
 from .recursive import restricted_server
 from .scheduler import Scheduler
 from .serde.protocol import PynixdGCAction
+from .session_builders import SessionBuilders
 from .state import upstream_in_flight
 from .store import LocalDBStore, LocalStore, Store
 from .store_url import reference_key, substituter_spec
@@ -195,6 +196,7 @@ class Server:
         )
 
         self.ctx.scheduler = Scheduler(self.ctx)
+        self.ctx.session_builders = SessionBuilders(settings, self.ctx.local_store.nix_bin, self.add_store)
         sessions = self.ctx.sessions
         metrics.watch_client_ops(lambda: [p.current_op[1] for p in sessions.proxies() if p.current_op is not None])
 

@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
     from .config import PynixdSettings
     from .scheduler import Scheduler
+    from .session_builders import SessionBuilders
     from .store.base import Store
     from .store.daemon import DaemonStore
     from .store.local_daemon import LocalStore
@@ -57,6 +58,8 @@ class PynixdContext:
     _stores: dict[StoreId, Store]
     db: LocalStoreDB | None = None
     scheduler: Scheduler | None = None
+    session_builders: SessionBuilders | None = None
+    """The stores of trusted clients' `builders`; `Server` sets it."""
     trust: TrustPolicy = field(default_factory=TrustPolicy)
     """Who may connect over the Unix listener, and who is trusted.
 

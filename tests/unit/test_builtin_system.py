@@ -23,7 +23,7 @@ MISSING = StorePath("/nix/store/00000000000000000000000000000001-probe")
 
 
 def _supports(features: set[str]) -> bool:
-    store = SimpleNamespace(_feature_matrix={"x86_64-linux": {"kvm", "big-parallel"}})
+    store = SimpleNamespace(_feature_matrix={"x86_64-linux": {"kvm", "big-parallel"}}, mandatory_features=frozenset())
     return DaemonStore.supports_derivation(cast("Any", store), "builtin", features)
 
 

@@ -383,6 +383,13 @@ def _mib(count: int | None) -> int:
     return (count or 0) // MIB
 
 
+def outside_the_session(store: DaemonStore, build: QueuedBuild) -> str | None:
+    """Why remote *store* is not one of the stores *build* may use, or `None` (`pynixd/session_builders.py`)."""
+    if build.builders is not None:
+        return None if store.store_id in build.builders else "not one of the client's builders"
+    return "another client's builder" if store.session_only else None
+
+
 def incapable_reason(store: DaemonStore, build: QueuedBuild, features: set[str]) -> str | None:
     """Why *store* cannot take *build* at all, or `None` when it can."""
     if not store.is_healthy:
@@ -448,7 +455,9 @@ class BuildAllocator:
         settings = getattr(self.ranker, "settings", StoreRankingSettings())
         order = [self.local_store, *remotes] if settings.local_wins_ties else [*remotes, self.local_store]
         for store in order:
-            reason = incapable_reason(store, build, build_features)
+            reason = (None if store is self.local_store else outside_the_session(store, build)) or incapable_reason(
+                store, build, build_features
+            )
             if reason is None:
                 capable.append(store)
             else:
