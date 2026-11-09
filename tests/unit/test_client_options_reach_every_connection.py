@@ -125,6 +125,32 @@ async def test_a_second_client_replaces_the_set() -> None:
 
 
 @pytest.mark.anyio
+async def test_the_client_store_and_builders_stay_with_pynixd() -> None:
+    """NIX-DEFECT (#23) in `pynixd/connection.py`: Lillecarl/nix#412.
+
+    A trusted client's `--store` set in a daemon's worker sends the worker's
+    build hook to that store. With `--store unix://<the daemon>` the hook waited
+    on its own daemon, and `build-remote.sh` hung for 300 s under Nix's daemon.
+    """
+    writer = BytesWriter("upstream")
+    conn = Connection(BytesReader(_last(), identifier="upstream"), writer, "upstream")
+    conn.connected = True
+    conn.version = VERSION
+    options = _options("/hook.sh")
+    options = options.model_copy(
+        update={"overrides": {**options.overrides, "store": "unix:///s", "builders": "/m2 - - 1 1 bar"}}
+    )
+
+    await conn.apply_options(options)
+
+    assert conn.op_log == ["SetOptionsRequest"]
+    assert conn.applied_options == _options("/hook.sh")
+    sent = writer.get_bytes()
+    assert b"unix:///s" not in sent
+    assert b"/m2 - - 1 1 bar" not in sent
+
+
+@pytest.mark.anyio
 async def test_no_option_set_leaves_the_connection_as_it_is() -> None:
     conn = await _connection(1)
 

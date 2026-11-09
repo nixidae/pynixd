@@ -47,6 +47,17 @@ log = structlog.get_logger(__name__)
 
 _LINGER_SECONDS = 0.05
 """How long a streamed message may wait in the writer for more to join it."""
+_KEPT_FROM_THE_DAEMON = frozenset({"store", "builders"})
+"""A client's overrides that pynixd answers itself and never sends to a daemon it uses.
+
+NIX-DEFECT (#23): `ClientSettings::apply` (`daemon.cc:287`) sets a trusted
+client's `store` in the worker, and the worker's build hook opens it. A client
+of `--store unix://<the daemon>` makes the hook a client of that daemon, and the
+hook's worker waits for the database lock of the first worker. `store` names
+the client's view, and the daemon has its own: Lillecarl/nix#412. pynixd sends
+neither: its stores are its own, and it places the client's builds on the
+client's builders itself (`pynixd/session_builders.py`).
+"""
 
 # ── Shared types ────────────────────────────────────────────────────
 
@@ -319,6 +330,9 @@ class Connection:
         It sends nothing when the connection carries the set already, so the
         common case costs one comparison. Issue nixidae/nixidae#231.
         """
+        if options is not None and not _KEPT_FROM_THE_DAEMON.isdisjoint(options.overrides):
+            kept = {k: v for k, v in options.overrides.items() if k not in _KEPT_FROM_THE_DAEMON}
+            options = options.model_copy(update={"overrides": kept})
         if options is None or options == self.applied_options:
             return
         await self.send_request(options)
