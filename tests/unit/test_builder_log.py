@@ -47,6 +47,15 @@ def test_the_builder_lines_make_the_log() -> None:
     assert builder_log(_build(), resp) == b'hi-input1\n\n@nix {"action":"setPhase","phase":"buildPhase"}\ndone\n'
 
 
+def test_a_line_that_is_not_utf8_keeps_its_bytes() -> None:
+    """`test_build_equivalence.py`'s `binary-log`: a gzip header on stderr failed the build with UnicodeEncodeError.
+
+    A log field reads with `surrogateescape`, so the encode takes the same handler back to the builder's bytes.
+    """
+    line = b"\x1f\x8b\x08not-utf8".decode("utf-8", errors="surrogateescape")
+    assert builder_log(_build(), _resp(_line(line))) == b"\x1f\x8b\x08not-utf8\n"
+
+
 def test_a_silent_build_keeps_an_empty_log() -> None:
     assert builder_log(_build({}), _resp()) == b""
 

@@ -174,7 +174,7 @@ def builder_log(build: QueuedBuild, resp: BuildDerivationResponse) -> bytes | No
         elif message.result_type == ResultType.SET_PHASE and first is not None:
             phase = json.dumps({"action": "setPhase", "phase": first}, separators=(",", ":"), ensure_ascii=False)
             lines.append(f"@nix {phase}\n")
-    return "".join(lines).encode()
+    return "".join(lines).encode(errors="surrogateescape")
 
 
 def kept_on_the_builder(build: QueuedBuild) -> str | None:
