@@ -98,6 +98,10 @@ class ClientSubstituters:
             except StoreDirMismatch:
                 # Nix's own refusal (`binary-cache-store.cc:58`): `getDefaultSubstituters` drops the cache
                 # with a warning (`store-registration.cc:88`), so the daemon answers without it too.
+                # NIX-DEFECT (#23): `HttpBinaryCacheStore::init` (`http-binary-cache-store.cc:69`) skips that
+                # check on a hit in the narinfo disk cache, whose row holds the StoreDir unread, so Nix keeps
+                # the cache once any client of `/nix/store` has used it. pynixd checks every time; the
+                # cache's answers are for paths of another store. nixidae/nixidae#1241.
                 log.warning("client_substituter_dropped", url=url, exc_info=True)
                 self._dropped.add(key)
                 raise

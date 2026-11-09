@@ -130,6 +130,13 @@ def _errors(err: str) -> list[str]:
     return lines[next(i for i, line in enumerate(lines) if line.startswith("error:")) :]
 
 
+# The default client config names the machine's own daemon as a substituter. Under `NIX_STORE_DIR`, Nix takes
+# that store to have this store's directory, sends it these paths, and the daemon refuses each one with "is not
+# in the Nix store". nixidae/nixidae#1193. The daemon's build survives that only while a later substituter
+# remains, and whether cachix remains depends on Nix's narinfo disk cache. nixidae/nixidae#1241.
+ALONE = {"substituters": ""}
+
+
 async def _probe(tmp_path: Path, route: OpRoute, sandbox: str, extra: str) -> dict[str, Any]:
     async with _serve(tmp_path, route, sandbox) as (nix, env, state):
         _rc, out, err, _both = await run_subproc(
@@ -144,9 +151,12 @@ async def _probe(tmp_path: Path, route: OpRoute, sandbox: str, extra: str) -> di
                 _drv("unsandboxed-probe", PROBE, extra),
             ],
             env=dict(env),
+            nix_config=ALONE,
         )
         path = out.strip()
-        _rc, info, _err, _both = await run_subproc([*nix[:1], "path-info", *nix[1:], "--json", path], env=dict(env))
+        _rc, info, _err, _both = await run_subproc(
+            [*nix[:1], "path-info", *nix[1:], "--json", path], env=dict(env), nix_config=ALONE
+        )
         contents = (state.parent.parent / "store" / path.rsplit("/", 1)[-1]).read_text()
     valid, refs = _rows(state)
     info_json = json.loads(info)
@@ -181,12 +191,6 @@ async def test_an_unsandboxed_build_runs_on_the_host_as_the_daemons_does(tmp_pat
 REWRITTEN = """echo $dev > $dev
 @NOISE@
 echo $out $dev $n > $out"""
-
-
-# The default client config names the machine's own daemon as a substituter. Under `NIX_STORE_DIR`, Nix takes
-# that store to have this store's directory, sends it these paths, and the daemon refuses each one with "is not
-# in the Nix store". nixidae/nixidae#1193.
-ALONE = {"substituters": ""}
 
 
 def _rewritten(name: str, noise: str) -> str:
