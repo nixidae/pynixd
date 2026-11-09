@@ -490,52 +490,6 @@ class BuildAllocator:
         )
         return RankedStores(list(ranked), [*excluded, *ranked.excluded])
 
-    def incompatibility_reasons(
-        self,
-        platform: str,
-        features: set[str] | None,
-    ) -> list[str]:
-        """Build per-store incompatibility explanations for error reporting."""
-        reasons: list[str] = []
-        fm = self.local_store._feature_matrix
-        if fm is not None and platform not in fm:
-            reasons.append(f"local: system {platform} not in feature_matrix")
-        elif fm is not None and features:
-            local_feats = fm.get(platform, set())
-            missing = features - local_feats
-            if missing:
-                reasons.append(
-                    f"local: missing features {', '.join(sorted(missing))} for {platform}",
-                )
-        elif fm is None:
-            reasons.append("local: no feature_matrix (not probed)")
-        else:
-            reasons.append("local: compatible")
-
-        for store in self.stores.values():
-            sfm = store._feature_matrix
-            if sfm is not None and platform not in sfm:
-                reasons.append(f"{store.store_id}: system {platform} not in feature_matrix")
-            elif sfm is not None and features:
-                store_feats = sfm.get(platform, set())
-                missing = features - store_feats
-                if missing:
-                    reasons.append(
-                        f"{store.store_id}: missing features {', '.join(sorted(missing))} for {platform}",
-                    )
-                else:
-                    reasons.append(
-                        f"{store.store_id}: compatible but excluded (unhealthy/saturated/failed)",
-                    )
-            elif sfm is None:
-                reasons.append(f"{store.store_id}: no feature_matrix (not probed)")
-            else:
-                reasons.append(
-                    f"{store.store_id}: compatible but excluded (unhealthy/saturated/failed)",
-                )
-
-        return reasons
-
     @staticmethod
     def strip_handled_features(build: QueuedBuild) -> None:
         """Remove pynixd-handled features from requiredSystemFeatures.
