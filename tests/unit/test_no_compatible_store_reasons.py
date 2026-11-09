@@ -35,7 +35,7 @@ async def _refusal(platform: str, features: set[str]) -> list[str]:
         "a": SimpleNamespace(_feature_matrix={"x86_64-linux": {"kvm"}}),
         "b": SimpleNamespace(_feature_matrix={"aarch64-linux": {"big-parallel"}}),
     }
-    scheduler = SimpleNamespace(stores=stores, queue=queue)
+    scheduler = SimpleNamespace(stores=stores, queue=queue, _stores_of=lambda _build: stores.values())
 
     async def post(_message: Any) -> None:
         return None
