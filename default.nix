@@ -121,6 +121,10 @@ let
     "nix_" + lib.replaceStrings [ "." ] [ "_" ] (lib.versions.majorMinor defaultNix.version);
   # Every guest's daemon and client. NixOS defaults `nix.package` to `pkgs.nix`.
   withDefaultNix = test: test.extend { modules = [ { defaults.nix.package = defaultNix; } ]; };
+  # The functional suite's Nix: `build-remote.sh` speaks `ssh-ng://` to its first builder there,
+  # which needs Lillecarl/nix#413 fixed to pass. Its guests run the same Nix as their system Nix.
+  nixftNix = defaultNix.appendPatches [ ./nix/functional-tests/nix-ssh-ng-keep-failed.patch ];
+  withNixftNix = test: test.extend { modules = [ { defaults.nix.package = nixftNix; } ]; };
   vivarium-runner = vivariumLib.runner;
 
   # Allow-lists, by extension, under the directories that hold source. The run
@@ -430,6 +434,13 @@ let
       _: nix: test.extend { modules = [ { defaults.nix.package = lib.mkForce nix; } ]; }
     ) supportedNix;
 
+  nixftLane = pkgs.callPackage ./nix/functional-tests/package.nix {
+    nix = nixftNix;
+    version = defaultNixName;
+    pynixd = package;
+    wirelogPython = pyinstance;
+  };
+
   nixFunctionalTests = lib.mapAttrs (
     version: nix:
     pkgs.callPackage ./nix/functional-tests/package.nix {
@@ -624,23 +635,23 @@ let
     # The Nix functional suite in a UML guest, where cleanup is a poweroff
     # rather than a promise. `nix run --file . internal.tests.guest-nixft.driver
     # -- --out <abs>`. Issue #45.
-    guest-nixft = withDefaultNix (
+    guest-nixft = withNixftNix (
       pkgs.callPackage ./tests/derivations/guest-nixft {
         pynixd-lib = library;
         src = testSrc;
         inherit vivariumLib;
-        nixft = nixFunctionalTests.${defaultNixName};
+        nixft = nixftLane;
       }
     );
 
     # The same suite with no Nix daemon under pynixd: pynixd opens and writes
     # each test store itself. Issue #1155.
-    guest-nixft-no-daemon = withDefaultNix (
+    guest-nixft-no-daemon = withNixftNix (
       pkgs.callPackage ./tests/derivations/guest-nixft {
         pynixd-lib = library;
         src = testSrc;
         inherit vivariumLib;
-        nixft = nixFunctionalTests.${defaultNixName};
+        nixft = nixftLane;
         noDaemon = true;
       }
     );

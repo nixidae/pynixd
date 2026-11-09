@@ -1,0 +1,43 @@
+Over `ssh-ng://`, `SSHStore::setOptions` sends nothing, so the remote never
+learns `--keep-failed`. It deletes a failed build's directory, and the build
+hook still warns that the remote kept it (`build-remote.cc:328`).
+`build-remote.sh:86` then fails once its first builder speaks `ssh-ng://`.
+Lillecarl/nix#413, nixidae/nixidae#1242.
+
+--- a/src/libstore/ssh-store.cc
++++ b/src/libstore/ssh-store.cc
+@@ -7,6 +7,7 @@
+ #include "nix/util/pool.hh"
+ #include "nix/store/ssh.hh"
+ #include "nix/store/store-registration.hh"
++#include "nix/store/globals.hh"
+
+ namespace nix {
+
+@@ -96,6 +97,26 @@
+            forward-cores or forward-overridden-cores that only
+            override the requested settings.
+         */
++        /* `--keep-failed` must reach the remote, or it deletes the build
++           directory while `build-remote.cc` warns that it kept it
++           (Lillecarl/nix#413). `LegacySSHStore` sends `keepFailed` in its
++           build options. The fixed fields go too, as `SetOptions` has no
++           optional ones: in the build hook they are the client's, with
++           `max-jobs = 1` (`build-remote.cc`). No overrides go: in the hook
++           every setting counts as overridden, `store` and `builders`
++           included. */
++        if (!settings.keepFailed)
++            return;
++        conn.to << WorkerProto::Op::SetOptions << settings.keepFailed << settings.getWorkerSettings().keepGoing
++                << settings.getWorkerSettings().tryFallback << verbosity << settings.getWorkerSettings().maxBuildJobs
++                << settings.getWorkerSettings().maxSilentTime << true << (settings.verboseBuild ? lvlError : lvlVomit)
++                << 0 // obsolete log type
++                << 0 /* obsolete print build trace */
++                << settings.getLocalSettings().buildCores << settings.getWorkerSettings().useSubstitutes
++                << 0; // no overrides
++        auto ex = conn.processStderrReturn();
++        if (ex)
++            std::rethrow_exception(ex);
+     };
+ };
+

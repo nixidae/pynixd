@@ -135,7 +135,9 @@ EOF
 #
 # The first builder speaks `ssh://`, Nix's legacy serve protocol, which pynixd
 # does not speak (nixidae/nixidae#1242). It becomes `ssh-ng://` in both arms,
-# so the placement on three builders is still measured.
+# so the placement on three builders is still measured. Over `ssh-ng://`, Nix
+# sends no `--keep-failed` to the builder (Lillecarl/nix#413), so the suite's
+# Nix carries `nix-ssh-ng-keep-failed.patch`.
 REMOTE="$WORK/src/tests/functional/build-remote.sh"
 legacy='  "ssh://localhost?remote-store=$TEST_ROOT/machine1?'
 if [[ "$(grep -c -F -- "$legacy" "$REMOTE")" != "1" ]]; then
