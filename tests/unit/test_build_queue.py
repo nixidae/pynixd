@@ -336,3 +336,25 @@ async def test_a_build_with_no_option_set_ends_no_request() -> None:
     await queue.complete(first, _failed())
 
     assert queue.nobody_wants(queue.by_id[second]) is False
+
+
+@pytest.mark.parametrize(
+    ("env", "described"),
+    [
+        ({"name": "kyverno-rendered.yaml"}, "kyverno-rendered.yaml"),
+        ({"name": "hello-2.12", "pname": "hello", "version": "2.12"}, "hello-2.12"),
+        ({}, "00000000000000000000000000000001-test.drv"),
+    ],
+    ids=["no-pname", "nixpkgs", "no-env"],
+)
+async def test_a_build_is_described_by_its_derivation_name(env: dict[str, str], described: str) -> None:
+    """nixidae/nixidae#759 logged a derivation without `pname` as `unknown-unknown`."""
+    queue = BuildQueue()
+    drv_path = StorePath("/nix/store/00000000000000000000000000000001-test.drv")
+    request = BuildDerivationRequest(
+        drv_path=drv_path,
+        derivation=BasicDerivation(platform="x86_64-linux", builder="/bin/sh", env=env),
+        build_mode=BuildMode.NORMAL,
+    )
+    build_id, _ = await queue.enqueue(request)
+    assert queue.by_id[build_id].description == described

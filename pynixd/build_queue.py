@@ -274,10 +274,11 @@ class QueuedBuild:
 
     @property
     def description(self) -> str:
-        """A human-readable description of the build."""
-        pname = self.request.derivation.env.get("pname", "unknown")
-        version = self.request.derivation.env.get("version", "unknown")
-        return f"{pname}-{version}"
+        """The derivation's name, the one field every derivation has; `pname` and `version` are a nixpkgs convention.
+
+        nixidae/nixidae#759 saw most builds logged as `unknown-unknown`.
+        """
+        return self.request.derivation.env.get("name") or str(self.request.drv_path).rsplit("/", 1)[-1]
 
     # ── Log pub/sub methods ───────────────────────────────────────────
 
