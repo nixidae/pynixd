@@ -7,6 +7,7 @@ machine Nix's suite builds on. nixidae/nixidae#1242.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -125,33 +126,99 @@ def test_outside_the_session_names_why() -> None:
     assert outside_the_session(_store(THEIRS, session_only=True), FakeBuild()) == "another client's builder"
 
 
-async def test_one_store_per_machine_for_every_session(tmp_path: Path) -> None:
-    added: list[Any] = []
+class Server:
+    """What `SessionBuilders` reads of the server: the stores it opened and closed, the sessions and the queue."""
 
-    async def add_store(store: Any) -> bool:
-        added.append(store)
+    def __init__(self, tmp_path: Path, *, linger: float = 60.0) -> None:
+        self.added: list[Any] = []
+        self.removed: list[StoreId] = []
+        self.values: list[str] = []
+        self.pending: list[frozenset[StoreId] | None] = []
+        self.builders = SessionBuilders(
+            PynixdSettings(unix_path=tmp_path / "pynixd.sock", session_builder_linger=linger),
+            "/bin/nix",
+            self.add_store,
+            self.remove_store,
+            lambda: self.values,
+            self.pending_builders,
+        )
+
+    async def add_store(self, store: Any) -> bool:
+        self.added.append(store)
         return True
 
-    builders = SessionBuilders(PynixdSettings(unix_path=tmp_path / "pynixd.sock"), "/bin/nix", add_store)
+    async def remove_store(self, store_id: StoreId) -> None:
+        self.removed.append(store_id)
+
+    async def pending_builders(self) -> list[frozenset[StoreId] | None]:
+        return self.pending
+
+
+async def test_one_store_per_machine_for_every_session(tmp_path: Path) -> None:
+    server = Server(tmp_path)
+    builders = server.builders
     line = f"{tmp_path}/m2 - - 1 1 bar"
     first = await builders.stores_for(line)
     again = await builders.stores_for(line)
     assert first == again
     assert first is not None
     assert len(first) == 1
-    assert len(added) == 1
-    assert added[0].session_only
+    assert len(server.added) == 1
+    assert server.added[0].session_only
     # Another value that names the same machine reuses its store.
     await builders.stores_for(f"{line} ; ")
-    assert len(added) == 1
+    assert len(server.added) == 1
 
 
 async def test_a_value_with_no_machine_keeps_pynixds_placement(tmp_path: Path) -> None:
     """NIX-DEVIATION (#27) in `pynixd/session_builders.py`: no machine means pynixd's own stores."""
-
-    async def add_store(store: Any) -> bool:
-        raise AssertionError(store)
-
-    builders = SessionBuilders(PynixdSettings(unix_path=tmp_path / "pynixd.sock"), "/bin/nix", add_store)
+    server = Server(tmp_path)
+    builders = server.builders
     assert await builders.stores_for(f"@{tmp_path}/no-such-file") is None
     assert await builders.stores_for("# only a comment") is None
+    assert server.added == []
+
+
+async def _opened(server: Server, line: str) -> StoreId:
+    ids = await server.builders.stores_for(line)
+    assert ids is not None
+    [store_id] = ids
+    return store_id
+
+
+async def test_an_unneeded_store_closes_after_the_linger(tmp_path: Path) -> None:
+    """nixidae/nixidae#1243: a store no session names and no build needs closes, and the next build reopens it."""
+    server = Server(tmp_path, linger=10.0)
+    line = f"{tmp_path}/m - - 1 1"
+    store_id = await _opened(server, line)
+    assert await _opened(server, f"{line} ; ") == store_id
+    now = time.monotonic()
+    assert await server.builders.reap(now + 5) == []
+    assert await server.builders.reap(now + 11) == [store_id]
+    assert server.removed == [store_id]
+    # Both values forget the closed store, so either one opens it again.
+    assert await _opened(server, line) == store_id
+    assert len(server.added) == 2
+    assert await _opened(server, f"{line} ; ") == store_id
+    assert len(server.added) == 2
+
+
+async def test_an_open_session_keeps_its_store(tmp_path: Path) -> None:
+    server = Server(tmp_path, linger=10.0)
+    line = f"{tmp_path}/m - - 1 1"
+    store_id = await _opened(server, line)
+    server.values = [line]
+    now = time.monotonic()
+    assert await server.builders.reap(now + 100) == []
+    server.values = []
+    assert await server.builders.reap(now + 105) == []
+    assert await server.builders.reap(now + 111) == [store_id]
+
+
+async def test_an_unfinished_build_keeps_its_store(tmp_path: Path) -> None:
+    """A build outlives the session that asked for it, and it may still be placed on the store."""
+    server = Server(tmp_path, linger=10.0)
+    store_id = await _opened(server, f"{tmp_path}/m - - 1 1")
+    server.pending = [None, frozenset({store_id})]
+    assert await server.builders.reap(time.monotonic() + 100) == []
+    assert server.removed == []

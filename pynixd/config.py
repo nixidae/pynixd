@@ -1186,6 +1186,14 @@ class PynixdSettings(BaseSettings):
     that sets it keeps starting: an unknown key fails the whole settings.
     """
 
+    session_builder_linger: float = 60.0
+    """Seconds a store of a client's `builders` stays open with no session or build that needs it.
+
+    A reopen costs a `nix daemon` start for a local machine and an SSH
+    handshake for an `ssh-ng://` host, so a client that builds again within
+    the linger keeps its store. nixidae/nixidae#1243.
+    """
+
     gc_enabled: bool = True
     gc_interval: float = 3600.0
     gc_poll_interval: float = 60.0

@@ -196,8 +196,20 @@ class Server:
         )
 
         self.ctx.scheduler = Scheduler(self.ctx)
-        self.ctx.session_builders = SessionBuilders(settings, self.ctx.local_store.nix_bin, self.add_store)
         sessions = self.ctx.sessions
+        self.ctx.session_builders = SessionBuilders(
+            settings,
+            self.ctx.local_store.nix_bin,
+            self.add_store,
+            self.remove_store,
+            lambda: [
+                value
+                for proxy in sessions.proxies()
+                if proxy.client.options is not None
+                and (value := proxy.client.options.overrides.get("builders")) is not None
+            ],
+            self._pending_builders,
+        )
         metrics.watch_client_ops(lambda: [p.current_op[1] for p in sessions.proxies() if p.current_op is not None])
 
         self.ssh_server: asyncssh.SSHAcceptor | None = None
@@ -394,6 +406,10 @@ class Server:
         if host is not None:
             host.scope.cancel()
             await host.done.wait()
+
+    async def _pending_builders(self) -> list[frozenset[StoreId] | None]:
+        scheduler = self.ctx.scheduler
+        return [] if scheduler is None else [build.builders for build in await scheduler.queue.get_pending()]
 
     def _spawn(self, fn: Callable[..., Awaitable[object]], *args: object) -> None:
         """Run *fn* for the daemon's lifetime, in the server's background task group.
@@ -759,6 +775,8 @@ class Server:
             self.stall_watchdog.start(asyncio.get_running_loop())
         self._spawn(self.loop_lag.run)
         self._spawn(self._warn_silent_upstreams)
+        if self.ctx.session_builders is not None:
+            self._spawn(self.ctx.session_builders.run)
 
         s = self.settings
         if s.ssh_port is not None:

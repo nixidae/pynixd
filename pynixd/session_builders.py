@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import tempfile
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlencode
@@ -34,7 +35,7 @@ from .store.base import get_current_system
 from .store_url import StoreReference, spec_for
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterable
 
     from .config import PynixdSettings, StoreSpecBase
     from .store.base import Store
@@ -144,7 +145,9 @@ def builder_spec(machine: Machine, settings: PynixdSettings, nix_bin: str) -> St
 class SessionBuilders:
     """The stores of every `builders` value a trusted client sent, opened once each.
 
-    A store stays open until pynixd stops (nixidae/nixidae#1243).
+    `reap` closes a store that no open session names and no unfinished build
+    may use, once it has been so for `session_builder_linger` seconds.
+    nixidae/nixidae#1243.
     """
 
     def __init__(
@@ -152,22 +155,31 @@ class SessionBuilders:
         settings: PynixdSettings,
         nix_bin: str,
         add_store: Callable[[Store], Awaitable[bool]],
+        remove_store: Callable[[StoreId], Awaitable[None]],
+        live_values: Callable[[], Iterable[str]],
+        pending_builders: Callable[[], Awaitable[Iterable[frozenset[StoreId] | None]]],
     ) -> None:
         self.settings = settings
         self.nix_bin = nix_bin
         self._add_store = add_store
+        self._remove_store = remove_store
+        self._live_values = live_values
+        self._pending_builders = pending_builders
         self._by_value: dict[str, frozenset[StoreId]] = {}
         self._open: dict[StoreId, Store] = {}
+        self._last_needed: dict[StoreId, float] = {}
+        # Held across a close too: a store id is a digest of its machine, so a
+        # reopen during the close registers a store that the close then forgets.
         self._lock = anyio.Lock()
 
     async def stores_for(self, builders: str) -> frozenset[StoreId] | None:
         """The stores of *builders*, or `None` when it names no machine; raises `MachinesError`."""
-        known = self._by_value.get(builders)
-        if known is not None:
-            return known
         async with self._lock:
             known = self._by_value.get(builders)
             if known is not None:
+                now = time.monotonic()
+                for store_id in known:
+                    self._last_needed[store_id] = now
                 return known
             # `Machine::parseConfig({settings.thisSystem}, ...)`, `worker.cc:352`.
             machines = parse_config({get_current_system()}, builders)
@@ -185,7 +197,37 @@ class SessionBuilders:
                         raise SessionBuilderError(f"pynixd cannot open the builder '{machine.store_uri}'")
                     log.info("session_builder_opened", store_id=spec.store_id, uri=machine.store_uri)
                     self._open[spec.store_id] = store
+                self._last_needed[spec.store_id] = time.monotonic()
                 ids.add(spec.store_id)
             result = frozenset(ids)
             self._by_value[builders] = result
             return result
+
+    async def run(self) -> None:
+        """Reap every half linger, so a store closes within one and a half lingers of its last need."""
+        while True:
+            await anyio.sleep(max(self.settings.session_builder_linger / 2, 1.0))
+            await self.reap(time.monotonic())
+
+    async def reap(self, now: float) -> list[StoreId]:
+        """Close each store unneeded for the linger, and answer which ones it closed."""
+        linger = self.settings.session_builder_linger
+        async with self._lock:
+            needed: set[StoreId] = set()
+            for value in self._live_values():
+                needed |= self._by_value.get(value, frozenset())
+            for builders in await self._pending_builders():
+                needed |= builders or frozenset()
+            closed: list[StoreId] = []
+            for store_id in list(self._open):
+                if store_id in needed:
+                    self._last_needed[store_id] = now
+                elif now - self._last_needed.get(store_id, now) >= linger:
+                    closed.append(store_id)
+            for store_id in closed:
+                del self._open[store_id]
+                self._last_needed.pop(store_id, None)
+                self._by_value = {v: ids for v, ids in self._by_value.items() if store_id not in ids}
+                await self._remove_store(store_id)
+                log.info("session_builder_closed", store_id=store_id)
+            return closed
