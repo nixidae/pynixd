@@ -244,6 +244,13 @@ class PressureSettings(BaseModel):
     memory_full_low: float = 0.5
     """`memory` `full`: each task stalls on memory. Past 2 % the machine thrashes."""
 
+    memory_full_below_available: float = 0.25
+    """`memory` `full` counts only while `MemAvailable` is under this share of `MemTotal`.
+
+    Swap-in of idle pages stalls their owners, and the kernel counts that as
+    host-wide `full`: dynhetz read `full avg10=1.67` with 38 of 64 GB free and
+    17 GB swapped out, which held the limit at 1. nixidae/nixidae#1260."""
+
     io_full_high: float = 25.0
     io_full_low: float = 10.0
     """`io` `full`. Network storage idles at several percent; dynhetz measured 3 %."""

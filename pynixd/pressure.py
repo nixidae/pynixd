@@ -106,13 +106,18 @@ class BuildLimit:
         psi = health.psi
         mem = health.meminfo if health.meminfo and health.meminfo.mem_total else None
         min_kb = s.min_available_memory_mb * 1024
-        if psi is not None and psi.memory.full_avg10 >= s.memory_full_high:
+        memory_full = (
+            psi.memory.full_avg10
+            if psi is not None and (mem is None or mem.mem_available < s.memory_full_below_available * mem.mem_total)
+            else 0.0
+        )
+        if memory_full >= s.memory_full_high:
             return LimitReason.memory_pressure, True
         if psi is not None and psi.io.full_avg10 >= s.io_full_high:
             return LimitReason.io_pressure, True
         if mem is not None and mem.mem_available < min_kb:
             return LimitReason.low_memory, True
-        if psi is not None and psi.memory.full_avg10 > s.memory_full_low:
+        if memory_full > s.memory_full_low:
             return LimitReason.memory_pressure, False
         if psi is not None and psi.io.full_avg10 > s.io_full_low:
             return LimitReason.io_pressure, False

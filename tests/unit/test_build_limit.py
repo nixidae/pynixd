@@ -74,13 +74,13 @@ def test_memory_stall_halves_the_running_builds_and_ends_slow_start() -> None:
     limit = _limit()
     limit.observe(_health(), running=0, now=0.0)
     limit.observe(_health(), running=8, now=10.0)
-    limit.observe(_health(memory_full=5.0), running=12, now=11.0)
+    limit.observe(_health(memory_full=5.0, available_gib=8.0), running=12, now=11.0)
     assert (limit.limit, limit.reason) == (6, LimitReason.memory_pressure)
     assert not limit.slow_start
 
-    limit.observe(_health(memory_full=5.0), running=12, now=15.0)
+    limit.observe(_health(memory_full=5.0, available_gib=8.0), running=12, now=15.0)
     assert limit.limit == 6, "a second fall before avg10 can show the first"
-    limit.observe(_health(memory_full=5.0), running=6, now=21.0)
+    limit.observe(_health(memory_full=5.0, available_gib=8.0), running=6, now=21.0)
     assert limit.limit == 3
 
 
@@ -89,8 +89,24 @@ def test_the_band_between_the_marks_holds() -> None:
     limit = _limit()
     limit.observe(_health(), running=0, now=0.0)
     for t, memory_full in enumerate((1.0, 1.9, 0.6, 1.5), start=20):
-        limit.observe(_health(memory_full=memory_full), running=8, now=float(t * 10))
+        limit.observe(_health(memory_full=memory_full, available_gib=8.0), running=8, now=float(t * 10))
         assert (limit.limit, limit.reason) == (8, LimitReason.memory_pressure)
+
+
+def test_a_memory_stall_with_memory_to_spare_leaves_the_limit_to_rise() -> None:
+    """Swap-in of idle pages reads as host-wide `full`; with most memory free, builds did not cause it."""
+    limit = _limit()
+    limit.observe(_health(), running=0, now=0.0)
+    limit.observe(_health(memory_full=5.0, available_gib=38.0), running=8, now=10.0)
+    assert (limit.limit, limit.reason) == (16, LimitReason.slow_start)
+
+
+def test_a_memory_stall_counts_on_a_host_that_gives_no_meminfo() -> None:
+    limit = _limit()
+    limit.observe(_health(), running=0, now=0.0)
+    stalled = SystemHealth(psi=_health(memory_full=5.0).psi, cores=8.0)
+    limit.observe(stalled, running=8, now=10.0)
+    assert (limit.limit, limit.reason) == (4, LimitReason.memory_pressure)
 
 
 def test_cpu_pressure_holds_but_never_falls() -> None:
