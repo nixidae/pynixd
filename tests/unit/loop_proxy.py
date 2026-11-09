@@ -2,7 +2,8 @@
 
 `op_loop` is called unbound (`DaemonProxy.op_loop(proxy)`), so this needs
 every attribute the loop touches: `r`, `w`, `client`, `dispatch`,
-`send_error`, `_op_timing`, `_op_metrics` and `_metrics_enabled`. When the
+`send_error`, `version`, `standard_features`, `_op_timing`, `_op_metrics`
+and `_metrics_enabled`. When the
 loop grows a new attribute, this is the one place to add it, and every
 loop test fails together instead of one fake drifting silently.
 """
@@ -10,7 +11,7 @@ loop test fails together instead of one fake drifting silently.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pynixd.proxy import DaemonProxy
 
@@ -35,9 +36,14 @@ class LoopReader:
 class LoopProxy:
     """A loop test drives this, and reads what the loop did back."""
 
-    def __init__(self, ops: Sequence[int], *, fail: bool = False, metrics_enabled: bool = True) -> None:
+    def __init__(
+        self, ops: Sequence[int], *, fail: bool = False, metrics_enabled: bool = True, response: Any = None
+    ) -> None:
         self.r = LoopReader(ops)
         self.w = SimpleNamespace(drain=self._nothing)
+        self.version = None
+        self.standard_features: frozenset[str] = frozenset()
+        self._response = response
         self.client = SimpleNamespace(flush=self._nothing)
         self.errors: list[str] = []
         self.dispatched: list[int] = []
@@ -52,11 +58,11 @@ class LoopProxy:
     async def send_error(self, text: str, traces: Sequence[str] = ()) -> None:
         self.errors.append(text)
 
-    async def dispatch(self, op_num: int) -> None:
+    async def dispatch(self, op_num: int) -> Any:
         if self._fail:
             raise RuntimeError("the store refused")
         self.dispatched.append(op_num)
-        return None
+        return self._response
 
     async def run(self) -> None:
         await DaemonProxy.op_loop(cast("DaemonProxy", self))

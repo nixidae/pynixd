@@ -459,12 +459,14 @@ class DaemonProxy:
             t0 = time.monotonic()
             self.current_op = (op_name, t0)
             result = "ok"
+            responding = False
             try:
                 response = await self.dispatch(op_num)
 
                 if response is not None:
                     await self.client.flush()
                     t_encoded = time.monotonic()
+                    responding = True
                     await response.to_writer(WriteContext.from_proxy(self))
                     await self.w.drain()
                     self._note_encode_time(op_num, t_encoded)
@@ -481,6 +483,10 @@ class DaemonProxy:
                 log.exception("handle_op_error", name=op_name)
                 await self.client.flush()
                 await self.send_error(error_text(ex), traces=error_traces(ex))
+                if responding:
+                    # The client has read part of the response, so the stream is out of step: Nix ends the
+                    # session (`daemon.cc:1218`, `:1232`). nixidae/nixidae#1212.
+                    break
             finally:
                 self.current_op = None
                 elapsed = time.monotonic() - t0
