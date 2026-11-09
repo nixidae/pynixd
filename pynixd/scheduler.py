@@ -1432,6 +1432,7 @@ class Scheduler:
                         self.trigger()
                         return
 
+                    build_resp = await self._post_build_hook_here(build, store, build_resp)
                     await self.queue.complete(build.build_id, build_resp)
                     completed = True
                     self.trigger()
@@ -1706,6 +1707,28 @@ class Scheduler:
             status=resp.result.status,
         )
         return resp
+
+    async def _post_build_hook_here(
+        self, build: QueuedBuild, store: DaemonStore, resp: BuildDerivationResponse
+    ) -> BuildDerivationResponse:
+        """*resp*, failed when the local post-build hook fails after a build on a builder.
+
+        `buildWithHook` runs the hook locally once the outputs are valid (`derivation-building-goal.cc:765`),
+        and the builder runs its own as well. `build-remote-input-addressed.sh:35` counts both. The local
+        goal never sees the builder's status, so an `ALREADY_VALID` answer runs the hook too.
+        """
+        if (
+            store is self.local_builder
+            or not isinstance(self.local_store, LocalDBStore)
+            or not result_succeeded(resp.result)
+        ):
+            return resp
+        failed = await self.local_store.post_build_hook_after(
+            build.request, build.options, output_paths(build, resp), build.post_log_and_fanout
+        )
+        if failed is None:
+            return resp
+        return resp.model_copy(update={"result": failure(failed)})
 
     async def _keep_log(self, build: QueuedBuild, resp: BuildDerivationResponse) -> None:
         """Write the log of a build on a builder to the local store, as Nix's build hook does."""

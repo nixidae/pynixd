@@ -101,6 +101,9 @@ class FakeScheduler:
     async def _say_where_it_builds(self, *_args: Any) -> None:
         return
 
+    async def _post_build_hook_here(self, _build: Any, _store: Any, resp: Any) -> Any:
+        return resp
+
     async def _keep_log(self, *_args: Any) -> None:
         return None
 

@@ -57,6 +57,9 @@ class SlotScheduler:
         self.steps.append("build")
         return FakeResponse(BuildResultStatus.BUILT)
 
+    async def _post_build_hook_here(self, _build: Any, _store: Any, resp: Any) -> Any:
+        return resp
+
     async def _keep_log(self, *_args: Any) -> None:
         return None
 

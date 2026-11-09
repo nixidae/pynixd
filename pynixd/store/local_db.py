@@ -971,6 +971,24 @@ class LocalDBStore(Store):
             )
         )
 
+    async def post_build_hook_after(
+        self,
+        request: BuildDerivationRequest,
+        options: SetOptionsRequest | None,
+        out_paths: Iterable[StorePath],
+        on_log: Callable[[LogMessage], Awaitable[None]],
+    ) -> str | None:
+        """`runPostBuildHook` here after a build on another store (`derivation-building-goal.cc:765`): its failure.
+
+        The daemon of this store never sees that build, so pynixd runs the hook whatever the route.
+        """
+        settings = BuildSettings.from_nix_config(
+            await self.engine.nix_config(), _build_overrides(options), nix_version=self._nix_version or ""
+        )
+        if not settings.post_build_hook:
+            return None
+        return await self._post_build_hook(settings, request.drv_path, out_paths, on_log)
+
     async def _post_build_hook(
         self,
         settings: BuildSettings,
