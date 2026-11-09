@@ -79,6 +79,7 @@ class Store(ABC):
         self.want_mass_query = False
         """Nix's `want-mass-query`: false on every store, and a binary cache reads it from `nix-cache-info`."""
         self.no_schedule = spec.no_schedule
+        self.nix_bin = spec.nix_bin
         self.session_only = False
         """A store of a client's `builders`: only that client's builds go here (`pynixd/session_builders.py`)."""
         self.reference_key: object | None = spec.reference_key()

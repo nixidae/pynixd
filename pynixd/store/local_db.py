@@ -295,7 +295,6 @@ class LocalDBStore(Store):
             name=str(self.store_id),
         )
         self._nix_version_command = (spec.nix_bin, spec.extra_env)
-        self.nix_bin = spec.nix_bin
         self._nix_version: str | None = None
         #: The scheduler's race over the substituters; the instance sets it at start.
         self.substitution_queue: SubstitutionQueue | None = None
