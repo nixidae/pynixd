@@ -13,19 +13,16 @@ under `-j1`. Issue nixidae/nixidae#235.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from collections.abc import Awaitable
 from typing import Any, cast
 
 import anyio
 import pytest
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, BuildId, RequestId, StoreId
-from pynixd.allocator import RankedStore
 from pynixd.answer import Answer
 from pynixd.build_queue import BuildQueue, QueuedBuild
-from pynixd.config import PlacementTraceSettings, StoreRankingSettings
 from pynixd.placement import local_slot_is_full
-from pynixd.placement_trace import PlacementTrace
 from pynixd.scheduler import Scheduler
 from pynixd.serde import (
     BasicDerivation,
@@ -39,7 +36,7 @@ from pynixd.serde import (
     TimeSpan,
     Verbosity,
 )
-from tests._conftest.placement import FakeStore as PlacedStore
+from tests._conftest.placement import FakeStore as PlacedStore, FixedRanking, Spawned, fake_placer
 
 _BUILDER = StoreId("builder1")
 
@@ -230,54 +227,14 @@ async def test_a_shared_build_starts_when_any_client_wanting_it_has_a_slot() -> 
 # ── A build that no live request wants takes no slot. Issue nixidae/nixidae#325 ─────
 
 
-class _AssignScheduler:
-    """Enough of `Scheduler` for `_assign_to_stores` to run against a real queue.
+def _assign(queue: BuildQueue, pending: QueuedBuild, spawned: Spawned) -> Awaitable[list[QueuedBuild]]:
+    """One pass over *pending*, with the local store ranked alone (nixidae/nixidae#1001).
 
-    Every branch that could stop an assignment for another reason answers
-    "go ahead", so a build that is not assigned was stopped by the rule under
-    test and by nothing else.
+    Every other check of the placer passes: no cost, room on every store. So a
+    build that is not assigned was stopped by the rule under test and by nothing else.
     """
-
-    def __init__(self, queue: BuildQueue) -> None:
-        self.queue = queue
-        self.local_store = PlacedStore(LOCAL_STORE_ID)
-        # The local store is ranked like the others (nixidae/nixidae#1001).
-        local = RankedStore(self.local_store.store_id, 0.0, self.local_store)
-        self.allocator = type("A", (), {"rank_stores": lambda *a, **k: [local]})()
-        self.stores: dict[StoreId, object] = {}
-        self.executed: list[object] = []
-
-    _assign_one = Scheduler._assign_one  # noqa: SLF001 -- the assignment is the unit
-    _place = Scheduler._place  # noqa: SLF001 -- the assignment is the unit
-    _trace_decision = Scheduler._trace_decision  # noqa: SLF001 -- a trace with no database returns at once
-    trace = PlacementTrace(None, PlacementTraceSettings())
-    _client_forbids_local = Scheduler._client_forbids_local  # noqa: SLF001 -- part of the assignment
-    ranker = SimpleNamespace(settings=StoreRankingSettings())
-
-    def _has_compatible_store(self, build: object, features: set[str]) -> bool:
-        del build, features
-        return True
-
-    async def _transfer_seconds(self, build: object) -> dict[StoreId, float]:
-        del build
-        return {}
-
-    def _local_slot_is_full(self, build: object, running: object, assigned: object) -> bool:
-        del build, running, assigned
-        return False
-
-    def _has_build_room(self, store: object, running: object, assigned: object) -> bool:
-        del store, running, assigned
-        return True
-
-    async def execute_build(self, build: QueuedBuild, store: object) -> None:
-        del store
-        self.executed.append(build.build_id)
-
-    def _spawn_worker(self, build: QueuedBuild, store: object) -> None:
-        """Marks the build as building and runs nothing: the assignment is the unit."""
-        del store
-        build.worker = anyio.CancelScope()
+    local = PlacedStore(LOCAL_STORE_ID)
+    return fake_placer(queue, FixedRanking.of(local), spawned, local=local).assign([pending], {})
 
 
 def _request(name: str) -> BuildDerivationRequest:
@@ -313,15 +270,11 @@ async def test_the_slot_a_failure_frees_does_not_go_to_the_same_request() -> Non
     x1, so without this rule x2 takes it. Issue nixidae/nixidae#325.
     """
     queue, pending = await _queue_with_a_failed_first_build(keep_going=False)
-    scheduler = _AssignScheduler(queue)
+    spawned = Spawned()
 
-    waiting = await Scheduler._assign_to_stores(  # noqa: SLF001 -- the assignment is the unit under test
-        cast("Any", scheduler),
-        [pending],
-        {},
-    )
+    waiting = await _assign(queue, pending, spawned)
 
-    assert scheduler.executed == []
+    assert spawned.stores == []
     assert not pending.is_building
     assert waiting == []
     # **And it is answered, not left pending.** A goal of the same request can
@@ -342,14 +295,10 @@ async def test_the_slot_a_failure_frees_does_not_go_to_the_same_request() -> Non
 async def test_keep_going_still_gives_the_slot_to_the_next_build() -> None:
     """`build.sh:180` asks for exactly this, and `build.sh:183` counts four errors."""
     queue, pending = await _queue_with_a_failed_first_build(keep_going=True)
-    scheduler = _AssignScheduler(queue)
 
-    await Scheduler._assign_to_stores(  # noqa: SLF001 -- same
-        cast("Any", scheduler),
-        [pending],
-        {},
-    )
+    spawned = Spawned()
 
-    # The assignment is what the rule governs, so the worker handle is the
-    # observable and `scheduler.executed` is not.
+    await _assign(queue, pending, spawned)
+
+    assert spawned.stores == [LOCAL_STORE_ID]
     assert pending.is_building

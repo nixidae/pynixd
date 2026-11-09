@@ -8,47 +8,41 @@ derivation that requires `parity-missing`. nixidae/nixidae#1216.
 from __future__ import annotations
 
 import re
-from types import SimpleNamespace
-from typing import Any, cast
 
 import pytest
 
-from pynixd.scheduler import Scheduler
-from pynixd.serde import BuildResultStatus
+from nix_daemon_protocol.ids import StoreId
+from pynixd.build_queue import BuildQueue
+from pynixd.serde import BasicDerivation, BuildDerivationRequest, BuildMode, BuildResultStatus
 from pynixd_store.store_path import StorePath
+from tests._conftest.placement import FakeStore, FixedRanking, Spawned, fake_placer
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 DRV = StorePath("/nix/store/00000000000000000000000000000001-probe.drv")
 
 
-class Queue:
-    def __init__(self) -> None:
-        self.failed: list[tuple[str, BuildResultStatus]] = []
-
-    async def fail(self, _build_id: int, message: str, status: BuildResultStatus) -> None:
-        self.failed.append((message, status))
+def _store(name: str, feature_matrix: dict[str, set[str]]) -> FakeStore:
+    store = FakeStore(StoreId(name))
+    store.feature_matrix = feature_matrix
+    return store
 
 
 async def _refusal(platform: str, features: set[str]) -> list[str]:
-    queue = Queue()
-    stores = {
-        "a": SimpleNamespace(_feature_matrix={"x86_64-linux": {"kvm"}}),
-        "b": SimpleNamespace(_feature_matrix={"aarch64-linux": {"big-parallel"}}),
-    }
-    scheduler = SimpleNamespace(stores=stores, queue=queue, _stores_of=lambda _build: stores.values())
-
-    async def post(_message: Any) -> None:
-        return None
-
-    build = SimpleNamespace(
-        build_id=1,
-        request=SimpleNamespace(drv_path=DRV, derivation=SimpleNamespace(platform=platform)),
-        post_log_and_fanout=post,
+    queue = BuildQueue()
+    build_id, answer = await queue.enqueue(
+        BuildDerivationRequest(
+            drv_path=DRV, derivation=BasicDerivation(platform=platform, builder="/bin/sh"), build_mode=BuildMode.NORMAL
+        )
     )
-    await Scheduler._fail_no_compatible_store(cast("Any", scheduler), cast("Any", build), features)  # noqa: SLF001 -- the refusal is the unit
-    [(message, status)] = queue.failed
-    assert status == BuildResultStatus.INPUT_REJECTED
-    return ANSI.sub("", message).splitlines()
+    a = _store("a", {"x86_64-linux": {"kvm"}})
+    b = _store("b", {"aarch64-linux": {"big-parallel"}})
+    placer = fake_placer(queue, FixedRanking.of(), Spawned(), stores={a.store_id: a, b.store_id: b})
+
+    await placer._fail_no_compatible_store(queue.by_id[build_id], features)  # noqa: SLF001 -- the refusal is the unit
+
+    result = answer.result().result
+    assert result.status == BuildResultStatus.INPUT_REJECTED
+    return ANSI.sub("", str(result.error_msg)).splitlines()
 
 
 @pytest.mark.anyio

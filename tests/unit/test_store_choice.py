@@ -5,7 +5,7 @@ nixidae/nixidae#1001, and `preferLocalBuild` from nixidae/nixidae#947.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+import time
 from typing import TYPE_CHECKING, Any, cast
 
 import anyio
@@ -24,14 +24,23 @@ from pynixd.allocator import (
     score_store,
 )
 from pynixd.build_queue import BuildQueue
-from pynixd.config import PlacementTraceSettings, StoreRankingSettings
+from pynixd.config import StoreRankingSettings
 from pynixd.placement import missing_input_bytes
-from pynixd.placement_trace import PlacementTrace
 from pynixd.psi import MemInfo, SystemHealth
 from pynixd.scheduler import Scheduler
 from pynixd.serde import BasicDerivation, BuildDerivationRequest, BuildMode, StorePath
 from pynixd_store.build_stats import ExpectedBytes, StoreEstimate, StoreLink, slot_wait_seconds, transfer_seconds
-from tests._conftest.placement import FakeBuild, FakeMonitor, FakeStore, cpu
+from tests._conftest.placement import (
+    FakeBuild,
+    FakeMonitor,
+    FakeStore,
+    FixedRanking,
+    FixedRng,
+    Spawned,
+    cpu,
+    fake_placer,
+    options,
+)
 
 if TYPE_CHECKING:
     from pynixd.build_queue import QueuedBuild
@@ -381,56 +390,6 @@ class TestPreferLocalBuild:
         assert self._pick(wait=500.0, remote_seconds=None) is None
 
 
-class LocalStore(FakeStore):
-    """The local store, which the ranker dropped: its score fell under `min_schedule_score`."""
-
-
-class AssignScheduler:
-    """Enough of `Scheduler` for `_assign_to_stores`, with a ranker that
-    returns the remote alone, as it does when the local store is under
-    pressure."""
-
-    def __init__(self, queue: BuildQueue) -> None:
-        self.queue = queue
-        self.local_store = LocalStore(LOCAL_STORE_ID)
-        remote = RankedStore(REMOTE, 0.0, FakeStore(REMOTE))
-        self.allocator = SimpleNamespace(rank_stores=lambda *_a, **_k: [remote])
-        self.ranker = SimpleNamespace(settings=StoreRankingSettings())
-        self.rng: FixedRng | None = None
-        self.stores: dict[StoreId, object] = {}
-        self.assigned: list[StoreId] = []
-
-    _assign_one = Scheduler._assign_one  # noqa: SLF001 -- the assignment is the unit
-    _place = Scheduler._place  # noqa: SLF001 -- the assignment is the unit
-    _trace_decision = Scheduler._trace_decision  # noqa: SLF001 -- a trace with no database returns at once
-    trace = PlacementTrace(None, PlacementTraceSettings())
-    _client_forbids_local = Scheduler._client_forbids_local  # noqa: SLF001 -- part of the assignment
-    _stores_of = Scheduler._stores_of  # noqa: SLF001 -- part of the assignment
-    _dynamic_supports_build = Scheduler._dynamic_supports_build  # noqa: SLF001 -- part of the assignment
-
-    def _dynamic_supports(self, *_args: Any) -> bool:
-        return False
-
-    def _has_compatible_store(self, *_args: Any) -> bool:
-        return True
-
-    async def _transfer_seconds(self, *_args: Any) -> dict[StoreId, float]:
-        return {}
-
-    def _local_slot_is_full(self, *_args: Any) -> bool:
-        return False
-
-    def _has_build_room(self, *_args: Any) -> bool:
-        return True
-
-    def _local_wait_seconds(self) -> float | None:
-        return None
-
-    def _spawn_worker(self, build: QueuedBuild, store: Any) -> None:
-        build.worker = anyio.CancelScope()
-        self.assigned.append(store.store_id)
-
-
 def _request(number: int, env: dict[str, str] | None = None) -> BuildDerivationRequest:
     return BuildDerivationRequest(
         drv_path=StorePath(path=f"/nix/store/{number:032d}-trivial.drv"),
@@ -439,12 +398,17 @@ def _request(number: int, env: dict[str, str] | None = None) -> BuildDerivationR
     )
 
 
-async def _assign(env: dict[str, str]) -> AssignScheduler:
+def _remote_alone() -> FixedRanking:
+    """The ranking when the local store is under pressure: the remote alone."""
+    return FixedRanking.of(FakeStore(REMOTE))
+
+
+async def _assign(env: dict[str, str]) -> Spawned:
     queue = BuildQueue()
     build_id, _ = await queue.enqueue(_request(1, env))
-    scheduler = AssignScheduler(queue)
-    await Scheduler._assign_to_stores(cast("Any", scheduler), [queue.by_id[build_id]], {})  # noqa: SLF001 -- the assignment is the unit
-    return scheduler
+    spawned = Spawned()
+    await fake_placer(queue, _remote_alone(), spawned).assign([queue.by_id[build_id]], {})
+    return spawned
 
 
 class TestALocalStoreUnderPressure:
@@ -456,26 +420,24 @@ class TestALocalStoreUnderPressure:
     @pytest.mark.anyio
     async def test_still_takes_a_prefer_local_build(self) -> None:
         """Nix ignores load for `preferLocalBuild`: a free slot is enough."""
-        scheduler = await _assign({"preferLocalBuild": "1"})
+        spawned = await _assign({"preferLocalBuild": "1"})
 
-        assert scheduler.assigned == [LOCAL_STORE_ID]
+        assert spawned.stores == [LOCAL_STORE_ID]
 
     @pytest.mark.anyio
     async def test_leaves_other_builds_to_the_ranking(self) -> None:
-        scheduler = await _assign({})
+        spawned = await _assign({})
 
-        assert scheduler.assigned == [REMOTE]
+        assert spawned.stores == [REMOTE]
 
 
-class BrokenScheduler(AssignScheduler):
-    """`_transfer_seconds` raises for one build, as a database or a bad derivation can."""
+class BrokenEstimate:
+    """The estimate raises for one build, as a database or a bad derivation can."""
 
-    def __init__(self, queue: BuildQueue, broken: BuildId) -> None:
-        super().__init__(queue)
+    def __init__(self, broken: BuildId) -> None:
         self.broken = broken
 
-    async def _transfer_seconds(self, *args: Any) -> dict[StoreId, float]:
-        build: QueuedBuild = args[0]
+    async def transfer_seconds(self, build: QueuedBuild) -> dict[StoreId, float]:
         if build.build_id == self.broken:
             raise RuntimeError("an estimate that raises")
         return {}
@@ -491,26 +453,20 @@ class TestOneBrokenBuild:
         queue = BuildQueue()
         broken, broken_future = await queue.enqueue(_request(1))
         healthy, _ = await queue.enqueue(_request(2))
-        scheduler = BrokenScheduler(queue, broken)
+        spawned = Spawned()
+        placer = fake_placer(queue, _remote_alone(), spawned, estimator=BrokenEstimate(broken))
 
-        await Scheduler._assign_to_stores(  # noqa: SLF001 -- the assignment is the unit
-            cast("Any", scheduler), [queue.by_id[broken], queue.by_id[healthy]], {}
-        )
+        await placer.assign([queue.by_id[broken], queue.by_id[healthy]], {})
 
-        assert scheduler.assigned == [REMOTE]
+        assert spawned.stores == [REMOTE]
         assert queue.by_id[healthy].is_building
         assert "an estimate that raises" in str(broken_future.result().result.error_msg)
 
 
-class OnePressuredPoolScheduler(AssignScheduler):
+def _blocked_alone(blocked: BuildId) -> FixedRanking:
     """The first build's builders are all under `min_schedule_score`; the second's are not."""
-
-    def __init__(self, queue: BuildQueue, blocked: BuildId) -> None:
-        super().__init__(queue)
-        remote = RankedStore(REMOTE, 0.0, FakeStore(REMOTE))
-        self.allocator = SimpleNamespace(
-            rank_stores=lambda build, *_a, **_k: [] if build.build_id == blocked else [remote]
-        )
+    remote = RankedStore(REMOTE, 0.0, FakeStore(REMOTE))
+    return FixedRanking(lambda build: [] if build.build_id == blocked else [remote])
 
 
 @pytest.mark.anyio
@@ -520,27 +476,28 @@ async def test_a_build_whose_builders_are_full_does_not_hold_back_the_next() -> 
     queue = BuildQueue()
     blocked, _ = await queue.enqueue(_request(1))
     other, _ = await queue.enqueue(_request(2))
-    scheduler = OnePressuredPoolScheduler(queue, blocked)
+    spawned = Spawned()
 
-    waiting = await Scheduler._assign_to_stores(  # noqa: SLF001 -- the assignment is the unit
-        cast("Any", scheduler), [queue.by_id[blocked], queue.by_id[other]], {}
+    waiting = await fake_placer(queue, _blocked_alone(blocked), spawned).assign(
+        [queue.by_id[blocked], queue.by_id[other]], {}
     )
 
-    assert scheduler.assigned == [REMOTE]
+    assert spawned.stores == [REMOTE]
     assert queue.by_id[other].is_building
     assert [build.build_id for build in waiting] == [blocked]
 
 
-class WakingScheduler(OnePressuredPoolScheduler):
-    """Enough of `Scheduler` for `schedule` and `on_sample`."""
+class WakingScheduler:
+    """Enough of `Scheduler` for `schedule` and `on_sample`: the loop around the placer, not placement."""
 
     def __init__(self, queue: BuildQueue, blocked: BuildId) -> None:
-        super().__init__(queue, blocked)
+        self.queue = queue
+        self.placer = fake_placer(queue, _blocked_alone(blocked), Spawned())
+        self.stores: dict[StoreId, FakeStore] = {}
         self.builds_waiting = False
         self.triggered = 0
-        self.pass_id = 0
 
-    def _filter_schedulable(self, pending: list[QueuedBuild]) -> tuple[list[QueuedBuild], dict[Any, int]]:
+    def _filter_schedulable(self, pending: list[QueuedBuild]) -> tuple[list[QueuedBuild], dict[StoreId, int]]:
         return pending, {}
 
     def _update_store_metrics(self) -> None:
@@ -548,8 +505,6 @@ class WakingScheduler(OnePressuredPoolScheduler):
 
     def trigger(self) -> None:
         self.triggered += 1
-
-    _assign_to_stores = Scheduler._assign_to_stores  # noqa: SLF001 -- part of the pass
 
 
 @pytest.mark.anyio
@@ -575,16 +530,9 @@ async def test_a_sample_wakes_a_build_that_waits_for_a_store() -> None:
     assert scheduler.triggered == 1, "with nothing waiting a sample costs no pass"
 
 
-class TwoRemotesScheduler(AssignScheduler):
-    """The ranker puts REMOTE first and OTHER second."""
-
-    def __init__(self, queue: BuildQueue) -> None:
-        super().__init__(queue)
-        ranked = [
-            RankedStore(REMOTE, 0.0, FakeStore(REMOTE)),
-            RankedStore(OTHER, 0.0, FakeStore(OTHER)),
-        ]
-        self.allocator = SimpleNamespace(rank_stores=lambda *_a, **_k: list(ranked))
+def _two_remotes() -> FixedRanking:
+    """REMOTE first and OTHER second."""
+    return FixedRanking.of(FakeStore(REMOTE), FakeStore(OTHER))
 
 
 @pytest.mark.anyio
@@ -593,11 +541,11 @@ async def test_a_retry_goes_to_a_store_the_build_has_not_failed_on() -> None:
     queue = BuildQueue()
     build_id, _ = await queue.enqueue(_request(1))
     queue.by_id[build_id].reset_for_retry(REMOTE, "getting status of ...: No such file or directory")
-    scheduler = TwoRemotesScheduler(queue)
+    spawned = Spawned()
 
-    await Scheduler._assign_to_stores(cast("Any", scheduler), [queue.by_id[build_id]], {})  # noqa: SLF001 -- the assignment is the unit
+    await fake_placer(queue, _two_remotes(), spawned).assign([queue.by_id[build_id]], {})
 
-    assert scheduler.assigned == [OTHER]
+    assert spawned.stores == [OTHER]
 
 
 GIB = 1024 * 1024 * 1024
@@ -646,15 +594,6 @@ class TestTheMemoryFit:
         assert fit.reason == "no candidate has memory for an expected peak of 4096 MiB; the most room goes first"
 
 
-class MemoryScheduler(AssignScheduler):
-    """The ranker puts REMOTE first; each remote has 4 GiB available."""
-
-    def __init__(self, queue: BuildQueue) -> None:
-        super().__init__(queue)
-        ranked = [_with_memory(REMOTE, 4 * GIB), _with_memory(OTHER, 4 * GIB)]
-        self.allocator = SimpleNamespace(rank_stores=lambda *_a, **_k: list(ranked))
-
-
 @pytest.mark.anyio
 async def test_a_second_large_build_goes_where_memory_is_left() -> None:
     """The first 3 GiB build reserves its peak on REMOTE, so the second leaves for OTHER."""
@@ -663,23 +602,15 @@ async def test_a_second_large_build_goes_where_memory_is_left() -> None:
     second, _ = await queue.enqueue(_request(2))
     for build_id in (first, second):
         queue.by_id[build_id].expected_peak_bytes = 3 * GIB
-    scheduler = MemoryScheduler(queue)
+    # REMOTE first; each remote has 4 GiB available.
+    ranked = [_with_memory(REMOTE, 4 * GIB), _with_memory(OTHER, 4 * GIB)]
+    spawned = Spawned()
 
-    await Scheduler._assign_to_stores(  # noqa: SLF001 -- the assignment is the unit
-        cast("Any", scheduler), [queue.by_id[first], queue.by_id[second]], {}
+    await fake_placer(queue, FixedRanking(lambda _build: list(ranked)), spawned).assign(
+        [queue.by_id[first], queue.by_id[second]], {}
     )
 
-    assert scheduler.assigned == [REMOTE, OTHER]
-
-
-class FixedRng:
-    """Every draw returns `value`."""
-
-    def __init__(self, value: float) -> None:
-        self.value = value
-
-    def random(self) -> float:
-        return self.value
+    assert spawned.stores == [REMOTE, OTHER]
 
 
 @pytest.mark.parametrize(("draw", "expected"), [(0.0, OTHER), (0.5, REMOTE)])
@@ -687,54 +618,58 @@ class FixedRng:
 async def test_an_exploration_draw_sends_the_build_past_the_best(draw: float, expected: StoreId) -> None:
     queue = BuildQueue()
     build_id, _ = await queue.enqueue(_request(1))
-    scheduler = TwoRemotesScheduler(queue)
-    scheduler.ranker = SimpleNamespace(settings=StoreRankingSettings(explore_share=0.1))
-    scheduler.rng = FixedRng(draw)
+    spawned = Spawned()
+    placer = fake_placer(
+        queue, _two_remotes(), spawned, settings=StoreRankingSettings(explore_share=0.1), rng=FixedRng(draw)
+    )
 
-    await Scheduler._assign_to_stores(cast("Any", scheduler), [queue.by_id[build_id]], {})  # noqa: SLF001 -- the assignment is the unit
+    await placer.assign([queue.by_id[build_id]], {})
 
-    assert scheduler.assigned == [expected]
+    assert spawned.stores == [expected]
 
 
 @pytest.mark.anyio
 async def test_a_prefer_local_build_is_never_explored() -> None:
     queue = BuildQueue()
     build_id, _ = await queue.enqueue(_request(1, {"preferLocalBuild": "1"}))
-    scheduler = AssignScheduler(queue)
-    scheduler.ranker = SimpleNamespace(settings=StoreRankingSettings(explore_share=1.0))
-    scheduler.rng = FixedRng(0.0)
+    spawned = Spawned()
+    placer = fake_placer(
+        queue, _remote_alone(), spawned, settings=StoreRankingSettings(explore_share=1.0), rng=FixedRng(0.0)
+    )
 
-    await Scheduler._assign_to_stores(cast("Any", scheduler), [queue.by_id[build_id]], {})  # noqa: SLF001 -- the assignment is the unit
+    await placer.assign([queue.by_id[build_id]], {})
 
-    assert scheduler.assigned == [LOCAL_STORE_ID]
+    assert spawned.stores == [LOCAL_STORE_ID]
 
 
-class BusyLocalScheduler(AssignScheduler):
-    """The local slot is full for 100 s, and a delegation's round trip is 0.3 s."""
+class RoundTripOnly:
+    """A delegation's round trip is 0.3 s; the inputs' cost is measured when *measured*."""
 
-    def __init__(self, queue: BuildQueue, *, measured: bool) -> None:
-        super().__init__(queue)
+    def __init__(self, *, measured: bool) -> None:
         self.measured = measured
 
-    async def _transfer_seconds(self, *args: Any) -> dict[StoreId, float]:
-        build: QueuedBuild = args[0]
+    async def transfer_seconds(self, build: QueuedBuild) -> dict[StoreId, float]:
         if self.measured:
             build.inputs_measured.add(REMOTE)
         return {REMOTE: 0.3}
 
-    def _local_slot_is_full(self, *_args: Any) -> bool:
-        return True
 
-    def _local_wait_seconds(self) -> float | None:
-        return 100.0
-
-
-async def _assign_prefer_local(*, measured: bool) -> BusyLocalScheduler:
+async def _assign_prefer_local(*, measured: bool) -> Spawned:
+    """The local slot of `-j1` is held by a build expected to end in 100 s."""
     queue = BuildQueue()
-    build_id, _ = await queue.enqueue(_request(1, {"preferLocalBuild": "1"}))
-    scheduler = BusyLocalScheduler(queue, measured=measured)
-    await Scheduler._assign_to_stores(cast("Any", scheduler), [queue.by_id[build_id]], {})  # noqa: SLF001 -- the assignment is the unit
-    return scheduler
+    running_id, _ = await queue.enqueue(_request(2))
+    running = queue.by_id[running_id]
+    running.assigned_store_id = LOCAL_STORE_ID
+    running.worker = anyio.CancelScope()
+    running.started_at = time.monotonic()
+    running.expected_duration = 100_000
+    build_id, _ = await queue.enqueue(_request(1, {"preferLocalBuild": "1"}), options=options(1))
+    spawned = Spawned()
+    placer = fake_placer(queue, _remote_alone(), spawned, estimator=RoundTripOnly(measured=measured))
+
+    await placer.assign([queue.by_id[build_id]], {LOCAL_STORE_ID: 1})
+
+    return spawned
 
 
 class TestAPreferLocalBuildNeverSentToTheStore:
@@ -745,15 +680,15 @@ class TestAPreferLocalBuildNeverSentToTheStore:
 
     @pytest.mark.anyio
     async def test_waits_while_its_inputs_there_are_unmeasured(self) -> None:
-        scheduler = await _assign_prefer_local(measured=False)
+        spawned = await _assign_prefer_local(measured=False)
 
-        assert scheduler.assigned == []
+        assert spawned.stores == []
 
     @pytest.mark.anyio
     async def test_goes_once_they_are_measured_and_the_wait_is_dearer(self) -> None:
-        scheduler = await _assign_prefer_local(measured=True)
+        spawned = await _assign_prefer_local(measured=True)
 
-        assert scheduler.assigned == [REMOTE]
+        assert spawned.stores == [REMOTE]
 
 
 class ValidityStore:
