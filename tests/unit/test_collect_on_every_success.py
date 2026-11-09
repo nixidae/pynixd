@@ -128,6 +128,9 @@ class FakeScheduler:
     async def _say_where_it_builds(self, *_args: Any) -> None:
         return
 
+    async def _keep_log(self, *_args: Any) -> None:
+        return None
+
     async def _hold_outputs(self, *_args: Any) -> None:
         return
 

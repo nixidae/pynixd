@@ -57,6 +57,9 @@ class SlotScheduler:
         self.steps.append("build")
         return FakeResponse(BuildResultStatus.BUILT)
 
+    async def _keep_log(self, *_args: Any) -> None:
+        return None
+
     async def _hold_outputs(self, held: contextlib.AsyncExitStack, *_args: Any) -> None:
         self.steps.append("outputs rooted")
         held.callback(self.steps.append, "roots released")

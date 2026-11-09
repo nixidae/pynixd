@@ -24,7 +24,8 @@ import anyio
 import structlog
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID
-from nix_daemon_protocol.protocol import Verbosity
+from nix_daemon_protocol.logs import LogResult
+from nix_daemon_protocol.protocol import ResultType, Verbosity
 from pynixd_store.build_stats import (
     BuildEstimateSource,
     BuildObservation,
@@ -69,6 +70,7 @@ from .serde import (
     QueryValidPathsRequest,
 )
 from .store import DaemonStore, LocalDBStore
+from .store.local_db import write_router
 from .store.transfer import stream_paths_store_to_store
 from .substitution_queue import SubstitutionQueue
 from .system_features import BUILTIN_SYSTEM, effective_required_features
@@ -165,6 +167,25 @@ def output_paths(build: QueuedBuild, resp: BuildDerivationResponse) -> StorePath
     ca_paths = {StorePath(str(r.out_path)).with_store_prefix() for r in realised.values() if r.out_path}
     static_paths = {p for p in build.request.derivation.output_paths().values() if p != StorePath("")}
     return static_paths | ca_paths
+
+
+def builder_log(build: QueuedBuild, resp: BuildDerivationResponse) -> bytes | None:
+    """The log a build on another store leaves in the local store, or None under `keep-build-log = false`.
+
+    `buildWithHook` (`derivation-building-goal.cc:619`) opens a local `LogFile` for a build on a
+    builder too, and writes each line the hook relays. The builder sends a line as a
+    `BUILD_LOG_LINE` result without its newline. `build-remote.sh:74` reads the log back with
+    `nix log`.
+    """
+    overrides = build.options.overrides if build.options is not None else {}
+    if overrides.get("keep-build-log") == "false":
+        return None
+    lines = (
+        message.fields[0].valstr
+        for message in resp.logs.messages
+        if isinstance(message, LogResult) and message.result_type == ResultType.BUILD_LOG_LINE and message.fields
+    )
+    return "".join(f"{line}\n" for line in lines if line is not None).encode()
 
 
 async def _hold(roots: TempRoots, paths: Iterable[StorePath], store_id: StoreId) -> None:
@@ -1363,6 +1384,8 @@ class Scheduler:
                     elif (fault := self._retryable_elsewhere(build, store, build_resp)) is not None:
                         await self._retry_elsewhere(build, store, build_resp, fault)
                         build_resp = None
+                    if build_resp is not None and store is not self.local_builder:
+                        await self._keep_log(build, build_resp)
                 # The build connection goes back before the pull, so the slot
                 # takes the next build while this one pulls. A pull took 92 s
                 # against a build of 40 s for t3code, with the slot idle for
@@ -1658,6 +1681,17 @@ class Scheduler:
             status=resp.result.status,
         )
         return resp
+
+    async def _keep_log(self, build: QueuedBuild, resp: BuildDerivationResponse) -> None:
+        """Write the log of a build on a builder to the local store, as Nix's build hook does."""
+        text = builder_log(build, resp)
+        if text is None:
+            return
+        try:
+            await write_router(self.local_store).add_build_log(str(build.request.drv_path), text)
+        except Exception:
+            # `LogFile` failing ends Nix's goal; pynixd keeps the build, which has its outputs.
+            log.warning("build_log_not_kept", build_id=build.build_id, exc_info=True)
 
     async def _hold_outputs(
         self, held: contextlib.AsyncExitStack, build: QueuedBuild, store: DaemonStore, resp: BuildDerivationResponse
