@@ -7,6 +7,7 @@ has it installed and otherwise falls back to the standard-library logger.
 from __future__ import annotations
 
 import logging as stdlib_logging
+import weakref
 from contextvars import ContextVar, Token
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -52,6 +53,18 @@ def get_logger(name: str) -> ProtocolLogger:
 
 _DEFAULT_LOGGER = get_logger("nix_daemon_protocol")
 _DECODE_DEPTH: ContextVar[int] = ContextVar("nix_daemon_protocol_decode_depth", default=0)
+_REPLIES: weakref.WeakSet[BaseException] = weakref.WeakSet()
+
+
+def reply_error[E: BaseException](exc: E) -> E:
+    """Mark *exc* as the daemon's own `STDERR_ERROR` reply: a valid frame, so no decode failed.
+
+    The caller that handles it picks its level. On dynhetz, 43 of 49 error
+    records in 15 minutes were refusals that `gc.py` already logs as a
+    warning. nixidae/nixidae#893.
+    """
+    _REPLIES.add(exc)
+    return exc
 
 
 def log_deserialization_failure(ctx: ReadContext, model_type: type, exc: BaseException) -> None:
@@ -118,7 +131,7 @@ class _DeserializationScope:
             _DECODE_DEPTH.reset(self._token)
         # A cancel or an interrupt stops a read that may be fine, so only an
         # `Exception` is a failure of the bytes.
-        if isinstance(exc, Exception):
+        if isinstance(exc, Exception) and exc not in _REPLIES:
             log_deserialization_failure(self._ctx, self._model_type, exc)
         return False
 

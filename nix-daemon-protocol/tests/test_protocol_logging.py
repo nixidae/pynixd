@@ -10,8 +10,11 @@ import pytest
 
 from nix_daemon_protocol import PROTOCOL_VERSION
 from nix_daemon_protocol import logging as protocol_logging
-from nix_daemon_protocol.context import ReadContext
+from nix_daemon_protocol.add_to_store_nar import AddToStoreNarResponse
+from nix_daemon_protocol.constants import STDERR_NEXT
+from nix_daemon_protocol.context import ReadContext, WriteContext
 from nix_daemon_protocol.io import BytesReader, BytesWriter
+from nix_daemon_protocol.logs import LogError
 from nix_daemon_protocol.wire_message import WireModel
 
 
@@ -101,3 +104,43 @@ async def test_a_cancelled_read_is_not_a_deserialization_failure() -> None:
         )
 
     assert logger.events == []
+
+
+class _Refused(Exception):
+    """What a host's `error_factory` makes of the daemon's message."""
+
+
+async def test_an_error_the_daemon_sent_is_not_a_deserialization_failure() -> None:
+    """`STDERR_ERROR` is a valid reply: the caller logs it at its own level. nixidae/nixidae#893."""
+    writer = BytesWriter()
+    await LogError(msg="Cannot delete path '/nix/store/x' since it is still alive").to_writer(
+        WriteContext(writer=writer, version=PROTOCOL_VERSION)
+    )
+    logger = _RecordingLogger()
+
+    with pytest.raises(_Refused, match="still alive"):
+        await AddToStoreNarResponse.from_reader(
+            ReadContext(
+                reader=BytesReader(writer.get_bytes(), identifier="refusal"),
+                version=PROTOCOL_VERSION,
+                logger=logger,
+                error_factory=_Refused,
+            ),
+        )
+
+    assert logger.events == []
+
+
+async def test_a_truncated_log_stream_is_a_deserialization_failure() -> None:
+    writer = BytesWriter()
+    writer.write_uint64(STDERR_NEXT)
+    logger = _RecordingLogger()
+
+    with pytest.raises(EOFError):
+        await AddToStoreNarResponse.from_reader(
+            ReadContext(
+                reader=BytesReader(writer.get_bytes(), identifier="truncated"), version=PROTOCOL_VERSION, logger=logger
+            ),
+        )
+
+    assert [event for event, _ in logger.events] == ["daemon_deserialization_failed"]

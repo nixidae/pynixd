@@ -34,7 +34,7 @@ from .constants import (
     STDERR_START_ACTIVITY,
     STDERR_STOP_ACTIVITY,
 )
-from .logging import deserialization_scope
+from .logging import deserialization_scope, reply_error
 from .protocol import FieldType
 from .wire_message import WireField, WireModel
 
@@ -190,7 +190,7 @@ async def drain(ctx: ReadContext, raise_on_error: bool = True) -> LogError | Non
         if isinstance(msg, LogError):
             last_error = msg
             if raise_on_error:
-                raise ctx.error_factory(msg.msg)
+                raise reply_error(ctx.error_factory(msg.msg))
     return last_error
 
 
@@ -229,7 +229,7 @@ class WireLogs(WireModel):
                 if isinstance(msg, LogError):
                     msgs.append(msg)
                     if ctx.raise_on_error:
-                        backend_error = ctx.error_factory(msg.msg)
+                        backend_error = reply_error(ctx.error_factory(msg.msg))
                     break
                 if ctx.log_sink:
                     await ctx.log_sink.send(msg)
