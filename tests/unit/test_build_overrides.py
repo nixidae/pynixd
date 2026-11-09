@@ -41,6 +41,18 @@ def test_the_daemon_keeps_its_own_experimental_features() -> None:
     }
 
 
+def test_the_builder_keeps_the_client_store_and_builders_as_the_daemons_do() -> None:
+    """`test_local_build_parity.py`'s post-build hook: the daemon route's hook saw no `store`, and pynixd's did.
+
+    pynixd sends neither setting to a daemon (`KEPT_FROM_THE_DAEMON`, Lillecarl/nix#412), so its own builder
+    applies neither.
+    """
+    got = _build_overrides(_options({"store": "unix:///s", "builders": "/m - - 1 1", "sandbox": "relaxed"}))
+    assert "store" not in got
+    assert "builders" not in got
+    assert got["sandbox"] == "relaxed"
+
+
 def test_keep_failed_is_a_fixed_field_of_the_session() -> None:
     """`daemon.cc:223`: `settings.keepFailed = keepFailed`, whatever the daemon's own `keep-failed` says."""
     assert _build_overrides(_options({}, keep_failed=1))["keep-failed"] == "true"

@@ -47,8 +47,8 @@ log = structlog.get_logger(__name__)
 
 _LINGER_SECONDS = 0.05
 """How long a streamed message may wait in the writer for more to join it."""
-_KEPT_FROM_THE_DAEMON = frozenset({"store", "builders"})
-"""A client's overrides that pynixd answers itself and never sends to a daemon it uses.
+KEPT_FROM_THE_DAEMON = frozenset({"store", "builders"})
+"""A client's overrides that pynixd answers itself, and that no build sees: no daemon it uses, nor its own builder.
 
 NIX-DEFECT (#23): `ClientSettings::apply` (`daemon.cc:287`) sets a trusted
 client's `store` in the worker, and the worker's build hook opens it. A client
@@ -330,8 +330,8 @@ class Connection:
         It sends nothing when the connection carries the set already, so the
         common case costs one comparison. Issue nixidae/nixidae#231.
         """
-        if options is not None and not _KEPT_FROM_THE_DAEMON.isdisjoint(options.overrides):
-            kept = {k: v for k, v in options.overrides.items() if k not in _KEPT_FROM_THE_DAEMON}
+        if options is not None and not KEPT_FROM_THE_DAEMON.isdisjoint(options.overrides):
+            kept = {k: v for k, v in options.overrides.items() if k not in KEPT_FROM_THE_DAEMON}
             options = options.model_copy(update={"overrides": kept})
         if options is None or options == self.applied_options:
             return

@@ -41,6 +41,7 @@ from pynixd_store.source import Pieces
 
 from .. import metrics
 from ..activity import BuildActivity, PostBuildHookActivity
+from ..connection import KEPT_FROM_THE_DAEMON
 from ..op_routes import OpRoute, Owned
 from ..serde import (
     BuildDerivationRequest,
@@ -1452,8 +1453,9 @@ class LocalDBStore(Store):
         return DerivationOutputMapBatchResponse(outputs=result)
 
 
-# `daemon.cc:271-283`: the daemon keeps its own value of these, even for a trusted client.
-_NEVER_APPLIED = frozenset({"experimental-features", "plugin-files", "ssh-auth-sock"})
+# `daemon.cc:271-283`: the daemon keeps its own value of these, even for a trusted client. pynixd's builder
+# keeps the client's `store` and `builders` too, as the daemons do (`KEPT_FROM_THE_DAEMON`).
+_NEVER_APPLIED = frozenset({"experimental-features", "plugin-files", "ssh-auth-sock"}) | KEPT_FROM_THE_DAEMON
 
 
 def _build_overrides(options: SetOptionsRequest | None) -> dict[str, str]:
