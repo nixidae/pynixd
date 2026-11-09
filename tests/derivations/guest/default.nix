@@ -61,7 +61,7 @@ let
     written for a machine rather than a machine inside one: measured,
     `test_wire_parity[impure]` timed out at 120.016s on an idle host.
 
-    Each suite needs only `prepare`, so a failure in one skips none of the
+    Each suite needs only its own `prepare-<suite>`, so a failure in one skips none of the
     others -- they are independent, and a run that stopped at the first
     would hide the second.
   */
@@ -167,22 +167,29 @@ vivariumLib.mkTest (
       ];
     };
 
-    phases = {
-      prepare = {
-        script = ../../guest/prepare.py;
-        after = [ "boot" ];
+    # `prepare-<suite>` in the suite's guest only: `--only unit` keeps its
+    # `after` closure, so it boots one guest and not all of them.
+    phases =
+      lib.mapAttrs' (
+        name: _:
+        lib.nameValuePair "prepare-${name}" {
+          script = ../../guest/prepare.py;
+          after = [ "boot" ];
+          nodes = [ name ];
+        }
+      ) suites
+      // {
+        leaks = {
+          script = ../../guest/leaks.py;
+          after = lib.attrNames suites;
+          always = true;
+          description = "no process outlived its suite";
+        };
       };
-      leaks = {
-        script = ../../guest/leaks.py;
-        after = lib.attrNames suites;
-        always = true;
-        description = "no process outlived its suite";
-      };
-    };
 
     /*
       One phase per suite, each in the guest named after it, so the suites
-      run at once. `prepare` and `leaks` name no guest, so they hold all.
+      run at once. `leaks` names no guest, so it holds all.
       One process per suite: `tests/unit` and `nix-daemon-protocol/tests`
       interfere, and one process for both is how 57 failures once hid
       behind a green run of 684 (pynixd issue #33).
@@ -220,7 +227,7 @@ vivariumLib.mkTest (
         # (`LocalSocketStoreSpec.daemon`), to measure the gap.
         PYNIXD_NO_DAEMON = "1";
       };
-      after = [ "prepare" ];
+      after = [ "prepare-${name}" ];
       /*
         Measured in a QEMU guest on an idle host: `tests/unit` 27.2s,
         `nix-daemon-protocol/tests` 4.8s, `tests/parity` 122.2s.

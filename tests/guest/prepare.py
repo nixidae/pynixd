@@ -1,4 +1,7 @@
-"""Get every guest ready for its suite, and count what runs before it.
+"""Get a suite's guest ready, and count what runs before the suite.
+
+One phase per suite (`prepare-<suite>`), each holding its guest, so they
+run at once and a run of one suite boots one guest.
 
 The suites run as `tester`, who does not own the store, so every `nix`
 call has to reach the guest's daemon. Waited on rather than assumed:
@@ -16,7 +19,8 @@ from vivarium_runner import Machine, Machines
 async def test(vms: Machines) -> None:
     # Every process, not a count: `leaks` compares by pid. It reads this
     # from `vms.shared`, the one thing that crosses from phase to phase.
-    vms.shared["before"] = {}
+    # Each `prepare-<suite>` adds its own guest.
+    vms.shared.setdefault("before", {})
     async with anyio.create_task_group() as group:
         for name, vm in vms.items():
             group.start_soon(_prepare, vms, name, vm)
