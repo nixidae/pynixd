@@ -125,11 +125,81 @@ if [[ "${NIX_REMOTE:-}" == daemon ]]; then
 fi
 EOF
 
+# --- Patch 5: the remote builds reach a daemon ----------------------------
+#
+# `build-remote.sh` builds with `--store $TEST_ROOT/machine0`, a chroot store
+# that the client opens itself, so no daemon took part in its three tests. A
+# daemon over machine0, started from `$DAEMON_PATH` as `startDaemon` starts
+# one, puts the daemon under test between the client and that store in both
+# arms. The client's `--builders` then reach that daemon.
+#
+# The first builder speaks `ssh://`, Nix's legacy serve protocol, which pynixd
+# does not speak (nixidae/nixidae#1242). It becomes `ssh-ng://` in both arms,
+# so the placement on three builders is still measured.
+REMOTE="$WORK/src/tests/functional/build-remote.sh"
+legacy='  "ssh://localhost?remote-store=$TEST_ROOT/machine1?'
+if [[ "$(grep -c -F -- "$legacy" "$REMOTE")" != "1" ]]; then
+    echo "setup.sh: build-remote.sh holds no ssh:// builder line; the patch is stale" >&2
+    exit 1
+fi
+awk -v old="$legacy" 'index($0, old) == 1 { sub(/"ssh:\/\//, "\"ssh-ng://") } { print }' "$REMOTE" > "$REMOTE.new"
+mv "$REMOTE.new" "$REMOTE"
+
+# The clients of the test open machine0 through that daemon, named in
+# NIX_REMOTE and not with `--store`. A trusted client's `--store` reaches the
+# daemon as an override, and `ClientSettings::apply` (`daemon.cc:287`) sets it
+# in the worker. The worker's build hook opens that store, the daemon itself,
+# and its new worker waits for the database lock of the first: the test hung
+# for 300 s. NIX_REMOTE is the setting's default, which the client does not
+# send. Lillecarl/nix#412.
+store_arg='--store "$TEST_ROOT/machine0"'
+if [[ "$(grep -c -F -- "$store_arg" "$REMOTE")" != "4" ]]; then
+    echo "setup.sh: build-remote.sh holds not 4 '$store_arg'; the patch is stale" >&2
+    exit 1
+fi
+awk -v old="$store_arg" -v new='' \
+    '{ while ((i = index($0, old)) > 0) $0 = substr($0, 1, i - 1) new substr($0, i + length(old)); print }' \
+    "$REMOTE" > "$REMOTE.new"
+mv "$REMOTE.new" "$REMOTE"
+
+# The script is sourced twice by `build-remote-input-addressed.sh`. The second
+# run deletes machine0, so the first daemon stops before that.
+insert_after "$REMOTE" '^)$' "the end of build-remote.sh's builders" <<'EOF'
+
+# Added for the daemon run. Stop the daemon over machine0 of an earlier run.
+if [[ -n "${machine0Pid:-}" ]]; then
+    kill "$machine0Pid" 2> /dev/null || true
+    wait "$machine0Pid" 2> /dev/null || true
+fi
+EOF
+insert_after "$REMOTE" '^rm -rf "\$TEST_ROOT/machine"\* || true$' "build-remote.sh's machine wipe" <<'EOF'
+
+# Added for the daemon run. A Unix socket path takes 107 bytes, so the socket
+# goes under $WORK, as the shim puts its own.
+machine0Socket=$WORK/socks/m0-$(printf '%s' "$TEST_ROOT" | cksum | cut -d' ' -f1).socket
+mkdir -p "$WORK/socks"
+# A client of `unix://...?root=` refuses a root that holds no `nix/store` yet,
+# and the daemon makes it only at its first operation. Opening the store
+# makes it.
+NIX_REMOTE= nix --extra-experimental-features 'nix-command' store info --store "$TEST_ROOT/machine0" > /dev/null
+rm -f "$machine0Socket"
+NIX_DAEMON_SOCKET_PATH=$machine0Socket PATH=$DAEMON_PATH NIX_REMOTE=$TEST_ROOT/machine0 \
+    nix --extra-experimental-features 'nix-command' daemon --store "$TEST_ROOT/machine0" &
+machine0Pid=$!
+trap 'kill "$machine0Pid" 2> /dev/null || true; wait "$machine0Pid" 2> /dev/null || true; killDaemon' EXIT
+for ((i = 0; i < 100; i++)); do
+    [[ -S $machine0Socket ]] && break
+    sleep 0.1
+done
+[[ -S $machine0Socket ]] || fail "the daemon over machine0 did not start"
+export NIX_REMOTE="unix://$machine0Socket?root=$TEST_ROOT/machine0"
+EOF
 echo "patches applied:"
 grep -n "NIX_REMOTE= nix --extra" "$FUNCS"
 grep -n "    restartDaemon" "$FUNCS"
 grep -n "NIX_REMOTE= nix-store --init" "$INIT"
 grep -n "    startDaemon" "$INIT"
+grep -n 'ssh-ng://localhost?remote-store=$TEST_ROOT/machine1\|export NIX_REMOTE=\|daemon --store' "$REMOTE"
 
 meson setup "$WORK/src/tests/functional" "$WORK/build"
 echo "READY $WORK"

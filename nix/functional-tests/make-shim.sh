@@ -56,12 +56,17 @@ set -euo pipefail
 # The suite runs no other command that holds that word.
 is_daemon=false
 wants_version=false
+chroot_root=
+previous=
 for arg in "$@"; do
     case "$arg" in
         daemon) is_daemon=true ;;
         --version) wants_version=true ;;
         *) ;;
     esac
+    # `build-remote.sh` starts a daemon over a chroot store with `--store <root>`.
+    [[ "$previous" == --store ]] && chroot_root=$arg
+    previous=$arg
 done
 
 # Only `nix daemon` belongs to pynixd. `nix daemon --version` does not: the
@@ -69,6 +74,37 @@ done
 # protocol and not of Nix.
 if [[ "$is_daemon" != true ]] || [[ "$wants_version" == true ]]; then
     exec "$REAL_NIX" "$@"
+fi
+
+if [[ -n "$chroot_root" ]]; then
+    root=$(readlink -f "$chroot_root")
+    work=${TEST_ROOT:-$(dirname "$root")}
+    mkdir -p "${WORK:?}/socks"
+    daemon=true
+    [[ "${NIXFT_NO_DAEMON:-}" == 1 ]] && daemon=false
+    config=$work/pynixd-chroot-config.json
+    cat > "$config" <<JSON
+{
+  "stores": {
+    "local": {
+      "type": "local-socket",
+      "store_path": "$root",
+      "socket_path": "$WORK/socks/$(printf '%s' "$root" | cksum | cut -d' ' -f1)-chroot.socket",
+      "nix_bin": "$REAL_NIX",
+      "use_db": true,
+      "monitor": false,
+      "probe": false,
+      "pynixd_writes": true,
+      "daemon": $daemon
+    }
+  },
+  "unix_path": "${NIX_DAEMON_SOCKET_PATH:?}",
+  "ssh_port": null,
+  "http_port": null
+}
+JSON
+    export PYNIXD_CONFIG=$config PYNIXD_LOG_LEVEL=INFO
+    exec "$PYNIXD_BIN" daemon 2> >(tee -a "$work/pynixd.log" | grep --line-buffered -v '"level": "\(info\|debug\)"' >&2)
 fi
 
 if [[ -z "${NIX_STORE_DIR:-}" || -z "${NIX_STATE_DIR:-}" || -z "${NIX_LOG_DIR:-}" || -z "${NIX_DAEMON_SOCKET_PATH:-}" ]]; then
