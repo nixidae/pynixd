@@ -118,7 +118,7 @@ async def test_a_client_that_is_gone_drops_out_of_the_fan_out(error: BaseExcepti
 
     `RuntimeError` was not in the caught set, so it left the task group of
     `post_log_bytes` as an `ExceptionGroup`, then left
-    `Scheduler.execute_build` through its own error path. Nothing retrieves
+    `Executor.run` through its own error path. Nothing retrieves
     the exception of that task. Issue nixidae/nixidae#235.
     """
     build = _build()

@@ -1,6 +1,6 @@
 """A builder that already holds the outputs still hands them over.
 
-`execute_build` and `_collect_outputs` pulled the outputs for `BUILT` alone.
+pynixd pulled the outputs for `BUILT` alone.
 A builder that held them from an earlier build answered `ALREADY_VALID`, so
 the local store never got them. A dynamic derivation's produced `.drv` then
 failed with "pynixd: derivation not found" on every run, until the builder
@@ -11,16 +11,13 @@ nixidae/nixidae#998.
 
 from __future__ import annotations
 
-import contextlib
-from types import SimpleNamespace
-from typing import Any, ClassVar, cast
+from dataclasses import dataclass
 
 import pytest
 from prometheus_client import REGISTRY
 
 from nix_daemon_protocol.ids import StoreId
-from pynixd.build_queue import BuildQueue
-from pynixd.scheduler import Scheduler
+from pynixd.build_queue import BuildQueue, QueuedBuild
 from pynixd.serde import (
     BasicDerivation,
     BuildDerivationRequest,
@@ -30,177 +27,93 @@ from pynixd.serde import (
     BuildResultStatus,
 )
 from pynixd_store.store_path import StorePath
+from tests._conftest.execution import FakeLocal, FakeSandbox, Streamed, Triggers, answering, fake_executor, queued
+from tests._conftest.placement import FakeStore
 
 PRODUCED_DRV = "/nix/store/d72wk730icpqmcjzfrxfpn22g2riadjd-kubecove.drv"
 SUCCESSES_THAT_BUILT_NOTHING = [BuildResultStatus.ALREADY_VALID, BuildResultStatus.SUBSTITUTED]
+BUILDER = StoreId("sg1-n3")
 
 
-class FakeRealisation:
-    out_path = PRODUCED_DRV
+@dataclass
+class Run:
+    build: QueuedBuild
+    steps: list[str]
+    pulled: set[StorePath]
+    located: dict[str, StoreId]
+    observed: list[int]
 
 
-class FakeResult:
-    error_msg = ""
-
-    def __init__(self, status: BuildResultStatus) -> None:
-        self.status = status
-
-    def realised_outputs(self) -> dict[str, FakeRealisation]:
-        return {"out": FakeRealisation()}
-
-
-class FakeResponse:
-    def __init__(self, status: BuildResultStatus) -> None:
-        self.result = FakeResult(status)
-
-
-class FakeDerivation:
-    @staticmethod
-    def output_paths() -> dict[str, StorePath]:
-        """Floating and text-hashed: the derivation names no output path."""
-        return {"out": StorePath("")}
-
-
-class FakeRequest:
-    derivation = FakeDerivation()
-
-
-class FakeBuild:
-    build_id = "b1"
-    assigned_store_id: StoreId | None = None
-    options = None
-    enqueued_at = 0.0
-    started_at: float | None = None
-    request = FakeRequest()
-    ca_realisations: ClassVar[list[Any]] = []
-
-    async def post_log_and_fanout(self, _msg: Any) -> None:
-        return
-
-
-class FakeStore:
-    store_id = StoreId("sg1-n3")
-
-    def build_conn(self, _options: Any = None) -> Any:
-        return contextlib.nullcontext(object())
-
-
-class FakeQueue:
-    def __init__(self, steps: list[str]) -> None:
-        self.steps = steps
-
-    async def complete(self, _build_id: str, _response: Any) -> None:
-        self.steps.append("complete")
-
-    async def fail(self, _build_id: str, _error_msg: str) -> None:
-        self.steps.append("fail")
-
-
-class FakeContext:
-    def __init__(self) -> None:
-        self.output_locations: dict[str, StoreId] = {}
-        self.stores: dict[StoreId, object] = {}
-
-
-class FakeScheduler:
-    """Enough of `Scheduler` for `execute_build` and `_collect_outputs`,
-    called unbound, as `test_outputs_before_completion.py` does."""
-
-    def __init__(self, status: BuildResultStatus) -> None:
-        self.status = status
-        self.steps: list[str] = []
-        self.queue = FakeQueue(self.steps)
-        self.ctx = FakeContext()
-        self.local_store = SimpleNamespace(db=None)
-        self.local_builder = None
-        self.pulled: set[StorePath] = set()
-
-    def trigger(self) -> None:
-        return
-
-    def _retryable_elsewhere(self, *_args: Any) -> str | None:
-        """No other store: a failed result completes. nixidae/nixidae#1015."""
-        return None
-
-    async def _prepare_build(self, *_args: Any) -> None:
-        return
-
-    async def _say_where_it_builds(self, *_args: Any) -> None:
-        return
-
-    async def _post_build_hook_here(self, _build: Any, _store: Any, resp: Any) -> Any:
-        return resp
-
-    async def _keep_log(self, *_args: Any) -> None:
-        return None
-
-    async def _hold_outputs(self, *_args: Any) -> None:
-        return
-
-    async def _execute(self, *_args: Any) -> FakeResponse:
-        return FakeResponse(self.status)
-
-    async def _collect_outputs(self, *args: Any) -> None:
-        self.steps.append("collect")
-        await Scheduler._collect_outputs(cast("Any", self), *args)  # noqa: SLF001 -- the method under test
-
-    _pull_with_retries = Scheduler._pull_with_retries  # noqa: SLF001 -- part of the collection
-
-    async def _record_observation(self, _build: Any, resp: FakeResponse) -> None:
-        self.steps.append(f"observed {resp.result.status.name}")
-
-    async def _pull_outputs(self, _store: Any, paths: set[StorePath]) -> int:
-        self.pulled |= paths
-        return 0
-
-
-async def _run(status: BuildResultStatus) -> FakeScheduler:
-    scheduler = FakeScheduler(status)
-    await Scheduler.execute_build(cast("Any", scheduler), cast("Any", FakeBuild()), cast("Any", FakeStore()))
-    return scheduler
+async def _run(status: BuildResultStatus) -> Run:
+    """A floating, text-hashed build on a builder: the derivation names no output path, and the answer realises it."""
+    steps: list[str] = []
+    store = FakeStore(BUILDER)
+    store.conn.answer = answering(status, realised=PRODUCED_DRV)
+    local = FakeLocal()
+    sandbox = FakeSandbox()
+    stream = Streamed(steps)
+    located: dict[str, StoreId] = {}
+    queue = BuildQueue()
+    build = await queued(queue, outputs={"out": ""})
+    executor = fake_executor(
+        queue,
+        {BUILDER: store},
+        local=local,
+        here=sandbox,
+        stream=stream,
+        trigger=Triggers(steps),
+        output_locations=located,
+    )
+    await executor.run(build, store)
+    pulled = {path for transfer in stream.calls if transfer.dst is local for path in transfer.paths}
+    return Run(build, steps, pulled, located, [observation.status for observation in sandbox.db.observations])
 
 
 class TestABuilderThatBuiltNothing:
     @pytest.mark.anyio
     @pytest.mark.parametrize("status", SUCCESSES_THAT_BUILT_NOTHING)
     async def test_pulls_the_realised_output(self, status: BuildResultStatus) -> None:
-        scheduler = await _run(status)
+        run = await _run(status)
 
-        assert scheduler.pulled == {StorePath(PRODUCED_DRV)}
+        assert run.pulled == {StorePath(PRODUCED_DRV)}
 
     @pytest.mark.anyio
     @pytest.mark.parametrize("status", SUCCESSES_THAT_BUILT_NOTHING)
     async def test_records_where_the_output_is(self, status: BuildResultStatus) -> None:
-        scheduler = await _run(status)
+        run = await _run(status)
 
-        assert scheduler.ctx.output_locations == {PRODUCED_DRV: StoreId("sg1-n3")}
+        assert run.located == {PRODUCED_DRV: BUILDER}
 
     @pytest.mark.anyio
     @pytest.mark.parametrize("status", SUCCESSES_THAT_BUILT_NOTHING)
     async def test_records_the_answer_under_its_own_status(self, status: BuildResultStatus) -> None:
         """A 0.2 s answer measures delegation, not the build. The estimator
         reads `BUILT` rows alone, so the row keeps its status."""
-        scheduler = await _run(status)
+        run = await _run(status)
 
-        assert scheduler.steps == ["collect", f"observed {status.name}", "complete"]
+        assert run.observed == [int(status)]
+        assert run.steps == ["copy", "trigger"]
+        assert run.build.answer.result().result.status == status
 
 
 class TestABuilderThatBuilt:
     @pytest.mark.anyio
     async def test_pulls_and_records_the_build(self) -> None:
-        scheduler = await _run(BuildResultStatus.BUILT)
+        run = await _run(BuildResultStatus.BUILT)
 
-        assert scheduler.pulled == {StorePath(PRODUCED_DRV)}
-        assert scheduler.steps == ["collect", "observed BUILT", "complete"]
+        assert run.pulled == {StorePath(PRODUCED_DRV)}
+        assert run.observed == [int(BuildResultStatus.BUILT)]
+        assert run.steps == ["copy", "trigger"]
 
 
 class TestAFailedBuild:
     @pytest.mark.anyio
     async def test_pulls_nothing(self) -> None:
-        scheduler = await _run(BuildResultStatus.PERMANENT_FAILURE)
+        run = await _run(BuildResultStatus.PERMANENT_FAILURE)
 
-        assert scheduler.pulled == set()
-        assert scheduler.steps == ["complete"]
+        assert run.pulled == set()
+        assert run.steps == ["trigger"]
+        assert run.build.answer.result().result.status == BuildResultStatus.PERMANENT_FAILURE
 
 
 class TestTheCompletionMetric:

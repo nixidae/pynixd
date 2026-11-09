@@ -43,7 +43,7 @@ _BUILT = BuildDerivationResponse(result=BuildResult(status=BuildResultStatus.BUI
 
 
 def _scheduler() -> Scheduler:
-    """A local and a remote store. Each test fakes `execute_build`."""
+    """A local and a remote store. Each test fakes `Executor.run`."""
     local = MockStore("local", feature_matrix={"x86_64-linux": set()})
     remote = MockStore("remote", feature_matrix={"x86_64-linux": set()})
     return Scheduler(
@@ -82,7 +82,7 @@ async def test_leaving_the_group_cancels_a_running_build(monkeypatch: pytest.Mon
             cancelled.append(build)
             raise
 
-    monkeypatch.setattr(scheduler, "execute_build", execute)
+    monkeypatch.setattr(scheduler.executor, "run", execute)
 
     with anyio.fail_after(5):
         async with scheduler.workers():
@@ -106,7 +106,7 @@ async def test_a_crashed_worker_leaves_its_siblings_running(monkeypatch: pytest.
         await release.wait()
         await scheduler.queue.complete(build.build_id, _BUILT)
 
-    monkeypatch.setattr(scheduler, "execute_build", execute)
+    monkeypatch.setattr(scheduler.executor, "run", execute)
 
     async with scheduler.workers():
         await scheduler.schedule()
@@ -128,7 +128,7 @@ async def test_a_build_cancelled_before_its_worker_starts_never_runs(monkeypatch
         del store
         ran.append(build)
 
-    monkeypatch.setattr(scheduler, "execute_build", execute)
+    monkeypatch.setattr(scheduler.executor, "run", execute)
 
     async with scheduler.workers():
         await scheduler.schedule()

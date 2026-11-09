@@ -8,23 +8,21 @@ limit, each time with `Permission denied: '/n'` and no traceback.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from pynixd.build_queue import BuildQueue
-from pynixd.scheduler import Scheduler
 from pynixd.serde import BuildResultStatus
-from tests._conftest.execution import fake_executor, queued
+from tests._conftest.execution import FakeSandbox, fake_executor, queued, sandbox_settings
 from tests._conftest.placement import FakeStore
 
 if TYPE_CHECKING:
     from pynixd.build_queue import QueuedBuild
+    from pynixd.serde import BuildDerivationResponse
 
 
-class Local:
-    async def build_here(self, *_args: Any) -> Any:
-        raise PermissionError(13, "Permission denied", "/n")
+async def _sandbox_raises() -> BuildDerivationResponse:
+    raise PermissionError(13, "Permission denied", "/n")
 
 
 async def _crash(store_ids: tuple[str, ...]) -> QueuedBuild:
@@ -32,17 +30,9 @@ async def _crash(store_ids: tuple[str, ...]) -> QueuedBuild:
     stores = {StoreId(n): FakeStore(StoreId(n)) for n in store_ids}
     queue = BuildQueue()
     build = await queued(queue)
-    scheduler = SimpleNamespace(
-        local_store=stores[LOCAL_STORE_ID],
-        queue=queue,
-        trigger=lambda: None,
-        executor=fake_executor(queue, stores),
-        _say_where_it_builds=Scheduler._say_where_it_builds,  # noqa: SLF001 -- the unit's own step
-    )
-    store = stores[LOCAL_STORE_ID]
-    await Scheduler._build_here(
-        cast("Any", scheduler), build, cast("Any", store), cast("Any", Local()), cast("Any", None)
-    )  # noqa: SLF001
+    sandbox = FakeSandbox(build=_sandbox_raises)
+    executor = fake_executor(queue, stores, here=sandbox)
+    await executor.build_in_sandbox(build, stores[LOCAL_STORE_ID], sandbox, sandbox_settings())
     return build
 
 

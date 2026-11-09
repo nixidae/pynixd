@@ -14,67 +14,48 @@ they are pulled automatically.
 from __future__ import annotations
 
 import contextlib
-import json
 import random
-import re
 import time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import anyio
 import structlog
 
-from nix_daemon_protocol.ids import LOCAL_STORE_ID
-from nix_daemon_protocol.logs import LogResult
-from nix_daemon_protocol.protocol import ResultType, Verbosity
 from pynixd_store.build_stats import (
-    BuildObservation,
     identity_of,
 )
-from pynixd_store.store_path import StorePath
 
 from . import metrics, state
-from ._lazy import ssh_errors
 from .allocator import (
     BuildAllocator,
     TelemetryStoreRanker,
 )
 from .build_queue import BuildQueue, QueuedBuild
-from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
-from .exceptions import BackendError, InfrastructureError, error_text, leaves
-from .execution import Executor, add_temp_roots
-from .goals.results import failure, result_succeeded
+from .exceptions import error_text
+from .execution import Executor
 from .placement import (
     Placer,
     TransferEstimator,
-    ms_since,
     request_has_a_local_slot,
 )
 from .placement_trace import PlacementTrace
 from .serde import (
     BuildDerivationResponse,
-    BuildResultStatus,
-    LogNext,
 )
 from .store import DaemonStore, LocalDBStore
-from .store.base import get_current_system
 from .store.local_db import write_router
 from .store.transfer import stream_paths_store_to_store
 from .substitution_queue import SubstitutionQueue
-from .trust import warning_text
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterable, Sequence
+    from collections.abc import AsyncIterator, Sequence
 
     from anyio.abc import TaskGroup
 
-    from nix_daemon_protocol.aliases import StorePathSet
     from nix_daemon_protocol.ids import BuildId, RequestId, StoreId
-    from nix_daemon_protocol.logs import LogMessage
-    from pynixd_store.builder.settings import BuildSettings
-    from pynixd_store.temp_roots import TempRoots
 
     from .answer import Answer
-    from .connection import ClientConn, Connection
+    from .connection import ClientConn
     from .context import PynixdContext
     from .derived_path import DerivedPath
     from .psi import SystemHealth
@@ -85,159 +66,6 @@ if TYPE_CHECKING:
     from .store.local_daemon import LocalStore
 
 log = structlog.get_logger(__name__)
-
-
-_PULL_ATTEMPTS = 3
-_PULL_BACKOFF_SECONDS = 2.0
-"""The first wait before a pull again; it doubles. A test sets 0, not a
-patched `anyio.sleep`: nixidae/nixidae#1019."""
-_ROOTS_CLOSE_SECONDS = 10.0
-"""The bound on releasing a build's roots on a store with no daemon, under a shield."""
-
-
-class _OutputClock:
-    """The log sink of a running build: it notes when each message arrives."""
-
-    options = None
-
-    def __init__(self, build: QueuedBuild) -> None:
-        self._build = build
-
-    async def send(self, msg: LogMessage) -> None:
-        del msg
-        self._build.last_output_at = time.monotonic()
-
-
-def output_paths(build: QueuedBuild, resp: BuildDerivationResponse) -> StorePathSet:
-    """The output paths of a successful build: the static ones and the realised ones."""
-    realised = resp.result.realised_outputs() or {}
-    ca_paths = {StorePath(str(r.out_path)).with_store_prefix() for r in realised.values() if r.out_path}
-    static_paths = {p for p in build.request.derivation.output_paths().values() if p != StorePath("")}
-    return static_paths | ca_paths
-
-
-def builder_log(build: QueuedBuild, resp: BuildDerivationResponse) -> bytes | None:
-    """The log a build on another store leaves in the local store, or None under `keep-build-log = false`.
-
-    `buildWithHook` (`derivation-building-goal.cc:619`) opens a local `LogFile` for a build on a
-    builder too. From an `ssh-ng://` builder it writes each `BUILD_LOG_LINE` result with a
-    newline, and each `SET_PHASE` result as the `@nix` line stdenv prints
-    (`derivation-building-goal.cc:671`). `build-remote.sh:74` reads the log back with `nix log`.
-    """
-    overrides = build.options.overrides if build.options is not None else {}
-    if overrides.get("keep-build-log") == "false":
-        return None
-    lines: list[str] = []
-    for message in resp.logs.messages:
-        if not isinstance(message, LogResult):
-            continue
-        first = message.fields[0].valstr if message.fields else None
-        if message.result_type == ResultType.BUILD_LOG_LINE:
-            lines.append(f"{first or ''}\n")
-        elif message.result_type == ResultType.SET_PHASE and first is not None:
-            phase = json.dumps({"action": "setPhase", "phase": first}, separators=(",", ":"), ensure_ascii=False)
-            lines.append(f"@nix {phase}\n")
-    return "".join(lines).encode(errors="surrogateescape")
-
-
-def kept_on_the_builder(build: QueuedBuild) -> str | None:
-    """The hook's warning for a failed build under `--keep-failed` (`build-remote.cc:328`), or None.
-
-    `build-remote.sh:113` asserts it.
-    """
-    if build.options is None or not build.options.keep_failed:
-        return None
-    hint = (
-        " You can re-run the command with `--builders ''` to disable remote building for this invocation."
-        if build.request.derivation.platform == get_current_system()
-        else ""
-    )
-    return warning_text(f"The failed build directory was kept on the remote builder due to `--keep-failed`.{hint}")
-
-
-async def _hold(roots: TempRoots, paths: Iterable[StorePath], store_id: StoreId) -> None:
-    """Hold *paths* against the collector of a store pynixd builds into itself. No daemon worker holds them."""
-    for path in paths:
-        if path == StorePath(""):
-            continue
-        if not await roots.add(path):
-            raise BackendError(f"pynixd: store {store_id} cannot hold '{path}' against its collector")
-
-
-def _cannot_build_there(store_id: StoreId) -> BackendError:
-    """A build pynixd's builder leaves to a daemon, on a store that runs none. The log names the reason."""
-    return BackendError(f"pynixd: store {store_id} runs no Nix daemon, and pynixd cannot build there")
-
-
-def with_build_times(resp: BuildDerivationResponse, start: int, stop: int) -> BuildDerivationResponse:
-    """*resp* with the times pynixd measured where a builder left Nix's zero.
-
-    NIX-DEFECT (#23): `Store::buildDerivation` (`entry-points.cc:85`) runs a `DerivationTrampolineGoal`,
-    whose `doneSuccess` (`derivation-trampoline-goal.cc:227`) answers with a new `BuildResult` that holds the
-    status and the outputs alone. A build that ran answers `timesBuilt`, `startTime` and `stopTime` of 0, so
-    a client cannot tell how long it took. pynixd fills each field that still holds 0, and only for `Built`:
-    a builder that fills one keeps its own value, so pynixd follows Nix again once Nix fixes it.
-    Lillecarl/nix#283 merges the stats in the trampoline goal. nixidae/nixidae#1217.
-    """
-    result = resp.result
-    if result.status != BuildResultStatus.BUILT:
-        return resp
-    update: dict[str, int] = {}
-    if not result.times_built:
-        update["times_built"] = 1
-    if not result.start_time:
-        update["start_time"] = start
-    if not result.stop_time:
-        update["stop_time"] = stop
-    if not update:
-        return resp
-    return resp.model_copy(update={"result": result.model_copy(update=update)})
-
-
-_ERROR_PREFIX = re.compile(r"\x1b\[31;1merror(?: \[[^\]]*\])?:\x1b\[0m ")
-"""What `showErrorInfo` writes before an error's message (`error.cc:223`, `:262`)."""
-
-
-def without_error_prefix(resp: BuildDerivationResponse) -> BuildDerivationResponse:
-    """*resp* with the `error: ` prefix taken off the front of its `errorMsg`.
-
-    NIX-DEFECT (#23): `Store::buildDerivation` (`entry-points.cc:95`) answers an `Error` that escapes the goal
-    with `.msg = e.msg()`, the whole formatted text, prefix and all, where `message()` (`error.hh:164`) is the
-    message alone. The client adds its own prefix, so it prints `error: error: ...`; Nix's own remote builds
-    embed the doubled text the same way. pynixd removes the leading prefix from a daemon's answer and from its
-    own builder's, which copies `e.msg()`, so the client prints one, as the daemon alone prints it. A client that
-    sends `BuildDerivation` to pynixd gets the message without the prefix too. Lillecarl/nix#409.
-    nixidae/nixidae#1204.
-    """
-    message = resp.result.error_msg
-    prefix = _ERROR_PREFIX.match(message)
-    if prefix is None:
-        return resp
-    return resp.model_copy(update={"result": resp.result.model_copy(update={"error_msg": message[prefix.end() :]})})
-
-
-def builder_options(
-    options: SetOptionsRequest | None, store: DaemonStore, local_builder: DaemonStore | None
-) -> SetOptionsRequest | None:
-    """The client's options, with `max-jobs = 1` for a builder, as the hook sends them (`build-remote.cc:97`).
-
-    The client's `--max-jobs 0` means "not here"; forwarded, it makes the builder refuse the build.
-    """
-    if options is None or store is local_builder:
-        return options
-    return options.model_copy(update={"max_build_jobs": 1})
-
-
-def build_decision_seeds(drv_path: str, input_srcs: Iterable[str]) -> set[str]:
-    """The seed set a build decision records, as build-kind.
-
-    The derivation plus the inputs its request names: no derivation file
-    is read, because the wire request already carries every input path.
-    Deeper layers resolve through the store's own references at flush --
-    if they needed building, their own decisions record them in turn.
-    Issue #65.
-    """
-    return {drv_path, *input_srcs}
 
 
 class Scheduler:
@@ -281,18 +109,37 @@ class Scheduler:
             dynamic=self._dynamic_feature_matrix,
             spawn=self._spawn_worker,
         )
-        self.executor: Executor[DaemonStore, LocalStore | LocalDBStore] = Executor(
+        local = self.local_store
+        self.executor: Executor[DaemonStore, LocalStore | LocalDBStore, LocalDBStore] = Executor(
             queue=self.queue,
-            local=self.local_store,
+            local=local,
+            local_builder=self.local_builder,
+            here=local if isinstance(local, LocalDBStore) else None,
+            sandbox_at=self._sandbox_at,
+            current=self._current,
             stores=lambda: self.stores,
             settings=self.ranker.settings,
             trigger=self.trigger,
             strip_handled_features=self.allocator.strip_handled_features,
             stream=stream_paths_store_to_store,  # type: ignore[arg-type]  # zuban-bug: a union type argument fails a callable Protocol; mypy accepts the call
+            marks=lambda: local.db,
+            add_build_log=lambda name, text: write_router(local).add_build_log(name, text),
+            output_locations=ctx.output_locations,
+            trace=self.trace,
         )
         for client in [*self.stores.values(), self.local_builder]:
             client.on_capacity = self.trigger
             client.sample_listeners.add(self.on_sample)
+
+    def _sandbox_at(self, store_id: StoreId) -> LocalDBStore | None:
+        """A local store other than this one that pynixd's builder builds into, as it runs no daemon."""
+        store = self.ctx.stores.get(store_id)
+        return store if isinstance(store, LocalDBStore) and store is not self.local_store else None
+
+    def _current(self, store_id: StoreId) -> DaemonStore | None:
+        """The store under *store_id* now: a reverse builder that reconnects is a new object under the same id."""
+        store = self.ctx.stores.get(store_id)
+        return None if store is None else store.daemon_client
 
     @property
     def held_by_pressure(self) -> set[BuildId]:
@@ -460,11 +307,11 @@ class Scheduler:
         # One crashed build must not cancel its siblings in the group.
         try:
             # A cancel from before the start lands at the first await only,
-            # after `execute_build` has already marked paths and named a store.
+            # after `Executor.run` has already marked paths and named a store.
             if scope.cancel_called:
                 return
             with scope:
-                await self.execute_build(build, store)
+                await self.executor.run(build, store)
         except Exception as e:
             # Failed, not left pending: the loop would retry a deterministic
             # crash on every pass. `fail` raises ValueError for a pruned build.
@@ -590,506 +437,3 @@ class Scheduler:
                 metrics.STORE_CPU_UTILIZATION.labels(store_id=s.store_id).set(
                     s.cpu_util.utilization,
                 )
-
-    @staticmethod
-    async def _say_where_it_builds(build: QueuedBuild, store: DaemonStore) -> None:
-        """Name the backend, but only when the backend is not the local one.
-
-        Nix writes `building '<drv>'...` for a local build, and `building
-        '<drv>' on '<machine>'...` for a remote one. The location is news only
-        in the second case, and the backend daemon writes the first line
-        itself, which pynixd forwards to the client.
-
-        pynixd wrote `pynixd: starting build on local at <timestamp>` for every
-        build, and two faults came from that. The extra line broke
-        `main:cli-characterisation`, which compares the output of a command
-        against a recorded `.exp` file. The timestamp also made the output
-        different on each run, so no two recordings of one build could agree.
-        """
-        if store.store_id == LOCAL_STORE_ID:
-            return
-        await build.post_log_and_fanout(LogNext(text=f"pynixd: building on {store.store_id}\n"))
-
-    async def execute_build(self, build: QueuedBuild, store: DaemonStore) -> None:
-        """Execute build on a store, handling inputs and outputs.
-
-        Internal phases:
-        1. Executor.prepare_build — strip features, hold and send the inputs
-        2. _execute        — Call backend via build_conn
-        3. _collect_outputs — Pull outputs, register realisations, record stats
-        """
-        build.assigned_store_id = store.store_id
-        # The decision is the use-event for the closure: queue the
-        # derivation plus the inputs its request names as build seeds.
-        # Synchronous queueing only -- the flush expands and writes on
-        # its own schedule -- so recording never slows the build start.
-        # Issue #65.
-        db = self.local_store.db
-        if db is not None:
-            db.mark_paths(
-                build_decision_seeds(
-                    str(build.request.drv_path),
-                    (str(p) for p in build.request.derivation.input_srcs),
-                ),
-                kind="build",
-            )
-        build_resp: BuildDerivationResponse | None = None
-        completed = False
-        try:
-            if store is self.local_builder and isinstance(self.local_store, LocalDBStore):
-                settings = await self.local_store.local_build_settings(build.request, build.options)
-                if settings is not None:
-                    # `derivation-building-goal.cc:44`, `derivation-goal.cc:67`: the derivation and its outputs.
-                    # The collector matches hash parts, so the `.lock` and `.drv.chroot` beside them stay too.
-                    roots = self.local_store.engine.temp_roots()
-                    try:
-                        await _hold(
-                            roots,
-                            [build.request.drv_path, *build.request.derivation.output_paths().values()],
-                            self.local_store.store_id,
-                        )
-                        await self._build_here(build, store, self.local_store, settings)
-                    finally:
-                        with anyio.CancelScope(shield=True), anyio.move_on_after(_ROOTS_CLOSE_SECONDS):
-                            await roots.close()
-                    return
-                if not store.runs_daemon:
-                    raise _cannot_build_there(store.store_id)
-            # A local store with no daemon has none to delegate to: pynixd builds into it itself.
-            other = self.ctx.stores.get(store.store_id)
-            if isinstance(other, LocalDBStore) and other is not self.local_store and not store.runs_daemon:
-                settings = await other.local_build_settings(build.request, build.options)
-                if settings is None:
-                    raise _cannot_build_there(store.store_id)
-                roots = other.engine.temp_roots()
-                try:
-                    await self._send_inputs(build, other, roots)
-                    await self._build_here(build, store, other, settings, roots)
-                finally:
-                    with anyio.CancelScope(shield=True), anyio.move_on_after(_ROOTS_CLOSE_SECONDS):
-                        await roots.close()
-                return
-            async with contextlib.AsyncExitStack() as held:
-                async with store.build_conn(builder_options(build.options, store, self.local_builder)) as conn:
-                    observation = build.observation = BuildObservation(
-                        store_id=str(store.store_id),
-                        status=-1,
-                        queued_ms=ms_since(build.enqueued_at),
-                    )
-                    inputs_started = time.monotonic()
-                    observation.inputs_bytes = await self.executor.prepare_build(build, store, conn)
-                    observation.inputs_ms = ms_since(inputs_started)
-                    await self._say_where_it_builds(build, store)
-                    build_resp = await self._execute(build, store, conn)
-                    if build.started_at is not None:
-                        observation.build_ms = ms_since(build.started_at)
-                    # Every success, not `BUILT` alone. A builder that already
-                    # holds the outputs answers `ALREADY_VALID`, and the local
-                    # store still lacks them. A dynamic derivation's produced
-                    # `.drv` then failed with "derivation not found" on each run
-                    # until the builder collected it. nixidae/nixidae#998.
-                    if result_succeeded(build_resp.result):
-                        await self._hold_outputs(held, build, store, build_resp)
-                    elif (fault := self.executor.retryable_elsewhere(build, store, build_resp)) is not None:
-                        await self.executor.retry_elsewhere(build, store, build_resp, fault)
-                        build_resp = None
-                    if build_resp is not None and store is not self.local_builder:
-                        await self._keep_log(build, build_resp)
-                        if not result_succeeded(build_resp.result) and (warning := kept_on_the_builder(build)):
-                            await build.post_log_and_fanout(LogNext(text=warning))
-                # The build connection goes back before the pull, so the slot
-                # takes the next build while this one pulls. A pull took 92 s
-                # against a build of 40 s for t3code, with the slot idle for
-                # all of it. nixidae/nixidae#1075.
-                if build_resp is not None and result_succeeded(build_resp.result):
-                    # The outputs first, and the completion after. It ran the
-                    # other way round and logged a collection failure on the
-                    # server, so a client held a successful BuildResult and
-                    # then asked the local store for a path that is not there.
-                    # The error it got named the missing path, never the copy
-                    # that failed. Issue #12.
-                    try:
-                        await self._collect_outputs(build, store, build_resp)
-                    except Exception as e:
-                        log.exception("output_pull_failed", build_id=build.build_id, store_id=store.store_id)
-                        reason = f"built on {store.store_id}, but pynixd could not collect the outputs: {e}"
-                        await build.post_log_and_fanout(LogNext(text=f"pynixd: {reason}\n"))
-                        await self.queue.fail(build.build_id, reason)
-                        self.trigger()
-                        return
-
-                    build_resp = await self._post_build_hook_here(build, store, build_resp)
-                    await self.queue.complete(build.build_id, build_resp)
-                    completed = True
-                    self.trigger()
-
-        except Exception as e:
-            # Decided by the leaves: a task group on the way wraps a
-            # BackendError in a group, which no `except BackendError` matches.
-            # A dropped connection is the builder's fault as well: a keepalive
-            # that closes a silent peer raises here. nixidae/nixidae#1063.
-            reason = error_text(e)
-            retryable = (BackendError, InfrastructureError, EOFError, OSError, *ssh_errors())
-            if all(isinstance(leaf, retryable) for leaf in leaves(e)):
-                log.warning("build_failed_retryable", build_id=build.build_id, error=reason)
-                self.executor.note_disk_full(store, reason)
-                await build.post_log_and_fanout(
-                    LogNext(text=f"pynixd: build failed on {store.store_id}, retrying: {reason}\n")
-                )
-                build.reset_for_retry(store.store_id, reason)
-            else:
-                log.exception("build_crashed", build_id=build.build_id)
-                await build.post_log_and_fanout(LogNext(text=f"pynixd: internal error, failing build: {reason}\n"))
-                await self.queue.fail(build.build_id, f"pynixd internal error: {reason}")
-            self.trigger()
-
-        if build_resp is not None and not completed:
-            await self.queue.complete(build.build_id, build_resp)
-            self.trigger()
-
-    async def _build_here(
-        self,
-        build: QueuedBuild,
-        store: DaemonStore,
-        local: LocalDBStore,
-        settings: BuildSettings,
-        roots: TempRoots | None = None,
-    ) -> None:
-        """pynixd's own sandbox builds it into *local* (`docs/design/builder.md`).
-
-        Into the local store, nothing is pulled and no worker of the daemon
-        holds a root. Into another local store, which has no daemon, *roots*
-        hold the outputs there, and they are pulled as from a builder. The
-        log is fanned out after the build, as `_execute` does.
-        """
-        observation = build.observation = BuildObservation(
-            store_id=str(store.store_id), status=-1, queued_ms=ms_since(build.enqueued_at)
-        )
-        await self._say_where_it_builds(build, store)
-        build.started_at = build.last_output_at = time.monotonic()
-        if build.wait_time is not None:
-            metrics.QUEUE_WAIT_DURATION.observe(build.wait_time)
-        messages: list[LogMessage] = []
-
-        async def keep(message: LogMessage) -> None:
-            build.last_output_at = time.monotonic()
-            messages.append(message)
-
-        verbosity = build.options.verbosity if build.options is not None else Verbosity.INFO
-        try:
-            resp = without_error_prefix(await local.build_here(build.request, settings, keep, verbosity))
-        except Exception as e:
-            # pynixd's own builder raised: a bug, or this machine (a full disk). Either way not a
-            # lost connection, so the same store gets no second try; another store may.
-            log.exception("local_build_crashed", build_id=build.build_id)
-            resp = BuildDerivationResponse(result=failure(f"pynixd's sandbox failed: {error_text(e)}"))
-        observation.build_ms = ms_since(build.started_at)
-        for message in messages:
-            await build.post_log_and_fanout(message)
-        if result_succeeded(resp.result) and roots is not None:
-            try:
-                # Until the pull ends, as `_hold_outputs` holds them on a builder.
-                await _hold(roots, output_paths(build, resp), local.store_id)
-                await stream_paths_store_to_store(
-                    local, self.local_store, output_paths(build, resp), peer_store_id=store.store_id, direction="in"
-                )
-            except Exception as e:
-                log.exception("output_pull_failed", build_id=build.build_id, store_id=store.store_id)
-                reason = f"built on {store.store_id}, but pynixd could not collect the outputs: {e}"
-                await build.post_log_and_fanout(LogNext(text=f"pynixd: {reason}\n"))
-                await self.queue.fail(build.build_id, reason)
-                self.trigger()
-                return
-        if result_succeeded(resp.result):
-            await self._record_observation(build, resp)
-            for path in output_paths(build, resp):
-                self.ctx.output_locations[str(path)] = store.store_id
-        elif (fault := self.executor.retryable_elsewhere(build, store, resp)) is not None:
-            await self.executor.retry_elsewhere(build, store, resp, fault)
-            return
-        await self.queue.complete(build.build_id, resp)
-        self.trigger()
-
-    async def _send_inputs(self, build: QueuedBuild, to: LocalDBStore, roots: TempRoots) -> None:
-        """Copy the input closure that *to* lacks, before pynixd builds into it.
-
-        *roots* hold the whole closure on *to* first, as `Executor.hold_inputs_on` does
-        on a builder. No substitution, unlike a push to a builder
-        (nixidae/nixidae#1074): the local store holds every input, and both
-        stores share this machine's disk.
-        """
-        inputs = {StorePath(path=str(p)) for p in build.request.derivation.input_srcs}
-        closure = await self.local_store.execute(QueryClosureWithInfoRequest(paths=inputs), client=None)
-        await _hold(roots, inputs | {info.path for info in closure.infos}, to.store_id)
-        sent = await stream_paths_store_to_store(
-            self.local_store, to, inputs, peer_store_id=to.store_id, direction="out"
-        )
-        log.debug("build_inputs_sent", build_id=build.build_id, store_id=to.store_id, bytes=sent)
-
-    async def _execute(
-        self,
-        build: QueuedBuild,
-        store: DaemonStore,
-        conn: Connection,
-    ) -> BuildDerivationResponse:
-        """Call the backend daemon and return the response.
-
-        Stderr is buffered in the response, then fanned out to the build's
-        subscribers. `_OutputClock` only notes when each message arrives:
-        a fan-out from inside the read would let a client that stops reading
-        stall the upstream build.
-        """
-        log.debug("build_executing", build_id=build.build_id, store_id=store.store_id)
-        build.started_at = build.last_output_at = time.monotonic()
-        if build.wait_time is not None:
-            metrics.QUEUE_WAIT_DURATION.observe(build.wait_time)
-
-        start = int(time.time())
-        resp: BuildDerivationResponse = await conn.call(
-            build.request,
-            client=cast("ClientConn", _OutputClock(build)),
-            options=builder_options(build.options, store, self.local_builder),
-            keep_logs=True,
-        )
-        resp = without_error_prefix(with_build_times(resp, start, int(time.time())))
-        if resp.logs.messages:
-            # The count, so a run can tell one fan-out of many messages from
-            # many fan-outs of one message.
-            log.debug("build_logs_fanned_out", build_id=build.build_id, count=len(resp.logs.messages))
-            for msg in resp.logs.messages:
-                await build.post_log_and_fanout(msg)
-        # **A failure of the build itself gets no log line here.** The message
-        # travels in `BuildResult.error_msg`, and the goal that asked for the
-        # build decides what a reader sees. `Goal::amDone` at `goal.cc:214`
-        # takes the same decision: it logs the failure of a goal that another
-        # goal waits for, and it stays quiet for a goal at the top, because
-        # the caller reports that one.
-        #
-        # pynixd wrote one `pynixd: <line>` for each line of the message. A
-        # `BuildPathsWithResults` request then carried a log that `nix-daemon`
-        # does not send, and the client printed the same text twice. Issue
-        # nixidae/nixidae#227.
-        log.debug(
-            "build_executed",
-            build_id=build.build_id,
-            status=resp.result.status,
-        )
-        return resp
-
-    async def _post_build_hook_here(
-        self, build: QueuedBuild, store: DaemonStore, resp: BuildDerivationResponse
-    ) -> BuildDerivationResponse:
-        """*resp*, failed when the local post-build hook fails after a build on a builder.
-
-        `buildWithHook` runs the hook locally once the outputs are valid (`derivation-building-goal.cc:765`),
-        and the builder runs its own as well. `build-remote-input-addressed.sh:35` counts both. The local
-        goal never sees the builder's status, so an `ALREADY_VALID` answer runs the hook too.
-        """
-        if (
-            store is self.local_builder
-            or not isinstance(self.local_store, LocalDBStore)
-            or not result_succeeded(resp.result)
-        ):
-            return resp
-        failed = await self.local_store.post_build_hook_after(
-            build.request, build.options, output_paths(build, resp), build.post_log_and_fanout
-        )
-        if failed is None:
-            return resp
-        return resp.model_copy(update={"result": failure(failed)})
-
-    async def _keep_log(self, build: QueuedBuild, resp: BuildDerivationResponse) -> None:
-        """Write the log of a build on a builder to the local store, as Nix's build hook does."""
-        text = builder_log(build, resp)
-        if text is None:
-            return
-        try:
-            # The base name, as `AddBuildLog` carries it (`daemon.cc:1013`).
-            await write_router(self.local_store).add_build_log(StorePath(build.request.drv_path).name, text)
-        except Exception:
-            # `LogFile` failing ends Nix's goal; pynixd keeps the build, which has its outputs.
-            log.warning("build_log_not_kept", build_id=build.build_id, exc_info=True)
-
-    async def _hold_outputs(
-        self, held: contextlib.AsyncExitStack, build: QueuedBuild, store: DaemonStore, resp: BuildDerivationResponse
-    ) -> None:
-        """Root the outputs on the builder for the pull, past the build connection.
-
-        The daemon worker of the build connection holds a root on each output,
-        and it ends with that connection. A transfer connection taken here, in
-        *held*, holds the roots instead. It is taken inside the build
-        connection, so it is re-entrant, and every acquire of the pull under
-        it skips the pool limit as before: a pull holds the builder and waits
-        for local, a push the reverse, and full pools would deadlock the two.
-        """
-        conn = await held.enter_async_context(store.transfer_conn())
-        await add_temp_roots(conn, output_paths(build, resp))
-
-    async def _collect_outputs(
-        self,
-        build: QueuedBuild,
-        store: DaemonStore,
-        resp: BuildDerivationResponse,
-    ) -> None:
-        """Pull outputs back to local store, register realisations, record stats.
-
-        Runs after a successful build execution.
-        """
-        if not result_succeeded(resp.result):
-            return
-
-        # `realised_outputs` reads whichever of the two wire shapes the answer
-        # carried. Issue #14.
-        realised = resp.result.realised_outputs()
-        if realised:
-            build.ca_realisations = list(realised.values())
-        all_output_paths = output_paths(build, resp)
-        log.info(
-            "pulling_paths",
-            store_id=store.store_id,
-            count=len(all_output_paths),
-        )
-
-        # The record after the pull, so it holds the pull's cost, and in
-        # `finally`, so a failed pull keeps the rest. Issue #12.
-        pull_started = time.monotonic()
-        try:
-            pulled = await self._pull_with_retries(build, store, all_output_paths)
-            if build.observation is not None:
-                build.observation.pull_ms = ms_since(pull_started)
-                build.observation.pull_bytes = pulled
-        finally:
-            await self._record_observation(build, resp)
-        # After the pull, and not before it: `_ensure_opaque` answers success
-        # for a path named here, and a failed pull left nothing local to serve.
-        for path in all_output_paths:
-            self.ctx.output_locations[str(path)] = store.store_id
-
-    async def _pull_with_retries(self, build: QueuedBuild, store: DaemonStore, paths: StorePathSet) -> int:
-        """The pull, tried again when it fails: the build succeeded, and one dropped stream is no reason to fail it.
-
-        A 1.6 GB output once failed with "0 bytes read", and the same pull
-        worked minutes later. nixidae/nixidae#942. A pull again skips what
-        already arrived: it asks the local store which paths it holds.
-
-        Each attempt asks for the store by id. That "0 bytes read" was sg1-n1's
-        pynixd restarting: a reverse builder comes back as a new store object
-        under the same id, 3.25 s later, and the old object has no connection
-        left. The backoff (2 s, then 4 s) outlasts that.
-        """
-        attempt = 1
-        while True:
-            try:
-                return await self._pull_outputs(store, paths)
-            except Exception as e:
-                if attempt >= _PULL_ATTEMPTS:
-                    raise
-                log.warning(
-                    "output_pull_retrying",
-                    build_id=build.build_id,
-                    store_id=store.store_id,
-                    attempt=attempt,
-                    error=error_text(e),
-                )
-                await anyio.sleep(_PULL_BACKOFF_SECONDS * 2 ** (attempt - 1))
-                attempt += 1
-                current = self.ctx.stores.get(store.store_id)
-                if current is not None and (client := current.daemon_client) is not None:
-                    store = client
-
-    async def _record_observation(self, build: QueuedBuild, resp: BuildDerivationResponse) -> None:
-        """Write what this build cost, for the next build of the same identity.
-
-        Every success, `ALREADY_VALID` included: a build that built nothing
-        measures what delegating it cost. The estimator reads `BUILT` alone.
-        nixidae/nixidae#1001.
-        """
-        observation = build.observation
-        if not isinstance(self.local_store, LocalDBStore) or observation is None:
-            return
-        observation.status = int(resp.result.status)
-        observation.cpu_user_us = resp.result.cpu_user.value if resp.result.cpu_user else None
-        observation.cpu_system_us = resp.result.cpu_system.value if resp.result.cpu_system else None
-        if (used := resp.result.resources).measured:
-            observation.resource_source = used.source
-            observation.peak_memory_bytes = used.peak_memory_bytes
-            observation.io_read_bytes = used.io_read_bytes
-            observation.io_write_bytes = used.io_write_bytes
-            observation.cpu_stall_us = used.cpu_stall.value
-            observation.memory_stall_us = used.memory_stall.value
-            observation.io_stall_us = used.io_stall.value
-            observation.samples = tuple(used.samples)
-            if used.host_source:
-                observation.host_resource_source = used.host_source
-                observation.host_cpu_user_us = used.host_cpu_user_us
-                observation.host_cpu_system_us = used.host_cpu_system_us
-                observation.host_peak_memory_bytes = used.host_peak_memory_bytes
-        identity = identity_of(build.request.derivation)
-        observation_id = await self.local_store.db.record_build_observation(identity, observation)
-        if build.placement is not None and observation_id is not None:
-            self.trace.observed(build.placement, observation_id)
-        log.info(
-            "build_observed",
-            name=identity.name,
-            store_id=observation.store_id,
-            status=observation.status,
-            expected_ms=build.expected_duration,
-            build_ms=observation.build_ms,
-            inputs_ms=observation.inputs_ms,
-            pull_ms=observation.pull_ms,
-        )
-
-    async def _pull_outputs(
-        self,
-        store: DaemonStore,
-        paths: StorePathSet,
-    ) -> int:
-        """Bring the outputs of a backend build into the local store, answering the NAR bytes moved.
-
-        The local store has to hold the paths, and a record of where they came
-        from is not enough. A client on a Unix socket never asks pynixd for a
-        NAR: `UDSRemoteStore::narFromPath` calls `Store::narFromPath`, which
-        reads the store directory through `LocalFSStore::getFSAccessor`. So
-        `nix copy --from unix://...` of a backend-built path reported "path
-        ... does not exist" and named the local store directory -- issue nixidae/nixidae#199.
-
-        `ctx.output_locations` still holds, and it still answers for the
-        clients that do use the wire, such as `ssh-ng://` and the HTTP cache.
-        This is the transfer that path mapping cannot replace.
-
-        One route, over the wire, for every backend. A second route copied the
-        store directory and then the SQLite rows of the builder database
-        straight into the local one, when both ends were a `LocalDBStore`.
-        Issue nixidae/nixidae#197 removed it, and it was wrong in four ways:
-
-        - No NAR was written and no hash was checked, so a truncated copy
-          registered as valid.
-        - The `Refs` copy carried only rows whose referrer was a new output,
-          and inserted with `INSERT OR IGNORE ... SELECT`. A reference whose
-          path had no row in the destination yet was dropped in silence.
-        - It wrote into a running daemon's database behind that daemon's back.
-        - It copied `ultimate` verbatim, which marked the local store as the
-          builder of a path it never built. Nix sets `ultimate` in
-          `unix/build/derivation-builder.cc` alone -- the local builder -- and
-          clears it on every copy. A distributed build leaves `ultimate =
-          false` in the store that receives the output, and the shortcut said
-          `true`.
-
-        `stream_paths_store_to_store` has none of those. It asks for the
-        closure, so a reference cannot go missing, and it hands each path to
-        the destination daemon, which hashes it and registers it itself.
-        """
-        if not paths:
-            return 0
-        log.debug(
-            "pull_outputs_streaming",
-            store_id=store.store_id,
-            count=len(paths),
-        )
-        return await stream_paths_store_to_store(
-            store,
-            self.local_store,
-            paths,
-            peer_store_id=store.store_id,
-            direction="in",
-        )

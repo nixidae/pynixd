@@ -64,7 +64,7 @@ class StatsTestStore(LocalStore):
     async def build_conn(self, options: SetOptionsRequest | None = None) -> AsyncIterator[Any]:  # type: ignore[override]
         # **The `options` parameter is not decoration.** Issue nixidae/nixidae#231 gave a
         # build the option set of the client that asked for it, and
-        # `Scheduler.execute_build` has passed it ever since. A stand-in
+        # `Executor.run` has passed it ever since. A stand-in
         # without it made the build crash with a `TypeError` that the
         # scheduler reported as "Internal scheduler error", so this test read
         # an empty stats table and blamed the recording. Issue #29.
@@ -157,7 +157,7 @@ async def test_build_stats_recording(tmp_path: Path) -> None:
     """Verify that build stats are recorded to the DB.
 
     This was `xfail`, with the reason "DB stats query returns no row". That
-    is the symptom. The cause was the order in `_collect_outputs`: the pull
+    is the symptom. The cause was the order in `Executor.collect_outputs`: the pull
     of the outputs ran first, it raised `ConnectionRefusedError` against the
     fake stores of this module, and the statistics of a build that had
     already succeeded went with it.
@@ -220,8 +220,8 @@ async def test_build_stats_recording(tmp_path: Path) -> None:
         # 2. Check the DB.
         #
         # **The future resolves before the row exists, and that is deliberate.**
-        # `Scheduler.execute_build` calls `queue.complete` as soon as the
-        # backend answers, and `_collect_outputs` runs after that and holds
+        # `Executor.run` calls `queue.complete` as soon as the
+        # backend answers, and `Executor.collect_outputs` runs after that and holds
         # `_record_observation`. Issue #12 states the same order from the
         # other side: the client is told the build succeeded before the pull
         # runs. So the row lands a moment after `await future.wait()` returns, and a

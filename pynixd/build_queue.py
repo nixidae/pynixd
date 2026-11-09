@@ -124,7 +124,7 @@ class QueuedBuild:
         self.enqueued_at = time.monotonic()
         self.started_at: float | None = None
         self.observation: BuildObservation | None = None
-        """What this build cost, by phase, filled while `execute_build` runs."""
+        """What this build cost, by phase, filled while `Executor.run` runs."""
         self.transfer_seconds: dict[StoreId, float | None] = {}
         """Each remote store's expected delegation seconds, `None` where unmeasured."""
         self.inputs_measured: set[StoreId] = set()
@@ -163,7 +163,7 @@ class QueuedBuild:
         self.ca_realisations: list[Realisation] = []
 
         # The store that was assigned to execute this build, set when
-        # execute_build begins.
+        # Executor.run begins.
         self.assigned_store_id: StoreId | None = None
 
         # BuildRequest(s) this build belongs to.
@@ -301,7 +301,7 @@ class QueuedBuild:
         the ordinary end of a build whose client left. `ca:new-build-cmd`
         measured it: `slow` of the `cancelled-builds` fixture sleeps 10 s, the
         test kills the daemon while it runs, and the exception left
-        `Scheduler.execute_build` through its own error path. Nothing
+        `Executor.run` through its own error path. Nothing
         retrieves the exception of that task, so asyncio reported it as one
         that was never retrieved and no client learned anything. Issue nixidae/nixidae#235.
         """
@@ -878,7 +878,7 @@ class BuildQueue:
         pynixd cannot copy the mechanism, because its goals are coroutines and
         the request learns of the failure several awaits later. It copies the
         *decision* instead, and it takes it here, where the failure first
-        becomes a fact. `Scheduler.execute_build` calls `complete` and then
+        becomes a fact. `Executor.run` calls `complete` and then
         `trigger`, so this runs before the scheduling pass that would give the
         freed slot to the next build. Issue nixidae/nixidae#325.
 

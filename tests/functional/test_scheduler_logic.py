@@ -223,7 +223,7 @@ async def test_scheduler_proactive_transfer() -> None:
     # It should be assigned to idle because busy has 0 slots
     assert queued_build.assigned_store_id == "idle"
 
-    # Yield control to let execute_build (and stream_paths) finish
+    # Yield control to let Executor.run (and stream_paths) finish
     await anyio.sleep(0.05)
 
     # Path was moved to the idle store

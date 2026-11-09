@@ -1,7 +1,7 @@
 """An opaque path a backend holds is a path pynixd can produce.
 
-A fleet build leaves its outputs on the backend that ran it. `Scheduler.
-_collect_outputs` records where each one went in `ctx.output_locations`, and
+A fleet build leaves its outputs on the backend that ran it.
+`Executor.collect_outputs` records where each one went in `ctx.output_locations`, and
 `DaemonProxy` and `NarFromPathHandler` both read a path from the backend that
 holds it. `EnsureDerivedPathGoal` asked the local store alone, so the build
 succeeded and the very next request for its outputs failed with `opaque path

@@ -10,7 +10,7 @@ from typing import Any
 
 from nix_daemon_protocol.protocol import Verbosity
 from nix_daemon_protocol.wire_time import TimeSpan
-from pynixd.scheduler import builder_options
+from pynixd.execution import builder_options
 from pynixd.serde import SetOptionsRequest
 
 LOCAL: Any = object()

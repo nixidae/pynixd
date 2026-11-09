@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pynixd.scheduler import build_decision_seeds
+from pynixd.execution import build_decision_seeds
 
 DRV = "/nix/store/00000000000000000000000000000001-x.drv"
 COMPILER = "/nix/store/00000000000000000000000000000002-cc"

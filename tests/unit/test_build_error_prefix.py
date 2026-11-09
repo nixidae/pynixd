@@ -6,7 +6,7 @@ client adds its own: `error: error: some outputs are unexpectedly invalid`. nixi
 
 from __future__ import annotations
 
-from pynixd.scheduler import without_error_prefix
+from pynixd.execution import without_error_prefix
 from pynixd.serde import BuildDerivationResponse, BuildResult, BuildResultStatus
 
 _RED = "\x1b[31;1m"

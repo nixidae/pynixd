@@ -508,7 +508,7 @@ class Placer[S: PlacedStore]:
         # reaching the daemon, which is a race and not a margin.
         #
         # `BuildQueue.complete` writes the fact under its own lock and
-        # `Scheduler.execute_build` triggers this pass afterwards, so the
+        # `Executor.run` triggers this pass afterwards, so the
         # answer is already there to read.
         #
         # **It ends the build rather than leaving it pending.** A goal of
@@ -644,7 +644,7 @@ class Placer[S: PlacedStore]:
                 store_id=rs.store_id,
                 score=rs.score,
             )
-            # Named here, and not in `execute_build` alone. The count of
+            # Named here, and not in `Executor.run` alone. The count of
             # running builds reads this field, and a task that has not
             # started yet would otherwise carry no store and go uncounted.
             build.assigned_store_id = rs.store_id

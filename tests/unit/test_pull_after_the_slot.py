@@ -5,85 +5,50 @@ A pull of 92 s held the slot of a 40 s build for t3code. nixidae/nixidae#1075.
 
 from __future__ import annotations
 
-import contextlib
-from collections.abc import AsyncIterator
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from nix_daemon_protocol.ids import StoreId
-from pynixd.scheduler import Scheduler
+from pynixd.build_queue import BuildQueue
 from pynixd.serde import BuildResultStatus
-from tests.unit.test_collect_on_every_success import FakeBuild, FakeContext, FakeResponse
+from tests._conftest.execution import FakeConn, FakeLocal, Streamed, Triggers, answering, fake_executor, queued
+from tests._conftest.placement import FakeStore
 
+if TYPE_CHECKING:
+    from nix_daemon_protocol.wire_ops import WireRequest
 
-class SlotStore:
-    store_id = StoreId("sg1-n2")
-
-    def __init__(self, steps: list[str]) -> None:
-        self.steps = steps
-
-    @contextlib.asynccontextmanager
-    async def build_conn(self, _options: Any = None) -> AsyncIterator[object]:
-        self.steps.append("slot taken")
-        try:
-            yield object()
-        finally:
-            self.steps.append("slot given back")
-
-
-class SlotScheduler:
-    def __init__(self) -> None:
-        self.steps: list[str] = []
-        self.ctx = FakeContext()
-        self.local_store = SimpleNamespace(db=None)
-        self.local_builder = None
-        self.queue = self
-
-    async def complete(self, _build_id: str, _response: Any) -> None:
-        self.steps.append("complete")
-
-    def trigger(self) -> None:
-        return
-
-    async def _prepare_build(self, *_args: Any) -> None:
-        return
-
-    async def _say_where_it_builds(self, *_args: Any) -> None:
-        return
-
-    async def _execute(self, *_args: Any) -> FakeResponse:
-        self.steps.append("build")
-        return FakeResponse(BuildResultStatus.BUILT)
-
-    async def _post_build_hook_here(self, _build: Any, _store: Any, resp: Any) -> Any:
-        return resp
-
-    async def _keep_log(self, *_args: Any) -> None:
-        return None
-
-    async def _hold_outputs(self, held: contextlib.AsyncExitStack, *_args: Any) -> None:
-        self.steps.append("outputs rooted")
-        held.callback(self.steps.append, "roots released")
-
-    async def _collect_outputs(self, *_args: Any) -> None:
-        self.steps.append("pull")
+OUT = "/nix/store/00000000000000000000000000000001-out"
 
 
 @pytest.mark.anyio
 async def test_the_slot_goes_back_before_the_pull_and_the_roots_after_it() -> None:
-    scheduler = SlotScheduler()
-    store = SlotStore(scheduler.steps)
+    steps: list[str] = []
+    store = FakeStore(StoreId("sg1-n2"))
+    store.events = steps
+    store.conn = FakeConn(events=steps)
+    answer = answering(BuildResultStatus.BUILT)
 
-    await Scheduler.execute_build(cast("Any", scheduler), cast("Any", FakeBuild()), cast("Any", store))
+    async def build(request: WireRequest) -> Any:
+        steps.append("build")
+        return await answer(request)
 
-    assert scheduler.steps == [
+    store.conn.answer = build
+    stream = Streamed()
+    stream.before = lambda: steps.append("pull")
+    queue = BuildQueue()
+    queued_build = await queued(queue, outputs={"out": OUT})
+    executor = fake_executor(queue, {store.store_id: store}, local=FakeLocal(), stream=stream, trigger=Triggers(steps))
+
+    await executor.run(queued_build, store)
+
+    assert steps == [
         "slot taken",
         "build",
-        "outputs rooted",
+        "transfer taken",
+        "hold",
         "slot given back",
         "pull",
-        "complete",
-        "roots released",
+        "trigger",
+        "transfer given back",
     ]

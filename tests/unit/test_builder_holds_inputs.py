@@ -30,7 +30,7 @@ from pynixd.serde import (
 )
 from pynixd.store import transfer
 from pynixd.wire import FEATURE_ADD_TEMP_ROOTS
-from tests._conftest.execution import FakeConn, FakeLocal, Streamed, fake_executor, queued
+from tests._conftest.execution import FakeConn, FakeLocal, FakeSandbox, Streamed, fake_executor, queued
 from tests._conftest.placement import FakeStore
 
 if TYPE_CHECKING:
@@ -122,7 +122,7 @@ async def test_a_refused_path_the_check_did_not_call_valid_is_not_healed(monkeyp
         await _copy(monkeypatch, [_refusal(NIX)])
 
 
-def _holder() -> Executor[FakeStore, FakeLocal]:
+def _holder() -> Executor[FakeStore, FakeLocal, FakeSandbox]:
     return fake_executor(BuildQueue(), {}, local=FakeLocal([_info(INPUT), _info(BOEHM)]))
 
 

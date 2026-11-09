@@ -6,6 +6,7 @@ a member placement reads. nixidae/nixidae#1244.
 
 from __future__ import annotations
 
+import contextlib
 import random
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -19,10 +20,17 @@ from pynixd.placement import Placer
 from pynixd.placement_trace import PlacementTrace
 from pynixd.pressure import BuildLimit
 from pynixd.psi import CpuUtil, SystemHealth
-from pynixd.serde import BasicDerivation, SetOptionsRequest, TimeSpan, Verbosity
+from pynixd.serde import (
+    AddTempRootRequest,
+    AddTempRootsRequest,
+    BasicDerivation,
+    SetOptionsRequest,
+    TimeSpan,
+    Verbosity,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping
+    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 
     from nix_daemon_protocol.wire_ops import WireRequest
     from pynixd.build_queue import BuildQueue, QueuedBuild
@@ -38,6 +46,37 @@ class FakeMonitor:
 
 def cpu(utilization: float) -> CpuUtil:
     return CpuUtil(utilization=utilization, cores=1.0, throttled_pct=0.0)
+
+
+class FakeConn:
+    """A build connection: it records each request it carries, holds roots, and answers the rest with *answer*."""
+
+    def __init__(self, features: frozenset[str] = frozenset(), events: list[str] | None = None) -> None:
+        self.standard_features = features
+        self.holds_roots = False
+        self.calls: list[WireRequest] = []
+        self.events = events
+        self.answer: Callable[[WireRequest], Awaitable[Any]] | None = None
+
+    async def call(
+        self,
+        request: WireRequest,
+        client: ClientConn | None = None,
+        suppress_last: bool = False,
+        raise_on_error: bool = False,
+        options: SetOptionsRequest | None = None,
+        keep_logs: bool | None = None,
+    ) -> Any:
+        del client, suppress_last, options, keep_logs
+        self.calls.append(request)
+        if isinstance(request, (AddTempRootRequest, AddTempRootsRequest)):
+            assert raise_on_error, "a root that did not hold must fail the build"
+            if self.events is not None:
+                self.events.append("hold")
+            return None
+        if self.answer is None:
+            raise AssertionError(f"the connection was not asked to answer {type(request).__name__}")
+        return await self.answer(request)
 
 
 class FakeStore:
@@ -71,6 +110,11 @@ class FakeStore:
         self.daemon_client = self
         self.answer: Callable[[WireRequest], Awaitable[Any]] | None = None
         """What the store answers an operation with; a store asked with none fails the test."""
+        self.runs_daemon = True
+        self.events: list[str] | None = None
+        """Each connection taken and given back, when a test watches the order."""
+        self.conn = FakeConn()
+        """The connection `build_conn` and `transfer_conn` hand out."""
 
     def supports_derivation(self, system: str, features: set[str]) -> bool:
         del features
@@ -81,6 +125,23 @@ class FakeStore:
         if self.answer is None:
             raise AssertionError(f"{self.store_id} was not asked to answer {type(request).__name__}")
         return await self.answer(request)
+
+    @contextlib.asynccontextmanager
+    async def _held(self, name: str) -> AsyncIterator[FakeConn]:
+        if self.events is not None:
+            self.events.append(f"{name} taken")
+        try:
+            yield self.conn
+        finally:
+            if self.events is not None:
+                self.events.append(f"{name} given back")
+
+    def build_conn(self, options: SetOptionsRequest | None = None) -> contextlib.AbstractAsyncContextManager[FakeConn]:
+        del options
+        return self._held("slot")
+
+    def transfer_conn(self) -> contextlib.AbstractAsyncContextManager[FakeConn]:
+        return self._held("transfer")
 
 
 @dataclass

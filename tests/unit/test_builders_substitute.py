@@ -48,7 +48,7 @@ async def test_the_builder_substitutes_the_inputs_before_pynixd_sends_them() -> 
     streamed = await _prepare(store)
 
     assert asked == [1]
-    assert [substitute for _, _, substitute in streamed.calls] == [True]
+    assert [transfer.substitute for transfer in streamed.calls] == [True]
 
 
 class _Source:
@@ -101,4 +101,4 @@ async def test_a_builder_that_failed_to_substitute_gets_a_plain_push() -> None:
     store.answer = check
     streamed = await _prepare(store)
 
-    assert [substitute for _, _, substitute in streamed.calls] == [False]
+    assert [transfer.substitute for transfer in streamed.calls] == [False]

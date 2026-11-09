@@ -209,10 +209,10 @@ async def _build_with_pynixd_fleet(
             build_mode=BuildMode.NORMAL,
         )
         # No wait for the outputs to arrive, and that is deliberate.
-        # `Scheduler.execute_build` marks a build complete before it calls
-        # `_collect_outputs`, which reads as a race, so this arm carried a two
+        # `Executor.run` marks a build complete before it calls
+        # `Executor.collect_outputs`, which reads as a race, so this arm carried a two
         # second sleep. Removing the sleep changed nothing across a full run,
-        # because `_collect_outputs` is awaited inside the same coroutine and
+        # because `Executor.collect_outputs` is awaited inside the same coroutine and
         # the server teardown drains it. A workaround for a problem that will
         # not reproduce is a workaround that hides the next one.
         return await engine.build_paths_with_results(request)
@@ -324,7 +324,7 @@ async def test_a_distributed_build_reassembles_the_same_store(
     cases are the ones that carry them. The scheduler used to reassemble by
     copying `ValidPaths` and `Refs` rows out of the builder's SQLite database,
     where a reference to a path that had not arrived yet inserted nothing and
-    reported nothing. `Scheduler._pull_outputs` streams the closure over the
+    reported nothing. `Executor._pull_outputs` streams the closure over the
     wire now, so a reference cannot go missing -- issue nixidae/nixidae#197.
     """
     roots = differential_roots
@@ -468,7 +468,7 @@ async def test_a_client_fetches_a_backend_built_output_through_pynixd(
     `UDSRemoteStore::narFromPath` calls `Store::narFromPath`, which reads the
     store **directory** through `LocalFSStore::getFSAccessor`. A `unix://`
     client therefore never sends `NarFromPath`, and `NarFromPathHandler`
-    cannot serve it a path that lives on a backend. `Scheduler._pull_outputs`
+    cannot serve it a path that lives on a backend. `Executor._pull_outputs`
     puts the output in the local store, which is what this test proves.
     """
     roots = differential_roots

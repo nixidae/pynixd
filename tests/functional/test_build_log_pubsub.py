@@ -88,7 +88,7 @@ async def test_build_log_pubsub_two_clients() -> None:
     subscribed = await scheduler.queue.subscribe(build_id, client1)
     assert subscribed
 
-    # Trigger scheduling — this assigns the build and spawns execute_build.
+    # Trigger scheduling — this assigns the build and spawns Executor.run.
     # The build will block on build_blocker inside MockStore.execute_mock().
     async with scheduler.workers():
         await scheduler.schedule()

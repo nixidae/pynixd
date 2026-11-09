@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pynixd.scheduler import with_build_times
+from pynixd.execution import with_build_times
 from pynixd.serde import BuildDerivationResponse, BuildResult, BuildResultStatus
 
 
