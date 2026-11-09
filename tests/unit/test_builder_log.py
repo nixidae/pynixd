@@ -13,7 +13,8 @@ from nix_daemon_protocol.logs import ActivityField, LogNext, LogResult
 from nix_daemon_protocol.protocol import FieldType, ResultType
 from nix_daemon_protocol.store_path import StorePath
 from pynixd import scheduler
-from pynixd.scheduler import Scheduler, builder_log
+from pynixd.scheduler import Scheduler, builder_log, kept_on_the_builder
+from pynixd.store.base import get_current_system
 
 if TYPE_CHECKING:
     import pytest
@@ -66,3 +67,31 @@ async def test_the_log_goes_to_the_local_store_under_the_base_name(monkeypatch: 
     fake = SimpleNamespace(local_store=object())
     await Scheduler._keep_log(cast("Any", fake), _build(), _resp(_line("hi-input1")))  # noqa: SLF001 -- the write is the unit
     assert written == [("xfb3ya060dvzsa0d4i6wi4xnmf82m4qh-build-remote-input-1.drv", b"hi-input1\n")]
+
+
+def _failing(platform: str, *, keep_failed: bool) -> Any:
+    return cast(
+        "Any",
+        SimpleNamespace(
+            options=SimpleNamespace(keep_failed=keep_failed, overrides={}),
+            request=SimpleNamespace(derivation=SimpleNamespace(platform=platform)),
+        ),
+    )
+
+
+def test_keep_failed_warns_that_the_builder_kept_the_directory() -> None:
+    """`build-remote.sh:113`: the hook's warning, with its hint for a build this machine could run."""
+    warning = kept_on_the_builder(_failing(get_current_system(), keep_failed=True))
+    assert warning is not None
+    assert "The failed build directory was kept on the remote builder due to `--keep-failed`." in warning
+    assert "--builders ''" in warning
+
+
+def test_a_foreign_platform_gets_no_hint() -> None:
+    warning = kept_on_the_builder(_failing("riscv64-none", keep_failed=True))
+    assert warning is not None
+    assert "--builders" not in warning
+
+
+def test_no_warning_without_keep_failed() -> None:
+    assert kept_on_the_builder(_failing(get_current_system(), keep_failed=False)) is None

@@ -71,10 +71,12 @@ from .serde import (
     QueryValidPathsRequest,
 )
 from .store import DaemonStore, LocalDBStore
+from .store.base import get_current_system
 from .store.local_db import write_router
 from .store.transfer import stream_paths_store_to_store
 from .substitution_queue import SubstitutionQueue
 from .system_features import BUILTIN_SYSTEM, effective_required_features
+from .trust import warning_text
 from .wire import FEATURE_ADD_TEMP_ROOTS
 
 if TYPE_CHECKING:
@@ -192,6 +194,21 @@ def builder_log(build: QueuedBuild, resp: BuildDerivationResponse) -> bytes | No
             phase = json.dumps({"action": "setPhase", "phase": first}, separators=(",", ":"), ensure_ascii=False)
             lines.append(f"@nix {phase}\n")
     return "".join(lines).encode()
+
+
+def kept_on_the_builder(build: QueuedBuild) -> str | None:
+    """The hook's warning for a failed build under `--keep-failed` (`build-remote.cc:328`), or None.
+
+    `build-remote.sh:113` asserts it.
+    """
+    if build.options is None or not build.options.keep_failed:
+        return None
+    hint = (
+        " You can re-run the command with `--builders ''` to disable remote building for this invocation."
+        if build.request.derivation.platform == get_current_system()
+        else ""
+    )
+    return warning_text(f"The failed build directory was kept on the remote builder due to `--keep-failed`.{hint}")
 
 
 async def _hold(roots: TempRoots, paths: Iterable[StorePath], store_id: StoreId) -> None:
@@ -1392,6 +1409,8 @@ class Scheduler:
                         build_resp = None
                     if build_resp is not None and store is not self.local_builder:
                         await self._keep_log(build, build_resp)
+                        if not result_succeeded(build_resp.result) and (warning := kept_on_the_builder(build)):
+                            await build.post_log_and_fanout(LogNext(text=warning))
                 # The build connection goes back before the pull, so the slot
                 # takes the next build while this one pulls. A pull took 92 s
                 # against a build of 40 s for t3code, with the slot idle for
