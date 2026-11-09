@@ -187,6 +187,13 @@ writeShellApplication {
     PATH=$NIX_PKG/bin:${lib.makeBinPath runtimeInputs}
     export PATH
 
+    # `formatter.sh:17` and `nix-profile.sh:15` read `$shell` under `set -u`.
+    # Nix's own build runs the suite in its stdenv, which exports it; a dev
+    # shell does too, so only a run from a login shell found it unset.
+    # nixidae/nixidae#1159.
+    shell=${lib.escapeShellArg (lib.getExe bash)}
+    export shell
+
     # One work directory for each version, so two versions never share a build
     # directory or a store. `/tmp` and not `/scratch`: Nix refuses a store
     # under a symbolic link, and `setup.sh` resolves this path for that reason.
