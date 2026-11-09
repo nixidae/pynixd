@@ -503,5 +503,5 @@ class GoalEngine:
         return (
             store
             for store_id, store in sorted(self.ctx.stores.items(), key=lambda item: str(item[0]))
-            if store_id != LOCAL_STORE_ID and str(store_id) in ids and store.is_healthy
+            if store_id != LOCAL_STORE_ID and str(store_id) in ids and store.is_healthy and store.opened
         )

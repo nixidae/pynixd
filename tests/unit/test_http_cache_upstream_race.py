@@ -276,7 +276,11 @@ async def test_upstream_nar_streams_decompressed() -> None:
     async def get_nar(request: web.Request) -> web.Response:
         return web.Response(body=lzma.compress(raw))
 
+    async def get_cache_info(request: web.Request) -> web.Response:
+        return web.Response(text="StoreDir: /nix/store\n")
+
     upstream.router.add_get("/nar/deadbeef.nar.xz", get_nar)
+    upstream.router.add_get("/nix-cache-info", get_cache_info)
     async with TestServer(upstream) as upstream_server:
         store = _store("cache-a", str(upstream_server.make_url("/")))
         await store.start()

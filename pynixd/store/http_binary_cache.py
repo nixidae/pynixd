@@ -11,7 +11,8 @@ import anyio
 import structlog
 
 from ..config import HTTPBinaryCacheSpec
-from ..exceptions import CacheFault, CacheUnopened, NarGone
+from ..cooldown import Cooldown
+from ..exceptions import CacheFault, CacheUnopened, NarGone, StoreDirMismatch
 from .binary_cache import BinaryCacheStore, default_cache_info, open_codec, parse_cache_info, pull
 
 if TYPE_CHECKING:
@@ -39,6 +40,8 @@ class HTTPBinaryCacheStore(BinaryCacheStore):
         self.max_concurrent = spec.max_concurrent
         self.health_window = spec.health_window
         self.drop_unopened = spec.drop_unopened
+        self.opening = Cooldown()
+        self._opened = True
         self._session: aiohttp.ClientSession | None = None
         self._semaphore: Any = None
 
@@ -57,19 +60,57 @@ class HTTPBinaryCacheStore(BinaryCacheStore):
                 await self.close()
                 raise
             # NIX-DEVIATION (#27): `getDefaultSubstituters` (`store-registration.cc:88`) drops a cache whose
-            # `init` throws, and the next daemon worker opens it again. A configured cache lives as long as
-            # pynixd, so pynixd keeps it with Nix's defaults, and it serves once it answers. A query to it
-            # fails meanwhile, as Nix's does after a narinfo disk cache hit skips `init`
-            # (`http-binary-cache-store.cc:69`). Measure how often pynixd starts with a dead cache to reverse it.
+            # `init` throws, and the next daemon worker opens it again, 30 s for a dead host.
+            # `maybeDisable` (`http-binary-cache-store.cc:94`) waits 60 s, but only under `--fallback` and
+            # only in one worker. pynixd keeps the configured cache out of every substituter list
+            # (`opened`) while a `Cooldown` runs, opens it again after, and doubles the wait at each
+            # failure. Measure how often a cache opens on the first try after its cooldown to reverse it.
+            # nixidae/nixidae#1257.
             # structlog renders `exc_info` on a warning as a bare `True`, not as a traceback.
-            log.warning("http_cache_info_fetch_failed", store_id=self.store_id, url=self.url, error=str(e))
+            log.warning(
+                "http_cache_info_fetch_failed",
+                store_id=self.store_id,
+                url=self.url,
+                error=str(e),
+                retry_in=self.opening.failed(),
+            )
             info = default_cache_info(self.priority, self.store_dir)
+            self._opened = False
+            if self._background.open:
+                self._background.spawn(self._open_after_cooldown)
         self._take_cache_info(info)
         concurrency = self.max_concurrent
         if concurrency is None:
             concurrency = 100
         self._semaphore = anyio.Semaphore(concurrency)
         self._started = True
+
+    @property
+    def opened(self) -> bool:
+        return self._opened
+
+    async def _open_after_cooldown(self) -> None:
+        while not self._opened:
+            await anyio.sleep(self.opening.remaining)
+            try:
+                info = await self._load_cache_info()
+            except CacheUnopened as e:
+                log.warning(
+                    "http_cache_info_fetch_failed",
+                    store_id=self.store_id,
+                    url=self.url,
+                    error=str(e),
+                    retry_in=self.opening.failed(),
+                )
+                continue
+            except StoreDirMismatch:
+                # Nix's refusal (`binary-cache-store.cc:58`) is final: the cache stays out.
+                log.exception("http_cache_store_dir_mismatch", store_id=self.store_id, url=self.url)
+                return
+            self._take_cache_info(info)
+            self.opening.succeeded()
+            self._opened = True
+            log.info("http_cache_opened", store_id=self.store_id, url=self.url)
 
     async def close(self) -> None:
         if self._session is not None:

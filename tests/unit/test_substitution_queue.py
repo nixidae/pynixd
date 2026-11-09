@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
 class FakeSubstituter:
     no_schedule = True
+    opened = True
     store_dir = store_dir()
 
     def __init__(

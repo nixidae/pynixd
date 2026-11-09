@@ -8,6 +8,7 @@ has already kept only the trusted ones (`trust.restrict_overrides`).
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 import anyio
@@ -17,11 +18,12 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from pynixd_store.background import Background
 
 from .config import BinaryCacheSpecBase
+from .cooldown import Cooldown
 from .exceptions import CacheUnopened, StoreDirMismatch
 from .store_url import reference_key, substituter_spec
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Callable, Iterable, Sequence
     from contextlib import AbstractAsyncContextManager
 
     from anyio.abc import TaskStatus
@@ -41,10 +43,12 @@ class ClientSubstituters:
     across clients.
     """
 
-    def __init__(self, settings: PynixdSettings) -> None:
+    def __init__(self, settings: PynixdSettings, *, now: Callable[[], float] = time.monotonic) -> None:
         self._settings = settings
+        self._now = now
         self._made: dict[object, Store] = {}
         self._dropped: set[object] = set()
+        self._unopened: dict[object, Cooldown] = {}
         self._lock = anyio.Lock()
         self._held = Background("ClientSubstituters")
 
@@ -67,7 +71,10 @@ class ClientSubstituters:
         }
         resolved: list[Store] = []
         for url in urls:
-            if reference_key(url) in self._dropped:
+            key = reference_key(url)
+            if key in self._dropped:
+                continue
+            if (cooldown := self._unopened.get(key)) is not None and cooldown.cooling:
                 continue
             try:
                 store = await self._backend(url, backends)
@@ -76,6 +83,8 @@ class ClientSubstituters:
             if store is None:
                 log.debug("client_substituter_only_the_daemon_reaches", url=url)
                 return None
+            if not store.opened:
+                continue
             if store not in resolved:
                 resolved.append(store)
         return tuple(resolved)
@@ -109,17 +118,20 @@ class ClientSubstituters:
                 self._dropped.add(key)
                 raise
             except CacheUnopened:
-                # `init` throws (`binary-cache-store.cc:48`), and Nix drops the cache with a warning and asks
-                # the rest (`store-registration.cc:88`). Nothing remembers the failure: each Nix daemon worker
-                # opens the substituters again, so the next client here tries this one again too.
-                # nixidae/nixidae#1257 proposes to remember the failure for a while.
-                log.warning("client_substituter_unopened", url=url, exc_info=True)
+                # NIX-DEVIATION (#27): `init` throws (`binary-cache-store.cc:48`), and `getDefaultSubstituters`
+                # drops the cache with a warning (`store-registration.cc:88`). Nothing remembers that: each Nix
+                # daemon worker opens the cache again, 30 s for a dead host. pynixd leaves the cache out for
+                # every client while a `Cooldown` runs, and opens it again after. Measure how often a cache
+                # opens on the first try after its cooldown to reverse it. nixidae/nixidae#1257.
+                cooldown = self._unopened.setdefault(key, Cooldown(now=self._now))
+                log.warning("client_substituter_unopened", url=url, retry_in=cooldown.failed(), exc_info=True)
                 raise
             except Exception:
                 # Another store opens without a connection: `RemoteStore`'s pool connects on first use
                 # (`remote-store.cc:35`), so Nix keeps a dead ssh-ng host. The daemon answers for this one.
                 log.warning("client_substituter_start_failed", url=url, exc_info=True)
                 return None
+            self._unopened.pop(key, None)
             self._made[key] = store
             return store
 

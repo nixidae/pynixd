@@ -224,7 +224,7 @@ class SubstitutionQueue:
 
         This pynixd's own cache needs no backend: pynixd answers for it.
         """
-        keys = {store.reference_key for store in self.substituter_stores()}
+        keys = {store.reference_key for store in self.configured_substituter_stores()}
 
         def covered(url: str) -> bool:
             return is_own_cache(url, self.ctx.settings) or ((key := reference_key(url)) is not None and key in keys)
@@ -387,12 +387,17 @@ class SubstitutionQueue:
         metrics.SUBSTITUTER_WAITED_FOR.labels(store_id=store_id).set(1 if healthy else 0)
         return healthy
 
-    def substituter_stores(self) -> Iterable[Store]:
+    def configured_substituter_stores(self) -> Iterable[Store]:
+        """Every substituter backend of the daemon's list, ordered by id; one that has not opened stands for its URL too."""
         return (
             store
             for store_id, store in sorted(self.ctx.stores.items(), key=lambda item: str(item[0]))
             if store_id != LOCAL_STORE_ID and store.no_schedule
         )
+
+    def substituter_stores(self) -> Iterable[Store]:
+        """The configured substituter backends that a query may ask: the ones that opened."""
+        return (store for store in self.configured_substituter_stores() if store.opened)
 
     def stores_with_ids(self, ids: Iterable[str]) -> tuple[Store, ...]:
         """The substituter backends with *ids*, in that order: the daemon's and the ones clients named."""

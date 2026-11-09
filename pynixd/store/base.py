@@ -136,6 +136,11 @@ class Store(ABC):
         return True
 
     @property
+    def opened(self) -> bool:
+        """Whether the store opened; a binary cache whose `nix-cache-info` failed is in no substituter list."""
+        return True
+
+    @property
     def in_flight(self) -> int:
         return 0
 
