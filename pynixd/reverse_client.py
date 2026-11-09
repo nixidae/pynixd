@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 from typing import TYPE_CHECKING
 
 import anyio
@@ -79,6 +80,7 @@ class ReverseInitiator:
             "system_features": system_features,
             "nix_version": "pynixd-0.1.0",
             "nix_bin": settings.nix_bin,
+            "max_jobs": settings.max_jobs or os.process_cpu_count() or 1,
         }
 
     async def run(self) -> None:

@@ -11,7 +11,7 @@ dispatching.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import asyncssh
 import structlog
@@ -32,6 +32,43 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 _REGISTRATION_COMMAND = "pynixd-register"
+
+UNDECLARED_MAX_JOBS = 8
+"""The build slots of a builder that declares no `max_jobs`. The pool size
+was the ceiling, 48, and dynhetz sent 48 fetches to macbook in one minute,
+none of which finished in 55 min. nixidae/nixidae#1073."""
+REVERSE_TRANSFER_CONNECTIONS = 16
+"""The transfer pool of a reverse builder: a quarter of `DaemonStore.MAX_CONNECTIONS`."""
+
+
+def build_slots(declared: object, store_id: str) -> int:
+    """The build slots of a registering builder: the `max_jobs` it declares, else `UNDECLARED_MAX_JOBS`."""
+    if isinstance(declared, int) and not isinstance(declared, bool) and declared >= 1:
+        return declared
+    if declared is not None:
+        log.warning("reverse_builder_max_jobs_invalid", store_id=store_id, max_jobs=declared)
+    return UNDECLARED_MAX_JOBS
+
+
+def reverse_spec(reg: dict[str, object], store_id: str) -> ReverseStoreSpec:
+    """The store a builder's registration describes."""
+    systems = set(cast("list[str]", reg.get("systems") or []))
+    system_features = set(cast("list[str]", reg.get("system_features") or []))
+    feature_matrix: dict[str, set[str]] | None = None
+    if systems:
+        feature_matrix = {s: set(system_features) for s in systems}
+    slots = build_slots(reg.get("max_jobs"), store_id)
+    return ReverseStoreSpec(
+        store_id=StoreId(store_id),
+        systems=systems or None,
+        system_features=system_features,
+        feature_matrix=feature_matrix,
+        probe=False,
+        reconnect=False,
+        nix_bin=str(reg.get("nix_bin", "nix")),
+        max_connections=slots + REVERSE_TRANSFER_CONNECTIONS,
+        transfer_connections=REVERSE_TRANSFER_CONNECTIONS,
+    )
 
 
 def _known_hosts_matcher(
@@ -117,35 +154,17 @@ async def start_reverse_acceptor(
                 return
 
             store_id_val = reg.get("store_id", f"builder-{id(conn):x}")
-            systems = set(reg.get("systems", []))
-            system_features = set(reg.get("system_features", []))
-            nix_version = reg.get("nix_version", "")
-            nix_bin = reg.get("nix_bin", "nix")
+            spec = reverse_spec(reg, store_id_val)
+            systems = spec.systems or set()
+            store = ReverseStore(spec, conn)
 
             log.info(
                 "reverse_builder_registration",
                 store_id=store_id_val,
                 systems=sorted(systems),
-                nix_version=nix_version,
+                nix_version=reg.get("nix_version", ""),
+                build_slots=store.build_pool.max_connections,
             )
-
-            feature_matrix: dict[str, set[str]] | None = None
-            if systems and system_features:
-                feature_matrix = {s: set(system_features) for s in systems}
-            elif systems:
-                feature_matrix = {s: set() for s in systems}
-
-            spec = ReverseStoreSpec(
-                store_id=StoreId(store_id_val),
-                systems=systems or None,
-                system_features=system_features,
-                feature_matrix=feature_matrix,
-                probe=False,
-                reconnect=False,
-                nix_bin=nix_bin,
-            )
-
-            store = ReverseStore(spec, conn)
 
             async def _proves(_: Store) -> bool:
                 if not systems:

@@ -714,6 +714,9 @@ class ReverseInitiatorSettings(BaseModel):
     systems: list[str] | None = None
     system_features: list[str] = Field(default_factory=list)
     nix_bin: str = "nix"
+    max_jobs: int | None = Field(default=None, ge=1)
+    """How many builds this builder takes at once; the controller sizes its
+    build pool to it. `None` takes the CPUs this process may use."""
     server_host_key_paths: list[Path] = Field(default_factory=list)
     reconnect_min_delay: float = 1.0
     reconnect_max_delay: float = 60.0
