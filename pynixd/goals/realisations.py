@@ -92,7 +92,7 @@ class RealisationSearch:
     *found* is `None` when an output has no realisation. *substituter_failed*
     says that a substituter failed while no other one held that output: Nix's
     `DrvOutputSubstitutionGoal` then ends `ecFailed`, not `ecNoSubstituters`
-    (`drv-output-substitution-goal.cc:61`), and the derivation goal fails
+    (`drv-output-substitution-goal.cc:84`, `:106`), and the derivation goal fails
     without `--fallback` (`derivation-goal.cc:124`).
     """
 

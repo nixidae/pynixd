@@ -66,6 +66,10 @@ class CacheFault(PynixdError):
     """A binary cache file that exists but could not be read: a transport error, a bad status, a bad body."""
 
 
+class CacheUnopened(CacheFault):
+    """A binary cache whose `nix-cache-info` could not be read, so `BinaryCacheStore::init` throws (`binary-cache-store.cc:48`)."""
+
+
 class StoreDirMismatch(PynixdError):
     """A binary cache whose `nix-cache-info` names another store directory than the store's (`binary-cache-store.cc:58`)."""
 

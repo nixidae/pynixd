@@ -914,6 +914,9 @@ class BinaryCacheSpecBase(StoreSpecBase):
     scheduleable: bool = False
     no_schedule: bool = True
     gc_enabled: bool = False
+    drop_unopened: bool = False
+    """An HTTP or S3 cache whose `nix-cache-info` cannot be read refuses to start, as Nix's does. A
+    substituter that a client names sets it; a configured cache starts with Nix's defaults instead."""
 
 
 class HTTPBinaryCacheSpec(BinaryCacheSpecBase):

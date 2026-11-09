@@ -11,7 +11,7 @@ import anyio
 import structlog
 
 from ..config import HTTPBinaryCacheSpec
-from ..exceptions import CacheFault, NarGone
+from ..exceptions import CacheFault, CacheUnopened, NarGone
 from .binary_cache import BinaryCacheStore, default_cache_info, open_codec, parse_cache_info, pull
 
 if TYPE_CHECKING:
@@ -38,6 +38,7 @@ class HTTPBinaryCacheStore(BinaryCacheStore):
         self.url = _normalise_base_url(url)
         self.max_concurrent = spec.max_concurrent
         self.health_window = spec.health_window
+        self.drop_unopened = spec.drop_unopened
         self._session: aiohttp.ClientSession | None = None
         self._semaphore: Any = None
 
@@ -49,7 +50,21 @@ class HTTPBinaryCacheStore(BinaryCacheStore):
             connector=aiohttp.TCPConnector(limit=100, force_close=False),
             timeout=aiohttp.ClientTimeout(total=30),
         )
-        self._take_cache_info(await self._load_cache_info())
+        try:
+            info = await self._load_cache_info()
+        except CacheUnopened as e:
+            if self.drop_unopened:
+                await self.close()
+                raise
+            # NIX-DEVIATION (#27): `getDefaultSubstituters` (`store-registration.cc:88`) drops a cache whose
+            # `init` throws, and the next daemon worker opens it again. A configured cache lives as long as
+            # pynixd, so pynixd keeps it with Nix's defaults, and it serves once it answers. A query to it
+            # fails meanwhile, as Nix's does after a narinfo disk cache hit skips `init`
+            # (`http-binary-cache-store.cc:69`). Measure how often pynixd starts with a dead cache to reverse it.
+            # structlog renders `exc_info` on a warning as a bare `True`, not as a traceback.
+            log.warning("http_cache_info_fetch_failed", store_id=self.store_id, url=self.url, error=str(e))
+            info = default_cache_info(self.priority, self.store_dir)
+        self._take_cache_info(info)
         concurrency = self.max_concurrent
         if concurrency is None:
             concurrency = 100
@@ -94,20 +109,23 @@ class HTTPBinaryCacheStore(BinaryCacheStore):
                 yield piece
 
     async def _load_cache_info(self) -> dict[str, str]:
-        def _check_response(status: int) -> None:
-            if status != 200:
-                raise RuntimeError(f"HTTP cache returned {status}")
+        """`nix-cache-info`, or `CacheUnopened` where `BinaryCacheStore::init` throws.
 
+        A 404 throws too: `init` then writes the file (`binary-cache-store.cc:50`), and
+        an upload to an HTTP cache fails as "does not appear to be a binary cache"
+        (`http-binary-cache-store.cc:76`).
+        """
+        session = self._require_session()
+        url = urljoin(self.url, "nix-cache-info")
         try:
-            session = self._require_session()
-            url = urljoin(self.url, "nix-cache-info")
             async with session.get(url, headers=await self._headers(url), raise_for_status=False) as response:
-                _check_response(response.status)
+                if response.status == 404:
+                    raise CacheUnopened(f"'{self.url}' does not appear to be a binary cache")
+                if response.status != 200:
+                    raise CacheUnopened(f"{url}: HTTP {response.status}")
                 text = await response.text()
-        except (TimeoutError, aiohttp.ClientError, OSError, RuntimeError) as e:
-            # structlog renders `exc_info` on a warning as a bare `True`, not as a traceback.
-            log.warning("http_cache_info_fetch_failed", store_id=self.store_id, url=self.url, error=repr(e))
-            return default_cache_info(self.priority, self.store_dir)
+        except (TimeoutError, aiohttp.ClientError, OSError) as e:
+            raise CacheUnopened(f"{url}: {e!r}") from e
         return parse_cache_info(text, self.priority, self.store_dir)
 
     async def _get_file(self, name: str) -> str | None:

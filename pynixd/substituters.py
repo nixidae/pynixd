@@ -16,7 +16,8 @@ import structlog
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from pynixd_store.background import Background
 
-from .exceptions import StoreDirMismatch
+from .config import BinaryCacheSpecBase
+from .exceptions import CacheUnopened, StoreDirMismatch
 from .store_url import reference_key, substituter_spec
 
 if TYPE_CHECKING:
@@ -70,7 +71,7 @@ class ClientSubstituters:
                 continue
             try:
                 store = await self._backend(url, backends)
-            except StoreDirMismatch:
+            except (StoreDirMismatch, CacheUnopened):
                 continue
             if store is None:
                 log.debug("client_substituter_only_the_daemon_reaches", url=url)
@@ -92,6 +93,8 @@ class ClientSubstituters:
             spec = substituter_spec(url, self._settings, prefix="client-")
             if spec is None:
                 return None
+            if isinstance(spec, BinaryCacheSpecBase):
+                spec = spec.model_copy(update={"drop_unopened": True})
             store = spec.to_store(str(spec.store_id))
             try:
                 await self._held.start(self._hold, key, store, url)
@@ -105,9 +108,16 @@ class ClientSubstituters:
                 log.warning("client_substituter_dropped", url=url, exc_info=True)
                 self._dropped.add(key)
                 raise
+            except CacheUnopened:
+                # `init` throws (`binary-cache-store.cc:48`), and Nix drops the cache with a warning and asks
+                # the rest (`store-registration.cc:88`). Nothing remembers the failure: each Nix daemon worker
+                # opens the substituters again, so the next client here tries this one again too.
+                # nixidae/nixidae#1257 proposes to remember the failure for a while.
+                log.warning("client_substituter_unopened", url=url, exc_info=True)
+                raise
             except Exception:
-                # Nix drops a substituter it cannot open, with a warning
-                # (`store-registration.cc:114`); the daemon answers for this one.
+                # Another store opens without a connection: `RemoteStore`'s pool connects on first use
+                # (`remote-store.cc:35`), so Nix keeps a dead ssh-ng host. The daemon answers for this one.
                 log.warning("client_substituter_start_failed", url=url, exc_info=True)
                 return None
             self._made[key] = store
