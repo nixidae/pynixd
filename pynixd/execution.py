@@ -884,7 +884,7 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         await build.post_log_and_fanout(
             LogNext(text=f"pynixd: build failed on {store.store_id} ({fault}), retrying elsewhere\n")
         )
-        build.reset_for_retry(store.store_id, str(resp.result.error_msg) or fault)
+        build.reset_for_retry(store.store_id, str(resp.result.error_msg) or fault, elsewhere=True)
         self.trigger()
 
     async def prepare_build(self, build: QueuedBuild, store: S, conn: BuildConn) -> int:

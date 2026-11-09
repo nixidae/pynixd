@@ -47,4 +47,5 @@ async def test_a_crash_with_no_other_store_fails_the_build_once() -> None:
 async def test_a_crash_moves_to_a_store_that_has_not_tried() -> None:
     build = await _crash(("local", "sg1-n1"))
     assert not build.answer.done()
-    assert build.store_failures == {LOCAL_STORE_ID: 1}
+    assert build.is_blacklisted(LOCAL_STORE_ID)
+    assert not build.is_blacklisted(StoreId("sg1-n1"))

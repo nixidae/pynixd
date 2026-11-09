@@ -236,19 +236,25 @@ class QueuedBuild:
         """Check if a specific store has exceeded the retry limit for this build."""
         return self.store_failures.get(store_id, 0) >= MAX_STORE_RETRIES
 
-    def reset_for_retry(self, failed_store_id: StoreId, reason: str) -> None:
+    def reset_for_retry(self, failed_store_id: StoreId, reason: str, *, elsewhere: bool = False) -> None:
         """Reset state for retry on next scheduling pass.
 
         Called after a build or infrastructure failure. The build will
         be re-scheduled to a different store if available, or the same
         store if it hasn't exceeded the per-backend retry limit.
+
+        *elsewhere* takes the store out for this build at once. Placement
+        only orders an untried store first, so a store that the ranking
+        drops leaves the failed ones: easykubenix's fixed-output test went to
+        three sg1 nodes three times each, 17,536 s, before the local store
+        built it. nixidae/nixidae#1102.
         """
         self.retries += 1
         self.started_at = None
         self.worker = None
 
-        # Increment failure count for this specific store
-        self.store_failures[failed_store_id] = self.store_failures.get(failed_store_id, 0) + 1
+        failures = self.store_failures.get(failed_store_id, 0) + 1
+        self.store_failures[failed_store_id] = max(failures, MAX_STORE_RETRIES) if elsewhere else failures
         self.store_errors[failed_store_id] = reason
 
     @property

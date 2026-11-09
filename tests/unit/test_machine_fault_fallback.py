@@ -71,3 +71,15 @@ async def test_max_jobs_zero_keeps_the_local_store_out() -> None:
 
 async def test_a_compile_error_is_not_retried() -> None:
     assert await _retry({}, SG1, "error: expected ';'") is None
+
+
+async def test_the_store_that_failed_is_not_tried_again() -> None:
+    """`retry_elsewhere` means another store: sg1 took one build three times per node. nixidae/nixidae#1102."""
+    queue = BuildQueue()
+    build = await queued(queue)
+    resp = BuildDerivationResponse(result=BuildResult(status=int(BuildResultStatus.TRANSIENT_FAILURE)))
+
+    await fake_executor(queue, STORES).retry_elsewhere(build, STORES[SG1], resp, "transient_failure")
+
+    assert build.is_blacklisted(SG1)
+    assert not build.is_blacklisted(StoreId("sg1-n2"))
