@@ -37,8 +37,7 @@ def test_a_local_path_is_a_daemon_over_that_root(tmp_path: Path) -> None:
     assert spec.store_path == Path("/t/machine2")
     assert spec.managed is True
     assert spec.nix_bin == "/bin/nix"
-    assert spec.nix_config is not None
-    assert spec.nix_config.system_features == ["bar"]
+    assert spec.extra_args == ["--option", "system-features", "bar"]
     assert spec.systems == {SYSTEM}
     assert spec.system_features == {"bar"}
     # A socket under the test's long root passes the 107 bytes of `sun_path`.
@@ -52,8 +51,7 @@ def test_ssh_ng_localhost_is_nix_fake_ssh(tmp_path: Path) -> None:
     spec = _spec("ssh-ng://localhost?remote-store=/t/machine3?system-features=baz - - 1 1 baz", tmp_path)
     assert isinstance(spec, LocalSocketStoreSpec)
     assert spec.store_path == Path("/t/machine3")
-    assert spec.nix_config is not None
-    assert spec.nix_config.system_features == ["baz"]
+    assert spec.extra_args == ["--option", "system-features", "baz"]
 
 
 def test_ssh_ng_host_is_an_ssh_builder(tmp_path: Path) -> None:

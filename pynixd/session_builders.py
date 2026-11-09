@@ -30,7 +30,6 @@ from nix_daemon_protocol.ids import StoreId
 
 from .config import LocalSocketStoreSpec, SSHSubprocessStoreSpec
 from .machines import Machine, MachinesError, parse_config
-from .nix_config import NixConfig
 from .store.base import get_current_system
 from .store_url import StoreReference, spec_for
 
@@ -104,9 +103,12 @@ def builder_spec(machine: Machine, settings: PynixdSettings, nix_bin: str) -> St
                 # A Unix socket path takes 107 bytes, and a root under a test's
                 # directory passes that inside `<root>/nix/var/nix/daemon-socket`.
                 "socket_path": socket_dir / f"{store_id}.socket",
-                "nix_config": NixConfig(
-                    system_features=sorted(set(inner_features.split()) if inner_features else features)
-                ),
+                # The store URL's `system-features` (`completeStoreReference`) is the daemon's setting.
+                "extra_args": [
+                    "--option",
+                    "system-features",
+                    " ".join(sorted(set(inner_features.split()) if inner_features else features)),
+                ],
             }
         )
 
