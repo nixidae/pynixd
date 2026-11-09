@@ -12,6 +12,7 @@ import anyio
 import pytest
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, BuildId, StoreId
+from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest, QueryValidPathsResponse
 from pynixd.allocator import (
     BuildAllocator,
     PreferLocal,
@@ -24,6 +25,7 @@ from pynixd.allocator import (
 )
 from pynixd.build_queue import BuildQueue
 from pynixd.config import PlacementTraceSettings, StoreRankingSettings
+from pynixd.placement import missing_input_bytes
 from pynixd.placement_trace import PlacementTrace
 from pynixd.psi import MemInfo, SystemHealth
 from pynixd.scheduler import Scheduler
@@ -762,18 +764,14 @@ class ValidityStore:
         self.held = held
         self.broken = broken
 
-    async def execute(self, request: Any, **_kwargs: Any) -> Any:
+    async def execute(self, request: QueryValidPathsRequest) -> QueryValidPathsResponse:
         if self.broken:
             raise ConnectionResetError("builder went away")
-        return SimpleNamespace(paths={path for path in request.paths if str(path) in self.held})
+        return QueryValidPathsResponse(paths={path for path in request.paths if str(path) in self.held})
 
 
 SIZES = {StorePath("/nix/store/00000000000000000000000000000001-a"): 10 * MB}
 SIZES[StorePath("/nix/store/00000000000000000000000000000002-b")] = 30 * MB
-
-
-def _with_stores(**stores: Any) -> Any:
-    return SimpleNamespace(ctx=SimpleNamespace(stores={StoreId(k): v for k, v in stores.items()}))
 
 
 class TestTheMissingInputBytes:
@@ -784,7 +782,7 @@ class TestTheMissingInputBytes:
     async def test_are_what_the_store_lacks(self) -> None:
         store = ValidityStore({"/nix/store/00000000000000000000000000000001-a"})
 
-        missing = await Scheduler._missing_input_bytes(_with_stores(), cast("Any", store), SIZES)  # noqa: SLF001 -- the estimate is the unit
+        missing = await missing_input_bytes(store, {}, SIZES)
 
         assert missing == 30 * MB
 
@@ -792,7 +790,7 @@ class TestTheMissingInputBytes:
     async def test_are_unknown_when_the_store_does_not_answer(self) -> None:
         store = ValidityStore(set(), broken=True)
 
-        assert await Scheduler._missing_input_bytes(_with_stores(), cast("Any", store), SIZES) is None  # noqa: SLF001 -- the estimate is the unit
+        assert await missing_input_bytes(store, {}, SIZES) is None
 
     @pytest.mark.anyio
     async def test_are_what_the_store_answers_and_not_its_daemon_client(self) -> None:
@@ -800,6 +798,6 @@ class TestTheMissingInputBytes:
         client = ValidityStore(set(), broken=True)
         store = ValidityStore({"/nix/store/00000000000000000000000000000002-b"})
 
-        missing = await Scheduler._missing_input_bytes(_with_stores(**{REMOTE: store}), cast("Any", client), SIZES)  # noqa: SLF001 -- the estimate is the unit
+        missing = await missing_input_bytes(client, {REMOTE: store}, SIZES)
 
         assert missing == 10 * MB

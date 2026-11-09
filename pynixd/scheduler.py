@@ -28,13 +28,8 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID
 from nix_daemon_protocol.logs import LogResult
 from nix_daemon_protocol.protocol import ResultType, Verbosity
 from pynixd_store.build_stats import (
-    BuildEstimateSource,
     BuildObservation,
-    ExpectedBytes,
-    StoreEstimate,
-    StoreLink,
     identity_of,
-    transfer_seconds,
 )
 from pynixd_store.hintfmt import ANSI_NORMAL, ANSI_RED, magenta
 from pynixd_store.store_path import StorePath
@@ -59,7 +54,13 @@ from .config import NoLocalJobs
 from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from .exceptions import BackendError, InfrastructureError, error_text, leaves
 from .goals.results import failure, result_succeeded
-from .placement import client_forbids_local, local_slot_is_full, request_has_a_local_slot, slot_wait
+from .placement import (
+    TransferEstimator,
+    client_forbids_local,
+    local_slot_is_full,
+    request_has_a_local_slot,
+    slot_wait,
+)
 from .placement_trace import CandidateTrace, Outcome, PlacementDecision, PlacementTrace
 from .serde import (
     AddTempRootRequest,
@@ -104,11 +105,7 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
-_LINK_REREAD_SECONDS = 60.0
-"""How long a store's measured link stands before the next read."""
 _PULL_ATTEMPTS = 3
-_MISSING_BYTES_TIMEOUT = 5.0
-"""Seconds a store has to say which inputs it holds, before its cost counts as unknown."""
 _PULL_BACKOFF_SECONDS = 2.0
 """The first wait before a pull again; it doubles. A test sets 0, not a
 patched `anyio.sleep`: nixidae/nixidae#1019."""
@@ -367,10 +364,11 @@ class Scheduler:
         was at its build limit."""
         self.builds_waiting = False
         """Whether the last pass left a build waiting for a store."""
-        self._links: dict[StoreId, tuple[float, StoreLink]] = {}
-        """Each store's measured link, and when it was read."""
         self.trace = PlacementTrace(None, ctx.settings.placement_trace)
         """Writes nothing until `start` hands it the database, which the local store opens after this."""
+        self.estimator = TransferEstimator(
+            self.local_store, lambda: self.stores, ctx.stores, self.ranker.settings, self.trace
+        )
         self.pass_id = 0
         self._weights = self.ranker.settings.model_dump_json()
         for client in [*self.stores.values(), self.local_builder]:
@@ -825,7 +823,7 @@ class Scheduler:
                 prefer_local=PreferLocal(
                     wait_seconds=self._local_wait_seconds(),
                     # Only a store whose input cost is known: a round trip
-                    # alone is no price for a delegation (`_missing_input_bytes`).
+                    # alone is no price for a delegation (`missing_input_bytes`).
                     transfer_seconds={
                         store_id: seconds for store_id, seconds in transfer.items() if store_id in build.inputs_measured
                     },
@@ -968,129 +966,13 @@ class Scheduler:
         self.trace.record(decision)
 
     async def _transfer_seconds(self, build: QueuedBuild) -> dict[StoreId, float]:
-        """Each remote store's expected delegation seconds for this build, where measured.
-
-        Read once per build and store, and kept on the build: a pass ranks
-        every pending build again. The input bytes are what the store lacks
-        now (`_missing_input_bytes`); the pull bytes are the identity's
-        history, since no output exists before the build.
-        """
-        if not isinstance(self.local_store, LocalDBStore):
-            return {}
-        db = self.local_store.db
-        identity = identity_of(build.request.derivation)
-        platform = build.request.derivation.platform
-        features = effective_required_features(build.request.derivation)
-        local_id = self.local_store.store_id
-        todo = [
-            store
-            for store_id, store in self.stores.items()
-            if store_id != local_id
-            and store_id not in build.transfer_seconds
-            and store.is_healthy
-            and store.supports_derivation(platform, features)
-        ]
-        estimate_local = self._wants_estimates and local_id not in build.estimates
-        if not todo and not estimate_local:
-            return self._known_transfer_seconds(build)
-        sizes = await self._input_closure_sizes(build) if todo else {}
-
-        async def build_ms(store_id: StoreId) -> tuple[int | None, BuildEstimateSource | None]:
-            # Only the trace and a time-aware ranking read a build estimate per
-            # store; a pass pays no query for it otherwise.
-            if not self._wants_estimates:
-                return None, None
-            return await db.expected_build_ms_on(identity, str(store_id))
-
-        async def measure(store: DaemonStore) -> None:
-            expected = await db.expected_bytes(identity, str(store.store_id))
-            link = await self._link(store.store_id)
-            missing = await self._missing_input_bytes(store, sizes)
-            setup = self.ranker.settings.remote_setup_seconds
-            build.transfer_seconds[store.store_id] = transfer_seconds(
-                ExpectedBytes(inputs=missing, pull=expected.pull), link, setup
-            )
-            if missing is not None and (missing == 0 or link.send_bytes_per_s):
-                build.inputs_measured.add(store.store_id)
-            ms, source = await build_ms(store.store_id)
-            build.estimates[store.store_id] = StoreEstimate(
-                inputs_bytes=missing,
-                pull_bytes=expected.pull,
-                link=link,
-                build_ms=ms,
-                build_source=source,
-                setup_seconds=setup,
-            )
-
-        async def measure_local() -> None:
-            ms, source = await build_ms(local_id)
-            build.estimates[local_id] = StoreEstimate(inputs_bytes=0, pull_bytes=0, build_ms=ms, build_source=source)
-
-        async with anyio.create_task_group() as tg:
-            for store in todo:
-                tg.start_soon(measure, store)
-            if estimate_local:
-                tg.start_soon(measure_local)
-        return self._known_transfer_seconds(build)
-
-    @property
-    def _wants_estimates(self) -> bool:
-        ranking = self.ranker.settings
-        return (
-            self.trace.enabled
-            or ranking.time_penalty_per_second is not None
-            or ranking.cpu_reference_seconds is not None
-        )
-
-    @staticmethod
-    def _known_transfer_seconds(build: QueuedBuild) -> dict[StoreId, float]:
-        return {store_id: seconds for store_id, seconds in build.transfer_seconds.items() if seconds is not None}
-
-    async def _input_closure_sizes(self, build: QueuedBuild) -> dict[StorePath, int]:
-        """The NAR size of each path in the closure of the build's inputs."""
-        inputs = {StorePath(path=str(path)) for path in build.request.derivation.input_srcs}
-        if not inputs:
-            return {}
-        closure = await self.local_store.execute(QueryClosureWithInfoRequest(paths=inputs), client=None)
-        return {info.path: info.info.nar_size for info in closure.infos}
-
-    async def _missing_input_bytes(self, store: DaemonStore, sizes: Mapping[StorePath, int]) -> int | None:
-        """The NAR bytes of the input closure that *store* lacks: what delegating there sends.
-
-        The same `QueryValidPaths` the transfer itself asks
-        (`stream_paths_store_to_store`). History was a guess: home-manager's
-        `man-paths` had never run on sg1-n3, a round trip alone priced it
-        under a second, and it sent 9.3 GB in 648 s for a 0.3 s build.
-        `None` when the store does not answer in time; the cost is then unknown.
-        The store answers, not its daemon client: a store with no daemon reads its own database.
-        """
-        if not sizes:
-            return 0
-        answers = self.ctx.stores.get(store.store_id, store)
-        try:
-            with anyio.fail_after(_MISSING_BYTES_TIMEOUT):
-                valid = await answers.execute(QueryValidPathsRequest(paths=set(sizes), substitute=0))
-        except (TimeoutError, BackendError, InfrastructureError, OSError, EOFError, *ssh_errors()):
-            log.debug("missing_input_bytes_unknown", store_id=store.store_id, exc_info=True)
-            return None
-        held = set(valid.paths)
-        return sum(size for path, size in sizes.items() if path not in held)
+        return await self.estimator.transfer_seconds(build)
 
     def _local_wait_seconds(self) -> float | None:
         return self._slot_wait_seconds(self.local_store.store_id)
 
     def _slot_wait_seconds(self, store_id: StoreId) -> float | None:
         return slot_wait(self.queue, store_id)
-
-    async def _link(self, store_id: StoreId) -> StoreLink:
-        if not isinstance(self.local_store, LocalDBStore):
-            return StoreLink()
-        cached = self._links.get(store_id)
-        if cached is not None and time.monotonic() - cached[0] < _LINK_REREAD_SECONDS:
-            return cached[1]
-        link = await self.local_store.db.store_link(str(store_id))
-        self._links[store_id] = (time.monotonic(), link)
-        return link
 
     @staticmethod
     def _has_build_room(

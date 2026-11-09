@@ -1,26 +1,53 @@
-"""Where a build may go, from the build queue alone: the local slots of each client.
+"""What placing a build reads: the local slots of each client, and what a delegation costs.
 
-`Scheduler` places builds with these. Each one reads a `BuildQueue` and the
-local store's id, so a test passes a real queue and no fake.
+The slot rules read a `BuildQueue` and the local store's id alone, so a test
+passes a real queue and no fake. `TransferEstimator` measures the cost.
 """
 
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
+import anyio
 import structlog
 
-from pynixd_store.build_stats import slot_wait_seconds
+from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest
+from pynixd_store.build_stats import (
+    ExpectedBytes,
+    StoreEstimate,
+    StoreLink,
+    identity_of,
+    slot_wait_seconds,
+    transfer_seconds,
+)
+from pynixd_store.store_path import StorePath
+
+from ._lazy import ssh_errors
+from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
+from .exceptions import BackendError, InfrastructureError
+from .store import LocalDBStore
+from .system_features import effective_required_features
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from nix_daemon_protocol.ids import RequestId, StoreId
+    from nix_daemon_protocol.query_valid_paths import QueryValidPathsResponse
+    from pynixd_store.build_stats import BuildEstimateSource
 
     from .build_queue import BuildQueue, QueuedBuild
+    from .config import StoreRankingSettings
+    from .placement_trace import PlacementTrace
+    from .store import DaemonStore
+    from .store.base import Store
 
 log = structlog.get_logger(__name__)
+
+_LINK_REREAD_SECONDS = 60.0
+"""How long a store's measured link stands before the next read."""
+_MISSING_BYTES_TIMEOUT = 5.0
+"""Seconds a store has to say which inputs it holds, before its cost counts as unknown."""
 
 
 def slot_wait(queue: BuildQueue, store_id: StoreId) -> float | None:
@@ -129,3 +156,155 @@ def client_forbids_local(queue: BuildQueue, build: QueuedBuild) -> bool:
     if wanters:
         return all(queue.max_jobs_of(request_id) == 0 for request_id in wanters)
     return build.options is not None and int(build.options.max_build_jobs) == 0
+
+
+class AnswersValidity(Protocol):
+    """A store that says which of some paths it holds."""
+
+    @property
+    def store_id(self) -> StoreId: ...
+    async def execute(self, request: QueryValidPathsRequest, /) -> QueryValidPathsResponse: ...
+
+
+async def missing_input_bytes(
+    store: AnswersValidity, answers: Mapping[StoreId, AnswersValidity], sizes: Mapping[StorePath, int]
+) -> int | None:
+    """The NAR bytes of the input closure that *store* lacks: what delegating there sends.
+
+    The same `QueryValidPaths` the transfer itself asks
+    (`stream_paths_store_to_store`). History was a guess: home-manager's
+    `man-paths` had never run on sg1-n3, a round trip alone priced it
+    under a second, and it sent 9.3 GB in 648 s for a 0.3 s build.
+    `None` when the store does not answer in time; the cost is then unknown.
+    The store in *answers* answers, not its daemon client: a store with no daemon reads its own database.
+    """
+    if not sizes:
+        return 0
+    answering = answers.get(store.store_id, store)
+    try:
+        with anyio.fail_after(_MISSING_BYTES_TIMEOUT):
+            valid = await answering.execute(QueryValidPathsRequest(paths=set(sizes), substitute=0))
+    except (TimeoutError, BackendError, InfrastructureError, OSError, EOFError, *ssh_errors()):
+        log.debug("missing_input_bytes_unknown", store_id=store.store_id, exc_info=True)
+        return None
+    held = set(valid.paths)
+    return sum(size for path, size in sizes.items() if path not in held)
+
+
+class TransferEstimator:
+    """What delegating a build to each store is expected to cost, from the local store's measurements."""
+
+    def __init__(
+        self,
+        local_store: Store,
+        stores: Callable[[], Mapping[StoreId, DaemonStore]],
+        answers: Mapping[StoreId, AnswersValidity],
+        settings: StoreRankingSettings,
+        trace: PlacementTrace,
+    ) -> None:
+        self.local_store = local_store
+        self.stores = stores
+        """The stores a build may go to, read on each call: a builder can join or leave between passes."""
+        self.answers = answers
+        """The store behind each daemon client; a store with no daemon reads its own database."""
+        self.settings = settings
+        self.trace = trace
+        self._links: dict[StoreId, tuple[float, StoreLink]] = {}
+        """Each store's measured link, and when it was read."""
+
+    async def transfer_seconds(self, build: QueuedBuild) -> dict[StoreId, float]:
+        """Each remote store's expected delegation seconds for this build, where measured.
+
+        Read once per build and store, and kept on the build: a pass ranks
+        every pending build again. The input bytes are what the store lacks
+        now (`missing_input_bytes`); the pull bytes are the identity's
+        history, since no output exists before the build.
+        """
+        if not isinstance(self.local_store, LocalDBStore):
+            return {}
+        db = self.local_store.db
+        identity = identity_of(build.request.derivation)
+        platform = build.request.derivation.platform
+        features = effective_required_features(build.request.derivation)
+        local_id = self.local_store.store_id
+        todo = [
+            store
+            for store_id, store in self.stores().items()
+            if store_id != local_id
+            and store_id not in build.transfer_seconds
+            and store.is_healthy
+            and store.supports_derivation(platform, features)
+        ]
+        estimate_local = self._wants_estimates and local_id not in build.estimates
+        if not todo and not estimate_local:
+            return self._known_transfer_seconds(build)
+        sizes = await self._input_closure_sizes(build) if todo else {}
+
+        async def build_ms(store_id: StoreId) -> tuple[int | None, BuildEstimateSource | None]:
+            # Only the trace and a time-aware ranking read a build estimate per
+            # store; a pass pays no query for it otherwise.
+            if not self._wants_estimates:
+                return None, None
+            return await db.expected_build_ms_on(identity, str(store_id))
+
+        async def measure(store: DaemonStore) -> None:
+            expected = await db.expected_bytes(identity, str(store.store_id))
+            link = await self._link(store.store_id)
+            missing = await missing_input_bytes(store, self.answers, sizes)
+            setup = self.settings.remote_setup_seconds
+            build.transfer_seconds[store.store_id] = transfer_seconds(
+                ExpectedBytes(inputs=missing, pull=expected.pull), link, setup
+            )
+            if missing is not None and (missing == 0 or link.send_bytes_per_s):
+                build.inputs_measured.add(store.store_id)
+            ms, source = await build_ms(store.store_id)
+            build.estimates[store.store_id] = StoreEstimate(
+                inputs_bytes=missing,
+                pull_bytes=expected.pull,
+                link=link,
+                build_ms=ms,
+                build_source=source,
+                setup_seconds=setup,
+            )
+
+        async def measure_local() -> None:
+            ms, source = await build_ms(local_id)
+            build.estimates[local_id] = StoreEstimate(inputs_bytes=0, pull_bytes=0, build_ms=ms, build_source=source)
+
+        async with anyio.create_task_group() as tg:
+            for store in todo:
+                tg.start_soon(measure, store)
+            if estimate_local:
+                tg.start_soon(measure_local)
+        return self._known_transfer_seconds(build)
+
+    @property
+    def _wants_estimates(self) -> bool:
+        ranking = self.settings
+        return (
+            self.trace.enabled
+            or ranking.time_penalty_per_second is not None
+            or ranking.cpu_reference_seconds is not None
+        )
+
+    @staticmethod
+    def _known_transfer_seconds(build: QueuedBuild) -> dict[StoreId, float]:
+        return {store_id: seconds for store_id, seconds in build.transfer_seconds.items() if seconds is not None}
+
+    async def _input_closure_sizes(self, build: QueuedBuild) -> dict[StorePath, int]:
+        """The NAR size of each path in the closure of the build's inputs."""
+        inputs = {StorePath(path=str(path)) for path in build.request.derivation.input_srcs}
+        if not inputs:
+            return {}
+        closure = await self.local_store.execute(QueryClosureWithInfoRequest(paths=inputs), client=None)
+        return {info.path: info.info.nar_size for info in closure.infos}
+
+    async def _link(self, store_id: StoreId) -> StoreLink:
+        if not isinstance(self.local_store, LocalDBStore):
+            return StoreLink()
+        cached = self._links.get(store_id)
+        if cached is not None and time.monotonic() - cached[0] < _LINK_REREAD_SECONDS:
+            return cached[1]
+        link = await self.local_store.db.store_link(str(store_id))
+        self._links[store_id] = (time.monotonic(), link)
+        return link
