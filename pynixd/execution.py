@@ -9,23 +9,33 @@ phase. nixidae/nixidae#1246.
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import structlog
 
+from pynixd_store.store_path import StorePath
+
 from .allocator import outside_the_session
+from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
+from .exceptions import BackendError, error_text
 from .goals.results import result_succeeded
 from .placement import client_forbids_local
-from .serde import BuildResultStatus, LogNext
+from .serde import AddTempRootRequest, AddTempRootsRequest, BuildResultStatus, LogNext, QueryValidPathsRequest
 from .system_features import effective_required_features
+from .wire import FEATURE_ADD_TEMP_ROOTS
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Awaitable, Callable, Iterable, Mapping
 
+    import anyio
+
+    from nix_daemon_protocol.aliases import StorePathSet
     from nix_daemon_protocol.ids import StoreId
+    from nix_daemon_protocol.wire_ops import WireRequest
 
     from .build_queue import BuildQueue, QueuedBuild
     from .config import StoreRankingSettings
+    from .connection import ClientConn
     from .serde import BuildDerivationResponse, BuildResult
 
 log = structlog.get_logger(__name__)
@@ -61,11 +71,17 @@ def machine_fault(result: BuildResult) -> str | None:
     return next((words for words in _MACHINE_FAULTS if words in message), None)
 
 
-class Builder(Protocol):
-    """What execution reads of a store that builds."""
+class Answers(Protocol):
+    """A store that answers an operation."""
 
     @property
     def store_id(self) -> StoreId: ...
+    async def execute(self, request: WireRequest, client: ClientConn | None = None) -> Any: ...
+
+
+class Builder(Answers, Protocol):
+    """What execution reads of a store that builds."""
+
     @property
     def session_only(self) -> bool: ...
 
@@ -74,23 +90,67 @@ class Builder(Protocol):
     def supports_derivation(self, system: str, features: set[str], /) -> bool: ...
 
 
-class Executor[S: Builder]:
+class RootHolder(Protocol):
+    """A connection to a builder's daemon, whose temporary roots live as long as it does."""
+
+    @property
+    def standard_features(self) -> frozenset[str]: ...
+
+    holds_roots: bool
+
+    async def call(self, request: WireRequest, client: ClientConn | None = None, *, raise_on_error: bool) -> Any: ...
+
+
+class Streams[S, L](Protocol):
+    """`stream_paths_store_to_store`, from the local store to a builder."""
+
+    def __call__(
+        self,
+        src: L,
+        dst: S,
+        paths: Iterable[StorePath],
+        cancel_event: anyio.Event | None = None,
+        *,
+        peer_store_id: str | None = None,
+        direction: Literal["in", "out"] | None = None,
+        substitute: bool = False,
+    ) -> Awaitable[int]: ...
+
+
+async def add_temp_roots(conn: RootHolder, paths: StorePathSet) -> None:
+    """Root *paths* on *conn*'s daemon for the connection's life. The pool closes *conn* when it comes back."""
+    if not paths:
+        return
+    conn.holds_roots = True
+    if FEATURE_ADD_TEMP_ROOTS in conn.standard_features:
+        await conn.call(AddTempRootsRequest(paths=paths), raise_on_error=True)
+        return
+    for path in sorted(paths, key=str):
+        await conn.call(AddTempRootRequest(path=path), raise_on_error=True)
+
+
+class Executor[S: Builder, L: Answers]:
     """Runs a build on the store the placer chose, and moves it on when the machine fails."""
 
     def __init__(
         self,
         *,
         queue: BuildQueue,
-        local_id: StoreId,
+        local: L,
         stores: Callable[[], Mapping[StoreId, S]],
         settings: StoreRankingSettings,
         trigger: Callable[[], None],
+        strip_handled_features: Callable[[QueuedBuild], None],
+        stream: Streams[S, L],
     ) -> None:
         self.queue = queue
-        self.local_id = local_id
+        self.local = local
+        self.local_id = local.store_id
         self._stores = stores
         self.settings = settings
         self.trigger = trigger
+        self.strip_handled_features = strip_handled_features
+        self.stream = stream
 
     def note_disk_full(self, store: S, message: str) -> None:
         """Hold *store* back from builds when it ran out of disk. nixidae/nixidae#1013."""
@@ -135,3 +195,54 @@ class Executor[S: Builder]:
         )
         build.reset_for_retry(store.store_id, str(resp.result.error_msg) or fault)
         self.trigger()
+
+    async def prepare_build(self, build: QueuedBuild, store: S, conn: RootHolder) -> int:
+        """Hold the inputs on the builder and send what it lacks; answer the NAR bytes sent.
+
+        All operations that must happen before the build request is sent
+        to the backend daemon.
+        """
+        self.strip_handled_features(build)
+
+        # The builder substitutes first, and pynixd pushes only what no
+        # substituter of the builder holds: a builder next to a cache pulls
+        # from it, not over the link from this host. A failed substitution is
+        # only a warning on the builder (`store-api.cc:758`), and the push
+        # covers it. nixidae/nixidae#1074.
+        input_srcs = build.request.derivation.input_srcs
+        substitute = True
+        if input_srcs:
+            paths_to_check = {StorePath(path=str(p)) for p in input_srcs}
+            await self.hold_inputs_on(conn, paths_to_check)
+            try:
+                check = await store.execute(QueryValidPathsRequest(paths=paths_to_check, substitute=1))
+                valid_paths = [str(cp) for cp in check.paths]
+                known = [str(p) for p in input_srcs if str(p) in valid_paths]
+            except (BackendError, OSError, ConnectionError) as e:
+                # A builder that fell silent while it substituted is asked
+                # again by the push, without the download.
+                log.warning("builder_substitution_failed", store_id=store.store_id, error=error_text(e))
+                known = []
+                substitute = False
+            missing_paths = {StorePath(str(p)) for p in input_srcs if str(p) not in known}
+        else:
+            missing_paths = set()
+        if not missing_paths:
+            return 0
+        log.debug("build_sending_inputs", build_id=build.build_id, store_id=store.store_id, count=len(missing_paths))
+        return await self.stream(
+            self.local, store, missing_paths, peer_store_id=store.store_id, direction="out", substitute=substitute
+        )
+
+    async def hold_inputs_on(self, conn: RootHolder, inputs: set[StorePath]) -> None:
+        """Root the closure of *inputs* on the builder, for the build connection's life.
+
+        Before the validity check, as `copyPaths` in `src/libstore/store-api.cc`
+        does: a path the builder holds and its collector deletes between the
+        check and the copy is neither sent nor present, and the copy fails on
+        it. The whole closure and not the inputs alone, because a root keeps
+        alive only the closure of a path that is valid, and an input the
+        builder lacks protects none of its references there. Issue #887.
+        """
+        closure = await self.local.execute(QueryClosureWithInfoRequest(paths=inputs), client=None)
+        await add_temp_roots(conn, inputs | {info.path for info in closure.infos})

@@ -5,52 +5,50 @@ nixidae/nixidae#1074.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
-from pynixd import scheduler as scheduler_module
+from nix_daemon_protocol.ids import StoreId
+from pynixd.build_queue import BuildQueue
 from pynixd.daemon_extensions.query_closure_with_info import QueryClosureWithInfoResponse
 from pynixd.exceptions import BackendError
-from pynixd.scheduler import Scheduler
 from pynixd.serde import QueryValidPathsRequest, QueryValidPathsResponse, StorePath
 from pynixd.store import transfer
+from tests._conftest.execution import FakeConn, Streamed, fake_executor, queued
+from tests._conftest.placement import FakeStore
 from tests.unit.test_builder_holds_inputs import BOEHM, INPUT, _info
+
+if TYPE_CHECKING:
+    from nix_daemon_protocol.wire_ops import WireRequest
+
+SG2 = StoreId("sg1-n2")
+
+
+async def _prepare(store: FakeStore) -> Streamed:
+    """Prepare a build with one input on *store*, and answer what pynixd pushed."""
+    queue = BuildQueue()
+    streamed = Streamed()
+    build = await queued(queue, input_srcs=[INPUT])
+    await fake_executor(queue, {SG2: store}, stream=streamed).prepare_build(build, store, FakeConn())
+    return streamed
 
 
 @pytest.mark.anyio
-async def test_the_builder_substitutes_the_inputs_before_pynixd_sends_them(monkeypatch: pytest.MonkeyPatch) -> None:
-    asked: list[QueryValidPathsRequest] = []
-    streamed: list[dict[str, Any]] = []
+async def test_the_builder_substitutes_the_inputs_before_pynixd_sends_them() -> None:
+    asked: list[int | None] = []
 
-    async def hold(_conn: object, _inputs: object) -> None:
-        pass
-
-    async def check(request: QueryValidPathsRequest) -> QueryValidPathsResponse:
-        asked.append(request)
+    async def check(request: WireRequest) -> QueryValidPathsResponse:
+        assert isinstance(request, QueryValidPathsRequest)
+        asked.append(request.substitute)
         return QueryValidPathsResponse(paths=set())
 
-    async def stream(*_args: Any, **kwargs: Any) -> int:
-        streamed.append(kwargs)
-        return 0
+    store = FakeStore(SG2)
+    store.answer = check
+    streamed = await _prepare(store)
 
-    monkeypatch.setattr(scheduler_module, "stream_paths_store_to_store", stream)
-    fake = SimpleNamespace(
-        allocator=SimpleNamespace(strip_handled_features=lambda _build: None),
-        local_store=None,
-        _hold_inputs_on=hold,
-    )
-    build = SimpleNamespace(
-        build_id="b1",
-        request=SimpleNamespace(derivation=SimpleNamespace(input_srcs={StorePath(path=INPUT)})),
-    )
-    store = SimpleNamespace(store_id="sg1-n2", execute=check)
-
-    await Scheduler._prepare_build(cast("Any", fake), cast("Any", build), cast("Any", store), cast("Any", object()))
-
-    assert [r.substitute for r in asked] == [1]
-    assert [kwargs["substitute"] for kwargs in streamed] == [True]
+    assert asked == [1]
+    assert [substitute for _, _, substitute in streamed.calls] == [True]
 
 
 class _Source:
@@ -95,31 +93,12 @@ async def test_only_what_the_builder_cannot_substitute_is_pushed(
 
 
 @pytest.mark.anyio
-async def test_a_builder_that_failed_to_substitute_gets_a_plain_push(monkeypatch: pytest.MonkeyPatch) -> None:
-    streamed: list[dict[str, Any]] = []
-
-    async def hold(_conn: object, _inputs: object) -> None:
-        pass
-
-    async def check(_request: QueryValidPathsRequest) -> QueryValidPathsResponse:
+async def test_a_builder_that_failed_to_substitute_gets_a_plain_push() -> None:
+    async def check(_request: WireRequest) -> QueryValidPathsResponse:
         raise BackendError("pynixd: store sg1-n2 did not answer QueryValidPathsRequest within 300 s of silence")
 
-    async def stream(*_args: Any, **kwargs: Any) -> int:
-        streamed.append(kwargs)
-        return 0
+    store = FakeStore(SG2)
+    store.answer = check
+    streamed = await _prepare(store)
 
-    monkeypatch.setattr(scheduler_module, "stream_paths_store_to_store", stream)
-    fake = SimpleNamespace(
-        allocator=SimpleNamespace(strip_handled_features=lambda _build: None),
-        local_store=None,
-        _hold_inputs_on=hold,
-    )
-    build = SimpleNamespace(
-        build_id="b1",
-        request=SimpleNamespace(derivation=SimpleNamespace(input_srcs={StorePath(path=INPUT)})),
-    )
-    store = SimpleNamespace(store_id="sg1-n2", execute=check)
-
-    await Scheduler._prepare_build(cast("Any", fake), cast("Any", build), cast("Any", store), cast("Any", object()))
-
-    assert [kwargs["substitute"] for kwargs in streamed] == [False]
+    assert [substitute for _, _, substitute in streamed.calls] == [False]

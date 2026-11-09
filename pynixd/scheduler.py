@@ -41,7 +41,7 @@ from .allocator import (
 from .build_queue import BuildQueue, QueuedBuild
 from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from .exceptions import BackendError, InfrastructureError, error_text, leaves
-from .execution import Executor
+from .execution import Executor, add_temp_roots
 from .goals.results import failure, result_succeeded
 from .placement import (
     Placer,
@@ -51,12 +51,9 @@ from .placement import (
 )
 from .placement_trace import PlacementTrace
 from .serde import (
-    AddTempRootRequest,
-    AddTempRootsRequest,
     BuildDerivationResponse,
     BuildResultStatus,
     LogNext,
-    QueryValidPathsRequest,
 )
 from .store import DaemonStore, LocalDBStore
 from .store.base import get_current_system
@@ -64,7 +61,6 @@ from .store.local_db import write_router
 from .store.transfer import stream_paths_store_to_store
 from .substitution_queue import SubstitutionQueue
 from .trust import warning_text
-from .wire import FEATURE_ADD_TEMP_ROOTS
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Sequence
@@ -86,6 +82,7 @@ if TYPE_CHECKING:
         BuildDerivationRequest,
         SetOptionsRequest,
     )
+    from .store.local_daemon import LocalStore
 
 log = structlog.get_logger(__name__)
 
@@ -170,18 +167,6 @@ async def _hold(roots: TempRoots, paths: Iterable[StorePath], store_id: StoreId)
 def _cannot_build_there(store_id: StoreId) -> BackendError:
     """A build pynixd's builder leaves to a daemon, on a store that runs none. The log names the reason."""
     return BackendError(f"pynixd: store {store_id} runs no Nix daemon, and pynixd cannot build there")
-
-
-async def add_temp_roots(conn: Connection, paths: StorePathSet) -> None:
-    """Root *paths* on *conn*'s daemon for the connection's life. The pool closes *conn* when it comes back."""
-    if not paths:
-        return
-    conn.holds_roots = True
-    if FEATURE_ADD_TEMP_ROOTS in conn.standard_features:
-        await conn.call(AddTempRootsRequest(paths=paths), raise_on_error=True)
-        return
-    for path in sorted(paths, key=str):
-        await conn.call(AddTempRootRequest(path=path), raise_on_error=True)
 
 
 def with_build_times(resp: BuildDerivationResponse, start: int, stop: int) -> BuildDerivationResponse:
@@ -296,12 +281,14 @@ class Scheduler:
             dynamic=self._dynamic_feature_matrix,
             spawn=self._spawn_worker,
         )
-        self.executor: Executor[DaemonStore] = Executor(
+        self.executor: Executor[DaemonStore, LocalStore | LocalDBStore] = Executor(
             queue=self.queue,
-            local_id=self.local_store.store_id,
+            local=self.local_store,
             stores=lambda: self.stores,
             settings=self.ranker.settings,
             trigger=self.trigger,
+            strip_handled_features=self.allocator.strip_handled_features,
+            stream=stream_paths_store_to_store,  # type: ignore[arg-type]  # zuban-bug: a union type argument fails a callable Protocol; mypy accepts the call
         )
         for client in [*self.stores.values(), self.local_builder]:
             client.on_capacity = self.trigger
@@ -627,7 +614,7 @@ class Scheduler:
         """Execute build on a store, handling inputs and outputs.
 
         Internal phases:
-        1. _prepare_build  — CA registration, resolve, strip features, stream inputs
+        1. Executor.prepare_build — strip features, hold and send the inputs
         2. _execute        — Call backend via build_conn
         3. _collect_outputs — Pull outputs, register realisations, record stats
         """
@@ -690,7 +677,7 @@ class Scheduler:
                         queued_ms=ms_since(build.enqueued_at),
                     )
                     inputs_started = time.monotonic()
-                    observation.inputs_bytes = await self._prepare_build(build, store, conn)
+                    observation.inputs_bytes = await self.executor.prepare_build(build, store, conn)
                     observation.inputs_ms = ms_since(inputs_started)
                     await self._say_where_it_builds(build, store)
                     build_resp = await self._execute(build, store, conn)
@@ -826,7 +813,7 @@ class Scheduler:
     async def _send_inputs(self, build: QueuedBuild, to: LocalDBStore, roots: TempRoots) -> None:
         """Copy the input closure that *to* lacks, before pynixd builds into it.
 
-        *roots* hold the whole closure on *to* first, as `_hold_inputs_on` does
+        *roots* hold the whole closure on *to* first, as `Executor.hold_inputs_on` does
         on a builder. No substitution, unlike a push to a builder
         (nixidae/nixidae#1074): the local store holds every input, and both
         stores share this machine's disk.
@@ -838,78 +825,6 @@ class Scheduler:
             self.local_store, to, inputs, peer_store_id=to.store_id, direction="out"
         )
         log.debug("build_inputs_sent", build_id=build.build_id, store_id=to.store_id, bytes=sent)
-
-    async def _prepare_build(
-        self,
-        build: QueuedBuild,
-        store: DaemonStore,
-        conn: Connection,  # build connection (opaque to this method)
-    ) -> int:
-        """Register CA realisations, resolve deferred derivations, stream inputs; answer the NAR bytes sent.
-
-        All operations that must happen before the build request is sent
-        to the backend daemon.
-        """
-        # Strip pynixd-handled features from requiredSystemFeatures
-        self.allocator.strip_handled_features(build)
-
-        # The builder substitutes first, and pynixd pushes only what no
-        # substituter of the builder holds: a builder next to a cache pulls
-        # from it, not over the link from this host. A failed substitution is
-        # only a warning on the builder (`store-api.cc:758`), and the push
-        # covers it. nixidae/nixidae#1074.
-        input_srcs = build.request.derivation.input_srcs
-        substitute = True
-        if input_srcs:
-            paths_to_check = {StorePath(path=str(p)) for p in input_srcs}
-            await self._hold_inputs_on(conn, paths_to_check)
-            try:
-                check = await store.execute(
-                    QueryValidPathsRequest(
-                        paths=paths_to_check,
-                        substitute=1,
-                    )
-                )
-                valid_paths = [str(cp) for cp in check.paths]
-                known = [str(p) for p in input_srcs if str(p) in valid_paths]
-            except (BackendError, OSError, ConnectionError) as e:
-                # A builder that fell silent while it substituted is asked
-                # again by the push, without the download.
-                log.warning("builder_substitution_failed", store_id=store.store_id, error=error_text(e))
-                known = []
-                substitute = False
-            missing_paths = {StorePath(str(p)) for p in input_srcs if str(p) not in known}
-        else:
-            missing_paths = set()
-        if not missing_paths:
-            return 0
-        log.debug(
-            "build_sending_inputs",
-            build_id=build.build_id,
-            store_id=store.store_id,
-            count=len(missing_paths),
-        )
-        return await stream_paths_store_to_store(
-            self.local_store,
-            store,
-            missing_paths,
-            peer_store_id=store.store_id,
-            direction="out",
-            substitute=substitute,
-        )
-
-    async def _hold_inputs_on(self, conn: Connection, inputs: set[StorePath]) -> None:
-        """Root the closure of *inputs* on the builder, for the build connection's life.
-
-        Before the validity check, as `copyPaths` in `src/libstore/store-api.cc`
-        does: a path the builder holds and its collector deletes between the
-        check and the copy is neither sent nor present, and the copy fails on
-        it. The whole closure and not the inputs alone, because a root keeps
-        alive only the closure of a path that is valid, and an input the
-        builder lacks protects none of its references there. Issue #887.
-        """
-        closure = await self.local_store.execute(QueryClosureWithInfoRequest(paths=inputs), client=None)
-        await add_temp_roots(conn, inputs | {info.path for info in closure.infos})
 
     async def _execute(
         self,

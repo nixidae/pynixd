@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import anyio
 
@@ -22,9 +22,11 @@ from pynixd.psi import CpuUtil, SystemHealth
 from pynixd.serde import BasicDerivation, SetOptionsRequest, TimeSpan, Verbosity
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Awaitable, Callable, Mapping
 
+    from nix_daemon_protocol.wire_ops import WireRequest
     from pynixd.build_queue import BuildQueue, QueuedBuild
+    from pynixd.connection import ClientConn
     from pynixd.placement import Estimates, PlacedStore, Ranks
     from pynixd_store.build_stats import StoreEstimate
 
@@ -67,10 +69,18 @@ class FakeStore:
         self.feature_matrix: dict[str, set[str]] = {}
         # The scheduler builds the local store's builds on its `daemon_client`.
         self.daemon_client = self
+        self.answer: Callable[[WireRequest], Awaitable[Any]] | None = None
+        """What the store answers an operation with; a store asked with none fails the test."""
 
     def supports_derivation(self, system: str, features: set[str]) -> bool:
         del features
         return self.systems is None or system in self.systems
+
+    async def execute(self, request: WireRequest, client: ClientConn | None = None) -> Any:
+        del client
+        if self.answer is None:
+            raise AssertionError(f"{self.store_id} was not asked to answer {type(request).__name__}")
+        return await self.answer(request)
 
 
 @dataclass

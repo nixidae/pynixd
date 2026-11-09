@@ -8,16 +8,15 @@ and the copy, and the copy trusted the check. Issue #887.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
+from nix_daemon_protocol.ids import StoreId
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
-from pynixd import scheduler as scheduler_module
+from pynixd.build_queue import BuildQueue
 from pynixd.daemon_extensions.query_closure_with_info import QueryClosureWithInfoResponse
 from pynixd.exceptions import BackendError
-from pynixd.scheduler import Scheduler
 from pynixd.serde import (
     AddTempRootRequest,
     AddTempRootsRequest,
@@ -31,6 +30,12 @@ from pynixd.serde import (
 )
 from pynixd.store import transfer
 from pynixd.wire import FEATURE_ADD_TEMP_ROOTS
+from tests._conftest.execution import FakeConn, FakeLocal, Streamed, fake_executor, queued
+from tests._conftest.placement import FakeStore
+
+if TYPE_CHECKING:
+    from nix_daemon_protocol.wire_ops import WireRequest
+    from pynixd.execution import Executor
 
 BOEHM = "/nix/store/x5lf684477ybm9xb0i70p0d89dp5w23b-boehm-gc-8.2.12"
 NIX = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-nix-2.35.3"
@@ -117,24 +122,14 @@ async def test_a_refused_path_the_check_did_not_call_valid_is_not_healed(monkeyp
         await _copy(monkeypatch, [_refusal(NIX)])
 
 
-class _Conn:
-    def __init__(self, features: frozenset[str]) -> None:
-        self.standard_features = features
-        self.calls: list[object] = []
-
-    async def call(self, request: object, raise_on_error: bool = False) -> None:
-        assert raise_on_error, "a root that did not hold must fail the build"
-        self.calls.append(request)
-
-
-def _holder() -> Any:
-    return SimpleNamespace(local_store=_Source([INPUT, BOEHM]))
+def _holder() -> Executor[FakeStore, FakeLocal]:
+    return fake_executor(BuildQueue(), {}, local=FakeLocal([_info(INPUT), _info(BOEHM)]))
 
 
 @pytest.mark.anyio
 async def test_the_input_closure_is_rooted_in_one_call_when_the_builder_negotiated_it() -> None:
-    conn = _Conn(frozenset({FEATURE_ADD_TEMP_ROOTS}))
-    await Scheduler._hold_inputs_on(_holder(), cast("Any", conn), {StorePath(path=INPUT)})
+    conn = FakeConn(frozenset({FEATURE_ADD_TEMP_ROOTS}))
+    await _holder().hold_inputs_on(conn, {StorePath(path=INPUT)})
 
     assert len(conn.calls) == 1
     request = conn.calls[0]
@@ -144,40 +139,28 @@ async def test_the_input_closure_is_rooted_in_one_call_when_the_builder_negotiat
 
 @pytest.mark.anyio
 async def test_an_older_builder_gets_one_add_temp_root_per_path() -> None:
-    conn = _Conn(frozenset())
-    await Scheduler._hold_inputs_on(_holder(), cast("Any", conn), {StorePath(path=INPUT)})
+    conn = FakeConn(frozenset())
+    await _holder().hold_inputs_on(conn, {StorePath(path=INPUT)})
 
     assert all(isinstance(r, AddTempRootRequest) for r in conn.calls)
     assert {str(cast("AddTempRootRequest", r).path) for r in conn.calls} == {INPUT, BOEHM}
 
 
 @pytest.mark.anyio
-async def test_the_roots_are_held_before_the_builder_is_asked_what_it_has(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_the_roots_are_held_before_the_builder_is_asked_what_it_has() -> None:
     events: list[str] = []
 
-    async def hold(_conn: object, _inputs: object) -> None:
-        events.append("hold")
-
-    async def check(request: object) -> QueryValidPathsResponse:
+    async def check(request: WireRequest) -> QueryValidPathsResponse:
         if isinstance(request, QueryValidPathsRequest):
             events.append("check")
         return QueryValidPathsResponse(paths=set())
 
-    async def stream(*_args: Any, **_kwargs: Any) -> None:
-        events.append("copy")
+    queue = BuildQueue()
+    store = FakeStore(StoreId("sg1-n2"))
+    store.answer = check
+    build = await queued(queue, input_srcs=[INPUT])
+    executor = fake_executor(queue, {store.store_id: store}, local=FakeLocal([_info(INPUT)]), stream=Streamed(events))
 
-    monkeypatch.setattr(scheduler_module, "stream_paths_store_to_store", stream)
-    fake = SimpleNamespace(
-        allocator=SimpleNamespace(strip_handled_features=lambda _build: None),
-        local_store=None,
-        _hold_inputs_on=hold,
-    )
-    build = SimpleNamespace(
-        build_id="b1",
-        request=SimpleNamespace(derivation=SimpleNamespace(input_srcs={StorePath(path=INPUT)})),
-    )
-    store = SimpleNamespace(store_id="sg1-n2", execute=check)
-
-    await Scheduler._prepare_build(cast("Any", fake), cast("Any", build), cast("Any", store), cast("Any", object()))
+    await executor.prepare_build(build, store, FakeConn(events=events))
 
     assert events == ["hold", "check", "copy"]
