@@ -237,25 +237,26 @@ INSERT INTO {BUILD_OBSERVATION_SAMPLE_TABLE}
 (observationId, atMs, cpuUs, memoryBytes, ioReadBytes, ioWriteBytes) VALUES (?, ?, ?, ?, ?, ?)
 """
 
-PRUNE_BUILD_OBSERVATION_SAMPLES = f"""
-DELETE FROM {BUILD_OBSERVATION_SAMPLE_TABLE}
-WHERE observationId IN (
+_PRUNED_OBSERVATIONS = f"""
     SELECT id FROM {BUILD_OBSERVATION_TABLE}
-    WHERE name = ? AND system = ? AND shape = ? AND storeId = ? AND id NOT IN (
+    WHERE name = :name AND system = :system AND shape = :shape AND storeId = :store AND id NOT IN (
         SELECT id FROM {BUILD_OBSERVATION_TABLE}
-        WHERE name = ? AND system = ? AND shape = ? AND storeId = ?
-        ORDER BY id DESC LIMIT ?
+        WHERE name = :name AND system = :system AND shape = :shape AND storeId = :store
+        ORDER BY id DESC LIMIT :kept
+    ) AND id IS NOT (
+        SELECT max(id) FROM {BUILD_OBSERVATION_TABLE}
+        WHERE name = :name AND system = :system AND shape = :shape AND storeId = :store AND status = 0
     )
-)
+"""
+"""The rows of one identity and store past the newest `kept`, except its newest `BUILT` row: an
+estimate reads only those, so a run of failures must not take the last one."""
+
+PRUNE_BUILD_OBSERVATION_SAMPLES = f"""
+DELETE FROM {BUILD_OBSERVATION_SAMPLE_TABLE} WHERE observationId IN ({_PRUNED_OBSERVATIONS})
 """
 
 PRUNE_BUILD_OBSERVATIONS = f"""
-DELETE FROM {BUILD_OBSERVATION_TABLE}
-WHERE name = ? AND system = ? AND shape = ? AND storeId = ? AND id NOT IN (
-    SELECT id FROM {BUILD_OBSERVATION_TABLE}
-    WHERE name = ? AND system = ? AND shape = ? AND storeId = ?
-    ORDER BY id DESC LIMIT ?
-)
+DELETE FROM {BUILD_OBSERVATION_TABLE} WHERE id IN ({_PRUNED_OBSERVATIONS})
 """
 
 QUERY_BUILD_MS_OF_SHAPE = f"""
@@ -998,7 +999,7 @@ class LocalStoreDB:
             queue.update(str(path) for path in paths)
 
     async def record_build_observation(self, identity: DerivationIdentity, observation: BuildObservation) -> int | None:
-        """Store one build's cost, and keep the newest `OBSERVATIONS_KEPT` of its identity and store.
+        """Store one build's cost, and keep the newest `OBSERVATIONS_KEPT` of its identity and store, and its newest `BUILT`.
 
         Answers the row id, or `None` when nothing was written.
         """
@@ -1046,8 +1047,9 @@ class LocalStoreDB:
                     ],
                 )
                 # The samples first: the subquery finds the rows the next statement removes.
-                await db.execute(PRUNE_BUILD_OBSERVATION_SAMPLES, (*key, *key, OBSERVATIONS_KEPT))
-                await db.execute(PRUNE_BUILD_OBSERVATIONS, (*key, *key, OBSERVATIONS_KEPT))
+                pruned = dict(zip(("name", "system", "shape", "store"), key, strict=True), kept=OBSERVATIONS_KEPT)
+                await db.execute(PRUNE_BUILD_OBSERVATION_SAMPLES, pruned)
+                await db.execute(PRUNE_BUILD_OBSERVATIONS, pruned)
                 await db.commit()
         except aiosqlite.Error:
             log.warning("record_build_observation_failed", name=identity.name, exc_info=True)

@@ -87,6 +87,11 @@ BUILD_OBSERVATION_SAMPLE_TABLE = f"{TABLE_PREFIX}BuildObservationSample"
 
 Raw rows, not a running average: an estimator can change, and an outlier can
 go, without losing the history. nixidae/nixidae#1001.
+
+Rule: no pruning drops the last row of an identity and store, however old.
+It keeps the newest `BUILT` row, or the newest row if none built. A rebuild
+months later still needs it, and store GC never deletes these rows.
+nixidae/nixidae#1211.
 """
 
 PLACEMENT_DECISION_TABLE = f"{TABLE_PREFIX}PlacementDecision"

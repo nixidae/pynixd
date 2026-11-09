@@ -34,7 +34,7 @@ from pynixd.serde import (
 )
 from pynixd.store import LocalDBStore, LocalStore
 from pynixd_store.build_stats import BuildObservation, identity_of
-from pynixd_store.local_store_db import LocalStoreDB
+from pynixd_store.local_store_db import OBSERVATIONS_KEPT, LocalStoreDB
 from pynixd_store.store_layout import StoreLayout
 from pynixd_store.store_path import StorePath
 from tests.conftest import STORE_PREFIX, make_test_spec, rmtree_robust, serde_path
@@ -352,6 +352,27 @@ async def test_expected_peak_memory_is_the_median_of_the_identity() -> None:
         assert await db.expected_peak_memory(vmpkg) == 900
         other = identity_of(BasicDerivation(platform="x86_64-linux", builder="", env={"pname": "otherpkg"}))
         assert await db.expected_peak_memory(other) is None
+
+
+async def test_pruning_keeps_the_last_successful_build_of_an_identity() -> None:
+    """A run of failures never drops the one build an estimate reads. nixidae/nixidae#1211."""
+    path = STORE_PREFIX / "stats-keep-last-test"
+    rmtree_robust(path)
+    (path / "nix/var/nix/db").mkdir(parents=True)
+    with closing(sqlite3.connect(path / "nix/var/nix/db/db.sqlite")) as conn, conn:
+        conn.execute("CREATE TABLE ValidPaths (id INTEGER PRIMARY KEY, path TEXT UNIQUE)")
+    async with await LocalStoreDB.open(StoreLayout.chroot(path)) as db:
+        testpkg = identity_of(BasicDerivation(platform="x86_64-linux", builder="", env={"pname": "testpkg"}))
+        await db.record_build_observation(
+            testpkg, BuildObservation(store_id="a", status=0, build_ms=500, peak_memory_bytes=700)
+        )
+        for _ in range(OBSERVATIONS_KEPT + 1):
+            await db.record_build_observation(
+                testpkg, BuildObservation(store_id="a", status=BuildResultStatus.MISC_FAILURE, build_ms=1)
+            )
+
+        assert await db.expected_build_ms(testpkg) == 500
+        assert await db.expected_peak_memory(testpkg) == 700
 
 
 async def test_expected_build_ms_is_the_median_of_the_identity(tmp_path: Path) -> None:
