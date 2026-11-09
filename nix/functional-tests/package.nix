@@ -71,6 +71,7 @@ let
       ./make-shim.sh
       ./make-record-shim.sh
       ./compare.py
+      ./reach.py
       ./store-state.py
     ];
   };
@@ -362,6 +363,7 @@ writeShellApplication {
       WORK=$WORK NIX_DAEMON_PACKAGE=$shim SAVE_LOG=$PYNIXD_LOG \
         bash "$SCRIPTS/run.sh" "$@"
       check_pynixd_served
+      python3 "$SCRIPTS/reach.py" "$PYNIXD_LOG" "$WORK/tmp/nix-test"
     }
 
     # meson writes `testlog.json` while the run goes on, so this reads a run

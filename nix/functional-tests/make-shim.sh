@@ -150,8 +150,13 @@ cat > "$config" <<JSON
 JSON
 
 export PYNIXD_CONFIG=$config
+# `reach.py` counts the operations of each test from `client_op_timing`, an
+# info line, so the whole log goes beside the test. The test's stderr keeps
+# what the default level gives it: an info line there reaches the output that
+# a script greps.
+export PYNIXD_LOG_LEVEL=INFO
 # The suite starts this in the background and waits for the socket to appear.
-exec "$PYNIXD_BIN" daemon
+exec "$PYNIXD_BIN" daemon 2> >(tee -a "$work/pynixd.log" | grep --line-buffered -v '"level": "\(info\|debug\)"' >&2)
 EOF
 
 chmod +x "$SHIM/bin/nix"
