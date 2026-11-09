@@ -35,6 +35,7 @@ from pynixd_store.build_stats import (
     slot_wait_seconds,
     transfer_seconds,
 )
+from pynixd_store.hintfmt import ANSI_NORMAL, ANSI_RED, magenta
 from pynixd_store.store_path import StorePath
 
 from . import metrics, state
@@ -1181,28 +1182,36 @@ class Scheduler:
         build: QueuedBuild,
         build_features: set[str] | None,
     ) -> None:
-        """Permanently fail a build with no compatible store, in Nix 2.35's words.
+        """Permanently fail a build with no compatible store, as `reject` (`derivation-building-goal.cc:289`) does.
 
-        `reject` at `derivation-building-goal.cc:285` answers InputRejected
-        with "platform mismatch" or "missing system features". pynixd's
-        "current system" is every store it has, so it names what they offer.
+        Each reason that applies adds its block, in Nix's order and colours.
+
+        NIX-DEVIATION (#27): `reject` names `thisSystem` and the local `system-features`. pynixd builds on a
+        pool, so "Current system" lists every system of every store. "Available features" names what the
+        stores of the derivation's system offer, or every store's features when no store has that system.
+        One machine's values would hide the stores that could take the build with a change. Reverse it if a
+        client parses these lines as one machine's. nixidae/nixidae#1216.
         """
         platform = build.request.derivation.platform
         offered: dict[str, set[str]] = {}
         for store in self.stores.values():
             for system, features in (store._feature_matrix or {}).items():
                 offered.setdefault(system, set()).update(features)
-        error_msg = f"Cannot build '{build.request.drv_path}'."
+        required = build_features or set()
+        available = offered.get(platform) or set().union(*offered.values())
+        reasons = ""
         if platform not in offered:
-            error_msg += (
-                f"\nReason: platform mismatch\nRequired system: '{platform}'"
-                f"\nCurrent system: '{', '.join(sorted(offered)) or 'none'}'"
+            reasons += (
+                f"\nReason: {ANSI_RED}platform mismatch{ANSI_NORMAL}\nRequired system: '{magenta(platform)}'"
+                f"\nCurrent system: '{magenta(', '.join(sorted(offered)) or 'none')}'"
             )
-        else:
-            error_msg += (
-                f"\nReason: missing system features\nRequired features: {{{', '.join(sorted(build_features or ()))}}}"
-                f"\nAvailable features: {{{', '.join(sorted(offered[platform]))}}}"
+        if not reasons or not required <= available:
+            reasons += (
+                f"\nReason: {ANSI_RED}missing system features{ANSI_NORMAL}"
+                f"\nRequired features: {{{', '.join(sorted(required))}}}"
+                f"\nAvailable features: {{{', '.join(sorted(available))}}}"
             )
+        error_msg = f"Cannot build '{magenta(build.request.drv_path)}'.{reasons}"
         await self.queue.fail(build.build_id, error_msg, BuildResultStatus.INPUT_REJECTED)
         for line in error_msg.split("\n"):
             await build.post_log_and_fanout(LogNext(text=f"pynixd: {line}\n"))
