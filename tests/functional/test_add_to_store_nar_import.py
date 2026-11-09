@@ -15,6 +15,7 @@ import anyio
 import pytest
 
 from nix_daemon_protocol.add_to_store_nar import AddToStoreNarRequest, AddToStoreNarResponse
+from nix_daemon_protocol.logs import LogMessage, LogNext
 from nix_daemon_protocol.nar_hash import NARHash
 from pynixd.exceptions import BackendError
 from pynixd.serde.context import ReadContext, WriteContext
@@ -86,13 +87,33 @@ async def test_pynixd_imports_as_the_daemon_does(tmp_path: Path, monkeypatch: py
     await run(str(NIX_BIN), "store", "verify", "--store", str(b), "--no-trust", *order)
 
 
-async def _send(conn: Connection, info: ValidPathInfo, nar: bytes) -> None:
-    """One AddToStoreNar; raises `BackendError` with the server's message."""
+class _Lines:
+    """A log sink: each line the server streams, as it comes."""
+
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+
+    async def send(self, msg: LogMessage) -> None:
+        if isinstance(msg, LogNext):
+            self.lines.append(msg.text)
+
+
+async def _send(conn: Connection, info: ValidPathInfo, nar: bytes, logs: _Lines | None = None) -> None:
+    """One AddToStoreNar; raises `BackendError` with the server's message. *logs* gets the streamed lines."""
     await AddToStoreNarRequest(info=info, repair=0, dont_check_sigs=0).to_writer(WriteContext.from_conn(conn))
     framed = conn.w.framed()
     framed.write(nar)
     await framed.finalize()
-    await AddToStoreNarResponse.from_reader(ReadContext.from_conn(conn, raise_on_error=True))
+    await AddToStoreNarResponse.from_reader(
+        ReadContext(
+            reader=conn.r,
+            version=conn.version,
+            log_sink=logs,
+            buffer_logs=logs is None,
+            error_factory=BackendError,
+            features=conn.standard_features,
+        )
+    )
 
 
 _REFUSALS = [
@@ -129,6 +150,25 @@ async def test_a_false_content_hash_is_refused(tmp_path: Path) -> None:
         with pytest.raises(BackendError, match="ca hash mismatch importing path"):
             await _send(conn, info, nar)
         assert not await valid(conn, flat)
+
+
+@pytest.mark.parametrize("route", ["pynixd", "daemon"])
+async def test_a_warning_reaches_the_client_before_the_refusal(tmp_path: Path, route: str) -> None:
+    """`pathInfoIsUntrusted` warns of a false address, then the path lacks a signature.
+
+    nix-daemon's logger is the tunnel during `addToStore` (`daemon.cc:943`), so
+    the line reaches its client. nixidae/nixidae#1161.
+    """
+    a, order, _ = await lab(tmp_path)
+    tree = next(p for p in order if p.endswith("-tree"))
+    flat = next(p for p in order if p.endswith("-flat"))
+    info = info_of(a, tree, ca=info_of(a, flat).info.ca)
+    b, socket = tmp_path / "b", tmp_path / "b.sock"
+    logs = _Lines()
+    async with server(b, socket, route, require_sigs=True), client(socket) as conn:
+        with pytest.raises(BackendError, match="lacks a signature by a trusted key"):
+            await _send(conn, info, nar_of(a, tree), logs)
+    assert any(f"path '{tree}' claims to be content-addressed but isn't" in line for line in logs.lines), logs.lines
 
 
 async def test_an_unsigned_path_is_refused_and_a_signed_one_is_not(tmp_path: Path) -> None:

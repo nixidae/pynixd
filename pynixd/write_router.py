@@ -333,13 +333,14 @@ class WriteRouter:
                 root=False,
             )
         else:
-            # The daemon's log lines are dropped here, as before the router: nixidae/nixidae#1161.
+            # The daemon's logger is the tunnel during `addToStore` (`daemon.cc:943`). nixidae/nixidae#1161.
             await self.daemon.add_to_store(
                 info,
                 source,
                 repair=write.repair,
                 dont_check_sigs=dont_check_sigs,
                 options=client.options,
+                logs=client.conn,
                 on_bytes=meter.on_bytes,
             )
         meter.finish()
@@ -365,6 +366,7 @@ class WriteRouter:
                 source,
                 repair=write.repair,
                 options=client.options,
+                logs=client.conn,
                 root=client.root,
                 sign=sign,
                 on_bytes=meter.on_bytes,

@@ -154,11 +154,12 @@ class DaemonWrites:
         *,
         repair: bool = False,
         options: SetOptionsRequest | None = None,
+        logs: ClientConn | None = None,
         root: Callable[[str], Awaitable[None]],
         sign: Callable[[ValidPathInfo, Connection], Awaitable[ValidPathInfo]] | None = None,
         on_bytes: Callable[[int], None] | None = None,
     ) -> ValidPathInfo:
-        """AddToStore (op 7). *root* temp-roots the path as soon as the daemon names it.
+        """AddToStore (op 7). *root* temp-roots the path as soon as the daemon names it; *logs* gets its log lines as they come.
 
         *sign* runs over the same connection, idle once the response is read.
         A second pooled connection without the client's options makes the
@@ -176,7 +177,7 @@ class DaemonWrites:
             await conn.send_request(request)
             await conn.w.drain()
             await send_framed(source.read, conn.w, on_bytes=on_bytes)
-            response = await AddToStoreResponse.from_reader(ReadContext.from_conn(conn))
+            response = await AddToStoreResponse.from_reader(ReadContext.from_conn(conn, client=logs))
             info = response.info
             await root(str(info.path))
             if sign is not None:
