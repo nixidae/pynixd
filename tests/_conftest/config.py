@@ -162,12 +162,15 @@ def make_test_spec(
 ) -> LocalSocketStoreSpec:
     """Create a LocalSocketStoreSpec with test defaults.
 
-    An explicit `daemon`, or an op the caller routes to the daemon or its
-    shadow, keeps `PYNIXD_NO_DAEMON` off the spec. A bare daemon client
-    (`LocalStore`) passes `daemon=True`: it has no answer of its own.
+    An explicit `daemon`, an op the caller routes to the daemon or its
+    shadow, or `managed=False` keeps `PYNIXD_NO_DAEMON` off the spec. A bare
+    daemon client (`LocalStore`) passes `daemon=True`: it has no answer of its
+    own. An unmanaged store is a daemon that someone else runs.
     """
-    asks_the_daemon = "daemon" in kwargs or any(
-        OpRoute(route) is not OpRoute.pynixd for route in kwargs.get("op_routes", {}).values()
+    asks_the_daemon = (
+        "daemon" in kwargs
+        or kwargs.get("managed") is False
+        or any(OpRoute(route) is not OpRoute.pynixd for route in kwargs.get("op_routes", {}).values())
     )
     if nix_config is None:
         nix_config = for_test_store()

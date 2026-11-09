@@ -71,7 +71,10 @@ async def rig() -> AsyncIterator[_Rig]:
     root = STORE_PREFIX / "upstream-faults"
     rmtree_robust(root)
     root.mkdir(parents=True)
-    daemon = LocalSocketStore(make_test_spec(store_id="faults-daemon", store_path=root / "store", no_probe=True))
+    # The link under test is the one to a nix-daemon, so the store keeps its daemon under `PYNIXD_NO_DAEMON`.
+    daemon = LocalSocketStore(
+        make_test_spec(store_id="faults-daemon", store_path=root / "store", no_probe=True, daemon=True)
+    )
     async with daemon:
         proxy = FaultProxy(root / "proxy.sock", daemon.socket_path)
         async with proxy.running():
