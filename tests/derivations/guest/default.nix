@@ -247,10 +247,20 @@ vivariumLib.mkTest (
     # One guest per suite, named after it, so events.jsonl says
     # `machine=unit` and a suite's files land in artifacts/unit/.
     nodes = lib.genAttrs (lib.attrNames suites) (name: {
+      # `tests/unit` peaks well above the default 128M, and an agent that
+      # is OOM-killed partway through looks exactly like a hang. krun backs
+      # only what the guest touches, so it keeps its default, the host's
+      # available memory, and one xdist worker per core fits. The node's own
+      # backend decides, not the run's knob: `.krun` sets only the node's.
+      imports = [
+        (
+          { config, ... }:
+          {
+            vivarium.memory = lib.mkIf (config.vivarium.backend != "krun") "3072M";
+          }
+        )
+      ];
       vivarium = {
-        # `tests/unit` peaks well above the default 128M, and an agent that
-        # is OOM-killed partway through looks exactly like a hang.
-        memory = "3072M";
         # The suites make stores of their own under /tmp, on the root disk.
         diskSize = 8192;
         # `/dev/kvm` for the build VM's tests. UML has none to give.
