@@ -47,7 +47,6 @@ from tests._conftest.helpers import (
 )
 from tests._conftest.hooks import (
     pytest_collection_modifyitems,
-    pytest_ignore_collect,
     pytest_runtest_makereport,
     pytest_sessionstart,
     pytest_terminal_summary,
@@ -90,7 +89,6 @@ __all__ = [
     "pytest_addoption",
     "pytest_collection_modifyitems",
     "pytest_configure",
-    "pytest_ignore_collect",
     "pytest_runtest_makereport",
     "pytest_sessionstart",
     "pytest_terminal_summary",

@@ -24,14 +24,6 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
-# ── Collection filtering ──────────────────────────────────────────
-
-
-def pytest_ignore_collect(collection_path: Path) -> bool:
-    """Skip integration test directories during normal collection."""
-    return "nar_integration" in str(collection_path) or "drv_integration" in str(collection_path)
-
-
 # ── Session lifecycle ─────────────────────────────────────────────
 
 
