@@ -582,6 +582,11 @@ class SubstitutionQueue:
             log.warning("substitution_query_timeout", store_id=store.store_id, path=str(path))
             return SubstitutionQueryResult(store_id=store.store_id, path_info=None, query_succeeded=False)
         except Exception:
+            # NIX-DEVIATION (#27): `PathSubstitutionGoal::init` keeps a query's error (`substitution-goal.cc:82`)
+            # and throws it when no substituter is left, unless `--fallback` is set (`:147`). pynixd counts the
+            # failed query as "no substitute", so one dead substituter does not fail a build that needs none.
+            # The warning and the store's health log stay. Count builds that ran after a failed query and then
+            # found the path substitutable to reverse it. nixidae/nixidae#1262.
             counted("error")
             log.warning("substitution_query_failed", store_id=store.store_id, path=str(path), exc_info=True)
             return SubstitutionQueryResult(store_id=store.store_id, path_info=None, query_succeeded=False)

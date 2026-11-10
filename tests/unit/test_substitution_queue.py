@@ -185,6 +185,38 @@ async def test_a_probe_that_raises_costs_only_its_own_answer() -> None:
     assert availability.available
 
 
+class FailingSubstituter(FakeSubstituter):
+    async def execute(self, request: WireRequest, **kwargs: Any) -> QueryPathInfoResponse:
+        del request, kwargs
+        self.queries += 1
+        raise OSError("connection refused")
+
+
+@pytest.mark.anyio
+async def test_a_failed_query_is_no_substitute_and_not_an_error() -> None:
+    """Nix throws the query's error without `--fallback` (`substitution-goal.cc:147`); pynixd builds.
+
+    NIX-DEVIATION, nixidae/nixidae#1262.
+    """
+    path = StorePath("/nix/store/00000000000000000000000000000000-example")
+    dead = FailingSubstituter("dead", valid=True)
+    ctx = cast(
+        "PynixdContext",
+        SimpleNamespace(
+            settings=PynixdSettings(),
+            stores={StoreId("local"): SimpleNamespace(no_schedule=False), dead.store_id: dead},
+        ),
+    )
+    queue = SubstitutionQueue(ctx)
+
+    async with queue.running():
+        availability = await queue.can_substitute(path)
+
+    assert not availability.available
+    assert dead.queries == 1
+    assert not queue.negative[path][dead.store_id].query_succeeded
+
+
 @pytest.mark.anyio
 async def test_close_cancels_the_stragglers() -> None:
     path = StorePath("/nix/store/00000000000000000000000000000000-example")
