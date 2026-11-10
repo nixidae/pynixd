@@ -1600,6 +1600,11 @@ async def _fetches(tmp_path: Path, route: OpRoute, base: str, seen: dict[str, An
             "missing": ((), _fetchurl("parity-fetch-missing", f"{base}/gone", f'hash = "{FAKE_HASH}";')),
             "forbidden": ((), _fetchurl("parity-fetch-forbidden", f"{base}/forbidden", f'hash = "{FAKE_HASH}";')),
             "wrong-hash": ((), _fetchurl("parity-fetch-wrong", f"{base}/file", f'hash = "{FAKE_HASH}";')),
+            # curl takes the scheme; nothing listens on port 1.
+            "ftp-refused": (
+                ("--option", "download-attempts", "1"),
+                _fetchurl("parity-fetch-ftp", "ftp://localhost:1/file", f'hash = "{FAKE_HASH}";'),
+            ),
             # `displayUri` (`filetransfer.cc:1280`) keeps the password out of every message.
             "credentials": ((), _fetchurl("parity-fetch-creds", f"{secret}/file", f'hash = "{_sri(FETCHED)}";')),
             "credentials-missing": (
@@ -1646,6 +1651,7 @@ async def test_builtin_fetchurl_fetches_what_the_daemon_fetches(tmp_path: Path) 
     assert here["mirror"][4][0][0].startswith("/mirror/sha256/"), here["mirror"]
     assert any("HTTP error" in line and "404" in line for line in here["missing"][3]), here["missing"]
     assert here["flat"][4][0][1].startswith("curl/"), here["flat"]
+    assert any("Could not connect to server (7)" in line for line in here["ftp-refused"][3]), here["ftp-refused"]
     assert here["credentials"][0] == 0, here["credentials"]
     assert here["credentials"][4][0][2].startswith("Basic "), here["credentials"]
     missing = here["credentials-missing"][3]

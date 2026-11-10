@@ -41,7 +41,6 @@ def test_builtin_fetchurl_builds_on_the_platform_builtin() -> None:
     ("drv", "reason"),
     [
         (_drv("s3://bucket/f"), "builtin:fetchurl of the URL scheme 's3'"),
-        (_drv("ftp://example.org/f"), "builtin:fetchurl of the URL scheme 'ftp'"),
         (_drv(__json="{}"), "builtin:fetchurl with structured attrs"),
     ],
 )

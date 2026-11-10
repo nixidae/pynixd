@@ -104,9 +104,6 @@ DISK_FULL_BYTES = 8 * 1024 * 1024
 
 DEV_FILES = ("/dev/full", "/dev/null", "/dev/random", "/dev/tty", "/dev/urandom", "/dev/zero")
 
-FETCH_SCHEMES = frozenset({"http", "https", "file"})
-"""The schemes pynixd's `builtin:fetchurl` fetches."""
-
 BUILDER_RPC = "builder-rpc-v0"
 """`drvFeatureBuilderRpcV0`: the builder submits its outputs over its daemon (`derivations.hh:24`)."""
 
@@ -266,9 +263,9 @@ def _builder_lines(builders: str) -> list[str]:
 
 def _url_unsupported(url: str) -> str | None:
     """A URL whose transfer pynixd leaves to the daemon: S3 needs AWS credentials resolved on the host
-    (`derivation-builder.cc:622`)."""
+    (`derivation-builder.cc:622`). curl takes every other scheme, as in Nix's `curlFileTransfer`."""
     scheme, sep, _rest = url.partition("://")
-    if not sep or scheme.lower() not in FETCH_SCHEMES:
+    if not sep or scheme.lower() == "s3":
         return f"builtin:fetchurl of the URL scheme '{scheme}'"
     return None
 
