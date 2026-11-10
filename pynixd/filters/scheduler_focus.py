@@ -62,14 +62,17 @@ KEEP_LOGGERS = frozenset(
         "pynixd.instance",
         "pynixd.reverse_server",
         "pynixd.reverse_client",
-        "pynixd.serde.probe_systems",
-        "pynixd.serde.probe_features",
-        "pynixd.serde.build_paths",
         # Collection runs rarely and its lines are the operator's whole
         # window into a pass: the plan counts, the weight ranking, the
         # delete report. Filtering them blinds `pynixd gc`, which is how a
         # dry-run went green with an empty plan and nothing said why.
         "pynixd.gc",
+        # The store package's own: the database's open mode and its WAL
+        # checkpoints, and GC seeds and stale roots. Rare lines, and without
+        # them a checkpoint looked as if it never ran (nixidae/nixidae#1136).
+        "pynixd_store.local_store_db",
+        "pynixd_store.gc",
+        "pynixd_store.liveness",
     },
 )
 
