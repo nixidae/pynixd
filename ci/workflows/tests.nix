@@ -140,10 +140,11 @@ ghalib.evalWorkflow {
           name = "Format, lint, types and the package";
           run = "nix build --file . checks.format checks.lint checks.types checks.packagedHelper --no-link --print-build-logs";
         }
-        (pytestSuite "Tests" [
-          "tests/functional"
-          "tests/unit"
-        ])
+        # One process each: five basenames exist in both (`test_build_vm.py`,
+        # ...), and pytest's default import mode refuses the second at
+        # collection. The guest runs them apart too.
+        (pytestSuite "Functional tests" [ "tests/functional" ])
+        (pytestSuite "Unit tests" [ "tests/unit" ])
         (pytestSuite "Protocol tests" [ "nix-daemon-protocol/tests" ])
         # The differential suite: pynixd's goal engine against Nix's own,
         # which nanopynix calls in process. It ran nowhere until nixidae
