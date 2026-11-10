@@ -21,6 +21,7 @@ from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_message import WireModel
 from nix_daemon_protocol.wire_time import Time
 from pynixd.config import StoreSpecBase
+from pynixd.nix_config import NixConfig
 from pynixd.psi import CpuUtil
 from pynixd.serde import (
     BuildDerivationRequest,
@@ -160,6 +161,10 @@ class MockStore(DaemonStore):
         self._mock_known_paths: set[StorePath] = set()
         self.store_path = Path(f"/mock/{store_id}")
         self.nix_version = "pynixd-mock-2.18.1"
+        # No substituter: without a `nix_config`, a server falls back to Nix's
+        # default, cache.nixos.org, and its start waited 10.5 s for DNS in the
+        # offline guest, five times in `test_background_task_death`.
+        self.nix_config = NixConfig(substituters=[])
         # responses: Maps Request type -> fixed Response object
         self.responses: dict[type[WireRequest], Any] = {}
         # call_handlers: Maps Request type -> async handler function
