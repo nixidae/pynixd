@@ -66,6 +66,8 @@ log = structlog.get_logger(__name__)
 
 BUILDER_ONLY_OPS = frozenset({SubmitOutputRequest.op, AddToStoreScanningRequest.op})
 """The operations of `builder-rpc-v0`, which only a builder's own daemon serves."""
+_THIS_MACHINE = frozenset({"unix", "recursive"})
+"""The transports whose client runs on this machine."""
 
 
 NIX_VERSION: str = "pynixd-0.1.0"
@@ -132,6 +134,7 @@ class DaemonProxy:
         self.transport = transport
         """Which listener accepted this session. A metric label, so it is one
         of a fixed few words and never an address."""
+        self.client.on_this_machine = transport in _THIS_MACHINE
         self._op_timing: dict[int, tuple[int, float]] = {}
         self._encode_timing: dict[int, tuple[int, float]] = {}
         self._temp_roots: TempRoots | None = None

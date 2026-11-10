@@ -26,6 +26,7 @@ log = structlog.get_logger(__name__)
 
 # Duration threshold for tiny-build heuristics (2.5s).
 TINY_BUILD_THRESHOLD_MS = 2500
+SHORT_OF_DISK = "short of disk"
 
 
 # The Protocols name what the allocator reads, so the type checker holds a
@@ -257,15 +258,16 @@ def pick_store[S: Candidate](
 ) -> RankedStore[S] | None:
     """The store a build goes to, from the ranked stores with room; `None` waits.
 
-    NIX-DEVIATION (#27): `DerivationBuildingGoal` at
-    `derivation-building-goal.cc:606` builds a `preferLocalBuild` derivation
-    locally whenever the machine can, and `acquireResources` waits for a
-    local slot however long that takes. pynixd waits too, unless the expected
-    wait passes `PreferLocal.weight` times the best remote's measured
-    delegation seconds; then it delegates. A busy machine keeps its trivial
-    builds moving, and a local copy of 550 MB still stays local (#947). With
-    either number unknown it waits, as Nix does. To reverse it, measure
-    `preferLocalBuild` builds that went remote and cost more than the wait.
+    `DerivationBuildingGoal` at `derivation-building-goal.cc:606` builds a
+    `preferLocalBuild` derivation locally whenever the machine can, and
+    `acquireResources` waits for a local slot however long that takes. For a
+    client on this machine (`PreferLocal.wait_for_local`) pynixd does the same.
+
+    NIX-DEVIATION (#27): for a client of another machine, "local" is not its
+    machine. pynixd waits unless the expected wait passes `PreferLocal.weight`
+    times the best remote's measured delegation seconds; then it delegates
+    (#947). With either number unknown it waits, as Nix does. To reverse it,
+    measure such builds that went remote and cost more than the wait.
     """
     usable = [candidate for candidate in ranked if candidate.store_id != local_id or not local_slot_full]
     if prefer_local is None:
@@ -273,6 +275,8 @@ def pick_store[S: Candidate](
     local = next((candidate for candidate in usable if candidate.store_id == local_id), None)
     if local is not None:
         return local
+    if prefer_local.wait_for_local:
+        return None
     remote = next((candidate for candidate in usable if candidate.store_id != local_id), None)
     if remote is None:
         return None
@@ -311,6 +315,8 @@ class PreferLocal:
     """Until the soonest running local build is expected to free its slot."""
     transfer_seconds: Mapping[StoreId, float]
     weight: float
+    wait_for_local: bool = False
+    """A client on this machine wants it: no delegation while the local store can build it."""
 
 
 class StoreRanker(ABC):
@@ -543,7 +549,7 @@ class BuildAllocator[S: Candidate]:
         candidates: list[S] = []
         for store in capable:
             if short_of_disk(store, settings, now):
-                excluded.append(ExcludedStore(store.store_id, "short of disk"))
+                excluded.append(ExcludedStore(store.store_id, SHORT_OF_DISK))
             else:
                 candidates.append(store)
 

@@ -14,9 +14,12 @@ import pytest
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, BuildId, StoreId
 from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest, QueryValidPathsResponse
 from pynixd.allocator import (
+    SHORT_OF_DISK,
     BuildAllocator,
+    ExcludedStore,
     PreferLocal,
     RankedStore,
+    RankedStores,
     TelemetryStoreRanker,
     explore_store,
     fit_memory,
@@ -25,6 +28,7 @@ from pynixd.allocator import (
 )
 from pynixd.build_queue import BuildQueue
 from pynixd.config import StoreRankingSettings
+from pynixd.connection import ClientConn
 from pynixd.placement import missing_input_bytes
 from pynixd.psi import MemInfo, SystemHealth
 from pynixd.scheduler import Scheduler
@@ -44,6 +48,7 @@ from tests._conftest.placement import (
 
 if TYPE_CHECKING:
     from pynixd.build_queue import QueuedBuild
+    from pynixd.wire import NixWriter
 
 REMOTE = StoreId("sg1-n1")
 OTHER = StoreId("sg1-n2")
@@ -389,6 +394,19 @@ class TestPreferLocalBuild:
     def test_waits_when_the_delegation_is_unmeasured(self) -> None:
         assert self._pick(wait=500.0, remote_seconds=None) is None
 
+    def test_a_client_on_this_machine_waits_however_long(self) -> None:
+        """`derivation-building-goal.cc:606`: Nix waits for the local slot. nixidae/nixidae#1259."""
+        picked = pick_store(
+            _ranked(REMOTE, OTHER),
+            LOCAL_STORE_ID,
+            local_slot_full=True,
+            prefer_local=PreferLocal(
+                wait_seconds=3600.0, transfer_seconds={REMOTE: 1.0}, weight=10.0, wait_for_local=True
+            ),
+        )
+
+        assert picked is None
+
 
 def _request(number: int, env: dict[str, str] | None = None) -> BuildDerivationRequest:
     return BuildDerivationRequest(
@@ -654,7 +672,7 @@ class RoundTripOnly:
         return {REMOTE: 0.3}
 
 
-async def _assign_prefer_local(*, measured: bool) -> Spawned:
+async def _assign_prefer_local(*, measured: bool, from_this_machine: bool = False) -> Spawned:
     """The local slot of `-j1` is held by a build expected to end in 100 s."""
     queue = BuildQueue()
     running_id, _ = await queue.enqueue(_request(2))
@@ -663,7 +681,9 @@ async def _assign_prefer_local(*, measured: bool) -> Spawned:
     running.worker = anyio.CancelScope()
     running.started_at = time.monotonic()
     running.expected_duration = 100_000
-    build_id, _ = await queue.enqueue(_request(1, {"preferLocalBuild": "1"}), options=options(1))
+    client = ClientConn(w=cast("NixWriter", None))
+    client.on_this_machine = from_this_machine
+    build_id, _ = await queue.enqueue(_request(1, {"preferLocalBuild": "1"}), options=options(1), askers=[client])
     spawned = Spawned()
     placer = fake_placer(queue, _remote_alone(), spawned, estimator=RoundTripOnly(measured=measured))
 
@@ -689,6 +709,34 @@ class TestAPreferLocalBuildNeverSentToTheStore:
         spawned = await _assign_prefer_local(measured=True)
 
         assert spawned.stores == [REMOTE]
+
+    @pytest.mark.anyio
+    async def test_a_client_on_this_machine_keeps_it_waiting_for_the_local_slot(self) -> None:
+        spawned = await _assign_prefer_local(measured=True, from_this_machine=True)
+
+        assert spawned.stores == []
+
+
+class LocalShortOfDisk(FixedRanking):
+    """The remote alone, and the local store excluded for disk."""
+
+    def rank_stores(self, build: QueuedBuild, *args: Any, **kwargs: Any) -> RankedStores[FakeStore]:
+        ranked = super().rank_stores(build, *args, **kwargs)
+        return RankedStores(list(ranked), [ExcludedStore(LOCAL_STORE_ID, SHORT_OF_DISK)])
+
+
+@pytest.mark.anyio
+async def test_a_prefer_local_build_leaves_a_local_store_short_of_disk() -> None:
+    queue = BuildQueue()
+    client = ClientConn(w=cast("NixWriter", None))
+    client.on_this_machine = True
+    build_id, _ = await queue.enqueue(_request(1, {"preferLocalBuild": "1"}), askers=[client])
+    spawned = Spawned()
+    ranking = LocalShortOfDisk.of(FakeStore(REMOTE))
+
+    await fake_placer(queue, ranking, spawned).assign([queue.by_id[build_id]], {})
+
+    assert spawned.stores == [REMOTE]
 
 
 class ValidityStore:

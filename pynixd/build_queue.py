@@ -223,6 +223,11 @@ class QueuedBuild:
             self.worker = None
 
     @property
+    def asked_from_this_machine(self) -> bool:
+        """Whether a client on this machine asked for the build, or waits for it."""
+        return any(client.on_this_machine for client in (*self.askers, *self._subscriber_refs))
+
+    @property
     def is_done(self) -> bool:
         """Whether the build answer has been resolved (success or failure)."""
         return self.answer.done()

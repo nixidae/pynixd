@@ -27,6 +27,7 @@ from pynixd_store.store_path import StorePath
 
 from ._lazy import ssh_errors
 from .allocator import (
+    SHORT_OF_DISK,
     Candidate,
     ExcludedStore,
     PreferLocal,
@@ -556,7 +557,14 @@ class Placer[S: PlacedStore]:
         here_only = build.request.build_mode != BuildMode.NORMAL
         if here_only:
             ranked = RankedStores([c for c in ranked if c.store_id == local_store.store_id])
-        prefer_local = (build.request.derivation.build_local or here_only) and local_can_build
+        # Short of disk, the local store is no place for any build: a `preferLocalBuild` one goes elsewhere.
+        local_short_of_disk = any(
+            excluded.store_id == local_store.store_id and excluded.reason == SHORT_OF_DISK
+            for excluded in ranked.excluded
+        )
+        prefer_local = (
+            (build.request.derivation.build_local or here_only) and local_can_build and not local_short_of_disk
+        )
         notes.prefer_local = prefer_local
         notes.local_can_build = local_can_build
         # Nix weighs no load for a `preferLocalBuild` derivation, so the
@@ -608,6 +616,7 @@ class Placer[S: PlacedStore]:
                         store_id: seconds for store_id, seconds in transfer.items() if store_id in build.inputs_measured
                     },
                     weight=self.settings.prefer_local_weight,
+                    wait_for_local=build.asked_from_this_machine,
                 )
                 if prefer_local
                 else None,

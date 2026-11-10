@@ -91,6 +91,9 @@ class ClientConn:
         differ, and a message written with the wrong one carries a shape the
         reader does not expect. Issue #14.
         """
+        self.on_this_machine = False
+        """Whether the client runs on this machine: a Unix socket session, or recursive Nix from a local build.
+        `DaemonProxy` sets it from its transport."""
         self.options: SetOptionsRequest | None = None
         """The options that this client set for its session.
 
