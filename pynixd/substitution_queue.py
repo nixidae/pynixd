@@ -575,9 +575,9 @@ class SubstitutionQueue:
             counted("unsupported")
             return SubstitutionQueryResult(store_id=store.store_id, path_info=None, query_succeeded=False)
         except TimeoutError:
-            # Timed out and refused are both "no" to the caller and a
-            # different fault to an operator. A store that times out on every
-            # query costs each selection the whole timeout.
+            # Only with `substitution_query_timeout` set. Timed out and
+            # refused are both "no" to the caller and a different fault to an
+            # operator.
             counted("timeout")
             log.warning("substitution_query_timeout", store_id=store.store_id, path=str(path))
             return SubstitutionQueryResult(store_id=store.store_id, path_info=None, query_succeeded=False)

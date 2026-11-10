@@ -24,6 +24,10 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 _HTTP_CHUNK_SIZE = 1024 * 256
+# A stall, not a total: Nix bounds a transfer by `connect-timeout` and
+# `stalled-download-timeout` (`filetransfer.hh:56`, `:66`), never its length.
+# A total turns a slow narinfo read into "no substitute". nixidae/nixidae#1265.
+_TRANSFER_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=60)
 
 
 class HTTPBinaryCacheStore(BinaryCacheStore):
@@ -133,7 +137,7 @@ class HTTPBinaryCacheStore(BinaryCacheStore):
             nar_url,
             headers=await self._headers(nar_url),
             raise_for_status=False,
-            timeout=aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=60),
+            timeout=_TRANSFER_TIMEOUT,
         ) as response:
             if response.status in (403, 404):
                 raise NarGone(f"HTTP cache returned {response.status} for {nar_url}")
@@ -178,7 +182,7 @@ class HTTPBinaryCacheStore(BinaryCacheStore):
                     url,
                     headers=await self._headers(url),
                     raise_for_status=False,
-                    timeout=aiohttp.ClientTimeout(total=5),
+                    timeout=_TRANSFER_TIMEOUT,
                 ) as response:
                     if response.status == 404:
                         return None

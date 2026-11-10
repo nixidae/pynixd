@@ -1269,7 +1269,13 @@ class PynixdSettings(BaseSettings):
     substitution_health_window: int = 64
     substitution_health_min_fill_ratio: float = 0.10
     substitution_health_min_success_ratio: float = 0.50
-    substitution_query_timeout: float = 2.0
+    substitution_query_timeout: float | None = None
+    """Seconds one substituter query may take before it counts as "no substitute"; `None` is no deadline.
+
+    Nix sets no deadline on a query (`substitution-goal.cc`), only the transfer's `connect-timeout` and
+    `stalled-download-timeout`. A 2 s deadline under load made pynixd build glibc's bootstrap chain
+    from source instead of substituting it. nixidae/nixidae#1265.
+    """
     substitution_import_timeout: float = 300.0
     force_substitute_on_destination: bool = False
     """Answer QueryValidPaths as if the client had set substitute=1.

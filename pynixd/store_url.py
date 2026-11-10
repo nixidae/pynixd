@@ -280,8 +280,9 @@ def is_own_cache(url: str, settings: PynixdSettings) -> bool:
 
     A node's nix.conf can list it, for Nix. As a substituter of pynixd, a
     narinfo miss there asks pynixd itself, joins the race it is part of, and
-    waits out `substitution_query_timeout`: 2 s on every new local build on
-    dynhetz, 675 timeouts in 30 minutes (nixidae/nixidae#1125).
+    waits on itself. With a 2 s `substitution_query_timeout` that cost 2 s on
+    every new local build on dynhetz, 675 timeouts in 30 minutes
+    (nixidae/nixidae#1125); with none, it never ends.
     """
     split = urlsplit(url)
     port = settings.http_port if split.scheme == "http" else settings.https_port

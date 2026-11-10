@@ -185,6 +185,27 @@ async def test_a_probe_that_raises_costs_only_its_own_answer() -> None:
     assert availability.available
 
 
+@pytest.mark.anyio
+async def test_a_slow_query_is_slow_and_not_absent() -> None:
+    """Nix sets no deadline on a query; pynixd waits as long. nixidae/nixidae#1265."""
+    path = StorePath("/nix/store/00000000000000000000000000000000-example")
+    slow_hit = FakeSubstituter("slow-hit", valid=True, delay=2.2)
+    ctx = cast(
+        "PynixdContext",
+        SimpleNamespace(
+            settings=PynixdSettings(),
+            stores={StoreId("local"): SimpleNamespace(no_schedule=False), slow_hit.store_id: slow_hit},
+        ),
+    )
+    queue = SubstitutionQueue(ctx)
+
+    async with queue.running():
+        availability = await queue.can_substitute(path)
+
+    assert availability.available
+    assert queue.positive[path][slow_hit.store_id].query_succeeded
+
+
 class FailingSubstituter(FakeSubstituter):
     async def execute(self, request: WireRequest, **kwargs: Any) -> QueryPathInfoResponse:
         del request, kwargs
