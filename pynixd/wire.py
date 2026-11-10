@@ -186,6 +186,10 @@ class NixReader:
     def _transport_is_dirty(self) -> bool:
         return False
 
+    def has_unread(self) -> bool:
+        """Whether bytes wait below this reader that no read has asked for; `False` where it cannot tell."""
+        return False
+
     def peer_closed(self) -> bool:
         """Has the other side closed the stream, with nothing left to read?
 
@@ -366,6 +370,10 @@ class UnixNixReader(NixReader):
     def _transport_is_dirty(self) -> bool:
         return (len(self._buf) - self._pos) > 0 or _queued(self.stream) or bool(_peek(self._sock))
 
+    def has_unread(self) -> bool:
+        # Not the read-ahead: a read that waits for more holds its partial message there.
+        return _queued(self.stream) or bool(_peek(self._sock))
+
     def peer_closed(self) -> bool:
         # The transport reads only inside `receive`, so an idle close waits in
         # the kernel, where a peek finds it.
@@ -447,6 +455,10 @@ class NixWriter:
         raise NotImplementedError
 
     def _transport_is_dirty(self) -> bool:
+        return False
+
+    def is_closing(self) -> bool:
+        """Whether the transport under this writer closes or has closed, so a write goes nowhere."""
         return False
 
     async def close(self) -> None:
@@ -562,6 +574,9 @@ class SSHNixWriter(NixWriter):
     def _transport_is_dirty(self) -> bool:
         return self.writer.channel.get_write_buffer_size() > 0
 
+    def is_closing(self) -> bool:
+        return self.writer.channel.is_closing()
+
     async def close(self) -> None:
         # The close is synchronous and runs even when the drain fails or is
         # cancelled. A transport left open keeps the daemon's work running.
@@ -606,6 +621,9 @@ class UnixNixWriter(NixWriter):
 
     def _transport_is_dirty(self) -> bool:
         return self._transport.get_write_buffer_size() > 0
+
+    def is_closing(self) -> bool:
+        return self._transport.is_closing()
 
     async def close(self) -> None:
         # As `SSHNixWriter.close`: the transport closes whatever the drain does.
@@ -749,16 +767,20 @@ async def send_framed(
     dst: NixWriter,
     chunk_size: int = _CHUNK_SIZE,
     on_bytes: Callable[[int], None] | None = None,
+    go_on: Callable[[], Awaitable[bool]] | None = None,
 ) -> None:
     """`forward_framed` from a byte source: `read(n)` gives at most n bytes, and `b""` at the end.
 
     The frames gather up to *chunk_size*, with the drain and the checkpoint
-    per frame, for the reasons `forward_framed` gives.
+    per frame, for the reasons `forward_framed` gives. *go_on* runs before each
+    read; when it answers false, the send stops there, without the last frame.
     """
     pending: list[bytes] = []
     pending_size = 0
     done = False
     while not done:
+        if go_on is not None and not await go_on():
+            return
         data = await read(chunk_size - pending_size)
         if data:
             pending.append(data)

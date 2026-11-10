@@ -49,6 +49,59 @@ if TYPE_CHECKING:
     from .daemon import DaemonStore
 
 
+async def _answer_beside_send[T](
+    send: Callable[[Callable[[], Awaitable[bool]]], Awaitable[None]], read: Callable[[], Awaitable[T]], conn: Connection
+) -> T:
+    """*read*'s answer, read while *send* uploads the body on *conn*.
+
+    Nix's `FramedSink` reads the daemon's answer before each frame it sends
+    (`remote-store.cc:849`). A daemon that refuses before it reads the body
+    writes its error and closes (`daemon.cc:1113`). A write after that close
+    fails, and uvloop then closes the transport with the error still unread in
+    the kernel. So *send* calls the function it is given before each frame:
+    that lets the reader take what the daemon sent, and answers false once the
+    answer is in.
+
+    The answer never cancels the send. The body is often the client's own
+    frames, and a read cut off inside a frame leaves the client's stream where
+    no drain can find the end: the client then blocks on a full socket. A
+    daemon that refuses drains the rest itself (`daemon.cc:946`), and one that
+    closed breaks the send. A send that fails on its own while *upstream* is
+    open cancels the read, which would wait for a body that never comes.
+    """
+    answers: list[T] = []
+    failures: list[Exception] = []
+    answered = anyio.Event()
+
+    async def reading() -> None:
+        try:
+            answers.append(await read())
+        except Exception as e:  # noqa: BLE001 -- held for after the send, which it must not cancel
+            failures.append(e)
+        finally:
+            answered.set()
+
+    async def go_on() -> bool:
+        while conn.r.has_unread() and not answered.is_set():
+            await anyio.sleep(0)
+        return not answered.is_set()
+
+    broken: Exception | None = None
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(reading)
+        try:
+            await send(go_on)
+        except Exception as e:  # noqa: BLE001 -- the answer decides which error the caller sees
+            broken = e
+            if not conn.w.is_closing() and not isinstance(e, ConnectionError):
+                tg.cancel_scope.cancel()
+    if failures:
+        raise failures[0] from broken
+    if broken is not None:
+        raise broken
+    return answers[0]
+
+
 class DaemonWrites:
     """The write operations of *store*'s daemon."""
 
@@ -142,8 +195,11 @@ class DaemonWrites:
             await conn.apply_options(options)
             await conn.send_request(request)
             await conn.w.drain()
-            await send_framed(source.read, conn.w, on_bytes=on_bytes)
-            await AddToStoreNarResponse.from_reader(ReadContext.from_conn(conn, client=logs))
+            await _answer_beside_send(
+                lambda go_on: send_framed(source.read, conn.w, on_bytes=on_bytes, go_on=go_on),
+                lambda: AddToStoreNarResponse.from_reader(ReadContext.from_conn(conn, client=logs)),
+                conn,
+            )
 
     async def add_to_store_from_dump(
         self,
@@ -176,8 +232,11 @@ class DaemonWrites:
             await conn.apply_options(options)
             await conn.send_request(request)
             await conn.w.drain()
-            await send_framed(source.read, conn.w, on_bytes=on_bytes)
-            response = await AddToStoreResponse.from_reader(ReadContext.from_conn(conn, client=logs))
+            response = await _answer_beside_send(
+                lambda go_on: send_framed(source.read, conn.w, on_bytes=on_bytes, go_on=go_on),
+                lambda: AddToStoreResponse.from_reader(ReadContext.from_conn(conn, client=logs)),
+                conn,
+            )
             info = response.info
             await root(str(info.path))
             if sign is not None:
@@ -203,18 +262,14 @@ class DaemonWrites:
             await conn.apply_options(options)
             await conn.send_request(request)
             await conn.w.drain()
-            # A task group hands back no result, so the child records it here.
-            responses: list[AddMultipleToStoreResponse] = []
             infos: list[ValidPathInfo] = []
 
-            async def read_response() -> None:
-                responses.append(await AddMultipleToStoreResponse.from_reader(ReadContext.from_conn(conn)))
-
-            async with anyio.create_task_group() as tg:
-                tg.start_soon(read_response)
+            async def send(go_on: Callable[[], Awaitable[bool]]) -> None:
                 framed = FramedWriter(conn.w)
                 framed.write_uint64(count)
                 async for info, nar in paths:
+                    if not await go_on():
+                        return
                     # Per path as well as per chunk: a transfer of many small
                     # paths spends its time here rather than in the byte loop
                     # (tests/benchmark/test_bench_nar_profile.py).
@@ -223,7 +278,9 @@ class DaemonWrites:
                     framed.write(await info.bytes_wire())
                     await send_raw(nar.read, framed, info.info.nar_size)
                 await framed.finalize()
-            if not responses:
-                raise RuntimeError("the AddMultipleToStore reader task recorded no response")
+
+            await _answer_beside_send(
+                send, lambda: AddMultipleToStoreResponse.from_reader(ReadContext.from_conn(conn)), conn
+            )
         self.store.add_path_infos([as_copied(info) for info in infos])
         return infos

@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
+import anyio
 import pytest
 
 from nix_daemon_protocol.add_to_store import AddToStoreRequest, AddToStoreResponse
@@ -274,3 +275,31 @@ async def test_a_git_dump_without_git_hashing_is_refused_in_nix_words(tmp_path: 
             await _send(conn, "tree", "fixed:git:sha1", b"".join(dump_path(tree)))
         resp = await _send(conn, "good", "fixed:sha256", b"good\n")
         assert await valid(conn, str(resp.info.path))
+
+
+@_ROUTES
+async def test_a_refused_upload_larger_than_a_socket_buffer_says_why(
+    tmp_path_factory: pytest.TempPathFactory, route: str
+) -> None:
+    """The daemon refuses a git dump before it reads it, and closes; the client still reads why.
+
+    Nix's `FramedSink` reads the daemon's answer before each frame it sends
+    (`remote-store.cc:849`). pynixd read only after the whole upload: 16 MiB
+    outgrew the socket buffer, the send broke on the closed socket, and the
+    client read `RuntimeError: unable to perform operation on <UnixTransport closed=True ...>`.
+    """
+    # Not `tmp_path`: the parameter puts a `[` in its name, and Nix cannot parse that in a `unix://` URL.
+    tmp_path = tmp_path_factory.mktemp("refused")
+    big = tmp_path / "big"
+    big.write_bytes(b"x" * (16 << 20))  # noqa: ASYNC240 -- test setup
+    b, socket = tmp_path / "b", tmp_path / "b.sock"
+    async with server(b, socket, route):
+        result = await anyio.run_process(
+            [
+                *(str(NIX_BIN), "store", "add", "--store", f"unix://{socket}", "--mode", "git", "--hash-algo", "sha1"),
+                *("--extra-experimental-features", "git-hashing nix-command", str(big)),
+            ],
+            check=False,
+        )
+    assert result.returncode == 1
+    assert "experimental Nix feature 'git-hashing' is disabled" in result.stderr.decode()
