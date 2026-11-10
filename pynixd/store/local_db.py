@@ -32,7 +32,8 @@ from pynixd_store.builder.vm import BuildVm
 from pynixd_store.create_store import open_local_store
 from pynixd_store.drv_parser import drv_bytes, from_basic_derivation
 from pynixd_store.engine import StoreEngine, hashes_self_reference_positions
-from pynixd_store.hintfmt import magenta, show_error
+from pynixd_store.errors import PynixdError
+from pynixd_store.hintfmt import magenta, missing_feature, show_error
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.nix_config import nix_environment, read_nix_config, read_nix_config_text, read_nix_version
 from pynixd_store.overlay_engine import LowerPathNeedsSync, OverlayEngine
@@ -1130,15 +1131,15 @@ class LocalDBStore(Store):
 
         The table and its key follow the shape this store's daemon reads, the
         way `register_drv_output` of `DaemonStore` turns the request. Without
-        `ca-derivations` the daemon answers, which raises Nix's own
-        `experimental-feature` error. This op runs through `execute` on both
-        the client wire and the scheduler's own registration (`goals/ensure.py`).
+        `ca-derivations` it refuses as `registerDrvOutput` does (`local-store.cc:656`).
+        This op runs through `execute` on both the client wire and the scheduler's
+        own registration (`goals/ensure.py`).
         """
         from nix_daemon_protocol.constants import FEATURE_REALISATION_WITH_PATH
         from nix_daemon_protocol.register_drv_output import RegisterDrvOutputResponse
 
         if "ca-derivations" not in (await self.trust_policy()).experimental_features:
-            return None
+            raise PynixdError(missing_feature("ca-derivations"))
         shaped = await self._daemon.request_in_the_shape_this_store_reads(request)
         by_path = FEATURE_REALISATION_WITH_PATH in self.features
         if by_path:
