@@ -334,6 +334,8 @@ class PooledConnection:
         self.opened_at = 0.0
         self.closed = False
         self.applied_options = options
+        # The pool outlives the test in the metrics collector, which reads this (`metrics.py:718`).
+        self.current_op: tuple[str, float] | None = None
         self.r = FakeIo()
         self.w = FakeIo()
 
