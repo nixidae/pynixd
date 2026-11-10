@@ -36,6 +36,7 @@ from pynixd.store import LocalDBStore, Store
 from pynixd.store_url import spec_for
 from pynixd.unix_socket import open_unix_connection
 from pynixd.wire import UnixNixReader, UnixNixWriter
+from tests._conftest.nix_config import for_test_store
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
 if TYPE_CHECKING:
@@ -213,9 +214,12 @@ async def _client(lab: _Lab) -> AsyncIterator[Connection]:
         if lab.s3_url is not None
         else f"file://{lab.cache_dir}"
     )
-    stores: dict[StoreId, Store] = {
-        StoreId("local"): LocalDBStore(make_test_spec(store_id="local", store_path=lab.target, no_probe=True)),
-    }
+    # No substituter but the cache: the guest's root store holds `parent` and
+    # `child` too, since the fixture built them there. nixidae/nixidae#1208.
+    local = make_test_spec(
+        store_id="local", store_path=lab.target, no_probe=True, nix_config=for_test_store(substituters=())
+    )
+    stores: dict[StoreId, Store] = {StoreId("local"): LocalDBStore(local)}
     if lab.transport == "http":
         stores[StoreId("upstream")] = HTTPBinaryCacheSpec(url=url, trusted=True).to_store("upstream")
     elif lab.transport == "file":
