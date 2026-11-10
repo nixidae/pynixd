@@ -258,7 +258,9 @@ class WriteRouter:
         reason = await self.why_the_daemon(write)
         if reason is None:
             return True
-        if not self.daemon.runs:
+        # A Git address is Nix's refusal either way. The daemon refuses it before it reads the body and closes,
+        # and under load the forward then read a reset connection, not the error.
+        if not self.daemon.runs or reason == _NO_GIT_HASHING:
             raise PynixdError(_refusal(reason))
         subject = str(write.info.path) if write.info is not None else write.dump.name if write.dump else None
         log.info("write_fallthrough", op=write.op, subject=subject, reason=reason)

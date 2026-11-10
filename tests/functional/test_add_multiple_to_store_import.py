@@ -275,7 +275,7 @@ async def test_a_wrong_git_address_is_refused_as_the_daemon_refuses_it(tmp_path:
 
 @_ROUTES
 async def test_a_git_address_without_git_hashing_is_refused(tmp_path: Path, route: str) -> None:
-    """pynixd's route sends the Git path to the daemon, which refuses it in Nix's words."""
+    """pynixd's route refuses the Git path in Nix's words, as the daemon does, and keeps the path before it."""
     a, [flat, git, tree] = await _git_lab(tmp_path)
     b, socket = tmp_path / "b", tmp_path / "b.sock"
     async with server(b, socket, route), client(socket) as conn:

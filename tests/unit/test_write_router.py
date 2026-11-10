@@ -147,7 +147,6 @@ async def test_the_daemon_route_wins_and_counts_nothing() -> None:
     ("engine", "write", "reason"),
     [
         ({"writable": False}, Write(op="AddToStoreNar", repair=True), "not writable"),
-        ({}, Write(op="AddMultipleToStore", info=_info("fixed:git:sha1:" + "0" * 40)), "Git"),
     ],
 )
 async def test_the_first_reason_sends_it_to_the_daemon(engine: dict[str, Any], write: Write, reason: str) -> None:
@@ -196,30 +195,27 @@ async def test_a_store_with_no_engine_sends_every_write_to_the_daemon() -> None:
     assert daemon.added == [(str(_info().path), None)]
 
 
-async def test_add_multiple_sends_a_path_the_engine_refuses_to_the_daemon_alone() -> None:
-    """The loop of `daemon.cc:505`: each path asks the router, and a Git path goes to the daemon with the client's logs."""
+async def test_add_multiple_refuses_a_git_path_itself_and_keeps_the_path_before() -> None:
+    """The loop of `daemon.cc:505`: each path asks the router. A Git path is Nix's refusal with a daemon too.
+
+    The daemon refuses one before it reads the body and closes, so a forward could read a reset connection.
+    """
     plain = _info()
     git = _info("fixed:git:sha1:" + "0" * 40).model_copy(
         update={"path": StorePath(path="/nix/store/" + "b" * 32 + "-g")}
     )
     daemon = _Daemon()
     router = _router(daemon=daemon)
-    rooted: list[str] = []
-
-    async def root(path: str) -> None:
-        rooted.append(path)
-
-    conn = object()
-    client = WriteClient(conn=conn, root=root)  # type: ignore[arg-type]  # a stand-in connection
-    await router.add_multiple_to_store(
-        Write(op="AddMultipleToStore"), 2, _paths(git, plain), dont_check_sigs=True, client=client
-    )
+    before = _fallthroughs("AddMultipleToStore")
+    with pytest.raises(PynixdError, match="git-hashing"):
+        await router.add_multiple_to_store(
+            Write(op="AddMultipleToStore"), 2, _paths(plain, git), dont_check_sigs=True, client=WriteClient()
+        )
     engine = router.engine
     assert isinstance(engine, _Engine)
     assert engine.added == [str(plain.path)]
-    assert daemon.added == [(str(git.path), conn)]
-    assert rooted == [str(git.path), str(plain.path)]
-    assert sorted(engine.forgotten) == sorted([str(git.path), str(plain.path)])
+    assert daemon.added == []
+    assert _fallthroughs("AddMultipleToStore") == before
 
 
 class _Client:
