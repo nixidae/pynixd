@@ -307,9 +307,11 @@ WHERE name = ? AND system = ? AND shape = ? AND storeId = ? AND inputsBytes IS N
 ORDER BY id DESC LIMIT ?
 """
 
+# Not the local store's rows: a local build pulls from itself and records 0 bytes. 40 local builds of a
+# `qemu-root-image` made the median 0, and one remote pull of 8.6 GB took 322 s. nixidae/nixidae#1259.
 QUERY_PULL_BYTES = f"""
 SELECT pullBytes FROM {BUILD_OBSERVATION_TABLE}
-WHERE name = ? AND system = ? AND shape = ? AND pullBytes IS NOT NULL
+WHERE name = ? AND system = ? AND shape = ? AND storeId != ? AND pullBytes IS NOT NULL
 ORDER BY id DESC LIMIT ?
 """
 
@@ -1145,15 +1147,15 @@ class LocalStoreDB:
             dispatch_ms=int(statistics.median(round_trips)) if round_trips else None,
         )
 
-    async def expected_bytes(self, identity: DerivationIdentity, store_id: str) -> ExpectedBytes:
-        """The median bytes the identity sent to this store, and pulled from any store."""
+    async def expected_bytes(self, identity: DerivationIdentity, store_id: str, *, local_id: str) -> ExpectedBytes:
+        """The median bytes the identity sent to this store, and pulled from any store but *local_id*."""
         if not self.active or not self.schema.usable:
             return ExpectedBytes()
         shape = (identity.name, identity.system, identity.shape)
         try:
             async with self.execute(QUERY_INPUTS_BYTES, (*shape, store_id, OBSERVATIONS_KEPT)) as cursor:
                 inputs = [int(r[0]) for r in await cursor.fetchall()]
-            async with self.execute(QUERY_PULL_BYTES, (*shape, OBSERVATIONS_KEPT)) as cursor:
+            async with self.execute(QUERY_PULL_BYTES, (*shape, local_id, OBSERVATIONS_KEPT)) as cursor:
                 pulls = [int(r[0]) for r in await cursor.fetchall()]
         except aiosqlite.Error:
             log.debug("expected_bytes_failed", name=identity.name, exc_info=True)

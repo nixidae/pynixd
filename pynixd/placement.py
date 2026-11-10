@@ -266,7 +266,7 @@ class TransferEstimator:
             return await db.expected_build_ms_on(identity, str(store_id))
 
         async def measure(store: DaemonStore) -> None:
-            expected = await db.expected_bytes(identity, str(store.store_id))
+            expected = await db.expected_bytes(identity, str(store.store_id), local_id=str(local_id))
             link = await self._link(store.store_id)
             missing = await missing_input_bytes(store, self.answers, sizes)
             setup = self.settings.remote_setup_seconds

@@ -188,6 +188,18 @@ class TestTheTables:
             (str(REMOTE), 0, None, -1000.0, -20.0, 10_000, 30_000, "shape-on-store", 40_000),
         ]
 
+    async def test_a_local_build_is_no_pull_history(self, db: LocalStoreDB) -> None:
+        """A local build records 0 pull bytes; a remote's pull prices the output. nixidae/nixidae#1259."""
+        for _ in range(3):
+            await db.record_build_observation(
+                HELLO, BuildObservation(store_id=str(LOCAL_STORE_ID), status=0, pull_bytes=0)
+            )
+        await db.record_build_observation(HELLO, BuildObservation(store_id=str(REMOTE), status=0, pull_bytes=8 * MB))
+
+        expected = await db.expected_bytes(HELLO, str(REMOTE), local_id=str(LOCAL_STORE_ID))
+
+        assert expected.pull == 8 * MB
+
     async def test_the_observation_links_to_a_decision_still_in_the_buffer(self, db: LocalStoreDB) -> None:
         """A short build ends before the flush that writes its decision."""
         trace = PlacementTrace(db, PlacementTraceSettings(enabled=True))
