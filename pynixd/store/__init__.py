@@ -38,7 +38,10 @@ if TYPE_CHECKING:
     from .local_daemon import LocalStore as LocalStore
     from .local_db import LocalDBStore as LocalDBStore
     from .reverse import ReverseStore as ReverseStore
-    from .s3_binary_cache import S3BinaryCacheStore as S3BinaryCacheStore
+    from .s3_binary_cache import (
+        S3BinaryCacheStore as S3BinaryCacheStore,
+        resolve_aws_credentials as resolve_aws_credentials,
+    )
     from .ssh import (
         SSHSocketStore as SSHSocketStore,
         SSHSubprocessStore as SSHSubprocessStore,
@@ -60,6 +63,7 @@ ORIGIN: dict[str, str] = {
     "SSHSubprocessStore": "ssh",
     "Store": "base",
     "get_current_system": "base",
+    "resolve_aws_credentials": "s3_binary_cache",
 }
 """Each public name, and the submodule that defines it."""
 
@@ -81,6 +85,7 @@ __all__ = [
     "get_current_system",
     "is_binary_cache",
     "is_http_binary_cache",
+    "resolve_aws_credentials",
 ]
 
 

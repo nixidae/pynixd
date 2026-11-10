@@ -15,7 +15,8 @@ from botocore.awsrequest import AWSRequest
 from botocore.exceptions import BotoCoreError
 from botocore.session import Session
 
-from ..s3_url import DEFAULT_REGION
+from pynixd_store.s3_url import DEFAULT_REGION
+
 from .http_binary_cache import HTTPBinaryCacheStore
 
 if TYPE_CHECKING:
@@ -23,9 +24,27 @@ if TYPE_CHECKING:
 
     from botocore.credentials import Credentials
 
+    from pynixd_store.builder.spec import AwsCredentials
+
     from ..config import S3BinaryCacheSpec
 
 log = structlog.get_logger(__name__)
+
+
+def resolve_aws_credentials(profile: str | None) -> AwsCredentials | None:
+    """`getCredentials` (`aws-creds.cc`) for a `builtin:fetchurl` of `s3://`: botocore's chain for *profile*.
+
+    `None` when the chain finds none or fails: Nix's parent drops the error (`derivation-builder.cc:638`). Blocks.
+    """
+    try:
+        credentials = Session(profile=profile).get_credentials()
+        frozen = None if credentials is None else credentials.get_frozen_credentials()
+    except BotoCoreError as e:
+        log.debug("s3_fetch_credentials_failed", profile=profile, error=str(e))
+        return None
+    if frozen is None:
+        return None
+    return {"access_key_id": frozen.access_key, "secret_access_key": frozen.secret_key, "session_token": frozen.token}
 
 
 class S3BinaryCacheStore(HTTPBinaryCacheStore):

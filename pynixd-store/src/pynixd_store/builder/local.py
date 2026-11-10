@@ -39,6 +39,7 @@ from .. import optimise
 from ..add import PathLock, delete_path, sync_store_path
 from ..content_address import Method, fixed_output_address, output_method
 from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta, missing_feature, show_error
+from ..s3_url import S3URLError, parse as parse_s3_url
 from ..signing import SecretKey, fingerprint
 from . import buildenv, cgroup as build_cgroup, hooks, users as build_users
 from .buildlog import BuildLog
@@ -65,7 +66,7 @@ from .outputs import (
     random_path,
 )
 from .restriction import SOCKET_NAME, RestrictionContext
-from .spec import BuildenvSpec, ChildSpec, FetchSpec
+from .spec import AwsCredentials, BuildenvSpec, ChildSpec, FetchSpec
 from .usage import USAGE_NAME, read_usage, with_host
 from .vm import (
     BUILDER_SOCKET_NAME as VM_BUILDER_SOCKET_NAME,
@@ -274,12 +275,44 @@ def _builder_lines(builders: str) -> list[str]:
 
 
 def _url_unsupported(url: str) -> str | None:
-    """A URL whose transfer pynixd leaves to the daemon: S3 needs AWS credentials resolved on the host
-    (`derivation-builder.cc:622`). curl takes every other scheme, as in Nix's `curlFileTransfer`."""
+    """A URL with no scheme stays with the daemon. curl takes every scheme, as in Nix's `curlFileTransfer`,
+    and the helper turns `s3://` into HTTP (`filetransfer.cc:1294`)."""
     scheme, sep, _rest = url.partition("://")
-    if not sep or scheme.lower() == "s3":
+    if not sep:
         return f"builtin:fetchurl of the URL scheme '{scheme}'"
     return None
+
+
+def _is_s3(url: str) -> bool:
+    return url.partition("://")[0].lower() == "s3"
+
+
+def _aws_credentials(
+    main: str | None, mirrors: Sequence[str], resolve: Callable[[str | None], AwsCredentials | None] | None
+) -> dict[str, AwsCredentials]:
+    """The credentials of each `s3://` URL: *resolve* takes a profile, `None` for the default chain.
+
+    Nix's parent resolves those of the main URL, and they sign every S3 request (`derivation-builder.cc:622`,
+    `builtins/fetchurl.cc:47`). Without them Nix's child asks the chain for each URL (`filetransfer.cc:1309`).
+    The helper cannot ask in the chroot, so pynixd asks for it here.
+    """
+    urls = [url for url in (main, *mirrors) if url is not None and _is_s3(url)]
+    if resolve is None or not urls:
+        return {}
+    by_profile: dict[str | None, AwsCredentials | None] = {}
+
+    def credentials(url: str) -> AwsCredentials | None:
+        try:
+            profile = parse_s3_url(url).profile
+        except S3URLError:
+            return None
+        if profile not in by_profile:
+            by_profile[profile] = resolve(profile)
+        return by_profile[profile]
+
+    if main is not None and _is_s3(main) and (first := credentials(main)) is not None:
+        return dict.fromkeys(urls, first)
+    return {url: found for url in urls if (found := credentials(url)) is not None}
 
 
 def _builtin_unsupported(drv: BasicDerivation, settings: BuildSettings) -> str | None:
@@ -361,13 +394,21 @@ def _read_or_empty(path: str | None) -> str:
         return ""
 
 
-def _fetch_spec(drv: BasicDerivation, settings: BuildSettings, out: str, build_dir: str) -> FetchSpec:
+def _fetch_spec(
+    drv: BasicDerivation,
+    settings: BuildSettings,
+    out: str,
+    build_dir: str,
+    aws_credentials: Callable[[str | None], AwsCredentials | None] | None,
+) -> FetchSpec:
     transfer = settings.transfer
     env = _builtin_env(drv)
+    main_url = env.get("url")
+    mirrors = _mirror_urls(drv, settings)
     return {
         "fixed_or_impure": drv.outputs["out"].kind in (OutputKind.CA_FIXED, OutputKind.IMPURE),
-        "main_url": env.get("url"),
-        "mirrors": _mirror_urls(drv, settings),
+        "main_url": main_url,
+        "mirrors": mirrors,
         "out": out,
         "unpack": env.get("unpack", "") == "1",
         "executable": env.get("executable") == "1",
@@ -388,6 +429,7 @@ def _fetch_spec(drv: BasicDerivation, settings: BuildSettings, out: str, build_d
         "retry_delay_rate_limited_ms": transfer.retry_delay_rate_limited_ms,
         "retry_max_delay_ms": transfer.retry_max_delay_ms,
         "retry_jitter": transfer.retry_jitter,
+        "aws_credentials": _aws_credentials(main_url, mirrors, aws_credentials),
     }
 
 
@@ -651,6 +693,7 @@ async def build(
     vm: BuildVm | None = None,
     on_usage: Callable[[BuildUsage], None] | None = None,
     sample_seconds: float = 0,
+    aws_credentials: Callable[[str | None], AwsCredentials | None] | None = None,
 ) -> LocalBuildResult:
     """Build *drv*, whose inputs are valid, and register its outputs. `unsupported(drv)` must be `None`.
 
@@ -663,6 +706,7 @@ async def build(
     its contents match its registered hash (`derivation-building-goal.cc:1334`); the build replaces the rest.
     *recursive* serves the builder of a `recursive-nix` or `builder-rpc-v0` derivation; it must be given for one.
     With *vm*, a sandboxed build for the store's own system runs in a microVM, and the helper inside it.
+    *aws_credentials* resolves the credentials of an AWS profile for a `builtin:fetchurl` of `s3://`; it may block.
     """
     layout = engine.layout
     store_dir = str(layout.store_dir)
@@ -784,7 +828,7 @@ async def build(
         for name, contents in env.files.items():
             (paths.tmp / name).write_text(contents, encoding="utf-8")
         fetch = (
-            await anyio.to_thread.run_sync(_fetch_spec, drv, settings, str(scratch["out"]), build_dir)
+            await anyio.to_thread.run_sync(_fetch_spec, drv, settings, str(scratch["out"]), build_dir, aws_credentials)
             if drv.builder == "builtin:fetchurl"
             else None
         )

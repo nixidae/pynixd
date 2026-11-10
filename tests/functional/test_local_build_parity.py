@@ -1548,10 +1548,18 @@ async def _http(tmp_path: Path) -> AsyncIterator[tuple[str, dict[str, Any]]]:
     mirrored = f"/mirror/sha256/{hashlib.sha256(FETCHED).hexdigest()}"
 
     async def handle(request: web.Request) -> web.StreamResponse:
+        authorization = request.headers.get("Authorization", "")
+        # A SigV4 signature covers the time of the request.
+        authorization = _SIGV4_DATE.sub("/DATE/", _SIGV4_SIGNATURE.sub("Signature=SIG", authorization))
         seen["requests"].append(
-            (request.path, request.headers.get("User-Agent", ""), request.headers.get("Authorization", ""))
+            (
+                request.path,
+                request.headers.get("User-Agent", ""),
+                authorization,
+                request.headers.get("x-amz-security-token", ""),
+            )
         )
-        if request.path in ("/file", mirrored):
+        if request.path in ("/file", "/bucket/file", mirrored):
             return web.Response(body=FETCHED)
         if request.path == "/tree.nar":
             return web.Response(body=nar)
@@ -1571,6 +1579,8 @@ async def _http(tmp_path: Path) -> AsyncIterator[tuple[str, dict[str, Any]]]:
 
 
 _ELAPSED = re.compile(r"after \d+ ms")
+_SIGV4_DATE = re.compile(r"/\d{8}/")
+_SIGV4_SIGNATURE = re.compile(r"Signature=[0-9a-f]+")
 
 
 def _fetchurl(name: str, url: str, extra: str) -> str:
@@ -1586,6 +1596,7 @@ def _tree(path: Path) -> list[str] | str:
 async def _fetches(tmp_path: Path, route: OpRoute, base: str, seen: dict[str, Any]) -> dict[str, Any]:
     results: dict[str, Any] = {}
     secret = base.replace("http://", "http://user:secret@")
+    s3 = f"endpoint={base}&region=eu-north-1"
     async with _serve(tmp_path, route) as (url, root):
         fetches = {
             "flat": ((), _fetchurl("parity-fetch", f"{base}/file", f'hash = "{_sri(FETCHED)}";')),
@@ -1615,6 +1626,13 @@ async def _fetches(tmp_path: Path, route: OpRoute, base: str, seen: dict[str, An
                 (),
                 _fetchurl("parity-fetch-creds-missing", f"{secret}/gone", f'hash = "{FAKE_HASH}";'),
             ),
+            # `setupForS3` (`filetransfer.cc:1294`): HTTP to the endpoint, signed with the environment's credentials.
+            "s3": ((), _fetchurl("parity-fetch-s3", f"s3://bucket/file?{s3}", f'hash = "{_sri(FETCHED)}";')),
+            "s3-missing": (
+                (),
+                _fetchurl("parity-fetch-s3-missing", f"s3://bucket/gone?{s3}", f'hash = "{FAKE_HASH}";'),
+            ),
+            "s3-no-key": ((), _fetchurl("parity-fetch-s3-no-key", f"s3://bucket?{s3}", f'hash = "{FAKE_HASH}";')),
         }
         for name, (options, expr) in fetches.items():
             seen["requests"].clear()
@@ -1641,9 +1659,21 @@ async def _fetches(tmp_path: Path, route: OpRoute, base: str, seen: dict[str, An
     return results
 
 
-async def test_builtin_fetchurl_fetches_what_the_daemon_fetches(tmp_path: Path) -> None:
+async def test_builtin_fetchurl_fetches_what_the_daemon_fetches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """`builtinFetchurl` (`builtins/fetchurl.cc:10`): a flat file, an executable one, an unpacked NAR, the
-    hashed mirrors first, and the errors of a missing file, a refused one and a wrong hash."""
+    hashed mirrors first, an S3 object, and the errors of a missing file, a refused one and a wrong hash."""
+    # Both daemons resolve S3 credentials from their environment (`derivation-builder.cc:622`), and only there.
+    for name, value in {
+        "AWS_ACCESS_KEY_ID": "AKIDPARITY",
+        "AWS_SECRET_ACCESS_KEY": "parity-secret",
+        "AWS_SESSION_TOKEN": "parity-token",
+        "AWS_CONFIG_FILE": str(tmp_path / "aws-config"),
+        "AWS_SHARED_CREDENTIALS_FILE": str(tmp_path / "aws-credentials"),
+        "AWS_EC2_METADATA_DISABLED": "true",
+    }.items():
+        monkeypatch.setenv(name, value)
     # One server for both runs: the URL is part of the derivation, so its port must not change.
     async with _http(tmp_path) as (base, seen):
         before = _fallthrough()
@@ -1662,6 +1692,15 @@ async def test_builtin_fetchurl_fetches_what_the_daemon_fetches(tmp_path: Path) 
     missing = here["credentials-missing"][3]
     assert any("HTTP error" in line for line in missing), missing
     assert not any("secret" in line for line in missing), missing
+    assert here["s3"][0] == 0, here["s3"]
+    path, _agent, authorization, token = here["s3"][4][0]
+    assert path == "/bucket/file", here["s3"]
+    assert authorization.startswith("AWS4-HMAC-SHA256 Credential=AKIDPARITY/DATE/eu-north-1/s3/aws4_request"), here[
+        "s3"
+    ]
+    assert token == "parity-token", here["s3"]
+    assert any(f"{base}/bucket/gone" in line for line in here["s3-missing"][3]), here["s3-missing"]
+    assert any("URI has a missing or invalid key" in line for line in here["s3-no-key"][3]), here["s3-no-key"]
 
 
 #: Package trees for `builtin:buildenv`; "->" makes a symbolic link.

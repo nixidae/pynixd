@@ -25,13 +25,14 @@ from typing import TYPE_CHECKING
 
 import pycurl
 
+from .. import s3_url
 from ..hintfmt import ANSI_NORMAL, magenta, show_error
 from ..nar_fs import restore_path
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from .spec import FetchSpec
+    from .spec import AwsCredentials, FetchSpec
 
 ACT_FILE_TRANSFER = 101
 RES_PROGRESS = 105
@@ -97,7 +98,15 @@ class TransferError(Exception):
     def __init__(self, kind: str, message: str) -> None:
         super().__init__(message)
         self.kind = kind
+        self.hint = message
         self.traces: tuple[str, ...] = ()
+
+
+#: A `nix::Error`: `builtinFetchurl` tries the next mirror after one, and `writeFile` adds its trace to one.
+NixError = (TransferError, s3_url.S3URLError)
+
+#: `warnOnce` (`s3-url.cc:146`) warns once in a process, and the helper is one process for one build.
+_warned_dotted_bucket = False
 
 
 def preload_nss() -> None:
@@ -204,12 +213,42 @@ def _retry_after_ms(value: str) -> int | None:
     return min(max(int(date - time.time()), 0) * 1000, 2**32 - 1)
 
 
+class _S3Signing:
+    """How curl signs a request to S3 (`filetransfer.cc:1302`)."""
+
+    def __init__(self, region: str, credentials: AwsCredentials | None) -> None:
+        self.provider = f"aws:amz:{region}:s3"
+        self.credentials = credentials
+
+
+def _for_s3(spec: FetchSpec, url: str) -> tuple[str, _S3Signing]:
+    """`setupForS3` (`filetransfer.cc:1294`): the HTTP URL of *url*, and its signature."""
+    global _warned_dotted_bucket  # noqa: PLW0603 -- `warnOnce`'s static flag
+    parsed = s3_url.parse(url)
+    https = s3_url.object_url(parsed)
+    if s3_url.falls_back_to_path_style(parsed) and not _warned_dotted_bucket:
+        _warned_dotted_bucket = True
+        log_message(
+            LVL_WARN,
+            warning(
+                f"bucket name '{magenta(parsed.bucket)}' contains a dot; falling back to path-style addressing "
+                "(virtual-hosted-style requires non-dotted bucket names for TLS certificate validity); "
+                "set 'addressing-style=path' to silence this warning"
+            ),
+        )
+    region = s3_url.DEFAULT_REGION if parsed.region is None else parsed.region
+    return https, _S3Signing(region, spec["aws_credentials"].get(url))
+
+
 class _Transfer:
     """One `TransferItem`: a GET of *url* into *sink*, retried as `maybeRetry` allows."""
 
-    def __init__(self, spec: FetchSpec, url: str, sink: Callable[[bytes], object]) -> None:
+    def __init__(
+        self, spec: FetchSpec, url: str, sink: Callable[[bytes], object], s3: _S3Signing | None = None
+    ) -> None:
         self.spec = spec
         self.url = url
+        self.s3 = s3
         #: What every message names: Nix never shows the credentials.
         self.display = display_uri(url)
         self.sink = sink
@@ -349,6 +388,14 @@ class _Transfer:
         if self.written:
             c.setopt(pycurl.RESUME_FROM_LARGE, self.written)
         c.setopt(pycurl.RESOLVER_START_FUNCTION, self._on_resolver_start)
+        if self.s3 is not None:
+            credentials = self.s3.credentials
+            if credentials is not None:
+                c.setopt(pycurl.USERNAME, credentials["access_key_id"])
+                c.setopt(pycurl.PASSWORD, credentials["secret_access_key"])
+                if credentials["session_token"] is not None:
+                    c.setopt(pycurl.HTTPHEADER, [f"x-amz-security-token: {credentials['session_token']}"])
+            c.setopt(pycurl.AWS_SIGV4, self.s3.provider)
 
     def run(self, rng: random.Random) -> None:
         spec = self.spec
@@ -398,7 +445,10 @@ class _Transfer:
 
 
 def _download(spec: FetchSpec, url: str, sink: Callable[[bytes], object], rng: random.Random) -> None:
-    transfer = _Transfer(spec, url, sink)
+    s3 = None
+    if url.partition("://")[0].lower() == "s3":
+        url, s3 = _for_s3(spec, url)
+    transfer = _Transfer(spec, url, sink, s3)
     try:
         transfer.run(rng)
     finally:
@@ -429,7 +479,7 @@ def _fetch(spec: FetchSpec, url: str, rng: random.Random) -> None:
         with open(fd, "wb", closefd=True) as file:
             try:
                 _download(spec, url, file.write, rng)
-            except TransferError as e:
+            except NixError as e:
                 # `writeFile(path, Source &)` (`file-system.cc:315`); `PathFmt` quotes the path.
                 e.traces = (f"writing file {magenta(chr(34) + str(out) + chr(34))}", *e.traces)
                 raise
@@ -457,13 +507,13 @@ def run(spec: FetchSpec) -> None:
         for url in spec["mirrors"]:
             try:
                 _fetch(spec, url, rng)
-            except (TransferError, OSError):
+            except (*NixError, OSError):
                 continue
             os._exit(0)
         _fetch(spec, main_url, rng)
     except Exception as e:  # noqa: BLE001 -- `runChild` writes any `std::exception` as the build's error
-        traces = e.traces if isinstance(e, TransferError) else ()
-        os.write(2, (show_error(str(e), traces) + "\n").encode(errors="replace"))
+        text, traces = (e.hint, e.traces) if isinstance(e, NixError) else (str(e), ())
+        os.write(2, (show_error(text, traces) + "\n").encode(errors="replace"))
         os._exit(1)
     os._exit(0)
 

@@ -10,8 +10,9 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from pynixd.config import S3BinaryCacheSpec
-from pynixd.s3_url import https_url
 from pynixd.store_url import spec_for
+from pynixd_store.hintfmt import magenta
+from pynixd_store.s3_url import S3URLError, falls_back_to_path_style, https_url, object_url, parse
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -132,3 +133,61 @@ async def test_no_credentials_send_the_request_unsigned(tmp_path: Path, monkeypa
     store = spec.to_store("s3-test")
     assert store._resolve_credentials() is None
     assert await store._headers("http://127.0.0.1:1/bucket/nix-cache-info") == {}
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("s3://my-bucket/my-key.txt", "https://my-bucket.s3.us-east-1.amazonaws.com/my-key.txt"),
+        (
+            "s3://prod-cache/nix/store/abc123.nar.xz?region=eu-west-1",
+            "https://prod-cache.s3.eu-west-1.amazonaws.com/nix/store/abc123.nar.xz",
+        ),
+        (
+            "s3://bucket/key?region=us-west-2&profile=prod&endpoint=custom.s3.com&scheme=https&region=us-east-1",
+            "https://custom.s3.com/bucket/key",
+        ),
+        (
+            "s3://my-bucket/my-key.txt?versionId=abc123xyz",
+            "https://my-bucket.s3.us-east-1.amazonaws.com/my-key.txt?versionId=abc123xyz",
+        ),
+        (
+            "s3://bucket/path/to/object?region=eu-west-1&versionId=version456",
+            "https://bucket.s3.eu-west-1.amazonaws.com/path/to/object?versionId=version456",
+        ),
+        ("s3://bucket/key?endpoint=https://minio.local&scheme=http", "https://minio.local/bucket/key"),
+        ("s3://bucket/key?addressing-style=path", "https://s3.us-east-1.amazonaws.com/bucket/key"),
+        ("s3://b/a//c?endpoint=http://127.0.0.1:9000", "http://127.0.0.1:9000/b/a//c"),
+    ],
+)
+def test_an_s3_object_url_reads_where_nix_reads(url: str, expected: str) -> None:
+    """`ParsedS3URL::parse` and `toHttpsUrl` (`src/libstore-tests/s3-url.cc:31`, `:207`): the first of a repeated
+    parameter wins, and the key keeps its empty segments."""
+    assert object_url(parse(url)) == expected
+
+
+@pytest.mark.parametrize(
+    ("url", "message"),
+    [
+        ("s3:///key", "URI has a missing or invalid bucket name"),
+        ("s3://127.0.0.1", "URI has a missing or invalid bucket name"),
+        ("s3://", "URI has a missing or invalid bucket name"),
+        ("s3://bucket", "URI has a missing or invalid key"),
+        (
+            "s3://bucket/key?addressing-style=bogus",
+            "unknown S3 addressing style 'bogus', expected 'auto', 'path', or 'virtual'",
+        ),
+    ],
+)
+def test_an_s3_url_nix_cannot_parse_is_refused_in_its_words(url: str, message: str) -> None:
+    """`src/libstore-tests/s3-url.cc:161`; each carries the trace `s3-url.cc:100` adds."""
+    with pytest.raises(S3URLError) as caught:
+        parse(url)
+    assert str(caught.value) == message
+    assert caught.value.traces == (f"while parsing S3 URI: '{magenta(url)}'",)
+
+
+def test_a_dotted_bucket_warns_only_where_it_falls_back() -> None:
+    assert falls_back_to_path_style(parse("s3://my.bucket/key"))
+    assert not falls_back_to_path_style(parse("s3://my.bucket/key?addressing-style=path"))
+    assert not falls_back_to_path_style(parse("s3://my.bucket/key?endpoint=minio.local"))

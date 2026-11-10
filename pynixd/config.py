@@ -15,12 +15,12 @@ from pydantic_settings import (
 )
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
+from pynixd_store.s3_url import https_url
 from pynixd_store.store_layout import Overlay, StoreLayout
 
 from .constants import STALL_TRACEBACK_MAX_BYTES
 from .nix_config import NixConfig
 from .op_routes import OPERATION_NAMES, OpRoute
-from .s3_url import https_url
 
 
 class ScheduleMode(StrEnum):

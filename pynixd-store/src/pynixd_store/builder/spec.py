@@ -8,6 +8,14 @@ from __future__ import annotations
 from typing import TypedDict
 
 
+class AwsCredentials(TypedDict):
+    """`AwsCredentials` (`aws-creds.hh`): what signs an `s3://` request."""
+
+    access_key_id: str
+    secret_access_key: str
+    session_token: str | None
+
+
 class FetchSpec(TypedDict):
     """`builtin:fetchurl`: the derivation's attributes, the file transfer settings, and what `runChild` reads
     on the host (`unix/build/derivation-builder.cc:956`)."""
@@ -38,6 +46,8 @@ class FetchSpec(TypedDict):
     retry_delay_rate_limited_ms: int
     retry_max_delay_ms: int
     retry_jitter: bool
+    aws_credentials: dict[str, AwsCredentials]
+    """The credentials of each `s3://` URL, resolved on the host; a URL with none goes unsigned."""
 
 
 class BuildenvSpec(TypedDict):

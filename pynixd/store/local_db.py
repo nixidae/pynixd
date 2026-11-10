@@ -40,7 +40,7 @@ from pynixd_store.overlay_engine import LowerPathNeedsSync, OverlayEngine
 from pynixd_store.signing import SecretKey, hash_keyed_realisation_fingerprint, realisation_fingerprint
 from pynixd_store.source import Pieces
 
-from .. import metrics
+from .. import metrics, store as store_package
 from ..activity import BuildActivity, PostBuildHookActivity
 from ..connection import KEPT_FROM_THE_DAEMON
 from ..op_routes import OpRoute, Owned
@@ -66,6 +66,7 @@ if TYPE_CHECKING:
     from nix_daemon_protocol.wire_ops import WireRequest
     from pynixd_store.add import ImportSettings
     from pynixd_store.builder.restriction import RecursiveServer
+    from pynixd_store.builder.spec import AwsCredentials
     from pynixd_store.builder.usage import BuildUsage
     from pynixd_store.content_address import ContentAddress
     from pynixd_store.drv_parser import Derivation
@@ -210,6 +211,11 @@ def _resources(usage: BuildUsage) -> BuildResources:
 
 def _stall(us: int | None) -> OptMicroseconds:
     return OptMicroseconds() if us is None else OptMicroseconds(tag=1, value=us)
+
+
+def _aws_credentials(profile: str | None) -> AwsCredentials | None:
+    """botocore takes ~90 ms to import, so `s3_binary_cache` loads with the first `s3://` fetch, not at start."""
+    return store_package.resolve_aws_credentials(profile)
 
 
 class LocalDBStore(Store):
@@ -907,6 +913,7 @@ class LocalDBStore(Store):
                 vm=self.build_vm,
                 on_usage=used.append,
                 sample_seconds=self.usage_sample_seconds,
+                aws_credentials=_aws_credentials,
             )
             signed: dict[str, set[Signature]] = {}
             if (

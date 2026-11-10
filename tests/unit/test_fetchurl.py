@@ -10,8 +10,9 @@ import pytest
 from nix_daemon_protocol.basic_derivation import BasicDerivation
 from nix_daemon_protocol.derivation_output import DerivationOutput
 from pynixd_store.builder import fetchurl
-from pynixd_store.builder.local import _mirror_urls, unsupported
+from pynixd_store.builder.local import _aws_credentials, _mirror_urls, unsupported
 from pynixd_store.builder.settings import BuildSettings
+from pynixd_store.builder.spec import AwsCredentials
 from pynixd_store.hintfmt import magenta
 
 HEX = "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
@@ -37,14 +38,46 @@ def test_builtin_fetchurl_builds_on_the_platform_builtin() -> None:
     assert _reason(_drv()) is None
 
 
-@pytest.mark.parametrize(
-    ("drv", "reason"),
-    [
-        (_drv("s3://bucket/f"), "builtin:fetchurl of the URL scheme 's3'"),
-    ],
-)
-def test_what_pynixd_does_not_fetch_goes_to_the_daemon(drv: BasicDerivation, reason: str) -> None:
-    assert _reason(drv) == reason
+def test_an_s3_url_is_fetched_here() -> None:
+    """`setupForS3` (`filetransfer.cc:1294`): curl reads S3 as HTTP, signed with the credentials of the host."""
+    assert _reason(_drv("s3://bucket/f?region=eu-west-1")) is None
+    assert _reason(_drv(), _settings(**{"hashed-mirrors": "s3://cache"})) is None
+
+
+def test_a_url_with_no_scheme_goes_to_the_daemon() -> None:
+    assert _reason(_drv("bucket/f")) == "builtin:fetchurl of the URL scheme 'bucket/f'"
+
+
+def _creds(name: str) -> AwsCredentials:
+    return {"access_key_id": name, "secret_access_key": "s", "session_token": None}
+
+
+def test_the_credentials_of_the_main_url_sign_every_s3_request() -> None:
+    """`derivation-builder.cc:622` resolves the main URL's profile; `builtins/fetchurl.cc:47` uses it for each."""
+    asked: list[str | None] = []
+
+    def resolve(profile: str | None) -> AwsCredentials:
+        asked.append(profile)
+        return _creds(f"{profile}")
+
+    found = _aws_credentials("s3://b/f?profile=main", ["s3://m/x?profile=other", "http://h/x"], resolve)
+    assert found == {"s3://b/f?profile=main": _creds("main"), "s3://m/x?profile=other": _creds("main")}
+    assert asked == ["main"]
+
+
+def test_without_the_main_urls_credentials_each_s3_url_asks_for_its_own() -> None:
+    """`filetransfer.cc:1309`: Nix's child asks the chain per request; pynixd asks once per profile."""
+    asked: list[str | None] = []
+
+    def resolve(profile: str | None) -> AwsCredentials | None:
+        asked.append(profile)
+        return None if profile is None else _creds(profile)
+
+    mirrors = ["s3://m/1?profile=p", "s3://m/2?profile=p", "s3://m/3", "s3:///bad"]
+    found = _aws_credentials("https://h/f", mirrors, resolve)
+    assert found == {"s3://m/1?profile=p": _creds("p"), "s3://m/2?profile=p": _creds("p")}
+    assert asked == ["p", None]
+    assert _aws_credentials("s3://b/f", [], None) == {}
 
 
 def test_a_url_with_credentials_is_fetched_here_and_shown_without_them() -> None:
@@ -84,10 +117,6 @@ def test_hashed_mirrors_serve_a_flat_output_only() -> None:
     settings = _settings(**{"hashed-mirrors": "http://a/ http://b"})
     assert _mirror_urls(_drv(), settings) == [f"http://a/sha256/{HEX}", f"http://b/sha256/{HEX}"]
     assert _mirror_urls(_drv(method="r:sha256"), settings) == []
-
-
-def test_a_mirror_with_a_scheme_pynixd_does_not_fetch_goes_to_the_daemon() -> None:
-    assert _reason(_drv(), _settings(**{"hashed-mirrors": "s3://cache"})) == "builtin:fetchurl of the URL scheme 's3'"
 
 
 def test_download_attempts_is_the_old_name_of_the_tries() -> None:
