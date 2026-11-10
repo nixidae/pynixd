@@ -111,8 +111,11 @@ async def _build_who(tmp_path: Path, route: OpRoute) -> tuple[list[int], Path]:
         f"args = [ (builtins.toFile \"who.sh\" ''\n{WHO}\n'') ]; }}"
     )
     async with _serve(tmp_path, route) as (build, env, store):
+        # No substituter: the host daemon that the suite's default names keeps `/nix/store`, and a
+        # query for a path of this relocated store fails there. Nix throws that failure without
+        # `--fallback` (`substitution-goal.cc:147`), and so did the daemon route. nixidae/nixidae#1261.
         _rc, out, _err, _both = await run_subproc(
-            [*build, "--no-link", "--print-out-paths", "--expr", expr], env=dict(env)
+            [*build, "--no-link", "--print-out-paths", "--expr", expr], env=dict(env), nix_config={"substituters": ""}
         )
     real = store / out.strip().rsplit("/", 1)[-1]
     return [int(word) for word in real.read_text().split()], real
