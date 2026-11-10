@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 @dataclass
 class FakeMonitor:
     health: SystemHealth = field(default_factory=SystemHealth)
+    silent: bool = False
 
 
 def cpu(utilization: float) -> CpuUtil:

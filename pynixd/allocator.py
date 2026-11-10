@@ -27,6 +27,7 @@ log = structlog.get_logger(__name__)
 # Duration threshold for tiny-build heuristics (2.5s).
 TINY_BUILD_THRESHOLD_MS = 2500
 SHORT_OF_DISK = "short of disk"
+SILENT = "its health samples stopped"
 
 
 # The Protocols name what the allocator reads, so the type checker holds a
@@ -36,6 +37,8 @@ SHORT_OF_DISK = "short of disk"
 class Monitor(Protocol):
     @property
     def health(self) -> SystemHealth: ...
+    @property
+    def silent(self) -> bool: ...
 
 
 class SessionMember(Protocol):
@@ -550,6 +553,8 @@ class BuildAllocator[S: Candidate]:
         for store in capable:
             if short_of_disk(store, settings, now):
                 excluded.append(ExcludedStore(store.store_id, SHORT_OF_DISK))
+            elif store.monitor is not None and store.monitor.silent:
+                excluded.append(ExcludedStore(store.store_id, SILENT))
             else:
                 candidates.append(store)
 

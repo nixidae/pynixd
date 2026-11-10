@@ -61,6 +61,13 @@ class ResourceMonitor(ABC):
         self.running = False
         self._scope: anyio.CancelScope | None = None
         self.health = SystemHealth()
+        self.silent = False
+        """The host stopped answering: a sample failed, or a stream sent none in time.
+
+        Not the same as no figures. A peer with no health operation is
+        unmonitored and still gets builds, ranked last; a silent one gets none
+        until its next sample. On 2026-11-06 a vllm build went to gx10-1759
+        while its stream was silent and sat there 6.5 min (nixidae/nixidae#1063)."""
         self.disk_fn: Callable[[], Awaitable[DiskSpace | None]] | None = None
         """Samples the store's filesystem, whatever reads the other files.
 
@@ -98,8 +105,9 @@ class ResourceMonitor(ABC):
                 log.warning("disk_sample_failed", exc_info=True)
         self._publish(health)
 
-    def _publish(self, health: SystemHealth) -> None:
+    def _publish(self, health: SystemHealth, *, silent: bool = False) -> None:
         self.health = health
+        self.silent = silent
         try:
             self.on_sample(health)
         except Exception:
@@ -206,7 +214,7 @@ class PeerHealthMonitor(ResourceMonitor):
             except anyio.get_cancelled_exc_class():
                 raise
             except Exception as e:
-                self._publish(SystemHealth())
+                self._publish(SystemHealth(), silent=True)
                 backoff = min(backoff * 2, 60.0)
                 log.warning(
                     "peer_health_sample_failed",
@@ -248,8 +256,7 @@ class PeerHealthMonitor(ResourceMonitor):
                     self._publish(health)
             if scope.cancelled_caught:
                 log.warning("peer_health_stream_silent", store_id=getattr(self.store, "store_id", None))
-                # The ranker does not age a sample; an empty one ranks the peer as unmonitored.
-                self._publish(SystemHealth())
+                self._publish(SystemHealth(), silent=True)
         finally:
             with anyio.CancelScope(shield=True):
                 await conn.close()
