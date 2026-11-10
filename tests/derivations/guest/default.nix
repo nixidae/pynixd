@@ -74,9 +74,16 @@ let
       path = "nix-daemon-protocol/tests";
       flags = [ ];
     };
+    # One worker per core the guest has: 333 tests ran 401 s in series,
+    # and the slowest took 24 s. `worksteal` hands a free worker the next
+    # test, so no table of shards needs upkeep.
     functional = {
       path = "tests/functional";
-      flags = [ perTestTimeout ];
+      flags = [
+        perTestTimeout
+        "--numprocesses=auto"
+        "--dist=worksteal"
+      ];
     };
     differential = {
       path = "tests/differential";

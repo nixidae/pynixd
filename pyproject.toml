@@ -51,6 +51,8 @@ dependencies = [
 [project.optional-dependencies]
 test = [
     "pytest",
+    # One worker per core for a suite that is slow in series: tests/functional ran 401 s, one test at a time.
+    "pytest-xdist",
     # **`environs` is a test dependency now, and it was a runtime one.**
     # `tests/_conftest/config.py` reads a binary path through it, which
     # `pynixd/CLAUDE.md` asks of a test. No module of the wheel imports it any

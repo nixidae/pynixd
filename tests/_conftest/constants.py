@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -38,8 +39,16 @@ def log_folder_name(test_name: str) -> str:
 
 # ── Store paths ───────────────────────────────────────────────────
 
-STORE_PREFIX = Path("/tmp/pynixd-stores")
-SESSION_STORE_PREFIX = Path("/tmp/pynixd-session-stores")
+_WORKER = os.environ.get("PYTEST_XDIST_WORKER", "")
+"""The xdist worker, `gw0` and on, or empty without xdist.
+
+Each worker's stores, sockets and `tmp_path` sit under prefixes of its own:
+each sweep below removes everything under its prefix, so a shared prefix would
+delete the stores of a test that another worker runs."""
+_OWN = f"-{_WORKER}" if _WORKER else ""
+
+STORE_PREFIX = Path(f"/tmp/pynixd-stores{_OWN}")
+SESSION_STORE_PREFIX = Path(f"/tmp/pynixd-session-stores{_OWN}")
 HELLO = ("--file", "<nixpkgs>", "hello")
 """A real package with a real closure, as installables of `nix`.
 
@@ -49,7 +58,7 @@ tests needed a network and built whatever the channel said that day. A
 guest has no network, and the channel's `hello` sent it to build 572
 derivations from the bootstrap seed. Issue #57.
 """
-TMP_PREFIX = "/tmp/pynixd-test/"
+TMP_PREFIX = f"/tmp/pynixd-test{_OWN}/"
 """Where each test's `tmp_path` goes: a directory of its own, so the sweep
 after each test lists the suite's leftovers and not the host's `/tmp`.
 Measured with 14,013 entries in `/tmp`: a glob of `/tmp/pynixd-test-*` after
