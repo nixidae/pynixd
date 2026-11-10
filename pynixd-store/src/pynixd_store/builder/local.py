@@ -266,13 +266,10 @@ def _builder_lines(builders: str) -> list[str]:
 
 def _url_unsupported(url: str) -> str | None:
     """A URL whose transfer pynixd leaves to the daemon: S3 needs AWS credentials resolved on the host
-    (`derivation-builder.cc:622`), and `displayUri` re-renders a URL with credentials (`filetransfer.cc:1280`)."""
-    scheme, sep, rest = url.partition("://")
+    (`derivation-builder.cc:622`)."""
+    scheme, sep, _rest = url.partition("://")
     if not sep or scheme.lower() not in FETCH_SCHEMES:
         return f"builtin:fetchurl of the URL scheme '{scheme}'"
-    authority = rest.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
-    if "@" in authority:
-        return "builtin:fetchurl of a URL with credentials"
     return None
 
 

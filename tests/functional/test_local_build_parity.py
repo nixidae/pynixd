@@ -1547,7 +1547,9 @@ async def _http(tmp_path: Path) -> AsyncIterator[tuple[str, dict[str, Any]]]:
     mirrored = f"/mirror/sha256/{hashlib.sha256(FETCHED).hexdigest()}"
 
     async def handle(request: web.Request) -> web.StreamResponse:
-        seen["requests"].append((request.path, request.headers.get("User-Agent", "")))
+        seen["requests"].append(
+            (request.path, request.headers.get("User-Agent", ""), request.headers.get("Authorization", ""))
+        )
         if request.path in ("/file", mirrored):
             return web.Response(body=FETCHED)
         if request.path == "/tree.nar":
@@ -1579,6 +1581,7 @@ def _tree(path: Path) -> list[str] | str:
 
 async def _fetches(tmp_path: Path, route: OpRoute, base: str, seen: dict[str, Any]) -> dict[str, Any]:
     results: dict[str, Any] = {}
+    secret = base.replace("http://", "http://user:secret@")
     async with _serve(tmp_path, route) as (url, root):
         fetches = {
             "flat": ((), _fetchurl("parity-fetch", f"{base}/file", f'hash = "{_sri(FETCHED)}";')),
@@ -1597,6 +1600,12 @@ async def _fetches(tmp_path: Path, route: OpRoute, base: str, seen: dict[str, An
             "missing": ((), _fetchurl("parity-fetch-missing", f"{base}/gone", f'hash = "{FAKE_HASH}";')),
             "forbidden": ((), _fetchurl("parity-fetch-forbidden", f"{base}/forbidden", f'hash = "{FAKE_HASH}";')),
             "wrong-hash": ((), _fetchurl("parity-fetch-wrong", f"{base}/file", f'hash = "{FAKE_HASH}";')),
+            # `displayUri` (`filetransfer.cc:1280`) keeps the password out of every message.
+            "credentials": ((), _fetchurl("parity-fetch-creds", f"{secret}/file", f'hash = "{_sri(FETCHED)}";')),
+            "credentials-missing": (
+                (),
+                _fetchurl("parity-fetch-creds-missing", f"{secret}/gone", f'hash = "{FAKE_HASH}";'),
+            ),
         }
         for name, (options, expr) in fetches.items():
             seen["requests"].clear()
@@ -1637,6 +1646,11 @@ async def test_builtin_fetchurl_fetches_what_the_daemon_fetches(tmp_path: Path) 
     assert here["mirror"][4][0][0].startswith("/mirror/sha256/"), here["mirror"]
     assert any("HTTP error" in line and "404" in line for line in here["missing"][3]), here["missing"]
     assert here["flat"][4][0][1].startswith("curl/"), here["flat"]
+    assert here["credentials"][0] == 0, here["credentials"]
+    assert here["credentials"][4][0][2].startswith("Basic "), here["credentials"]
+    missing = here["credentials-missing"][3]
+    assert any("HTTP error" in line for line in missing), missing
+    assert not any("secret" in line for line in missing), missing
 
 
 #: Package trees for `builtin:buildenv`; "->" makes a symbolic link.

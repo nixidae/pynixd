@@ -169,6 +169,18 @@ def error_kind(status: int, code: int, body: str | None) -> str:
     return "Transient"
 
 
+def display_uri(url: str) -> str:
+    """`FileTransferRequest::displayUri` (`filetransfer.cc:1280`): *url* with no user or password in its authority."""
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        return url
+    end = min((i for i in (rest.find(c) for c in "/?#") if i >= 0), default=len(rest))
+    authority = rest[:end]
+    if "@" not in authority:
+        return url
+    return f"{scheme}://{authority.rpartition('@')[2]}{rest[end:]}"
+
+
 def error_message(url: str, status: int, code: int, errbuf: str, body: str | None) -> str:
     """The text of the `FileTransferError` that `finish` throws, and its response body (`filetransfer.cc:1471`)."""
     if status:
@@ -198,6 +210,8 @@ class _Transfer:
     def __init__(self, spec: FetchSpec, url: str, sink: Callable[[bytes], object]) -> None:
         self.spec = spec
         self.url = url
+        #: What every message names: Nix never shows the credentials.
+        self.display = display_uri(url)
         self.sink = sink
         self.curl = pycurl.Curl()
         self.attempt = 0
@@ -229,9 +243,9 @@ class _Transfer:
                     "id": self.activity,
                     "level": LVL_TALKATIVE,
                     "type": ACT_FILE_TRANSFER,
-                    "text": f"downloading '{self.url}'",
+                    "text": f"downloading '{self.display}'",
                     "parent": 0,
-                    "fields": [self.url],
+                    "fields": [self.display],
                 }
             )
 
@@ -357,7 +371,7 @@ class _Transfer:
             body = self.error_body.decode(errors="replace") if self.error_body is not None else None
             kind = error_kind(status, code, body)
             self.attempt += 1
-            message = error_message(self.url, status, code, errbuf, body)
+            message = error_message(self.display, status, code, errbuf, body)
             base = spec["retry_delay_rate_limited_ms"] if status in (429, 503) else spec["retry_delay_ms"]
             retry = kind == "Transient" and self.attempt < spec["tries"]
             if retry and self.written:
