@@ -14,7 +14,8 @@ class FetchSpec(TypedDict):
 
     fixed_or_impure: bool
     """`isFixed() || isImpure()`: `builtinFetchurl` refuses any other derivation (`builtins/fetchurl.cc:28`)."""
-    main_url: str
+    main_url: str | None
+    """`None` for a derivation with no `url`: `env.at("url")` throws then (`builtins/fetchurl.cc:32`)."""
     mirrors: list[str]
     """The hashed-mirror URLs to try first, in order."""
     out: str

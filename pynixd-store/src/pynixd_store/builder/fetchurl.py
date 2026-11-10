@@ -412,7 +412,7 @@ def _fetch(spec: FetchSpec, url: str, rng: random.Random) -> None:
     if spec["unpack"]:
         # The NAR goes to a file first: `restorePath` pulls and curl pushes. A partial file is no output.
         nar = Path(spec["tmp_dir"]) / "fetchurl.nar"
-        decompressor = lzma.LZMADecompressor() if spec["main_url"].endswith(".xz") else None
+        decompressor = lzma.LZMADecompressor() if (spec["main_url"] or "").endswith(".xz") else None
         with nar.open("wb") as file:
 
             def write(data: bytes) -> None:
@@ -448,6 +448,11 @@ def run(spec: FetchSpec) -> None:
         _write_private(Path(spec["ca_file"]), spec["ca_data"])
         if not spec["fixed_or_impure"]:
             raise RuntimeError("'builtin:fetchurl' must be a fixed-output or impure derivation")
+        main_url = spec["main_url"]
+        if main_url is None:
+            # `std::map::at` throws `std::out_of_range`, no `nix::Error`: `runChild` writes its `what()` alone.
+            os.write(2, b"map::at\n")
+            os._exit(1)
         rng = random.Random()
         for url in spec["mirrors"]:
             try:
@@ -455,7 +460,7 @@ def run(spec: FetchSpec) -> None:
             except (TransferError, OSError):
                 continue
             os._exit(0)
-        _fetch(spec, spec["main_url"], rng)
+        _fetch(spec, main_url, rng)
     except Exception as e:  # noqa: BLE001 -- `runChild` writes any `std::exception` as the build's error
         traces = e.traces if isinstance(e, TransferError) else ()
         os.write(2, (show_error(str(e), traces) + "\n").encode(errors="replace"))

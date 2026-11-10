@@ -26,6 +26,16 @@ def _drv(name: str, attrs: str = "") -> str:
     )
 
 
+FIXED = (
+    'outputHashMode = "flat"; outputHashAlgo = "sha256"; '
+    'outputHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";'
+)
+
+
+def _builtin(name: str, builtin: str, attrs: str) -> str:
+    return f'derivation {{ name = "{name}"; system = "builtin"; builder = "builtin:{builtin}"; {attrs} }}'
+
+
 CASES: dict[str, tuple[str, dict[str, Any], tuple[str, ...]]] = {
     # `makeDerivationBuilder` (`derivation-builder.cc:1760`).
     "no-chroot": (_drv("refused-no-chroot", "__noChroot = true;"), {"sandbox": "true"}, ()),
@@ -63,6 +73,25 @@ CASES: dict[str, tuple[str, dict[str, Any], tuple[str, ...]]] = {
     "export-odd": (_drv("refused-export-odd", 'exportReferencesGraph = "a";'), {}, ()),
     "export-name": (_drv("refused-export-name", 'exportReferencesGraph = [ "1bad" "/nix/store/x" ];'), {}, ()),
     "export-path": (_drv("refused-export-path", 'exportReferencesGraph = [ "a" "/tmp" ];'), {}, ()),
+    # A builtin reads `env`, which holds no structured attribute (`derivations.cc:1031`).
+    "fetchurl-no-url": (_builtin("refused-fetch-no-url", "fetchurl", FIXED), {}, ()),
+    "fetchurl-structured": (
+        _builtin("refused-fetch-sa", "fetchurl", f'{FIXED} url = "file:///nowhere"; __structuredAttrs = true;'),
+        {},
+        (),
+    ),
+    "buildenv-structured": (
+        _builtin("refused-env-sa", "buildenv", 'derivations = [ ]; manifest = ""; __structuredAttrs = true;'),
+        {},
+        (),
+    ),
+    "unpack-channel-structured": (
+        _builtin(
+            "refused-channel-sa", "unpack-channel", 'channelName = "c"; src = "/nowhere"; __structuredAttrs = true;'
+        ),
+        {},
+        (),
+    ),
     # `DerivationGoal::haveDerivation` (`derivation-goal.cc:113`): a check needs valid outputs.
     "check-unbuilt": (_drv("refused-check"), {}, ("--rebuild",)),
     "check-floating-unbuilt": (

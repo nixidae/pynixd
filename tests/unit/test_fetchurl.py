@@ -41,7 +41,6 @@ def test_builtin_fetchurl_builds_on_the_platform_builtin() -> None:
     ("drv", "reason"),
     [
         (_drv("s3://bucket/f"), "builtin:fetchurl of the URL scheme 's3'"),
-        (_drv(__json="{}"), "builtin:fetchurl with structured attrs"),
     ],
 )
 def test_what_pynixd_does_not_fetch_goes_to_the_daemon(drv: BasicDerivation, reason: str) -> None:
@@ -53,6 +52,11 @@ def test_a_url_with_credentials_is_fetched_here_and_shown_without_them() -> None
     assert _reason(_drv("https://user:secret@example.org/f?q=a@b")) is None
     assert fetchurl.display_uri("https://user:secret@example.org/f?q=a@b") == "https://example.org/f?q=a@b"
     assert fetchurl.display_uri("https://example.org/f?q=a@b") == "https://example.org/f?q=a@b"
+
+
+def test_structured_attrs_reach_the_helper_with_no_url() -> None:
+    """`tryExtract` takes `__json` out of `env` (`derivations.cc:1031`), so `env.at("url")` throws in the helper."""
+    assert _reason(_drv(__json="{}")) is None
 
 
 def test_another_builtin_builds_here_and_the_helper_refuses_it() -> None:

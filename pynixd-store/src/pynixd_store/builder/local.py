@@ -292,45 +292,48 @@ def _builtin_unsupported(drv: BasicDerivation, settings: BuildSettings) -> str |
     return None
 
 
+def _builtin_env(drv: BasicDerivation) -> dict[str, str]:
+    """The `env` a builtin reads: `StructuredAttrs::tryExtract` takes `__json` out of it (`derivations.cc:1031`).
+
+    A structured-attrs derivation keeps every attribute in `__json`, so the builtin finds its own missing.
+    """
+    return {name: value for name, value in drv.env.items() if name != "__json"}
+
+
 def _unpack_channel_unsupported(drv: BasicDerivation) -> str | None:
-    """Structured attrs hide the attributes in `__json`; an output but `out` is a `map::at` throw."""
-    if "__json" in drv.env:
-        return "builtin:unpack-channel with structured attrs"
+    """An output but `out` is a `map::at` throw."""
     if set(drv.outputs) != {"out"}:
         return f"builtin:unpack-channel with the outputs {sorted(drv.outputs)}"
     return None
 
 
 def _buildenv_unsupported(drv: BasicDerivation) -> str | None:
-    """Structured attrs hide `derivations` in `__json`; a malformed one is a `stoi` throw or undefined behaviour."""
-    if "__json" in drv.env:
-        return "builtin:buildenv with structured attrs"
+    """A malformed `derivations` is a `stoi` throw or undefined behaviour."""
+    env = _builtin_env(drv)
     if set(drv.outputs) != {"out"}:
         return f"builtin:buildenv with the outputs {sorted(drv.outputs)}"
-    if "derivations" in drv.env and buildenv.packages(drv.env["derivations"]) is None:
+    if "derivations" in env and buildenv.packages(env["derivations"]) is None:
         return "builtin:buildenv with derivations that Nix cannot read"
     return None
 
 
 def _buildenv_spec(drv: BasicDerivation, out: str) -> BuildenvSpec:
     """`builtinBuildenv` reads the derivation's own attributes, not the builder's environment (`buildenv.cc:175`)."""
-    derivations = drv.env.get("derivations")
+    env = _builtin_env(drv)
+    derivations = env.get("derivations")
     return {
         "out": out,
         "packages": None if derivations is None else buildenv.packages(derivations),
-        "manifest": drv.env.get("manifest"),
+        "manifest": env.get("manifest"),
     }
 
 
 def _fetchurl_unsupported(drv: BasicDerivation, settings: BuildSettings) -> str | None:
     """Why the daemon runs this builtin. The helper refuses a plain output in Nix's words (`builtins/fetchurl.cc:28`)."""
-    if "__json" in drv.env:
-        return "builtin:fetchurl with structured attrs"
     if "out" not in drv.outputs:
         return "builtin:fetchurl with no output 'out'"
-    if "url" not in drv.env:
-        return "builtin:fetchurl with no url"
-    for url in (drv.env["url"], *(_mirror_urls(drv, settings))):
+    main = _builtin_env(drv).get("url")
+    for url in ((main,) if main is not None else ()) + tuple(_mirror_urls(drv, settings)):
         if (reason := _url_unsupported(url)) is not None:
             return reason
     return None
@@ -360,13 +363,14 @@ def _read_or_empty(path: str | None) -> str:
 
 def _fetch_spec(drv: BasicDerivation, settings: BuildSettings, out: str, build_dir: str) -> FetchSpec:
     transfer = settings.transfer
+    env = _builtin_env(drv)
     return {
         "fixed_or_impure": drv.outputs["out"].kind in (OutputKind.CA_FIXED, OutputKind.IMPURE),
-        "main_url": drv.env["url"],
+        "main_url": env.get("url"),
         "mirrors": _mirror_urls(drv, settings),
         "out": out,
-        "unpack": drv.env.get("unpack", "") == "1",
-        "executable": drv.env.get("executable") == "1",
+        "unpack": env.get("unpack", "") == "1",
+        "executable": env.get("executable") == "1",
         "tmp_dir": build_dir,
         "netrc_data": _read_or_empty(transfer.netrc_file),
         "netrc_file": transfer.netrc_file,
@@ -807,7 +811,11 @@ async def build(
             "fetchurl": fetch,
             "buildenv": _buildenv_spec(drv, str(scratch["out"])) if drv.builder == "builtin:buildenv" else None,
             "unpack_channel": (
-                {"out": str(scratch["out"]), "channel_name": drv.env.get("channelName"), "src": drv.env.get("src")}
+                {
+                    "out": str(scratch["out"]),
+                    "channel_name": _builtin_env(drv).get("channelName"),
+                    "src": _builtin_env(drv).get("src"),
+                }
                 if drv.builder == "builtin:unpack-channel"
                 else None
             ),
