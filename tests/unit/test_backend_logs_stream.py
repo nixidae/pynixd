@@ -30,8 +30,11 @@ from tests._conftest.socket_pair import socket_pair
 
 _MESSAGES = 100_000
 
-_HELD_LIMIT = 16 * 1024 * 1024
-"""Far above one message in flight, far below 50,000 kept ones (about 130 MiB)."""
+_TRACED_MESSAGES = 10_000
+"""Under `tracemalloc` each message costs about 0.8 ms: 100,000 took 81.7 s of the unit suite."""
+
+_HELD_LIMIT = 4 * 1024 * 1024
+"""Measured at the midpoint of `_TRACED_MESSAGES`: 0.27 MiB streamed, 9.1 MiB with `keep_logs=True`."""
 
 _MAX_GAP = 0.5
 """The longest the stream may hold the event loop, in seconds.
@@ -77,13 +80,13 @@ class _Daemon:
 
     def __init__(self, messages: int, tail: bytes) -> None:
         self.sent = 0
-        self._messages = messages
+        self.messages = messages
         self._tail = tail
         self._one = _progress()
         self._pending = b""
 
     async def read(self, n: int) -> bytes:
-        while len(self._pending) < n and self.sent < self._messages:
+        while len(self._pending) < n and self.sent < self.messages:
             self._pending += self._one
             self.sent += 1
         if len(self._pending) < n and self._tail:
@@ -143,7 +146,7 @@ class _Client:
         else:
             assert isinstance(msg, LogResult)
             self.received += 1
-            if self.received == _MESSAGES // 2 and tracemalloc.is_tracing():
+            if self.received == self.daemon.messages // 2 and tracemalloc.is_tracing():
                 self.held_midway = _held()
 
 
@@ -165,7 +168,7 @@ def _connection(daemon: _Daemon) -> Connection:
 
 
 async def test_progress_streams_to_the_client_and_is_not_kept() -> None:
-    daemon = _Daemon(_MESSAGES, _answer())
+    daemon = _Daemon(_TRACED_MESSAGES, _answer())
     client = _Client(daemon)
     conn = _connection(daemon)
 
@@ -175,9 +178,9 @@ async def test_progress_streams_to_the_client_and_is_not_kept() -> None:
     finally:
         tracemalloc.stop()
 
-    assert client.received == _MESSAGES
+    assert client.received == _TRACED_MESSAGES
     assert client.daemon_sent_at_first is not None
-    assert client.daemon_sent_at_first < _MESSAGES, "the first message waited for the whole stream"
+    assert client.daemon_sent_at_first < _TRACED_MESSAGES, "the first message waited for the whole stream"
     assert resp.logs.messages == [], "a streamed message is kept as well, and the proxy sends it twice"
     assert client.held_midway is not None
     assert client.held_midway < _HELD_LIMIT, f"{client.held_midway / 2**20:.1f} MiB held halfway through the stream"
