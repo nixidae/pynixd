@@ -278,4 +278,8 @@ async def pynixd_server(
         http_user="testuser",
         http_pass="testpass",
     ) as server:
+        # The server listens before `builder` has probed. Its 12 probe builds then
+        # land in the op counters of whichever test runs first.
+        if server.ctx.scheduler is not None and server.ctx.scheduler.stores_opened is not None:
+            await server.ctx.scheduler.stores_opened.wait()
         yield server
