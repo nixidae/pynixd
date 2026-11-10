@@ -419,6 +419,18 @@ class Server:
         """
         self._background.spawn(fn, *args)
 
+    async def _open_stores(self, opened: anyio.Event) -> None:
+        """Open every store but the local one, at once, then set *opened*."""
+        started = time.monotonic()
+        try:
+            async with anyio.create_task_group() as tg:
+                for store_id, store in list(self.ctx._stores.items()):
+                    if store_id != LOCAL_STORE_ID:
+                        tg.start_soon(self.add_store, store, False, None)
+        finally:
+            opened.set()
+        log.info("stores_opened", stores=len(self.ctx._stores) - 1, seconds=round(time.monotonic() - started, 3))
+
     async def _gc_tick(self) -> None:
         """Watch the disk on a short cadence, collect on pressure or schedule.
 
@@ -746,11 +758,14 @@ class Server:
                 reason="the local store is not a LocalDBStore, so no SQLite fast path is available",
             )
 
-        # Start non-local stores concurrently — they're already in _stores.
-        async with anyio.create_task_group() as tg:
-            for store_id, store in list(self.ctx._stores.items()):
-                if store_id != LOCAL_STORE_ID:
-                    tg.start_soon(self.add_store, store, False, None)
+        # The listeners do not wait for the other stores. A substituter that
+        # cannot be reached held every client for its whole open: 10.5 s on a
+        # DNS timeout (nixidae/nixidae#1268). What reads the store set waits.
+        opened = anyio.Event()
+        if self.ctx.scheduler:
+            self.ctx.scheduler.stores_opened = opened
+            self.ctx.scheduler.substitution_queue.stores_opened = opened
+        self._spawn(self._open_stores, opened)
 
         if self.ctx.scheduler:
             await self._background.start(self.ctx.scheduler.substitution_queue.serve)

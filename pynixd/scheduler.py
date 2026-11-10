@@ -89,6 +89,8 @@ class Scheduler:
         self.allocator = BuildAllocator(self.stores, self.local_builder, self.ranker)
         self.trigger_event = anyio.Event()
         self.running = False
+        self.stores_opened: anyio.Event | None = None
+        """Set once the server's stores have opened; the loop places no build before, or every early one goes local."""
         self._workers: TaskGroup | None = None
         self.builds_waiting = False
         """Whether the last pass left a build waiting for a store."""
@@ -327,6 +329,8 @@ class Scheduler:
         self.running = True
         log.info("scheduler_started")
         self.trace.db = self.local_store.db
+        if self.stores_opened is not None:
+            await self.stores_opened.wait()
         async with self.workers():
             if self._workers is not None and self.trace.db is not None:
                 self._workers.start_soon(self.trace.run)

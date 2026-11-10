@@ -184,6 +184,8 @@ class SubstitutionQueue:
 
     def __init__(self, ctx: PynixdContext) -> None:
         self.ctx = ctx
+        self.stores_opened: anyio.Event | None = None
+        """Set once the server's stores have opened; `None` where no start opens them. Each query waits for it."""
         settings = ctx.settings
         self.positive = cast(
             "TTLCache[StorePath, dict[StoreId, SubstitutionQueryResult], float]",
@@ -231,6 +233,11 @@ class SubstitutionQueue:
 
         self.uncovered = tuple(url for url in substituters if not covered(url))
 
+    async def _opened(self) -> None:
+        """Wait for the stores the server opens at its start, so a query in the first seconds misses none."""
+        if self.stores_opened is not None:
+            await self.stores_opened.wait()
+
     async def substituters_for(self, client: ClientConn | None) -> tuple[Store, ...] | None:
         """The backends that stand for the substituters *client* reaches, in its order; `None` when only the daemon reaches them.
 
@@ -242,6 +249,7 @@ class SubstitutionQueue:
         options = client.options if client is not None else None
         if options is not None and not options.use_substitutes:
             return ()
+        await self._opened()
         overrides = options.overrides if options is not None else {}
         named = overrides.get("substituters", overrides.get("binary-caches"))
         if named is None:
@@ -271,6 +279,7 @@ class SubstitutionQueue:
 
         *ca* is the path's content address, which a substituter of another store directory needs.
         """
+        await self._opened()
         stores = self._reaching(path, self.substituter_stores() if stores is None else stores, ca)
         cached = self._cached_positive(path, stores)
         if cached is not None:
@@ -318,6 +327,7 @@ class SubstitutionQueue:
 
         *ca* as for `can_substitute`.
         """
+        await self._opened()
         stores = self._reaching(path, self.substituter_stores() if stores is None else stores, ca)
         if not stores:
             return None
@@ -341,6 +351,7 @@ class SubstitutionQueue:
         The import runs in the queue's task group, so a caller that leaves cancels its own wait and not the
         import of the others. With *repair*, the import writes over a valid path (`substitution-goal.cc:236`).
         """
+        await self._opened()
         chosen = tuple(self.substituter_stores() if stores is None else stores)
         key = (path, tuple(store.store_id for store in chosen), repair)
         answer = self._active_imports.get(key)
@@ -427,6 +438,7 @@ class SubstitutionQueue:
         if hash_part in self._http_hash_negative:
             return None
 
+        await self._opened()
         stores = self.http_substituter_stores()
         if not stores:
             return None
