@@ -47,6 +47,11 @@ def for_test_store(
         trusted_public_keys=list(trusted_public_keys),
         require_sigs=require_sigs,
         experimental_features=list(experimental_features) or None,
+        # A test store is thrown away, so it needs no durability. With /tmp
+        # on disk, the fsyncs made `test_delegated_build_runs_on_the_builder`
+        # take 55.7 s against 30.8 s without them (`IsValidPath` x692: 13.3 s
+        # against 2.4 s). nixidae/nixidae#1258.
+        fsync_metadata=False,
     )
 
 
@@ -61,6 +66,7 @@ def for_dynamic_derivations(
         trusted_public_keys=list(trusted_public_keys) or None,
         require_sigs=require_sigs,
         experimental_features=["ca-derivations", "dynamic-derivations"],
+        fsync_metadata=False,
     )
 
 
@@ -75,4 +81,5 @@ def for_ca_derivations(
         trusted_public_keys=list(trusted_public_keys) or None,
         require_sigs=require_sigs,
         experimental_features=["ca-derivations"],
+        fsync_metadata=False,
     )
