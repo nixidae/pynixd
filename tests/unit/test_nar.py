@@ -22,6 +22,7 @@ from pynixd.nar import (
     write_nar,
     write_nar_to_path,
 )
+from pynixd.wire import BytesReader, BytesWriter, stream_parse_nar
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -420,6 +421,30 @@ class TestNarSize:
         data = write_nar(node)
         with pytest.raises(ValueError, match="Incomplete"):
             nar_size(data[: len(data) // 2])
+
+
+# A name, a symlink target and file contents are data, whatever their bytes.
+_TOKEN_LOOKALIKES = [
+    NarDirectory(entries=[NarDirectoryEntry(name=name, node=NarRegular(contents=b""))])
+    for name in (")", "(", "contents", "target", "name")
+] + [
+    NarDirectory(entries=[NarDirectoryEntry(name="link", node=NarSymlink(target=target))])
+    for target in (")", "(", "contents", "target", "name")
+]
+
+
+@pytest.mark.parametrize("node", _TOKEN_LOOKALIKES)
+def test_nar_size_reads_data_that_looks_like_a_token_as_data(node: NarDirectory) -> None:
+    data = write_nar(node)
+    assert nar_size(data + b"TRAILING") == len(data)
+
+
+@pytest.mark.parametrize("node", _TOKEN_LOOKALIKES)
+async def test_stream_parse_nar_reads_data_that_looks_like_a_token_as_data(node: NarDirectory) -> None:
+    data = write_nar(node)
+    dst = BytesWriter()
+    await stream_parse_nar(BytesReader(data + b"TRAILING"), dst)
+    assert dst.get_bytes() == data
 
 
 class TestNarPath:

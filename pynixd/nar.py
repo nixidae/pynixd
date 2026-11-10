@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .wire import _nar_pad
+from .wire import NarDepth, _nar_pad
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -300,8 +300,7 @@ class NarForwarder:
 
     def __init__(self) -> None:
         self._buf = bytearray()
-        self._depth = 0
-        self._after_contents = False
+        self._depth = NarDepth()
         self._body_len = 0
         self._in_body = False
         self.complete = False
@@ -327,26 +326,6 @@ class NarForwarder:
         self._in_body = False
         return token
 
-    def _update_depth(self, body: bytes) -> None:
-        """Update parser state based on the token body."""
-        if self._after_contents:
-            self._after_contents = False
-            return
-
-        try:
-            tok = body.decode("ascii")
-        except (UnicodeDecodeError, ValueError):
-            return
-
-        if tok == "(":
-            self._depth += 1
-        elif tok == ")":
-            self._depth -= 1
-            if self._depth == 0:
-                self.complete = True
-        elif tok == "contents":
-            self._after_contents = True
-
     def feed(self, data: bytes) -> Iterator[bytes]:
         """Consume *data* and yield forwarding chunks.
 
@@ -366,9 +345,7 @@ class NarForwarder:
                 return
             yield token
 
-            body = token[8 : 8 + self._body_len]
-            self._update_depth(body)
-
+            self.complete = self._depth.step(token[8 : 8 + self._body_len])
             if self.complete:
                 return
 

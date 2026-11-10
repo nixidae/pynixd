@@ -76,6 +76,33 @@ def _nar_pad(n: int) -> int:
     return (8 - n % 8) % 8
 
 
+class NarDepth:
+    """Where a NAR ends, read one token at a time without parsing the archive.
+
+    The token after `name`, `target` or `contents` is data: an entry named
+    `)` or a symlink to `(` is no structure (`archive.cc:237`, `:272` in
+    Nix 2.34).
+    """
+
+    def __init__(self) -> None:
+        self.depth = 0
+        self._data_next = False
+        self.complete = False
+
+    def step(self, body: bytes) -> bool:
+        """Account for one token's *body*; true once the archive's last `)` is read."""
+        if self._data_next:
+            self._data_next = False
+        elif body == b"(":
+            self.depth += 1
+        elif body == b")":
+            self.depth -= 1
+            self.complete = self.depth == 0
+        elif body in (b"name", b"target", b"contents"):
+            self._data_next = True
+        return self.complete
+
+
 # ── NixReader / NixWriter ──────────────────────────────────────
 
 
@@ -596,8 +623,7 @@ async def stream_parse_nar(
     """Copy a NAR archive from src to dst by parsing the NAR structure.
 
     The NAR format is a sequence of length-prefixed, 8-byte-padded tokens.
-    We track "(" / ")" depth to know when the NAR ends.
-    The token after "contents" is binary file data and must not be interpreted.
+    `NarDepth` says where the NAR ends.
 
     If capture=True, returns the raw NAR bytes.
     """
@@ -641,30 +667,9 @@ async def stream_parse_nar(
 
         return data
 
-    depth: int = 0
-    after_contents: bool = False
-
-    while True:
-        raw: bytes = await _fwd_token()
-
-        # Token after "contents" is binary file data — skip interpretation
-        if after_contents:
-            after_contents = False
-            continue
-
-        try:
-            tok: str = raw.decode("ascii")
-        except (UnicodeDecodeError, ValueError):
-            continue
-
-        if tok == "(":
-            depth += 1
-        elif tok == ")":
-            depth -= 1
-            if depth == 0:
-                break
-        elif tok == "contents":
-            after_contents = True
+    depth = NarDepth()
+    while not depth.step(await _fwd_token()):
+        pass
 
     await dst.drain()
 
