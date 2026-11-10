@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from nix_daemon_protocol.store_path import StorePath
 
+from ..hintfmt import magenta
 from ..signing import nar_hash_for_a_fingerprint
 from ..utils import nix32_encode
 
@@ -192,6 +193,26 @@ def _flatten(value: Any) -> Iterable[str]:
             yield from _flatten(item)
     else:
         raise _Unreproduced("a value that is not an array or a string")
+
+
+def export_graph_error(env: Mapping[str, str], store_dir: str) -> str | None:
+    """What `derivationOptionsFromStructuredAttrs` throws for a plain `exportReferencesGraph`, or `None`.
+
+    `derivation-options.cc:334` and `:339` check each pair in order, and `toStorePath` (`store-api.cc:137`)
+    refuses a path outside the store. Structured attrs warn and go on, so they throw nothing here.
+    """
+    if "__json" in env:
+        return None
+    raw = env.get("exportReferencesGraph", "")
+    words = [word for word in _TOKEN_SEPARATORS.split(raw) if word]
+    if len(words) % 2:
+        return f"odd number of tokens in 'exportReferencesGraph': '{magenta(raw)}'"
+    for name, path in zip(words[::2], words[1::2], strict=True):
+        if not _EXPORT_FILE_NAME.fullmatch(name):
+            return f"invalid file name '{magenta(name)}' in 'exportReferencesGraph'"
+        if not path.startswith(f"{store_dir}/") or path == f"{store_dir}/":
+            return f"path '{magenta(path)}' is not in the Nix store"
+    return None
 
 
 def export_requests(env: Mapping[str, str], store_dir: str) -> dict[str, list[StorePath]]:

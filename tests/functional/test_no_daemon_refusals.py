@@ -53,6 +53,10 @@ CASES: dict[str, tuple[str, dict[str, Any], tuple[str, ...]]] = {
         {"experimental_features": ["nix-command"]},
         ("--extra-experimental-features", "ca-derivations"),
     ),
+    # `derivationOptionsFromStructuredAttrs` (`derivation-options.cc:334`, `:339`) and `parseSingleDerivedPath`.
+    "export-odd": (_drv("refused-export-odd", 'exportReferencesGraph = "a";'), {}, ()),
+    "export-name": (_drv("refused-export-name", 'exportReferencesGraph = [ "1bad" "/nix/store/x" ];'), {}, ()),
+    "export-path": (_drv("refused-export-path", 'exportReferencesGraph = [ "a" "/tmp" ];'), {}, ()),
     "impure-without-feature": (
         _drv("refused-impure", "__impure = true;"),
         {"experimental_features": ["nix-command"]},
@@ -86,3 +90,18 @@ async def test_a_build_nix_refuses_fails_in_nix_words_with_no_daemon(tmp_path: P
 
     assert there[0] != 0, there
     assert here == there
+    if case in RAW_DAEMON:
+        # Both arms ask pynixd's QueryMissing, so the reference is what a raw nix-daemon 2.35.3 printed.
+        lines = here[1]
+        assert (lines[0], lines[1].split("'")[0], lines[-1]) == (
+            "error:",
+            "       … while parsing derivation ",
+            f"       error: {RAW_DAEMON[case]}",
+        ), lines
+
+
+RAW_DAEMON = {
+    "export-odd": "odd number of tokens in 'exportReferencesGraph': 'a'",
+    "export-name": "invalid file name '1bad' in 'exportReferencesGraph'",
+    "export-path": "path '/tmp' is not in the Nix store",
+}

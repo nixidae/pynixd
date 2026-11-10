@@ -190,6 +190,9 @@ def _missing_feature(parsed: Derivation, drv_name: str, features: Collection[str
     for output in parsed.outputs:
         if not output.hash_algo:
             continue
+        # `ContentAddressMethod::parsePrefix` (`content-address.cc:88`) comes first.
+        if output.hash_algo.startswith("git:") and "git-hashing" not in features:
+            return missing_feature("git-hashing")
         if output.hash_algo.startswith("text:") and "dynamic-derivations" not in features:
             return missing_feature("dynamic-derivations", "text-hashed derivation output")
         if output.hash_value == "impure":

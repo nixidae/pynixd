@@ -10,6 +10,10 @@ import structlog
 
 from nix_daemon_protocol.constants import FEATURE_REALISATION_WITH_PATH
 from nix_daemon_protocol.exceptions import DaemonProtocolError
+from nix_daemon_protocol.store_dir import store_dir as current_store_dir
+from pynixd_store.builder.env import export_graph_error
+from pynixd_store.errors import PynixdError
+from pynixd_store.hintfmt import magenta
 from pynixd_store.store_path import StorePath
 
 from ..derived_path import DerivedPath
@@ -28,6 +32,8 @@ from .goal import ExecutionGoal
 from .realisations import realisations_of, substitutable_realisations
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from anyio.abc import TaskGroup
 
     from pynixd_store.content_address import ContentAddress
@@ -300,9 +306,15 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
             )
             return
 
-        allowed = substitutes_allowed(parsed, self.client)
         unnamed = [name for name, path in output_paths.items() if not str(path)]
         realised = await self._realised_paths(parsed, unnamed, drv_path) if unnamed else {}
+        invalid = None if realised is None else await self._invalid(output_paths, realised)
+        if invalid == []:
+            return
+        # `misc.cc:233`: the options are parsed once an output is invalid or has no known path.
+        if (error := export_graph_error(parsed.env, current_store_dir())) is not None:
+            raise PynixdError(error).with_trace(f"while parsing derivation '{magenta(drv_path)}'")
+        allowed = substitutes_allowed(parsed, self.client)
         if realised is None and allowed:
             realised = await self._substitutable_paths(parsed, unnamed, drv_path)
         if realised is None:
@@ -311,11 +323,8 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
             self._must_build(drv_path, parsed, walk)
             return
 
-        invalid: list[StorePath] = []
-        for output_name, output_path in output_paths.items():
-            path = output_path if str(output_path) else realised[output_name]
-            if not await self._is_valid(path):
-                invalid.append(path)
+        if invalid is None:
+            invalid = await self._invalid(output_paths, realised)
         if not invalid:
             return
         # `misc.cc:271-292`: substitution must be allowed, and every invalid
@@ -446,6 +455,17 @@ class QueryMissingPlanGoal(ExecutionGoal[QueryMissingResponse]):
         if found is None:
             return None
         return {key.rpartition("!")[2]: StorePath(str(realisation.out_path)) for key, realisation in found.items()}
+
+    async def _invalid(
+        self, output_paths: Mapping[str, StorePath], realised: Mapping[str, StorePath]
+    ) -> list[StorePath]:
+        """Each wanted output that is not valid; an output the derivation does not name takes its realised path."""
+        invalid: list[StorePath] = []
+        for output_name, output_path in output_paths.items():
+            path = output_path if str(output_path) else realised[output_name]
+            if not await self._is_valid(path):
+                invalid.append(path)
+        return invalid
 
     async def _classify_opaque_path(self, path: StorePath, walk: _Walk) -> None:
         """`misc.cc:303-325`: a valid path plans nothing; a substitutable one counts with its closure."""
