@@ -83,6 +83,7 @@ class ImportSettings:
     ignored_acls: frozenset[str] = IGNORED_ACLS
     #: The daemon's own `experimental-features`; a client's are ignored (`daemon.cc:278`).
     git_hashing: bool = False
+    experimental_features: frozenset[str] = frozenset()
 
     @classmethod
     def from_nix_config(cls, config: Mapping[str, Any]) -> ImportSettings:
@@ -99,6 +100,7 @@ class ImportSettings:
             sync_before_registering=bool(config.get("sync-before-registering", {}).get("value", False)),
             ignored_acls=frozenset(value("ignored-acls")),
             git_hashing="git-hashing" in _words(value("experimental-features")),
+            experimental_features=frozenset(_words(value("experimental-features"))),
         )
 
 

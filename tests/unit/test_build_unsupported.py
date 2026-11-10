@@ -6,7 +6,8 @@ import pytest
 
 from nix_daemon_protocol.basic_derivation import BasicDerivation
 from nix_daemon_protocol.derivation_output import DerivationOutput
-from pynixd_store.builder.local import unsupported, uses_sandbox
+from nix_daemon_protocol.store_path import StorePath
+from pynixd_store.builder.local import _builder_refusal, unsupported, uses_sandbox
 from pynixd_store.builder.settings import BuildSettings
 
 FIXED = DerivationOutput(path="/nix/store/00000000000000000000000000000000-x", method="r:sha256", hash_digest="00")
@@ -52,9 +53,13 @@ def test_the_sandbox_is_where_nix_puts_it(
     assert _reason(output, sandbox, relocated=relocated, no_chroot=no_chroot) is None
 
 
-def test_no_chroot_with_sandbox_true_goes_to_the_daemon() -> None:
-    """`makeDerivationBuilder` (`derivation-builder.cc:1757`) throws, in the daemon's words."""
-    assert _reason(PLAIN, "true", relocated=True, no_chroot=True) == "__noChroot with sandbox = true"
+def test_no_chroot_with_sandbox_true_is_refused_in_nix_words() -> None:
+    """`makeDerivationBuilder` (`derivation-builder.cc:1760`) throws; pynixd's build refuses it the same way."""
+    assert _reason(PLAIN, "true", relocated=True, no_chroot=True) is None
+    drv_path = StorePath("/nix/store/00000000000000000000000000000000-x.drv")
+    refused = _builder_refusal(drv_path, _drv(PLAIN, no_chroot=True), _settings("true"), chroot=True)
+    assert refused is not None
+    assert "has '__noChroot' set, but that's not allowed when 'sandbox' is 'true'" in refused
 
 
 @pytest.mark.parametrize(
@@ -81,7 +86,8 @@ def test_auto_allocate_uids_is_pynixds_where_nix_allocates(
     ("config", "sandbox", "reason"),
     [
         ({"experimental-features": "auto-allocate-uids cgroups"}, "true", None),
-        ({"experimental-features": "auto-allocate-uids cgroups"}, "false", "uid-range without the sandbox"),
+        # `makeDerivationBuilder` (`derivation-builder.cc:1797`) refuses it; pynixd's build does the same.
+        ({"experimental-features": "auto-allocate-uids cgroups"}, "false", None),
         ({"auto-allocate-uids": False}, "true", "uid-range without auto-allocate-uids as root"),
         ({"experimental-features": "auto-allocate-uids"}, "true", "uid-range without the experimental feature cgroups"),
     ],

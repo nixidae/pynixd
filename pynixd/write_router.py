@@ -32,7 +32,7 @@ from nix_daemon_protocol.verify_store import VerifyStoreResponse
 from pynixd_store.collect import GCOptions
 from pynixd_store.content_address import ContentAddress, Method, content_addressed_path, parse_method_algo
 from pynixd_store.errors import PynixdError
-from pynixd_store.hintfmt import magenta
+from pynixd_store.hintfmt import missing_feature
 from pynixd_store.source import Metered
 
 from . import metrics
@@ -131,11 +131,7 @@ def _refusal(reason: str) -> str:
     words it (`experimental-features.cc:342`).
     """
     if reason == _NO_GIT_HASHING:
-        feature = magenta("git-hashing")
-        return (
-            f"experimental Nix feature '{feature}' is disabled; "
-            f"add '--extra-experimental-features {feature}' to enable it"
-        )
+        return missing_feature("git-hashing")
     return reason
 
 

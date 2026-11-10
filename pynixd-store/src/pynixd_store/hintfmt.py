@@ -24,6 +24,16 @@ def magenta(value: object) -> str:
     return f"{ANSI_MAGENTA}{value}{ANSI_NORMAL}"
 
 
+def missing_feature(name: str, reason: str = "") -> str:
+    """`MissingExperimentalFeature` (`experimental-features.cc:340`): what `require` throws. *reason* is uncoloured."""
+    feature = magenta(name)
+    why = f" ({reason})" if reason else ""
+    return (
+        f"experimental Nix feature '{feature}' is disabled{why}; "
+        f"add '--extra-experimental-features {feature}' to enable it"
+    )
+
+
 def _chomp(line: str) -> str:
     return line.rstrip(" \n\r\t")
 

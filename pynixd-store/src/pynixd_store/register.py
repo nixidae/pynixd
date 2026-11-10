@@ -28,7 +28,7 @@ from .content_address import (
 from .drv_hash import make_output_path, output_hashes, output_path_name
 from .drv_parser import read_drv_file
 from .errors import PynixdError
-from .hintfmt import magenta
+from .hintfmt import magenta, missing_feature
 from .queries import (
     ADD_DERIVATION_OUTPUT,
     ADD_REFERENCE,
@@ -46,7 +46,7 @@ from .queries import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Collection, Iterable, Mapping
 
     import aiosqlite
 
@@ -84,7 +84,7 @@ def _signatures(sigs: Iterable[Signature]) -> str | None:
     return " ".join(sig.to_str() for sig in ordered) or None
 
 
-async def prepare(info: ValidPathInfo, layout: StoreLayout) -> Registration:
+async def prepare(info: ValidPathInfo, layout: StoreLayout, features: Collection[str]) -> Registration:
     """What `addValidPath` would write for *info*, or `RegistrationError` where Nix refuses."""
     path = str(info.path)
     store_dir = str(layout.store_dir)
@@ -109,7 +109,7 @@ async def prepare(info: ValidPathInfo, layout: StoreLayout) -> Registration:
 
     outputs: dict[str, str] = {}
     if path.endswith(_DRV_EXTENSION):
-        outputs = await _derivation_outputs(path, layout)
+        outputs = await _derivation_outputs(path, layout, features)
 
     deriver = str(unkeyed.deriver) if unkeyed.deriver else None
     return Registration(
@@ -126,10 +126,11 @@ async def prepare(info: ValidPathInfo, layout: StoreLayout) -> Registration:
     )
 
 
-async def _derivation_outputs(drv_path: str, layout: StoreLayout) -> dict[str, str]:
-    """`readInvalidDerivation`, `checkInvariants` and `outputsAndOptPaths` (`local-store.cc:686`).
+async def _derivation_outputs(drv_path: str, layout: StoreLayout, features: Collection[str]) -> dict[str, str]:
+    """`readInvalidDerivation`, `checkInvariants` and `outputsAndOptPaths` (`local-store.cc:731`).
 
-    Only an output with a path gets a row: a floating, deferred or impure one has none.
+    Only an output with a path gets a row: a floating, deferred or impure one has none. The parse requires
+    the store's own *features*.
     """
     parsed = await read_drv_file(drv_path, layout)
     if parsed is None:
@@ -138,6 +139,8 @@ async def _derivation_outputs(drv_path: str, layout: StoreLayout) -> dict[str, s
     # so the name check of `checkInvariants` cannot fail here. A structured-attrs derivation has no `env["name"]`.
     drv_name = store_path_name(drv_path).removesuffix(_DRV_EXTENSION)
     store_dir = str(layout.store_dir)
+    if (missing := _missing_feature(parsed, drv_name, features)) is not None:
+        raise RegistrationError(missing)
     _check_output_types(parsed)
 
     async def read(path: str) -> Derivation | None:
@@ -178,6 +181,23 @@ async def _derivation_outputs(drv_path: str, layout: StoreLayout) -> dict[str, s
             )
         outputs[output.name] = expected
     return outputs
+
+
+def _missing_feature(parsed: Derivation, drv_name: str, features: Collection[str]) -> str | None:
+    """The first feature `parseDerivation` requires and *features* lacks (`derivations.cc:459`, `:322`)."""
+    if parsed.is_dynamic and "dynamic-derivations" not in features:
+        return missing_feature("dynamic-derivations", f"derivation '{drv_name}', ATerm format version 'xp-dyn-drv'")
+    for output in parsed.outputs:
+        if not output.hash_algo:
+            continue
+        if output.hash_algo.startswith("text:") and "dynamic-derivations" not in features:
+            return missing_feature("dynamic-derivations", "text-hashed derivation output")
+        if output.hash_value == "impure":
+            if "impure-derivations" not in features:
+                return missing_feature("impure-derivations")
+        elif not output.hash_value and "ca-derivations" not in features:
+            return missing_feature("ca-derivations")
+    return None
 
 
 def _check_output_types(parsed: Derivation) -> None:

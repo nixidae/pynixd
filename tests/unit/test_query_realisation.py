@@ -123,10 +123,15 @@ class TestQueryRealisation:
         assert answer.present == 0
         assert answer.realisation is None
 
-    async def test_without_ca_derivations_the_daemon_answers(self, tmp_path: Path) -> None:
-        """Nix 2.34 answers nothing there, and Nix master has no statement to run."""
+    @pytest.mark.parametrize("reads_paths", [False, True])
+    async def test_without_ca_derivations_there_is_no_realisation(self, tmp_path: Path, reads_paths: bool) -> None:
+        """`Store::queryRealisation` answers nothing without the feature (`store-api.cc:657`)."""
         _store_db(tmp_path)
-        assert await _ask(tmp_path, _by_hash(), reads_paths=False, features=()) is None
+        request = _by_path() if reads_paths else _by_hash()
+        answer = await _ask(tmp_path, request, reads_paths=reads_paths, features=())
+        assert answer is not None
+        assert answer.present == 0
+        assert answer.realisation is None
 
     async def test_a_hash_cannot_ask_a_store_that_reads_paths(self, tmp_path: Path) -> None:
         """The daemon route refuses the same: no index maps the hash to the path."""

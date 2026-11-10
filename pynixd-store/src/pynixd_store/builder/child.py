@@ -43,6 +43,7 @@ import seccomp
 from anyio.abc import SocketStream
 from anyio.streams.buffered import BufferedByteReceiveStream
 
+from ..hintfmt import magenta, show_error
 from . import buildenv, cgroup as build_cgroup, fetchurl, unpack_channel
 from .spec import ChildSpec
 from .usage import UsageSample, from_rusage, write_usage
@@ -325,6 +326,11 @@ def _run_child(spec: ChildSpec, status_fd: int) -> None:
     if spec["unpack_channel"] is not None:
         unpack_channel.run(spec["unpack_channel"])
     builder = spec["builder"]
+    if builder.startswith("builtin:"):
+        # `runChild` (`derivation-builder.cc:1007`): a builtin with no entry in `builtinBuilders`.
+        message = show_error(f"unsupported builtin builder '{magenta(builder.removeprefix('builtin:'))}'")
+        os.write(2, f"{message}\n".encode(errors="surrogateescape"))
+        os._exit(1)
     argv = [os.path.basename(builder), *spec["args"]]
     try:
         os.execve(builder, argv, spec["env"])

@@ -1101,8 +1101,8 @@ class LocalDBStore(Store):
 
         The table and its key follow the shape this store's daemon reads, the
         way `query_realisation` of `DaemonStore` turns the request. Without
-        `ca-derivations` the daemon answers: Nix 2.34 answers nothing there,
-        and Nix master never prepares the statement.
+        `ca-derivations` there is none to read: `Store::queryRealisation` answers
+        nothing (`store-api.cc:657`).
         """
         from nix_daemon_protocol.constants import FEATURE_REALISATION_WITH_PATH
         from nix_daemon_protocol.query_realisation import QueryRealisationResponse
@@ -1112,7 +1112,7 @@ class LocalDBStore(Store):
         from .daemon import answer_in_both_shapes
 
         if "ca-derivations" not in (await self.trust_policy()).experimental_features:
-            return None
+            return QueryRealisationResponse()
         shaped = await self._daemon.request_in_the_shape_this_store_reads(request)
         by_path = FEATURE_REALISATION_WITH_PATH in self.features
         if by_path:

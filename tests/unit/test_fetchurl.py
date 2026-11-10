@@ -50,9 +50,10 @@ def test_what_pynixd_does_not_fetch_goes_to_the_daemon(drv: BasicDerivation, rea
     assert _reason(drv) == reason
 
 
-def test_another_builtin_goes_to_the_daemon() -> None:
+def test_another_builtin_builds_here_and_the_helper_refuses_it() -> None:
+    """`runChild` (`derivation-builder.cc:1007`): the builder fails with Nix's "unsupported builtin builder"."""
     drv = BasicDerivation(outputs={"out": DerivationOutput(path="/x")}, platform="builtin", builder="builtin:other")
-    assert _reason(drv) == "the builtin builder 'builtin:other'"
+    assert _reason(drv) is None
 
 
 def test_a_plain_output_builds_here_and_the_helper_refuses_it() -> None:

@@ -38,7 +38,7 @@ from nix_daemon_protocol.store_path import StorePath
 from .. import optimise
 from ..add import PathLock, delete_path, sync_store_path
 from ..content_address import Method, fixed_output_address, output_method
-from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta, show_error
+from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta, missing_feature, show_error
 from ..signing import SecretKey, fingerprint
 from . import buildenv, cgroup as build_cgroup, hooks, users as build_users
 from .buildlog import BuildLog
@@ -115,7 +115,7 @@ def uses_sandbox(drv: BasicDerivation, settings: BuildSettings, *, relocated: bo
     """`makeDerivationBuilder` (`unix/build/derivation-builder.cc:1751`): whether the build gets the chroot.
 
     *relocated* is `isRelocatedStore`: a store whose real directory is not its logical one always sandboxes.
-    `unsupported` leaves `__noChroot` under `sandbox = true` to the daemon, which refuses it.
+    `build` refuses `__noChroot` under `sandbox = true` first, as Nix does.
     """
     if relocated or settings.sandbox == "true":
         return True
@@ -141,15 +141,10 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
         return f"the platform {drv.platform}"
     if "__json" in drv.env and (reason := structured_attrs_reason(drv.env)) is not None:
         return reason
-    # `makeDerivationBuilder` (`derivation-builder.cc:1757`) throws before a build starts.
-    if settings.sandbox == "true" and bool_attr(drv.env, "__noChroot", default=False):
-        return "__noChroot with sandbox = true"
     features = set(drv.required_system_features)
-    if "uid-range" in features:
-        # `makeDerivationBuilder` (`derivation-builder.cc:1810`), `setupBuildChroot` (`chroot.cc:52`) and
-        # `prepareBuild` (`linux-derivation-builder.cc:450`) throw before the build starts, in the daemon's words.
-        if not uses_sandbox(drv, settings, relocated=relocated):
-            return "uid-range without the sandbox"
+    if "uid-range" in features and uses_sandbox(drv, settings, relocated=relocated):
+        # `setupBuildChroot` (`chroot.cc:52`) and `prepareBuild` (`linux-derivation-builder.cc:450`) throw before
+        # the build starts, in the daemon's words.
         if not (settings.auto_allocate_uids and build_users.use_build_users(settings.build_users_group, True)):
             return "uid-range without auto-allocate-uids as root"
         if not settings.cgroups_feature:
@@ -167,9 +162,6 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
             or settings.start_id + settings.id_count > 0xFFFFFFFF
         ):
             return "auto-allocate-uids with start-id or id-count that Nix asserts on"
-    # `startDaemon` (`derivation-builder.cc:1155`) refuses the build in the daemon's own words.
-    if "recursive-nix" in features and not settings.recursive_nix:
-        return "recursive-nix without the experimental feature"
     if BUILDER_RPC in features:
         if not settings.dynamic_derivations:
             return "builder-rpc-v0 without dynamic-derivations"
@@ -194,6 +186,15 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
     git = any(o.method and output_method(o.method)[0] is Method.GIT for o in drv.outputs.values())
     if git and not settings.git_hashing:
         return "a Git-hashed output without git-hashing"
+    return None
+
+
+def _builder_refusal(drv_path: StorePath, drv: BasicDerivation, settings: BuildSettings, *, chroot: bool) -> str | None:
+    """What `makeDerivationBuilder` (`derivation-builder.cc:1751`) throws before the build starts, or `None`."""
+    if settings.sandbox == "true" and bool_attr(drv.env, "__noChroot", default=False):
+        return f"derivation '{magenta(drv_path)}' has '__noChroot' set, but that's not allowed when 'sandbox' is 'true'"
+    if not chroot and "uid-range" in drv.required_system_features:
+        return "feature 'uid-range' is only supported in sandboxed builds"
     return None
 
 
@@ -282,7 +283,7 @@ def _builtin_unsupported(drv: BasicDerivation, settings: BuildSettings) -> str |
         return _fetchurl_unsupported(drv, settings)
     if drv.builder == "builtin:unpack-channel":
         return _unpack_channel_unsupported(drv)
-    return f"the builtin builder '{drv.builder}'"
+    return None
 
 
 def _unpack_channel_unsupported(drv: BasicDerivation) -> str | None:
@@ -672,6 +673,8 @@ async def build(
     settled = False
     redirected: dict[StorePath, StorePath] = {}
     try:
+        if (refused := _builder_refusal(drv_path, drv, settings, chroot=chroot)) is not None:
+            return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(refused))
         if build_users.use_build_users(settings.build_users_group, settings.auto_allocate_uids):
             auto = settings.auto_allocate_uids
             pool = build_users.pool_dir(layout.state_dir, layout.relocated, auto=auto)
@@ -815,6 +818,9 @@ async def build(
                     "purity of builds without sandboxing"
                 ),
             )
+        # `startDaemon` (`derivation-builder.cc:787`) requires the feature before it starts the builder.
+        if "recursive-nix" in drv.required_system_features and not settings.recursive_nix:
+            return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(missing_feature("recursive-nix")))
         start = int(time.time())
         log = bytearray()
         lines = BuildLog(settings.log_lines)
