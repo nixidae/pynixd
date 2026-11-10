@@ -1,11 +1,13 @@
 # pynixd without a Nix daemon: the inventory
 
-Status: inventory, 2026-11-01, at nixidae bf7f5b93. Nothing here is
-implemented. nixidae/nixidae#1155 holds the goal; this page says what stands
+Status: inventory, written 2026-11-01 at nixidae bf7f5b93, brought up to date
+2026-11-11. nixidae/nixidae#1155 holds the goal; this page says what stands
 between pynixd and that goal.
 
-Every fact is **read** from pynixd's source at that revision. Nothing here is
-measured yet.
+A store spec with `daemon: false` runs no daemon at all, and every answer is
+pynixd's (`PYNIXD_NO_DAEMON=1` in the guest suites). There, a case this page
+leaves to the daemon fails with "runs no Nix daemon". "What is left" at the end
+lists those cases.
 
 ## Where the daemon is today
 
@@ -43,7 +45,7 @@ some cases and sends the rest to the daemon.
 | 6 QueryReferrers | owned (SQLite, Nix's own statement) | none while the database is active | — |
 | 33 QueryValidDerivers | owned (SQLite, Nix's own statement) | none while the database is active | — |
 | 41 QueryDerivationOutputMap | owned (SQLite; with `ca-derivations`, the derivation file and each output's realisation) | a drv that is not valid, or whose file or closure hashes pynixd cannot read | — |
-| 43 QueryRealisation | owned with `ca-derivations` (SQLite: `Realisations` by hash, or `BuildTraceV3` by path; both wire shapes) | without `ca-derivations` | — |
+| 43 QueryRealisation | owned (SQLite: `Realisations` by hash, or `BuildTraceV3` by path; both wire shapes). Without `ca-derivations` it answers none, as `Store::queryRealisation` does (`store-api.cc:657`) | none | — |
 | 14 FindRoots | owned (the walk of `liveness.py`, validity from SQLite), censored by the handler | a daemon pynixd did not start, while pynixd is not root: that daemon may see more of `/proc` | — |
 | 32 QuerySubstitutablePaths | owned: the scheduler's race over pynixd's substituter backends (a `NIX-DEVIATION`): HTTP caches, `s3://` caches (`S3BinaryCacheStore`), `unix://` stores, and `file://` caches pynixd can read (`LocalBinaryCacheStore`). A client's `substituters` replaces the daemon's list, and each one gets a backend on first use (`pynixd/substituters.py`) | a substituter, the client's or the daemon's, that no backend stands for: `ssh://`, an `s3://` URL with `versionId` or a parameter pynixd does not read, a `file://` directory pynixd cannot read, a `unix://` store pynixd does not run | — |
 | 21, 30 QuerySubstitutablePathInfo(s) | on trial: the daemon in a deployment, shadow in every test store; route `pynixd` answers what the highest-priority backend holding each path knows (`misc.cc:90`), from the same race | as op 32, and a path named with a content address | — |
@@ -68,11 +70,11 @@ store directory, as `verifyStore` does. `collect_garbage`
 
 | op | today | to own it |
 | --- | --- | --- |
-| 7 AddToStore | on trial: the daemon in a deployment; route `pynixd` adds the flat or NAR dump as `addToStoreFromDump` does (`local-store.cc:1168`): restore into a locked `tmp-*` directory while hashing, the path from the address and references, a temp root, then the path lock, move, NAR hash, canonical metadata, registration. A Git address, an algorithm pynixd does not know, an address Nix cannot make a path of, a name Nix refuses, a client before 1.25, repair, `auto-optimise-store` and `fsync-store-paths` go to the daemon | — |
-| 39 AddToStoreNar | on trial: the daemon in a deployment; route `pynixd` imports it (`pynixd_store/add.py`): signatures, path lock, restore into a locked `tmp-*` directory, NAR and content hash, canonical metadata, registration. Repair, a Git address, `auto-optimise-store` and `fsync-store-paths` go to the daemon | — |
-| 44 AddMultipleToStore | on trial: the daemon in a deployment; route `pynixd` imports each path as AddToStoreNar does, in stream order, one registration per path (`daemon.cc:505`). The first error ends the op and keeps the paths before it. A Git address goes to the daemon as AddToStoreNar for that path; repair, `auto-optimise-store` and `fsync-store-paths` send the whole op there | — |
+| 7 AddToStore | on trial: the daemon in a deployment; route `pynixd` adds the flat or NAR dump as `addToStoreFromDump` does (`local-store.cc:1168`): restore into a locked `tmp-*` directory while hashing, the path from the address and references, a temp root, then the path lock, move, NAR hash, canonical metadata, registration. Repair, `auto-optimise-store` and `fsync-store-paths` run here too. A Git address needs `git-hashing` in the store's own features. A dump Nix refuses after `startWork` (an algorithm pynixd does not know, an address Nix cannot make a path of, a name Nix refuses) goes to the daemon; with none, pynixd refuses it | Nix's text for each dump refusal |
+| 39 AddToStoreNar | on trial: the daemon in a deployment; route `pynixd` imports it (`pynixd_store/add.py`): signatures, path lock, restore into a locked `tmp-*` directory, NAR and content hash, canonical metadata, registration. Repair, `auto-optimise-store` and `fsync-store-paths` run here; a Git address needs `git-hashing` | — |
+| 44 AddMultipleToStore | on trial: the daemon in a deployment; route `pynixd` imports each path as AddToStoreNar does, in stream order, one registration per path (`daemon.cc:505`). The first error ends the op and keeps the paths before it. A Git address is as for AddToStoreNar | — |
 | 37 AddSignatures | on trial: the daemon in a deployment; route `pynixd` merges the signatures into `ValidPaths.sigs` as `addSignatures` does (`local-store.cc:1583`), in Nix's set order. A path that is not valid raises, where Nix dereferences a null pointer and the worker segfaults (`NIX-DEFECT`) | — |
-| 42 RegisterDrvOutput | on trial: the daemon in a deployment; route `pynixd` records the realisation as `registerDrvOutput` does (`local-store.cc:664`), in `BuildTraceV3` by the derivation's base name (Nix 2.35) or `Realisations` by its hash (Nix 2.34), in Nix's signature order. An id already present with another output path raises Nix's message. The scheduler's own registration runs the same route (`goals/ensure.py`). Without `ca-derivations` the daemon answers | — |
+| 42 RegisterDrvOutput | on trial: the daemon in a deployment; route `pynixd` records the realisation as `registerDrvOutput` does (`local-store.cc:664`), in `BuildTraceV3` by the derivation's base name (Nix 2.35) or `Realisations` by its hash (Nix 2.34), in Nix's signature order. An id already present with another output path raises Nix's message. The scheduler's own registration runs the same route (`goals/ensure.py`). Without `ca-derivations` it refuses in Nix's words (`local-store.cc:656`) | — |
 | 45 AddBuildLog | on trial: the daemon in a deployment; route `pynixd` writes the log as `addBuildLog` does (`local-store.cc:1645`), `<logDir>/drvs/<name[:2]>/<name[2:]>.bz2`, bzip2, a temporary file and a rename, and keeps a log already there. Admin only (`daemon.cc:1015`). The log is read whole, as Nix drains it. `logDir` is a sibling of the state, so the layout carries it (`NIX_LOG_DIR`) | — |
 | 11, 49 AddTempRoot(s) | owned where pynixd can write `temproots`; else the daemon (a `NIX-DEVIATION`) | run where pynixd owns the state directory |
 | 12 AddIndirectRoot | on trial: the daemon in a deployment; route `pynixd` links `gcroots/auto/<SHA-1 of the path>` to the client's path (`pynixd_store/roots.py`) | — |
@@ -83,8 +85,8 @@ store directory, as `verifyStore` does. `collect_garbage`
 
 | op | today | to own it |
 | --- | --- | --- |
-| 36 BuildDerivation | scheduler sends it to a store; for the local store, the daemon builds | a builder: sandbox, user, environment, output registration (`builder.md`) |
-| 9, 46 BuildPaths(WithResults) | goal engine; leaves are ops 36 and 10; repair and check modes go to the daemon whole (`engine.py:267`) | the leaves; repair and check can stay unsupported |
+| 36 BuildDerivation | on trial: the daemon in a deployment; route `pynixd` builds in pynixd's own sandbox (`builder.md`, `pynixd_store/builder/`), check and repair included. A build Nix refuses before or as it starts is refused here in Nix's words (`tests/functional/test_no_daemon_refusals.py`). `unsupported` (`builder/local.py`) names what still goes to the daemon | the rows of "What is left" |
+| 9, 46 BuildPaths(WithResults) | goal engine; leaves are ops 36 and 10. Check and repair run in the goals when the store holds each derivation; a repair also needs pynixd's builder and substituters (`engine.py`, `_the_store_answers`) | — |
 | 10 EnsurePath | on trial: the daemon in a deployment, `pynixd` in every test store; there `SubstitutePathGoal` fetches from the race and imports through the route of op 39. A client's own substituters take part as in op 32. A content-addressed output takes its path from a substituter's realisation, which the goal then records (`derivation-goal.cc:105`). A substituter no backend stands for sends the path to the daemon | that case |
 
 ### Maintenance
@@ -93,7 +95,7 @@ store directory, as `verifyStore` does. `collect_garbage`
 | --- | --- | --- |
 | 20 CollectGarbage | on trial: the daemon in a deployment; route `pynixd` collects as Nix 2.35's `collectGarbage` does (`gc.cc:356`): the big lock held for writing, the roots socket served for the whole walk (a process that adds a temporary root meanwhile sends it there, and its answer waits while that path is deleted), then from each candidate a walk through its referrers that keeps the closure when it reaches a root, a temporary root or a live path, and otherwise deletes it referrers first. `keep-outputs` and `keep-derivations` widen the walk of the whole store only, as in 2.35. It sends each line Nix prints. `ignore-liveness` is refused for every client (`daemon.cc:774`). pynixd's own collector (op 101, `gc.py`) plans in Python and deletes on the route of op 20: on `pynixd` each group of its plan is one engine `DELETE_SPECIFIC`, and a refusal (`PathInUse`) splits the group as the daemon's does | — |
 | 34 OptimiseStore | on trial: the daemon in a deployment; route `pynixd` hard-links identical files into `.links` as `optimiseStore` does (`optimise-store.cc`): each regular file and symlink hashed over its NAR, the first of a hash linked as `.links/<Nix32 NAR hash>`, a later file replaced by a hard link through a temporary link and a rename. It holds a temporary root on each path, as Nix does, so the daemon's collector does not remove one mid-walk. It reports the bytes it freed, as Nix's `printInfo` does (`optimise-store.cc:328`). Every client may run it (`daemon.cc:887`) | — |
-| 35 VerifyStore | on trial: the daemon in a deployment; route `pynixd` cross-checks the database and the store directory as `verifyStore` does (`local-store.cc:1380`), under the big garbage-collector lock held for reading: a valid path the directory lost is removed from the database when its referrers can go too; with `--check-contents` each `.links` entry and each valid path is re-hashed, a modified one is an error and a missing hash is filled. It sends each line Nix prints, at Nix's level, and drops a line above the client's verbosity as `TunnelLogger::log` does (`daemon.cc:89`). A `repair` request goes to the daemon, which has the builder `repairPath` needs; an untrusted repair is refused (`daemon.cc:896`) | — |
+| 35 VerifyStore | on trial: the daemon in a deployment; route `pynixd` cross-checks the database and the store directory as `verifyStore` does (`local-store.cc:1380`), under the big garbage-collector lock held for reading: a valid path the directory lost is removed from the database when its referrers can go too; with `--check-contents` each `.links` entry and each valid path is re-hashed, a modified one is an error and a missing hash is filled. It sends each line Nix prints, at Nix's level, and drops a line above the client's verbosity as `TunnelLogger::log` does (`daemon.cc:89`). A `repair` request runs `repairPath` in the goals when pynixd's builder takes op 36, else on the daemon; an untrusted repair is refused (`daemon.cc:896`) | — |
 | 19 SetOptions | owned (kept per session, sent per connection) | stops sending once nothing goes upstream |
 
 ## What the writes need first
@@ -133,6 +135,21 @@ Reads first, writes second, builds last.
 4. Substitution, through `HTTPBinaryCacheStore` and the write path.
 5. Roots, the live set, and deletion.
 6. The builder. This is where the experiments in nixidae/nixidae#1155 live.
+
+## What is left
+
+With no daemon, each of these fails with "runs no Nix daemon". The issue
+holds the current list.
+
+| case | what Nix does |
+| --- | --- |
+| `builtin:fetchurl` of an `s3://` URL: credentials resolved on the host, SigV4 by curl (`derivation-builder.cc:622`) | fetches |
+| a builtin with no `out` output, or buildenv and unpack-channel with others (`outputs.at("out")`) | fails in the builder |
+| a whole float in structured attrs whose truncation leaves int32 (`1e15`) | undefined behaviour |
+| `start-id` or `id-count` that `user-lock.cc:177` asserts on (`NIX-DEFECT`, Lillecarl/nix#395) | aborts |
+| builder-rpc-v0 (Nix master) without dynamic-derivations, or with a fixed output | refuses / builds |
+| a dump AddToStore refuses after `startWork` | refuses |
+| a build on any system but Linux | builds |
 
 ## The switch
 
