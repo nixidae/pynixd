@@ -57,6 +57,16 @@ CASES: dict[str, tuple[str, dict[str, Any], tuple[str, ...]]] = {
     "export-odd": (_drv("refused-export-odd", 'exportReferencesGraph = "a";'), {}, ()),
     "export-name": (_drv("refused-export-name", 'exportReferencesGraph = [ "1bad" "/nix/store/x" ];'), {}, ()),
     "export-path": (_drv("refused-export-path", 'exportReferencesGraph = [ "a" "/tmp" ];'), {}, ()),
+    # `DerivationGoal::haveDerivation` (`derivation-goal.cc:113`): a check needs valid outputs.
+    "check-unbuilt": (_drv("refused-check"), {}, ("--rebuild",)),
+    "check-floating-unbuilt": (
+        _drv(
+            "refused-check-floating",
+            'outputHashMode = "recursive"; outputHashAlgo = "sha256"; __contentAddressed = true;',
+        ),
+        {"experimental_features": ["nix-command", "ca-derivations"]},
+        ("--rebuild", "--extra-experimental-features", "ca-derivations"),
+    ),
     "impure-without-feature": (
         _drv("refused-impure", "__impure = true;"),
         {"experimental_features": ["nix-command"]},
@@ -65,11 +75,24 @@ CASES: dict[str, tuple[str, dict[str, Any], tuple[str, ...]]] = {
 }
 
 
+BUILDS: dict[str, tuple[str, dict[str, Any], tuple[str, ...]]] = {
+    # A repair of a floating output with no realisation builds it (`derivation-goal.cc:71`).
+    "repair-floating-unbuilt": (
+        _drv(
+            "built-repair-floating",
+            'outputHashMode = "recursive"; outputHashAlgo = "sha256"; __contentAddressed = true;',
+        ),
+        {"experimental_features": ["nix-command", "ca-derivations"]},
+        ("--repair", "--extra-experimental-features", "ca-derivations"),
+    ),
+}
+"""Builds Nix runs, and a store with no daemon must run too."""
+
 _OPS = ("BuildDerivation", "AddToStore", "AddToStoreNar", "AddMultipleToStore")
 
 
 async def _refused(tmp_path: Path, route: OpRoute, case: str) -> tuple[int, list[str]]:
-    expr, settings, flags = CASES[case]
+    expr, settings, flags = CASES[case] if case in CASES else BUILDS[case]
     spec_args: dict[str, Any] = {"daemon": False} if route is OpRoute.pynixd else {}
     serve = tmp_path / case
     serve.mkdir(exist_ok=True)
@@ -98,6 +121,15 @@ async def test_a_build_nix_refuses_fails_in_nix_words_with_no_daemon(tmp_path: P
             "       … while parsing derivation ",
             f"       error: {RAW_DAEMON[case]}",
         ), lines
+
+
+@pytest.mark.parametrize("case", sorted(BUILDS))
+async def test_a_build_nix_runs_builds_with_no_daemon(tmp_path: Path, case: str) -> None:
+    there = await _refused(tmp_path, OpRoute.daemon, case)
+    here = await _refused(tmp_path, OpRoute.pynixd, case)
+
+    assert there[0] == 0, there
+    assert here == there
 
 
 RAW_DAEMON = {

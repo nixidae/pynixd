@@ -722,7 +722,8 @@ class LocalDBStore(Store):
     ) -> BuildSettings | None:
         """The settings pynixd's sandbox builds *request* with, or `None` when the daemon builds it.
 
-        What `unsupported`, `_check_unsupported` or `_repair_unsupported` names stays on the daemon.
+        What `unsupported` or `_check_unsupported` names stays on the daemon. A repair of an output with no
+        known path builds it, as `checkPathValidity` finds it absent.
         """
         settings = await self._session_build_settings(request, options)
         if settings is None:
@@ -737,7 +738,6 @@ class LocalDBStore(Store):
             )
             or await self._realisations_unsupported(request)
             or await self._check_unsupported(request, settings)
-            or await self._repair_unsupported(request)
             or self._recursive_unsupported(request)
         )
         if reason is None:
@@ -785,15 +785,6 @@ class LocalDBStore(Store):
         if not all([await self.engine.is_valid_path_uncached(path) for path in paths]):
             return "a check of an output that is not valid"
         return None
-
-    async def _repair_unsupported(self, request: BuildDerivationRequest) -> str | None:
-        """Why the daemon repairs *request*, or `None`; also `None` for a request that does not repair.
-
-        pynixd repairs an output whose path the derivation or a realisation names, and builds an impure one again.
-        """
-        if request.build_mode != BuildMode.REPAIR:
-            return None
-        return "a repair of an output with no path" if await self._known_paths(request) is None else None
 
     async def _known_paths(self, request: BuildDerivationRequest) -> list[str] | None:
         """Each output's path: the derivation's, else a floating output's realised one. `None` when one has none.

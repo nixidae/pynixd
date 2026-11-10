@@ -1290,6 +1290,9 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             failed = failed or (attempt.found and not result_succeeded(attempt.result.result))
         if failed and (refusal := self._substitutes_failed()) is not None:
             return refusal
+        # `checkPathValidity`: an output with no known path is absent, so the derivation builds.
+        if len(paths) != len(outputs):
+            return None
         for path in paths.values():
             if not (await self._is_valid(path) and await self._contents_good(path)):
                 return None
