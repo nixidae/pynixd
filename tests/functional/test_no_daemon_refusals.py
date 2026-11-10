@@ -35,6 +35,12 @@ CASES: dict[str, tuple[str, dict[str, Any], tuple[str, ...]]] = {
         {"sandbox": "false", "system_features": ["uid-range"]},
         (),
     ),
+    # `setupBuildChroot` (`chroot.cc:52`): no build user with 65536 ids.
+    "uid-range-no-users": (
+        _drv("refused-uid-range-users", 'requiredSystemFeatures = [ "uid-range" ];'),
+        {"sandbox": "true", "system_features": ["uid-range"]},
+        (),
+    ),
     # `startDaemon` (`derivation-builder.cc:787`).
     "recursive-nix": (
         _drv("refused-recursive", 'requiredSystemFeatures = [ "recursive-nix" ];'),

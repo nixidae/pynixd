@@ -139,26 +139,20 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
     if "__json" in drv.env and (reason := structured_attrs_reason(drv.env)) is not None:
         return reason
     features = set(drv.required_system_features)
-    if "uid-range" in features and uses_sandbox(drv, settings, relocated=relocated):
-        # `setupBuildChroot` (`chroot.cc:52`) and `prepareBuild` (`linux-derivation-builder.cc:450`) throw before
-        # the build starts, in the daemon's words.
-        if not (settings.auto_allocate_uids and build_users.use_build_users(settings.build_users_group, True)):
-            return "uid-range without auto-allocate-uids as root"
-        if not settings.cgroups_feature:
-            return "uid-range without the experimental feature cgroups"
-    if settings.auto_allocate_uids and build_users.use_build_users(settings.build_users_group, True):
-        # `AutoUserLock::acquire` throws without the feature and asserts on the ids (`user-lock.cc:176`).
-        # NIX-DEFECT (#23): `unix/user-lock.cc:177` checks `start-id` and `id-count`, settings from
-        # `nix.conf`, with `assert`, so a typo aborts the process; an error naming the setting is what
-        # it should be. pynixd sends the build to the daemon and copies no abort; Lillecarl/nix#395.
-        if not settings.auto_allocate_feature:
-            return "auto-allocate-uids without the experimental feature"
-        if (
+    # NIX-DEFECT (#23): `unix/user-lock.cc:177` checks `start-id` and `id-count`, settings from
+    # `nix.conf`, with `assert`, so a typo aborts the process; an error naming the setting is what
+    # it should be. pynixd sends the build to the daemon and copies no abort; Lillecarl/nix#395.
+    if (
+        settings.auto_allocate_uids
+        and settings.auto_allocate_feature
+        and build_users.use_build_users(settings.build_users_group, True)
+        and (
             settings.start_id <= 0
             or settings.id_count % build_users.IDS_PER_BUILD
             or settings.start_id + settings.id_count > 0xFFFFFFFF
-        ):
-            return "auto-allocate-uids with start-id or id-count that Nix asserts on"
+        )
+    ):
+        return "auto-allocate-uids with start-id or id-count that Nix asserts on"
     if BUILDER_RPC in features:
         if not settings.dynamic_derivations:
             return "builder-rpc-v0 without dynamic-derivations"
@@ -192,6 +186,24 @@ def _builder_refusal(drv_path: StorePath, drv: BasicDerivation, settings: BuildS
         return f"derivation '{magenta(drv_path)}' has '__noChroot' set, but that's not allowed when 'sandbox' is 'true'"
     if not chroot and "uid-range" in drv.required_system_features:
         return "feature 'uid-range' is only supported in sandboxed builds"
+    return None
+
+
+def _user_refusal(settings: BuildSettings, *, auto: bool) -> str | None:
+    """What `AutoUserLock::acquire` (`user-lock.cc:176`) throws before it takes a user, or `None`."""
+    if auto and not settings.auto_allocate_feature:
+        return missing_feature("auto-allocate-uids")
+    return None
+
+
+def _chroot_refusal(
+    drv: BasicDerivation, settings: BuildSettings, user: build_users.BuildUser | None, *, chroot: bool
+) -> str | None:
+    """What `prepareUser` (`linux-derivation-builder.cc:448`) and `setupBuildChroot` (`chroot.cc:52`) throw."""
+    if chroot and user is not None and user.count != 1 and not settings.cgroups_feature:
+        return missing_feature("cgroups")
+    if chroot and "uid-range" in drv.required_system_features and (user is None or user.count < 65536):
+        return f"feature 'uid-range' requires the setting '{magenta('auto-allocate-uids')}' to be enabled"
     return None
 
 
@@ -667,10 +679,10 @@ async def build(
     settled = False
     redirected: dict[StorePath, StorePath] = {}
     try:
-        if (refused := _builder_refusal(drv_path, drv, settings, chroot=chroot)) is not None:
-            return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(refused))
         if build_users.use_build_users(settings.build_users_group, settings.auto_allocate_uids):
             auto = settings.auto_allocate_uids
+            if (refused := _user_refusal(settings, auto=auto)) is not None:
+                return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(refused))
             pool = build_users.pool_dir(layout.state_dir, layout.relocated, auto=auto)
             # `getBuildUser`: the chroot builder allocates in a user namespace (`linux-derivation-builder.cc:443`).
             take = (
@@ -708,6 +720,12 @@ async def build(
         if len(known) == len(drv.outputs) and valid == set(known.values()) and not check:
             settled = True
             return LocalBuildResult(BuildResultStatus.ALREADY_VALID, paths=known)
+        # `tryToBuild` finds the outputs invalid first, then `makeDerivationBuilder` and `startBuild` throw.
+        refused = _builder_refusal(drv_path, drv, settings, chroot=chroot) or _chroot_refusal(
+            drv, settings, user, chroot=chroot
+        )
+        if refused is not None:
+            return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(refused))
         # `derivation-building-goal.cc:503`: an output on disk that is not valid goes before the build.
         for path in known.values():
             if path not in valid:

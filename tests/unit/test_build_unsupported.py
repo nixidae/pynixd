@@ -7,8 +7,9 @@ import pytest
 from nix_daemon_protocol.basic_derivation import BasicDerivation
 from nix_daemon_protocol.derivation_output import DerivationOutput
 from nix_daemon_protocol.store_path import StorePath
-from pynixd_store.builder.local import _builder_refusal, unsupported, uses_sandbox
+from pynixd_store.builder.local import _builder_refusal, _chroot_refusal, _user_refusal, unsupported, uses_sandbox
 from pynixd_store.builder.settings import BuildSettings
+from pynixd_store.builder.users import BuildUser
 
 FIXED = DerivationOutput(path="/nix/store/00000000000000000000000000000000-x", method="r:sha256", hash_digest="00")
 IMPURE = DerivationOutput(path="", method="r:sha256", hash_digest="impure")
@@ -65,7 +66,8 @@ def test_no_chroot_with_sandbox_true_is_refused_in_nix_words() -> None:
 @pytest.mark.parametrize(
     ("config", "reason"),
     [
-        ({}, "auto-allocate-uids without the experimental feature"),
+        # `acquire` requires the feature (`user-lock.cc:176`); pynixd's build refuses it the same way.
+        ({}, None),
         ({"experimental-features": "auto-allocate-uids"}, None),
         ({"experimental-features": "auto-allocate-uids", "id-count": "65537"}, "start-id or id-count"),
         ({"experimental-features": "auto-allocate-uids", "start-id": "0"}, "start-id or id-count"),
@@ -88,8 +90,9 @@ def test_auto_allocate_uids_is_pynixds_where_nix_allocates(
         ({"experimental-features": "auto-allocate-uids cgroups"}, "true", None),
         # `makeDerivationBuilder` (`derivation-builder.cc:1797`) refuses it; pynixd's build does the same.
         ({"experimental-features": "auto-allocate-uids cgroups"}, "false", None),
-        ({"auto-allocate-uids": False}, "true", "uid-range without auto-allocate-uids as root"),
-        ({"experimental-features": "auto-allocate-uids"}, "true", "uid-range without the experimental feature cgroups"),
+        # `setupBuildChroot` (`chroot.cc:52`) and `prepareUser` refuse these; pynixd's build does the same.
+        ({"auto-allocate-uids": False}, "true", None),
+        ({"experimental-features": "auto-allocate-uids"}, "true", None),
     ],
 )
 def test_uid_range_is_pynixds_where_nix_builds_it(
@@ -104,6 +107,36 @@ def test_uid_range_is_pynixds_where_nix_builds_it(
         outputs={"out": PLAIN}, platform="x86_64-linux", builder="/bin/sh", env={"requiredSystemFeatures": "uid-range"}
     )
     assert unsupported(drv, settings, store_dir="/nix/store", relocated=False) == reason
+
+
+UID_RANGE = BasicDerivation(
+    outputs={"out": PLAIN}, platform="x86_64-linux", builder="/bin/sh", env={"requiredSystemFeatures": "uid-range"}
+)
+
+
+@pytest.mark.parametrize(
+    ("features", "count", "words"),
+    [
+        ("auto-allocate-uids cgroups", 65536, None),
+        ("auto-allocate-uids", 65536, "experimental Nix feature"),
+        ("auto-allocate-uids cgroups", None, "requires the setting"),
+        ("auto-allocate-uids cgroups", 1, "requires the setting"),
+    ],
+)
+def test_a_uid_range_build_without_its_ids_is_refused_in_nix_words(
+    features: str, count: int | None, words: str | None
+) -> None:
+    """`prepareUser` requires `cgroups`; `setupBuildChroot` (`chroot.cc:52`) needs 65536 ids."""
+    settings = BuildSettings.from_nix_config({}, {"system": "x86_64-linux", "experimental-features": features})
+    user = None if count is None else BuildUser(uid=30000, gid=30000, fd=-1, count=count)
+    got = _chroot_refusal(UID_RANGE, settings, user, chroot=True)
+    assert got is None if words is None else words in (got or "")
+
+
+def test_auto_allocate_uids_without_its_feature_is_refused_in_nix_words() -> None:
+    off = BuildSettings.from_nix_config({}, {"system": "x86_64-linux"})
+    assert "auto-allocate-uids" in (_user_refusal(off, auto=True) or "")
+    assert _user_refusal(off, auto=False) is None
 
 
 def test_a_git_hashed_output_needs_git_hashing() -> None:
