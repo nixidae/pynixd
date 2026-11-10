@@ -15,6 +15,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import sqlite3
 import tarfile
 import zipfile
@@ -1569,6 +1570,9 @@ async def _http(tmp_path: Path) -> AsyncIterator[tuple[str, dict[str, Any]]]:
         await runner.cleanup()
 
 
+_ELAPSED = re.compile(r"after \d+ ms")
+
+
 def _fetchurl(name: str, url: str, extra: str) -> str:
     return f'import <nix/fetchurl.nix> {{ name = "{name}"; url = "{url}"; {extra} }}'
 
@@ -1630,7 +1634,8 @@ async def _fetches(tmp_path: Path, route: OpRoute, base: str, seen: dict[str, An
                 expected_retcode=None,
             )
             paths = out.split()
-            errors = _errors(err) if rc else []
+            # curl's error buffer names the time a refused connect took, which differs from run to run.
+            errors = [_ELAPSED.sub("after N ms", line) for line in _errors(err)] if rc else []
             results[name] = rc, paths, [_tree(root / p.lstrip("/")) for p in paths], errors, list(seen["requests"])
     results["valid"], results["refs"] = _rows(root)
     return results
