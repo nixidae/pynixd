@@ -232,7 +232,11 @@ async def test_a_pooled_worker_sees_a_registration_at_once(tmp_path: Path) -> No
     _, nix_b, infos = await _lab(tmp_path)
     plain = [info for info in infos if not str(info.path).endswith(".drv")]
     asked = QueryPathInfoRequest(path=plain[0].path)
-    spec = make_test_spec(store_id="local", store_path=nix_b, no_probe=True, op_routes={"QueryPathInfo": "daemon"})
+    # The idle worker must outlive the registration: under the full suite's load the test took 12 s, past the
+    # default 10 s `idle_ttl`, and the pool retired the worker it asserts on.
+    spec = make_test_spec(
+        store_id="local", store_path=nix_b, no_probe=True, op_routes={"QueryPathInfo": "daemon"}, idle_ttl=600
+    )
     stores: dict[StoreId, Store] = {StoreId("local"): LocalDBStore(spec)}
     async with Server(stores=stores, ssh_port=None, http_port=None) as server:
         local = server.ctx.local_store
