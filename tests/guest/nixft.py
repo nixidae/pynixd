@@ -29,17 +29,26 @@ about 4.5 minutes for the pynixd arm."""
 SELECT_ENV = "PYNIXD_NIXFT_ARGS"
 """Arguments for `meson test` in both arms, such as `gc-concurrent cli-characterisation`. Empty runs every test."""
 
+LOG_LEVEL_ENV = "PYNIXD_NIXFT_LOG_LEVEL"
+"""pynixd's log level in the candidate arm, such as `DEBUG`. Each test's `pynixd.log` is copied to `/artifacts/pynixd-logs/`."""
+
 
 async def test(vms: Machines) -> None:
     [vm] = vms.values()
     nixft = vms.settings["nixft"]
     no_daemon = "NIXFT_NO_DAEMON=1 " if vms.settings.get("noDaemon") else ""
     select = shlex.join(shlex.split(os.environ.get(SELECT_ENV, "")))
+    level = os.environ.get(LOG_LEVEL_ENV)
+    log_level = f"NIXFT_PYNIXD_LOG_LEVEL={shlex.quote(level)} " if level else ""
     # Under HOME: the harness removes and remakes its work directory, which needs a parent the user can write.
-    run = f"{no_daemon}JOBS={JOBS} NIXFT_WORK=$HOME/nixft {nixft} all {select}"
+    run = f"{no_daemon}{log_level}JOBS={JOBS} NIXFT_WORK=$HOME/nixft {nixft} all {select}"
     # `su -` for the user's own HOME. The redirect stays root's: `/artifacts` is a host directory.
     command = f"su - tester -c {shlex.quote(run)} > /artifacts/nixft.log 2>&1"
     rc, _ = await vm.execute(command, timeout=TIMEOUT, label="nixft all")
+    if level:
+        await vm.succeed(
+            "cd /home/tester/nixft/tmp && find . -name pynixd.log -exec install -D -m 0644 {} /artifacts/pynixd-logs/{} \\;"
+        )
     tail = (await vm.succeed("tail -n 30 /artifacts/nixft.log")).strip()
     print(f"[test] nixft all: exit {rc}\n[test]   {tail}")
     if rc != 0:
