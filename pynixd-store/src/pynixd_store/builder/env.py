@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import platform
 import re
 import struct
 from dataclasses import dataclass, field
@@ -55,6 +56,7 @@ _INT_RANGE = range(-(2**63), 2**64)
 """What nlohmann keeps as an integer; a larger one becomes a double."""
 
 _C_INT_RANGE = range(-(2**31), 2**31)
+_X86 = platform.machine() in ("x86_64", "AMD64", "i386", "i486", "i586", "i686")
 _U64 = 2**64 - 1
 
 # nlohmann's `kCachedPowers` (`detail/conversions/to_chars.hpp`): 10^k as f * 2^e, for k from -300 in steps of 8.
@@ -121,17 +123,35 @@ def _refuse_number(text: str) -> Any:
 
 
 def _float(text: str) -> float:
-    """A double, unless `writeShell` would cast it to `int` out of range, which C++ leaves undefined."""
     value = float(text)
     if not math.isfinite(value):
         raise _Unreproduced(f"the number {text}")
-    try:
-        single = struct.unpack("f", struct.pack("f", value))[0]
-    except OverflowError:
-        raise _Unreproduced(f"the number {text}") from None
-    if math.ceil(single) == single and math.trunc(value) not in _C_INT_RANGE:
-        raise _Unreproduced(f"the number {text}")
     return value
+
+
+def _single(value: float) -> float:
+    """`static_cast<float>`: `struct.pack` raises exactly where the cast gives an infinity."""
+    try:
+        (single,) = struct.unpack("f", struct.pack("f", value))
+    except OverflowError:
+        return math.copysign(math.inf, value)
+    return float(single)
+
+
+def _c_int(value: float) -> int:
+    """`static_cast<int>` of a finite double, as this machine's instruction answers.
+
+    NIX-DEFECT (#23): `handleSimpleType` (`parsed-derivations.cc:155`) casts a whole double to `int`, which C++
+    leaves undefined outside `int`. Measured with Nix 2.35.3 on x86_64: `cvttsd2si` gives INT_MIN for every one.
+    aarch64's `fcvtzs` saturates (Arm ARM; not measured). pynixd copies the machine's value, so a path gets the
+    same content from pynixd and from Nix there; Lillecarl/nix#418.
+    """
+    whole = math.trunc(value)
+    if whole in _C_INT_RANGE:
+        return whole
+    if _X86:
+        return _C_INT_RANGE.start
+    return max(_C_INT_RANGE.start, min(whole, _C_INT_RANGE.stop - 1))
 
 
 def _integer(text: str) -> int:
@@ -396,9 +416,9 @@ def _shell_simple(value: Any) -> str | None:
         # `get<int>()` of a 64-bit value: the low 32 bits, signed.
         return str((value + 2**31) % 2**32 - 2**31)
     if isinstance(value, float):
-        # `get<float>()` is single precision; a whole one declares `get<int>()` of the double, truncated.
-        single = struct.unpack("f", struct.pack("f", value))[0]
-        return str(math.trunc(value)) if math.ceil(single) == single else None
+        # `get<float>()` is single precision; a whole one declares `get<int>()` of the double.
+        single = _single(value)
+        return str(_c_int(value)) if math.isinf(single) or math.ceil(single) == single else None
     if value is None:
         return "''"
     return None

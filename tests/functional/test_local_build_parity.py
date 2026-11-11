@@ -592,6 +592,8 @@ STRUCTURED = r"""derivation {
   "foo bar" = "BAD"; "1foobar" = "BAD";
   pi = 3.14; whole = 2.0; tiny = 1.0e-5; small = 0.0001; near = 0.99999999; half = -2.5;
   single = 16777217.5; floats = [ 1.5 2.0 ]; scaled = { a = 3.0; b = 0.1; };
+  edge = 2147483647.0; above = 2147483648.0; huge = 1.0e15; below = -3.0e9; beyond = 1.0e39;
+  huges = [ 1.0e15 ]; byname = { h = 1.0e15; };
 }"""
 
 

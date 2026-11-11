@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from nix_daemon_protocol.store_path import StorePath
+from pynixd_store.builder import env as env_module
 from pynixd_store.builder.env import (
     build_env,
     dump_float,
@@ -141,7 +142,7 @@ def test_a_structured_build_pynixd_cannot_reproduce_goes_to_the_daemon() -> None
 
     assert reason('{"a":1,"s":"x","l":[null,true]}') is None
     assert reason('{"float":123.456}') is None
-    assert reason('{"float":3e9}') is not None
+    assert reason('{"float":3e9}') is None
     assert reason('{"big":18446744073709551616}') is not None
     assert reason('{"bad":"\\ud800"}') is not None
     assert reason("[1]") is not None
@@ -248,7 +249,25 @@ def test_a_float_reaches_the_shell_only_when_its_single_precision_value_is_whole
     assert shell == "declare near=0\ndeclare single=16777217\ndeclare whole=2\n"
 
 
-@pytest.mark.parametrize("number", ["3e9", "1e15", "1e39", "-2147483649.0"])
-def test_a_float_the_shell_would_cast_out_of_range_goes_to_the_daemon(number: str) -> None:
-    """`get<int>()` of a double out of `int` range is undefined in C++."""
-    assert structured_attrs_reason({"__json": f'{{"x":{number}}}'}) == f"__json with the number {number}"
+@pytest.mark.parametrize(
+    ("number", "x86", "saturated"),
+    [
+        (2147483647.0, "2147483647", "2147483647"),
+        (2147483648.0, "-2147483648", "2147483647"),
+        (3e9, "-2147483648", "2147483647"),
+        (-3e9, "-2147483648", "-2147483648"),
+        (1e15, "-2147483648", "2147483647"),
+        (1e39, "-2147483648", "2147483647"),
+        (-1e300, "-2147483648", "-2147483648"),
+    ],
+)
+def test_a_whole_float_out_of_int_range_declares_what_the_machine_casts(
+    monkeypatch: pytest.MonkeyPatch, number: float, x86: str, saturated: str
+) -> None:
+    """`get<int>()` of a double out of `int` range is undefined in C++ (Lillecarl/nix#418). Nix 2.35.3 on
+    x86_64 wrote the x86 column; `1e39` overflows `get<float>()` to an infinity, which `ceil` keeps."""
+    assert structured_attrs_reason({"__json": f'{{"x":{number!r}}}'}) is None
+    monkeypatch.setattr(env_module, "_X86", True)
+    assert write_shell({"x": number, "l": [number]}) == f"declare -a l=({x86} )\ndeclare x={x86}\n"
+    monkeypatch.setattr(env_module, "_X86", False)
+    assert write_shell({"x": number}) == f"declare x={saturated}\n"
