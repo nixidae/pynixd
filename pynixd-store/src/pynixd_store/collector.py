@@ -41,6 +41,10 @@ class PathInUse(PynixdError):
     """`invalidatePathChecked` refuses a path a valid path still refers to (`local-store.cc:1366`)."""
 
 
+def _refusal(path: str, reason: str) -> PynixdError:
+    return PynixdError(f"Cannot delete path '{magenta(path)}' because it's {reason}.")
+
+
 class _LimitReached(Exception):
     """`GCLimitReached`: the collection freed more than `max-freed`."""
 
@@ -56,6 +60,8 @@ class Collection:
     report: Report
     results: collect.GCResults = field(default_factory=collect.GCResults)
     roots: set[str] = field(default_factory=set)
+    #: The first link of each permanent root, and the first label of each temporary root, for a refusal's reason.
+    root_names: dict[str, str] = field(default_factory=dict)
     alive: set[str] = field(default_factory=set)
     dead: set[str] = field(default_factory=set)
     #: Paths whose whole closure is in `alive`, so marking them again adds nothing.
@@ -65,6 +71,23 @@ class Collection:
     @property
     def whole_store(self) -> bool:
         return self.options.paths is None
+
+    @property
+    def refuses(self) -> bool:
+        """A named path that cannot go fails the request with the reason the walk found.
+
+        NIX-DEVIATION (#27): upstream 2.35 walks on and then says only "since it is still alive" (`gc.cc:780`).
+        pynixd refuses at the first root, temporary root or unnamed referrer, as Determinate v3.24.0 does
+        (`gc.cc:748`, `:762`, `:777`), so the client learns why. Upstream's suite checks only the exit code
+        (`gc.sh:23`, `gc-runtime.sh`); Determinate's greps the reason (`gc.sh:24`, `:27`, `gc-runtime.sh:30`).
+        Determinate also refuses for an unnamed referrer under `RETURN_LIVE` and `RETURN_DEAD`; pynixd does not,
+        because those actions delete nothing. Reverse it if a client parses upstream's text.
+        """
+        return self.options.action == GCAction.DELETE_SPECIFIC
+
+    def _label(self, name: str) -> str:
+        """A runtime or temporary root's name as the client may see it. A `gcroots` link is never censored."""
+        return collect.CENSORED if self.options.censor else name
 
     @property
     def deletes(self) -> bool:
@@ -106,17 +129,21 @@ class Collection:
             await self._permanent_roots(walk)
         for reaped in walk.reaped:
             await self.report(Verbosity.INFO, f'removing stale temporary roots file "{reaped}"')
-        for path in walk.temporary:
+        for path, labels in walk.temporary.items():
             self.server.temp_roots.add(_hash_part(path))
             if not self.ignores_temp_roots:
                 self.roots.add(path)
+                self.root_names.setdefault(path, f"in use by '{magenta(self._label(min(labels)))}'")
 
     async def _permanent_roots(self, walk: RootWalk) -> None:
         """`findRootsNoTemp` (`gc.cc:293`): the valid paths of the `gcroots` links and the runtime roots."""
         for path in walk.unreadable:
             await self.report(Verbosity.INFO, f'cannot read potential root "{path}"')
-        named = set(walk.stable.values()) | set(walk.runtime)
-        self.roots = {path.path for path in await self.engine.query_valid_paths(named)}
+        links = {path: {self._label(name) for name in names} for path, names in walk.runtime.items()}
+        for link, path in walk.stable.items():
+            links.setdefault(path, set()).add(link)
+        self.roots = {path.path for path in await self.engine.query_valid_paths(set(links))}
+        self.root_names = {path: f"referenced by the GC root '{magenta(min(links[path]))}'" for path in self.roots}
         for link, path in sorted(walk.stable.items()):
             # A plain file under `gcroots` that names an invalid path is skipped without a word (`gc.cc:280`).
             if path not in self.roots and os.path.islink(link):
@@ -140,10 +167,8 @@ class Collection:
             if path in self.dead:
                 continue
             if action == GCAction.DELETE_SPECIFIC:
-                raise PynixdError(
-                    f"Cannot delete path '{magenta(path)}' since it is still alive. To find out why, use: "
-                    "nix-store --query --roots and nix-store --query --referrers"
-                )
+                # The walk refused with its reason; a path kept after the walk has none.
+                raise _refusal(path, "in use by another process or path")
             await self.report(Verbosity.DEBUG, f"cannot delete '{path}' because it's still alive")
 
     async def _whole_store(self) -> None:
@@ -187,22 +212,31 @@ class Collection:
                     return
                 if path in self.dead:
                     continue
+                outside = (
+                    self.options.paths is not None
+                    and not self.options.delete_referrers
+                    and path not in self.options.paths
+                )
+                # Determinate checks the named paths first (`gc.cc:744`), upstream the roots (`gc.cc:643`).
+                if outside and self.refuses:
+                    raise _refusal(start, f"referenced by path '{magenta(path)}'")
                 if path in self.roots:
+                    if self.refuses:
+                        raise _refusal(start, self.root_names[path])
                     await self.report(Verbosity.DEBUG, f"cannot delete '{path}' because it's a root")
                     self.alive.add(start)
                     await self._mark_alive(path)
                     return
-                if (
-                    self.options.paths is not None
-                    and not self.options.delete_referrers
-                    and path not in self.options.paths
-                ):
+                if outside:
                     await self.report(
                         Verbosity.DEBUG,
                         f"cannot delete '{start}' because '{path}' is not in the specified paths to delete",
                     )
                     return
                 if not self.ignores_temp_roots and not self.server.hold(_hash_part(path)):
+                    if self.refuses:
+                        # A root sent over the socket has no label; Determinate names it `{nix-process:unknown}`.
+                        raise _refusal(start, f"in use by '{magenta(self._label('{temp:unknown}'))}'")
                     await self.report(Verbosity.DEBUG, f"cannot delete '{path}' because it's a temporary root")
                     self.alive.add(start)
                     await self._mark_alive(path)

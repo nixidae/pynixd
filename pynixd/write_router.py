@@ -528,7 +528,7 @@ class WriteRouter:
         return VerifyStoreResponse.fast(value=int(errors))
 
     async def collect_garbage(
-        self, request: CollectGarbageRequest, *, conn: ClientConn | None = None
+        self, request: CollectGarbageRequest, *, conn: ClientConn | None = None, censor: bool = False
     ) -> CollectGarbageResponse:
         """CollectGarbage (op 20): `LocalStore::collectGarbage`. The handler has refused what Nix refuses.
 
@@ -546,6 +546,7 @@ class WriteRouter:
             delete_referrers=named is not None and bool(named.delete_referrers),
             max_freed=request.max_freed,
             ignore_liveness=bool(request.ignore_liveness),
+            censor=censor,
         )
         overrides = conn.options.overrides if conn is not None and conn.options is not None else {}
         results = await engine.collect_garbage(

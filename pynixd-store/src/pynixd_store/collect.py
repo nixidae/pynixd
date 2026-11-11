@@ -53,6 +53,12 @@ class GCOptions:
     max_freed: int = 2**64 - 1
     #: No permanent root keeps a path (`gc.cc:521`). The handler refuses it outside a test.
     ignore_liveness: bool = False
+    #: An untrusted client: a refusal names no runtime or temporary root (`daemon.cc:807` of Determinate v3.24.0).
+    censor: bool = False
+
+
+CENSORED = "{censored}"
+"""What `findRuntimeRoots` and `findTempRoots` name a root with for an untrusted client (`gc.cc:220`)."""
 
 
 def in_nix_test() -> bool:

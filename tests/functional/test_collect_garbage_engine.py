@@ -10,6 +10,7 @@ nothing about the engine.
 from __future__ import annotations
 
 import os
+import re
 from typing import TYPE_CHECKING
 
 from tests.conftest import CLIENT_BIN, run_subproc, unix_session_uri
@@ -18,6 +19,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from pynixd import Server
+
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 async def _add_path(uri: str, directory: Path, content: bytes) -> str:
@@ -59,7 +62,7 @@ async def test_gc_deletes_what_no_root_keeps(pynixd_server: Server, tmp_path: Pa
 
 
 async def test_delete_refuses_a_path_a_root_keeps(pynixd_server: Server, tmp_path: Path) -> None:
-    """`gc.cc:784`: a named path that is still alive fails the request, and nothing goes."""
+    """A named path a root keeps fails the request with the root's link (Determinate v3.24.0 `gc.cc:762`)."""
     uri = unix_session_uri(pynixd_server)
     kept = await _add_path(uri, tmp_path / f"kept-{os.getpid()}", b"kept\n")
     rc, _out, _stderr, both = await run_subproc(
@@ -72,5 +75,5 @@ async def test_delete_refuses_a_path_a_root_keeps(pynixd_server: Server, tmp_pat
     )
 
     assert rc != 0
-    assert "since it is still alive" in both
+    assert f"because it's referenced by the GC root '{tmp_path / 'root'}'" in ANSI.sub("", both)
     assert await _is_valid(uri, kept)

@@ -9,6 +9,7 @@ from pynixd_store.collect import in_nix_test
 from ..constants import FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS
 from ..exceptions import ClosingError
 from ..serde import CollectGarbageRequest
+from ..serde.auth import Role
 from ..serde.context import ReadContext
 from ..store.local_db import write_router
 from ._base import Handler
@@ -49,4 +50,6 @@ class CollectGarbageHandler(Handler):
         if req.ignore_liveness and not in_nix_test():
             await ctx.proxy.send_error("you are not allowed to ignore liveness")
             return None
-        return await write_router(ctx.proxy.local_store).collect_garbage(req, conn=ctx.proxy.client)
+        return await write_router(ctx.proxy.local_store).collect_garbage(
+            req, conn=ctx.proxy.client, censor=ctx.role < Role.ADMIN
+        )

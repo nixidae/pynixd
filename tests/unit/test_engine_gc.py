@@ -155,18 +155,60 @@ async def test_the_whole_store_loses_what_no_root_keeps(tmp_path: Path) -> None:
     assert info.index(f"deleting '{A}'") < info.index(f"deleting '{B}'")
 
 
-async def test_a_named_path_with_an_unnamed_referrer_is_alive(tmp_path: Path) -> None:
-    """`gc.cc:784`: the error names the path, and nothing is deleted."""
+@pytest.mark.parametrize("rooted", [False, True])
+async def test_a_named_path_with_an_unnamed_referrer_is_alive(tmp_path: Path, *, rooted: bool) -> None:
+    """Determinate v3.24.0 `gc.cc:748`, `gc.sh:24`: the referrer is the reason, before any root of it; nothing goes."""
     store = _Store(tmp_path)
     store.add(B)
     store.add(A, refs=(B,))
+    if rooted:
+        store.root(A)
 
-    with pytest.raises(PynixdError, match="since it is still alive") as error:
+    with pytest.raises(PynixdError) as error:
         await _collect(store, GCOptions(GCAction.DELETE_SPECIFIC, frozenset({B})), _Lines())
 
-    assert "\x1b[35;1m" + B in str(error.value)
+    assert str(error.value) == f"Cannot delete path '{magenta(B)}' because it's referenced by path '{magenta(A)}'."
     assert store.valid(A)
     assert store.valid(B)
+
+
+@pytest.mark.parametrize("censor", [False, True])
+async def test_a_rooted_named_path_names_its_root(tmp_path: Path, *, censor: bool) -> None:
+    """Determinate v3.24.0 `gc.cc:762`, `gc.sh:27`: the link under `gcroots`, censored for nobody."""
+    store = _Store(tmp_path)
+    store.add(A)
+    store.root(A)
+    link = store.layout.state_dir / "gcroots" / "root"
+
+    with pytest.raises(PynixdError) as error:
+        await _collect(store, GCOptions(GCAction.DELETE_SPECIFIC, frozenset({A}), censor=censor), _Lines())
+
+    assert str(error.value) == (
+        f"Cannot delete path '{magenta(A)}' because it's referenced by the GC root '{magenta(str(link))}'."
+    )
+
+
+@pytest.mark.parametrize("censor", [False, True])
+async def test_a_temporary_root_names_its_process_unless_censored(tmp_path: Path, *, censor: bool) -> None:
+    """Determinate v3.24.0 `gc.cc:777` and `:290`: `{censored}` for an untrusted client (`daemon.cc:807`)."""
+    store = _Store(tmp_path)
+    store.add(A)
+    roots = TempRoots(store.layout.state_dir)
+    assert await roots.add(A)
+    try:
+        with pytest.raises(PynixdError) as error:
+            await _collect(store, GCOptions(GCAction.DELETE_SPECIFIC, frozenset({A}), censor=censor), _Lines())
+    finally:
+        await roots.close()
+
+    message = str(error.value)
+    assert message.startswith(f"Cannot delete path '{magenta(A)}' because it's in use by '")
+    if censor:
+        assert message.endswith(f"in use by '{magenta('{censored}')}'.")
+    else:
+        assert "{temp:" in message
+        assert "{censored}" not in message
+    assert store.valid(A)
 
 
 async def test_named_paths_go_with_their_named_referrers(tmp_path: Path) -> None:
@@ -249,7 +291,7 @@ async def test_ignore_liveness_deletes_a_path_a_root_keeps(tmp_path: Path) -> No
     store = _Store(tmp_path)
     store.add(A)
     store.root(A)
-    with pytest.raises(PynixdError, match="still alive"):
+    with pytest.raises(PynixdError, match="referenced by the GC root"):
         await _collect(store, GCOptions(GCAction.DELETE_SPECIFIC, frozenset({A})), _Lines())
 
     paths, _ = await _collect(
