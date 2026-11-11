@@ -128,6 +128,12 @@ FEATURE_PROVENANCE: Final[str] = "provenance"
 `provenance` experimental feature (`daemon.cc:1165`). A proxy names it only when its own store keeps the field.
 """
 
+FEATURE_VERSIONED_ADD_TO_STORE_MULTIPLE: Final[str] = "versionedAddToStoreMultiple"
+"""Each path info of an `AddMultipleToStore` stream takes the negotiated version and features, and not protocol 1.16
+with none (Determinate Nix, `daemon.cc:552` and `remote-store.cc:589` of v3.24.0). Without it the stream carries no
+provenance.
+"""
+
 FEATURE_PYNIXD_BUILD_RESOURCES: Final[str] = "pynixd-build-resources-2"
 """`BuildResult.resources`: what the build used (`build_resources.py`), after Nix's fields.
 
@@ -151,6 +157,7 @@ STANDARD_FEATURES: Final[frozenset[str]] = frozenset(
         FEATURE_NAMED_ACTIVITIES,
         FEATURE_OPEN_TELEMETRY,
         FEATURE_PROVENANCE,
+        FEATURE_VERSIONED_ADD_TO_STORE_MULTIPLE,
     }
 )
 """Each feature name that Nix or Determinate Nix defines, whether or not a peer offers it.
@@ -178,6 +185,7 @@ SUPPORTED_STANDARD_FEATURES: Final[frozenset[str]] = frozenset(
         FEATURE_NAMED_ACTIVITIES,
         FEATURE_OPEN_TELEMETRY,
         FEATURE_PROVENANCE,
+        FEATURE_VERSIONED_ADD_TO_STORE_MULTIPLE,
     }
 )
 """The standard features that this package has a codec for.

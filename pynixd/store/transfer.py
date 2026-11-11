@@ -9,7 +9,11 @@ import anyio
 import structlog
 from anyio.lowlevel import checkpoint
 
-from nix_daemon_protocol.add_multiple_to_store import AddMultipleToStoreRequest, AddMultipleToStoreResponse
+from nix_daemon_protocol.add_multiple_to_store import (
+    AddMultipleToStoreRequest,
+    AddMultipleToStoreResponse,
+    path_info_version,
+)
 from pynixd_store.source import Pieces
 from pynixd_store.store_path import StorePath
 
@@ -283,6 +287,7 @@ async def _stream_paths_over_conns(
         tg.start_soon(read_response)
         fw = dst_conn.w.framed()
         fw.write_uint64(len(to_transfer))
+        info_version = path_info_version(dst_conn.version, dst_conn.standard_features)
 
         for info in to_transfer:
             if cancel_event and cancel_event.is_set():
@@ -298,7 +303,7 @@ async def _stream_paths_over_conns(
             )
             dst_conn.op_log.append("AddToStoreNar (stream_paths_to)")
 
-            fw.write(await info.bytes_wire())
+            fw.write(await info.bytes_wire(*info_version))
 
             async for chunk in nars.read(path, info.info.nar_size):
                 fw.write(chunk)

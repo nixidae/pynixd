@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from nix_daemon_protocol import FEATURE_PROVENANCE, FEATURE_VERSIONED_ADD_TO_STORE_MULTIPLE, PROTOCOL_VERSION
+from nix_daemon_protocol.add_multiple_to_store import UNVERSIONED_PATH_INFO, path_info_version
 from nix_daemon_protocol.content_address import ContentAddress
 from nix_daemon_protocol.nar_hash import NARHash
 from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
@@ -30,7 +32,7 @@ A = "/nix/store/" + "a" * 32 + "-a"
 B = "/nix/store/" + "b" * 32 + "-b"
 
 
-def _info(path: str, size: int) -> ValidPathInfo:
+def _info(path: str, size: int, provenance: str = "") -> ValidPathInfo:
     return ValidPathInfo(
         path=StorePath(path=path),
         info=UnkeyedValidPathInfo(
@@ -42,6 +44,7 @@ def _info(path: str, size: int) -> ValidPathInfo:
             ultimate=False,
             sigs=set(),
             ca=ContentAddress(value=""),
+            provenance=provenance,
         ),
     )
 
@@ -62,7 +65,7 @@ async def test_each_nar_ends_before_the_next_info(frame: int) -> None:
     count = await frames.read_uint64()
     out = BytesWriter()
     seen: list[str] = []
-    async with contextlib.aclosing(_paths(frames, count)) as paths:
+    async with contextlib.aclosing(_paths(frames, count, UNVERSIONED_PATH_INFO, frozenset())) as paths:
         async for info, nar in paths:
             seen.append(str(info.path))
             await send_raw(nar.read, out, info.info.nar_size)
@@ -75,10 +78,34 @@ async def test_a_nar_left_unread_is_skipped() -> None:
     frames = FramedReader(BytesReader(_framed(await _stream(), 7)))
     count = await frames.read_uint64()
     seen: list[str] = []
-    async with contextlib.aclosing(_paths(frames, count)) as paths:
+    async with contextlib.aclosing(_paths(frames, count, UNVERSIONED_PATH_INFO, frozenset())) as paths:
         async for info, _nar in paths:
             seen.append(str(info.path))
     assert seen == [A, B]
+
+
+PROVENANCE = '{"type":"copied","from":"https://cache.example","next":null}'
+
+
+@pytest.mark.parametrize(
+    ("features", "kept"),
+    [
+        (frozenset({FEATURE_PROVENANCE, FEATURE_VERSIONED_ADD_TO_STORE_MULTIPLE}), PROVENANCE),
+        # `daemon.cc:552`: without the second feature the stream is 1.16 with no feature, whatever the session names.
+        (frozenset({FEATURE_PROVENANCE}), ""),
+    ],
+)
+async def test_a_stream_carries_provenance_under_versioned_add_to_store_multiple(
+    features: frozenset[str], kept: str
+) -> None:
+    version, inner = path_info_version(PROTOCOL_VERSION, features)
+    payload = struct.pack("<Q", 1) + await _info(A, 2, PROVENANCE).bytes_wire(version, inner) + b"AA"
+    frames = FramedReader(BytesReader(_framed(payload, 4096)))
+    count = await frames.read_uint64()
+    async with contextlib.aclosing(_paths(frames, count, version, inner)) as paths:
+        found = [info.info.provenance async for info, _nar in paths]
+    assert found == [kept]
+    assert await frames.read(1) == b""
 
 
 async def test_send_raw_refuses_a_short_source() -> None:

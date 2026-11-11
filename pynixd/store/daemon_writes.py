@@ -22,7 +22,11 @@ from anyio.lowlevel import checkpoint
 
 from nix_daemon_protocol.add_build_log import AddBuildLogRequest, AddBuildLogResponse
 from nix_daemon_protocol.add_indirect_root import AddIndirectRootRequest, AddIndirectRootResponse
-from nix_daemon_protocol.add_multiple_to_store import AddMultipleToStoreRequest, AddMultipleToStoreResponse
+from nix_daemon_protocol.add_multiple_to_store import (
+    AddMultipleToStoreRequest,
+    AddMultipleToStoreResponse,
+    path_info_version,
+)
 from nix_daemon_protocol.add_perm_root import AddPermRootRequest, AddPermRootResponse
 from nix_daemon_protocol.add_signatures import AddSignaturesRequest, AddSignaturesResponse
 from nix_daemon_protocol.add_to_store import AddToStoreResponse
@@ -269,6 +273,7 @@ class DaemonWrites:
             async def send(go_on: Callable[[], Awaitable[bool]]) -> None:
                 framed = FramedWriter(conn.w)
                 framed.write_uint64(count)
+                info_version = path_info_version(conn.version, conn.standard_features)
                 async for info, nar in paths:
                     if not await go_on():
                         return
@@ -277,7 +282,7 @@ class DaemonWrites:
                     # (tests/benchmark/test_bench_nar_profile.py).
                     await checkpoint()
                     infos.append(info)
-                    framed.write(await info.bytes_wire())
+                    framed.write(await info.bytes_wire(*info_version))
                     await send_raw(nar.read, framed, info.info.nar_size)
                 await framed.finalize()
 

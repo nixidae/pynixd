@@ -11,6 +11,7 @@ import structlog
 from nix_daemon_protocol.add_multiple_to_store import (
     AddMultipleToStoreRequest,
     AddMultipleToStoreResponse,
+    path_info_version,
 )
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from pynixd_store.source import Bounded
@@ -56,7 +57,8 @@ class AddMultipleToStoreHandler(Handler):
         frames = FramedReader(ctx.proxy.r)
         try:
             count = await frames.read_uint64()
-            async with contextlib.aclosing(_paths(frames, count)) as paths:
+            version, features = path_info_version(ctx.proxy.version, ctx.proxy.standard_features)
+            async with contextlib.aclosing(_paths(frames, count, version, features)) as paths:
                 await write_router(ctx.proxy.local_store).add_multiple_to_store(
                     Write(op=req.name, repair=bool(req.repair) or ctx.proxy.repairs_adds),
                     count,
@@ -80,7 +82,9 @@ class AddMultipleToStoreHandler(Handler):
         return AddMultipleToStoreResponse()
 
 
-async def _paths(frames: FramedReader, count: int) -> AsyncGenerator[tuple[ValidPathInfo, Source]]:
+async def _paths(
+    frames: FramedReader, count: int, version: int, features: frozenset[str]
+) -> AsyncGenerator[tuple[ValidPathInfo, Source]]:
     """The paths of a client's AddMultipleToStore stream, each NAR `Bounded`.
 
     A frame holds the end of one NAR and the start of the next path's info, so
@@ -88,7 +92,7 @@ async def _paths(frames: FramedReader, count: int) -> AsyncGenerator[tuple[Valid
     (`daemon.cc:564`) skips a valid path's NAR unread.
     """
     for _ in range(count):
-        info = await ValidPathInfo.from_reader(ReadContext(reader=frames, version=1))
+        info = await ValidPathInfo.from_reader(ReadContext(reader=frames, version=version, features=features))
         nar = Bounded(frames, info.info.nar_size)
         yield info, nar
         await nar.finish()

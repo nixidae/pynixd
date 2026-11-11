@@ -120,13 +120,15 @@ def test_pynixd_claims_every_feature_of_nix_latest() -> None:
 
     `named-activities` is Determinate Nix's `STDERR_START_ACTIVITY_STRINGLY`. It writes itself in the old shape
     to a peer that did not negotiate it. `open-telemetry` is its `traceparent` after each op code. `provenance` is
-    one string in each path info and in `AddToStore`.
+    one string in each path info and in `AddToStore`. `versionedAddToStoreMultiple` gives op 44's path infos the
+    negotiated shape.
     """
     determinate = {
         ndp.FEATURE_QUERY_PATH_INFOS,
         ndp.FEATURE_NAMED_ACTIVITIES,
         ndp.FEATURE_OPEN_TELEMETRY,
         ndp.FEATURE_PROVENANCE,
+        ndp.FEATURE_VERSIONED_ADD_TO_STORE_MULTIPLE,
     }
     assert frozenset(FEATURES_OF_NIX_LATEST | determinate) == ndp.SUPPORTED_STANDARD_FEATURES
 
@@ -164,6 +166,15 @@ def test_pynixd_always_names_query_path_infos() -> None:
         stores={}, pynixd_features=frozenset(), local_store=SimpleNamespace(answers_active_builds=False)
     )
     assert ndp.FEATURE_QUERY_PATH_INFOS in DaemonProxy.server_features(cast("DaemonProxy", proxy), frozenset())
+
+
+def test_pynixd_always_names_versioned_add_to_store_multiple() -> None:
+    """pynixd reads op 44's stream itself, and writes each backend's in the shape that backend named."""
+    proxy = SimpleNamespace(
+        stores={}, pynixd_features=frozenset(), local_store=SimpleNamespace(answers_active_builds=False)
+    )
+    named = DaemonProxy.server_features(cast("DaemonProxy", proxy), frozenset())
+    assert ndp.FEATURE_VERSIONED_ADD_TO_STORE_MULTIPLE in named
 
 
 class _Store:

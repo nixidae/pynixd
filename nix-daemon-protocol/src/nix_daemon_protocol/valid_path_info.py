@@ -27,10 +27,10 @@ class ValidPathInfo(WireModel):
     path: StorePath
     info: UnkeyedValidPathInfo
 
-    async def bytes_wire(self) -> bytes:
+    async def bytes_wire(self, version: int = 0, features: frozenset[str] = frozenset()) -> bytes:
         """Serialize this ValidPathInfo to bytes (in-memory BytesWriter is sync)."""
         buf = BytesWriter()
-        ctx = WriteContext(writer=buf, version=0)
+        ctx = WriteContext(writer=buf, version=version, features=features)
         await self.to_writer(ctx)
         return buf.bytes()
 

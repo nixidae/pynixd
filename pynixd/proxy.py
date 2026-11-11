@@ -364,6 +364,8 @@ class DaemonProxy:
         our_features.add(wire.FEATURE_QUERY_PATH_INFOS)
         # The trace context is hop-local: pynixd reads it from each client and sends it on to a backend that names it.
         our_features.add(wire.FEATURE_OPEN_TELEMETRY)
+        # Op 44's stream is hop-local too: pynixd reads it, and writes each backend's in the shape that backend named.
+        our_features.add(wire.FEATURE_VERSIONED_ADD_TO_STORE_MULTIPLE)
         # Op 48 has no fallback: a store whose builds pynixd cannot see would answer an empty list while they run.
         if self.local_store.answers_active_builds:
             our_features.add(wire.FEATURE_QUERY_ACTIVE_BUILDS)
