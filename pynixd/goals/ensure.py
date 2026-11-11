@@ -502,7 +502,20 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             return substituted.with_dynamic_outputs(self.derived_path.base_store_path())
 
         # A check or a repair builds the realised outputs again.
-        realised = None if checking or repairing else await self._already_realised(parsed, selected_outputs)
+        #
+        # NIX-DEFECT (#23): `checkPathValidity` (`derivation-goal.cc:361`) answers `AlreadyValid` from a
+        # realisation of the unresolved derivation, and no input goal runs. The client then resolves a
+        # content-addressed derivation itself (`outputs-query.cc:90`) and reads the produced `.drv` of each dynamic
+        # input. Nothing roots that `.drv` (the live output's deriver is the resolved one), and a collection leaves
+        # its build-trace row, so the read fails with "does not exist". Nix 2.35 writes no realisation under the
+        # unresolved derivation (`derivation-goal.cc:179`); rows of Nix 2.34 and of `_under_the_original_id` do.
+        # pynixd deviates: a derivation with a dynamic input realises its inputs first, which builds a missing
+        # produced `.drv` again, then takes the resolved one's cut-off. Lillecarl/nix#422, nixidae/nixidae#1245.
+        realised = (
+            None
+            if checking or repairing or parsed.dynamic_input_drvs
+            else await self._already_realised(parsed, selected_outputs)
+        )
         if realised is not None:
             log.debug("ensure_derivation_already_realised", drv_path=str(drv_path), outputs=sorted(selected_outputs))
             return realised.with_dynamic_outputs(self.derived_path.base_store_path())

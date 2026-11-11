@@ -58,6 +58,16 @@ let
     '';
   };
 
+  # Content-addressed, so the client resolves it, and resolving reads the produced `.drv`. nixidae/nixidae#1245.
+  caWrapper = mkCADrv {
+    name = "use-dynamic-drv-ca";
+    buildCommand = ''
+      while IFS= read -r line || [ -n "$line" ]; do
+        printf '%s\n' "$line"
+      done < "${indirectHello}" > $out
+    '';
+  };
+
   # A produced derivation must carry its producer's name without `.drv`.
   deferredTarget = mkDrv {
     name = "deferred-producer";
@@ -235,6 +245,7 @@ in
     hello
     producingDrv
     wrapper
+    caWrapper
     deferredProducer
     deferredWrapper
     target
