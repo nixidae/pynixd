@@ -493,6 +493,7 @@ let
   # directory of every step.
   ciTestWorkflows = {
     tests = ciWorkflowValue ./ci/workflows/tests.nix;
+    extended = ciWorkflowValue ./ci/workflows/extended.nix;
   };
 
   # Those values as the files GitHub reads.
@@ -608,6 +609,17 @@ let
     inherit nixvenv optionsReference;
   };
 
+  guestArgs = {
+    pynixd-lib = library;
+    src = testSrc;
+    inherit vivariumLib;
+    inherit agent krunVariables;
+    devEnv = guestEnv;
+    nix = defaultNix;
+    nixGit = pkgs.nixVersions.git;
+    nixFloor = pkgs.nixVersions."nix_${lib.replaceStrings [ "." ] [ "_" ] supportedNixFloor}";
+  };
+
   tests = rec {
     simple = pkgs.callPackage ./tests/derivations/simple {
       pynixd-lib = library;
@@ -633,17 +645,12 @@ let
 
     # The same suites in a guest, where cleanup is a poweroff rather than
     # a promise.
-    guest = withDefaultNix (
-      pkgs.callPackage ./tests/derivations/guest {
-        pynixd-lib = library;
-        src = testSrc;
-        inherit vivariumLib;
-        inherit agent krunVariables;
-        devEnv = guestEnv;
-        nix = defaultNix;
-        nixGit = pkgs.nixVersions.git;
-        nixFloor = pkgs.nixVersions."nix_${lib.replaceStrings [ "." ] [ "_" ] supportedNixFloor}";
-      }
+    guest = withDefaultNix (pkgs.callPackage ./tests/derivations/guest guestArgs);
+
+    # The extended set (`@pytest.mark.extended`) of the suites `tests/suites.toml` flags, for the schedule
+    # and by hand before a risky change (nixidae/nixidae#1247).
+    guest-extended = withDefaultNix (
+      pkgs.callPackage ./tests/derivations/guest (guestArgs // { extended = true; })
     );
 
     # The Nix functional suite in a UML guest, where cleanup is a poweroff

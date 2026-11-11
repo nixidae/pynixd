@@ -89,7 +89,10 @@ packages = ["pynixd"]
 # `pytest.ini` wins over `pyproject.toml` whatever either says, so a setting
 # added here would have been read by nobody.
 [tool.pytest.ini_options]
-addopts = "--tb=short"
+# `-m 'not extended'`: a plain run is the standard set; `-m extended`, given
+# later, replaces it (nixidae/nixidae#1247). `--strict-markers`, so a
+# misspelt `extended` fails collection instead of running in the standard set.
+addopts = "--tb=short --strict-markers -m 'not extended'"
 log_cli = false
 testpaths = ["tests"]
 python_files = ["test_*.py"]
@@ -106,7 +109,7 @@ markers = [
     "store: tests using --store (pynixd as eval store)",
     "builders: tests using --builders (pynixd as remote builder)",
     "dag: tests building multi-layer DAG derivations",
-    "slow: tests that are slow and should be excluded by default",
+    "extended: the extended set: slow or exhaustive, run on the schedule (nixidae/nixidae#1247)",
     "bench: benchmark tests that measure performance",
     "benchmark: dedicated performance measurement tests",
     "ca_derivations: tests requiring CA/dynamic derivation support",

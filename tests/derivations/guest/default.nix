@@ -29,6 +29,8 @@
   nixFloor,
   # The build VM's launcher and helper, which `tests/functional/test_build_vm.py` runs.
   krunVariables,
+  # The extended set (`@pytest.mark.extended`, nixidae/nixidae#1247) in place of the standard one.
+  extended ? false,
 }:
 
 let
@@ -49,68 +51,31 @@ let
     ssh-keygen -q -t ed25519 -N "" -C tester -f $out/id_ed25519
   '';
 
-  perTestTimeout = "--async-test-timeout=600";
+  allSuites = builtins.fromTOML (builtins.readFile ../../suites.toml);
 
-  /*
-    One phase each, generated below from this list.
+  # The standard run takes every suite and deselects the extended tests
+  # (`addopts` in each `pyproject.toml`); the extended run takes the suites
+  # that hold some and selects only those. A later `-m` replaces the earlier.
+  suites =
+    if extended then
+      lib.mapAttrs (
+        _: suite:
+        suite
+        // {
+          args = suite.args ++ [
+            "-m"
+            "extended"
+          ];
+        }
+      ) (lib.filterAttrs (_: suite: suite.extended or false) allSuites)
+    else
+      allSuites;
 
-    Per suite, because `nix-daemon-protocol/tests` is its own project with
-    its own `pytest.ini`: it does not know `--async-test-timeout`, and
-    pytest answers an unknown option with exit 4 before collecting
-    anything. The 600 seconds is against the suite's own 120, which is
-    written for a machine rather than a machine inside one: measured,
-    `test_wire_parity[impure]` timed out at 120.016s on an idle host.
-
-    Each suite needs only its own `prepare-<suite>`, so a failure in one skips none of the
-    others -- they are independent, and a run that stopped at the first
-    would hide the second.
-  */
-  suites = {
-    unit = {
-      path = "tests/unit";
-      flags = [ perTestTimeout ];
-    };
-    protocol = {
-      path = "nix-daemon-protocol/tests";
-      flags = [ ];
-    };
-    # One worker per core the guest has: 333 tests ran 401 s in series,
-    # and the slowest took 24 s. `worksteal` hands a free worker the next
-    # test, so no table of shards needs upkeep.
-    functional = {
-      path = "tests/functional";
-      flags = [
-        perTestTimeout
-        "--numprocesses=auto"
-        "--dist=worksteal"
-      ];
-    };
-    differential = {
-      path = "tests/differential";
-      flags = [ perTestTimeout ];
-    };
-    # Missing for 35 minutes of failure that the guest's own configuration
-    # caused: it took cache.nixos.org from the NixOS default and had no
-    # route to it. `substituters = lib.mkForce [ ]` below is what put it
-    # back -- 2120.92s and 5 failures became 121.20s and none. Issue #37.
-    parity = {
-      path = "tests/parity";
-      flags = [ perTestTimeout ];
-    };
-    # What pynixd does as root: build users, the store's owner. The other
-    # suites run as `tester`, and one of their tests needs a store that its
-    # user cannot write.
-    root = {
-      path = "tests/root";
-      flags = [ perTestTimeout ];
-      user = "root";
-    };
-  };
 in
 vivariumLib.mkTest (
   { config, ... }:
   {
-    name = "pynixd";
+    name = if extended then "pynixd-extended" else "pynixd";
 
     knobs.backend = {
       env = "PYNIXD_GUEST_BACKEND";
@@ -175,7 +140,9 @@ vivariumLib.mkTest (
     };
 
     # `prepare-<suite>` in the suite's guest only: `--only unit` keeps its
-    # `after` closure, so it boots one guest and not all of them.
+    # `after` closure, so it boots one guest and not all of them. A failure
+    # in one suite's chain skips no other suite: a run that stopped at the
+    # first failure would hide the second.
     phases =
       lib.mapAttrs' (
         name: _:
@@ -195,11 +162,9 @@ vivariumLib.mkTest (
       };
 
     /*
-      One phase per suite, each in the guest named after it, so the suites
-      run at once. `leaks` names no guest, so it holds all.
-      One process per suite: `tests/unit` and `nix-daemon-protocol/tests`
-      interfere, and one process for both is how 57 failures once hid
-      behind a green run of 684 (pynixd issue #33).
+      One phase per suite (`tests/suites.toml`), each in the guest named
+      after it, so the suites run at once. `leaks` names no guest, so it
+      holds all.
 
       `-- -k name` on the driver selects inside every suite; pair it with
       `--only`, because a suite the selection does not reach exits 5 and
@@ -215,7 +180,7 @@ vivariumLib.mkTest (
         "--tb=short"
         "-q"
       ]
-      ++ suite.flags;
+      ++ suite.args;
       user = suite.user or "tester";
       # pynixd makes a cgroup per build (`builder/cgroup.py`). Root needs
       # one too: in the agent's cgroup, pynixd would move the agent into

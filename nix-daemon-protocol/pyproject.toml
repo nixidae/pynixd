@@ -39,6 +39,12 @@ packages = ["src/nix_daemon_protocol"]
 # suite than pynixd's, so it answers the walk-up the same way, and a
 # `pytest.ini` would silently win over everything written here.
 [tool.pytest.ini_options]
+# The standard set by default; `-m extended`, given later, replaces it
+# (nixidae/nixidae#1247).
+addopts = "--strict-markers -m 'not extended'"
+markers = [
+    "extended: the extended set: slow or exhaustive, run on the schedule (nixidae/nixidae#1247)",
+]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]

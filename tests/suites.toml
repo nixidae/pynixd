@@ -1,0 +1,53 @@
+# The pytest suites, one process each. Read by the guest driver
+# (`tests/derivations/guest`), the scheduled workflow (`ci/workflows/extended.nix`)
+# and `tests/unit/test_extended_set.py`.
+#
+# One process per suite: `tests/unit` and `nix-daemon-protocol/tests` interfere,
+# and one process for both is how 57 failures once hid behind a green run of 684
+# (pynixd issue #33).
+#
+# `extended`: the suite holds tests marked `@pytest.mark.extended`
+# (nixidae/nixidae#1247). The standard run deselects them; the extended run
+# selects only them, and only in these suites, because pytest exits 5 on a
+# suite with nothing selected.
+#
+# `--async-test-timeout=600` is against the suite's own 120, which is written
+# for a machine rather than a machine inside one: measured,
+# `test_wire_parity[impure]` timed out at 120.016s on an idle host.
+
+[unit]
+path = "tests/unit"
+args = ["--async-test-timeout=600"]
+
+# Its own project with its own config: it does not know `--async-test-timeout`,
+# and pytest answers an unknown option with exit 4 before collecting anything.
+[protocol]
+path = "nix-daemon-protocol/tests"
+args = []
+
+# One worker per core the guest has: 333 tests ran 401 s in series, and the
+# slowest took 24 s. `worksteal` hands a free worker the next test, so no table
+# of shards needs upkeep.
+[functional]
+path = "tests/functional"
+args = ["--async-test-timeout=600", "--numprocesses=auto", "--dist=worksteal"]
+
+[differential]
+path = "tests/differential"
+args = ["--async-test-timeout=600"]
+
+# Missing for 35 minutes of failure that the guest's own configuration caused:
+# it took cache.nixos.org from the NixOS default and had no route to it. The
+# guest's `substituters = lib.mkForce [ ]` put it back -- 2120.92s and 5
+# failures became 121.20s and none. Issue #37.
+[parity]
+path = "tests/parity"
+args = ["--async-test-timeout=600"]
+
+# What pynixd does as root: build users, the store's owner. The other suites
+# run as `tester`, and one of their tests needs a store that its user cannot
+# write.
+[root]
+path = "tests/root"
+args = ["--async-test-timeout=600"]
+user = "root"
