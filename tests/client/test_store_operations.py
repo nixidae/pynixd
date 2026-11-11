@@ -48,7 +48,8 @@ async def _compare(ops: list[Op]) -> None:
     async with open_arms(example) as arms, huggorm.AsyncSession() as session:
         uris = [f"unix://{arms.control}", f"unix://{arms.pynixd}"]
         stores = {uri: session.store(uri) for uri in uris}
-        divergence = await run(stores, ops, arms.control.parent / f"data{example}")
+        staging = session.store("dummy://?read-only=false")
+        divergence = await run(stores, ops, arms.control.parent / f"data{example}", staging)
     if divergence is not None:
         pytest.fail(divergence.describe(), pytrace=False)
 

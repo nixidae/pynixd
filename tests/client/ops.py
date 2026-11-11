@@ -8,6 +8,8 @@ with the smallest indices.
 
 from __future__ import annotations
 
+import hashlib
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -16,6 +18,8 @@ import anyio
 import huggorm  # type: ignore[import-not-found]  # the type gate has no huggorm; see default.nix
 from huggorm.errors import NixError  # type: ignore[import-not-found]  # the type gate has no huggorm; see default.nix
 from hypothesis import event, strategies as st
+
+from pynixd_store.drv_hash import make_output_path
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -32,6 +36,10 @@ ABSENT = huggorm.StorePath("00000000000000000000000000000000-absent")
 NAME_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+-._?="
 BAD_NAME_CHARS = "/ ~!"
 METHODS = [huggorm.ContentAddressMethod.FLAT, huggorm.ContentAddressMethod.NAR, huggorm.ContentAddressMethod.TEXT]
+# Whether the control parses a `.drv` as Nix master does, refusing a duplicate (NixOS/nix#16284). A lane's
+# huggorm and its `nix daemon` are one release, so the client's own version answers for the daemon.
+_VERSION = re.match(r"(\d+)\.(\d+)", huggorm.nix_version())
+CANONICAL_ATERM = _VERSION is not None and (int(_VERSION[1]), int(_VERSION[2])) >= (2, 36)
 
 
 class Query(StrEnum):
@@ -42,6 +50,13 @@ class Query(StrEnum):
     CLOSURE = "compute_fs_closure"
     REVERSE_CLOSURE = "compute_fs_closure(flip_direction=True)"
     HASH_PART = "query_path_from_hash_part"
+    ALL_VALID = "query_all_valid_paths"
+    DERIVERS = "query_valid_derivers"
+    TOPO_SORT = "topo_sort_paths"
+    OUTPUT_MAP = "query_derivation_output_map"
+    MISSING = "query_missing"
+    NAR = "nar_from_path"
+    TRUSTED = "is_trusted_client"
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +73,23 @@ class Ask:
     targets: tuple[int, ...]
 
 
-type Op = Add | Ask
+@dataclass(frozen=True, slots=True)
+class Derive:
+    """A `.drv` that names `inputs` as sources, written as `writeDerivation` writes one: text, with references."""
+
+    name: str
+    inputs: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class Import:
+    """A NAR and its path info from another store, as `nix copy` and `nix-store --import` send them."""
+
+    name: str
+    data: bytes
+
+
+type Op = Add | Ask | Derive | Import
 # A plain value both arms can be compared on: strings, numbers, bools and tuples of them.
 type Plain = str | int | bool | tuple[Plain, ...] | None
 
@@ -93,7 +124,32 @@ adds = st.builds(
     references=st.lists(indices, max_size=3).map(tuple),
 )
 asks = st.builds(Ask, query=st.sampled_from(Query), targets=st.lists(indices, min_size=1, max_size=3).map(tuple))
-operations = st.lists(st.one_of(adds, asks), min_size=1, max_size=12)
+derives = st.builds(Derive, name=names, inputs=st.lists(indices, max_size=3).map(tuple))
+imports = st.builds(Import, name=names, data=st.binary(max_size=256))
+operations = st.lists(st.one_of(adds, asks, derives, imports), min_size=1, max_size=12)
+
+
+class _Nar(huggorm.Sink):  # type: ignore[misc]  # the type gate has no huggorm; see default.nix
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[bytes] = []
+
+    def write(self, data: bytes) -> None:
+        self.parts.append(data)
+
+    def nar(self) -> bytes:
+        return b"".join(self.parts)
+
+
+class _Bytes(huggorm.Source):  # type: ignore[misc]  # the type gate has no huggorm; see default.nix
+    def __init__(self, data: bytes) -> None:
+        super().__init__()
+        self.data: bytes = data
+
+    def read(self, n: int) -> bytes:
+        out = self.data[:n]
+        self.data = self.data[n:]
+        return out
 
 
 def _pick(known: list[StorePath], index: int) -> StorePath:
@@ -142,6 +198,67 @@ async def _ask(store: AsyncStore, ask: Ask, known: list[StorePath]) -> Plain:
         case Query.HASH_PART:
             found = await store.query_path_from_hash_part(first.to_string()[:32])
             return None if found is None else str(found)
+        case Query.ALL_VALID:
+            return _paths(await store.query_all_valid_paths())
+        case Query.DERIVERS:
+            return _paths(await store.query_valid_derivers(first))
+        case Query.TOPO_SORT:
+            return tuple(str(path) for path in await store.topo_sort_paths(targets))
+        case Query.OUTPUT_MAP:
+            return tuple(
+                sorted((name, str(path)) for name, path in (await store.query_derivation_output_map(first)).items())
+            )
+        case Query.MISSING:
+            missing = await store.query_missing([_target(path) for path in targets])
+            return (
+                _paths(missing.will_build()),
+                _paths(missing.will_substitute()),
+                _paths(missing.unknown()),
+                missing.download_size(),
+                missing.nar_size(),
+            )
+        case Query.NAR:
+            sink = _Nar()
+            await store.nar_from_path(first, sink)
+            return hashlib.sha256(sink.nar()).hexdigest()
+        case Query.TRUSTED:
+            return str(await store.is_trusted_client())
+
+
+def _target(path: StorePath) -> object:
+    """Every output of a derivation, or the path itself."""
+    if path.to_string().endswith(".drv"):
+        return huggorm.DerivedPathBuilt(path, huggorm.OutputsSpec(all=True))
+    return path
+
+
+def _quote(text: str) -> str:
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _aterm(name: str, inputs: list[StorePath]) -> str:
+    """`_unparse` with the output path `checkInvariants` expects.
+
+    With no input derivation, `hashDerivationModulo` hashes the text with every output path blank.
+    The control daemon checks the path, so an error here shows as a refused add in both arms.
+    """
+    masked = hashlib.sha256(_unparse(name, "", inputs).encode()).digest()
+    try:
+        out = make_output_path("out", masked, name, "/nix/store")
+    except ValueError:
+        # A name no output path may carry: the output stays blank, for the daemons to refuse.
+        out = ""
+    return _unparse(name, out, inputs)
+
+
+def _unparse(name: str, out: str, inputs: list[StorePath]) -> str:
+    """A derivation with one input-addressed output, in Nix's ATerm form (`Derivation::unparse`)."""
+    sources = ",".join(_quote(f"/nix/store/{path}") for path in sorted(str(p) for p in inputs))
+    env = ",".join(
+        f"({_quote(key)},{_quote(value)})"
+        for key, value in sorted({"builder": "/bin/sh", "name": name, "out": out, "system": "x86_64-linux"}.items())
+    )
+    return f'Derive([("out",{_quote(out)},"","")],[],[{sources}],"x86_64-linux","/bin/sh",["-c","true"],[{env}])'
 
 
 async def _add(store: AsyncStore, add: Add, known: list[StorePath], scratch: Path) -> StorePath:
@@ -155,13 +272,33 @@ async def _add(store: AsyncStore, add: Add, known: list[StorePath], scratch: Pat
     return await store.add_path_to_store(add.name, str(scratch), method=add.method, references=references)
 
 
+async def _import(store: AsyncStore, staging: AsyncStore, op: Import) -> StorePath:
+    """Add to `staging`, then send its NAR and path info: unsigned, which a trusted client may send."""
+    path = await staging.add_to_store(op.name, op.data)
+    info = await staging.query_path_info(path)
+    sink = _Nar()
+    await staging.nar_from_path(path, sink)
+    await store.add_to_store_nar(info, _Bytes(sink.nar()), check_sigs=False)
+    return path
+
+
 async def _apply(
-    store: AsyncStore, uri: str, op: Op, known: list[StorePath], scratch: Path
+    store: AsyncStore, uri: str, op: Op, known: list[StorePath], scratch: Path, staging: AsyncStore
 ) -> tuple[Outcome, StorePath | None]:
     try:
         match op:
             case Add():
                 path = await _add(store, op, known, scratch)
+                return Outcome(value=str(path)), path
+            case Derive():
+                inputs = [_pick(known, i) for i in op.inputs]
+                text = _aterm(op.name, inputs)
+                path = await store.add_to_store(
+                    f"{op.name}.drv", text.encode(), method=huggorm.ContentAddressMethod.TEXT, references=inputs
+                )
+                return Outcome(value=str(path)), path
+            case Import():
+                path = await _import(store, staging, op)
                 return Outcome(value=str(path)), path
             case Ask():
                 return Outcome(value=await _ask(store, op, known)), None
@@ -170,16 +307,43 @@ async def _apply(
         return Outcome(error=(type(error).__name__, str(error).replace(uri, STORE_URI))), None
 
 
-async def run(arms: dict[str, AsyncStore], ops: list[Op], scratch: Path) -> Divergence | None:
-    """Apply `ops` to both stores, keyed by URI, control first; the first operation whose outcomes differ, or None."""
+def _on_purpose(op: Op, control: Outcome, pynixd: Outcome) -> bool:
+    """A divergence pynixd makes on purpose: the NIX-DEFECT of `drv_parser._check_monotonic`.
+
+    Before 2.36 the control merges a duplicate input source and refuses the output path; pynixd refuses the
+    duplicate, as master does.
+    """
+    return (
+        not CANONICAL_ATERM
+        and isinstance(op, Derive)
+        and control.error is not None
+        and pynixd.error is not None
+        and "error parsing derivation" in pynixd.error[1]
+        and ": duplicate store path '" in pynixd.error[1]
+    )
+
+
+async def run(arms: dict[str, AsyncStore], ops: list[Op], scratch: Path, staging: AsyncStore) -> Divergence | None:
+    """Apply `ops` to both stores, keyed by URI, control first; the first operation whose outcomes differ, or None.
+
+    `staging` is a store of neither arm, where an `Import` makes its NAR.
+    """
     (control_uri, control), (pynixd_uri, pynixd) = arms.items()
     known = [ABSENT]
     for step, op in enumerate(ops):
-        expected, added = await _apply(control, control_uri, op, known, scratch)
-        actual, _ = await _apply(pynixd, pynixd_uri, op, known, scratch)
-        kind = f"add {op.method}" if isinstance(op, Add) else str(op.query)
+        expected, added = await _apply(control, control_uri, op, known, scratch, staging)
+        actual, _ = await _apply(pynixd, pynixd_uri, op, known, scratch, staging)
+        match op:
+            case Add():
+                kind = f"add {op.method}"
+            case Ask():
+                kind = str(op.query)
+            case Derive():
+                kind = "derive"
+            case Import():
+                kind = "import"
         event(f"{kind}: {'error ' + expected.error[0] if expected.error else 'answered'}")
-        if expected != actual:
+        if expected != actual and not _on_purpose(op, expected, actual):
             return Divergence(step=step, op=op, control=expected, pynixd=actual)
         if added is not None:
             known.append(added)
