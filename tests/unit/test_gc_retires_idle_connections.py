@@ -40,7 +40,7 @@ from pynixd.exceptions import ClosingError
 from pynixd.gc import Collector
 from pynixd.handlers.collect_garbage import CollectGarbageHandler
 from pynixd.handlers.pynixd_collect_garbage import PynixdCollectGarbageHandler
-from pynixd.serde import CollectGarbageRequest
+from pynixd.serde import CollectGarbageRequest, CollectGarbageResponse
 from pynixd.serde.auth import Role
 from pynixd.serde.context import WriteContext
 from pynixd.serde.protocol import GCAction
@@ -101,6 +101,7 @@ class FakeStore:
         # `write_router` takes a store that pynixd does not write as its own daemon.
         self.daemon_client = self
         self.store_id = "fake"
+        self.answer = CollectGarbageResponse.fast(paths_deleted=set(), bytes_freed=0, obsolete=0)
 
     def add_path_info(self, _info: Any) -> None:
         return
@@ -113,10 +114,10 @@ class FakeStore:
         self.calls.append(f"call:{type(request).__name__}")
         return "answered"
 
-    async def execute(self, request: Any, client: Any = None) -> str:
+    async def execute(self, request: Any, client: Any = None) -> CollectGarbageResponse:
         """The road through `DaemonStore.collect_garbage`, which forgets what it deleted."""
         self.calls.append(f"execute:{type(request).__name__}")
-        return "answered"
+        return self.answer
 
 
 class FakeProxy:
