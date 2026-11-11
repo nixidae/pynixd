@@ -18,13 +18,21 @@ import pytest
 
 import nix_daemon_protocol
 from nix_daemon_protocol import PROTOCOL_VERSION
+from nix_daemon_protocol.constants import FEATURE_NAMED_ACTIVITIES
 from nix_daemon_protocol.context import ReadContext, WriteContext
 from nix_daemon_protocol.io import BytesReader, BytesWriter
+from nix_daemon_protocol.logs import LogStartActivityStringly
 from nix_daemon_protocol.wire_integer import WireUInt64
 from nix_daemon_protocol.wire_message import WireModel
 from nix_daemon_protocol.wire_ops import WireRequest, WireResponse
 from nix_daemon_protocol.wire_scalar import WireScalar, is_wire_scalar
 from nix_daemon_protocol.wire_string import WireString
+
+
+OWN_SHAPE_FEATURES: dict[type[WireModel], frozenset[str]] = {
+    LogStartActivityStringly: frozenset({FEATURE_NAMED_ACTIVITIES}),
+}
+"""Models that write another model's shape to a peer without the feature, and their own under it."""
 
 
 def _concrete_wire_models() -> list[type[WireModel]]:
@@ -102,11 +110,12 @@ def _model_id(model_type: type[WireModel]) -> str:
 async def test_every_wire_model_roundtrips(model_type: type[WireModel]) -> None:
     """Every model preserves its wire representation through a decode."""
     value = _example_model(model_type)
+    features = OWN_SHAPE_FEATURES.get(model_type, frozenset())
     encoded = BytesWriter()
-    await value.to_writer(WriteContext(writer=encoded, version=PROTOCOL_VERSION))
+    await value.to_writer(WriteContext(writer=encoded, version=PROTOCOL_VERSION, features=features))
 
     reader = BytesReader(encoded.bytes())
-    read_context = ReadContext(reader=reader, version=PROTOCOL_VERSION)
+    read_context = ReadContext(reader=reader, version=PROTOCOL_VERSION, features=features)
     if issubclass(model_type, WireRequest):
         request_type = model_type
         assert await reader.read_uint64() == request_type.op
@@ -115,7 +124,7 @@ async def test_every_wire_model_roundtrips(model_type: type[WireModel]) -> None:
     decoded = await model_type.from_reader(read_context)
 
     reencoded = BytesWriter()
-    await decoded.to_writer(WriteContext(writer=reencoded, version=PROTOCOL_VERSION))
+    await decoded.to_writer(WriteContext(writer=reencoded, version=PROTOCOL_VERSION, features=features))
     assert reencoded.bytes() == encoded.bytes()
 
 

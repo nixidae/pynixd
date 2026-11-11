@@ -59,6 +59,8 @@ class ActivityType(IntEnum):
     POST_BUILD_HOOK = 110
     BUILD_WAITING = 111
     FETCH_TREE = 112
+    STRINGLY = 10113
+    """`actStringly` (`logging.hh:39` of Determinate v3.24.0): a named activity told to a peer that reads no name."""
 
 
 class ResultType(IntEnum):

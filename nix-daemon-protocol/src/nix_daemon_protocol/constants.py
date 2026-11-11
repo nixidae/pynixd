@@ -112,6 +112,11 @@ It gates no shape that a proxy forwards: the answer is one JSON string. So it is
 `SUPPORTED_STANDARD_FEATURES`, and a proxy names it only when its own store can answer.
 """
 
+FEATURE_NAMED_ACTIVITIES: Final[str] = "named-activities"
+"""`STDERR_START_ACTIVITY_STRINGLY`: an activity named by a string, with key and field pairs (Determinate Nix,
+`worker-protocol.hh:158` of v3.24.0). A peer without it gets `actStringly` and the text alone (`logging.hh:225`).
+"""
+
 FEATURE_PYNIXD_BUILD_RESOURCES: Final[str] = "pynixd-build-resources-2"
 """`BuildResult.resources`: what the build used (`build_resources.py`), after Nix's fields.
 
@@ -132,6 +137,7 @@ STANDARD_FEATURES: Final[frozenset[str]] = frozenset(
         FEATURE_ADD_TEMP_ROOTS,
         FEATURE_QUERY_PATH_INFOS,
         FEATURE_QUERY_ACTIVE_BUILDS,
+        FEATURE_NAMED_ACTIVITIES,
     }
 )
 """Each feature name that Nix or Determinate Nix defines, whether or not a peer offers it.
@@ -156,6 +162,7 @@ SUPPORTED_STANDARD_FEATURES: Final[frozenset[str]] = frozenset(
         FEATURE_ADD_TEMP_ROOTS,
         FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS,
         FEATURE_QUERY_PATH_INFOS,
+        FEATURE_NAMED_ACTIVITIES,
     }
 )
 """The standard features that this package has a codec for.
@@ -193,5 +200,7 @@ STDERR_NEXT: Final[int] = 0x6F6C6D67
 STDERR_LAST: Final[int] = 0x616C7473
 STDERR_ERROR: Final[int] = 0x63787470
 STDERR_START_ACTIVITY: Final[int] = 0x53545254
+STDERR_START_ACTIVITY_STRINGLY: Final[int] = 0x5354524E
+"""Determinate Nix's named activity (`worker-protocol.hh:31` of v3.24.0), behind `named-activities`."""
 STDERR_STOP_ACTIVITY: Final[int] = 0x53544F50
 STDERR_RESULT: Final[int] = 0x52534C54

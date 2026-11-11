@@ -44,6 +44,7 @@ from .constants import FEATURE_ADD_TO_STORE_SCANNING as FEATURE_ADD_TO_STORE_SCA
 from .constants import FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS as FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS
 from .constants import FEATURE_DISABLE_SET_OPTIONS as FEATURE_DISABLE_SET_OPTIONS
 from .constants import FEATURE_EXCHANGE_PROTOCOL as FEATURE_EXCHANGE_PROTOCOL
+from .constants import FEATURE_NAMED_ACTIVITIES as FEATURE_NAMED_ACTIVITIES
 from .constants import FEATURE_QUERY_ACTIVE_BUILDS as FEATURE_QUERY_ACTIVE_BUILDS
 from .constants import FEATURE_QUERY_PATH_INFOS as FEATURE_QUERY_PATH_INFOS
 from .constants import FEATURE_REALISATION_WITH_PATH as FEATURE_REALISATION_WITH_PATH
@@ -57,6 +58,7 @@ from .constants import STDERR_LAST as STDERR_LAST
 from .constants import STDERR_NEXT as STDERR_NEXT
 from .constants import STDERR_RESULT as STDERR_RESULT
 from .constants import STDERR_START_ACTIVITY as STDERR_START_ACTIVITY
+from .constants import STDERR_START_ACTIVITY_STRINGLY as STDERR_START_ACTIVITY_STRINGLY
 from .constants import STDERR_STOP_ACTIVITY as STDERR_STOP_ACTIVITY
 from .constants import SUPPORTED_PROTOCOL_VERSIONS as SUPPORTED_PROTOCOL_VERSIONS
 from .constants import SUPPORTED_STANDARD_FEATURES as SUPPORTED_STANDARD_FEATURES
@@ -94,10 +96,12 @@ from .keyed_build_result import KeyedBuildResult as KeyedBuildResult
 from .keyed_drv_output import KeyedDrvOutput as KeyedDrvOutput
 from .logging import ProtocolLogger as ProtocolLogger
 from .logs import ActivityField as ActivityField
+from .logs import ActivityMetadatum as ActivityMetadatum
 from .logs import LogError as LogError
 from .logs import LogNext as LogNext
 from .logs import LogResult as LogResult
 from .logs import LogStartActivity as LogStartActivity
+from .logs import LogStartActivityStringly as LogStartActivityStringly
 from .logs import LogStopActivity as LogStopActivity
 from .logs import TraceLine as TraceLine
 from .logs import WireLogs as WireLogs

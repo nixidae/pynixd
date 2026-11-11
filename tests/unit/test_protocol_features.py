@@ -88,6 +88,7 @@ def test_the_names_of_nix_are_the_names_of_this_package() -> None:
     assert ndp.FEATURE_SUBMIT_OUTPUT == "submit-output"
     assert ndp.FEATURE_QUERY_PATH_INFOS == "queryPathInfos"
     assert ndp.FEATURE_QUERY_ACTIVE_BUILDS == "queryActiveBuilds"
+    assert ndp.FEATURE_NAMED_ACTIVITIES == "named-activities"
     assert ndp.STANDARD_FEATURES >= FEATURES_OF_NIX_LATEST | FEATURES_OF_BUILDER_RPC_V0
 
 
@@ -116,8 +117,12 @@ def test_pynixd_claims_every_feature_of_nix_latest() -> None:
     request between two Nix peers.
 
     `queryPathInfos` is Determinate Nix's op 50, and the local store answers it.
+
+    `named-activities` is Determinate Nix's `STDERR_START_ACTIVITY_STRINGLY`. It writes itself in the old shape
+    to a peer that did not negotiate it.
     """
-    assert frozenset(FEATURES_OF_NIX_LATEST | {ndp.FEATURE_QUERY_PATH_INFOS}) == ndp.SUPPORTED_STANDARD_FEATURES
+    determinate = {ndp.FEATURE_QUERY_PATH_INFOS, ndp.FEATURE_NAMED_ACTIVITIES}
+    assert frozenset(FEATURES_OF_NIX_LATEST | determinate) == ndp.SUPPORTED_STANDARD_FEATURES
 
 
 def test_the_negotiation_is_the_intersection() -> None:

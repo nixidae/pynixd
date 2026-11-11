@@ -27,15 +27,17 @@ import asyncio
 from typing import TYPE_CHECKING, cast
 
 from .constants import (
+    FEATURE_NAMED_ACTIVITIES,
     STDERR_ERROR,
     STDERR_LAST,
     STDERR_NEXT,
     STDERR_RESULT,
     STDERR_START_ACTIVITY,
+    STDERR_START_ACTIVITY_STRINGLY,
     STDERR_STOP_ACTIVITY,
 )
 from .logging import deserialization_scope, reply_error
-from .protocol import FieldType
+from .protocol import ActivityType, FieldType
 from .wire_message import WireField, WireModel
 
 if TYPE_CHECKING:
@@ -95,6 +97,39 @@ class LogStartActivity(WireModel):
     parent: int = 0
 
 
+class ActivityMetadatum(WireModel):
+    """One key and field of `LogStartActivityStringly` (`daemon.cc:191` of Determinate v3.24.0)."""
+
+    key: str = WireField(default="", text_errors="surrogateescape")
+    field: ActivityField = WireField(default_factory=ActivityField)
+
+
+class LogStartActivityStringly(WireModel):
+    """STDERR_START_ACTIVITY_STRINGLY -- an activity named by a string (`daemon.cc:190` of Determinate v3.24.0).
+
+    A writer whose peer did not negotiate `named-activities` writes it as `LogStartActivity` of `actStringly`
+    with the text and no fields, as `Logger::startActivity` does (`logging.hh:225`): a proxy forwards it to each
+    client in the shape that client reads.
+    """
+
+    code: int = WireField(default=STDERR_START_ACTIVITY_STRINGLY, serialize=True, deserialize=False)
+    act_id: int = 0
+    level: int = 0
+    name: str = WireField(default="", text_errors="surrogateescape")
+    text: str = WireField(default="", text_errors="surrogateescape")
+    metadata: list[ActivityMetadatum] = WireField(default_factory=list)
+    parent: int = 0
+
+    async def to_writer(self, ctx: WriteContext) -> None:
+        if FEATURE_NAMED_ACTIVITIES in ctx.features:
+            await super().to_writer(ctx)
+            return
+        plain = LogStartActivity(
+            act_id=self.act_id, level=self.level, type=ActivityType.STRINGLY, text=self.text, parent=self.parent
+        )
+        await plain.to_writer(ctx)
+
+
 class LogStopActivity(WireModel):
     """STDERR_STOP_ACTIVITY — end a tracked activity."""
 
@@ -126,12 +161,13 @@ class LogError(WireModel):
 # ── Tagged-union container ───────────────────────────────────────────
 
 # Union of all log message types — used for type annotations
-LogMessage = LogNext | LogStartActivity | LogStopActivity | LogResult | LogError
+LogMessage = LogNext | LogStartActivity | LogStartActivityStringly | LogStopActivity | LogResult | LogError
 
 # Dispatch table: uint64 code → message class
 _LOG_PARSERS: dict[int, type[WireModel]] = {
     STDERR_NEXT: LogNext,
     STDERR_START_ACTIVITY: LogStartActivity,
+    STDERR_START_ACTIVITY_STRINGLY: LogStartActivityStringly,
     STDERR_STOP_ACTIVITY: LogStopActivity,
     STDERR_RESULT: LogResult,
     STDERR_ERROR: LogError,
