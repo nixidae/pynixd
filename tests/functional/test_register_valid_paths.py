@@ -28,6 +28,7 @@ from pynixd import Server
 from pynixd.serde import QueryPathInfoRequest, StorePath
 from pynixd.store import LocalDBStore, Store
 from pynixd_store.drv_parser import parse_drv
+from pynixd_store.hintfmt import magenta
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.nar_fs import dump_path, restore_path
 from pynixd_store.register import RegistrationError
@@ -165,11 +166,12 @@ def _with(info: ValidPathInfo, **changes: Any) -> ValidPathInfo:
     return info.model_copy(update={"info": info.info.model_copy(update=changes)})
 
 
-async def _refused(nix_b: Path, infos: list[ValidPathInfo], match: str) -> None:
+async def _refused(nix_b: Path, infos: list[ValidPathInfo], match: str) -> RegistrationError:
     async with _store(nix_b) as store:
-        with pytest.raises(RegistrationError, match=match):
+        with pytest.raises(RegistrationError, match=match) as refused:
             await store.register_valid_paths(infos)
     assert _rows(nix_b, _VALID_PATHS) == [], "a refusal leaves no row"
+    return refused.value
 
 
 def _input_addressed(infos: list[ValidPathInfo], *suffixes: str) -> list[ValidPathInfo]:
@@ -202,7 +204,10 @@ async def test_a_false_content_address_is_refused(tmp_path: Path) -> None:
 
 
 async def test_a_derivation_with_a_wrong_output_is_refused(tmp_path: Path) -> None:
-    """`checkInvariants` (`derivations.cc:1384`) reads the file: the database cannot vouch for it."""
+    """`checkInvariants` (`derivations.cc:1384`) reads the file: the database cannot vouch for it.
+
+    It traces the error with the derivation (`derivations.cc:1398`), and so does pynixd.
+    """
     _, nix_b, infos = await _lab(tmp_path)
     two = next(info for info in infos if str(info.path).endswith("-two.drv"))
     drv = nix_b / "nix" / "store" / str(two.path).rsplit("/", 1)[-1]
@@ -210,7 +215,25 @@ async def test_a_derivation_with_a_wrong_output_is_refused(tmp_path: Path) -> No
     doc = next(output.path for output in parse_drv(text).outputs if output.name == "doc")
     drv.chmod(0o644)
     drv.write_text(text.replace(doc, doc[:-1] + "x"))  # noqa: ASYNC240 -- test setup
-    await _refused(nix_b, [_with(two, ca=ContentAddress(value=""))], "derivation has incorrect output")
+    error = await _refused(nix_b, [_with(two, ca=ContentAddress(value=""))], "derivation has incorrect output")
+    assert error.traces == (f"while checking derivation '{magenta(str(two.path))}'",)
+
+
+async def test_a_deferred_output_needs_a_name_a_path_may_carry(tmp_path: Path) -> None:
+    """`processDerivationOutputPaths` (`derivations.cc:1315`) makes the path a deferred output would have.
+
+    The client suite found it (nixidae/nixidae#1249): pynixd skipped a deferred output and accepted the name.
+    """
+    _, nix_b, infos = await _lab(tmp_path)
+    [template] = _input_addressed(infos, "-flat")
+    name = "swga9llxp3gm8jblg04y5c5gb07ssxjb-.drv"
+    (nix_b / "nix" / "store" / name).write_text(  # noqa: ASYNC240 -- test setup
+        'Derive([("out","","","")],[],[],"x86_64-linux","/bin/sh",["-c","true"],'
+        '[("builder","/bin/sh"),("name",""),("out",""),("system","x86_64-linux")])'
+    )
+    drv = template.model_copy(update={"path": StorePath(path=f"/nix/store/{name}")})
+    error = await _refused(nix_b, [drv], "name must not be empty")
+    assert error.traces == (f"while checking derivation '{magenta(str(drv.path))}'",)
 
 
 async def test_pynixd_writes_needs_the_opt_in(tmp_path: Path) -> None:

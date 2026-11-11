@@ -140,9 +140,18 @@ async def _derivation_outputs(drv_path: str, layout: StoreLayout, features: Coll
     # The name is the path's, never `env["name"]`: `parseDerivation` takes it from the path (`derivations.cc:444`),
     # so the name check of `checkInvariants` cannot fail here. A structured-attrs derivation has no `env["name"]`.
     drv_name = store_path_name(drv_path).removesuffix(_DRV_EXTENSION)
-    store_dir = str(layout.store_dir)
     if (missing := _missing_feature(parsed, drv_name, features)) is not None:
         raise RegistrationError(missing)
+    try:
+        return await _check_invariants(parsed, drv_path, drv_name, layout)
+    except RegistrationError as error:
+        # `Derivation::checkInvariants(store, drvPath)` (`derivations.cc:1398`) traces every check below the name.
+        raise error.with_trace(f"while checking derivation '{magenta(drv_path)}'") from None
+
+
+async def _check_invariants(parsed: Derivation, drv_path: str, drv_name: str, layout: StoreLayout) -> dict[str, str]:
+    """`Derivation::checkInvariants(store)`: the output types and paths, and the variable that names each."""
+    store_dir = str(layout.store_dir)
     _check_output_types(parsed)
     # `checkInvariants` of Nix master (`derivations.cc:381`, `:397`): a builder-rpc-v0 builder sees no output path,
     # so no variable names one, and only a content-addressed derivation may use it.
@@ -177,6 +186,18 @@ async def _derivation_outputs(drv_path: str, layout: StoreLayout, features: Coll
         elif kind is OutputKind.CA_FIXED:
             address = fixed_output_address(output.hash_algo, output.hash_value)
             expected = content_addressed_path(address, output_path_name(drv_name, output.name), (), store_dir)
+        elif kind is OutputKind.DEFERRED:
+            # With inputs that hash (`DrvHash`), Nix makes the path a deferred output would have
+            # (`derivations.cc:1315`), and refuses a name no path may carry. A deferred output needs no row.
+            if hashes is None:
+                hashes = await output_hashes(parsed, read)
+            digest = None if hashes is None else hashes.get(output.name)
+            if digest is not None:
+                try:
+                    make_output_path(output.name, bytes.fromhex(digest), drv_name, store_dir)
+                except ValueError as error:
+                    raise RegistrationError(str(error)) from None
+            continue
         else:
             continue
         outputs[output.name] = expected
