@@ -102,8 +102,14 @@ class TestRestrictOverrides:
 
     POLICY = TrustPolicy(substituters=("https://cache.nixos.org/",), trusted_substituters=("https://t.example/",))
 
-    def test_the_four_unrestricted_settings_pass(self) -> None:
-        overrides = {"timeout": "5", "max-silent-time": "6", "build-poll-interval": "1", "connect-timeout": "2"}
+    def test_the_five_unrestricted_settings_pass(self) -> None:
+        overrides = {
+            "timeout": "5",
+            "max-silent-time": "6",
+            "build-poll-interval": "1",
+            "connect-timeout": "2",
+            "session-id": "a-session",
+        }
         assert restrict_overrides(overrides, self.POLICY) == (overrides, [])
 
     def test_an_alias_is_refused(self) -> None:

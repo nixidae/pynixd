@@ -68,9 +68,12 @@ class TrustPolicy:
         )
 
 
-_UNRESTRICTED_SETTINGS = frozenset({"timeout", "max-silent-time", "build-poll-interval", "connect-timeout"})
+_UNRESTRICTED_SETTINGS = frozenset(
+    {"timeout", "max-silent-time", "build-poll-interval", "connect-timeout", "session-id"}
+)
 """What an untrusted client may set, `daemon.cc:297`. Nix compares the
-primary name alone, so an alias such as `build-timeout` is refused."""
+primary name alone, so an alias such as `build-timeout` is refused.
+`session-id` is Determinate Nix's (`daemon.cc:321` of v3.24.0): it labels the client's JSON log records."""
 
 _SUBSTITUTER_NAMES = frozenset({"substituters", "binary-caches"})
 
