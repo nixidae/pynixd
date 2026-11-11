@@ -587,6 +587,13 @@ class Placer[S: PlacedStore]:
         # dropped it, for pressure or for disk, and it waits: full is full.
         notes.ranked = list(ranked)
         if not ranked and not local_can_build and (here_only or not self._has_compatible_store(build, build_features)):
+            # Stores the build failed on too often can build it, so `reject`'s reasons are not true.
+            # nixidae/nixidae#1273.
+            used_up = self._compatible_and_used_up(build, build_features)
+            if used_up:
+                notes.end(Outcome.FAILED, "every capable store failed it too often")
+                await self._fail_all_compatible_blacklisted(build, build_features, used_up)
+                return False
             notes.end(Outcome.FAILED, "no store can build it")
             await self._fail_no_compatible_store(build, build_features)
             return False
@@ -663,20 +670,13 @@ class Placer[S: PlacedStore]:
                 reserved[rs.store_id] = reserved.get(rs.store_id, 0) + build.expected_peak_bytes
         else:
             # All compatible stores are busy, or this build can't be placed
-            all_compatible = [
-                s
-                for s in self._stores_of(build)
-                if s.supports_derivation(build.request.derivation.platform, build_features)
-            ]
             # A builder of a dynamic platform can still register, and its
             # registration runs a pass (`on_store_added`) that places the build.
-            if (
-                all_compatible
-                and all(build.is_blacklisted(s.store_id) for s in all_compatible)
-                and not self._dynamic_supports_build(build, build_features)
-            ):
+            dynamic = self._dynamic_supports_build(build, build_features)
+            used_up = None if dynamic else self._compatible_and_used_up(build, build_features)
+            if used_up:
                 notes.end(Outcome.FAILED, "every capable store failed it too often")
-                await self._fail_all_compatible_blacklisted(build, build_features, all_compatible)
+                await self._fail_all_compatible_blacklisted(build, build_features, used_up)
                 return False
             notes.end(Outcome.WAITING, "no store is a candidate now")
             return True
@@ -781,6 +781,17 @@ class Placer[S: PlacedStore]:
     def _dynamic_supports_build(self, build: QueuedBuild, build_features: set[str]) -> bool:
         """`_dynamic_supports`, for a build that may use pynixd's own stores; a client's builders register none."""
         return build.builders is None and self._dynamic_supports(build.request.derivation.platform, build_features)
+
+    def _compatible_and_used_up(self, build: QueuedBuild, build_features: set[str]) -> list[S] | None:
+        """The stores that support *build*, when the build failed on each of them too often; else `None`."""
+        compatible = [
+            s
+            for s in self._stores_of(build)
+            if s.supports_derivation(build.request.derivation.platform, build_features)
+        ]
+        if compatible and all(build.is_blacklisted(s.store_id) for s in compatible):
+            return compatible
+        return None
 
     def _has_compatible_store(
         self,
