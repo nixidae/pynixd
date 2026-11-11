@@ -38,13 +38,10 @@ from .queries import (
     IS_VALID_PATH,
     QUERY_ALL_VALID_PATHS,
     QUERY_CLOSURE,
-    QUERY_CLOSURE_WITH_INFO,
     QUERY_DERIVATION_OUTPUT_MAP_BATCH,
     QUERY_DERIVATION_OUTPUTS,
     QUERY_PATH_FROM_HASH_PART,
     QUERY_PATH_FROM_NAR_HASH,
-    QUERY_PATH_INFO_WITH_REFS,
-    QUERY_PATH_INFOS_BATCH,
     QUERY_REALISATION_BY_HASH,
     QUERY_REALISATION_BY_PATH,
     QUERY_REFERENCES_BATCH,
@@ -72,7 +69,7 @@ if TYPE_CHECKING:
 
 def path_info(row: tuple[Any, ...], references: Iterable[str]) -> ValidPathInfo:
     """A `ValidPaths` row and its references, as `LocalStore::queryPathInfoInternal` reads them (`local-store.cc:667`)."""
-    path, deriver, nar_hash, registration_time, nar_size, ultimate, sigs, ca = row
+    path, deriver, nar_hash, registration_time, nar_size, ultimate, sigs, ca, provenance = row
     return ValidPathInfo(
         path=StorePath(path=path),
         info=UnkeyedValidPathInfo(
@@ -84,6 +81,7 @@ def path_info(row: tuple[Any, ...], references: Iterable[str]) -> ValidPathInfo:
             ultimate=bool(ultimate),
             sigs={Signature(**Signature.from_str(sig)) for sig in (sigs or "").split()},
             ca=ContentAddress(value=ca or ""),
+            provenance=provenance or "",
         ),
     )
 
@@ -176,11 +174,11 @@ class StoreEngine:
         if found is not None:
             row, references = found
             return None if row is None else path_info(row, references)
-        async with self.db.execute(QUERY_PATH_INFO_WITH_REFS, (path,)) as cursor:
+        async with self.db.execute(self.db.statements.path_info_with_refs, (path,)) as cursor:
             rows = [tuple(r) for r in await cursor.fetchall()]
         if not rows:
             return None
-        return path_info(rows[0][:8], {r[8] for r in rows if r[8] is not None})
+        return path_info(rows[0][:9], {r[9] for r in rows if r[9] is not None})
 
     async def read_derivation(self, drv_path: str) -> Derivation | None:
         """`Store::readDerivation`: the parsed `.drv` file, or `None` when it is not on disk."""
@@ -246,14 +244,14 @@ class StoreEngine:
 
     async def query_closure_with_info(self, paths: Iterable[str]) -> list[ValidPathInfo]:
         """The closure of *paths*, each with its info."""
-        async with self.db.execute(QUERY_CLOSURE_WITH_INFO, (json.dumps(list(paths)),)) as cursor:
+        async with self.db.execute(self.db.statements.closure_with_info, (json.dumps(list(paths)),)) as cursor:
             rows = await cursor.fetchall()
-        return [path_info(row[:8], (row[8] or "").split()) for row in rows]
+        return [path_info(row[:9], (row[9] or "").split()) for row in rows]
 
     async def query_path_infos(self, paths: Iterable[str]) -> list[ValidPathInfo]:
         """The info of each valid one of *paths*."""
         paths_json = json.dumps(list(paths))
-        async with self.db.execute(QUERY_PATH_INFOS_BATCH, (paths_json,)) as cursor:
+        async with self.db.execute(self.db.statements.path_infos_batch, (paths_json,)) as cursor:
             rows = await cursor.fetchall()
         async with self.db.execute(QUERY_REFERENCES_BATCH, (paths_json,)) as cursor:
             reference_rows = await cursor.fetchall()
@@ -382,6 +380,7 @@ class StoreEngine:
         *,
         root: Callable[[str], Awaitable[None]],
         repair: bool = False,
+        provenance: str = "",
         ignored_acls: frozenset[str] = add.IGNORED_ACLS,
         scan: bool = False,
         auto_optimise: bool | None = None,
@@ -397,6 +396,7 @@ class StoreEngine:
             source,
             root=root,
             repair=repair,
+            provenance=provenance,
             ignored_acls=ignored_acls,
             scan=scan,
             auto_optimise=auto_optimise,
@@ -421,7 +421,7 @@ class StoreEngine:
         features = settings.experimental_features
         registrations = [await register.prepare(info, self.layout, features) for info in infos]
         async with self.db.acquire_conn() as conn:
-            await register.register_valid_paths(conn, registrations)
+            await register.register_valid_paths(conn, registrations, self.db.statements)
         for info in infos:
             self._on_change(info.path)
 

@@ -532,6 +532,7 @@ async def add_dump(
     *,
     root: Callable[[str], Awaitable[None]],
     repair: bool = False,
+    provenance: str = "",
     ignored_acls: frozenset[str] = IGNORED_ACLS,
     scan: bool = False,
     auto_optimise: bool | None = None,
@@ -597,6 +598,7 @@ async def add_dump(
                         ultimate=False,
                         sigs=set(),
                         ca=WireContentAddress(value=ca.render()),
+                        provenance=provenance,
                     ),
                 )
                 await engine.register_valid_paths([info])

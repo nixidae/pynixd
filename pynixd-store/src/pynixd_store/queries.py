@@ -5,10 +5,14 @@ operation classes.  These are pure string constants used by
 LocalDBStore for SQLite fast-path queries.
 """
 
+from __future__ import annotations
+
+from dataclasses import dataclass
+
 IS_VALID_PATH = "SELECT 1 FROM ValidPaths WHERE path = ? LIMIT 1"
 
-QUERY_PATH_INFO_WITH_REFS = """
-SELECT v.path, v.deriver, v.hash, v.registrationTime, v.narSize, v.ultimate, v.sigs, v.ca, vp.path
+_QUERY_PATH_INFO_WITH_REFS = """
+SELECT v.path, v.deriver, v.hash, v.registrationTime, v.narSize, v.ultimate, v.sigs, v.ca, {provenance}, vp.path
 FROM ValidPaths v
 LEFT JOIN Refs r ON r.referrer = v.id
 LEFT JOIN ValidPaths vp ON vp.id = r.reference
@@ -78,7 +82,7 @@ SELECT vp.path FROM closure c
 JOIN ValidPaths vp ON c.id = vp.id
 """
 
-QUERY_CLOSURE_WITH_INFO = """
+_QUERY_CLOSURE_WITH_INFO = """
 WITH RECURSIVE closure(id) AS (
     SELECT id FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
     UNION
@@ -87,7 +91,7 @@ WITH RECURSIVE closure(id) AS (
     JOIN Refs r ON c.id = r.referrer
 )
 SELECT vp.path, vp.deriver, vp.hash, vp.registrationTime, vp.narSize,
-       vp.ultimate, vp.sigs, vp.ca,
+       vp.ultimate, vp.sigs, vp.ca, {provenance},
        (SELECT group_concat(ref_vp.path, ' ')
         FROM Refs r
         JOIN ValidPaths ref_vp ON r.reference = ref_vp.id
@@ -97,9 +101,9 @@ JOIN ValidPaths vp ON c.id = vp.id
 ORDER BY vp.id ASC
 """
 
-QUERY_PATH_INFOS_BATCH = """
+_QUERY_PATH_INFOS_BATCH = """
 SELECT vp.path, vp.deriver, vp.hash, registrationTime, narSize,
-       vp.ultimate, vp.sigs, vp.ca
+       vp.ultimate, vp.sigs, vp.ca, {provenance}
 FROM ValidPaths vp
 WHERE vp.path IN (SELECT value FROM json_each(?))
 """
@@ -121,7 +125,7 @@ WHERE vp_drv.path IN (SELECT value FROM json_each(?))
 
 # Nix's own statements for a registration, `local-store.cc:331-348` of 2.34,
 # the same on master. Every write to Nix's tables uses one of these.
-REGISTER_VALID_PATH = "insert into ValidPaths (path, hash, registrationTime, deriver, narSize, ultimate, sigs, ca) values (?, ?, ?, ?, ?, ?, ?, ?);"
+_REGISTER_VALID_PATH = "insert into ValidPaths (path, hash, registrationTime, deriver, narSize, ultimate, sigs, ca{provenance}) values (?, ?, ?, ?, ?, ?, ?, ?{value});"
 UPDATE_PATH_INFO = "update ValidPaths set narSize = ?, hash = ?, ultimate = ?, sigs = ?, ca = ? where path = ?;"
 # The fields `updatePathInfo` writes back, read for `addSignatures`: it changes only `sigs` and keeps the rest.
 QUERY_PATH_INFO_FOR_UPDATE = "select narSize, hash, ultimate, sigs, ca from ValidPaths where path = ?;"
@@ -131,3 +135,36 @@ INVALIDATE_PATH = "delete from ValidPaths where path = ?;"
 ADD_REFERENCE = "insert or replace into Refs (referrer, reference) values (?, ?);"
 ADD_DERIVATION_OUTPUT = "insert or replace into DerivationOutputs (drv, id, path) values (?, ?, ?);"
 QUERY_VALID_PATH_ID = "select id from ValidPaths where path = ?;"
+
+
+@dataclass(frozen=True, slots=True)
+class PathInfoStatements:
+    """The statements that read or write a whole `ValidPaths` row, for a table with or without `provenance`.
+
+    Determinate Nix adds the column with its `provenance` experimental feature, in the migration
+    `20241024-provenance` (`local-store.cc:679` of v3.24.0). Without it each read answers `NULL` in its place, so
+    a row has one shape: the eight columns of Nix, then provenance. `UPDATE_PATH_INFO` leaves provenance alone, as
+    Nix's does (`local-store.cc:388`).
+    """
+
+    provenance: bool
+    path_info_with_refs: str
+    closure_with_info: str
+    path_infos_batch: str
+    register_valid_path: str
+
+
+def path_info_statements(*, provenance: bool) -> PathInfoStatements:
+    column = "{table}.provenance" if provenance else "NULL"
+    return PathInfoStatements(
+        provenance=provenance,
+        path_info_with_refs=_QUERY_PATH_INFO_WITH_REFS.format(provenance=column.format(table="v")),
+        closure_with_info=_QUERY_CLOSURE_WITH_INFO.format(provenance=column.format(table="vp")),
+        path_infos_batch=_QUERY_PATH_INFOS_BATCH.format(provenance=column.format(table="vp")),
+        register_valid_path=_REGISTER_VALID_PATH.format(
+            provenance=", provenance" if provenance else "", value=", ?" if provenance else ""
+        ),
+    )
+
+
+WITHOUT_PROVENANCE = path_info_statements(provenance=False)

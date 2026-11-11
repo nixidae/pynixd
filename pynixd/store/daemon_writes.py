@@ -209,6 +209,7 @@ class DaemonWrites:
         source: Source,
         *,
         repair: bool = False,
+        provenance: str = "",
         options: SetOptionsRequest | None = None,
         logs: ClientConn | None = None,
         root: Callable[[str], Awaitable[None]],
@@ -227,6 +228,7 @@ class DaemonWrites:
             cam=ContentAddress(value=method_algo),
             references={StorePath(path=ref) for ref in references},
             repair=int(repair),
+            provenance=provenance,
         )
         async with self.store.transfer_conn(options) as conn:
             await conn.apply_options(options)

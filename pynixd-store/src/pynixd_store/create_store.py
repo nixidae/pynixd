@@ -133,6 +133,9 @@ create index if not exists IndexRealisationsRefsOnOutputPath on Realisations(out
 #: The index of `schema.sql` in Nix 2.34 that Nix 2.35 drops (`20260309-drop-redundant-indexreferrer`).
 INDEX_REFERRER_2_34 = "create index if not exists IndexReferrer on Refs(referrer);"
 
+PROVENANCE_MIGRATION = "20241024-provenance"
+PROVENANCE_COLUMN = "alter table ValidPaths add column provenance text"
+
 _RESERVED_SIZE = 8 * 1024 * 1024  # `gc-reserved-space` (`local-settings.hh:46`)
 
 
@@ -143,13 +146,20 @@ def _value(config: Mapping[str, Any], name: str, default: Any) -> Any:
 
 def _migrations(config: Mapping[str, Any], nix_version: str) -> list[tuple[str, str]]:
     """`upgradeDBSchema` (`local-store.cc:582`): each migration a Nix of *nix_version* runs on this configuration."""
-    ca = "ca-derivations" in _value(config, "experimental-features", ())
+    features = _value(config, "experimental-features", ())
+    ca = "ca-derivations" in features
+    found: list[tuple[str, str]] = []
     if not nix_at_least(nix_version, 2, 35):
-        return [("20220326-ca-derivations", CA_SCHEMA_2_34)] if ca else []
-    found = []
-    if ca:
-        found.append(("20251017-ca-derivations", CA_SCHEMA))
-    found.append(("20260309-drop-redundant-indexreferrer", "drop index if exists IndexReferrer"))
+        if ca:
+            found.append(("20220326-ca-derivations", CA_SCHEMA_2_34))
+    else:
+        if ca:
+            found.append(("20251017-ca-derivations", CA_SCHEMA))
+        found.append(("20260309-drop-redundant-indexreferrer", "drop index if exists IndexReferrer"))
+    # Determinate Nix runs this one last, with its `provenance` experimental feature alone (`local-store.cc:679` of
+    # v3.24.0). Another Nix names no such feature, so its configuration never holds it.
+    if "provenance" in features:
+        found.append((PROVENANCE_MIGRATION, PROVENANCE_COLUMN))
     return found
 
 

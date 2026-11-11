@@ -39,7 +39,6 @@ from .queries import (
     QUERY_VALID_PATH_ID,
     REGISTER_BUILD_TRACE_BY_PATH,
     REGISTER_REALISATION_BY_HASH,
-    REGISTER_VALID_PATH,
     UPDATE_BUILD_TRACE_BY_PATH,
     UPDATE_PATH_INFO,
     UPDATE_REALISATION_BY_HASH,
@@ -53,6 +52,7 @@ if TYPE_CHECKING:
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
     from .drv_parser import Derivation
+    from .queries import PathInfoStatements
     from .store_layout import StoreLayout
 
 _DRV_EXTENSION = ".drv"
@@ -76,6 +76,7 @@ class Registration:
     ca: str | None
     references: frozenset[str]
     derivation_outputs: Mapping[str, str]
+    provenance: str | None = None
 
 
 def _signatures(sigs: Iterable[Signature]) -> str | None:
@@ -123,6 +124,7 @@ async def prepare(info: ValidPathInfo, layout: StoreLayout, features: Collection
         ca=ca,
         references=references,
         derivation_outputs=outputs,
+        provenance=unkeyed.provenance or None,
     )
 
 
@@ -268,7 +270,9 @@ def _base_name(path: str) -> str:
     return path.rsplit("/", 1)[-1]
 
 
-async def register_valid_paths(conn: aiosqlite.Connection, registrations: Iterable[Registration]) -> None:
+async def register_valid_paths(
+    conn: aiosqlite.Connection, registrations: Iterable[Registration], statements: PathInfoStatements
+) -> None:
     """Write *registrations* in one transaction, as `registerValidPaths` does.
 
     The caller holds the connection and the right to write; a refusal rolls
@@ -287,10 +291,20 @@ async def register_valid_paths(conn: aiosqlite.Connection, registrations: Iterab
             if await _path_id(conn, path) is not None:
                 await conn.execute(UPDATE_PATH_INFO, (row.nar_size, row.nar_hash, row.ultimate, row.sigs, row.ca, path))
                 continue
-            cursor = await conn.execute(
-                REGISTER_VALID_PATH,
-                (path, row.nar_hash, row.registration_time, row.deriver, row.nar_size, row.ultimate, row.sigs, row.ca),
+            values: tuple[object, ...] = (
+                path,
+                row.nar_hash,
+                row.registration_time,
+                row.deriver,
+                row.nar_size,
+                row.ultimate,
+                row.sigs,
+                row.ca,
             )
+            # A table without the column drops the provenance, as Determinate Nix does without the experimental feature.
+            if statements.provenance:
+                values += (row.provenance,)
+            cursor = await conn.execute(statements.register_valid_path, values)
             drv_id = cursor.lastrowid
             await cursor.close()
             for name, output in sorted(row.derivation_outputs.items()):

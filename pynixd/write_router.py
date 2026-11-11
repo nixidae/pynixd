@@ -65,6 +65,7 @@ class Dump:
     name: str
     method_algo: str
     references: frozenset[str]
+    provenance: str = ""
 
 
 @dataclass(frozen=True)
@@ -347,6 +348,7 @@ class WriteRouter:
                 dump.references,
                 source,
                 repair=write.repair,
+                provenance=dump.provenance,
                 options=client.options,
                 logs=client.conn,
                 root=client.root,
@@ -366,6 +368,7 @@ class WriteRouter:
             Metered(source, meter.on_bytes),
             root=client.root,
             repair=write.repair,
+            provenance=dump.provenance,
             ignored_acls=settings.ignored_acls,
             auto_optimise=_override(client, "auto-optimise-store"),
             fsync=_override(client, "fsync-store-paths"),

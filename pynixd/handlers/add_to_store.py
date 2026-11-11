@@ -44,7 +44,7 @@ class AddToStoreHandler(Handler):
         if req.repair and ctx.role < Role.ADMIN:
             raise ClosingError("you are not privileged to repair paths")
 
-        dump = Dump(req.path_name, str(req.cam), frozenset(str(ref) for ref in req.references))
+        dump = Dump(req.path_name, str(req.cam), frozenset(str(ref) for ref in req.references), req.provenance)
 
         async def sign(info: ValidPathInfo, conn: Connection | None) -> ValidPathInfo:
             # Nix signs build outputs alone; an untrusted client's path carries no

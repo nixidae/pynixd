@@ -51,7 +51,7 @@ from .db_migrations import (
     SchemaState,
     apply_migrations,
 )
-from .queries import IS_VALID_PATH, QUERY_PATH_INFO_WITH_REFS
+from .queries import IS_VALID_PATH, WITHOUT_PROVENANCE, PathInfoStatements, path_info_statements
 from .store_layout import StoreLayout
 from .store_path import StorePath
 
@@ -350,8 +350,9 @@ class SyncReader:
     as long as a Python call and not for a thread hop.
     """
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, statements: PathInfoStatements = WITHOUT_PROVENANCE) -> None:
         self.db_path = db_path
+        self.statements = statements
         self._conn: sqlite3.Connection | None = None
         self._unavailable = False
 
@@ -413,7 +414,7 @@ class SyncReader:
         if conn is None:
             return None
         try:
-            cursor = conn.execute(QUERY_PATH_INFO_WITH_REFS, (path,))
+            cursor = conn.execute(self.statements.path_info_with_refs, (path,))
         except sqlite3.Error:
             log.debug("sync_reader_query_failed", exc_info=True)
             return None
@@ -423,7 +424,7 @@ class SyncReader:
             cursor.close()
         if not rows:
             return (None, [])
-        return (tuple(rows[0][:8]), [r[8] for r in rows if r[8] is not None])
+        return (tuple(rows[0][:9]), [r[9] for r in rows if r[9] is not None])
 
     def close(self) -> None:
         if self._conn is not None:
@@ -496,6 +497,9 @@ class LocalStoreDB:
         that Nix's own tables are readable, which is a different question.
         """
 
+        self.statements = WITHOUT_PROVENANCE
+        """The `ValidPaths` statements for the columns this database has. `open` checks for `provenance` once."""
+
         self.synchronous: str | None = None
         """`pragma synchronous` for a writing connection: `NORMAL`, or `OFF` without `fsync-metadata`
         (`local-store.cc:536`). `None` until the engine reads its settings; SQLite's default stands until then."""
@@ -548,7 +552,7 @@ class LocalStoreDB:
         """
         if not self.active or self.db_path is None:
             return None
-        return SyncReader(self.db_path)
+        return SyncReader(self.db_path, self.statements)
 
     @asynccontextmanager
     async def acquire_conn(self) -> AsyncIterator[aiosqlite.Connection]:
@@ -729,6 +733,9 @@ class LocalStoreDB:
                 # `use-sqlite-wal` is off.
                 async with db.execute("SELECT 1 FROM ValidPaths LIMIT 1") as cursor:
                     await cursor.fetchone()
+                async with db.execute("SELECT name FROM pragma_table_info('ValidPaths')") as cursor:
+                    columns = {str(row[0]) for row in await cursor.fetchall()}
+                instance.statements = path_info_statements(provenance="provenance" in columns)
 
         except (aiosqlite.Error, OSError) as e:
             log.warning(
@@ -760,6 +767,7 @@ class LocalStoreDB:
             mode="read-write" if not read_only else "read-only",
             pynixd_schema_version=instance.schema.version,
             pynixd_tables=instance.schema.usable,
+            provenance=instance.statements.provenance,
         )
         return instance
 
