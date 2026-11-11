@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 import aiosqlite
 import anyio
 import structlog
+from anyio.lowlevel import checkpoint
 
 from pynixd_store.db_migrations import PLACEMENT_CANDIDATE_TABLE, PLACEMENT_DECISION_TABLE
 
@@ -308,7 +309,7 @@ class PlacementTrace:
                 if count < self.settings.sweep_chunk:
                     break
                 # The daemon's own writers get the lock between two chunks.
-                await anyio.sleep(0)
+                await checkpoint()
         except aiosqlite.Error:
             log.warning("placement_trace_sweep_failed", removed=removed, exc_info=True)
         if removed:
