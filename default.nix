@@ -125,6 +125,9 @@ let
   # which needs Lillecarl/nix#413 fixed to pass. Its guests run the same Nix as their system Nix.
   nixftNix = defaultNix.appendPatches [ ./nix/functional-tests/nix-ssh-ng-keep-failed.patch ];
   withNixftNix = test: test.extend { modules = [ { defaults.nix.package = nixftNix; } ]; };
+  # Determinate Nix v3.24.0 as it ships: huggorm's component build of the pinned fork, without huggorm's patches.
+  determinateNix =
+    (import "${sources.huggorm}/nix/determinate.nix" { inherit pkgs sources; }).components.nix-cli;
   vivarium-runner = vivariumLib.runner;
 
   # Allow-lists, by extension, under the directories that hold source. The run
@@ -441,14 +444,25 @@ let
     wirelogPython = pyinstance;
   };
 
-  nixFunctionalTests = lib.mapAttrs (
-    version: nix:
-    pkgs.callPackage ./nix/functional-tests/package.nix {
-      inherit nix version;
-      pynixd = package;
-      wirelogPython = pyinstance;
-    }
-  ) supportedNix;
+  nixFunctionalTests =
+    lib.mapAttrs (
+      version: nix:
+      pkgs.callPackage ./nix/functional-tests/package.nix {
+        inherit nix version;
+        pynixd = package;
+        wirelogPython = pyinstance;
+      }
+    ) supportedNix
+    // {
+      # Determinate Nix as the client, the scripts and the control daemon (nixidae/nixidae#1250).
+      determinate = pkgs.callPackage ./nix/functional-tests/package.nix {
+        nix = determinateNix;
+        testSource = sources.nix-determinate;
+        version = "determinate";
+        pynixd = package;
+        wirelogPython = pyinstance;
+      };
+    };
 
   # The workflow schema, the steps a job asks for by name, and the writer
   # that turns a workflow value into YAML. It takes `lib` and nothing else,
@@ -653,6 +667,18 @@ let
         inherit vivariumLib;
         nixft = nixftLane;
         noDaemon = true;
+      }
+    );
+
+    # The same suite with Determinate Nix as the client, the scripts and the control daemon. The guest's own Nix
+    # stays the default one: `build-remote.sh` reaches it over `ssh-ng://localhost` (nixidae/nixidae#1250).
+    guest-nixft-determinate = withDefaultNix (
+      pkgs.callPackage ./tests/derivations/guest-nixft {
+        pynixd-lib = library;
+        src = testSrc;
+        inherit vivariumLib;
+        nixft = nixFunctionalTests.determinate;
+        name = "nixft-determinate";
       }
     );
 

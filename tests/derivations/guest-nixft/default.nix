@@ -21,12 +21,13 @@
   nixft,
   # pynixd runs no Nix daemon under it: `NIXFT_NO_DAEMON=1` of the shim. Issue #1155.
   noDaemon ? false,
+  name ? if noDaemon then "nixft-no-daemon" else "nixft",
 }:
 
 vivariumLib.mkTest (
   { config, ... }:
   {
-    name = if noDaemon then "nixft-no-daemon" else "nixft";
+    inherit name;
 
     backend = "qemu";
 

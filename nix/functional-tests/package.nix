@@ -29,6 +29,9 @@
   # The Nix whose daemon serves the control run. Its `src` holds the test
   # scripts, so the client, the scripts and the control daemon are one version.
   nix,
+  # The Nix source tree that holds `tests/functional`. A component build of Determinate Nix carries a file set
+  # of its own directories in `src`, and no tests.
+  testSource ? nix.src,
   # The daemon proxy under test.
   pynixd,
   # A python that has `nix_daemon_protocol` importable. The recorder of the
@@ -164,7 +167,7 @@ writeShellApplication {
   text = ''
     NIXFT_VERSION=${lib.escapeShellArg version}
     NIX_PKG=${lib.escapeShellArg nix}
-    NIX_SRC=${lib.escapeShellArg nix.src}
+    NIX_SRC=${lib.escapeShellArg testSource}
     PYNIXD_BIN=${lib.escapeShellArg (lib.getExe' pynixd "pynixd")}
     WIRELOG_PYTHON=${lib.escapeShellArg wirelogInterpreter}
     SCRIPTS=${lib.escapeShellArg scripts}
