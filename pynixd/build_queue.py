@@ -18,7 +18,7 @@ from . import metrics, wire
 from .activity import next_activity_id
 from .answer import Answer
 from .exceptions import DelegationLoopError
-from .serde import BuildDerivationResponse, BuildMode, BuildResult, BuildResultStatus
+from .serde import BuildDerivationResponse, BuildMode, BuildResult, BuildResultStatus, LogNext
 from .serde.context import WriteContext
 from .state_models import QueueCounts
 
@@ -138,6 +138,8 @@ class QueuedBuild:
 
         The first client to ask decides, as for `options`.
         """
+        self.told_wait: str | None = None
+        """What the clients last read of why this build waits; `tell_wait` repeats nothing."""
         self.last_traced: tuple[tuple[object, ...], float] | None = None
         """The key of the last decision traced for this build, and when."""
         self.last_output_at: float | None = None
@@ -346,6 +348,12 @@ class QueuedBuild:
         """Store a log entry and fan out to all subscribers."""
         raw = await self.post_log(msg)
         await self.post_log_bytes(raw)
+
+    async def tell_wait(self, reason: str) -> None:
+        """Tell the clients why the build waits, once for each reason; a pass runs every few seconds."""
+        if reason != self.told_wait:
+            self.told_wait = reason
+            await self.post_log_and_fanout(LogNext(text=f"pynixd: {reason}\n"))
 
     async def add_subscriber(self, client: ClientConn, *, cancel_on_unsubscribe: bool = False) -> None:
         """Register a client to receive this build's logs.

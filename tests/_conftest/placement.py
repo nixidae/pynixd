@@ -235,7 +235,7 @@ def _conforms(store: FakeStore, ranking: FixedRanking) -> tuple[PlacedStore, Ran
 
 def fake_placer(
     queue: BuildQueue,
-    ranking: FixedRanking,
+    ranking: Ranks[FakeStore],
     spawned: Spawned,
     *,
     local: FakeStore | None = None,

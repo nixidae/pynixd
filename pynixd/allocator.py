@@ -13,7 +13,7 @@ from .config import StoreRankingSettings
 from .system_features import PYNIXD_HANDLED_FEATURES, effective_required_features
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Mapping
+    from collections.abc import Iterable, Iterator, Mapping, Sequence
 
     from nix_daemon_protocol.ids import StoreId
     from pynixd_store.build_stats import StoreEstimate
@@ -28,6 +28,8 @@ log = structlog.get_logger(__name__)
 TINY_BUILD_THRESHOLD_MS = 2500
 SHORT_OF_DISK = "short of disk"
 SILENT = "its health samples stopped"
+UNDER_MIN_SCORE = "score under min_schedule_score"
+MIB = 1024 * 1024
 
 
 # The Protocols name what the allocator reads, so the type checker holds a
@@ -373,7 +375,7 @@ class TelemetryStoreRanker(StoreRanker):
             if terms.passed:
                 ranked.append(RankedStore(store.store_id, terms.final_score, store, terms))
             else:
-                excluded.append(ExcludedStore(store.store_id, "score under min_schedule_score", terms))
+                excluded.append(ExcludedStore(store.store_id, UNDER_MIN_SCORE, terms))
 
         return RankedStores(ranked, excluded).sort()
 
@@ -393,7 +395,43 @@ def short_of_disk(store: Candidate, settings: StoreRankingSettings, now: float) 
     return now < store.disk_full_until
 
 
-MIB = 1024 * 1024
+@dataclass(frozen=True, slots=True)
+class DiskWait:
+    """Why a build that no store takes waits for disk, or fails for it."""
+
+    never_fits: bool
+    """Each store short of disk has less disk in all than `min_free_bytes`, and no other store may come back."""
+    text: str
+
+
+def disk_wait(
+    excluded: Sequence[ExcludedStore], stores: Mapping[StoreId, Candidate], settings: StoreRankingSettings
+) -> DiskWait | None:
+    """The disk verdict of a build that no store takes, when free disk keeps a store out; else `None`.
+
+    A store held back by its score or its silence may come back, so the
+    build waits. A disk smaller than `min_free_bytes` never qualifies: a
+    build that waits for it waits forever.
+    """
+    short = [stores[e.store_id] for e in excluded if e.reason == SHORT_OF_DISK and e.store_id in stores]
+    if not short:
+        return None
+    floor = f"ranking.min_free_bytes ({settings.min_free_bytes // MIB} MiB)"
+    disks = [(s.store_id, s.monitor.health.disk if s.monitor is not None else None) for s in short]
+    sizes = [(store_id, disk) for store_id, disk in disks if disk is not None]
+    never_fits = (
+        len(sizes) == len(disks)
+        and all(disk.total_bytes < settings.min_free_bytes for _, disk in sizes)
+        and not any(e.reason in (UNDER_MIN_SCORE, SILENT) for e in excluded)
+    )
+    if never_fits:
+        details = ", ".join(f"{store_id} has {disk.total_bytes // MIB} MiB" for store_id, disk in sizes)
+        return DiskWait(never_fits=True, text=f"no store has the disk for a build: {details} in all, under {floor}")
+    details = ", ".join(
+        f"{store_id} has {disk.free_bytes // MIB} MiB free" if disk else f"{store_id} ran out of space"
+        for store_id, disk in disks
+    )
+    return DiskWait(never_fits=False, text=f"waiting for disk space: {details}, under {floor}")
 
 
 def memory_room(store: Candidate, reserved_bytes: int) -> int | None:

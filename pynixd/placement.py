@@ -33,6 +33,7 @@ from .allocator import (
     PreferLocal,
     RankedStore,
     RankedStores,
+    disk_wait,
     explore_store,
     fit_memory,
     outside_the_session,
@@ -678,7 +679,15 @@ class Placer[S: PlacedStore]:
                 notes.end(Outcome.FAILED, "every capable store failed it too often")
                 await self._fail_all_compatible_blacklisted(build, build_features, used_up)
                 return False
-            notes.end(Outcome.WAITING, "no store is a candidate now")
+            disk = disk_wait(ranked.excluded, {s.store_id: s for s in self._stores_of(build)}, self.settings)
+            if disk is not None and disk.never_fits and not dynamic:
+                notes.end(Outcome.FAILED, disk.text)
+                await self.queue.fail(build.build_id, disk.text)
+                await build.post_log_and_fanout(LogNext(text=f"pynixd: {disk.text}\n"))
+                return False
+            if disk is not None:
+                await build.tell_wait(disk.text)
+            notes.end(Outcome.WAITING, disk.text if disk is not None else "no store is a candidate now")
             return True
         return False
 
