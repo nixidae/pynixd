@@ -556,18 +556,19 @@ async def _writes_on_the_daemon(tmp_path: Path) -> AsyncIterator[str]:
 
 @pytest.mark.ca_derivations
 @pytest.mark.parametrize("writes", ["pynixd", "daemon"])
-@pytest.mark.parametrize("target", ["nested", "wrapper", "caWrapper"])
+@pytest.mark.parametrize("target", ["nested", "wrapper", "caWrapper", "caWrapperUser"])
 @pytest.mark.parametrize("also_the_output", [False, True], ids=["drv", "drv-and-output"])
 async def test_dynamic_drv_after_its_produced_drv_is_deleted(
     dyn_env: tuple[Server, str], tmp_path: Path, writes: str, target: str, also_the_output: bool
 ) -> None:
     """The build trace still names a produced `.drv` that a collection removed: Nix builds the producer again.
 
-    `caWrapper` is built once before the delete, so the store holds its realisation. A content-addressed
-    derivation is resolved on the client (`outputs-query.cc:90`), and resolving reads the produced `.drv`.
+    `caWrapper` and `caWrapperUser` are built once before the delete, so the store holds their realisations. A
+    content-addressed derivation is resolved on the client (`outputs-query.cc:90`), recursively, and resolving
+    reads the produced `.drv`. `caWrapperUser` has no dynamic input of its own, as infisical-start.
     nixidae/nixidae#1245.
     """
-    if target == "caWrapper" and also_the_output:
+    if target.startswith("caWrapper") and also_the_output:
         pytest.skip("the resolved caWrapper .drv references the inner output, so no delete can remove it")
     if writes == "daemon":
         async with _writes_on_the_daemon(tmp_path) as uri:
@@ -590,7 +591,7 @@ async def _build_after_the_delete(uri: str, *, target: str, also_the_output: boo
     assert produced.endswith(".drv"), produced
     _, inner, _, _ = await run_subproc([*build, f"{drv_path}^out^out"], nix_config=DYN_NIX_CONFIG, expected_retcode=0)
     by_attr = ["--impure", "--file", str(TEST_NIX), f"dyn.{target}"]
-    if target == "caWrapper":
+    if target.startswith("caWrapper"):
         await run_subproc([*build, *by_attr], nix_config=DYN_NIX_CONFIG, expected_retcode=0)
     doomed = [produced, inner.strip()] if also_the_output else [produced]
     rc, _, _, deleted = await run_subproc(
@@ -598,7 +599,7 @@ async def _build_after_the_delete(uri: str, *, target: str, also_the_output: boo
     )
     assert rc == 0, f"could not delete {doomed}:\n{deleted}"
 
-    if target == "caWrapper":
+    if target.startswith("caWrapper"):
         # The evaluator's road, as ekn's `realise_string`: `realiseContext` builds, then resolves on the client.
         read = [str(CLIENT_BIN), "eval", *store, *by_attr, "--apply", "builtins.readFile", "--raw"]
         rc, stdout, _, stdboth = await run_subproc(read, nix_config=DYN_NIX_CONFIG)

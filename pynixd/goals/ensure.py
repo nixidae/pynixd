@@ -504,16 +504,15 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         # A check or a repair builds the realised outputs again.
         #
         # NIX-DEFECT (#23): `checkPathValidity` (`derivation-goal.cc:361`) answers `AlreadyValid` from a
-        # realisation of the unresolved derivation, and no input goal runs. The client then resolves a
-        # content-addressed derivation itself (`outputs-query.cc:90`) and reads the produced `.drv` of each dynamic
-        # input. Nothing roots that `.drv` (the live output's deriver is the resolved one), and a collection leaves
-        # its build-trace row, so the read fails with "does not exist". Nix 2.35 writes no realisation under the
-        # unresolved derivation (`derivation-goal.cc:179`); rows of Nix 2.34 and of `_under_the_original_id` do.
-        # pynixd deviates: a derivation with a dynamic input realises its inputs first, which builds a missing
-        # produced `.drv` again, then takes the resolved one's cut-off. Lillecarl/nix#422, nixidae/nixidae#1245.
+        # realisation of the unresolved derivation, and no input goal runs. The client then resolves the
+        # derivation itself, recursively (`outputs-query.cc:90`), and reads the produced `.drv` of each dynamic
+        # input on the way, however deep. Nothing roots that `.drv` (the live output's deriver is the resolved
+        # one), and a collection leaves its build-trace row, so the read fails with "does not exist". pynixd
+        # deviates: when that resolution would meet a missing produced `.drv`, the goal realises the inputs,
+        # which builds it again, then takes the resolved one's cut-off. Lillecarl/nix#422, nixidae/nixidae#1245.
         realised = (
             None
-            if checking or repairing or parsed.dynamic_input_drvs
+            if checking or repairing or not await self._resolution_finds_every_drv(parsed, set())
             else await self._already_realised(parsed, selected_outputs)
         )
         if realised is not None:
@@ -736,6 +735,49 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         if built is None:
             return {}
         return {key.rsplit("!", 1)[1]: StorePath(str(realisation.out_path)) for key, realisation in built.items()}
+
+    async def _resolution_finds_every_drv(self, parsed: Derivation, seen: set[str]) -> bool:
+        """Whether a client that resolves *parsed* (`outputs-query.cc:90`) finds every `.drv` it reads.
+
+        The walk follows the client: each static input that resolves, and each dynamic input, whose produced
+        `.drv` the producer's realisation names. A missing realisation answers false as well: the client
+        cannot resolve, and the goal must realise the input. nixidae/nixidae#1245.
+        """
+        store = self.engine.ctx.local_store
+        for input_drv_path in parsed.input_drvs:
+            if str(input_drv_path) in seen:
+                continue
+            seen.add(str(input_drv_path))
+            child = await store.read_derivation(str(input_drv_path))
+            if child is None:
+                return False
+            if child.should_resolve(ca_derivations=False) and not await self._resolution_finds_every_drv(child, seen):
+                return False
+        for producer_path, node in parsed.dynamic_input_drvs.items():
+            if not await self._produced_drvs_are_valid(StorePath(str(producer_path)), node, seen):
+                return False
+        return True
+
+    async def _produced_drvs_are_valid(self, producer_path: StorePath, node: ChildMapNode, seen: set[str]) -> bool:
+        store = self.engine.ctx.local_store
+        producer = await store.read_derivation(str(producer_path))
+        if producer is None:
+            return False
+        if node.children:
+            built = await realisations_of(producer, set(node.children), store, producer_path)
+            if built is None:
+                return False
+            for key, realisation in built.items():
+                produced = StorePath(str(realisation.out_path))
+                valid = await store.execute(IsValidPathRequest(path=StorePath(path=str(produced))), mark=False)
+                if not valid.valid:
+                    return False
+                child = node.children[key.rpartition("!")[2]]
+                if not await self._produced_drvs_are_valid(produced, child, seen):
+                    return False
+        if not producer.should_resolve(ca_derivations=False):
+            return True
+        return await self._resolution_finds_every_drv(producer, seen)
 
     async def _already_realised(self, parsed: Derivation, wanted: set[str]) -> GoalResult | None:
         """The realisation of each wanted output, when the store holds one for all of them.

@@ -68,6 +68,16 @@ let
     '';
   };
 
+  # One level up: no dynamic input of its own, but resolving it resolves `caWrapper`.
+  caWrapperUser = mkCADrv {
+    name = "use-dynamic-drv-ca-2";
+    buildCommand = ''
+      while IFS= read -r line || [ -n "$line" ]; do
+        printf '%s\n' "$line"
+      done < "${caWrapper}" > $out
+    '';
+  };
+
   # A produced derivation must carry its producer's name without `.drv`.
   deferredTarget = mkDrv {
     name = "deferred-producer";
@@ -246,6 +256,7 @@ in
     producingDrv
     wrapper
     caWrapper
+    caWrapperUser
     deferredProducer
     deferredWrapper
     target
