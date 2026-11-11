@@ -2612,6 +2612,10 @@ RPC_PYNIXD_ONLY: dict[str, tuple[str, tuple[str, ...]]] = {
         _rpc_drv("rpc-unknown", _FLOATING, RPC_SCRIPT + "nix $o store submit-output $p bogus\n"),
         ("nix-command", "ca-derivations", "dynamic-derivations"),
     ),
+    "impure": (
+        _rpc_drv("rpc-impure", '__impure = true; outputHashMode = "recursive"; outputHashAlgo = "sha256";'),
+        ("nix-command", "ca-derivations", "dynamic-derivations", "impure-derivations"),
+    ),
 }
 
 
@@ -2644,11 +2648,13 @@ async def test_a_builder_rpc_fixed_output_builds_with_no_daemon(tmp_path: Path) 
     [
         ("fixed-method", "was hashed with method 'nar', expected 'flat'"),
         ("unknown-output", "submitted unknown output 'bogus' (Valid outputs are [out])"),
+        ("impure", "The builder-rpc-v0 feature may not be used with impure derivations"),
     ],
 )
 async def test_a_builder_rpc_submission_nix_misses_is_refused(tmp_path: Path, case: str, error: str) -> None:
     """`checkCAOutput` trusts a fixed output's method, and the unknown-output error lists the submitted outputs
-    (`derivation-check.cc:26`, `:102`; Lillecarl/nix#416). pynixd refuses the first and names the valid outputs."""
+    (`derivation-check.cc:26`, `:102`; Lillecarl/nix#416). pynixd refuses the first and names the valid outputs.
+    An impure output aborts the worker (`derivation-builder-impl.cc:744`; Lillecarl/nix#417); pynixd refuses it."""
     if NIX_GIT_BIN is None:
         pytest.skip("NIX_GIT_BIN names no Nix of the master branch")
     here = await _rpc_case(tmp_path, OpRoute.pynixd, case, NIX_GIT_BIN, RPC_PYNIXD_ONLY)

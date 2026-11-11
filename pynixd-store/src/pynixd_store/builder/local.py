@@ -137,7 +137,6 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
         return f"the platform {drv.platform}"
     if "__json" in drv.env and (reason := structured_attrs_reason(drv.env)) is not None:
         return reason
-    features = set(drv.required_system_features)
     # NIX-DEFECT (#23): `unix/user-lock.cc:177` checks `start-id` and `id-count`, settings from
     # `nix.conf`, with `assert`, so a typo aborts the process; an error naming the setting is what
     # it should be. pynixd sends the build to the daemon and copies no abort; Lillecarl/nix#395.
@@ -152,11 +151,6 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
         )
     ):
         return "auto-allocate-uids with start-id or id-count that Nix asserts on"
-    # `startBuild` (`unix-derivation-builder.cc:355`) refuses an input-addressed one in Nix's words, and
-    # `checkSubmittedOutputs` asserts each output is fixed or floating (`derivation-builder-impl.cc:743`;
-    # nixidae/nixidae#1272).
-    if BUILDER_RPC in features and OutputKind.IMPURE in {o.kind for o in drv.outputs.values()}:
-        return "builder-rpc-v0 with an impure output"
     try:
         export_requests(drv.env, store_dir)
     except ValueError as e:
@@ -878,6 +872,14 @@ async def build(
                 return LocalBuildResult(
                     BuildResultStatus.MISC_FAILURE,
                     show_error("The builder-rpc-v0 feature may only be used with content-addressing derivations"),
+                )
+            if any(o.kind is OutputKind.IMPURE for o in drv.outputs.values()):
+                # NIX-DEFECT (#23): `startBuild` (`unix-derivation-builder.cc:355`) passes an impure derivation, and
+                # `checkSubmittedOutputs` asserts each output is fixed or floating (`derivation-builder-impl.cc:744`),
+                # so the worker aborts after the build. pynixd refuses it before the build; Lillecarl/nix#417.
+                return LocalBuildResult(
+                    BuildResultStatus.MISC_FAILURE,
+                    show_error("The builder-rpc-v0 feature may not be used with impure derivations"),
                 )
             if not settings.dynamic_derivations:
                 return LocalBuildResult(
