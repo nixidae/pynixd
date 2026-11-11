@@ -49,6 +49,13 @@ class BuildResultStatus(IntEnum):
 
     HASH_MISMATCH = 101
     UNKNOWN = 102
+    RAISED = 103
+    """The builder's Nix raised an `Error`, and `Store::buildDerivation` made it a `MiscFailure`.
+
+    `entry-points.cc:85` catches what escapes `Worker::run`; `buildPaths` and
+    `buildPathsWithResults` let the same `Error` end the operation. The wire
+    carries `MiscFailure`.
+    """
 
     @property
     def is_success(self) -> bool:

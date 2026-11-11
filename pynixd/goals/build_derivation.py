@@ -268,6 +268,7 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
             # place of that root empty rather than reporting a build it chose
             # not to run. Issue nixidae/nixidae#325.
             abandoned=not result_succeeded(response.result) and not response.result.error_msg,
+            raised=str(response.result.error_msg) if status == BuildResultStatus.RAISED else None,
         )
 
     async def _wait_within_my_limits(

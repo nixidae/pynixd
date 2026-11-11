@@ -100,6 +100,8 @@ def machine_fault(result: BuildResult) -> str | None:
     if result_succeeded(result):
         return None
     status = BuildResultStatus(result.status)
+    if status == BuildResultStatus.RAISED:
+        status = BuildResultStatus.MISC_FAILURE
     if status in (BuildResultStatus.TRANSIENT_FAILURE, BuildResultStatus.MISC_FAILURE):
         return status.name.lower()
     message = str(result.error_msg)
@@ -340,6 +342,24 @@ def without_error_prefix(resp: BuildDerivationResponse) -> BuildDerivationRespon
     if prefix is None:
         return resp
     return resp.model_copy(update={"result": resp.result.model_copy(update={"error_msg": message[prefix.end() :]})})
+
+
+def marked_raised(resp: BuildDerivationResponse) -> BuildDerivationResponse:
+    """*resp* as `RAISED` when the builder's Nix answers `MiscFailure` with a message.
+
+    A builder answers so for an `Error` that escaped its worker (`entry-points.cc:85`): the provenance tag check
+    (`provenance.cc:12`) is one. `nix-daemon` lets that `Error` end a `BuildPathsWithResults`, and the client
+    prints it. `BuildPathsWithResultsGoal` ends the request with the message. Only a builder's answer is marked:
+    pynixd's own `MiscFailure` results stay results. nixidae/nixidae#1277.
+
+    NIX-DEFECT (#23): Determinate's `isCancelled` (`build-result.hh:218`) counts every `MiscFailure` as
+    cancelled, and `throwBuildErrors` (`installables.cc:491`) prints `(cancelled)` with no text. A result
+    would reach a Determinate client as no reason at all; the error reaches every client. Lillecarl/nix#421.
+    """
+    result = resp.result
+    if result.status != BuildResultStatus.MISC_FAILURE or not result.error_msg:
+        return resp
+    return resp.model_copy(update={"result": result.model_copy(update={"status": BuildResultStatus.RAISED})})
 
 
 def builder_options(
@@ -686,7 +706,7 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
             keep_logs=True,
         )
         resp: BuildDerivationResponse = await self._while_the_builder_answers(build, store, call)
-        resp = without_error_prefix(with_build_times(resp, start, int(time.time())))
+        resp = marked_raised(without_error_prefix(with_build_times(resp, start, int(time.time()))))
         if resp.logs.messages:
             # The count, so a run can tell one fan-out of many messages from
             # many fan-outs of one message.

@@ -410,6 +410,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
                     BuildResultStatus.DEPENDENCY_FAILED,
                 )
                 refusal.failing_derivation = outer_result.failing_derivation
+                refusal.raised = outer_result.raised
                 return refusal
             return goal_failure(
                 f"pynixd: nested derived path did not produce {chain_output}: {self.derived_path}",
@@ -1513,6 +1514,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         # The first failed input is the one that `amDone` counts, so its name
         # is the name of this failure as well.
         refusal.failing_derivation = failed[0].failing_derivation
+        refusal.raised = next((f.raised for f in failed if f.raised is not None), None)
         return refusal
 
     async def _realise_input_derivations(self, parsed: Derivation) -> list[tuple[InputNode, GoalResult]]:

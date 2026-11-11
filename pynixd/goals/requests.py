@@ -9,6 +9,7 @@ import anyio
 import structlog
 
 from ..derived_path import DerivedPath
+from ..exceptions import BackendError
 from ..serde import (
     BuildPathsWithResultsRequest,
     BuildPathsWithResultsResponse,
@@ -127,6 +128,9 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
             self._root_goals.append((SerdeDerivedPath(value=str(path)), goal))
 
         root_results = await self._run_the_root_goals([goal for _, goal in self._root_goals])
+        raised = self._the_error_that_ends_the_request(root_results)
+        if raised is not None:
+            raise BackendError(raised)
         # `for_the_wire`, because this is where a goal result becomes an answer
         # to a client. The goal system uses `BuildResultStatus.UNKNOWN`, which
         # is 102, and the wire carries the status as one byte that a client
@@ -267,6 +271,30 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
             dispatch.release_every_goal()
 
         return results
+
+    def _the_error_that_ends_the_request(self, results: Sequence[GoalResult | None]) -> str | None:
+        """The message of the first raised `Error`, in the order Nix takes its goals, or `None`.
+
+        `Store::buildPathsWithResults` (`entry-points.cc:62`) has no catch, so
+        an `Error` that escapes `Worker::run` ends the operation, and the
+        client prints it. pynixd's builder answers the same `Error` as a
+        `MiscFailure` result (`BuildResultStatus.RAISED`); this turns it back.
+        Determinate's client prints a `MiscFailure` result as `(cancelled)`
+        and drops its text (`build-result.hh:218`), so
+        `provenance.sh:371` saw no message.
+
+        NIX-DEVIATION (#27): the `Error` aborts `Worker::run` at once, and the
+        destructor of every other goal kills its builder. pynixd raises only
+        after the root goals answered, and the other builds run on, as
+        `_the_result_unless_it_stops` keeps them. A build is shared, so a
+        raise must not kill the work of another client. Measure a request
+        whose answer the wait delayed to reverse it. nixidae/nixidae#1277.
+        """
+        for index in self._goal_order([goal for _, goal in self._root_goals]):
+            result = results[index]
+            if result is not None and result.raised is not None:
+                return result.raised
+        return None
 
     @staticmethod
     def _another_root_carries_this_failure(

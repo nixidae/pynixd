@@ -309,3 +309,40 @@ async def test_a_repeated_path_gets_one_answer_for_each_request() -> None:
     )
 
     assert [str(item.path) for item in response.results] == [path, path]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("raised", [True, False], ids=["raised", "result"])
+async def test_an_error_the_builder_raised_ends_the_request(raised: bool) -> None:
+    """Nix's `buildPathsWithResults` lets the `Error` end the operation, with its text.
+
+    `provenance.sh:371` of the functional suite greps the client's stderr for
+    `tag name '123-invalid' is invalid`. The builder answers it as a
+    `MiscFailure` result, and Determinate's client prints that as
+    `(cancelled)`. A `MiscFailure` of pynixd's own stays a result.
+    nixidae/nixidae#1277.
+    """
+    message = "tag name '123-invalid' is invalid"
+    failing = "/nix/store/11111111111111111111111111111111-simple.drv!out"
+    fine = "/nix/store/22222222222222222222222222222222-fine.drv!out"
+    failure = goal_failure(message, BuildResultStatus.RAISED if raised else BuildResultStatus.MISC_FAILURE)
+    if raised:
+        failure.raised = message
+    engine = FakeEngine(
+        {
+            failing: FakeEnsureGoal(cast("GoalEngine", None), failure),
+            fine: FakeEnsureGoal(cast("GoalEngine", None), goal_success()),
+        }
+    )
+    for goal in engine.goals.values():
+        goal.engine = cast("GoalEngine", engine)
+
+    request = BuildPathsWithResultsGoal(cast("GoalEngine", engine), _request({failing, fine}))
+    if raised:
+        with pytest.raises(BackendError, match=message):
+            await result_of(request)
+        return
+    response = await result_of(request)
+    results = {str(item.path): item.result for item in response.results}
+    assert results[failing].status == BuildResultStatus.MISC_FAILURE
+    assert results[failing].error_msg == message

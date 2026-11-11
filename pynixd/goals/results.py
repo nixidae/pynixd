@@ -35,6 +35,11 @@ class GoalResult:
     #: for the waitees that `Goal::amDone` drops. `_run_the_root_goals` reads
     #: it and leaves the place of that root empty. Issue nixidae/nixidae#325.
     abandoned: bool = False
+    #: The message of an `Error` that a builder's Nix raised, here or in an
+    #: input, which ends the request as it ends `buildPathsWithResults`
+    #: (`BuildResultStatus.RAISED`). `None` for every other result. Issue
+    #: nixidae/nixidae#1277.
+    raised: str | None = None
 
     def copy(self) -> GoalResult:
         """Return a shallow copy of this GoalResult with independent collections."""
@@ -45,6 +50,7 @@ class GoalResult:
             dynamic_paths=dict(self.dynamic_paths),
             failing_derivation=self.failing_derivation,
             abandoned=self.abandoned,
+            raised=self.raised,
         )
 
     def with_dynamic_outputs(self, drv_path: StorePath) -> GoalResult:
