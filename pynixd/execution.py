@@ -704,7 +704,7 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         # `BuildPathsWithResults` request then carried a log that `nix-daemon`
         # does not send, and the client printed the same text twice. Issue
         # nixidae/nixidae#227.
-        log.debug("build_executed", build_id=build.build_id, status=resp.result.status)
+        log.debug("build_executed", build_id=build.build_id, status=resp.result.status, error_msg=resp.result.error_msg)
         return resp
 
     async def _while_the_builder_answers[T](self, build: QueuedBuild, store: S, call: Callable[[], Awaitable[T]]) -> T:
