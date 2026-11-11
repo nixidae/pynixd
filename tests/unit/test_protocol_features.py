@@ -50,6 +50,9 @@ the detail, as Fact 9.
 """
 
 MISSING_CODECS = {
+    ndp.FEATURE_PROVENANCE: (
+        "The codecs carry the field, and the store does not keep it yet: a client's provenance would be dropped."
+    ),
     ndp.FEATURE_DISABLE_SET_OPTIONS: (
         "`SetOptions` must become a no-op. A builder cannot change the settings of the daemon that serves it."
     ),

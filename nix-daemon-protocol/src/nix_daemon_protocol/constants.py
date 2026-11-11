@@ -122,6 +122,12 @@ FEATURE_OPEN_TELEMETRY: Final[str] = "open-telemetry"
 (Determinate Nix, `worker-protocol.hh:151` of v3.24.0; `daemon.cc:1175` and `:1225`).
 """
 
+FEATURE_PROVENANCE: Final[str] = "provenance"
+"""A JSON string, empty for none, after the content address of each path info, and in `AddToStore` after `repair`
+(Determinate Nix, `worker-protocol.cc:390`, `daemon.cc:452` of v3.24.0). Its daemon names it only with the
+`provenance` experimental feature (`daemon.cc:1165`).
+"""
+
 FEATURE_PYNIXD_BUILD_RESOURCES: Final[str] = "pynixd-build-resources-2"
 """`BuildResult.resources`: what the build used (`build_resources.py`), after Nix's fields.
 
@@ -144,6 +150,7 @@ STANDARD_FEATURES: Final[frozenset[str]] = frozenset(
         FEATURE_QUERY_ACTIVE_BUILDS,
         FEATURE_NAMED_ACTIVITIES,
         FEATURE_OPEN_TELEMETRY,
+        FEATURE_PROVENANCE,
     }
 )
 """Each feature name that Nix or Determinate Nix defines, whether or not a peer offers it.

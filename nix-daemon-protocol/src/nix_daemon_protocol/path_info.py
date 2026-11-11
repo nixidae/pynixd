@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .constants import FEATURE_PROVENANCE
 from .content_address import ContentAddress
 
 if TYPE_CHECKING:
@@ -26,6 +27,7 @@ class UnkeyedValidPathInfo(WireModel):
     ultimate: bool
     sigs: set[Signature]
     ca: ContentAddress
+    provenance: str = WireField(default="", needs_features=[FEATURE_PROVENANCE])
 
     def to_valid_path_info(self, path: StorePath) -> ValidPathInfo:
         """Wrap this UnkeyedValidPathInfo with a StorePath into ValidPathInfo."""

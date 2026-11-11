@@ -70,6 +70,9 @@ class ValidPathInfo(WireModel):
                 data["sigs"].add(Signature(**Signature.from_str(val)))
             elif key == "CA":
                 data["ca"] = ContentAddress(value=val)
+            elif key == "Provenance":
+                # `nar-info.cc:94` of Determinate v3.24.0: one JSON value on the line.
+                data["provenance"] = val
 
         info = UnkeyedValidPathInfo(
             deriver=data.get("deriver"),
@@ -80,6 +83,7 @@ class ValidPathInfo(WireModel):
             ultimate=bool(data.get("ultimate", False)),
             sigs=data.get("sigs", set()),
             ca=data.get("ca", ContentAddress(value="")),
+            provenance=data.get("provenance", ""),
         )
         return cls(path=data.get("path", StorePath(path="")), info=info)
 
@@ -108,5 +112,8 @@ class ValidPathInfo(WireModel):
 
         if self.info.ca:
             lines.append(f"CA: {self.info.ca}")
+
+        if self.info.provenance:
+            lines.append(f"Provenance: {self.info.provenance}")
 
         return "\n".join(lines) + "\n"
