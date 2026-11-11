@@ -130,6 +130,7 @@ class _Client:
     """The client of the operation: counts what reaches it, and when."""
 
     options = None
+    traceparent = ""
 
     def __init__(self, daemon: _Daemon) -> None:
         self.daemon = daemon

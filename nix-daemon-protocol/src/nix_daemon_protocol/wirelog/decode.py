@@ -42,7 +42,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from ..constants import STDERR_LAST, WORKER_MAGIC_1, WORKER_MAGIC_2, proto
+from ..constants import FEATURE_OPEN_TELEMETRY, STDERR_LAST, WORKER_MAGIC_1, WORKER_MAGIC_2, proto
 from ..context import ReadContext
 from ..io import BytesReader, BytesWriter
 from ..logs import LogError, LogNext, read_stream
@@ -180,7 +180,7 @@ def _flatten(value: object, prefix: str, out: dict[str, str]) -> None:
 async def _decode_request(op: int, body: bytes, version: int, features: frozenset[str]) -> dict[str, str] | None:
     """The request of one operation as named fields, or None.
 
-    `body` starts after the 8-byte operation code, which is where the model of
+    `body` starts after the 8-byte operation code and any trace context, which is where the model of
     a request starts as well. A framed request carries its source after the
     model, and `remaining()` is what says so.
     """
@@ -252,6 +252,8 @@ async def _read_handshake(client: BytesReader, server: BytesReader) -> Handshake
     if negotiated >= proto(1, 38):
         client_features = frozenset(await _read_string_set(client))
         server_features = frozenset(await _read_string_set(server))
+    if FEATURE_OPEN_TELEMETRY in client_features & server_features:
+        await client.read_bytes()  # traceparent (`daemon.cc:1175` of Determinate v3.24.0)
 
     if await client.read_uint64():  # sendCpu
         await client.read_uint64()  # cpuAffinity, which the daemon ignores
@@ -348,8 +350,11 @@ async def _decode(chunks: list[Chunk], path: Path) -> Session:
         offset = client.tell()
         try:
             op = await client.read_uint64()
+            if FEATURE_OPEN_TELEMETRY in features:
+                await client.read_bytes()  # traceparent (`daemon.cc:1225` of Determinate v3.24.0)
         except EOFError:
             break
+        body_start = client.tell()
         request_cls = WIRE_REGISTRY.get(op)
         if request_cls is None:
             session.problem = f"operation {op} at offset {offset} of the request stream is not in the registry"
@@ -361,7 +366,7 @@ async def _decode(chunks: list[Chunk], path: Path) -> Session:
         except (EOFError, ValueError) as exc:
             session.problem = f"{request_cls.name} at offset {offset} of the request stream did not decode: {exc}"
             break
-        starts.append((offset, op, bytes(client_bytes[offset + 8 : client.tell()])))
+        starts.append((offset, op, bytes(client_bytes[body_start : client.tell()])))
 
     for index, (offset, op, body) in enumerate(starts):
         after = _chunk_index_at(client_offsets, offset)

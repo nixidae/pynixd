@@ -69,3 +69,5 @@ class WriteContext:
     version: int
     features: frozenset[str] = _NO_FEATURES
     """The features that the two peers negotiated. See `ReadContext.features`."""
+    traceparent: str = ""
+    """What a request carries after its op code under `open-telemetry`: the client's, or empty."""

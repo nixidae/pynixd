@@ -119,9 +119,9 @@ def test_pynixd_claims_every_feature_of_nix_latest() -> None:
     `queryPathInfos` is Determinate Nix's op 50, and the local store answers it.
 
     `named-activities` is Determinate Nix's `STDERR_START_ACTIVITY_STRINGLY`. It writes itself in the old shape
-    to a peer that did not negotiate it.
+    to a peer that did not negotiate it. `open-telemetry` is its `traceparent` after each op code.
     """
-    determinate = {ndp.FEATURE_QUERY_PATH_INFOS, ndp.FEATURE_NAMED_ACTIVITIES}
+    determinate = {ndp.FEATURE_QUERY_PATH_INFOS, ndp.FEATURE_NAMED_ACTIVITIES, ndp.FEATURE_OPEN_TELEMETRY}
     assert frozenset(FEATURES_OF_NIX_LATEST | determinate) == ndp.SUPPORTED_STANDARD_FEATURES
 
 

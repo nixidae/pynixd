@@ -23,13 +23,11 @@ from typing import Any, get_args, get_origin
 
 from pydantic_core import PydanticUndefined
 
-from .constants import proto_str
 from .context import ReadContext, WriteContext
-from .exceptions import UnsupportedProtocolVersion
 from .logging import deserialization_scope
 from .wire_integer import WireUInt64
 from .wire_message import WireModel, _nested_context, _wire_fields
-from .wire_ops import WireRequest
+from .wire_ops import WireRequest, write_request_prelude
 from .wire_scalar import WireScalarLike, is_wire_scalar
 
 Writer = Callable[[Any, WriteContext], Awaitable[None]]
@@ -452,15 +450,6 @@ def _bound_func(method: object) -> object:
     return method
 
 
-async def _write_request_prelude(value: WireRequest, ctx: WriteContext) -> None:
-    """Write the only non-declarative portion shared by all requests."""
-    if ctx.version and ctx.version < value.min_protocol:
-        raise UnsupportedProtocolVersion(
-            f"{value.name} requires daemon protocol >= {proto_str(value.min_protocol)}, got {proto_str(ctx.version)}",
-        )
-    ctx.writer.write_uint64(value.op)
-
-
 @functools.cache
 def _writer_for(annotation: type, version: int, features: frozenset[str]) -> Writer:
     """Specialize a write closure once for an annotation/version pair."""
@@ -832,7 +821,7 @@ def compile_codec(model: type[WireModel], version: int, features: frozenset[str]
         "read_adapters": tuple(read_emitter.adapters),
         "read_codecs": tuple(read_emitter.codecs),
         "read_enums": tuple(read_emitter.enums),
-        "request_prelude": _write_request_prelude,
+        "request_prelude": write_request_prelude,
         "write_adapters": tuple(write_emitter.adapters),
         "write_codecs": tuple(write_emitter.codecs),
         "write_predicates": write_predicates,

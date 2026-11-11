@@ -117,6 +117,11 @@ FEATURE_NAMED_ACTIVITIES: Final[str] = "named-activities"
 `worker-protocol.hh:158` of v3.24.0). A peer without it gets `actStringly` and the text alone (`logging.hh:225`).
 """
 
+FEATURE_OPEN_TELEMETRY: Final[str] = "open-telemetry"
+"""A W3C `traceparent` string after the handshake and after each op code, empty when the client is not tracing
+(Determinate Nix, `worker-protocol.hh:151` of v3.24.0; `daemon.cc:1175` and `:1225`).
+"""
+
 FEATURE_PYNIXD_BUILD_RESOURCES: Final[str] = "pynixd-build-resources-2"
 """`BuildResult.resources`: what the build used (`build_resources.py`), after Nix's fields.
 
@@ -138,6 +143,7 @@ STANDARD_FEATURES: Final[frozenset[str]] = frozenset(
         FEATURE_QUERY_PATH_INFOS,
         FEATURE_QUERY_ACTIVE_BUILDS,
         FEATURE_NAMED_ACTIVITIES,
+        FEATURE_OPEN_TELEMETRY,
     }
 )
 """Each feature name that Nix or Determinate Nix defines, whether or not a peer offers it.
@@ -163,6 +169,7 @@ SUPPORTED_STANDARD_FEATURES: Final[frozenset[str]] = frozenset(
         FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS,
         FEATURE_QUERY_PATH_INFOS,
         FEATURE_NAMED_ACTIVITIES,
+        FEATURE_OPEN_TELEMETRY,
     }
 )
 """The standard features that this package has a codec for.

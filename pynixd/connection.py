@@ -91,6 +91,9 @@ class ClientConn:
         differ, and a message written with the wrong one carries a shape the
         reader does not expect. Issue #14.
         """
+        self.traceparent = ""
+        """The trace context the client sent with its current operation under `open-telemetry`, else empty.
+        `DaemonProxy` reads it; `Connection.call` sends it on with each request made for this client."""
         self.on_this_machine = False
         """Whether the client runs on this machine: a Unix socket session, or recursive Nix from a local build.
         `DaemonProxy` sets it from its transport."""
@@ -346,7 +349,7 @@ class Connection:
         await type(options).response_type.from_reader(ReadContext.from_conn(self, buffer_logs=False))
         self.applied_options = options
 
-    async def send_request(self, request: WireRequest) -> None:
+    async def send_request(self, request: WireRequest, traceparent: str = "") -> None:
         """Write *request*: its op number and its fields, with nothing after them.
 
         Every op pynixd sends to a store goes through here, so `op_log` and
@@ -356,7 +359,7 @@ class Connection:
         self.op_log.append(type(request).__name__)
         if self.store_id is not None:
             metrics.UPSTREAM_OPS.labels(store_id=self.store_id, op=request.name).inc()
-        await request.to_writer(WriteContext.from_conn(self))
+        await request.to_writer(WriteContext.from_conn(self, traceparent))
 
     async def call(
         self,
@@ -389,7 +392,7 @@ class Connection:
 
         self.current_op = (type(request).__name__, time.monotonic())
         try:
-            await self.send_request(request)
+            await self.send_request(request, client.traceparent if client is not None else "")
             await self.w.drain()
             resp_cls = type(request).response_type
             return await resp_cls.from_reader(
@@ -424,7 +427,7 @@ class Connection:
 
         self.current_op = (type(request).__name__, time.monotonic())
         try:
-            await self.send_request(request)
+            await self.send_request(request, client.traceparent if client is not None else "")
             framed = self.w.framed()
             framed.write(payload)
             await framed.finalize()
@@ -490,6 +493,9 @@ class Connection:
                 server_features=self.features,
                 standard_features=sorted(self.standard_features),
             )
+        if wire.FEATURE_OPEN_TELEMETRY in self.standard_features:
+            # The connection's own trace context (`remote-store.cc:115`): pynixd traces nothing.
+            self.w.write_string("")
         self.w.write_uint64(0)  # sendCpu
         self.w.write_uint64(0)  # reserveSpace
         await w.drain()

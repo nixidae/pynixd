@@ -28,7 +28,6 @@ from nix_daemon_protocol.wire_ops import WireRequest, WireResponse
 from nix_daemon_protocol.wire_scalar import WireScalar, is_wire_scalar
 from nix_daemon_protocol.wire_string import WireString
 
-
 OWN_SHAPE_FEATURES: dict[type[WireModel], frozenset[str]] = {
     LogStartActivityStringly: frozenset({FEATURE_NAMED_ACTIVITIES}),
 }

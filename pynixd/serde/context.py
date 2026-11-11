@@ -78,8 +78,8 @@ class WriteContext(ProtocolWriteContext):
         return cls(writer=ctx.proxy.w, version=ctx.version, features=ctx.proxy.standard_features)
 
     @classmethod
-    def from_conn(cls, conn: Connection) -> WriteContext:
-        return cls(writer=conn.w, version=conn.version, features=conn.standard_features)
+    def from_conn(cls, conn: Connection, traceparent: str = "") -> WriteContext:
+        return cls(writer=conn.w, version=conn.version, features=conn.standard_features, traceparent=traceparent)
 
     @classmethod
     def from_proxy(cls, proxy: DaemonProxy) -> WriteContext:

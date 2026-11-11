@@ -357,6 +357,8 @@ class DaemonProxy:
         # The local store answers op 50 for every backend: the engine in one query, a daemon that lacks the
         # feature one path at a time.
         our_features.add(wire.FEATURE_QUERY_PATH_INFOS)
+        # The trace context is hop-local: pynixd reads it from each client and sends it on to a backend that names it.
+        our_features.add(wire.FEATURE_OPEN_TELEMETRY)
         # Op 48 has no fallback: a store whose builds pynixd cannot see would answer an empty list while they run.
         if self.local_store.answers_active_builds:
             our_features.add(wire.FEATURE_QUERY_ACTIVE_BUILDS)
@@ -406,9 +408,13 @@ class DaemonProxy:
             # The intersection, and not what the client named. A client that
             # names `realisation-with-path-not-hash` gets the new codec only
             # when pynixd names it back, which is `intersectFeatures` at
-            # `worker-protocol-connection.cc:148`. Issue #14.
+            # `worker-protocol-connection.cc:148`. Issue #14. It is taken of what this proxy names, so a
+            # feature that changes the client's bytes, such as `open-telemetry`, is read whenever it is named.
             honourable = self.honourable_features()
-            self.standard_features = wire.negotiate_features(client_features, honourable | self.pynixd_features)
+            named = self.server_features(honourable)
+            self.standard_features = wire.negotiate_features(
+                client_features, named & (wire.STANDARD_FEATURES | self.pynixd_features)
+            )
             # `ClientConn.send` writes a log message straight to the client,
             # so it needs the set of that client and not of a backend.
             self.client.standard_features = self.standard_features
@@ -420,8 +426,11 @@ class DaemonProxy:
                 standard_features=sorted(self.standard_features),
             )
 
-            self.w.write_string_set(self.server_features(honourable))
+            self.w.write_string_set(named)
             await self.w.drain()
+            if wire.FEATURE_OPEN_TELEMETRY in self.standard_features:
+                # `processConnection` (`daemon.cc:1175` of Determinate v3.24.0), before the CPU affinity.
+                self.client.traceparent = await self.r.read_string()
 
         if await self.r.read_uint64():  # sendCpu
             await self.r.read_uint64()  # cpuAffinity (ignored)
@@ -453,6 +462,9 @@ class DaemonProxy:
         while True:
             try:
                 op_num = await self.r.read_uint64()
+                if wire.FEATURE_OPEN_TELEMETRY in self.standard_features:
+                    # Before the op is known (`daemon.cc:1225` of Determinate v3.24.0): an unknown op reads it too.
+                    self.client.traceparent = await self.r.read_string()
             except (EOFError, *ssh_connection_lost()):
                 break
 

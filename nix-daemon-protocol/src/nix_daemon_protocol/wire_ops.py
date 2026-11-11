@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar, Self
 
-from .constants import MINIMUM_PROTOCOL, proto_str
+from .constants import FEATURE_OPEN_TELEMETRY, MINIMUM_PROTOCOL, proto_str
 from .exceptions import UnsupportedProtocolVersion
 from .logs import WireLogs
 from .wire_message import WireField, WireModel, _compiled_or_none, _wire_plan
@@ -52,17 +52,25 @@ class WireRequest(WireModel):
             # The compiled request writes the prelude itself.
             await codec.write(self, ctx)
             return
-        if ctx.version and ctx.version < self.min_protocol:
-            raise UnsupportedProtocolVersion(
-                f"{self.name} requires daemon protocol >= {proto_str(self.min_protocol)}, got {proto_str(ctx.version)}",
-            )
-        ctx.writer.write_uint64(self.op)
+        await write_request_prelude(self, ctx)
         await self._write_body(ctx)
 
     @classmethod
     async def from_reader(cls, ctx: ReadContext) -> Self:
         """Read body only — op was consumed by dispatch."""
         return await super().from_reader(ctx)
+
+
+async def write_request_prelude(value: WireRequest, ctx: WriteContext) -> None:
+    """The op code, and the trace context after it under `open-telemetry` (`startOp`, `worker-protocol-connection.cc:261`
+    of Determinate v3.24.0). Both codecs of a request write it here."""
+    if ctx.version and ctx.version < value.min_protocol:
+        raise UnsupportedProtocolVersion(
+            f"{value.name} requires daemon protocol >= {proto_str(value.min_protocol)}, got {proto_str(ctx.version)}",
+        )
+    ctx.writer.write_uint64(value.op)
+    if FEATURE_OPEN_TELEMETRY in ctx.features:
+        ctx.writer.write_string(ctx.traceparent)
 
 
 class WireResponse(WireModel):
