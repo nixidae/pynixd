@@ -44,6 +44,10 @@ path = "tests/client"
 # The statistics say which operations a run reached and how each one ended.
 args = ["--async-test-timeout=600", "--hypothesis-show-statistics"]
 extended = true
+# The extended run repeats the suite once per lane, in a guest of its own: huggorm's bindings of that
+# lane against `nix daemon` of the same Nix (`laneNix` in `default.nix`). `client` itself is the default
+# lane, nix_2_35.
+lanes = ["nix_2_34", "git", "determinate"]
 
 # Missing for 35 minutes of failure that the guest's own configuration caused:
 # it took cache.nixos.org from the NixOS default and had no route to it. The

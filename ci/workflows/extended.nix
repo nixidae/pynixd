@@ -3,7 +3,8 @@
 # (`tests.nix`). nixidae renders this to `.github/workflows/pynixd-extended.yml`.
 #
 # Host pytest, as `tests.nix` runs it. `root` needs a root user and runs in the
-# guest driver only (`internal.tests.guest-extended`).
+# guest driver only (`internal.tests.guest-extended`). A suite's `lanes` run it
+# again in that lane's shell (`internal.laneShells`, nixidae/nixidae#1249).
 {
   lib,
   ghalib,
@@ -37,9 +38,20 @@ ghalib.evalWorkflow {
         '';
       }
     ]
-    ++ lib.mapAttrsToList (name: suite: {
-      name = "Extended ${name} tests";
-      run = "nix develop --impure --file shell.nix --command pytest ${suite.path} -m extended";
-    }) suites;
+    ++ lib.concatLists (
+      lib.mapAttrsToList (
+        name: suite:
+        [
+          {
+            name = "Extended ${name} tests";
+            run = "nix develop --impure --file shell.nix --command pytest ${suite.path} -m extended";
+          }
+        ]
+        ++ map (lane: {
+          name = "Extended ${name} tests on ${lane}";
+          run = "nix develop --impure --file . internal.laneShells.${lane} --command pytest ${suite.path} -m extended";
+        }) (suite.lanes or [ ])
+      ) suites
+    );
   };
 }

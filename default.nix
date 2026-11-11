@@ -212,14 +212,14 @@ let
 
     This repository's two projects are editable, from `root`: the checkout
     for the shell, and `/work` for a guest, which holds a copy of the tree
-    there.
+    there. `lane` is a nanopynix lane: `stable` is the default one.
   */
   devPythonSetAt =
-    root:
+    lane: root:
     let
       own = _name: mkEditableProject root;
     in
-    nanopynix.lib.pythonSetWith {
+    nanopynix.lanes.${lane}.pythonSetWith {
       projectRoots = [
         ./.
         ./nix-daemon-protocol
@@ -285,8 +285,22 @@ let
       huggorm = [ ];
       vivarium-runner = [ ];
     };
-  shellEnv = devEnvFrom (devPythonSetAt (toString ./.));
-  guestEnv = devEnvFrom (devPythonSetAt "/work");
+  shellEnv = devEnvFrom (devPythonSetAt "stable" (toString ./.));
+  guestEnv = devEnvFrom (devPythonSetAt "stable" "/work");
+
+  # The `nix daemon` of each lane `tests/suites.toml` names: the release that lane's huggorm Nix
+  # patches, unpatched, as `defaultNix` is for the default lane (nixidae/nixidae#1249).
+  laneNix = {
+    inherit (pkgs.nixVersions) nix_2_34 git;
+    determinate = determinateNix;
+  };
+  # A lane's environment and its `nix daemon`, with this repository editable from `root`.
+  lanesAt =
+    root:
+    lib.mapAttrs (lane: nix: {
+      devEnv = devEnvFrom (devPythonSetAt lane root);
+      inherit nix;
+    }) laneNix;
 
   pyinstance = nixvenv {
     python = pkgs.python3;
@@ -616,6 +630,7 @@ let
     inherit vivariumLib;
     inherit agent krunVariables;
     devEnv = guestEnv;
+    lanes = lanesAt "/work";
     nix = defaultNix;
     nixGit = pkgs.nixVersions.git;
     nixFloor = pkgs.nixVersions."nix_${lib.replaceStrings [ "." ] [ "_" ] supportedNixFloor}";
@@ -719,14 +734,20 @@ let
     switchByNix = byNix switch;
   };
 
-  shell = pkgs.callPackage ./nix/shell.nix {
-    inherit agent;
-    inherit (vivarium.packages) vivarium;
-    nix = defaultNix;
-    nixGit = pkgs.nixVersions.git;
+  shellWith =
+    { devEnv, nix }:
+    pkgs.callPackage ./nix/shell.nix {
+      inherit agent devEnv nix;
+      inherit (vivarium.packages) vivarium;
+      nixGit = pkgs.nixVersions.git;
+      nixpkgsPath = pkgs.path;
+    };
+  shell = shellWith {
     devEnv = shellEnv;
-    nixpkgsPath = pkgs.path;
+    nix = defaultNix;
   };
+  # The shell of each lane in `tests/suites.toml`: `NIX_BIN` and huggorm of that lane, for the scheduled workflow.
+  laneShells = lib.mapAttrs (_: shellWith) (lanesAt (toString ./.));
 in
 
 {
@@ -761,6 +782,7 @@ in
       ciWorkflowFiles
       ci-workflow-update
       tests
+      laneShells
       ;
   };
 }

@@ -31,6 +31,9 @@
   krunVariables,
   # The extended set (`@pytest.mark.extended`, nixidae/nixidae#1247) in place of the standard one.
   extended ? false,
+  # Each lane a suite in `tests/suites.toml` names: `{ devEnv; nix; }`, the environment with that lane's
+  # huggorm and the `nix daemon` it runs against (nixidae/nixidae#1249).
+  lanes ? { },
 }:
 
 let
@@ -56,20 +59,35 @@ let
   # The standard run takes every suite and deselects the extended tests
   # (`addopts` in each `pyproject.toml`); the extended run takes the suites
   # that hold some and selects only those. A later `-m` replaces the earlier.
-  suites =
-    if extended then
-      lib.mapAttrs (
-        _: suite:
-        suite
-        // {
-          args = suite.args ++ [
-            "-m"
-            "extended"
-          ];
-        }
-      ) (lib.filterAttrs (_: suite: suite.extended or false) allSuites)
-    else
-      allSuites;
+  extendedSuites = lib.mapAttrs (
+    _: suite:
+    suite
+    // {
+      args = suite.args ++ [
+        "-m"
+        "extended"
+      ];
+    }
+  ) (lib.filterAttrs (_: suite: suite.extended or false) allSuites);
+
+  # The extended run repeats a suite once per lane it names, as `<suite>-<lane>`, each in its own guest.
+  laneSuites = lib.concatMapAttrs (
+    name: suite:
+    lib.listToAttrs (
+      map (
+        lane:
+        lib.nameValuePair "${name}-${lib.replaceStrings [ "_" ] [ "-" ] lane}" (suite // { inherit lane; })
+      ) (suite.lanes or [ ])
+    )
+  ) extendedSuites;
+
+  suites = if extended then extendedSuites // laneSuites else allSuites;
+
+  laneOf =
+    suite:
+    lanes.${suite.lane}
+      or (throw "tests/suites.toml names the lane ${suite.lane}, and the guest has none: see `laneNix` in default.nix");
+  envOf = suite: if suite ? lane then (laneOf suite).devEnv else pytestEnv;
 
 in
 vivariumLib.mkTest (
@@ -187,7 +205,7 @@ vivariumLib.mkTest (
       # its leaf.
       delegateCgroup = true;
       environment = {
-        NIX_BIN = "$(command -v nix)";
+        NIX_BIN = if suite ? lane then lib.getExe (laneOf suite).nix else "$(command -v nix)";
         NIX_GIT_BIN = "${nixGit}/bin/nix";
         NIX_FLOOR_BIN = "${nixFloor}/bin/nix";
         # Without it a failure names `/tmp/pynixd-logs/...`, which dies
@@ -211,7 +229,7 @@ vivariumLib.mkTest (
 
     # One guest per suite, named after it, so events.jsonl says
     # `machine=unit` and a suite's files land in artifacts/unit/.
-    nodes = lib.genAttrs (lib.attrNames suites) (name: {
+    nodes = lib.mapAttrs (name: suite: {
       # `tests/unit` peaks well above the default 128M, and an agent that
       # is OOM-killed partway through looks exactly like a hang. krun backs
       # only what the guest touches, so it keeps its default, the host's
@@ -241,12 +259,14 @@ vivariumLib.mkTest (
       environment.variables = krunVariables;
 
       environment.systemPackages = [
-        pytestEnv
+        (envOf suite)
         agent
         nix
         pkgs.coreutils
         pkgs.util-linux
       ];
+      # A lane's `nix daemon` is `NIX_BIN`, off the PATH: it would collide with the guest's own `nix`.
+      system.extraDependencies = lib.optional (suite ? lane) (laneOf suite).nix;
 
       /*
         Not root, which is what the suites run as everywhere else.
@@ -316,6 +336,6 @@ vivariumLib.mkTest (
       # tests that read it fail on "file 'nixpkgs' was not found in the Nix
       # search path", which names nothing about pynixd.
       nix.nixPath = [ "nixpkgs=${pkgs.path}" ];
-    });
+    }) suites;
   }
 )
