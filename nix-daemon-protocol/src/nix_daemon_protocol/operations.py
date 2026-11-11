@@ -52,8 +52,9 @@ STANDARD_OPERATIONS: Final[tuple[StandardOperation, ...]] = (
     StandardOperation(45, "AddBuildLog"),
     StandardOperation(46, "BuildPathsWithResults"),
     StandardOperation(47, "AddPermRoot", proto(1, 36)),
+    # Determinate Nix's (`worker-protocol.hh:283` and `:285` of v3.24.0); upstream reserves the codes.
+    StandardOperation(48, "QueryActiveBuilds", proto(1, 38)),
     StandardOperation(49, "AddTempRoots", proto(1, 38)),
-    # Determinate Nix's (`worker-protocol.hh:285` of v3.24.0); upstream reserves the code.
     StandardOperation(50, "QueryPathInfos", proto(1, 38)),
     # A builder's own daemon alone serves these two (`daemon.cc:349`).
     StandardOperation(1000, "SubmitOutput", proto(1, 38)),

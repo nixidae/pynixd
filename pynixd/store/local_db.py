@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import functools
+import json
 import os
 import types
 from enum import Enum
@@ -26,6 +27,7 @@ from nix_daemon_protocol.protocol import Verbosity
 from nix_daemon_protocol.realisation import Realisation
 from nix_daemon_protocol.signature import Signature
 from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
+from pynixd_store import active_builds
 from pynixd_store.builder import hooks, local as local_builder
 from pynixd_store.builder.settings import BuildSettings
 from pynixd_store.builder.vm import BuildVm
@@ -272,8 +274,9 @@ class LocalDBStore(Store):
 
     #: Batch operations that the engine answers. They take no route: upstream
     #: Nix has no such operation, and the daemon's fallback for each asks one
-    #: path at a time. Op 50 is Determinate Nix's; the rest are pynixd's own.
+    #: path at a time. Ops 48 and 50 are Determinate Nix's; the rest are pynixd's own.
     EXTENDED: ClassVar[dict[int, str]] = {
+        48: "query_active_builds",
         50: "query_path_infos",
         104: "query_closure",
         105: "query_closure_with_info",
@@ -1411,6 +1414,31 @@ class LocalDBStore(Store):
         return QueryClosureWithInfoResponse(
             infos=await self.engine.query_closure_with_info(str(p) for p in request.paths)
         )
+
+    @property
+    def builds_here(self) -> bool:
+        """Whether pynixd's own builder builds into this store (`_session_build_settings`)."""
+        return self.routes.get(BuildDerivationRequest.op) is OpRoute.pynixd and self.engine.writable
+
+    @property
+    def answers_active_builds(self) -> bool:
+        return self.builds_here or self._daemon.answers_active_builds
+
+    async def query_active_builds(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        """QueryActiveBuilds (op 48): the builds of pynixd's builder, and those of a daemon that names the feature.
+
+        A daemon without it never gets the request: upstream Nix closes the connection on an op it does not know.
+        """
+        from pynixd.serde import QueryActiveBuildsResponse
+
+        if not self.answers_active_builds:
+            raise PynixdError(f"Querying active builds not supported by store '{magenta(self.store_id)}'")
+        builds = await anyio.to_thread.run_sync(active_builds.query, self.engine.active_builds.snapshot())
+        if self._daemon.answers_active_builds:
+            theirs = await self._daemon.call(request, client=client, suppress_last=suppress_last)
+            builds += json.loads(theirs.builds)
+        # `nlohmann::json::dump` writes no spaces (`daemon.cc:1118`).
+        return QueryActiveBuildsResponse(builds=json.dumps(builds, separators=(",", ":")))
 
     async def query_path_infos(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryPathInfos: the path-info cache for each path, then the engine for the rest."""

@@ -38,6 +38,7 @@ from nix_daemon_protocol.find_roots import FindRootsRequest, FindRootsResponse
 from nix_daemon_protocol.is_valid_path import IsValidPathRequest, IsValidPathResponse
 from nix_daemon_protocol.nar_from_path import NarFromPathRequest
 from nix_daemon_protocol.optimise_store import OptimiseStoreRequest, OptimiseStoreResponse
+from nix_daemon_protocol.query_active_builds import QueryActiveBuildsRequest
 from nix_daemon_protocol.query_all_valid_paths import QueryAllValidPathsRequest, QueryAllValidPathsResponse
 from nix_daemon_protocol.query_derivation_output_map import QueryDerivationOutputMapRequest
 from nix_daemon_protocol.query_missing import QueryMissingRequest, QueryMissingResponse
@@ -162,7 +163,13 @@ class RestrictedProxy(DaemonProxy):
         return super().honourable_features()
 
     def server_features(self, honourable: frozenset[str]) -> set[str]:
-        """The protocol features alone: none of pynixd's own operations."""
+        """The protocol features alone: none of pynixd's own operations, and not `queryActiveBuilds`.
+
+        NIX-DEFECT (#23): `processConnection` (`daemon.cc:1161` of Determinate v3.24.0) names every feature of
+        `WorkerProto::latest` to a recursive build too. Its `RestrictedStore` is no `QueryActiveBuildsStore`, so
+        op 48 then throws in `require` (`daemon.cc:1115`). pynixd names only what this socket answers, and a
+        build sees no other build of the machine. Lillecarl/nix#420.
+        """
         return set(honourable)
 
     async def add_temp_root(self, path: str | StorePath) -> None:
@@ -347,6 +354,9 @@ class RestrictedProxy(DaemonProxy):
                 return CollectGarbageResponse(paths_deleted=set(), bytes_freed=0, obsolete=0)
             case OptimiseStoreRequest():
                 return OptimiseStoreResponse(value=1)
+            case QueryActiveBuildsRequest():
+                # `require<QueryActiveBuildsStore>` (`store-cast.hh:20`), after `startWork` (`daemon.cc:1114`).
+                raise RestrictedError(f"Querying active builds not supported by store {_quoted(STORE_NAME)}")
             case VerifyStoreRequest():
                 if request.repair:
                     raise RestrictedError("you are not privileged to repair paths")

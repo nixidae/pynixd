@@ -36,6 +36,7 @@ from nix_daemon_protocol.signature import Signature
 from nix_daemon_protocol.store_path import StorePath
 
 from .. import optimise
+from ..active_builds import ActiveBuild
 from ..add import PathLock, delete_path, sync_store_path
 from ..content_address import Method, fixed_output_address, output_method
 from ..drv_parser import BUILDER_RPC as BUILDER_RPC
@@ -979,7 +980,13 @@ async def build(
             stack.callback(sampler.cancel_scope.cancel)
             if cgroup is not None and sample_seconds > 0 and guest is None:
                 sampler.start_soon(build_cgroup.sample_every, cgroup, sample_seconds, samples)
-            failure = await _run(paths, spec, settings, drv_path, keep, control, guest, cgroup, user)
+
+            def running(pid: int) -> contextlib.AbstractContextManager[None]:
+                main_uid = os.getuid() if user is None else user.uid
+                build = ActiveBuild(pid, main_uid, cgroup, start, drv_path.name)
+                return engine.active_builds.running(build)
+
+            failure = await _run(paths, spec, settings, drv_path, keep, control, guest, cgroup, user, running)
             # Not `sampler.cancel_scope.cancel()` here: this body runs in that scope, and the read below would be
             # cancelled too. The stack's callback stops the sampler on the way out.
             taken = tuple(samples)
@@ -1265,12 +1272,13 @@ async def _run(
     guest: _Guest | None = None,
     cgroup: Path | None = None,
     user: build_users.BuildUser | None = None,
+    running: Callable[[int], contextlib.AbstractContextManager[None]] | None = None,
 ) -> BuildFailure | _BuilderFailed | None:
     """Run the helper on a pseudoterminal, as `startBuild` does, and wait under the two timeouts.
 
     *control* is the helper's end of the socket it binds added paths on; it closes here once the helper has it.
     With *guest*, the helper runs in a microVM, which reports through files in the top directory, and its VMM
-    joins *cgroup*.
+    joins *cgroup*. *running* holds the helper's pid as an active build while it runs.
     """
     spec_file = paths.top / "spec.json"
     maps: socket.socket | None = None
@@ -1332,6 +1340,9 @@ async def _run(
     if maps is not None and user is not None:
         with maps:
             await _map_build_user(maps, process.pid, user)
+    tracked = contextlib.ExitStack()
+    if running is not None:
+        tracked.enter_context(running(process.pid))
     timed_out: str | None = None
     try:
         with anyio.move_on_after(settings.timeout or None) as overall:
@@ -1360,6 +1371,7 @@ async def _run(
                         process.kill()
             await process.wait()
             os.close(master)
+            tracked.close()
     if guest is not None:
         setup_error = vm_status(paths.top)
     else:

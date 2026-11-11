@@ -44,6 +44,7 @@ from .constants import FEATURE_ADD_TO_STORE_SCANNING as FEATURE_ADD_TO_STORE_SCA
 from .constants import FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS as FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS
 from .constants import FEATURE_DISABLE_SET_OPTIONS as FEATURE_DISABLE_SET_OPTIONS
 from .constants import FEATURE_EXCHANGE_PROTOCOL as FEATURE_EXCHANGE_PROTOCOL
+from .constants import FEATURE_QUERY_ACTIVE_BUILDS as FEATURE_QUERY_ACTIVE_BUILDS
 from .constants import FEATURE_QUERY_PATH_INFOS as FEATURE_QUERY_PATH_INFOS
 from .constants import FEATURE_REALISATION_WITH_PATH as FEATURE_REALISATION_WITH_PATH
 from .constants import FEATURE_SUBMIT_OUTPUT as FEATURE_SUBMIT_OUTPUT
@@ -116,6 +117,8 @@ from .protocol import GCAction as GCAction
 from .protocol import OptTrusted as OptTrusted
 from .protocol import ResultType as ResultType
 from .protocol import Verbosity as Verbosity
+from .query_active_builds import QueryActiveBuildsRequest as QueryActiveBuildsRequest
+from .query_active_builds import QueryActiveBuildsResponse as QueryActiveBuildsResponse
 from .query_all_valid_paths import QueryAllValidPathsRequest as QueryAllValidPathsRequest
 from .query_all_valid_paths import QueryAllValidPathsResponse as QueryAllValidPathsResponse
 from .query_derivation_output_map import QueryDerivationOutputMapRequest as QueryDerivationOutputMapRequest

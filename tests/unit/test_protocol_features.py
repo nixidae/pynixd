@@ -69,6 +69,9 @@ change. The two must move together: a peer that reads the name then sends the
 new shape, and a codec that cannot read that shape drops the connection.
 """
 
+NAMED_BY_THE_PROXY = {ndp.FEATURE_QUERY_ACTIVE_BUILDS}
+"""Standard features that gate no forwarded shape. `DaemonProxy.server_features` names each on a condition."""
+
 
 def test_the_number_is_the_one_that_nix_froze() -> None:
     """Nix 2.34 and the master branch both report 1.38."""
@@ -84,12 +87,14 @@ def test_the_names_of_nix_are_the_names_of_this_package() -> None:
     assert ndp.FEATURE_ADD_TO_STORE_SCANNING == "add-to-store-scanning"
     assert ndp.FEATURE_SUBMIT_OUTPUT == "submit-output"
     assert ndp.FEATURE_QUERY_PATH_INFOS == "queryPathInfos"
+    assert ndp.FEATURE_QUERY_ACTIVE_BUILDS == "queryActiveBuilds"
     assert ndp.STANDARD_FEATURES >= FEATURES_OF_NIX_LATEST | FEATURES_OF_BUILDER_RPC_V0
 
 
 def test_the_ledger_names_every_feature_that_pynixd_does_not_claim() -> None:
     """The ledger and the claim are two halves of one statement."""
-    assert set(MISSING_CODECS) == set(ndp.STANDARD_FEATURES) - set(ndp.SUPPORTED_STANDARD_FEATURES)
+    assert set(MISSING_CODECS) | NAMED_BY_THE_PROXY == set(ndp.STANDARD_FEATURES) - set(ndp.SUPPORTED_STANDARD_FEATURES)
+    assert not set(MISSING_CODECS) & NAMED_BY_THE_PROXY
     for feature, reason in MISSING_CODECS.items():
         assert reason, feature
 
@@ -144,7 +149,9 @@ def test_pynixd_always_names_query_path_infos() -> None:
     The engine answers it in one query. `DaemonStore.query_path_infos` forwards it to a daemon that names
     `queryPathInfos` (`daemon.cc:935` of Determinate v3.24.0), and asks one path at a time of any other.
     """
-    proxy = SimpleNamespace(stores={}, pynixd_features=frozenset())
+    proxy = SimpleNamespace(
+        stores={}, pynixd_features=frozenset(), local_store=SimpleNamespace(answers_active_builds=False)
+    )
     assert ndp.FEATURE_QUERY_PATH_INFOS in DaemonProxy.server_features(cast("DaemonProxy", proxy), frozenset())
 
 

@@ -26,6 +26,7 @@ from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
 from nix_daemon_protocol.wire_ops import WireRequest
 from pynixd_store.drv_hash import output_hashes
 from pynixd_store.drv_parser import drv_bytes, parse_drv_bytes
+from pynixd_store.hintfmt import magenta
 from pynixd_store.store_layout import StoreLayout
 from pynixd_store.utils import random_nix32_hash
 
@@ -33,7 +34,7 @@ from .. import metrics, wire
 from .._lazy import ssh_errors
 from ..config import PressureSettings
 from ..constants import FEATURE_REALISATION_WITH_PATH
-from ..exceptions import BackendError
+from ..exceptions import BackendError, PynixdError
 from ..monitor import ResourceMonitor
 from ..pressure import BuildLimit
 from ..serde import (
@@ -1235,6 +1236,19 @@ class DaemonStore(Store):
         """PynixdCollectGarbage (op 101) — delegate to daemon."""
         return await self.call(request, client=client, suppress_last=suppress_last)
 
+    @property
+    def answers_active_builds(self) -> bool:
+        return wire.FEATURE_QUERY_ACTIVE_BUILDS in self.features
+
+    async def query_active_builds(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        """QueryActiveBuilds (op 48), to a daemon that names `queryActiveBuilds` alone.
+
+        Upstream Nix throws "invalid operation" before `startWork` on an op it does not know, and closes the session.
+        """
+        if not self.answers_active_builds:
+            raise PynixdError(f"Querying active builds not supported by store '{magenta(self.store_id)}'")
+        return await self.call(request, client=client, suppress_last=suppress_last)
+
     async def query_path_infos(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryPathInfos (op 50): one call to a daemon that names `queryPathInfos`, else one call per path."""
 
@@ -1479,6 +1493,7 @@ for _op, _method_name in {
     45: "add_build_log",
     46: "build_paths_with_results",
     47: "add_perm_root",
+    48: "query_active_builds",
     50: "query_path_infos",
     101: "pynixd_collect_garbage",
     104: "query_closure",

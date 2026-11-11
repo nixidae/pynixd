@@ -357,6 +357,9 @@ class DaemonProxy:
         # The local store answers op 50 for every backend: the engine in one query, a daemon that lacks the
         # feature one path at a time.
         our_features.add(wire.FEATURE_QUERY_PATH_INFOS)
+        # Op 48 has no fallback: a store whose builds pynixd cannot see would answer an empty list while they run.
+        if self.local_store.answers_active_builds:
+            our_features.add(wire.FEATURE_QUERY_ACTIVE_BUILDS)
 
         # Only build-capable stores contribute scheduling capabilities.
         # Substituters are deliberately non-scheduleable; advertising

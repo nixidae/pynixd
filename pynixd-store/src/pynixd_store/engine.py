@@ -26,6 +26,7 @@ from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 
 from . import add, build_log, collect, optimise, register, roots, verify
+from .active_builds import ActiveBuilds
 from .collector import Collection
 from .content_address import parse_any_sha256
 from .drv_parser import read_drv_file
@@ -119,6 +120,8 @@ class StoreEngine:
         self._settings: add.ImportSettings | None = None
         #: Whether the store's Nix hashes the offset of each self-reference (`add.HashModulo`); not Nix 2.34.
         self.hashes_self_reference_positions = True
+        #: The builds of pynixd's own builder that run now (`QueryActiveBuilds`, op 48).
+        self.active_builds = ActiveBuilds()
 
     @property
     def db(self) -> LocalStoreDB:

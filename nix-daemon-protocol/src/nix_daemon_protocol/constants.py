@@ -105,6 +105,13 @@ Upstream Nix reserves the code for it. The gated shape is a store-path set in, a
 `ValidPathInfo` out, which this package already reads.
 """
 
+FEATURE_QUERY_ACTIVE_BUILDS: Final[str] = "queryActiveBuilds"
+"""The `QueryActiveBuilds` operation, code 48, of Determinate Nix (`worker-protocol.hh:124` of v3.24.0).
+
+It gates no shape that a proxy forwards: the answer is one JSON string. So it is not in
+`SUPPORTED_STANDARD_FEATURES`, and a proxy names it only when its own store can answer.
+"""
+
 FEATURE_PYNIXD_BUILD_RESOURCES: Final[str] = "pynixd-build-resources-2"
 """`BuildResult.resources`: what the build used (`build_resources.py`), after Nix's fields.
 
@@ -124,6 +131,7 @@ STANDARD_FEATURES: Final[frozenset[str]] = frozenset(
         FEATURE_SUBMIT_OUTPUT,
         FEATURE_ADD_TEMP_ROOTS,
         FEATURE_QUERY_PATH_INFOS,
+        FEATURE_QUERY_ACTIVE_BUILDS,
     }
 )
 """Each feature name that Nix or Determinate Nix defines, whether or not a peer offers it.

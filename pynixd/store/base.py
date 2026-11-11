@@ -122,6 +122,11 @@ class Store(ABC):
         return frozenset()
 
     @property
+    def answers_active_builds(self) -> bool:
+        """Whether this store answers `QueryActiveBuilds` (op 48) with every build it runs."""
+        return False
+
+    @property
     def store_dir(self) -> str:
         """The store directory whose paths this store names (`StoreDirConfig::storeDir`): pynixd's own here."""
         return store_dir()
