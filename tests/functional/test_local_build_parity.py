@@ -2504,18 +2504,20 @@ nix $o store submit-output $p out
 """
 
 
-def _rpc_drv(name: str, attrs: str) -> str:
+def _rpc_drv(name: str, attrs: str, script: str = RPC_SCRIPT) -> str:
     return f"""
 let nix = builtins.storePath "@NIX@"; in
 derivation {{
   name = "{name}"; system = builtins.currentSystem; builder = "/bin/sh";
   requiredSystemFeatures = [ "builder-rpc-v0" ];
   PATH = "${{nix}}/bin";
-  args = [ "-c" ''{RPC_SCRIPT.replace("@NAME@", name)}'' ];
+  args = [ "-c" ''{script.replace("@NAME@", name)}'' ];
   {attrs}
 }}
 """
 
+
+_FLOATING = '__contentAddressed = true; outputHashMode = "recursive"; outputHashAlgo = "sha256";'
 
 RPC_CASES: dict[str, tuple[str, tuple[str, ...]]] = {
     # `startDaemon` requires the feature (`unix-derivation-builder.cc:675`). The guest's own config enables it,
@@ -2527,6 +2529,16 @@ RPC_CASES: dict[str, tuple[str, tuple[str, ...]]] = {
     # `Derivation::checkInvariants` (`derivations.cc:398`) and `startBuild` (`unix-derivation-builder.cc:355`).
     "input-addressed": (
         _rpc_drv("rpc-input-addressed", ""),
+        ("nix-command", "ca-derivations", "dynamic-derivations"),
+    ),
+    # `checkCAOutput` (`derivation-check.cc:53`): a floating output added flat, where the derivation says NAR.
+    "floating-method": (
+        _rpc_drv("rpc-floating-method", _FLOATING, RPC_SCRIPT.replace("--scan", "--mode flat")),
+        ("nix-command", "ca-derivations", "dynamic-derivations"),
+    ),
+    # `checkOutputs` (`derivation-check.cc:106`): the submitted path's name is not the output's.
+    "wrong-name": (
+        _rpc_drv("rpc-wrong-name", _FLOATING, RPC_SCRIPT.replace("--name @NAME@", "--name other")),
         ("nix-command", "ca-derivations", "dynamic-derivations"),
     ),
 }
@@ -2591,6 +2603,15 @@ RPC_PYNIXD_ONLY: dict[str, tuple[str, tuple[str, ...]]] = {
         _rpc_drv("rpc-fixed", f'outputHashMode = "recursive"; outputHash = "{RPC_FIXED_HASH}";'),
         ("nix-command", "ca-derivations", "dynamic-derivations"),
     ),
+    # The NAR of `f` hashes to what the flat output names, so only the method tells them apart.
+    "fixed-method": (
+        _rpc_drv("rpc-fixed-method", f'outputHashMode = "flat"; outputHash = "{RPC_FIXED_HASH}";'),
+        ("nix-command", "ca-derivations", "dynamic-derivations"),
+    ),
+    "unknown-output": (
+        _rpc_drv("rpc-unknown", _FLOATING, RPC_SCRIPT + "nix $o store submit-output $p bogus\n"),
+        ("nix-command", "ca-derivations", "dynamic-derivations"),
+    ),
 }
 
 
@@ -2616,3 +2637,20 @@ async def test_a_builder_rpc_fixed_output_builds_with_no_daemon(tmp_path: Path) 
     assert here["paths"] == [wanted], here
     assert here["info"][wanted]["references"] == [], here["info"]
     assert here["trace"] == [("out", wanted)], here
+
+
+@pytest.mark.parametrize(
+    ("case", "error"),
+    [
+        ("fixed-method", "was hashed with method 'nar', expected 'flat'"),
+        ("unknown-output", "submitted unknown output 'bogus' (Valid outputs are [out])"),
+    ],
+)
+async def test_a_builder_rpc_submission_nix_misses_is_refused(tmp_path: Path, case: str, error: str) -> None:
+    """`checkCAOutput` trusts a fixed output's method, and the unknown-output error lists the submitted outputs
+    (`derivation-check.cc:26`, `:102`; Lillecarl/nix#416). pynixd refuses the first and names the valid outputs."""
+    if NIX_GIT_BIN is None:
+        pytest.skip("NIX_GIT_BIN names no Nix of the master branch")
+    here = await _rpc_case(tmp_path, OpRoute.pynixd, case, NIX_GIT_BIN, RPC_PYNIXD_ONLY)
+    assert here["rc"] == 1, here
+    assert error in "\n".join(here["errors"]), here["errors"]

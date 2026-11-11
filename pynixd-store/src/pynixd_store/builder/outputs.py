@@ -44,7 +44,9 @@ from ..content_address import (
     make_store_path,
     output_method,
     parse_any_sha256,
+    store_path_name,
 )
+from ..drv_hash import output_path_name
 from ..hintfmt import magenta
 from ..nar_fs import dump_path, restore_path
 from ..utils import nix32_encode
@@ -609,12 +611,15 @@ def check_outputs(
     *,
     store_dir: str,
     path_info: Callable[[StorePath], ValidPathInfo | None],
+    submitted: tuple[str, Mapping[str, DerivationOutput]] | None = None,
 ) -> BuildFailure | None:
-    """`checkOutputs` (`build/derivation-check.cc:39`) after the fixed-output check.
+    """`checkOutputs` (`build/derivation-check.cc:82`) after the fixed-output check.
 
     Op 36 carries no input derivations, so no placeholder resolves: an exact
     store path names a path, and any other word names an output.
-    *path_info* blocks: call this from a worker thread.
+    *path_info* blocks: call this from a worker thread. *submitted*, the
+    derivation's name and outputs, makes *infos* what a builder-rpc-v0 builder
+    submitted: each is checked first for its name and its address (`:93`).
     """
     by_path = {info.path: info for info in infos.values()}
 
@@ -694,9 +699,74 @@ def check_outputs(
         return None
 
     for name in sorted(infos):
+        if submitted is not None and (failure := _submitted(drv_path, *submitted, name, infos)) is not None:
+            return failure
         c = checks if isinstance(checks, OutputChecks) else checks.get(name)
         if c is not None and (failure := apply(name, infos[name], c)) is not None:
             return failure
+    return None
+
+
+def _submitted(
+    drv_path: StorePath,
+    drv_name: str,
+    declared: Mapping[str, DerivationOutput],
+    name: str,
+    infos: Mapping[str, ValidPathInfo],
+) -> BuildFailure | None:
+    """The head of the loop of `checkOutputs` (`derivation-check.cc:93`) and `checkCAOutput` (`:12`).
+
+    NIX-DEFECT (#23): `checkCAOutput` compares only the hash of a fixed output (`derivation-check.cc:26`), so a
+    path made with another method and the same digest passes and is realised away from the fixed path. It asserts
+    that the path has an address (`:25`), which a submitted path need not have, and the unknown-output error lists
+    the submitted outputs as the valid ones (`:102`). pynixd checks the method, refuses a path with no address as
+    the floating case does, and lists the derivation's outputs. Lillecarl/nix#416.
+    """
+    info = infos[name]
+    output = declared.get(name)
+    if output is None:
+        return BuildFailure(
+            BuildResultStatus.OUTPUT_REJECTED,
+            f"builder for '{magenta(drv_path)}' submitted unknown output '{magenta(name)}' "
+            f"(Valid outputs are [{magenta(', '.join(sorted(declared)))}])",
+        )
+    expected, actual = output_path_name(drv_name, name), store_path_name(str(info.path))
+    if actual != expected:
+        return BuildFailure(
+            BuildResultStatus.OUTPUT_REJECTED,
+            f"derivation '{magenta(drv_path)}' output '{magenta(name)}' (at '{magenta(info.path)}') was named "
+            f"'{magenta(actual)}', expected '{magenta(expected)}'",
+        )
+    if output.kind not in (OutputKind.CA_FIXED, OutputKind.CA_FLOATING):
+        return None
+    where = f"output '{magenta(name)}' (at '{magenta(info.path)}')"
+    if not info.info.ca.value:
+        kind = "fixed-output" if output.kind is OutputKind.CA_FIXED else "floating content-addressing"
+        return BuildFailure(
+            BuildResultStatus.OUTPUT_REJECTED,
+            f"{kind} derivation '{magenta(drv_path)}' {where} was not content-addressed",
+        )
+    got = ContentAddress.parse(info.info.ca.value)
+    if output.kind is OutputKind.CA_FIXED:
+        wanted = fixed_output_address(output.method, output.hash_digest)
+        references = frozenset(info.info.references)
+        if (failure := _check(drv_path, _Fixed(wanted, got, info.path, references))) is not None:
+            return failure
+        method, algo = wanted.method, wanted.algo
+    else:
+        method, algo = output_method(output.method)
+    if got.method is not method:
+        return BuildFailure(
+            BuildResultStatus.OUTPUT_REJECTED,
+            f"content-addressing derivation '{magenta(drv_path)}' {where} was hashed with method "
+            f"'{magenta(got.method.render())}', expected '{magenta(method.render())}'",
+        )
+    if got.algo != algo:
+        return BuildFailure(
+            BuildResultStatus.OUTPUT_REJECTED,
+            f"content-addressing derivation '{magenta(drv_path)}' {where} was hashed with algorithm "
+            f"'{magenta(got.algo)}', expected '{magenta(algo)}'",
+        )
     return None
 
 

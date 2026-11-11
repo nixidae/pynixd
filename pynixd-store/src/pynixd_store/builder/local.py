@@ -1161,6 +1161,7 @@ async def _check_submitted(
             infos,
             store_dir=str(engine.layout.store_dir),
             path_info=lambda path: anyio.from_thread.run(engine.query_path_info, str(path)),
+            submitted=(drv_path.base_name().removesuffix(".drv"), drv.outputs),
         )
     )
     if failure is not None:

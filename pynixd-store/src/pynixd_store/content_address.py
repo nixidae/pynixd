@@ -43,6 +43,10 @@ class Method(StrEnum):
     NAR = "r:"
     GIT = "git:"
 
+    def render(self) -> str:
+        """`ContentAddressMethod::render` (`content-address.cc:25`)."""
+        return {Method.TEXT: "text", Method.FLAT: "flat", Method.NAR: "nar", Method.GIT: "git"}[self]
+
 
 def parse_digest(text: str, algo: str) -> bytes:
     """`Hash::parseNonSRIUnprefixed`: Base16, Nix32 or Base64, told apart by length."""
