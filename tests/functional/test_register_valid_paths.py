@@ -243,3 +243,20 @@ async def test_a_pooled_worker_sees_a_registration_at_once(tmp_path: Path) -> No
         await local.register_valid_paths(plain)
         assert (await local.execute(asked, skip_probe=True)).valid is True
         assert worker.op_log.count("QueryPathInfoRequest") == 2, "the same worker answers both"
+
+
+_RPC_EXPR = """
+derivation {
+  name = "rpc"; system = "x86_64-linux"; builder = "/bin/sh"; requiredSystemFeatures = [ "builder-rpc-v0" ];
+}
+"""
+
+
+async def test_an_input_addressed_builder_rpc_derivation_is_refused(tmp_path: Path) -> None:
+    """`checkInvariants` of Nix master (`derivations.cc:397`). Nix 2.35 knows no builder-rpc-v0 and writes it."""
+    nix_a, nix_b = tmp_path / "a", tmp_path / "b"
+    await _nix("eval", "--store", str(nix_a), "--raw", "--expr", f"({_RPC_EXPR}).drvPath")
+    await _nix("store", "info", "--store", str(nix_b))
+    infos = _infos(nix_a)
+    _copy_files(nix_a, nix_b, infos)
+    await _refused(nix_b, infos, "may only be used with content-addressing derivations")

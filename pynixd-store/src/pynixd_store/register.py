@@ -26,7 +26,7 @@ from .content_address import (
     store_path_name,
 )
 from .drv_hash import make_output_path, output_hashes, output_path_name
-from .drv_parser import read_drv_file
+from .drv_parser import BUILDER_RPC, read_drv_file
 from .errors import PynixdError
 from .hintfmt import magenta, missing_feature
 from .queries import (
@@ -142,6 +142,15 @@ async def _derivation_outputs(drv_path: str, layout: StoreLayout, features: Coll
     if (missing := _missing_feature(parsed, drv_name, features)) is not None:
         raise RegistrationError(missing)
     _check_output_types(parsed)
+    # `checkInvariants` of Nix master (`derivations.cc:381`, `:397`): a builder-rpc-v0 builder sees no output path,
+    # so no variable names one, and only a content-addressed derivation may use it.
+    rpc_outputs = BUILDER_RPC in parsed.required_system_features
+    kinds = [DerivationOutput(path=o.path, method=o.hash_algo, hash_digest=o.hash_value).kind for o in parsed.outputs]
+    if rpc_outputs and OutputKind.INPUT_ADDRESSED in kinds:
+        raise RegistrationError(
+            f"derivation uses the '{magenta(BUILDER_RPC)}' feature, which may only be used with content-addressing "
+            "derivations"
+        )
 
     async def read(path: str) -> Derivation | None:
         return await read_drv_file(path, layout)
@@ -168,6 +177,9 @@ async def _derivation_outputs(drv_path: str, layout: StoreLayout, features: Coll
             expected = content_addressed_path(address, output_path_name(drv_name, output.name), (), store_dir)
         else:
             continue
+        outputs[output.name] = expected
+        if rpc_outputs:
+            continue
         actual = parsed.env.get(output.name)
         if actual is None:
             raise RegistrationError(
@@ -179,7 +191,6 @@ async def _derivation_outputs(drv_path: str, layout: StoreLayout, features: Coll
                 f"derivation has incorrect environment variable '{magenta(output.name)}', "
                 f"should be '{magenta(expected)}' but is actually '{magenta(actual)}'"
             )
-        outputs[output.name] = expected
     return outputs
 
 

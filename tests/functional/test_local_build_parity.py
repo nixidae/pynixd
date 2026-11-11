@@ -2532,8 +2532,10 @@ RPC_CASES: dict[str, tuple[str, tuple[str, ...]]] = {
 }
 
 
-async def _rpc_case(tmp_path: Path, route: OpRoute, case: str, nix_bin: Path) -> dict[str, Any]:
-    expr, features = RPC_CASES[case]
+async def _rpc_case(
+    tmp_path: Path, route: OpRoute, case: str, nix_bin: Path, cases: dict[str, tuple[str, tuple[str, ...]]] = RPC_CASES
+) -> dict[str, Any]:
+    expr, features = cases[case]
     nix = _nix_store_path(nix_bin)
     spec_args: dict[str, Any] = {"daemon": False} if route is OpRoute.pynixd else {}
     serve = tmp_path / case
@@ -2579,3 +2581,38 @@ async def test_a_builder_rpc_edge_answers_as_the_daemon_with_no_daemon(tmp_path:
     there = await _rpc_case(tmp_path, OpRoute.daemon, case, NIX_GIT_BIN)
     here = await _rpc_case(tmp_path, OpRoute.pynixd, case, NIX_GIT_BIN)
     assert here == there, {"pynixd": here, "daemon": there}
+
+
+RPC_FIXED_HASH = "sha256-DcbzN2JsXZlsWHQT6RaqEgd3UTovcqd8BGmBh0m+A/A="
+"""The NAR hash of the file `RPC_SCRIPT` adds, `built` and a newline."""
+
+RPC_PYNIXD_ONLY: dict[str, tuple[str, tuple[str, ...]]] = {
+    "fixed": (
+        _rpc_drv("rpc-fixed", f'outputHashMode = "recursive"; outputHash = "{RPC_FIXED_HASH}";'),
+        ("nix-command", "ca-derivations", "dynamic-derivations"),
+    ),
+}
+
+
+async def test_a_builder_rpc_fixed_output_builds_with_no_daemon(tmp_path: Path) -> None:
+    """Nix master's daemon never ends this build: the goal's output lock and the builder's add of the same path
+    wait for each other (`derivation-building-goal.cc:421`, `local-store.cc:1314`; Lillecarl/nix#415). pynixd
+    builds it, and registers the realisation `checkSubmittedOutputs` registers (`derivation-builder-impl.cc:758`).
+    """
+    if NIX_GIT_BIN is None:
+        pytest.skip("NIX_GIT_BIN names no Nix of the master branch")
+    expr, features = RPC_PYNIXD_ONLY["fixed"]
+    nix = _nix_store_path(NIX_GIT_BIN)
+    _rc, wanted, _err, _both = await run_subproc(
+        [
+            # Read-only: the guest's daemon is Nix 2.35, whose `checkInvariants` refuses a derivation with no `out`.
+            *(NIX_GIT_BIN, "eval", "--read-only", "--raw", "--extra-experimental-features", " ".join(features)),
+            "--impure",
+            *("--expr", f"({expr.replace('@NIX@', nix)}).outPath"),
+        ]
+    )
+    here = await _rpc_case(tmp_path, OpRoute.pynixd, "fixed", NIX_GIT_BIN, RPC_PYNIXD_ONLY)
+    assert here["rc"] == 0, here
+    assert here["paths"] == [wanted], here
+    assert here["info"][wanted]["references"] == [], here["info"]
+    assert here["trace"] == [("out", wanted)], here

@@ -38,6 +38,7 @@ from nix_daemon_protocol.store_path import StorePath
 from .. import optimise
 from ..add import PathLock, delete_path, sync_store_path
 from ..content_address import Method, fixed_output_address, output_method
+from ..drv_parser import BUILDER_RPC as BUILDER_RPC
 from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta, missing_feature, show_error
 from ..s3_url import S3URLError, parse as parse_s3_url
 from ..signing import SecretKey, fingerprint
@@ -105,9 +106,6 @@ DISK_FULL_BYTES = 8 * 1024 * 1024
 
 DEV_FILES = ("/dev/full", "/dev/null", "/dev/random", "/dev/tty", "/dev/urandom", "/dev/zero")
 
-BUILDER_RPC = "builder-rpc-v0"
-"""`drvFeatureBuilderRpcV0`: the builder submits its outputs over its daemon (`derivations.hh:24`)."""
-
 
 def uses_sandbox(drv: BasicDerivation, settings: BuildSettings, *, relocated: bool) -> bool:
     """`makeDerivationBuilder` (`unix/build/derivation-builder.cc:1751`): whether the build gets the chroot.
@@ -154,10 +152,11 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
         )
     ):
         return "auto-allocate-uids with start-id or id-count that Nix asserts on"
-    # `startBuild` (`unix-derivation-builder.cc:355`) refuses an input-addressed one in Nix's words, and pynixd
-    # registers realisations for a floating output alone (nixidae/nixidae#1271).
-    if BUILDER_RPC in features and {o.kind for o in drv.outputs.values()} != {OutputKind.CA_FLOATING}:
-        return "builder-rpc-v0 with an output that is not floating"
+    # `startBuild` (`unix-derivation-builder.cc:355`) refuses an input-addressed one in Nix's words, and
+    # `checkSubmittedOutputs` asserts each output is fixed or floating (`derivation-builder-impl.cc:743`;
+    # nixidae/nixidae#1272).
+    if BUILDER_RPC in features and OutputKind.IMPURE in {o.kind for o in drv.outputs.values()}:
+        return "builder-rpc-v0 with an impure output"
     try:
         export_requests(drv.env, store_dir)
     except ValueError as e:
@@ -744,9 +743,11 @@ async def build(
         present = {path for path in known.values() if await engine.is_valid_path_uncached(str(path))}
         valid = {path for path in present if not repair or await engine.contents_good(str(path))}
         repairing = repair and BUILDER_RPC in drv.required_system_features
-        if repairing:
-            # The builder adds each output itself, and an add that repairs locks the path it replaces: the build
-            # lets go of each output it repairs, or that add waits for it forever.
+        if BUILDER_RPC in drv.required_system_features:
+            # NIX-DEFECT (#23): `acquireResources` (`derivation-building-goal.cc:421`) locks each known output, and
+            # the builder's own add of it locks the same path (`local-store.cc:1314`): a fixed output, or one
+            # repaired, waits for itself forever. The builder never writes to an output path, so pynixd lets go of
+            # each one that is not valid. Lillecarl/nix#415.
             for path, lock in held.items():
                 if path not in valid:
                     lock.release(delete=False)
@@ -872,6 +873,12 @@ async def build(
         # `startDaemon` (`derivation-builder.cc:787`; `unix-derivation-builder.cc:674` of Nix master) requires the
         # feature before it starts the builder: dynamic-derivations for builder-rpc-v0, else recursive-nix.
         if BUILDER_RPC in drv.required_system_features:
+            if any(o.kind is OutputKind.INPUT_ADDRESSED for o in drv.outputs.values()):
+                # `startBuild` (`unix-derivation-builder.cc:355`), for a derivation that `checkInvariants` passed.
+                return LocalBuildResult(
+                    BuildResultStatus.MISC_FAILURE,
+                    show_error("The builder-rpc-v0 feature may only be used with content-addressing derivations"),
+                )
             if not settings.dynamic_derivations:
                 return LocalBuildResult(
                     BuildResultStatus.MISC_FAILURE, show_error(missing_feature("dynamic-derivations"))

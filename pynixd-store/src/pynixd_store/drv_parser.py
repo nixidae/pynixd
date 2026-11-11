@@ -54,6 +54,9 @@ if TYPE_CHECKING:
 
     from .store_layout import StoreLayout
 
+BUILDER_RPC = "builder-rpc-v0"
+"""`drvFeatureBuilderRpcV0`: the builder submits its outputs over its daemon (`derivations.hh:24`)."""
+
 DRV_TEXT_ERRORS = "surrogateescape"
 """A derivation is bytes to Nix (`derivations.cc:224-275`, `:533-561`).
 
