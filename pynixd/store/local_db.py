@@ -1424,6 +1424,14 @@ class LocalDBStore(Store):
     def answers_active_builds(self) -> bool:
         return self.builds_here or self._daemon.answers_active_builds
 
+    @property
+    def keeps_provenance(self) -> bool:
+        """Both writers and the fast reads keep it: the database, when pynixd reads one, and the daemon, when one runs."""
+        db = self.engine.db
+        if db.active and not db.statements.provenance:
+            return False
+        return self._daemon.keeps_provenance if self._daemon.runs_daemon else db.active
+
     async def query_active_builds(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryActiveBuilds (op 48): the builds of pynixd's builder, and those of a daemon that names the feature.
 

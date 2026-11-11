@@ -127,6 +127,11 @@ class Store(ABC):
         return False
 
     @property
+    def keeps_provenance(self) -> bool:
+        """Whether each path this store adds keeps the provenance its client sent, and each path info carries it back."""
+        return False
+
+    @property
     def store_dir(self) -> str:
         """The store directory whose paths this store names (`StoreDirConfig::storeDir`): pynixd's own here."""
         return store_dir()

@@ -125,7 +125,7 @@ FEATURE_OPEN_TELEMETRY: Final[str] = "open-telemetry"
 FEATURE_PROVENANCE: Final[str] = "provenance"
 """A JSON string, empty for none, after the content address of each path info, and in `AddToStore` after `repair`
 (Determinate Nix, `worker-protocol.cc:390`, `daemon.cc:452` of v3.24.0). Its daemon names it only with the
-`provenance` experimental feature (`daemon.cc:1165`).
+`provenance` experimental feature (`daemon.cc:1165`). A proxy names it only when its own store keeps the field.
 """
 
 FEATURE_PYNIXD_BUILD_RESOURCES: Final[str] = "pynixd-build-resources-2"
@@ -177,6 +177,7 @@ SUPPORTED_STANDARD_FEATURES: Final[frozenset[str]] = frozenset(
         FEATURE_QUERY_PATH_INFOS,
         FEATURE_NAMED_ACTIVITIES,
         FEATURE_OPEN_TELEMETRY,
+        FEATURE_PROVENANCE,
     }
 )
 """The standard features that this package has a codec for.

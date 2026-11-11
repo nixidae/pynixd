@@ -94,7 +94,7 @@ def test_pynixd_names_query_active_builds_only_when_its_store_sees_every_build()
 def test_a_builder_that_names_query_active_builds_does_not_make_pynixd_name_it() -> None:
     """A build on an ssh builder is not in the local store's answer, and a recursive build names `honourable` alone."""
     builder = SimpleNamespace(no_schedule=False, features={wire.FEATURE_QUERY_ACTIVE_BUILDS})
-    proxy = SimpleNamespace(stores={"builder": builder})
+    proxy = SimpleNamespace(stores={"builder": builder}, local_store=SimpleNamespace(keeps_provenance=False))
 
     assert wire.FEATURE_QUERY_ACTIVE_BUILDS not in DaemonProxy.honourable_features(cast("DaemonProxy", proxy))
 

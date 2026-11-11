@@ -339,6 +339,11 @@ class DaemonProxy:
             if store.no_schedule:
                 continue
             honourable |= set(store.features)
+        # Not a union: every add and every path info of a client goes through the local store, and a store that
+        # does not keep the field drops it with no error. A store with no daemon names no feature, and keeps it.
+        honourable.discard(wire.FEATURE_PROVENANCE)
+        if self.local_store.keeps_provenance:
+            honourable.add(wire.FEATURE_PROVENANCE)
         return frozenset(honourable & set(wire.SUPPORTED_STANDARD_FEATURES))
 
     pynixd_features: frozenset[str] = wire.PYNIXD_FEATURES

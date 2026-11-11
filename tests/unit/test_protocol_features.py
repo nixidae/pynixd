@@ -50,9 +50,6 @@ the detail, as Fact 9.
 """
 
 MISSING_CODECS = {
-    ndp.FEATURE_PROVENANCE: (
-        "The codecs carry the field, and the store does not keep it yet: a client's provenance would be dropped."
-    ),
     ndp.FEATURE_DISABLE_SET_OPTIONS: (
         "`SetOptions` must become a no-op. A builder cannot change the settings of the daemon that serves it."
     ),
@@ -122,9 +119,15 @@ def test_pynixd_claims_every_feature_of_nix_latest() -> None:
     `queryPathInfos` is Determinate Nix's op 50, and the local store answers it.
 
     `named-activities` is Determinate Nix's `STDERR_START_ACTIVITY_STRINGLY`. It writes itself in the old shape
-    to a peer that did not negotiate it. `open-telemetry` is its `traceparent` after each op code.
+    to a peer that did not negotiate it. `open-telemetry` is its `traceparent` after each op code. `provenance` is
+    one string in each path info and in `AddToStore`.
     """
-    determinate = {ndp.FEATURE_QUERY_PATH_INFOS, ndp.FEATURE_NAMED_ACTIVITIES, ndp.FEATURE_OPEN_TELEMETRY}
+    determinate = {
+        ndp.FEATURE_QUERY_PATH_INFOS,
+        ndp.FEATURE_NAMED_ACTIVITIES,
+        ndp.FEATURE_OPEN_TELEMETRY,
+        ndp.FEATURE_PROVENANCE,
+    }
     assert frozenset(FEATURES_OF_NIX_LATEST | determinate) == ndp.SUPPORTED_STANDARD_FEATURES
 
 
@@ -171,10 +174,17 @@ class _Store:
         self.features = features
 
 
-def _honourable(stores: dict[str, _Store]) -> frozenset[str]:
-    """`DaemonProxy.honourable_features`, called on a proxy that is only stores."""
-    proxy = SimpleNamespace(stores=stores)
+def _honourable(stores: dict[str, _Store], *, keeps_provenance: bool = False) -> frozenset[str]:
+    """`DaemonProxy.honourable_features`, called on a proxy that is only stores and a local store."""
+    proxy = SimpleNamespace(stores=stores, local_store=SimpleNamespace(keeps_provenance=keeps_provenance))
     return DaemonProxy.honourable_features(cast("DaemonProxy", proxy))
+
+
+def test_provenance_follows_the_local_store_and_not_the_build_stores() -> None:
+    """Every add and path info of a client goes through the local store, which drops a field it does not keep."""
+    builder = {"b": _Store(no_schedule=False, features={ndp.FEATURE_PROVENANCE})}
+    assert ndp.FEATURE_PROVENANCE not in _honourable(builder)
+    assert ndp.FEATURE_PROVENANCE in _honourable({}, keeps_provenance=True)
 
 
 FEATURE = ndp.FEATURE_REALISATION_WITH_PATH

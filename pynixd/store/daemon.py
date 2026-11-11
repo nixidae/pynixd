@@ -1240,6 +1240,11 @@ class DaemonStore(Store):
     def answers_active_builds(self) -> bool:
         return wire.FEATURE_QUERY_ACTIVE_BUILDS in self.features
 
+    @property
+    def keeps_provenance(self) -> bool:
+        # Determinate Nix names it only with the `provenance` experimental feature (`daemon.cc:1165` of v3.24.0).
+        return wire.FEATURE_PROVENANCE in self.features
+
     async def query_active_builds(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryActiveBuilds (op 48), to a daemon that names `queryActiveBuilds` alone.
 
