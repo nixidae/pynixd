@@ -158,6 +158,10 @@ ghalib.evalWorkflow {
         # -- and no wired path ran it. Issue #33 is the same hole one suite
         # over. 8 tests, 22 s.
         (pytestSuite "Parity tests" [ "tests/parity" ])
+        # Nix's client code (huggorm) against `nix daemon` and pynixd, with a
+        # fixed sample of generated operations. nixidae/nixidae#1249. 8
+        # examples, 4 s in a guest.
+        (pytestSuite "Client tests" [ "tests/client" ])
         # After the suites: a drift in the Pages render must not hide them.
         # Issue #49.
         {

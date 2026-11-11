@@ -351,6 +351,7 @@ let
       ++ [
         ps.pytest
         ps.moto
+        ps.hypothesis
         vivarium-runner
       ];
   };
