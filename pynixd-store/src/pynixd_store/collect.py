@@ -51,6 +51,17 @@ class GCOptions:
     paths: frozenset[str] | None = None
     delete_referrers: bool = False
     max_freed: int = 2**64 - 1
+    #: No permanent root keeps a path (`gc.cc:521`). The handler refuses it outside a test.
+    ignore_liveness: bool = False
+
+
+def in_nix_test() -> bool:
+    """`_NIX_IN_TEST` is set: Determinate Nix lets a client ignore liveness, temporary roots included.
+
+    Determinate v3.24.0 reads it in the daemon (`daemon.cc:823`) and the collector (`gc.cc:770`). Upstream 2.35
+    refuses it from every client (`daemon.cc:773`), and its suite sends it to no daemon (`multiple-outputs.sh:78`).
+    """
+    return "_NIX_IN_TEST" in os.environ
 
 
 _TRUE = frozenset({"true", "yes", "1"})

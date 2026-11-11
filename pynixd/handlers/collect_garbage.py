@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar
 
+from pynixd_store.collect import in_nix_test
+
 from ..constants import FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS
 from ..exceptions import ClosingError
 from ..serde import CollectGarbageRequest
@@ -43,8 +45,8 @@ class CollectGarbageHandler(Handler):
         # collector reads those roots and frees nothing. `nix-daemon` has no
         # such connection, because the client that made the root is gone.
         await ctx.proxy.local_store.retire_idle_connections()
-        # `daemon.cc:774`: after `startWork`, for every client.
-        if req.ignore_liveness:
+        # After `startWork`: upstream refuses every client (`daemon.cc:773`), Determinate all but its own suite's.
+        if req.ignore_liveness and not in_nix_test():
             await ctx.proxy.send_error("you are not allowed to ignore liveness")
             return None
         return await write_router(ctx.proxy.local_store).collect_garbage(req, conn=ctx.proxy.client)

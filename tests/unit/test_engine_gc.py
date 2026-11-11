@@ -244,6 +244,52 @@ async def test_a_temporary_root_file_keeps_its_path(tmp_path: Path) -> None:
     assert store.valid(A)
 
 
+async def test_ignore_liveness_deletes_a_path_a_root_keeps(tmp_path: Path) -> None:
+    """`gc.cc:521`: `findRootsNoTemp` does not run, so no `gcroots` link or runtime root keeps a path."""
+    store = _Store(tmp_path)
+    store.add(A)
+    store.root(A)
+    with pytest.raises(PynixdError, match="still alive"):
+        await _collect(store, GCOptions(GCAction.DELETE_SPECIFIC, frozenset({A})), _Lines())
+
+    paths, _ = await _collect(
+        store, GCOptions(GCAction.DELETE_SPECIFIC, frozenset({A}), ignore_liveness=True), _Lines()
+    )
+
+    assert paths == {A}
+    assert store.gone(A)
+
+
+@pytest.mark.parametrize("in_test", [False, True])
+async def test_only_a_nix_test_walks_past_a_temporary_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, in_test: bool
+) -> None:
+    """Determinate v3.24.0 `gc.cc:770`: the walk skips the check; the deletion loop still keeps the path (`:757`).
+
+    Outside a test the walk stops at the root set, which holds each temporary root as upstream's does (`gc.cc:531`).
+    """
+    if in_test:
+        monkeypatch.setenv("_NIX_IN_TEST", str(tmp_path))
+    else:
+        monkeypatch.delenv("_NIX_IN_TEST", raising=False)
+    store = _Store(tmp_path)
+    store.add(A)
+    roots = TempRoots(store.layout.state_dir)
+    assert await roots.add(A)
+    lines = _Lines()
+    try:
+        paths, _ = await _collect(store, GCOptions(GCAction.DELETE_DEAD, ignore_liveness=True), lines)
+    finally:
+        await roots.close()
+
+    assert paths == set()
+    assert store.valid(A)
+    walked = f"not deleting '{A}' because it became a temporary root after initial scan"
+    stopped = f"cannot delete '{A}' because it's a root"
+    assert (walked if in_test else stopped) in lines.at(Verbosity.DEBUG)
+    assert (stopped if in_test else walked) not in lines.at(Verbosity.DEBUG)
+
+
 async def test_a_root_given_to_the_socket_during_the_collection_is_kept(tmp_path: Path) -> None:
     """`gc.cc:463`: a client that roots a path while the lock is held reaches the collector over the socket."""
     store = _Store(tmp_path)

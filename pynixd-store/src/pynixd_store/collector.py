@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
     from .collect import Report
     from .engine import StoreEngine
+    from .liveness import RootWalk
 
 
 class PathInUse(PynixdError):
@@ -86,14 +87,32 @@ class Collection:
             await self._sweep_links()
         return self.results
 
+    @property
+    def ignores_temp_roots(self) -> bool:
+        """The walk skips each temporary root it read (`gc.cc:770` of Determinate v3.24.0); the deletion loop does not."""
+        return self.options.ignore_liveness and collect.in_nix_test()
+
     async def _find_roots(self) -> None:
         """`findRootsNoTemp` then `findTempRoots` (`gc.cc:520`). The lock is held, so no permanent root appears."""
         await self.report(Verbosity.INFO, "finding garbage collector roots...")
         layout = self.engine.layout
         state_dir, store_dir = layout.state_dir, str(layout.store_dir)
-        for link, target in await anyio.to_thread.run_sync(partial(unlink_stale_auto_roots, state_dir, store_dir)):
-            await self.report(Verbosity.INFO, f'removing stale link from "{link}" to "{target}"')
+        permanent = not self.options.ignore_liveness
+        if permanent:
+            for link, target in await anyio.to_thread.run_sync(partial(unlink_stale_auto_roots, state_dir, store_dir)):
+                await self.report(Verbosity.INFO, f'removing stale link from "{link}" to "{target}"')
         walk = await anyio.to_thread.run_sync(partial(walk_root_sources, state_dir, store_dir, reap=True))
+        if permanent:
+            await self._permanent_roots(walk)
+        for reaped in walk.reaped:
+            await self.report(Verbosity.INFO, f'removing stale temporary roots file "{reaped}"')
+        for path in walk.temporary:
+            self.server.temp_roots.add(_hash_part(path))
+            if not self.ignores_temp_roots:
+                self.roots.add(path)
+
+    async def _permanent_roots(self, walk: RootWalk) -> None:
+        """`findRootsNoTemp` (`gc.cc:293`): the valid paths of the `gcroots` links and the runtime roots."""
         for path in walk.unreadable:
             await self.report(Verbosity.INFO, f'cannot read potential root "{path}"')
         named = set(walk.stable.values()) | set(walk.runtime)
@@ -107,11 +126,6 @@ class Collection:
                     # Gone since the walk read it: Nix read it once, and this line is all that is lost.
                     continue
                 await self.report(Verbosity.INFO, f'skipping invalid root from "{link}" to "{target}"')
-        for reaped in walk.reaped:
-            await self.report(Verbosity.INFO, f'removing stale temporary roots file "{reaped}"')
-        for path in walk.temporary:
-            self.server.temp_roots.add(_hash_part(path))
-            self.roots.add(path)
 
     async def _specific(self, paths: frozenset[str]) -> None:
         action = self.options.action
@@ -188,7 +202,7 @@ class Collection:
                         f"cannot delete '{start}' because '{path}' is not in the specified paths to delete",
                     )
                     return
-                if not self.server.hold(_hash_part(path)):
+                if not self.ignores_temp_roots and not self.server.hold(_hash_part(path)):
                     await self.report(Verbosity.DEBUG, f"cannot delete '{path}' because it's a temporary root")
                     self.alive.add(start)
                     await self._mark_alive(path)

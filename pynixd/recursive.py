@@ -61,6 +61,7 @@ from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.verify_store import VerifyStoreRequest, VerifyStoreResponse
 from nix_daemon_protocol.wire_ops import WIRE_REGISTRY
 from pynixd_store.builder.restriction import AddDependencyError, SubmitError
+from pynixd_store.collect import in_nix_test
 from pynixd_store.content_address import parse_method_algo
 from pynixd_store.hintfmt import magenta
 
@@ -349,7 +350,7 @@ class RestrictedProxy(DaemonProxy):
             case FindRootsRequest():
                 return FindRootsResponse()
             case CollectGarbageRequest():
-                if request.ignore_liveness:
+                if request.ignore_liveness and not in_nix_test():
                     raise RestrictedError("you are not allowed to ignore liveness")
                 return CollectGarbageResponse(paths_deleted=set(), bytes_freed=0, obsolete=0)
             case OptimiseStoreRequest():

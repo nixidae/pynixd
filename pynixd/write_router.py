@@ -545,6 +545,7 @@ class WriteRouter:
             paths=None if named is None else frozenset(path.path for path in named.paths),
             delete_referrers=named is not None and bool(named.delete_referrers),
             max_freed=request.max_freed,
+            ignore_liveness=bool(request.ignore_liveness),
         )
         overrides = conn.options.overrides if conn is not None and conn.options is not None else {}
         results = await engine.collect_garbage(
