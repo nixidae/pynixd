@@ -27,6 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Self
 
+from pynixd_store.content_address import check_name
 from pynixd_store.store_path import StorePath
 
 # ── OutputsSpec ─────────────────────────────────────────────────────
@@ -55,26 +56,6 @@ class OutputsNames:
 OutputsSpec = OutputsAll | OutputsNames
 
 
-def check_output_name(name: str) -> None:
-    """`checkName` at `path.cc:12-38`, with its messages: `ValueError` for a name Nix refuses."""
-    if not name:
-        raise ValueError("name must not be empty")
-    if len(name) > _MAX_NAME_LEN:
-        raise ValueError(f"name '{name}' must be no longer than {_MAX_NAME_LEN} characters")
-    if name in {".", ".."}:
-        raise ValueError(f"name '{name}' is not valid")
-    for dots in (".", ".."):
-        if name.startswith(dots + "-"):
-            raise ValueError(f"name '{name}' is not valid: first dash-separated component must not be '{dots}'")
-    for char in name:
-        if not (char.isascii() and (char.isalnum() or char in "+-._?=")):
-            raise ValueError(f"name '{name}' contains illegal character '{char}'")
-
-
-_MAX_NAME_LEN = 211
-"""`StorePath::MaxPathLen`."""
-
-
 def _parse_outputs_spec(s: str) -> OutputsSpec:
     if s == "*":
         return OutputsAll()
@@ -82,7 +63,7 @@ def _parse_outputs_spec(s: str) -> OutputsSpec:
     # plans nothing for it (`build.sh:102`, measured in issue #26).
     names = frozenset(s.split(",")) if s else frozenset()
     for name in names:
-        check_output_name(name)
+        check_name(name)
     return OutputsNames(names)
 
 

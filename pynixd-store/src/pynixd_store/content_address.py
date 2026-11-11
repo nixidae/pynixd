@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from .hintfmt import magenta
+from .hintfmt import magenta, missing_feature
 from .utils import compress_hash, nix32_decode, nix32_encode
 
 if TYPE_CHECKING:
@@ -90,24 +90,49 @@ def parse_any_sha256(text: str) -> bytes:
     return parse_digest(text.removeprefix("sha256:"), "sha256")
 
 
-def parse_method_algo(text: str) -> tuple[Method, str]:
+def parse_method_algo(text: str, features: frozenset[str]) -> tuple[Method, str]:
     """`ContentAddressMethod::parseWithAlgo` (`content-address.cc:203`): `fixed:r:sha256` and the like.
 
-    `ValueError` for any form Nix refuses or pynixd cannot hash.
+    `ValueError` in Nix's words for any form Nix refuses, and for a feature *features* lacks. Nix appends
+    a `:` and parses up to the algorithm, so it ignores what follows it.
     """
-    prefix, sep, rest = text.partition(":")
-    if not sep:
-        raise ValueError(f"not a content address method: {text}")
+    whole = f"{text}:"
+    prefix, _, rest = whole.partition(":")
     if prefix == "text":
         method = Method.TEXT
     elif prefix == "fixed":
         method = next((m for m in (Method.NAR, Method.GIT) if rest.startswith(m)), Method.FLAT)
+        if method is Method.GIT and "git-hashing" not in features:
+            raise ValueError(missing_feature("git-hashing"))
         rest = rest.removeprefix(method)
     else:
-        raise ValueError(f"content address prefix '{prefix}' is unrecognized")
-    if rest not in HASH_SIZES:
-        raise ValueError(f"unknown hash algorithm '{rest}'")
-    return method, rest
+        raise ValueError(
+            f"content address prefix '{magenta(prefix)}' is unrecognized. Recogonized prefixes are 'text' or 'fixed'"
+        )
+    algo, sep, _ = rest.partition(":")
+    if not sep:
+        raise ValueError(f"content address hash must be in form '<algo>:<hash>', but found: {magenta(whole)}")
+    # `parseHashAlgoOpt` (`hash.cc:472`).
+    if algo == "blake3":
+        if "blake3-hashes" not in features:
+            raise ValueError(missing_feature("blake3-hashes"))
+    elif algo not in HASH_SIZES:
+        raise ValueError(
+            f"unknown hash algorithm '{magenta(algo)}', expect 'blake3', 'md5', 'sha1', 'sha256', or 'sha512'"
+        )
+    return method, algo
+
+
+def text_needs_sha256(name: str, algo: str) -> str:
+    """The refusal of a text address with another algorithm than SHA-256, in the words of `remote-store.cc:363`.
+
+    NIX-DEFECT (#23): the daemon (protocol >= 1.25) parses `text:sha1` and
+    adds the dump; `makeFixedOutputPathFromCA` then asserts SHA-256
+    (`store-dir-config.cc:137`), and the worker aborts. The client reads a
+    closed connection, not an error. pynixd refuses with the client's own
+    check (`remote-store.cc:363`) instead. Lillecarl/nix#414.
+    """
+    return f"When adding text-hashed data called '{magenta(name)}', only SHA-256 is supported but '{magenta(algo)}' was given"
 
 
 def output_method(method: str) -> tuple[Method, str]:
@@ -122,11 +147,38 @@ def fixed_output_address(method: str, hash_text: str) -> ContentAddress:
     return ContentAddress(found, algo, parse_digest(hash_text, algo))
 
 
+MAX_NAME_LEN = 211
+"""`StorePath::MaxPathLen`."""
+
+
+def check_name(name: str) -> None:
+    """`checkName` (`path.cc:12`), with Nix's messages: `ValueError` for a name Nix refuses."""
+    if not name:
+        raise ValueError("name must not be empty")
+    if len(name) > MAX_NAME_LEN:
+        raise ValueError(f"name '{magenta(name)}' must be no longer than {magenta(MAX_NAME_LEN)} characters")
+    if name in {".", ".."}:
+        raise ValueError(f"name '{magenta(name)}' is not valid")
+    for dots in (".", ".."):
+        if name.startswith(dots + "-"):
+            raise ValueError(
+                f"name '{magenta(name)}' is not valid: first dash-separated component must not be '{magenta(dots)}'"
+            )
+    for char in name:
+        if not (char.isascii() and (char.isalnum() or char in "+-._?=")):
+            raise ValueError(f"name '{magenta(name)}' contains illegal character '{magenta(char)}'")
+
+
 def make_store_path(kind: str, algo: str, digest: bytes, name: str, store_dir: str) -> str:
-    """`StoreDirConfig::makeStorePath`."""
+    """`StoreDirConfig::makeStorePath`. Like the `StorePath` it makes, it refuses a name `checkName` refuses."""
     clear = f"{kind}:{algo}:{digest.hex()}:{store_dir}:{name}"
-    compressed = compress_hash(hashlib.sha256(clear.encode()).digest(), 20)
-    return f"{store_dir}/{nix32_encode(compressed)}-{name}"
+    base = f"{nix32_encode(compress_hash(hashlib.sha256(clear.encode()).digest(), 20))}-{name}"
+    try:
+        check_name(name)
+    except ValueError as error:
+        # `checkPathName` (`path.cc:40`).
+        raise ValueError(f"path '{magenta(base)}' is not a valid store path: {error}") from None
+    return f"{store_dir}/{base}"
 
 
 def _make_type(kind: str, references: Iterable[str], self_reference: bool) -> str:
@@ -153,7 +205,7 @@ def content_addressed_path(
     references = set(references)
     if ca.method is Method.TEXT:
         if ca.algo != "sha256":
-            raise ValueError("text hashing requires sha256")
+            raise ValueError(text_needs_sha256(name, ca.algo))
         if self_reference:
             raise ValueError("self-reference not allowed with text hashing")
         return make_store_path(_make_type("text", references, False), ca.algo, ca.digest, name, store_dir)

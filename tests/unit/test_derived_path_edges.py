@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from pynixd.derived_path import DerivedPath, OutputsAll, OutputsNames, check_output_name
+from pynixd.derived_path import DerivedPath, OutputsAll, OutputsNames
+from pynixd_store.content_address import check_name
+from pynixd_store.hintfmt import magenta
 
 DRV = "/nix/store/00000000000000000000000000000001-a.drv"
 
@@ -13,15 +15,19 @@ DRV = "/nix/store/00000000000000000000000000000001-a.drv"
     ("name", "reason"),
     [
         ("", "name must not be empty"),
-        ("*nope", "contains illegal character '\\*'"),
-        (".", "is not valid"),
-        ("..-x", "first dash-separated component must not be '..'"),
+        ("*nope", f"name '{magenta('*nope')}' contains illegal character '{magenta('*')}'"),
+        (".", f"name '{magenta('.')}' is not valid"),
+        (
+            "..-x",
+            f"name '{magenta('..-x')}' is not valid: first dash-separated component must not be '{magenta('..')}'",
+        ),
     ],
 )
 def test_an_output_name_nix_refuses_is_refused(name: str, reason: str) -> None:
-    """`checkName` at `path.cc:12-38`."""
-    with pytest.raises(ValueError, match=reason):
-        check_output_name(name)
+    """`checkName` at `path.cc:12-38`, its arguments magenta as `HintFmt` renders them."""
+    with pytest.raises(ValueError) as refused:
+        check_name(name)
+    assert str(refused.value) == reason
 
 
 def test_a_bad_name_in_a_derived_path_is_refused() -> None:

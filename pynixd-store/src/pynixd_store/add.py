@@ -568,7 +568,10 @@ async def add_dump(
             references = frozenset(str(ref) for ref in found)
         ca = ContentAddress(method, algo, digest)
         store_dir = str(engine.layout.store_dir)
-        path = content_addressed_path(ca, name, references, store_dir)
+        try:
+            path = content_addressed_path(ca, name, references, store_dir)
+        except ValueError as error:
+            raise AddError(str(error)) from error
         await root(path)
         if not repair and await engine.is_valid_path_uncached(path):
             return path

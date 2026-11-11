@@ -30,13 +30,12 @@ from nix_daemon_protocol.protocol import GCAction, Verbosity
 from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.verify_store import VerifyStoreResponse
 from pynixd_store.collect import GCOptions
-from pynixd_store.content_address import ContentAddress, Method, content_addressed_path, parse_method_algo
+from pynixd_store.content_address import Method, parse_method_algo, text_needs_sha256
 from pynixd_store.errors import PynixdError
 from pynixd_store.hintfmt import missing_feature
 from pynixd_store.source import Metered
 
 from . import metrics
-from .derived_path import check_output_name
 from .op_routes import OpRoute
 from .store.copied import as_copied
 from .store.daemon_writes import DaemonWrites
@@ -106,21 +105,30 @@ def _git_path(write: Write, facts: Facts) -> str | None:
     return None
 
 
+_NO_BLAKE3 = "pynixd does not hash with BLAKE3"
+
+
+def parse_dump_header(dump: Dump, features: frozenset[str]) -> tuple[Method, str]:
+    """The method and algorithm of *dump*, or `ValueError` with Nix's refusal of its header.
+
+    Nix refuses these before it reads the body (`daemon.cc:420`), so pynixd needs no daemon for them. A name
+    or an address Nix cannot make a path of fails later, in `content_addressed_path`, after the hash.
+    """
+    method, algo = parse_method_algo(dump.method_algo, features)
+    if method is Method.TEXT and algo != "sha256":
+        raise ValueError(text_needs_sha256(dump.name, algo))
+    return method, algo
+
+
 def _dump(write: Write, facts: Facts) -> str | None:
-    """A dump whose refusal or hash pynixd does not reproduce: Nix's message comes after `startWork`."""
-    dump = write.dump
-    if dump is None:
+    """A dump pynixd cannot hash. A header Nix refuses is no reason: `WriteRouter.engine_takes` refuses it first."""
+    if write.dump is None:
         return None
     try:
-        method, algo = parse_method_algo(dump.method_algo)
-        check_output_name(dump.name)
-        # The digest's value does not change whether Nix makes a path of it.
-        content_addressed_path(ContentAddress(method, algo, b""), dump.name, dump.references, "/nix/store")
-    except ValueError as error:
-        return str(error)
-    if method is Method.GIT and not facts.settings.git_hashing:
-        return _NO_GIT_HASHING
-    return None
+        _, algo = parse_dump_header(write.dump, facts.settings.experimental_features)
+    except ValueError:
+        return None
+    return _NO_BLAKE3 if algo == "blake3" else None
 
 
 def _refusal(reason: str) -> str:
@@ -255,6 +263,13 @@ class WriteRouter:
         """Whether the engine takes *write*. A write on the `pynixd` route that falls through is logged and counted."""
         if self.engine is None or self.route(write.op) is not OpRoute.pynixd:
             return False
+        if write.dump is not None:
+            # The daemon refuses a header before it reads the body and closes, and under load the forward then
+            # read a reset connection, not the error.
+            try:
+                parse_dump_header(write.dump, (await self.engine.settings()).experimental_features)
+            except ValueError as error:
+                raise PynixdError(str(error)) from None
         reason = await self.why_the_daemon(write)
         if reason is None:
             return True
@@ -373,7 +388,7 @@ class WriteRouter:
             return info
         engine = self._engine()
         settings = await engine.settings()
-        method, algo = parse_method_algo(dump.method_algo)
+        method, algo = parse_dump_header(dump, settings.experimental_features)
         path = await engine.add_to_store_from_dump(
             dump.name,
             method,

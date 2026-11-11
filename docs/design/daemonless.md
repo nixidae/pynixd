@@ -70,7 +70,7 @@ store directory, as `verifyStore` does. `collect_garbage`
 
 | op | today | to own it |
 | --- | --- | --- |
-| 7 AddToStore | on trial: the daemon in a deployment; route `pynixd` adds the flat or NAR dump as `addToStoreFromDump` does (`local-store.cc:1168`): restore into a locked `tmp-*` directory while hashing, the path from the address and references, a temp root, then the path lock, move, NAR hash, canonical metadata, registration. Repair, `auto-optimise-store` and `fsync-store-paths` run here too. A Git address needs `git-hashing` in the store's own features. A dump Nix refuses after `startWork` (an algorithm pynixd does not know, an address Nix cannot make a path of, a name Nix refuses) goes to the daemon; with none, pynixd refuses it | Nix's text for each dump refusal |
+| 7 AddToStore | on trial: the daemon in a deployment; route `pynixd` adds the flat or NAR dump as `addToStoreFromDump` does (`local-store.cc:1168`): restore into a locked `tmp-*` directory while hashing, the path from the address and references, a temp root, then the path lock, move, NAR hash, canonical metadata, registration. Repair, `auto-optimise-store` and `fsync-store-paths` run here too. A Git address needs `git-hashing` in the store's own features. pynixd refuses a header Nix refuses in Nix's words before it reads the body, and a name or an address Nix cannot make a path of after the hash, as Nix does. A text address with another algorithm than SHA-256 aborts Nix's worker; pynixd refuses it (`NIX-DEFECT`, Lillecarl/nix#414). A BLAKE3 dump goes to the daemon | BLAKE3 (nixidae/nixidae#1269) |
 | 39 AddToStoreNar | on trial: the daemon in a deployment; route `pynixd` imports it (`pynixd_store/add.py`): signatures, path lock, restore into a locked `tmp-*` directory, NAR and content hash, canonical metadata, registration. Repair, `auto-optimise-store` and `fsync-store-paths` run here; a Git address needs `git-hashing` | — |
 | 44 AddMultipleToStore | on trial: the daemon in a deployment; route `pynixd` imports each path as AddToStoreNar does, in stream order, one registration per path (`daemon.cc:505`). The first error ends the op and keeps the paths before it. A Git address is as for AddToStoreNar | — |
 | 37 AddSignatures | on trial: the daemon in a deployment; route `pynixd` merges the signatures into `ValidPaths.sigs` as `addSignatures` does (`local-store.cc:1583`), in Nix's set order. A path that is not valid raises, where Nix dereferences a null pointer and the worker segfaults (`NIX-DEFECT`) | — |
@@ -146,7 +146,7 @@ holds the current list.
 | a whole float in structured attrs whose truncation leaves int32 (`1e15`) | undefined behaviour |
 | `start-id` or `id-count` that `user-lock.cc:177` asserts on (`NIX-DEFECT`, Lillecarl/nix#395) | aborts |
 | builder-rpc-v0 (Nix master) without dynamic-derivations, or with a fixed output | refuses / builds |
-| a dump AddToStore refuses after `startWork` | refuses |
+| a dump hashed with BLAKE3, with `blake3-hashes` on (nixidae/nixidae#1269) | adds |
 | a build on any system but Linux | builds |
 
 ## The switch

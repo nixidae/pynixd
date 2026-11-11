@@ -19,8 +19,10 @@ import pytest
 
 from nix_daemon_protocol.add_to_store import AddToStoreRequest, AddToStoreResponse
 from nix_daemon_protocol.content_address import ContentAddress
+from nix_daemon_protocol.store_path import StorePath
 from pynixd.exceptions import BackendError
 from pynixd.serde.context import ReadContext, WriteContext
+from pynixd_store.content_address import text_needs_sha256
 from pynixd_store.engine import StoreEngine
 from pynixd_store.hintfmt import magenta
 from pynixd_store.nar_fs import dump_path
@@ -41,6 +43,7 @@ from tests._conftest.import_lab import (
 from tests.conftest import NIX_BIN
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from pathlib import Path
 
     from pynixd.connection import Connection
@@ -122,9 +125,16 @@ async def test_nix_store_add_and_eval_add_as_the_daemon_does(tmp_path: Path, add
     await run(str(NIX_BIN), "store", "verify", "--store", str(b), "--no-trust", *paths)
 
 
-async def _send(conn: Connection, name: str, cam: str, dump: bytes, *, repair: int = 0) -> AddToStoreResponse:
+async def _send(
+    conn: Connection, name: str, cam: str, dump: bytes, *, repair: int = 0, references: Iterable[str] = ()
+) -> AddToStoreResponse:
     """One AddToStore with *dump* in one frame; raises `BackendError`."""
-    request = AddToStoreRequest(path_name=name, cam=ContentAddress(value=cam), references=set(), repair=repair)
+    request = AddToStoreRequest(
+        path_name=name,
+        cam=ContentAddress(value=cam),
+        references={StorePath(ref) for ref in references},
+        repair=repair,
+    )
     await request.to_writer(WriteContext.from_conn(conn))
     framed = conn.w.framed()
     framed.write(dump)
@@ -214,6 +224,65 @@ async def test_a_dump_that_is_not_a_nar_is_refused_and_the_session_goes_on(tmp_p
         resp = await _send(conn, "good", "fixed:sha256", b"good\n")
         assert await valid(conn, str(resp.info.path))
     assert not list((b / "nix" / "store").glob("tmp-*"))
+
+
+_REFUSED_DUMPS = [
+    # `ContentAddressMethod::parseWithAlgo` (`content-address.cc:203`), before the `FramedSource`.
+    ("f", "sha256"),
+    ("f", "other:sha256"),
+    ("f", "fixed:md4"),
+    ("f", "fixed:r:blake3"),
+    ("f", "text:"),
+    ("f", "text"),
+    ("f", "fixed"),
+    ("f", "fixed:r"),
+    # `addToStoreFromDump`, after the hash: `checkName` (`path.cc:12`) as `makeStorePath` makes the path.
+    ("bad name", "fixed:sha256"),
+    (".", "fixed:sha256"),
+    ("..-f", "fixed:sha256"),
+    ("f" * 212, "fixed:sha256"),
+    ("bad name", "text:sha256"),
+]
+
+
+async def _refusals(tmp_path: Path, route: str, daemon: bool | None, sends: list[tuple[str, str]]) -> list[str]:
+    """What the store answers each of *sends*, a flat dump `x`; the session goes on after each.
+
+    A send named `f` with `fixed:sha256` refers to a valid path.
+    """
+    answers = []
+    tmp_path.mkdir(exist_ok=True)
+    root, socket = tmp_path / route, tmp_path / f"{route}.sock"
+    async with server(root, socket, route, daemon=daemon), client(socket) as conn:
+        good = str((await _send(conn, "good", "fixed:sha256", b"good")).info.path)
+        for name, cam in sends:
+            references = [good] if (name, cam) == ("f", "fixed:sha256") else []
+            with pytest.raises(BackendError) as refused:
+                await _send(conn, name, cam, b"x", references=references)
+            answers.append(str(refused.value))
+            assert await valid(conn, good)
+    return answers
+
+
+async def test_a_dump_nix_refuses_is_refused_in_nix_words_with_no_daemon(tmp_path: Path) -> None:
+    sends = [*_REFUSED_DUMPS, ("f", "fixed:sha256")]
+    there = await _refusals(tmp_path, "daemon", None, sends)
+    here = await _refusals(tmp_path, "pynixd", False, sends)
+    assert here == there, {"pynixd": here, "daemon": there}
+
+
+async def test_a_text_dump_hashed_with_sha1_is_refused_where_the_daemon_aborts(tmp_path: Path) -> None:
+    """NIX-DEFECT (#23): `makeFixedOutputPathFromCA` asserts SHA-256 (`store-dir-config.cc:137`).
+
+    The daemon's worker aborts, and the client reads a closed connection.
+    pynixd refuses in the words of the client's own check (`remote-store.cc:363`).
+    """
+    (there,) = await _refusals(tmp_path, "daemon", None, [("f", "text:sha1")])
+    assert there.startswith("IncompleteReadError"), there
+    for route, daemon in (("pynixd", False), ("pynixd", None)):
+        assert await _refusals(tmp_path / f"{daemon}", route, daemon, [("f", "text:sha1")]) == [
+            text_needs_sha256("f", "sha1")
+        ]
 
 
 async def _git_add(store: str, algo: str, source: Path) -> str:

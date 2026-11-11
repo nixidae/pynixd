@@ -237,7 +237,7 @@ class RestrictedProxy(DaemonProxy):
             raise ClosingError("Adding to store with scanning was requested, but not supported in negotiated protocol")
         frames = FramedReader(self.r)
         try:
-            method, algo = parse_method_algo(str(request.cam))
+            method, algo = parse_method_algo(str(request.cam), (await self._engine.settings()).experimental_features)
             path = await self._engine.add_to_store_from_dump(
                 request.path_name,
                 method,

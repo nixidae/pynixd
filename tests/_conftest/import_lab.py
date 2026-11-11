@@ -115,15 +115,27 @@ async def lab(tmp_path: Path) -> tuple[Path, list[str], str]:
 
 @asynccontextmanager
 async def server(
-    root: Path, socket: Path, route: str, *, upstream: str | None = None, **config: Any
+    root: Path,
+    socket: Path,
+    route: str,
+    *,
+    upstream: str | None = None,
+    daemon: bool | None = None,
+    **config: Any,
 ) -> AsyncIterator[LocalDBStore]:
-    """A local store whose import ops take *route*; *upstream* is a binary cache pynixd substitutes from."""
+    """A local store whose import ops take *route*; *upstream* is a binary cache pynixd substitutes from.
+
+    `daemon=False` runs the store with no Nix daemon.
+    """
+    # `make_test_spec` reads an explicit `daemon` as the caller's choice, so it is passed only when given.
+    spec_args: dict[str, Any] = {} if daemon is None else {"daemon": daemon}
     spec = make_test_spec(
         store_id="local",
         store_path=root,
         no_probe=True,
         nix_config=for_test_store(substituters=(), **config),
         op_routes=dict.fromkeys(IMPORT_OPS, route),
+        **spec_args,
     )
     store = LocalDBStore(spec)
     stores: dict[StoreId, Store] = {StoreId("local"): store}
