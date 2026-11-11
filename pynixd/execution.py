@@ -94,15 +94,16 @@ def machine_fault(result: BuildResult) -> str | None:
 
     Nix marks a build that failed with a full disk, or any unsandboxed build,
     `TransientFailure` (`derivation-builder.cc:242-250`), and an error outside
-    the builder `MiscFailure` (`derivation-building-goal.cc:805`). The text
-    catches a disk that filled and emptied again before Nix looked.
+    the builder `MiscFailure` (`derivation-building-goal.cc:805`). A builder
+    whose goal never finished answers `Cancelled`. The text catches a disk
+    that filled and emptied again before Nix looked.
     """
     if result_succeeded(result):
         return None
     status = BuildResultStatus(result.status)
     if status == BuildResultStatus.RAISED:
         status = BuildResultStatus.MISC_FAILURE
-    if status in (BuildResultStatus.TRANSIENT_FAILURE, BuildResultStatus.MISC_FAILURE):
+    if status in (BuildResultStatus.TRANSIENT_FAILURE, BuildResultStatus.MISC_FAILURE, BuildResultStatus.CANCELLED):
         return status.name.lower()
     message = str(result.error_msg)
     return next((words for words in _MACHINE_FAULTS if words in message), None)
