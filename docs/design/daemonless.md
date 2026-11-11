@@ -143,7 +143,6 @@ holds the current list.
 
 | case | what Nix does |
 | --- | --- |
-| a builtin with no `out` output, or buildenv and unpack-channel with others (`outputs.at("out")`) | fails in the builder |
 | a whole float in structured attrs whose truncation leaves int32 (`1e15`) | undefined behaviour |
 | `start-id` or `id-count` that `user-lock.cc:177` asserts on (`NIX-DEFECT`, Lillecarl/nix#395) | aborts |
 | builder-rpc-v0 (Nix master) without dynamic-derivations, or with a fixed output | refuses / builds |

@@ -26,7 +26,7 @@ class FetchSpec(TypedDict):
     """`None` for a derivation with no `url`: `env.at("url")` throws then (`builtins/fetchurl.cc:32`)."""
     mirrors: list[str]
     """The hashed-mirror URLs to try first, in order."""
-    out: str
+    out: str | None
     unpack: bool
     executable: bool
     tmp_dir: str
@@ -53,7 +53,7 @@ class FetchSpec(TypedDict):
 class BuildenvSpec(TypedDict):
     """`builtin:buildenv`: its output and the derivation's own attributes, `None` for one it lacks."""
 
-    out: str
+    out: str | None
     packages: list[tuple[str, bool, int]] | None
     """The `derivations` attribute, read: a path, whether it is active, its priority."""
     manifest: str | None
@@ -62,7 +62,7 @@ class BuildenvSpec(TypedDict):
 class UnpackChannelSpec(TypedDict):
     """`builtin:unpack-channel`: its output and the derivation's own attributes, `None` for one it lacks."""
 
-    out: str
+    out: str | None
     channel_name: str | None
     src: str | None
 

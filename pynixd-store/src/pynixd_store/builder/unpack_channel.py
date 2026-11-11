@@ -166,8 +166,13 @@ def unpack_channel(out: str, channel_name: str | None, src: str | None) -> None:
 
 def run(spec: UnpackChannelSpec) -> None:
     """After `enterChroot`. Exits the process."""
+    out = spec["out"]
+    if out is None:
+        # `ctx.outputs.at("out")` throws `std::out_of_range`: `runChild` writes its `what()` alone.
+        os.write(2, b"map::at\n")
+        os._exit(1)
     try:
-        unpack_channel(spec["out"], spec["channel_name"], spec["src"])
+        unpack_channel(out, spec["channel_name"], spec["src"])
     except Exception as e:  # noqa: BLE001 -- `runChild` writes any `std::exception` as the build's error
         os.write(2, (show_error(str(e)) + "\n").encode(errors="replace"))
         os._exit(1)

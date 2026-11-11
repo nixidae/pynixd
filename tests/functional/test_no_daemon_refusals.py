@@ -92,6 +92,28 @@ CASES: dict[str, tuple[str, dict[str, Any], tuple[str, ...]]] = {
         {},
         (),
     ),
+    # A builtin with no `out` (`builtins/fetchurl.cc:24`, `ctx.outputs.at("out")` in the other two).
+    "fetchurl-no-out": (
+        _builtin("refused-fetch-no-out", "fetchurl", 'outputs = [ "bin" ]; url = "file:///x";'),
+        {},
+        (),
+    ),
+    "buildenv-no-out": (
+        _builtin("refused-env-no-out", "buildenv", 'outputs = [ "bin" ]; derivations = [ ]; manifest = "";'),
+        {},
+        (),
+    ),
+    "unpack-channel-no-out": (
+        _builtin("refused-channel-no-out", "unpack-channel", 'outputs = [ "bin" ]; channelName = "c"; src = "/x";'),
+        {},
+        (),
+    ),
+    # The builtin makes `out` alone, and the build fails on the other output.
+    "buildenv-extra-output": (
+        _builtin("refused-env-extra", "buildenv", 'outputs = [ "out" "dev" ]; derivations = [ ]; manifest = "";'),
+        {},
+        (),
+    ),
     # `DerivationGoal::haveDerivation` (`derivation-goal.cc:113`): a check needs valid outputs.
     "check-unbuilt": (_drv("refused-check"), {}, ("--rebuild",)),
     "check-floating-unbuilt": (

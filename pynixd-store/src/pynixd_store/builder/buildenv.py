@@ -213,8 +213,12 @@ def build_profile(out: str, pkgs: list[Package]) -> None:
 
 def run(spec: BuildenvSpec) -> None:
     """`builtinBuildenv` (`buildenv.cc:173`), after `enterChroot`. Exits the process."""
+    out = spec["out"]
+    if out is None:
+        # `ctx.outputs.at("out")` throws `std::out_of_range`: `runChild` writes its `what()` alone.
+        os.write(2, b"map::at\n")
+        os._exit(1)
     try:
-        out = spec["out"]
         os.makedirs(out, exist_ok=True)
         pkgs, manifest = spec["packages"], spec["manifest"]
         if pkgs is None:

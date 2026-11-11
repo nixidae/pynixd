@@ -320,8 +320,6 @@ def _builtin_unsupported(drv: BasicDerivation, settings: BuildSettings) -> str |
         return _buildenv_unsupported(drv)
     if drv.builder == "builtin:fetchurl":
         return _fetchurl_unsupported(drv, settings)
-    if drv.builder == "builtin:unpack-channel":
-        return _unpack_channel_unsupported(drv)
     return None
 
 
@@ -333,24 +331,15 @@ def _builtin_env(drv: BasicDerivation) -> dict[str, str]:
     return {name: value for name, value in drv.env.items() if name != "__json"}
 
 
-def _unpack_channel_unsupported(drv: BasicDerivation) -> str | None:
-    """An output but `out` is a `map::at` throw."""
-    if set(drv.outputs) != {"out"}:
-        return f"builtin:unpack-channel with the outputs {sorted(drv.outputs)}"
-    return None
-
-
 def _buildenv_unsupported(drv: BasicDerivation) -> str | None:
     """A malformed `derivations` is a `stoi` throw or undefined behaviour."""
     env = _builtin_env(drv)
-    if set(drv.outputs) != {"out"}:
-        return f"builtin:buildenv with the outputs {sorted(drv.outputs)}"
     if "derivations" in env and buildenv.packages(env["derivations"]) is None:
         return "builtin:buildenv with derivations that Nix cannot read"
     return None
 
 
-def _buildenv_spec(drv: BasicDerivation, out: str) -> BuildenvSpec:
+def _buildenv_spec(drv: BasicDerivation, out: str | None) -> BuildenvSpec:
     """`builtinBuildenv` reads the derivation's own attributes, not the builder's environment (`buildenv.cc:175`)."""
     env = _builtin_env(drv)
     derivations = env.get("derivations")
@@ -362,9 +351,7 @@ def _buildenv_spec(drv: BasicDerivation, out: str) -> BuildenvSpec:
 
 
 def _fetchurl_unsupported(drv: BasicDerivation, settings: BuildSettings) -> str | None:
-    """Why the daemon runs this builtin. The helper refuses a plain output in Nix's words (`builtins/fetchurl.cc:28`)."""
-    if "out" not in drv.outputs:
-        return "builtin:fetchurl with no output 'out'"
+    """Why the daemon runs this builtin. The helper refuses the rest in Nix's words (`builtins/fetchurl.cc:24`)."""
     main = _builtin_env(drv).get("url")
     for url in ((main,) if main is not None else ()) + tuple(_mirror_urls(drv, settings)):
         if (reason := _url_unsupported(url)) is not None:
@@ -374,8 +361,8 @@ def _fetchurl_unsupported(drv: BasicDerivation, settings: BuildSettings) -> str 
 
 def _mirror_urls(drv: BasicDerivation, settings: BuildSettings) -> list[str]:
     """The hashed mirrors `builtinFetchurl` tries for a flat fixed output (`builtins/fetchurl.cc:76`)."""
-    out = drv.outputs["out"]
-    if out.kind is not OutputKind.CA_FIXED or not out.method:
+    out = drv.outputs.get("out")
+    if out is None or out.kind is not OutputKind.CA_FIXED or not out.method:
         return []
     method, algo = output_method(out.method)
     if method not in (Method.FLAT, Method.TEXT):
@@ -397,7 +384,7 @@ def _read_or_empty(path: str | None) -> str:
 def _fetch_spec(
     drv: BasicDerivation,
     settings: BuildSettings,
-    out: str,
+    out: str | None,
     build_dir: str,
     aws_credentials: Callable[[str | None], AwsCredentials | None] | None,
 ) -> FetchSpec:
@@ -406,7 +393,8 @@ def _fetch_spec(
     main_url = env.get("url")
     mirrors = _mirror_urls(drv, settings)
     return {
-        "fixed_or_impure": drv.outputs["out"].kind in (OutputKind.CA_FIXED, OutputKind.IMPURE),
+        # `type()` is the derivation's, and every output has the one kind (`derivations.cc:325`).
+        "fixed_or_impure": any(o.kind in (OutputKind.CA_FIXED, OutputKind.IMPURE) for o in drv.outputs.values()),
         "main_url": main_url,
         "mirrors": mirrors,
         "out": out,
@@ -827,8 +815,10 @@ async def build(
         )
         for name, contents in env.files.items():
             (paths.tmp / name).write_text(contents, encoding="utf-8")
+        # A builtin finds no `out` in `ctx.outputs` and fails in its own words (`derivation-builder.cc:999`).
+        builtin_out = str(scratch["out"]) if "out" in scratch else None
         fetch = (
-            await anyio.to_thread.run_sync(_fetch_spec, drv, settings, str(scratch["out"]), build_dir, aws_credentials)
+            await anyio.to_thread.run_sync(_fetch_spec, drv, settings, builtin_out, build_dir, aws_credentials)
             if drv.builder == "builtin:fetchurl"
             else None
         )
@@ -853,10 +843,10 @@ async def build(
             "no_new_privileges": not settings.allow_new_privileges,
             "filter_syscalls": settings.filter_syscalls,
             "fetchurl": fetch,
-            "buildenv": _buildenv_spec(drv, str(scratch["out"])) if drv.builder == "builtin:buildenv" else None,
+            "buildenv": _buildenv_spec(drv, builtin_out) if drv.builder == "builtin:buildenv" else None,
             "unpack_channel": (
                 {
-                    "out": str(scratch["out"]),
+                    "out": builtin_out,
                     "channel_name": _builtin_env(drv).get("channelName"),
                     "src": _builtin_env(drv).get("src"),
                 }

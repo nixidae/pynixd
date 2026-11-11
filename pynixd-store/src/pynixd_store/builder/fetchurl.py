@@ -456,9 +456,8 @@ def _download(spec: FetchSpec, url: str, sink: Callable[[bytes], object], rng: r
         transfer.curl.close()
 
 
-def _fetch(spec: FetchSpec, url: str, rng: random.Random) -> None:
+def _fetch(spec: FetchSpec, out: Path, url: str, rng: random.Random) -> None:
     """The `fetch` lambda of `builtinFetchurl`: the download, then the output in place."""
-    out = Path(spec["out"])
     if spec["unpack"]:
         # The NAR goes to a file first: `restorePath` pulls and curl pushes. A partial file is no output.
         nar = Path(spec["tmp_dir"]) / "fetchurl.nar"
@@ -496,6 +495,9 @@ def run(spec: FetchSpec) -> None:
             _write_private(Path(spec["netrc_file"]), spec["netrc_data"])
         spec["ca_file"] = str(tmp / "ca-certificates.crt")
         _write_private(Path(spec["ca_file"]), spec["ca_data"])
+        if spec["out"] is None:
+            raise RuntimeError("'builtin:fetchurl' requires an 'out' output")
+        out = Path(spec["out"])
         if not spec["fixed_or_impure"]:
             raise RuntimeError("'builtin:fetchurl' must be a fixed-output or impure derivation")
         main_url = spec["main_url"]
@@ -506,11 +508,11 @@ def run(spec: FetchSpec) -> None:
         rng = random.Random()
         for url in spec["mirrors"]:
             try:
-                _fetch(spec, url, rng)
+                _fetch(spec, out, url, rng)
             except (*NixError, OSError):
                 continue
             os._exit(0)
-        _fetch(spec, main_url, rng)
+        _fetch(spec, out, main_url, rng)
     except Exception as e:  # noqa: BLE001 -- `runChild` writes any `std::exception` as the build's error
         text, traces = (e.hint, e.traces) if isinstance(e, NixError) else (str(e), ())
         os.write(2, (show_error(text, traces) + "\n").encode(errors="replace"))
