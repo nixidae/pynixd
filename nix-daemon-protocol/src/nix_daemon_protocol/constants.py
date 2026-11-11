@@ -20,6 +20,9 @@ def proto_str(version: int) -> str:
 
 WORKER_MAGIC_1: Final[int] = 0x6E697863
 WORKER_MAGIC_2: Final[int] = 0x6478696F
+WORKER_MAGIC_ACCESS_DENIED: Final[int] = 0xAB9A9FF0
+"""Determinate Nix's daemon sends it in place of `WORKER_MAGIC_2` to a peer that `authPeer` refuses
+(`src/nix/unix/daemon.cc:384` of v3.24.0). Its client then names `allowed-users`."""
 PROTOCOL_VERSION: Final[int] = proto(1, 38)
 MINIMUM_PROTOCOL: Final[int] = proto(1, 35)
 """The oldest protocol of a client, a store and a builder: Lix speaks 1.35, nixbuild.net 1.35 (probed 2026-11-08).

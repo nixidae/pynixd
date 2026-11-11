@@ -17,6 +17,8 @@ import anyio.to_thread
 import structlog
 from anyio.abc import SocketListener
 
+from nix_daemon_protocol.constants import WORKER_MAGIC_ACCESS_DENIED
+
 from .config import ScheduleMode
 from .hangup import wait_for_socket_hangup
 from .proxy import DaemonProxy
@@ -125,9 +127,13 @@ async def start_unix_server(
             # A thread, because NSS may answer from the network.
             role, user = await anyio.to_thread.run_sync(authorise, peer, ctx.trust)
         except PeerRefusedError as ex:
-            # nix-daemon closes the socket before the handshake, and the
-            # client reads end-of-file.
+            # NIX-DEVIATION (#27): `src/nix/unix/daemon.cc:342` closes the socket, and the client reads
+            # end-of-file. pynixd first sends Determinate Nix's `WORKER_MAGIC_ACCESS_DENIED`: a Determinate
+            # client then names `allowed-users`, and an upstream one says "protocol mismatch"
+            # (`worker-protocol-connection.cc:170`). Reverse it if a client must read end-of-file.
             log.warning("unix_client_refused", pid=peer.pid, uid=peer.uid, reason=str(ex))
+            with contextlib.suppress(anyio.BrokenResourceError, anyio.ClosedResourceError):
+                await stream.send(WORKER_MAGIC_ACCESS_DENIED.to_bytes(8, "little"))
             await stream.aclose()
             return
         except Exception:

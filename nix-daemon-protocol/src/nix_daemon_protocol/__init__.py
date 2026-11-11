@@ -61,6 +61,7 @@ from .constants import SUPPORTED_PROTOCOL_VERSIONS as SUPPORTED_PROTOCOL_VERSION
 from .constants import SUPPORTED_STANDARD_FEATURES as SUPPORTED_STANDARD_FEATURES
 from .constants import WORKER_MAGIC_1 as WORKER_MAGIC_1
 from .constants import WORKER_MAGIC_2 as WORKER_MAGIC_2
+from .constants import WORKER_MAGIC_ACCESS_DENIED as WORKER_MAGIC_ACCESS_DENIED
 from .constants import is_supported_protocol as is_supported_protocol
 from .constants import negotiate_features as negotiate_features
 from .constants import proto as proto
