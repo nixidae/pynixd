@@ -52,9 +52,14 @@ GONE_PID = 2**22 + 1
 
 async def test_a_running_build_has_every_key_that_from_json_reads() -> None:
     registry = ActiveBuilds()
-    argv = [sys.executable, "-c", "import time; time.sleep(60)"]
+    argv = [sys.executable, "-c", "import time; print('up', flush=True); time.sleep(60)"]
     async with await anyio.open_process(argv) as sleeper:
         try:
+            # During `execve` the kernel gives an empty cmdline; a line on stdout comes after it. nixidae/nixidae#1281.
+            if sleeper.stdout is None:
+                raise AssertionError("open_process pipes stdout by default")
+            with anyio.fail_after(30):
+                await sleeper.stdout.receive()
             with registry.running(ActiveBuild(sleeper.pid, os.getuid(), None, 1700000000, DRV)):
                 (build,) = json.loads(json.dumps(active_builds.query(registry.snapshot())))
             assert registry.snapshot() == ()
