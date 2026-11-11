@@ -35,10 +35,10 @@ class GoalResult:
     #: for the waitees that `Goal::amDone` drops. `_run_the_root_goals` reads
     #: it and leaves the place of that root empty. Issue nixidae/nixidae#325.
     abandoned: bool = False
-    #: The message of an `Error` that a builder's Nix raised, here or in an
-    #: input, which ends the request as it ends `buildPathsWithResults`
-    #: (`BuildResultStatus.RAISED`). `None` for every other result. Issue
-    #: nixidae/nixidae#1277.
+    #: The message of an `Error` that Nix raises, here or in an input, which
+    #: ends the request as it ends `buildPathsWithResults`: a builder's
+    #: (`BuildResultStatus.RAISED`), or one pynixd raises where Nix does.
+    #: `None` for every other result. Issues nixidae/nixidae#1277 and nixidae/nixidae#1276.
     raised: str | None = None
 
     def copy(self) -> GoalResult:

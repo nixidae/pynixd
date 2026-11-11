@@ -191,7 +191,9 @@ async def _run(drv_path: str) -> tuple[FakeEngine, GoalResult]:
 async def test_a_pure_derivation_with_an_impure_input_is_refused() -> None:
     engine, result = await _run(PURE_DRV)
 
-    assert str(result.result.error_msg) == (f"pure derivation '{PURE_DRV}' depends on impure derivation '{IMPURE_DRV}'")
+    message = f"pure derivation '{PURE_DRV}' depends on impure derivation '{IMPURE_DRV}'"
+    assert str(result.result.error_msg) == message
+    assert result.raised == message
     assert engine.build_goals == []
 
 

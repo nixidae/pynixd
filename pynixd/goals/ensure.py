@@ -1381,16 +1381,20 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         Nix guards the check with the `impure-derivations` feature, and pynixd
         cannot ask the setting. It needs no guard: an impure derivation exists
         only when the feature is on.
+
+        Nix throws the message, so it ends the request (`raised`). As a result
+        it would reach the client as a `MiscFailure`, and Determinate's client
+        prints that as "(cancelled)" with no text. nixidae/nixidae#1276.
         """
         if parsed.is_impure or parsed.is_fixed_output:
             return None
         for input_drv_path in parsed.input_drvs:
             given = await self.engine.ctx.local_store.read_derivation(input_drv_path)
             if given is not None and given.is_impure:
-                return goal_failure(
-                    f"pure derivation '{drv_path}' depends on impure derivation '{input_drv_path}'",
-                    BuildResultStatus.UNKNOWN,
-                )
+                message = f"pure derivation '{drv_path}' depends on impure derivation '{input_drv_path}'"
+                refusal = goal_failure(message, BuildResultStatus.UNKNOWN)
+                refusal.raised = message
+                return refusal
         return None
 
     async def _input_paths(self, parsed: Derivation, dynamic_paths: DynamicPathMap) -> DynamicPathMap:
