@@ -31,6 +31,10 @@ CONTROLLERS = ("cpu", "memory", "io")
 REMOVE_TRIES = 100
 REMOVE_PAUSE = 0.01
 """Seconds between two tries of `rmdir`: the kernel keeps a cgroup busy until each killed process is gone."""
+SETTLE_SECONDS = 2.0
+"""How long `_base` keeps moving processes into the leaf. The functional suite's workers fork at once at its start,
+and a fixed ten tries with no pause lose that race: every build of the process then runs without a cgroup."""
+SETTLE_PAUSE = 0.005
 
 _log = structlog.get_logger(__name__)
 _serial = itertools.count()
@@ -72,7 +76,9 @@ def _base() -> Path | None:
         leaf.mkdir(exist_ok=True)
         enable = " ".join(f"+{name}" for name in CONTROLLERS if name in available)
         # A process that forks while the others move lands in *own*, and the write below then fails with EBUSY.
-        for _ in range(10):
+        # `_make` runs in a worker thread, so the pause blocks no event loop.
+        deadline = time.monotonic() + SETTLE_SECONDS
+        while time.monotonic() < deadline:
             for pid in (own / "cgroup.procs").read_text().split():
                 with contextlib.suppress(ProcessLookupError):
                     (leaf / "cgroup.procs").write_text(pid)
@@ -81,6 +87,7 @@ def _base() -> Path | None:
             except OSError as e:
                 if e.errno != errno.EBUSY:
                     raise
+                time.sleep(SETTLE_PAUSE)
                 continue
             return own
     except OSError as e:
