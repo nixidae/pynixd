@@ -32,7 +32,6 @@ from nix_daemon_protocol.verify_store import VerifyStoreResponse
 from pynixd_store.collect import GCOptions
 from pynixd_store.content_address import Method, parse_method_algo, text_needs_sha256
 from pynixd_store.errors import PynixdError
-from pynixd_store.hintfmt import missing_feature
 from pynixd_store.source import Metered
 
 from . import metrics
@@ -93,21 +92,6 @@ def _database(write: Write, facts: Facts) -> str | None:
     return None if facts.writable else "the store database is not writable"
 
 
-_NO_GIT_HASHING = "a Git content address without git-hashing"
-
-
-def _git_path(write: Write, facts: Facts) -> str | None:
-    """Without `git-hashing` the daemon refuses a Git address, in Nix's words."""
-    if facts.settings.git_hashing:
-        return None
-    if write.info is not None and str(write.info.info.ca).startswith("fixed:git:"):
-        return _NO_GIT_HASHING
-    return None
-
-
-_NO_BLAKE3 = "pynixd does not hash with BLAKE3"
-
-
 def parse_dump_header(dump: Dump, features: frozenset[str]) -> tuple[Method, str]:
     """The method and algorithm of *dump*, or `ValueError` with Nix's refusal of its header.
 
@@ -120,27 +104,20 @@ def parse_dump_header(dump: Dump, features: frozenset[str]) -> tuple[Method, str
     return method, algo
 
 
-def _dump(write: Write, facts: Facts) -> str | None:
-    """A dump pynixd cannot hash. A header Nix refuses is no reason: `WriteRouter.engine_takes` refuses it first."""
-    if write.dump is None:
-        return None
-    try:
-        _, algo = parse_dump_header(write.dump, facts.settings.experimental_features)
-    except ValueError:
-        return None
-    return _NO_BLAKE3 if algo == "blake3" else None
+def nix_refusal(write: Write, features: frozenset[str]) -> str | None:
+    """What Nix refuses of *write* before the body: a dump's header, or the method and algorithm of a NAR's address.
 
-
-def _refusal(reason: str) -> str:
-    """What a store with no daemon answers a write that a daemon would take for *reason*.
-
-    For a Git address, Nix's own refusal: `ContentAddressMethod::parse`
-    requires the feature (`content-address.cc:17`), and `MissingExperimentalFeature`
-    words it (`experimental-features.cc:342`).
+    `ContentAddress::parseOpt` reads a NAR's address off the wire (`daemon.cc:924`, `worker-protocol.cc:380` for
+    AddMultipleToStore), so a feature it lacks fails there, as a dump's header does.
     """
-    if reason == _NO_GIT_HASHING:
-        return missing_feature("git-hashing")
-    return reason
+    try:
+        if write.dump is not None:
+            parse_dump_header(write.dump, features)
+        elif write.info is not None and write.info.info.ca is not None and str(write.info.info.ca):
+            parse_method_algo(str(write.info.info.ca), features)
+    except ValueError as error:
+        return str(error)
+    return None
 
 
 def pynixd_import(info: ValidPathInfo, *, repair: bool = False) -> Write:
@@ -152,11 +129,7 @@ def pynixd_import(info: ValidPathInfo, *, repair: bool = False) -> Write:
     return Write(op="AddToStoreNar", repair=repair, info=info)
 
 
-REASONS: tuple[Callable[[Write, Facts], str | None], ...] = (
-    _database,
-    _git_path,
-    _dump,
-)
+REASONS: tuple[Callable[[Write, Facts], str | None], ...] = (_database,)
 """What sends a write the engine may take to the daemon, first match wins."""
 
 
@@ -263,20 +236,16 @@ class WriteRouter:
         """Whether the engine takes *write*. A write on the `pynixd` route that falls through is logged and counted."""
         if self.engine is None or self.route(write.op) is not OpRoute.pynixd:
             return False
-        if write.dump is not None:
-            # The daemon refuses a header before it reads the body and closes, and under load the forward then
-            # read a reset connection, not the error.
-            try:
-                parse_dump_header(write.dump, (await self.engine.settings()).experimental_features)
-            except ValueError as error:
-                raise PynixdError(str(error)) from None
+        # Nix's refusal either way. The daemon refuses it before it reads the body and closes, and under load the
+        # forward then reads a reset connection, not the error (nixidae/nixidae#1270).
+        refusal = nix_refusal(write, (await self.engine.settings()).experimental_features)
+        if refusal is not None:
+            raise PynixdError(refusal)
         reason = await self.why_the_daemon(write)
         if reason is None:
             return True
-        # A Git address is Nix's refusal either way. The daemon refuses it before it reads the body and closes,
-        # and under load the forward then read a reset connection, not the error.
-        if not self.daemon.runs or reason == _NO_GIT_HASHING:
-            raise PynixdError(_refusal(reason))
+        if not self.daemon.runs:
+            raise PynixdError(reason)
         subject = str(write.info.path) if write.info is not None else write.dump.name if write.dump else None
         log.info("write_fallthrough", op=write.op, subject=subject, reason=reason)
         metrics.OP_FALLTHROUGH.labels(store_id=self.store_id, op=write.op).inc()

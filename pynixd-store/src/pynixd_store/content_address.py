@@ -10,7 +10,9 @@ import base64
 import hashlib
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
+
+import blake3
 
 from .hintfmt import magenta, missing_feature
 from .utils import compress_hash, nix32_decode, nix32_encode
@@ -18,7 +20,19 @@ from .utils import compress_hash, nix32_decode, nix32_encode
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-HASH_SIZES = {"md5": 16, "sha1": 20, "sha256": 32, "sha512": 64}
+HASH_SIZES = {"blake3": 32, "md5": 16, "sha1": 20, "sha256": 32, "sha512": 64}
+
+
+class Hasher(Protocol):
+    def update(self, data: bytes, /) -> object: ...
+    def digest(self) -> bytes: ...
+
+
+def new_hash(algo: str) -> Hasher:
+    """The `HashSink` of *algo* (`hash.cc:296`). `hashlib` has no BLAKE3, so that one comes from `blake3`."""
+    if algo == "blake3":
+        return blake3.blake3()
+    return hashlib.new(algo)
 
 
 class Method(StrEnum):
@@ -210,7 +224,7 @@ def content_addressed_path(
             raise ValueError("self-reference not allowed with text hashing")
         return make_store_path(_make_type("text", references, False), ca.algo, ca.digest, name, store_dir)
     if ca.method is Method.GIT and ca.algo not in ("sha1", "sha256"):
-        raise ValueError(f"Git file ingestion must use SHA-1 or SHA-256 hash, but instead using: {ca.algo}")
+        raise ValueError(f"Git file ingestion must use SHA-1 or SHA-256 hash, but instead using: {magenta(ca.algo)}")
     if ca.algo == "sha256" and ca.method is Method.NAR:
         return make_store_path(_make_type("source", references, self_reference), ca.algo, ca.digest, name, store_dir)
     if references or self_reference:

@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from pynixd.write_router import Dump, Facts, Write, first_reason, parse_dump_header
+from nix_daemon_protocol.content_address import ContentAddress
+from nix_daemon_protocol.nar_hash import NARHash
+from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
+from nix_daemon_protocol.store_path import StorePath
+from nix_daemon_protocol.valid_path_info import ValidPathInfo
+from nix_daemon_protocol.wire_time import Time
+from pynixd.write_router import Dump, Facts, Write, first_reason, nix_refusal, parse_dump_header
 from pynixd_store.add import ImportSettings
 from pynixd_store.content_address import Method, parse_method_algo, text_needs_sha256
 from pynixd_store.hintfmt import magenta, missing_feature
@@ -79,13 +85,31 @@ def test_pynixd_adds_what_it_can_hash() -> None:
 
 
 def test_pynixd_adds_a_git_dump_with_git_hashing() -> None:
-    facts = Facts(
-        writable=True, settings=ImportSettings(git_hashing=True, experimental_features=frozenset({"git-hashing"}))
-    )
+    facts = Facts(writable=True, settings=ImportSettings(experimental_features=frozenset({"git-hashing"})))
     assert _why("f", "fixed:git:sha1", [], facts) is None
 
 
-def test_the_daemon_hashes_with_blake3() -> None:
-    """Python's `hashlib` has no BLAKE3, so with `blake3-hashes` such a dump goes to the daemon."""
+def test_pynixd_adds_a_blake3_dump_with_blake3_hashes() -> None:
     facts = Facts(writable=True, settings=ImportSettings(experimental_features=frozenset({"blake3-hashes"})))
-    assert _why("f", "fixed:r:blake3", [], facts) == "pynixd does not hash with BLAKE3"
+    assert _why("f", "fixed:r:blake3", [], facts) is None
+
+
+def test_nix_refuses_a_gated_address_of_a_nar_before_its_body() -> None:
+    """`ContentAddress::parseOpt` on the wire (`daemon.cc:924`): the feature gates of the method and algorithm."""
+
+    def write(ca: str) -> Write:
+        info = UnkeyedValidPathInfo(
+            nar_hash=NARHash(hash="0" * 64),
+            references=set(),
+            registration_time=Time(ts=0),
+            nar_size=0,
+            ultimate=False,
+            sigs=set(),
+            ca=ContentAddress(value=ca),
+        )
+        return Write(op="AddToStoreNar", info=ValidPathInfo(path=StorePath(path=REF), info=info))
+
+    assert nix_refusal(write("fixed:git:sha1:" + "0" * 40), NONE) == missing_feature("git-hashing")
+    assert nix_refusal(write("fixed:r:blake3:" + "0" * 64), NONE) == missing_feature("blake3-hashes")
+    assert nix_refusal(write("fixed:r:blake3:" + "0" * 64), frozenset({"blake3-hashes"})) is None
+    assert nix_refusal(write(""), NONE) is None

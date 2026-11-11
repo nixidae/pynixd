@@ -24,7 +24,7 @@ from pynixd.exceptions import BackendError
 from pynixd.serde.context import ReadContext, WriteContext
 from pynixd_store.content_address import text_needs_sha256
 from pynixd_store.engine import StoreEngine
-from pynixd_store.hintfmt import magenta
+from pynixd_store.hintfmt import magenta, missing_feature
 from pynixd_store.nar_fs import dump_path
 from tests._conftest.import_lab import (
     EXPR,
@@ -283,6 +283,54 @@ async def test_a_text_dump_hashed_with_sha1_is_refused_where_the_daemon_aborts(t
         assert await _refusals(tmp_path / f"{daemon}", route, daemon, [("f", "text:sha1")]) == [
             text_needs_sha256("f", "sha1")
         ]
+
+
+_BLAKE3 = ("blake3-hashes",)
+
+
+async def test_a_blake3_dump_adds_as_the_daemon_does(tmp_path: Path, added: list[str]) -> None:
+    """With `blake3-hashes`, op 7 hashes a dump with BLAKE3, and op 39 imports a NAR with a BLAKE3 address."""
+    tree, flat = _inputs(tmp_path)
+    sends = [
+        ("tree", "fixed:r:blake3", b"".join(dump_path(tree))),
+        ("flat", "fixed:blake3", flat.read_bytes()),  # noqa: ASYNC240 -- test setup
+    ]
+    nix = str(NIX_BIN)
+    answers, printed = {}, {}
+    b, c = tmp_path / "b", tmp_path / "c"
+    for root, route in ((b, "pynixd"), (c, "daemon")):
+        socket = tmp_path / f"{route}.sock"
+        async with server(root, socket, route, experimental_features=_BLAKE3):
+            async with client(socket) as conn:
+                answers[route] = [
+                    (await _send(conn, name, cam, dump)).info.model_dump(exclude={"info": {"registration_time"}})
+                    for name, cam, dump in sends
+                ]
+            store = f"unix://{socket}?root={root}"
+            add = (nix, "store", "add", "--store", store, "--extra-experimental-features", "blake3-hashes")
+            printed[route] = [
+                await run(*add, "--mode", mode, "--hash-algo", "blake3", str(source))
+                for mode, source in (("nar", tree / "bin"), ("flat", flat))
+            ]
+    assert len(added) == len(sends)
+    assert answers["pynixd"] == answers["daemon"]
+    assert printed["pynixd"] == printed["daemon"]
+    for query in (VALID_PATHS, REFS):
+        assert rows(b, query) == rows(c, query)
+    paths = [p for (p, *_) in rows(b, VALID_PATHS)]
+    for path in paths:
+        assert files(b, path) == files(c, path), path
+
+
+@pytest.mark.parametrize("daemon", [None, False])
+async def test_a_blake3_dump_without_blake3_hashes_is_refused_in_nix_words(tmp_path: Path, daemon: bool | None) -> None:
+    """`parseHashAlgoOpt` requires the feature (`hash.cc:475`). The daemon route reads a reset (nixidae/nixidae#1270)."""
+    b, socket = tmp_path / "b", tmp_path / "b.sock"
+    async with server(b, socket, "pynixd", daemon=daemon), client(socket) as conn:
+        with pytest.raises(BackendError, match=re.escape(missing_feature("blake3-hashes"))):
+            await _send(conn, "flat", "fixed:blake3", b"x")
+        resp = await _send(conn, "good", "fixed:sha256", b"good")
+        assert await valid(conn, str(resp.info.path))
 
 
 async def _git_add(store: str, algo: str, source: Path) -> str:

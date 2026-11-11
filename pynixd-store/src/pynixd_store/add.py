@@ -38,7 +38,7 @@ from nix_daemon_protocol.wire_time import Time
 
 from . import optimise
 from .builder.refscan import scan_for_references
-from .content_address import ContentAddress, Method, content_addressed_path, parse_any_sha256
+from .content_address import ContentAddress, Method, content_addressed_path, new_hash, parse_any_sha256
 from .errors import PynixdError
 from .hintfmt import magenta
 from .nar_fs import BadArchive, dump_path, restore_path
@@ -82,7 +82,6 @@ class ImportSettings:
     sync_before_registering: bool = False
     ignored_acls: frozenset[str] = IGNORED_ACLS
     #: The daemon's own `experimental-features`; a client's are ignored (`daemon.cc:278`).
-    git_hashing: bool = False
     experimental_features: frozenset[str] = frozenset()
 
     @classmethod
@@ -99,7 +98,6 @@ class ImportSettings:
             # Not on Windows (`local-settings.hh:252`).
             sync_before_registering=bool(config.get("sync-before-registering", {}).get("value", False)),
             ignored_acls=frozenset(value("ignored-acls")),
-            git_hashing="git-hashing" in _words(value("experimental-features")),
             experimental_features=frozenset(_words(value("experimental-features"))),
         )
 
@@ -204,7 +202,7 @@ class HashingReader:
 
     def __init__(self, read: Callable[[int], bytes], algo: str = "sha256") -> None:
         self._read = read
-        self.hasher = hashlib.new(algo)
+        self.hasher = new_hash(algo)
         self.size = 0
 
     def __call__(self, n: int) -> bytes:
@@ -229,7 +227,7 @@ class HashModulo:
 
     def __init__(self, algo: str, modulus: bytes, *, positions: bool = True) -> None:
         self._positions = positions
-        self._hash = hashlib.new(algo)
+        self._hash = new_hash(algo)
         self._modulus = modulus
         self._zero = b"\0" * len(modulus)
         self._prev = b""
@@ -289,7 +287,7 @@ def git_hash(path: Path, algo: str) -> tuple[int, bytes]:
     A tree sorts its entries by name as bytes, a directory's name with a trailing `/`.
     """
     st = os.lstat(path)
-    h = hashlib.new(algo)
+    h = new_hash(algo)
     if stat.S_ISREG(st.st_mode):
         h.update(b"blob %d\0" % st.st_size)
         with open(path, "rb") as file:
