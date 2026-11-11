@@ -145,7 +145,7 @@ holds the current list.
 | --- | --- |
 | a whole float in structured attrs whose truncation leaves int32 (`1e15`) | undefined behaviour |
 | `start-id` or `id-count` that `user-lock.cc:177` asserts on (`NIX-DEFECT`, Lillecarl/nix#395) | aborts |
-| builder-rpc-v0 (Nix master) without dynamic-derivations, or with a fixed output | refuses / builds |
+| builder-rpc-v0 (Nix master) with a fixed output (nixidae/nixidae#1271) | builds |
 | a build on any system but Linux | builds |
 
 ## The switch

@@ -154,13 +154,10 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
         )
     ):
         return "auto-allocate-uids with start-id or id-count that Nix asserts on"
-    if BUILDER_RPC in features:
-        if not settings.dynamic_derivations:
-            return "builder-rpc-v0 without dynamic-derivations"
-        # `startBuild` (`unix-derivation-builder.cc:355`) refuses an input-addressed one in Nix's words, and
-        # pynixd registers realisations for a floating output alone.
-        if {o.kind for o in drv.outputs.values()} != {OutputKind.CA_FLOATING}:
-            return "builder-rpc-v0 with an output that is not floating"
+    # `startBuild` (`unix-derivation-builder.cc:355`) refuses an input-addressed one in Nix's words, and pynixd
+    # registers realisations for a floating output alone (nixidae/nixidae#1271).
+    if BUILDER_RPC in features and {o.kind for o in drv.outputs.values()} != {OutputKind.CA_FLOATING}:
+        return "builder-rpc-v0 with an output that is not floating"
     try:
         export_requests(drv.env, store_dir)
     except ValueError as e:
@@ -872,8 +869,14 @@ async def build(
                     "purity of builds without sandboxing"
                 ),
             )
-        # `startDaemon` (`derivation-builder.cc:787`) requires the feature before it starts the builder.
-        if "recursive-nix" in drv.required_system_features and not settings.recursive_nix:
+        # `startDaemon` (`derivation-builder.cc:787`; `unix-derivation-builder.cc:674` of Nix master) requires the
+        # feature before it starts the builder: dynamic-derivations for builder-rpc-v0, else recursive-nix.
+        if BUILDER_RPC in drv.required_system_features:
+            if not settings.dynamic_derivations:
+                return LocalBuildResult(
+                    BuildResultStatus.MISC_FAILURE, show_error(missing_feature("dynamic-derivations"))
+                )
+        elif "recursive-nix" in drv.required_system_features and not settings.recursive_nix:
             return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(missing_feature("recursive-nix")))
         start = int(time.time())
         log = bytearray()

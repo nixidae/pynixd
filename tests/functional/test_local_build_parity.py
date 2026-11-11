@@ -2493,3 +2493,89 @@ async def test_a_builder_rpc_build_builds_what_the_daemon_builds(tmp_path: Path)
     assert "duplicate output" in here["contents"][out], lines
     assert dev in here["info"][out]["references"], here["info"]
     assert {row[1] for row in here["trace"]} >= {"out", "dev"}, here["trace"]
+
+
+RPC_SCRIPT = """
+set -e
+o="--extra-experimental-features nix-command --extra-experimental-features dynamic-derivations"
+echo built > f
+p=$(nix $o store add --scan --name @NAME@ ./f)
+nix $o store submit-output $p out
+"""
+
+
+def _rpc_drv(name: str, attrs: str) -> str:
+    return f"""
+let nix = builtins.storePath "@NIX@"; in
+derivation {{
+  name = "{name}"; system = builtins.currentSystem; builder = "/bin/sh";
+  requiredSystemFeatures = [ "builder-rpc-v0" ];
+  PATH = "${{nix}}/bin";
+  args = [ "-c" ''{RPC_SCRIPT.replace("@NAME@", name)}'' ];
+  {attrs}
+}}
+"""
+
+
+RPC_CASES: dict[str, tuple[str, tuple[str, ...]]] = {
+    # `startDaemon` requires the feature (`unix-derivation-builder.cc:675`). The guest's own config enables it,
+    # so the store reads a config file that does not.
+    "no-dynamic-derivations": (
+        _rpc_drv("rpc-no-dyn", '__contentAddressed = true; outputHashMode = "flat"; outputHashAlgo = "sha256";'),
+        ("nix-command", "ca-derivations"),
+    ),
+    # `Derivation::checkInvariants` (`derivations.cc:398`) and `startBuild` (`unix-derivation-builder.cc:355`).
+    "input-addressed": (
+        _rpc_drv("rpc-input-addressed", ""),
+        ("nix-command", "ca-derivations", "dynamic-derivations"),
+    ),
+}
+
+
+async def _rpc_case(tmp_path: Path, route: OpRoute, case: str, nix_bin: Path) -> dict[str, Any]:
+    expr, features = RPC_CASES[case]
+    nix = _nix_store_path(nix_bin)
+    spec_args: dict[str, Any] = {"daemon": False} if route is OpRoute.pynixd else {}
+    serve = tmp_path / case
+    serve.mkdir(exist_ok=True)
+    async with _serve(
+        serve,
+        route,
+        experimental_features=features,
+        settings={"system_features": ["builder-rpc-v0"]},
+        config_file=True,
+        ops=("BuildDerivation", "AddToStore", "AddToStoreNar", "AddMultipleToStore"),
+        nix_bin=nix_bin,
+        feature_matrix={system: set(fs) | {"builder-rpc-v0"} for system, fs in _NO_PROBE_FEATURE_MATRIX.items()},
+        **spec_args,
+    ) as (url, root):
+        await run_subproc([nix_bin, "copy", "--no-check-sigs", "--to", url, nix])
+        rc, out, err, _both = await run_subproc(
+            [
+                *(nix_bin, "build", "--store", url, "--extra-experimental-features", " ".join(features)),
+                *("--impure", "--no-link", "--print-out-paths", "--expr", expr.replace("@NIX@", nix)),
+            ],
+            expected_retcode=None,
+        )
+        info = None
+        if rc == 0:
+            _rc, text, _err, _both = await run_subproc([nix_bin, "path-info", "--store", url, "--json", *out.split()])
+            info = _without_times(json.loads(text))
+    trace = None
+    if rc == 0:
+        db = sqlite3.connect(f"file:{root}/nix/var/nix/db/db.sqlite?mode=ro", uri=True)
+        try:
+            trace = db.execute("SELECT outputName, outputPath FROM BuildTraceV3 ORDER BY outputName").fetchall()
+        finally:
+            db.close()
+    return {"rc": rc, "errors": _errors(err) if rc else [], "paths": out.split(), "info": info, "trace": trace}
+
+
+@pytest.mark.parametrize("case", sorted(RPC_CASES))
+async def test_a_builder_rpc_edge_answers_as_the_daemon_with_no_daemon(tmp_path: Path, case: str) -> None:
+    """Nix master's daemon is the reference; pynixd runs no daemon."""
+    if NIX_GIT_BIN is None:
+        pytest.skip("NIX_GIT_BIN names no Nix of the master branch")
+    there = await _rpc_case(tmp_path, OpRoute.daemon, case, NIX_GIT_BIN)
+    here = await _rpc_case(tmp_path, OpRoute.pynixd, case, NIX_GIT_BIN)
+    assert here == there, {"pynixd": here, "daemon": there}
