@@ -1,17 +1,19 @@
 # pynixd as the Nix daemon of a machine, used the way people use one.
 #
-# `nix build --file . internal.tests.daemon` boots three guests on one segment:
+# `nix build --file . internal.tests.daemon` boots four guests on one segment:
 #
-#   daemon   pynixd in `replace` mode, so it holds
-#            /nix/var/nix/daemon-socket/socket and nix-daemon sits behind it
-#   control  the same machine with nix-daemon alone
-#   client   a user with an SSH key for both
+#   daemon     pynixd in `replace` mode, so it holds
+#              /nix/var/nix/daemon-socket/socket and nix-daemon sits behind it
+#   control    the same machine with nix-daemon alone
+#   client     a user with an SSH key for both
+#   delegator  pynixd in `replace` mode with `control` as its only build store
 #
 # and runs the same work against `daemon` and `control`: a local build as a
 # user, a build in the far store over `ssh-ng://`, and a remote build with
 # `--builders`. Each answer from `daemon` is compared with the one from
 # `control`. That is the differential run of tests/parity, over the real
-# paths a user takes rather than one recorded connection.
+# paths a user takes rather than one recorded connection. `delegator` takes
+# part in `dynamic` alone.
 #
 # OpenSSH and `nix-daemon --stdio`, not pynixd's own SSH listener: that is
 # what `ssh-ng://` runs on the far side, and it reaches pynixd only because
@@ -44,6 +46,7 @@ let
     daemon = "10.44.0.1";
     control = "10.44.0.2";
     client = "10.44.0.3";
+    delegator = "10.44.0.4";
   };
 
   # pynixd in `replace` mode. The guest's store is smaller than the 2 GiB
@@ -57,6 +60,12 @@ let
       settings.ranking.min_free_bytes = 0;
     };
   };
+
+  # Of `dynamic`: a producer of a `.drv`, and that `.drv`, which is content-addressed.
+  dynamicDerivations.nix.settings.experimental-features = [
+    "ca-derivations"
+    "dynamic-derivations"
+  ];
 
   common = name: {
     vivarium = {
@@ -169,6 +178,15 @@ vivariumLib.mkTest (
         ];
         description = "a user's request fails with pynixd stopped, locally and over ssh-ng";
       };
+      dynamic = {
+        script = ../../daemon/dynamic.py;
+        after = [ "prepare" ];
+        nodes = [
+          "control"
+          "delegator"
+        ];
+        description = "a dynamic derivation through pynixd, on a builder that already holds the produced .drv";
+      };
     };
 
     nodes = {
@@ -179,7 +197,38 @@ vivariumLib.mkTest (
         ];
         vivarium.backend = lib.mkIf (config.resolved.backend.value == "mixed") "uml";
       };
-      control = server "control";
+      control = {
+        imports = [
+          (server "control")
+          dynamicDerivations
+        ];
+        # pynixd on `delegator` connects as root: a builder refuses an
+        # input-addressed `BuildDerivation` from an untrusted user (`daemon.cc:634`).
+        users.users.root.openssh.authorizedKeys.keys = [ keys.snakeOilEd25519PublicKey ];
+      };
+      delegator = {
+        imports = [
+          (common "delegator")
+          dynamicDerivations
+          pynixdGuest
+        ];
+        services.pynixd.settings.stores = {
+          local.no_schedule = true;
+          control = {
+            type = "ssh-subprocess";
+            host = "control";
+            username = "root";
+            client_keys = [ "/etc/ssh/delegator_key" ];
+            # A guest on a private segment; nothing in the path to pin against.
+            known_hosts = null;
+            systems = [ pkgs.stdenv.hostPlatform.system ];
+          };
+        };
+        system.activationScripts.delegatorKey = lib.stringAfter [ "users" "etc" ] ''
+          install -m 0600 ${keys.snakeOilEd25519PrivateKey} /etc/ssh/delegator_key
+        '';
+        vivarium.backend = lib.mkIf (config.resolved.backend.value == "mixed") "uml";
+      };
       client = {
         imports = [ (common "client") ];
         # The client's own daemon imports what the far side built, and an
