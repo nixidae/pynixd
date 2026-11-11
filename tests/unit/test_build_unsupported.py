@@ -10,6 +10,7 @@ from nix_daemon_protocol.store_path import StorePath
 from pynixd_store.builder.local import _builder_refusal, _chroot_refusal, _user_refusal, unsupported, uses_sandbox
 from pynixd_store.builder.settings import BuildSettings
 from pynixd_store.builder.users import BuildUser
+from pynixd_store.hintfmt import magenta
 
 FIXED = DerivationOutput(path="/nix/store/00000000000000000000000000000000-x", method="r:sha256", hash_digest="00")
 IMPURE = DerivationOutput(path="", method="r:sha256", hash_digest="impure")
@@ -69,8 +70,8 @@ def test_no_chroot_with_sandbox_true_is_refused_in_nix_words() -> None:
         # `acquire` requires the feature (`user-lock.cc:176`); pynixd's build refuses it the same way.
         ({}, None),
         ({"experimental-features": "auto-allocate-uids"}, None),
-        ({"experimental-features": "auto-allocate-uids", "id-count": "65537"}, "start-id or id-count"),
-        ({"experimental-features": "auto-allocate-uids", "start-id": "0"}, "start-id or id-count"),
+        ({"experimental-features": "auto-allocate-uids", "id-count": "65537"}, None),
+        ({"experimental-features": "auto-allocate-uids", "start-id": "0"}, None),
     ],
 )
 def test_auto_allocate_uids_is_pynixds_where_nix_allocates(
@@ -137,6 +138,31 @@ def test_auto_allocate_uids_without_its_feature_is_refused_in_nix_words() -> Non
     off = BuildSettings.from_nix_config({}, {"system": "x86_64-linux"})
     assert "auto-allocate-uids" in (_user_refusal(off, auto=True) or "")
     assert _user_refusal(off, auto=False) is None
+
+
+@pytest.mark.parametrize(
+    ("config", "words"),
+    [
+        ({}, None),
+        ({"start-id": "0"}, f"setting '{magenta('start-id')}' must be greater than 0, not {magenta(0)}"),
+        ({"id-count": "65537"}, f"setting '{magenta('id-count')}' must be a multiple of 65536, not {magenta(65537)}"),
+        (
+            {"start-id": str(0xFFFF0000), "id-count": str(2 << 16)},
+            f"settings '{magenta('start-id')}' and '{magenta('id-count')}' end at {magenta(0xFFFF0000 + (2 << 16))}, "
+            "past the last uid 4294967295",
+        ),
+    ],
+)
+def test_start_id_or_id_count_nix_asserts_on_is_refused_with_the_setting(
+    config: dict[str, str], words: str | None
+) -> None:
+    """`AutoUserLock::acquire` asserts on these (`user-lock.cc:177`; Lillecarl/nix#395); pynixd names the setting."""
+    entries = {name: {"value": value} for name, value in config.items()}
+    settings = BuildSettings.from_nix_config(
+        entries, {"system": "x86_64-linux", "experimental-features": "auto-allocate-uids"}
+    )
+    got = _user_refusal(settings, auto=True)
+    assert got == words
 
 
 def test_a_git_hashed_output_needs_git_hashing() -> None:

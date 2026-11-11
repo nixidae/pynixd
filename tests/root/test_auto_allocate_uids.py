@@ -58,13 +58,15 @@ def _fallthrough() -> float:
 
 
 @contextlib.asynccontextmanager
-async def _serve(tmp_path: Path, route: OpRoute) -> AsyncIterator[str]:
+async def _serve(
+    tmp_path: Path, route: OpRoute, *, start_id: int = START_ID, id_count: int = IDS_PER_BUILD
+) -> AsyncIterator[str]:
     root = HERE / route.name / "store"
     socket = tmp_path / f"{route.name}.sock"
     nix_config = for_test_store(substituters=(), experimental_features=("auto-allocate-uids",))
     nix_config.auto_allocate_uids = True
-    nix_config.start_id = START_ID
-    nix_config.id_count = IDS_PER_BUILD
+    nix_config.start_id = start_id
+    nix_config.id_count = id_count
     spec = make_test_spec(
         store_id="local",
         store_path=root,
@@ -120,3 +122,23 @@ async def test_an_allocated_uid_build_writes_what_the_daemons_writes(tmp_path: P
     assert here[0] == there[0]
     assert here[1].st_uid == there[1].st_uid == 0
     assert (here[2].st_uid, here[2].st_gid) == (there[2].st_uid, there[2].st_gid)
+
+
+@pytest.mark.parametrize(
+    ("start_id", "id_count", "words"),
+    [
+        (0, IDS_PER_BUILD, "setting 'start-id' must be greater than 0, not 0"),
+        (START_ID, IDS_PER_BUILD + 1, "setting 'id-count' must be a multiple of 65536, not 65537"),
+    ],
+)
+async def test_a_start_id_or_id_count_nix_asserts_on_fails_the_build_with_no_daemon(
+    tmp_path: Path, start_id: int, id_count: int, words: str
+) -> None:
+    """`AutoUserLock::acquire` asserts on these (`user-lock.cc:177`), so Nix's daemon aborts (Lillecarl/nix#395).
+    pynixd fails the build with an error that names the setting."""
+    async with _serve(tmp_path, OpRoute.pynixd, start_id=start_id, id_count=id_count) as url:
+        rc, _out, err, _both = await run_subproc(
+            [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--expr", WHO], expected_retcode=None
+        )
+    assert rc == 1, err
+    assert f"error: {words}" in err, err

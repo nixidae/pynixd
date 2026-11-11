@@ -137,20 +137,6 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
         return f"the platform {drv.platform}"
     if "__json" in drv.env and (reason := structured_attrs_reason(drv.env)) is not None:
         return reason
-    # NIX-DEFECT (#23): `unix/user-lock.cc:177` checks `start-id` and `id-count`, settings from
-    # `nix.conf`, with `assert`, so a typo aborts the process; an error naming the setting is what
-    # it should be. pynixd sends the build to the daemon and copies no abort; Lillecarl/nix#395.
-    if (
-        settings.auto_allocate_uids
-        and settings.auto_allocate_feature
-        and build_users.use_build_users(settings.build_users_group, True)
-        and (
-            settings.start_id <= 0
-            or settings.id_count % build_users.IDS_PER_BUILD
-            or settings.start_id + settings.id_count > 0xFFFFFFFF
-        )
-    ):
-        return "auto-allocate-uids with start-id or id-count that Nix asserts on"
     try:
         export_requests(drv.env, store_dir)
     except ValueError as e:
@@ -182,8 +168,25 @@ def _builder_refusal(drv_path: StorePath, drv: BasicDerivation, settings: BuildS
 
 def _user_refusal(settings: BuildSettings, *, auto: bool) -> str | None:
     """What `AutoUserLock::acquire` (`user-lock.cc:176`) throws before it takes a user, or `None`."""
-    if auto and not settings.auto_allocate_feature:
+    if not auto:
+        return None
+    if not settings.auto_allocate_feature:
         return missing_feature("auto-allocate-uids")
+    # NIX-DEFECT (#23): `user-lock.cc:177` checks `start-id` and `id-count`, settings from `nix.conf`, with
+    # `assert`, so a typo aborts the process. pynixd refuses the build with an error that names the setting;
+    # Lillecarl/nix#395.
+    if settings.start_id <= 0:
+        return f"setting '{magenta('start-id')}' must be greater than 0, not {magenta(settings.start_id)}"
+    if settings.id_count % build_users.IDS_PER_BUILD:
+        return (
+            f"setting '{magenta('id-count')}' must be a multiple of {build_users.IDS_PER_BUILD}, "
+            f"not {magenta(settings.id_count)}"
+        )
+    if settings.start_id + settings.id_count > 0xFFFFFFFF:
+        return (
+            f"settings '{magenta('start-id')}' and '{magenta('id-count')}' end at "
+            f"{magenta(settings.start_id + settings.id_count)}, past the last uid {0xFFFFFFFF}"
+        )
     return None
 
 

@@ -143,7 +143,6 @@ holds the current list.
 
 | case | what Nix does |
 | --- | --- |
-| `start-id` or `id-count` that `user-lock.cc:177` asserts on (`NIX-DEFECT`, Lillecarl/nix#395) | aborts |
 | a build on any system but Linux | builds |
 
 ## The switch
