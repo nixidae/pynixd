@@ -86,8 +86,12 @@ async def _answer_beside_send[T](
             answered.set()
 
     async def go_on() -> bool:
+        # One loop turn first: `has_unread` sees only what the transport took from the kernel. Without it the first
+        # frame goes out right after the header, and the daemon's error is still in the kernel when the write breaks.
+        # 2 runs of 3 of the git-dump refusal read the reset. nixidae/nixidae#1270.
+        await checkpoint()
         while conn.r.has_unread() and not answered.is_set():
-            await anyio.sleep(0)
+            await checkpoint()
         return not answered.is_set()
 
     broken: Exception | None = None
