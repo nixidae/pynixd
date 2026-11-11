@@ -1236,7 +1236,7 @@ class DaemonStore(Store):
         return await self.call(request, client=client, suppress_last=suppress_last)
 
     async def query_path_infos(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
-        """QueryPathInfos (op 103) — batch path info query, falls back to per-path calls."""
+        """QueryPathInfos (op 50): one call to a daemon that names `queryPathInfos`, else one call per path."""
 
         from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
@@ -1245,7 +1245,7 @@ class DaemonStore(Store):
         if not request.paths:
             return QueryPathInfosResponse(infos=[])
 
-        if "QueryPathInfos" in self.features:
+        if wire.FEATURE_QUERY_PATH_INFOS in self.features:
             return await self.call(request, client=client, suppress_last=suppress_last)
 
         infos: list[ValidPathInfo] = []
@@ -1479,8 +1479,8 @@ for _op, _method_name in {
     45: "add_build_log",
     46: "build_paths_with_results",
     47: "add_perm_root",
+    50: "query_path_infos",
     101: "pynixd_collect_garbage",
-    103: "query_path_infos",
     104: "query_closure",
     105: "query_closure_with_info",
     106: "query_derivation_output_map_batch",

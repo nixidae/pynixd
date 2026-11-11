@@ -95,6 +95,13 @@ A client pins a set of temporary roots with one round trip instead of one
 this package already reads.
 """
 
+FEATURE_QUERY_PATH_INFOS: Final[str] = "queryPathInfos"
+"""The `QueryPathInfos` operation, code 50, of Determinate Nix (`worker-protocol.hh:128` of v3.24.0).
+
+Upstream Nix reserves the code for it. The gated shape is a store-path set in, and a list of
+`ValidPathInfo` out, which this package already reads.
+"""
+
 FEATURE_PYNIXD_BUILD_RESOURCES: Final[str] = "pynixd-build-resources-2"
 """`BuildResult.resources`: what the build used (`build_resources.py`), after Nix's fields.
 
@@ -113,9 +120,10 @@ STANDARD_FEATURES: Final[frozenset[str]] = frozenset(
         FEATURE_ADD_TO_STORE_SCANNING,
         FEATURE_SUBMIT_OUTPUT,
         FEATURE_ADD_TEMP_ROOTS,
+        FEATURE_QUERY_PATH_INFOS,
     }
 )
-"""Each feature name that Nix defines, whether or not a peer offers it.
+"""Each feature name that Nix or Determinate Nix defines, whether or not a peer offers it.
 
 `WorkerProto::latest` of the master branch offers realisation-with-path,
 delete-dead-specific-referrers and addTempRoots. The other three belong to
@@ -132,7 +140,12 @@ content-addressed. `docs/notes/reentrancy.md` holds the detail, as Fact 9.
 """
 
 SUPPORTED_STANDARD_FEATURES: Final[frozenset[str]] = frozenset(
-    {FEATURE_REALISATION_WITH_PATH, FEATURE_ADD_TEMP_ROOTS, FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS}
+    {
+        FEATURE_REALISATION_WITH_PATH,
+        FEATURE_ADD_TEMP_ROOTS,
+        FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS,
+        FEATURE_QUERY_PATH_INFOS,
+    }
 )
 """The standard features that this package has a codec for.
 

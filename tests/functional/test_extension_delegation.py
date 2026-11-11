@@ -7,9 +7,9 @@ from pathlib import Path
 import structlog
 
 from nix_daemon_protocol.ids import StoreId
-from pynixd import Server
+from nix_daemon_protocol.query_path_infos import QueryPathInfosRequest
+from pynixd import Server, wire
 from pynixd.config import SSHSubprocessStoreSpec
-from pynixd.daemon_extensions.query_path_infos import QueryPathInfosRequest
 from pynixd.serde import QueryAllValidPathsRequest
 from pynixd.store import LocalSocketStore, SSHSubprocessStore
 from pynixd_store.store_path import StorePath
@@ -31,7 +31,7 @@ async def test_extension_delegation(tmp_path: Path) -> None:
     Store operations triggered:
     - QueryAllValidPaths: Queries all valid paths
     - QueryPathInfo: Queries path info
-    - QueryPathInfos: Queries path infos
+    - QueryPathInfos (op 50, Determinate Nix's): Queries path infos
     """
 
     # 0. Setup SSH keys and stores
@@ -116,7 +116,7 @@ async def test_extension_delegation(tmp_path: Path) -> None:
             await store_a_b.execute(QueryAllValidPathsRequest())
 
             log.info("server_b_features", features=store_a_b.features)
-            assert "QueryPathInfos" in store_a_b.features
+            assert wire.FEATURE_QUERY_PATH_INFOS in store_a_b.features
 
             # Now try to execute QueryPathInfos on store_a_b
             req = QueryPathInfosRequest(paths={path})
@@ -125,9 +125,9 @@ async def test_extension_delegation(tmp_path: Path) -> None:
             assert any(str(info.path) == str(path) for info in resp.infos)
             log.info("query_path_infos_success", path=path)
 
-            # 3. Verify feature gating: store_a (local daemon at /) doesn't have
-            # the extension, so the executor decomposes locally into N QueryPathInfo calls.
-            # store_a_b (SSH to pynixd) has the feature, so it sends a single wire message.
-            assert "QueryPathInfos" not in store_a.features
-            assert "QueryPathInfos" in store_a_b.features
+            # 3. Verify feature gating: store_a (upstream Nix's daemon at /) does not name
+            # `queryPathInfos`, so the executor decomposes locally into N QueryPathInfo calls.
+            # store_a_b (SSH to pynixd) names it, so it sends a single op 50.
+            assert wire.FEATURE_QUERY_PATH_INFOS not in store_a.features
+            assert wire.FEATURE_QUERY_PATH_INFOS in store_a_b.features
             log.info("feature_gating_verified")

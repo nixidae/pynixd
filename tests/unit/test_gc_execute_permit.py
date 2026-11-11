@@ -27,14 +27,13 @@ from nix_daemon_protocol import (
 from nix_daemon_protocol.content_address import ContentAddress
 from nix_daemon_protocol.nar_hash import NARHash
 from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
+from nix_daemon_protocol.query_path_infos import QueryPathInfosRequest, QueryPathInfosResponse
 from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.wire_time import Time
 from pynixd.daemon_extensions import (
     PynixdGCAction,
     QueryClosureRequest,
     QueryClosureResponse,
-    QueryPathInfosRequest,
-    QueryPathInfosResponse,
 )
 from pynixd.exceptions import GCNotPermittedError
 from pynixd.gc import Collector

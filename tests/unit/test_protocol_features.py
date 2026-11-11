@@ -83,6 +83,7 @@ def test_the_names_of_nix_are_the_names_of_this_package() -> None:
     assert ndp.FEATURE_DISABLE_SET_OPTIONS == "disable-set-options"
     assert ndp.FEATURE_ADD_TO_STORE_SCANNING == "add-to-store-scanning"
     assert ndp.FEATURE_SUBMIT_OUTPUT == "submit-output"
+    assert ndp.FEATURE_QUERY_PATH_INFOS == "queryPathInfos"
     assert ndp.STANDARD_FEATURES >= FEATURES_OF_NIX_LATEST | FEATURES_OF_BUILDER_RPC_V0
 
 
@@ -108,8 +109,10 @@ def test_pynixd_claims_every_feature_of_nix_latest() -> None:
     `delete-dead-specific-referrers` covers the paths of `CollectGarbage`.
     Without it, the parity suite against Nix 2.35 could not decode a GC
     request between two Nix peers.
+
+    `queryPathInfos` is Determinate Nix's op 50, and the local store answers it.
     """
-    assert frozenset(FEATURES_OF_NIX_LATEST) == ndp.SUPPORTED_STANDARD_FEATURES
+    assert frozenset(FEATURES_OF_NIX_LATEST | {ndp.FEATURE_QUERY_PATH_INFOS}) == ndp.SUPPORTED_STANDARD_FEATURES
 
 
 def test_the_negotiation_is_the_intersection() -> None:
@@ -133,6 +136,16 @@ def test_a_client_of_the_master_branch_negotiates_every_feature() -> None:
     negotiated = wire.negotiate_features(FEATURES_OF_NIX_LATEST, ndp.SUPPORTED_STANDARD_FEATURES)
 
     assert negotiated == frozenset(FEATURES_OF_NIX_LATEST)
+
+
+def test_pynixd_always_names_query_path_infos() -> None:
+    """The local store answers op 50 whatever the backends name, as for op 49.
+
+    The engine answers it in one query. `DaemonStore.query_path_infos` forwards it to a daemon that names
+    `queryPathInfos` (`daemon.cc:935` of Determinate v3.24.0), and asks one path at a time of any other.
+    """
+    proxy = SimpleNamespace(stores={}, pynixd_features=frozenset())
+    assert ndp.FEATURE_QUERY_PATH_INFOS in DaemonProxy.server_features(cast("DaemonProxy", proxy), frozenset())
 
 
 class _Store:

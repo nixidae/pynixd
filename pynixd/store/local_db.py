@@ -270,11 +270,11 @@ class LocalDBStore(Store):
         36: Owned("own_build_derivation", writes=True),
     }
 
-    #: Operations of pynixd's own protocol extension that the engine answers.
-    #: They take no route: Nix has no such operation, and the daemon's
-    #: fallback for each asks one path at a time.
+    #: Batch operations that the engine answers. They take no route: upstream
+    #: Nix has no such operation, and the daemon's fallback for each asks one
+    #: path at a time. Op 50 is Determinate Nix's; the rest are pynixd's own.
     EXTENDED: ClassVar[dict[int, str]] = {
-        103: "query_path_infos",
+        50: "query_path_infos",
         104: "query_closure",
         105: "query_closure_with_info",
         106: "query_derivation_output_map_batch",

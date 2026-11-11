@@ -354,6 +354,9 @@ class DaemonProxy:
         # the gate has no fallback: a client that misses the name
         # silently holds no batch roots at all. Issue #66.
         our_features.add(wire.FEATURE_ADD_TEMP_ROOTS)
+        # The local store answers op 50 for every backend: the engine in one query, a daemon that lacks the
+        # feature one path at a time.
+        our_features.add(wire.FEATURE_QUERY_PATH_INFOS)
 
         # Only build-capable stores contribute scheduling capabilities.
         # Substituters are deliberately non-scheduleable; advertising

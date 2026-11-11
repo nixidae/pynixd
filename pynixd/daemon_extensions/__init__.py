@@ -25,8 +25,4 @@ from .query_derivation_output_map_batch import (
     DerivationOutputMapBatchResponse as DerivationOutputMapBatchResponse,
     QueryDerivationOutputMapBatchRequest as QueryDerivationOutputMapBatchRequest,
 )
-from .query_path_infos import (
-    QueryPathInfosRequest as QueryPathInfosRequest,
-    QueryPathInfosResponse as QueryPathInfosResponse,
-)
 from .sign_path_info import SignPathInfoRequest as SignPathInfoRequest, SignPathInfoResponse as SignPathInfoResponse

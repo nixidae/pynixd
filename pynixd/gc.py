@@ -38,6 +38,7 @@ from nix_daemon_protocol import (
     QueryValidPathsRequest,
     StorePath,
 )
+from nix_daemon_protocol.query_path_infos import QueryPathInfosRequest
 from pynixd_store.gc import (
     GarbagePlanner,
     by_weight,
@@ -51,7 +52,6 @@ from .daemon_extensions import (
     PynixdCollectGarbageResponse,
     PynixdGCAction,
     QueryClosureRequest,
-    QueryPathInfosRequest,
 )
 from .exceptions import BackendError, GCNotPermittedError, PynixdError
 from .store.local_db import LocalDBStore

@@ -43,6 +43,7 @@ from nix_daemon_protocol.query_derivation_output_map import QueryDerivationOutpu
 from nix_daemon_protocol.query_missing import QueryMissingRequest, QueryMissingResponse
 from nix_daemon_protocol.query_path_from_hash_part import QueryPathFromHashPartRequest
 from nix_daemon_protocol.query_path_info import QueryPathInfoRequest, QueryPathInfoResponse
+from nix_daemon_protocol.query_path_infos import QueryPathInfosRequest, QueryPathInfosResponse
 from nix_daemon_protocol.query_realisation import QueryRealisationRequest, QueryRealisationResponse
 from nix_daemon_protocol.query_referrers import QueryReferrersRequest, QueryReferrersResponse
 from nix_daemon_protocol.query_substitutable_path_info import QuerySubstitutablePathInfoRequest
@@ -302,6 +303,8 @@ class RestrictedProxy(DaemonProxy):
                 return await self._next(request.model_copy(update={"paths": paths, "substitute": 0}))
             case QueryPathInfoRequest():
                 return await self._path_info(request)
+            case QueryPathInfosRequest():
+                return await self._path_infos(request)
             case QueryReferrersRequest():
                 return QueryReferrersResponse()
             case QueryValidDeriversRequest():
@@ -369,6 +372,15 @@ class RestrictedProxy(DaemonProxy):
             update={"deriver": None, "registration_time": 0, "ultimate": False, "sigs": set()}
         )
         return QueryPathInfoResponse(valid=response.valid, info=info)
+
+    async def _path_infos(self, request: QueryPathInfosRequest) -> QueryPathInfosResponse:
+        """`Store::queryPathInfos` of Determinate Nix: `queryPathInfo` for each path, so the same censoring."""
+        infos: list[ValidPathInfo] = []
+        for path in request.paths:
+            response = await self._path_info(QueryPathInfoRequest(path=path))
+            if isinstance(response, QueryPathInfoResponse) and response.valid and response.info is not None:
+                infos.append(ValidPathInfo(path=path, info=response.info))
+        return QueryPathInfosResponse(infos=infos)
 
     async def _build(self, request: BuildPathsRequest | BuildPathsWithResultsRequest) -> WireResponse:
         """`buildPathsWithResults` (`restricted-store.cc:248`): the closure of what it built joins the build."""

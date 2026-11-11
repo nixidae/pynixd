@@ -44,6 +44,7 @@ from .constants import FEATURE_ADD_TO_STORE_SCANNING as FEATURE_ADD_TO_STORE_SCA
 from .constants import FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS as FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS
 from .constants import FEATURE_DISABLE_SET_OPTIONS as FEATURE_DISABLE_SET_OPTIONS
 from .constants import FEATURE_EXCHANGE_PROTOCOL as FEATURE_EXCHANGE_PROTOCOL
+from .constants import FEATURE_QUERY_PATH_INFOS as FEATURE_QUERY_PATH_INFOS
 from .constants import FEATURE_REALISATION_WITH_PATH as FEATURE_REALISATION_WITH_PATH
 from .constants import FEATURE_SUBMIT_OUTPUT as FEATURE_SUBMIT_OUTPUT
 from .constants import MINIMUM_PROTOCOL as MINIMUM_PROTOCOL
@@ -124,6 +125,8 @@ from .query_path_from_hash_part import QueryPathFromHashPartRequest as QueryPath
 from .query_path_from_hash_part import QueryPathFromHashPartResponse as QueryPathFromHashPartResponse
 from .query_path_info import QueryPathInfoRequest as QueryPathInfoRequest
 from .query_path_info import QueryPathInfoResponse as QueryPathInfoResponse
+from .query_path_infos import QueryPathInfosRequest as QueryPathInfosRequest
+from .query_path_infos import QueryPathInfosResponse as QueryPathInfosResponse
 from .query_realisation import QueryRealisationRequest as QueryRealisationRequest
 from .query_realisation import QueryRealisationResponse as QueryRealisationResponse
 from .query_referrers import QueryReferrersRequest as QueryReferrersRequest

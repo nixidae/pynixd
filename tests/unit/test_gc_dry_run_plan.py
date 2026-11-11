@@ -21,13 +21,12 @@ from nix_daemon_protocol import (
     QueryValidPathsRequest,
     QueryValidPathsResponse,
 )
+from nix_daemon_protocol.query_path_infos import QueryPathInfosRequest, QueryPathInfosResponse
 from nix_daemon_protocol.store_path import StorePath
 from pynixd.daemon_extensions import (
     PynixdGCAction,
     QueryClosureRequest,
     QueryClosureResponse,
-    QueryPathInfosRequest,
-    QueryPathInfosResponse,
 )
 from pynixd.gc import Collector
 from tests.unit.test_gc_execute_permit import _weighed
