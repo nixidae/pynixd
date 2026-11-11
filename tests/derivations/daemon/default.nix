@@ -46,6 +46,18 @@ let
     client = "10.44.0.3";
   };
 
+  # pynixd in `replace` mode. The guest's store is smaller than the 2 GiB
+  # `ranking.min_free_bytes`, which no build would pass.
+  pynixdGuest = {
+    imports = [ ../../../nix/nixos/default.nix ];
+    services.pynixd = {
+      enable = true;
+      mode = "replace";
+      inherit package;
+      settings.ranking.min_free_bytes = 0;
+    };
+  };
+
   common = name: {
     vivarium = {
       memory = "1024M";
@@ -163,13 +175,8 @@ vivariumLib.mkTest (
       daemon = {
         imports = [
           (server "daemon")
-          ../../../nix/nixos/default.nix
+          pynixdGuest
         ];
-        services.pynixd = {
-          enable = true;
-          mode = "replace";
-          inherit package;
-        };
         vivarium.backend = lib.mkIf (config.resolved.backend.value == "mixed") "uml";
       };
       control = server "control";

@@ -86,6 +86,8 @@ let
           # session measures what a restart does to a running build, so the
           # build must run.
           settings.ranking.min_schedule_score = -1.0e9;
+          # The guest's store is smaller than the 2 GiB floor, which no build would pass.
+          settings.ranking.min_free_bytes = 0;
         };
         systemd.services = {
           # The module sets `false`; `b` keeps NixOS's default, `true`, to measure it.
@@ -145,9 +147,6 @@ vivariumLib.mkTest {
   nodes.machine = {
     imports = [ handover ];
     vivarium.memory = "1024M";
-    # pynixd ranks out a local store with less than 2 GiB free
-    # (`min_free_bytes`), and the build then waits with no pass to wake it.
-    vivarium.diskSize = 3072;
     users.users.tester = {
       isNormalUser = true;
       uid = 1000;
