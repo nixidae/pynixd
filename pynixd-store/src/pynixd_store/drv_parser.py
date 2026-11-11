@@ -44,6 +44,8 @@ from nix_daemon_protocol.basic_derivation import BasicDerivation, bool_attr, req
 from nix_daemon_protocol.derivation_output import DerivationOutput, OutputKind
 
 from .content_address import ContentAddress, fixed_output_address
+from .errors import PynixdError
+from .hintfmt import magenta
 from .store_path import DrvOutput, StorePath
 from .utils import compress_hash, nix32_encode
 
@@ -744,6 +746,22 @@ def _unescape_piece(body: str) -> str:
     return text.replace("\0", "\\")
 
 
+def _check_monotonic(last: str | None, key: str, describe: Callable[[], str]) -> None:
+    """`checkMonotonic` of Nix master (`derivation/aterm.cc:253`): a set or map is sorted, with no duplicate.
+
+    NIX-DEFECT (#23): 2.35's `parseStrings` (`derivations.cc:303`) and its maps insert into a `std::set` or
+    `std::map`, so a duplicate or an unsorted entry vanishes, and the text that hashes is no longer the text on
+    disk: one value has several encodings. pynixd refuses them on every version, as master does. Fixed upstream
+    by NixOS/nix#16284, after 2.35.
+    """
+    if last is None:
+        return
+    if last == key:
+        raise ValueError(f"duplicate {magenta(describe())}")
+    if not last < key:
+        raise ValueError(f"{magenta(describe())} does not appear in a sorted order")
+
+
 class _Parser:
     """Simple recursive-descent ATerm parser for .drv files."""
 
@@ -810,6 +828,20 @@ class _Parser:
         self._expect("]")
         return result
 
+    def parse_string_set(self) -> list[str]:
+        """`parseStrings`: a list of strings, sorted and with no duplicate."""
+        items = self.parse_string_list()
+        for last, item in zip([None, *items], items, strict=False):
+            _check_monotonic(last, item, lambda item=item: f"set item '{item}'")
+        return items
+
+    def parse_store_path_set(self) -> list[StorePath]:
+        """`parseStorePaths`: store paths, sorted and with no duplicate."""
+        items = self.parse_string_list()
+        for last, item in zip([None, *items], items, strict=False):
+            _check_monotonic(last, item, lambda item=item: f"store path '{item}'")
+        return [StorePath(item) for item in items]
+
     def parse_outputs(self) -> list[DrvOutput]:
         """Parse [("name","path","hashAlgo","hash"), ...] into DrvOutput list."""
         self._expect("[")
@@ -827,6 +859,9 @@ class _Parser:
             hash_algo = self.parse_string()
             self._expect(",")
             hash_value = self.parse_string()
+            _check_monotonic(
+                result[-1].output_name if result else None, name, lambda name=name: f"output name '{name}'"
+            )
             self._expect(")")
             result.append(
                 DrvOutput(
@@ -844,17 +879,20 @@ class _Parser:
         """Parse [("drvPath",["out",...]), ...] - traditional format."""
         self._expect("[")
         result: dict[StorePath, list[str]] = {}
+        last: str | None = None
         self._skip_ws()
         while self._peek() != "]":
             if result:
                 self._expect(",")
             self._skip_ws()
             self._expect("(")
-            drv_path = StorePath(self.parse_string())
+            key = self.parse_string()
             self._expect(",")
-            outputs = self.parse_string_list()
+            outputs = self.parse_string_set()
+            _check_monotonic(last, key, lambda key=key: f"input derivation '{key}'")
+            last = key
             self._expect(")")
-            result[drv_path] = outputs
+            result[StorePath(key)] = outputs
             self._skip_ws()
         self._expect("]")
         return result
@@ -868,7 +906,7 @@ class _Parser:
         """
         if self._peek() == "[":
             # Leaf: flat list of output names
-            outputs = self.parse_string_list()
+            outputs = self.parse_string_set()
             return ChildMapNode(outputs=outputs)
         if self._peek() == "(":
             # Nested: recursive DerivedPathMapNode
@@ -886,10 +924,11 @@ class _Parser:
         """
         self._advance()  # '('
         self._skip_ws()
-        outputs = self.parse_string_list()
+        outputs = self.parse_string_set()
         self._expect(",")
         self._expect("[")  # Start of children list
         children: dict[str, ChildMapNode] = {}
+        last: str | None = None
         self._skip_ws()
         while self._peek() != "]":
             if children:
@@ -900,6 +939,8 @@ class _Parser:
             self._expect(",")
             # Parse child value (leaf or nested)
             child_node = self._parse_child_value()
+            _check_monotonic(last, child_name, lambda child_name=child_name: f"output name '{child_name}'")
+            last = child_name
             children[child_name] = child_node
             self._expect(")")
             self._skip_ws()
@@ -924,19 +965,21 @@ class _Parser:
         self._expect("[")
         simple: dict[StorePath, list[str]] = {}
         dynamic: dict[StorePath, ChildMapNode] = {}
+        last: str | None = None
         self._skip_ws()
         while self._peek() != "]":
             if simple or dynamic:
                 self._expect(",")
             self._skip_ws()
             self._expect("(")
-            drv_path = StorePath(self.parse_string())
+            key = self.parse_string()
+            drv_path = StorePath(key)
             self._expect(",")
             self._skip_ws()
 
             if self._peek() == "[":
                 # Non-dynamic: simple list of output names
-                outputs = self.parse_string_list()
+                outputs = self.parse_string_set()
                 simple[drv_path] = outputs
             elif self._peek() == "(":
                 # Dynamic: recursive ChildMapNode
@@ -946,6 +989,8 @@ class _Parser:
                 raise ValueError(
                     f"Expected '[' or '(' at pos {self._pos}, got {self._peek()!r}",
                 )
+            _check_monotonic(last, key, lambda key=key: f"input derivation '{key}'")
+            last = key
             self._expect(")")
             self._skip_ws()
         self._expect("]")
@@ -955,6 +1000,7 @@ class _Parser:
         """Parse [("key","value"), ...]."""
         self._expect("[")
         result: dict[str, str] = {}
+        last: str | None = None
         self._skip_ws()
         while self._peek() != "]":
             if result:
@@ -964,6 +1010,8 @@ class _Parser:
             key = self.parse_string()
             self._expect(",")
             value = self.parse_string()
+            _check_monotonic(last, key, lambda key=key: f"environment variable '{key}'")
+            last = key
             self._expect(")")
             result[key] = value
             self._skip_ws()
@@ -992,7 +1040,7 @@ class _Parser:
         self._expect(",")
         self._skip_ws()
 
-        input_srcs_list = self.parse_string_list(StorePath)
+        input_srcs_list = self.parse_store_path_set()
         self._expect(",")
         self._skip_ws()
 
@@ -1042,7 +1090,7 @@ class _Parser:
         self._expect(",")
         self._skip_ws()
 
-        input_srcs_list = self.parse_string_list(StorePath)
+        input_srcs_list = self.parse_store_path_set()
         self._expect(",")
         self._skip_ws()
 
@@ -1182,6 +1230,10 @@ def _parse_bytes(raw: bytes) -> Derivation:
     return parse_drv(drv_text(raw))
 
 
+class DerivationFormatError(PynixdError):
+    """A `.drv` on disk that does not parse, with Nix's message (`readDerivationCommon`)."""
+
+
 async def read_drv_file(drv_store_path: StorePath | str, layout: StoreLayout) -> Derivation | None:
     """Read and parse a `.drv` file from the file system of the store.
 
@@ -1215,4 +1267,15 @@ async def read_drv_file(drv_store_path: StorePath | str, layout: StoreLayout) ->
     path = anyio.Path(layout.real_store_dir / name[len(prefix) :])
     if not await path.exists():
         return None
-    return await parse_drv_bytes(await path.read_bytes())
+    raw = await path.read_bytes()
+    # `readDerivationCommon` (`store-api.cc:1191`): an empty file has its own message, the name must be a
+    # derivation's (`nameFromPath`), and each format error names the derivation.
+    base = name[len(prefix) :]
+    try:
+        if not raw:
+            raise ValueError("file is empty (possible filesystem corruption)")
+        if not base.endswith(".drv"):
+            raise ValueError(f"store path '{magenta(base)}' is not a valid derivation path")
+        return await parse_drv_bytes(raw)
+    except ValueError as error:
+        raise DerivationFormatError(f"error parsing derivation '{magenta(name)}': {error}") from error

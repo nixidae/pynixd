@@ -22,6 +22,7 @@ import pytest
 from pynixd.serde import OutputKind
 from pynixd_store import drv_parser
 from pynixd_store.drv_parser import Derivation, parse_drv, to_basic_derivation
+from pynixd_store.hintfmt import magenta
 from pynixd_store.store_layout import StoreLayout
 from pynixd_store.store_path import DrvOutput, StorePath
 from tests.conftest import NIX_BIN
@@ -269,7 +270,7 @@ class TestManufacturedExamples:
             'Derive([("out","/nix/store/abc-foo","","")]'
             ',[],[],"x86_64-linux"'
             ',"/bin/sh",["-c","echo \\"hello\\""]'
-            ',[("name","esc"),("desc","line1\\nline2\\ttab")])'
+            ',[("desc","line1\\nline2\\ttab"),("name","esc")])'
         )
         assert parsed.args == ["-c", 'echo "hello"']
         assert parsed.env["desc"] == "line1\nline2\ttab"
@@ -344,7 +345,7 @@ class TestManufacturedExamples:
 
     def test_multiple_outputs(self) -> None:
         parsed = parse_drv(
-            'Derive([("out","/nix/store/a-out","",""),("lib","/nix/store/a-lib","","")]'
+            'Derive([("lib","/nix/store/a-lib","",""),("out","/nix/store/a-out","","")]'
             ',[],[],"x86_64-linux"'
             ',"/bin/sh",["-c","make"]'
             ',[("name","multi"),("outputs","out lib")])'
@@ -640,12 +641,12 @@ class TestSerialize:
 
     def test_traditional_roundtrip(self) -> None:
         text = (
-            'Derive([("out","/nix/store/result","",""),'
-            '("dev","/nix/store/dev","","")],'
+            'Derive([("dev","/nix/store/dev","",""),'
+            '("out","/nix/store/result","","")],'
             '[("/nix/store/dep.drv",["out"])],'
             '["/nix/store/src"],'
             '"x86_64-linux","/bin/bash",["-c","true"],'
-            '[("name","test"),("key","value")])'
+            '[("key","value"),("name","test")])'
         )
         parsed = parse_drv(text)
         serialized = parsed.serialize()
@@ -694,3 +695,65 @@ class TestSerialize:
             serialized = parsed.serialize()
             reparsed = parse_drv(serialized)
             assert reparsed.serialize() == serialized, f"roundtrip failed for {name}"
+
+
+@pytest.mark.parametrize(
+    ("contents", "reason"),
+    [
+        (b"", "file is empty (possible filesystem corruption)"),
+        (b"x", f"store path '{magenta('n5if4nl47axds2b63wa1w1nbg4rgnidf-0')}' is not a valid derivation path"),
+    ],
+    ids=["empty", "not-a-drv"],
+)
+async def test_a_drv_that_does_not_parse_is_named(tmp_path: Path, contents: bytes, reason: str) -> None:
+    """`readDerivationCommon` (`store-api.cc:1191`): the error names the derivation, and an empty file says so.
+
+    The client suite found it (nixidae/nixidae#1249): `QueryDerivationOutputMap` of an empty file answered
+    `ValueError: Unexpected end of input`.
+    """
+    layout = StoreLayout(
+        store_dir=Path("/nix/store"),
+        real_store_dir=tmp_path,
+        state_dir=tmp_path / "state",
+        log_dir=tmp_path / "log",
+        relocated=False,
+    )
+    name = "n5if4nl47axds2b63wa1w1nbg4rgnidf-0"
+    await anyio.Path(tmp_path / name).write_bytes(contents)
+    with pytest.raises(drv_parser.DerivationFormatError) as refused:
+        await drv_parser.read_drv_file(f"/nix/store/{name}", layout)
+    assert str(refused.value) == f"error parsing derivation '{magenta(f'/nix/store/{name}')}': {reason}"
+
+
+_SRC_A = "/nix/store/00000000000000000000000000000000-a"
+_SRC_B = "/nix/store/11111111111111111111111111111111-b"
+
+
+def _drv(srcs: str = "", env: str = '("name","x")', outputs: str = '("out","","","")') -> str:
+    return f'Derive([{outputs}],[],[{srcs}],"x86_64-linux","/bin/sh",[],[{env}])'
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        (_drv(srcs=f'"{_SRC_A}","{_SRC_A}"'), "duplicate " + magenta(f"store path '{_SRC_A}'")),
+        (_drv(srcs=f'"{_SRC_B}","{_SRC_A}"'), magenta(f"store path '{_SRC_A}'") + " does not appear in a sorted order"),
+        (_drv(env='("b","1"),("a","2")'), magenta("environment variable 'a'") + " does not appear in a sorted order"),
+        (_drv(outputs='("out","","",""),("out","","","")'), "duplicate " + magenta("output name 'out'")),
+    ],
+    ids=["duplicate-source", "unsorted-sources", "unsorted-env", "duplicate-output"],
+)
+def test_a_drv_not_in_canonical_form_is_refused(text: str, reason: str) -> None:
+    """`checkMonotonic` of Nix master (`derivation/aterm.cc:253`, NixOS/nix#16284): one value, one encoding.
+
+    The client suite found it on the git lane (nixidae/nixidae#1249): master refused a duplicate input source,
+    and pynixd merged it.
+    """
+    with pytest.raises(ValueError) as refused:
+        parse_drv(text)
+    assert str(refused.value) == reason
+
+
+def test_a_drv_in_canonical_form_parses() -> None:
+    parsed = parse_drv(_drv(srcs=f'"{_SRC_A}","{_SRC_B}"', env='("a","1"),("b","2")'))
+    assert sorted(str(src) for src in parsed.input_srcs) == [_SRC_A, _SRC_B]
