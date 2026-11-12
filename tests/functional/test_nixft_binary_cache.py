@@ -223,10 +223,6 @@ async def test_a_cache_substitutes_and_answers_mass_queries_when_it_wants(
     `nix-env -qas` asks a cache only when its `nix-cache-info` says `WantMassQuery: 1`. The script appends
     that line to the cache and clears the client's narinfo cache. Here a copy of the cache takes the line,
     so its URL is new to every narinfo cache: the client's, pynixd's and nix-daemon's.
-
-    Through pynixd the cache without the line answers too: the NIX-DEVIATION of
-    `LocalDBStore.own_query_substitutable_paths` (`pynixd/store/local_db.py`), which asks every
-    substituter at once and names this cost.
     """
     builds, cache, out_path = await _make_cache(tmp_path)
     mass = tmp_path / "cache-mass"
@@ -262,8 +258,7 @@ async def test_a_cache_substitutes_and_answers_mass_queries_when_it_wants(
         executable,
         any(line.endswith("-dependencies-input-2") for line in closure[1].splitlines()),
     )
-    unasked = "---" if arm is Arm.local else "--S"
-    expected = ([(0, [unasked]), (0, ["--S"]), (0, ["--S"])], (0, ""), [0, 0, 0], True, True)
+    expected = ([(0, ["---"]), (0, ["--S"]), (0, ["--S"])], (0, ""), [0, 0, 0], True, True)
     assert got == expected, "\n".join(err for _rc, _out, err in everything)
 
 

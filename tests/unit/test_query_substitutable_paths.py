@@ -1,7 +1,9 @@
 """pynixd's answer to `QuerySubstitutablePaths`, from the scheduler's race.
 
-`SubstitutionQueue.can_substitute` asks every substituter backend at once and
-takes the first hit; the answer is the paths it finds. Nix answers nothing
+`SubstitutionQueue.can_substitute` asks every substituter backend that wants
+mass queries at once and takes the first hit; the answer is the paths it
+finds. A backend without `want-mass-query` is not asked (`store-api.cc:526`).
+Nix answers nothing
 without `substitute` (`store-api.cc:506`). A client that names substituters
 of its own gets the daemon's answer, because pynixd's backends are not those.
 """
@@ -33,7 +35,8 @@ MISSING = StorePath(path="/nix/store/00000000000000000000000000000003-missing")
 class _Queue:
     """Holds `HELD` and `SLOW`; `SLOW` answers late, so the paths are asked at once or the test times out."""
 
-    def __init__(self, *uncovered: str) -> None:
+    def __init__(self, *uncovered: str, want_mass_query: bool = True) -> None:
+        self.want_mass_query = want_mass_query
         self.asked: list[StorePath] = []
         self.both_asked = anyio.Event()
         self.uncovered = uncovered
@@ -77,6 +80,11 @@ class TestQuerySubstitutablePaths:
         queue = _Queue()
         assert await _ask(_store(tmp_path, queue), _client()) == {HELD, SLOW}
         assert sorted(queue.asked) == sorted([HELD, SLOW, MISSING])
+
+    async def test_a_backend_without_mass_queries_is_not_asked(self, tmp_path: Path) -> None:
+        queue = _Queue(want_mass_query=False)
+        assert await _ask(_store(tmp_path, queue), _client()) == set()
+        assert queue.asked == []
 
     async def test_without_substitute_nothing_is_substitutable(self, tmp_path: Path) -> None:
         queue = _Queue()

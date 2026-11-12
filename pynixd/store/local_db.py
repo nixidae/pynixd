@@ -1201,16 +1201,13 @@ class LocalDBStore(Store):
     async def own_query_substitutable_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QuerySubstitutablePaths: the paths some substituter holds, from the scheduler's race.
 
-        NIX-DEVIATION (#27): `Store::querySubstitutablePaths` at
-        `store-api.cc:504` asks the substituters one after another, in
-        priority order, and skips each one without `want-mass-query`. pynixd
-        asks every substituter backend at once for each path, takes the first
-        hit, and keeps hits and misses in the queue's caches
-        (`SubstitutionQueue.can_substitute`), as its binary cache proxy does.
-        The set is the same while the caches agree: a path counts when any
-        substituter holds it, in both. The cost is a path a cache without
-        `want-mass-query` holds, which Nix leaves out and pynixd includes.
-        To reverse it, measure that against the time of the sequential walk.
+        `Store::querySubstitutablePaths` at `store-api.cc:504` skips each
+        substituter without `want-mass-query` (`:526`), so a cache that opts
+        out of mass queries gets none, and pynixd skips it too
+        (`binary-cache.sh:53`). Nix then asks the others one after another;
+        pynixd asks them at once for each path and takes the first hit
+        (`SubstitutionQueue.can_substitute`). The set is the same: a path
+        counts when any of them holds it.
 
         A client that names its own substituters is asked of backends for
         those (`SubstitutionQueue.substituters_for`). A substituter no backend
@@ -1226,13 +1223,14 @@ class LocalDBStore(Store):
         stores = await queue.substituters_for(client)
         if stores is None:
             return None
-        if not stores:
+        massed = tuple(store for store in stores if store.want_mass_query)
+        if not massed:
             return QuerySubstitutablePathsResponse.fast(paths=set())
 
         found: set[StorePath] = set()
 
         async def ask(path: StorePath) -> None:
-            if (await queue.can_substitute(path, stores)).available:
+            if (await queue.can_substitute(path, massed)).available:
                 found.add(path)
 
         async with anyio.create_task_group() as tg:
