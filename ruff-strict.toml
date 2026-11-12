@@ -17,5 +17,4 @@ ignore = [
 
 [lint.per-file-ignores]
 "tests/**" = ["ERA001", "RUF059", "F401", "T201", "ARG001"]
-"tests/ai/**" = ["ERA001", "RUF059", "F401", "T201", "ARG001", "BLE001"]
 "tests/conftest.py" = ["ERA001", "RUF059", "F401", "T201", "ARG001", "BLE001"]
