@@ -245,6 +245,16 @@ async def test_a_daemon_cache_ranks_by_its_nix_cache_info_unless_a_priority_is_g
     assert [store.priority for store in (*added, configured)] == [30.0, 10.0, 5.0]
 
 
+async def test_want_mass_query_comes_from_the_url_before_nix_cache_info(tmp_path: Path) -> None:
+    """`binary-cache-store.cc:66`: `WantMassQuery:` sets the default; `?want-mass-query=` wins."""
+    cache = _cache(tmp_path / "cache")
+    urls = [f"file://{cache}", f"file://{cache}?want-mass-query=false"]
+    added = _add_substituter_stores({}, urls, PynixdSettings())
+    for store in added:
+        await store.start()
+    assert [store.want_mass_query for store in added] == [True, False]
+
+
 DRV = StorePath("/nix/store/00000000000000000000000000000003-thing.drv")
 DRV_OUTPUT = DrvOutput(f"sha256:{'ab' * 32}!out")
 

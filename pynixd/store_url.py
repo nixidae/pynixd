@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 _LOOPBACK_HOSTS: Final = frozenset({"127.0.0.1", "::1", "localhost"})
-_SUBSTITUTER_PARAMS: Final = frozenset({"trusted", "priority"})
+_SUBSTITUTER_PARAMS: Final = frozenset({"trusted", "priority", "want-mass-query"})
 _BINARY_CACHE_PARAMS: Final = frozenset({"store"})
 """What each binary cache reads beside a substituter's own: `StoreDirConfig::storeDir`."""
 
@@ -69,13 +69,17 @@ def _flag(value: str | None) -> bool | None:
 
 
 def _substituter_settings(ref: StoreReference, known: frozenset[str]) -> dict[str, object] | None:
-    """`trusted` and `priority` from *ref*, or `None` for a parameter outside *known* or a bad value."""
+    """`trusted`, `priority` and `want-mass-query` from *ref*, or `None` for a parameter outside *known* or a bad value."""
     if not set(ref.params) <= known | _SUBSTITUTER_PARAMS:
         return None
     trusted = _flag(ref.params.get("trusted"))
     if trusted is None:
         return None
     settings: dict[str, object] = {"trusted": trusted}
+    if (mass := ref.params.get("want-mass-query")) is not None:
+        if (want_mass_query := _flag(mass)) is None:
+            return None
+        settings["want_mass_query"] = want_mass_query
     if (directory := ref.params.get("store")) is not None:
         if not directory.startswith("/"):
             return None

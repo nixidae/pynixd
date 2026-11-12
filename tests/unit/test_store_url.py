@@ -68,6 +68,7 @@ def test_the_parameters_nix_reads_reach_the_spec() -> None:
         "ssh-ng://builder?ssh-key=relative/key",
         "ssh-ng://builder?base64-ssh-public-host-key=bm90IGEga2V5",
         "ssh-ng://builder?compress=maybe",
+        "file:///srv/cache?want-mass-query=maybe",
         "ssh-ng://builder/some/path",
         "ssh-ng://",
     ],
@@ -89,6 +90,15 @@ def test_another_trust_or_key_is_another_store() -> None:
     assert len({plain.store_id, trusted.store_id, keyed.store_id}) == 3
     assert len({plain.reference_key(), trusted.reference_key(), keyed.reference_key()}) == 3
     assert _ssh("ssh-ng://b?priority=3").reference_key() == plain.reference_key()
+
+
+def test_want_mass_query_reaches_the_spec_and_the_key() -> None:
+    """`store-api.hh:227`: `?want-mass-query=` is a store setting, so it sets whether `QuerySubstitutablePaths` asks."""
+    plain, wanted = spec_for("file:///srv/cache"), spec_for("file:///srv/cache?want-mass-query=true")
+    assert plain is not None
+    assert wanted is not None
+    assert (plain.want_mass_query, wanted.want_mass_query) == (None, True)
+    assert plain.reference_key() != wanted.reference_key()
 
 
 def test_a_configured_builder_is_not_a_substituters_store() -> None:

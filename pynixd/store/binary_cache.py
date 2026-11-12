@@ -85,6 +85,7 @@ class BinaryCacheStore(Store):
         self.max_fail_ratio = spec.max_fail_ratio
         self.cache_info: dict[str, str] = {}
         self._priority_given = "priority" in spec.model_fields_set
+        self._want_mass_query_given = spec.want_mass_query is not None
         self._recent_results: deque[bool] = deque(maxlen=spec.health_window)
         self._store_dir = spec.store_dir or store_dir()
 
@@ -96,7 +97,7 @@ class BinaryCacheStore(Store):
     def _take_cache_info(self, info: dict[str, str]) -> None:
         """Keep *info*, and rank by its `Priority` unless the spec names one.
 
-        `nix-cache-info` only sets the default priority; `?priority=` wins (`binary-cache-store.cc:67`).
+        `nix-cache-info` only sets the defaults: `?priority=` and `?want-mass-query=` win (`binary-cache-store.cc:66`).
         A cache of another store directory does not open (`binary-cache-store.cc:58`).
         """
         if info["StoreDir"] != self.store_dir:
@@ -104,7 +105,8 @@ class BinaryCacheStore(Store):
                 f"binary cache '{self.store_id}' is for Nix stores with prefix '{info['StoreDir']}', not '{self.store_dir}'"
             )
         self.cache_info = info
-        self.want_mass_query = info.get("WantMassQuery") == "1"
+        if not self._want_mass_query_given:
+            self.want_mass_query = info.get("WantMassQuery") == "1"
         if not self._priority_given:
             self.priority = float(info["Priority"])
 

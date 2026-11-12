@@ -76,8 +76,8 @@ class Store(ABC):
         self.store_id: StoreId = spec.store_id
         self.priority = spec.priority
         self.trusted = spec.trusted
-        self.want_mass_query = False
-        """Nix's `want-mass-query`: false on every store, and a binary cache reads it from `nix-cache-info`."""
+        self.want_mass_query = bool(spec.want_mass_query)
+        """Nix's `want-mass-query`: the URL's, else false, and a binary cache's `nix-cache-info` sets the default."""
         self.no_schedule = spec.no_schedule
         self.nix_bin = spec.nix_bin
         self.session_only = False

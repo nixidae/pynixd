@@ -263,6 +263,22 @@ async def test_a_cache_substitutes_and_answers_mass_queries_when_it_wants(
 
 
 @pytest.mark.parametrize("arm", list(Arm))
+async def test_a_cache_url_can_want_mass_queries(tmp_path: Path, arm: Arm) -> None:
+    """`?want-mass-query=true` on a cache whose `nix-cache-info` says nothing: `nix-env -qas` asks it.
+
+    The setting is the store's (`store-api.hh:227`), and `nix-cache-info` only sets its default
+    (`binary-cache-store.cc:66`).
+    """
+    builds, cache, _out_path = await _make_cache(tmp_path)
+    async with arm_store(tmp_path, arm, _config()) as store:
+        rc, out, err = await _run(
+            store, tmp_path / "xdg", NIX_BIN.with_name("nix-env"), "--substituters",
+            f"{file_url(cache)}?want-mass-query=true", "-f", builds, "-qas", "*",
+        )  # fmt: skip
+    assert (rc, _statuses(out)) == (0, ["--S"]), err
+
+
+@pytest.mark.parametrize("arm", list(Arm))
 async def test_a_nar_that_does_not_match_its_narinfo_fails(tmp_path: Path, arm: Arm) -> None:
     """`binary-cache.sh:102`: a NAR replaced by an empty directory's fails the build with "hash mismatch"."""
     builds, cache, _out_path = await _make_cache(tmp_path)

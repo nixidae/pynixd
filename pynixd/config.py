@@ -324,6 +324,12 @@ class StoreSpecBase(BaseModel):
     A binary cache is not. A store that a substituter URL opens takes the
     URL's `trusted`, false when absent, as in Nix (`store_url`).
     """
+    want_mass_query: bool | None = None
+    """`?want-mass-query=`: whether `QuerySubstitutablePaths` asks this store (`store-api.cc:526`).
+
+    `None` is Nix's default: false, and a binary cache reads it from its `nix-cache-info`
+    (`binary-cache-store.cc:66`, which only sets the default).
+    """
     score_penalty: int = 0
     mandatory_features: set[str] = Field(default_factory=set)
     """Features a derivation must require to build here: column 7 of a machines line (`Machine::mandatoryMet`)."""
@@ -644,8 +650,8 @@ class ExternalUnixStoreSpec(StoreSpecBase):
     """A substituter builds nothing, so it is never sent the probe builds."""
 
     def reference_key(self) -> object | None:
-        """`unix://<socket_path>?root=<store_path>`, and the trust."""
-        return ("unix", self.socket_path, self.store_path, self.trusted)
+        """`unix://<socket_path>?root=<store_path>`, the trust and `want-mass-query`."""
+        return ("unix", self.socket_path, self.store_path, self.trusted, self.want_mass_query)
 
     def to_store(self, store_id: str) -> ExternalUnixStore:
         """Build an ``ExternalUnixStore`` from this spec."""
@@ -829,6 +835,7 @@ class SSHSubprocessStoreSpec(StoreSpecBase):
             tuple(self.remote_command or ()),
             self.compress,
             self.trusted,
+            self.want_mass_query,
             self.no_schedule,
         )
 
@@ -934,8 +941,8 @@ class HTTPBinaryCacheSpec(BinaryCacheSpecBase):
     max_concurrent: int | None = None
 
     def reference_key(self) -> object | None:
-        """The URL with no trailing slash, the store directory and the trust."""
-        return ("http", self.url.rstrip("/"), self.store_dir, self.trusted)
+        """The URL with no trailing slash, the store directory, the trust and `want-mass-query`."""
+        return ("http", self.url.rstrip("/"), self.store_dir, self.trusted, self.want_mass_query)
 
     def to_store(self, store_id: str) -> HTTPBinaryCacheStore:
         """Build an ``HTTPBinaryCacheStore`` from this spec."""
@@ -953,8 +960,8 @@ class LocalBinaryCacheSpec(BinaryCacheSpecBase):
     path: Path
 
     def reference_key(self) -> object | None:
-        """The directory, the store directory and the trust."""
-        return ("file", self.path, self.store_dir, self.trusted)
+        """The directory, the store directory, the trust and `want-mass-query`."""
+        return ("file", self.path, self.store_dir, self.trusted, self.want_mass_query)
 
     def to_store(self, store_id: str) -> LocalBinaryCacheStore:
         """Build a ``LocalBinaryCacheStore`` from this spec."""
@@ -1004,6 +1011,7 @@ class S3BinaryCacheSpec(BinaryCacheSpecBase):
             self.profile,
             self.store_dir,
             self.trusted,
+            self.want_mass_query,
         )
 
     def to_store(self, store_id: str) -> S3BinaryCacheStore:

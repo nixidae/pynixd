@@ -85,4 +85,4 @@ def test_url_parameters_reach_the_backend() -> None:
 
 def test_a_parameter_the_registry_does_not_read_is_left_to_the_daemon() -> None:
     """pynixd never drops a setting the user wrote: `store_url`."""
-    assert _add_substituter_stores({}, [f"{LOCAL}?want-mass-query=1"], PynixdSettings()) == []
+    assert _add_substituter_stores({}, [f"{LOCAL}?compression=zstd"], PynixdSettings()) == []
