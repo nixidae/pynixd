@@ -33,6 +33,7 @@ from pynixd.op_routes import OpRoute
 from pynixd.store import LocalDBStore
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.nar_fs import dump_path
+from tests._conftest.census import descendants
 from tests._conftest.config import NIX_FLOOR_BIN, NIX_GIT_BIN
 from tests._conftest.constants import _NO_PROBE_FEATURE_MATRIX
 from tests._conftest.nix_config import for_test_store
@@ -1538,7 +1539,8 @@ EXECUTABLE_NAR = (
 async def _http(tmp_path: Path) -> AsyncIterator[tuple[str, dict[str, Any]]]:
     """The files the fetches ask for, at `localhost`: the name must resolve inside the sandbox.
 
-    *seen* records the path and User-Agent of each request.
+    *seen* records the path and User-Agent of each request. `/bucket/held` sets `seen["arrived"]` and answers
+    once `seen["release"]` is set.
     """
     tree = tmp_path / "tree"
     (tree / "sub").mkdir(parents=True)
@@ -1546,7 +1548,7 @@ async def _http(tmp_path: Path) -> AsyncIterator[tuple[str, dict[str, Any]]]:
     (tree / "run").write_text("#!/bin/sh\n")
     (tree / "run").chmod(0o755)
     nar = b"".join(dump_path(tree))
-    seen: dict[str, Any] = {"requests": [], "nar": nar}
+    seen: dict[str, Any] = {"requests": [], "nar": nar, "arrived": anyio.Event(), "release": anyio.Event()}
     mirrored = f"/mirror/sha256/{hashlib.sha256(FETCHED).hexdigest()}"
 
     async def handle(request: web.Request) -> web.StreamResponse:
@@ -1561,7 +1563,10 @@ async def _http(tmp_path: Path) -> AsyncIterator[tuple[str, dict[str, Any]]]:
                 request.headers.get("x-amz-security-token", ""),
             )
         )
-        if request.path in ("/file", "/bucket/file", mirrored):
+        if request.path == "/bucket/held":
+            seen["arrived"].set()
+            await seen["release"].wait()
+        if request.path in ("/file", "/bucket/file", "/bucket/held", mirrored):
             return web.Response(body=FETCHED)
         if request.path == "/tree.nar":
             return web.Response(body=nar)
@@ -1661,12 +1666,8 @@ async def _fetches(tmp_path: Path, route: OpRoute, base: str, seen: dict[str, An
     return results
 
 
-async def test_builtin_fetchurl_fetches_what_the_daemon_fetches(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """`builtinFetchurl` (`builtins/fetchurl.cc:10`): a flat file, an executable one, an unpacked NAR, the
-    hashed mirrors first, an S3 object, and the errors of a missing file, a refused one and a wrong hash."""
-    # Both daemons resolve S3 credentials from their environment (`derivation-builder.cc:622`), and only there.
+def _aws_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both daemons resolve S3 credentials from their environment (`derivation-builder.cc:622`), and only there."""
     for name, value in {
         "AWS_ACCESS_KEY_ID": "AKIDPARITY",
         "AWS_SECRET_ACCESS_KEY": "parity-secret",
@@ -1676,6 +1677,55 @@ async def test_builtin_fetchurl_fetches_what_the_daemon_fetches(
         "AWS_EC2_METADATA_DISABLED": "true",
     }.items():
         monkeypatch.setenv(name, value)
+
+
+def _epoll_waits(pid: int) -> list[int]:
+    """The threads of *pid* that wait in `epoll_wait`."""
+    waiting = []
+    for task in Path(f"/proc/{pid}/task").glob("*"):
+        with contextlib.suppress(OSError):  # the thread or the process ended since the listing
+            if (task / "wchan").read_text().strip() == "do_epoll_wait":
+                waiting.append(int(task.name))
+    return waiting
+
+
+async def test_the_daemon_forks_an_s3_fetch_from_a_worker_with_no_aws_threads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`preResolveAwsCredentials` (`derivation-builder.cc:622`) runs the AWS credential chain in the daemon's
+    worker, and the chain's event-loop threads outlive it. The worker then forks the builder, which can wait
+    forever on a mutex one of them held (Lillecarl/nix#424, nixidae/nixidae#1283). The guests' Nix runs the
+    chain in a process of its own (`nix/nix-aws-credentials-in-a-child.patch`). Unpatched, the worker holds
+    8 threads in `epoll_wait` while its builder fetches."""
+    _aws_environment(tmp_path, monkeypatch)
+    async with _http(tmp_path) as (base, seen), _serve(tmp_path, OpRoute.daemon) as (url, _root):
+        expr = _fetchurl(
+            "parity-fetch-s3-held",
+            f"s3://bucket/held?endpoint={base}&region=eu-north-1",
+            f'hash = "{_sri(FETCHED)}";',
+        )
+        rc: list[int] = []
+
+        async def build() -> None:
+            command = [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--expr", expr]
+            rc.append((await run_subproc(command, expected_retcode=None))[0])
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(build)
+            with anyio.fail_after(60):
+                await seen["arrived"].wait()
+            waiting = {pid: threads for pid in descendants(os.getpid()) if (threads := _epoll_waits(pid))}
+            seen["release"].set()
+    assert waiting == {}, waiting
+    assert rc == [0], rc
+
+
+async def test_builtin_fetchurl_fetches_what_the_daemon_fetches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`builtinFetchurl` (`builtins/fetchurl.cc:10`): a flat file, an executable one, an unpacked NAR, the
+    hashed mirrors first, an S3 object, and the errors of a missing file, a refused one and a wrong hash."""
+    _aws_environment(tmp_path, monkeypatch)
     # One server for both runs: the URL is part of the derivation, so its port must not change.
     async with _http(tmp_path) as (base, seen):
         before = _fallthrough()

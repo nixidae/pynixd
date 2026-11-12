@@ -114,8 +114,11 @@ let
   krun = pkgs.callPackage ./nix/krun/package.nix { inherit (vivarium.packages) libkrun; };
 
   # The Nix pynixd runs against unless a test names another: the newest
-  # release, not `pkgs.nix`, which nixpkgs keeps a minor behind.
-  defaultNix = pkgs.nixVersions.latest;
+  # release, not `pkgs.nix`, which nixpkgs keeps a minor behind. Patched: its
+  # builtin:fetchurl of s3:// deadlocked the test guests' builders (Lillecarl/nix#424).
+  defaultNixRelease = pkgs.nixVersions.latest;
+  # The version is the release's: a CI runner installs the release from releases.nixos.org.
+  defaultNix = defaultNixRelease.appendPatches [ ./nix/nix-aws-credentials-in-a-child.patch ];
   # Its name in `nixVersions` and in `nixFunctionalTests`, such as `nix_2_35`.
   defaultNixName =
     "nix_" + lib.replaceStrings [ "." ] [ "_" ] (lib.versions.majorMinor defaultNix.version);
@@ -289,7 +292,8 @@ let
   guestEnv = devEnvFrom (devPythonSetAt "stable" "/work");
 
   # The `nix daemon` of each lane `tests/suites.toml` names: the release that lane's huggorm Nix
-  # patches, unpatched, as `defaultNix` is for the default lane (nixidae/nixidae#1249).
+  # patches, unpatched (nixidae/nixidae#1249). `defaultNix`, the default lane's, carries one patch
+  # for a deadlock of the guests' builders.
   laneNix = {
     inherit (pkgs.nixVersions) nix_2_34 git;
     determinate = determinateNix;
@@ -491,7 +495,7 @@ let
     module:
     import module {
       inherit lib ghalib;
-      nixVersion = defaultNix.version;
+      nixVersion = defaultNixRelease.version;
     };
 
   # The workflows of pynixd's own repository, beside the file each renders
@@ -783,6 +787,7 @@ in
       ci-workflow-update
       tests
       laneShells
+      defaultNix
       ;
   };
 }
