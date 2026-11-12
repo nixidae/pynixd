@@ -1,41 +1,25 @@
-"""Nix's `timeout.sh`, which skips on `needLocalStore` ("see #4813"), held to three arms.
+"""Nix's `timeout.sh`, which skips on `needLocalStore` ("see #4813"), held to three arms (`_nixft.py`).
 
-Nix runs the script only against a store the client opens itself, so that arm is the reference. The
-same builds then go through pynixd with no daemon, and through nix-daemon behind pynixd. Each case
-names the line of `timeout.sh` it stands for.
+Each case names the line of `timeout.sh` it stands for.
 """
 
 from __future__ import annotations
 
-import contextlib
 import os
-from enum import StrEnum
 from typing import TYPE_CHECKING
 
 import anyio
 import pytest
 
-from nix_daemon_protocol.ids import StoreId
-from pynixd import Server
-from pynixd.op_routes import OpRoute
-from pynixd.store import LocalDBStore
 from tests._conftest.nix_config import for_test_store
-from tests.conftest import NIX_BIN, make_test_spec, run_subproc
+from tests.conftest import NIX_BIN, run_subproc
+from tests.functional._nixft import Arm, arm_store
 from tests.functional.test_build_without_sandbox import _keep_store_dirs
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
     from pathlib import Path
 
-    from pynixd.nix_config import NixConfig
-
 __all__ = ["_keep_store_dirs"]
-
-
-class Arm(StrEnum):
-    local = "local"
-    daemon = "daemon"
-    pynixd = "pynixd"
 
 
 # `timeout.nix`, with the builder's shell alone: no store path supplies `touch` or `sleep` here. A
@@ -81,32 +65,6 @@ CASES = (
 )
 
 
-@contextlib.asynccontextmanager
-async def _store(tmp_path: Path, arm: Arm) -> AsyncIterator[tuple[str, dict[str, str], NixConfig | dict[str, str]]]:
-    """A fresh `NIX_STORE_DIR` store for *arm*: the `--store` value, the client's environment and its config."""
-    base = tmp_path / arm
-    store, state, logs = base / "store", base / "var/nix", base / "var/log/nix"
-    nix_config = for_test_store(substituters=())
-    nix_config.sandbox = "false"
-    if arm is Arm.local:
-        yield "local", {"NIX_STORE_DIR": str(store), "NIX_STATE_DIR": str(state), "NIX_LOG_DIR": str(logs)}, nix_config
-        return
-    socket = tmp_path / f"{arm}.sock"
-    spec = make_test_spec(
-        store_id="local",
-        store_path=base,
-        no_probe=True,
-        nix_config=nix_config,
-        op_routes={"BuildDerivation": OpRoute.pynixd if arm is Arm.pynixd else OpRoute.daemon},
-        store_dir=store,
-        state_dir=state,
-        log_dir=logs,
-    )
-    env = {"NIX_STORE_DIR": str(store), "NIX_STATE_DIR": str(base / "client"), "NIX_LOG_DIR": str(logs)}
-    async with Server(stores={StoreId("local"): LocalDBStore(spec)}, unix_path=socket, ssh_port=None, http_port=None):
-        yield f"unix://{socket}", env, {"substituters": ""}
-
-
 @pytest.mark.parametrize("arm", list(Arm))
 @pytest.mark.parametrize(
     ("line", "command", "attr", "extra", "rc", "phrase"), CASES, ids=[f"line{c[0]}" for c in CASES]
@@ -125,11 +83,16 @@ async def test_a_build_limit_ends_a_build_as_a_local_store_does(
         cmd = [NIX_BIN.with_name("nix-build"), "--no-out-link", "-E", expr, "-A", attr]
     else:
         cmd = [NIX_BIN, "build", "--impure", "--no-link", "--expr", f"({expr}).{attr}"]
-    async with _store(tmp_path, arm) as (url, env, config):
+    config = for_test_store(substituters=())
+    config.sandbox = "false"
+    async with arm_store(tmp_path, arm, config) as store:
         # Each limit ends its build within seconds; a limit nobody applies leaves it running.
         with anyio.fail_after(60):
             got, _out, err, _both = await run_subproc(
-                [*cmd, "--store", url, *extra], expected_retcode=None, env=dict(env), nix_config=config
+                [*cmd, "--store", store.url, *extra],
+                expected_retcode=None,
+                env=dict(store.env),
+                nix_config=store.config,
             )
     if arm is not Arm.local:
         # NIX-DEFECT (#23): from protocol 1.26 the daemon writes an error with `operator<<(Sink &, const Error &)`
