@@ -184,6 +184,10 @@ async def test_a_read_the_daemon_stops_answering_shows_then_fails_and_the_next_o
             answers.append(await rig.ask_within_bound())
 
         tg.start_soon(ask)
+        # Count from the stall, not from the start: under load the request
+        # reached the daemon 1.1 s after the start, and silence read 0.4 s.
+        with anyio.fail_after(_ANSWER_WITHIN):
+            await rig.proxy.triggered.wait()
         await anyio.sleep(_READ_TIMEOUT / 2)
         (row,) = upstream_in_flight(rig.server.ctx)
         assert row.op == "IsValidPathRequest"
