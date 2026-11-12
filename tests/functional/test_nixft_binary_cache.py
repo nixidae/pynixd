@@ -1,16 +1,20 @@
-"""Nix's `binary-cache.sh`, which skips on `needLocalStore`, held to three arms (`_nixft.py`): a cache that fails.
+"""Nix's `binary-cache.sh`, which skips on `needLocalStore`, held to three arms (`_nixft.py`): failing and signed caches.
 
 The script needs `--no-require-sigs`, which only a store the client opens itself takes. Through pynixd,
-with nix-daemon and with none, `require-sigs` is off in the store's own configuration (`for_test_store`).
+with nix-daemon and with none, `require-sigs` is off in the store's own configuration (`for_test_store`),
+and on for the signed caches.
 Each step has its own `XDG_CACHE_HOME`, so the client's narinfo cache starts empty (`clearCacheCache`,
 `common/functions.sh:61`).
 """
 
 from __future__ import annotations
 
+import base64
 import lzma
 import re
 import shutil
+import urllib.parse
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import anyio
@@ -221,3 +225,84 @@ async def test_a_cache_with_an_incomplete_closure_builds_the_rest(tmp_path: Path
         rc, _out, err = await _run(store, tmp_path / "xdg", *_build(builds, cache), force_http=True)
     built = _what_ran(err, "building")
     assert (rc, "don't know how to build" in err, "input-1" in built, "input-2" in built) == (0, True, True, True), err
+
+
+@dataclass(frozen=True)
+class _Keys:
+    good: str
+    """The public key of the key that signed the cache."""
+    bad: str
+    """Another key under the same name."""
+    other: str
+    """A key under another name."""
+
+
+def _public_key(secret: str) -> str:
+    """`nix key convert-secret-to-public`: an ed25519 secret key holds the public key in its last 32 bytes."""
+    name, _, encoded = secret.strip().partition(":")
+    return f"{name}:{base64.b64encode(base64.b64decode(encoded)[32:]).decode()}"
+
+
+async def _make_signed_cache(root: Path) -> tuple[Path, str, _Keys]:
+    """`binary-cache.sh:184`: three keys, and the closure copied to a cache signed by the first."""
+    builds = root / "dependencies.nix"
+    builds.write_text(BUILDS)
+    cache = root / "cache"
+    public: list[str] = []
+    async with arm_store(root, Arm.local, _config()) as store:
+        rc, out, err = await _run(store, root / "xdg-make", NIX_BIN.with_name("nix-build"), builds, "--no-out-link")
+        assert rc == 0, err
+        out_path = out.strip()
+        secret = root / "sk1"
+        for index, name in enumerate(("test.nixos.org-1", "test.nixos.org-1", "foo.nixos.org-1"), start=1):
+            rc, key, err = await _run(store, root / "xdg-make", NIX_BIN, "key", "generate-secret", "--key-name", name)
+            assert rc == 0, err
+            (root / f"sk{index}").write_text(key)
+            public.append(_public_key(key))
+        signed = f"{file_url(cache)}?secret-key={urllib.parse.quote(str(secret))}"
+        rc, _out, err = await _run(store, root / "xdg-make", NIX_BIN, "copy", "--to", signed, out_path)
+        assert rc == 0, err
+    clear_store(root)
+    return cache, out_path, _Keys(*public)
+
+
+async def _realise(store: ArmStore, cache_home: Path, out_path: str, caches: str, *keys: str) -> tuple[int, str]:
+    """`nix-store -r` with `_NIX_FORCE_HTTP` set, as `binary-cache.sh:200-236` runs it."""
+    trust = ("--trusted-public-keys", " ".join(keys)) if keys else ()
+    rc, _out, err = await _run(
+        store, cache_home, NIX_BIN.with_name("nix-store"), "-r", out_path, "--substituters", caches, *trust,
+        sigs=False, force_http=True,
+    )  # fmt: skip
+    return rc, err
+
+
+UNSIGNED = "as it's not signed by any of the keys in 'trusted-public-keys'"
+"""`PathSubstitutionGoal::init` skips such a substitute with this warning (`substitution-goal.cc:116`)."""
+
+
+@pytest.mark.parametrize("arm", list(Arm))
+async def test_a_signed_cache_needs_its_key(tmp_path: Path, arm: Arm) -> None:
+    """`binary-cache.sh:200`, `:207`, `:214`: no key and a wrong key fail, and the right one among others succeeds."""
+    cache, out_path, keys = await _make_signed_cache(tmp_path)
+    async with arm_store(tmp_path, arm, _config(require_sigs=True)) as store:
+        none = await _realise(store, tmp_path / "xdg-none", out_path, file_url(cache))
+        bad = await _realise(store, tmp_path / "xdg-bad", out_path, file_url(cache), keys.bad)
+        good = await _realise(store, tmp_path / "xdg-bad", out_path, file_url(cache), keys.other, keys.good)
+    got = [(rc, UNSIGNED in err) for rc, err in (none, bad)] + [(good[0], False)]
+    assert got == [(1, True), (1, True), (0, False)], "\n".join(err for _rc, err in (none, bad, good))
+
+
+@pytest.mark.parametrize("arm", list(Arm))
+async def test_a_narinfo_whose_signature_does_not_cover_it_is_refused(tmp_path: Path, arm: Arm) -> None:
+    """`binary-cache.sh:218`, `:234`: narinfos without their `References` fail, and the good cache after them succeeds."""
+    cache, out_path, keys = await _make_signed_cache(tmp_path)
+    broken = tmp_path / "binary-cache-2"
+    shutil.copytree(cache, broken)
+    for narinfo in broken.glob("*.narinfo"):
+        narinfo.write_text(
+            "".join(line for line in narinfo.read_text().splitlines(keepends=True) if "References" not in line)
+        )
+    async with arm_store(tmp_path, arm, _config(require_sigs=True)) as store:
+        refused = await _realise(store, tmp_path / "xdg", out_path, file_url(broken), keys.good)
+        both = await _realise(store, tmp_path / "xdg", out_path, f"{file_url(broken)} {file_url(cache)}", keys.good)
+    assert (refused[0], both[0]) == (1, 0), f"{refused[1]}\n{both[1]}"
