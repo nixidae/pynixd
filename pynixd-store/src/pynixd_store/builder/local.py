@@ -102,6 +102,9 @@ SANDBOX_UID, SANDBOX_GID = 1000, 100
 USER_POLL_SECONDS = 0.5
 """How often a build that found every build user busy asks again; Nix's goal waits too (`waitForAWhile`)."""
 
+EXIT_GRACE = 1.0
+"""Seconds a builder has to exit once its log ends, before pynixd kills it; Nix gives none."""
+
 DISK_FULL_BYTES = 8 * 1024 * 1024
 """Less free space than this after a failure is a full disk (`decideWhetherDiskFull`, `derivation-builder.cc:304`)."""
 
@@ -1506,10 +1509,15 @@ async def _run(
                 with contextlib.suppress(ProcessLookupError):
                     process.kill()
             elif guest is None:
-                # `unprepareBuild` (`derivation-builder.cc:187`): a builder that closed its log may live on, so
-                # Nix kills it. The helper kills the builder and ends as the builder ended.
-                with contextlib.suppress(ProcessLookupError):
-                    process.send_signal(signal.SIGTERM)
+                # NIX-DEFECT (#23): `unprepareBuild` (`derivation-builder.cc:187`) kills the builder as its log
+                # ends, since a builder that closed its log may live on. A builder still on its way out then fails
+                # "due to signal 9": coreutils closes its output before it exits. pynixd waits `EXIT_GRACE` for
+                # the builder to exit, and only then has the helper kill it. Lillecarl/nix#428.
+                with anyio.move_on_after(EXIT_GRACE):
+                    await process.wait()
+                if process.returncode is None:
+                    with contextlib.suppress(ProcessLookupError):
+                        process.send_signal(signal.SIGTERM)
             await process.wait()
             os.close(master)
             tracked.close()

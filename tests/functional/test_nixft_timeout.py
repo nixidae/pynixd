@@ -46,6 +46,11 @@ in {
     exec > /dev/null 2>&1
     read x <> ${fifo}
   '';
+  closeLogBriefly = mk "brief" ''
+    echo > $out
+    exec > /dev/null 2>&1
+    read -t 0.2 x <> ${fifo} || :
+  '';
 }"""
 
 # (`timeout.sh` line, command, attribute, extra arguments, exit code, stderr phrase)
@@ -102,3 +107,29 @@ async def test_a_build_limit_ends_a_build_as_a_local_store_does(
         # floor; the fix is a field in the frame. Lillecarl/nix#427.
         rc = 1
     assert (got, phrase in err) == (rc, True), err
+
+
+@pytest.mark.parametrize("arm", list(Arm))
+async def test_a_builder_that_exits_soon_after_its_log_ends_succeeds(tmp_path: Path, arm: Arm) -> None:
+    """A builder that closes its log and exits 0 within a moment has built its output.
+
+    NIX-DEFECT (#23): `unprepareBuild` (`derivation-builder.cc:187`) kills the builder as the log ends, so
+    a builder still on its way out fails "due to signal 9". coreutils closes its output before it exits,
+    so a builder whose last command is `ln` failed so in 1 of 6 builds. pynixd waits a moment for the
+    builder to exit before it kills it. Lillecarl/nix#428.
+    """
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+    expr = f'(({BUILDS}) {{ fifo = "{fifo}"; }}).closeLogBriefly'
+    config = for_test_store(substituters=())
+    config.sandbox = "false"
+    async with arm_store(tmp_path, arm, config) as store:
+        with anyio.fail_after(60):
+            got, _out, err, _both = await run_subproc(
+                [NIX_BIN, "build", "--impure", "--no-link", "--expr", expr, "--store", store.url],
+                expected_retcode=None,
+                env=dict(store.env),
+                nix_config=store.config,
+            )
+    killed = arm is not Arm.pynixd
+    assert (got, "builder failed due to signal" in err) == (int(killed), killed), err
