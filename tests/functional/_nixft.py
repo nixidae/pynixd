@@ -8,6 +8,7 @@ others are pynixd with nix-daemon behind it, and pynixd with no daemon. Each arm
 from __future__ import annotations
 
 import contextlib
+import urllib.parse
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -63,7 +64,12 @@ async def arm_store(root: Path, arm: Arm, nix_config: NixConfig) -> AsyncIterato
     )
     env["NIX_STATE_DIR"] = str(root / "client")
     async with Server(stores={StoreId("local"): LocalDBStore(spec)}, unix_path=socket, ssh_port=None, http_port=None):
-        yield ArmStore(f"unix://{socket}", env, {"substituters": ""})
+        yield ArmStore(f"unix://{urllib.parse.quote(str(socket))}", env, {"substituters": ""})
+
+
+def file_url(path: Path) -> str:
+    """`file://` and *path*, quoted: Nix refuses a store URL with `[` in it, and pytest can put one in `tmp_path`."""
+    return f"file://{urllib.parse.quote(str(path))}"
 
 
 def clear_store(root: Path) -> None:

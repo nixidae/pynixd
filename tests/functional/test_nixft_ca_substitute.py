@@ -13,7 +13,7 @@ import pytest
 
 from tests._conftest.nix_config import for_test_store
 from tests.conftest import NIX_BIN, run_subproc
-from tests.functional._nixft import Arm, ArmStore, arm_store, clear_store
+from tests.functional._nixft import Arm, ArmStore, arm_store, clear_store, file_url
 from tests.functional.test_build_without_sandbox import _keep_store_dirs
 
 if TYPE_CHECKING:
@@ -96,7 +96,7 @@ async def test_ca_outputs_substitute_with_their_realisations(tmp_path: Path, arm
     """`ca/substitute.sh:16`, `:23`, `:25`, `:28`: `-j0` fetches the outputs, and each keeps its realisation."""
     builds = tmp_path / "content-addressed.nix"
     builds.write_text(BUILDS)
-    cache = f"file://{tmp_path / 'cache'}"
+    cache = file_url(tmp_path / "cache")
     attrs = ("transitivelyDependentCA", "dependentCA", "rootCA", "rootLegacy")
     async with arm_store(tmp_path, Arm.local, _config()) as store:
         await _nix(store, "copy", "--to", cache, "--file", builds, *attrs)

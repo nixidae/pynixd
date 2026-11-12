@@ -15,7 +15,7 @@ import pytest
 
 from tests._conftest.nix_config import for_test_store
 from tests.conftest import NIX_BIN, run_subproc
-from tests.functional._nixft import Arm, arm_store, clear_store
+from tests.functional._nixft import Arm, arm_store, clear_store, file_url
 from tests.functional.test_build_without_sandbox import _keep_store_dirs
 
 if TYPE_CHECKING:
@@ -69,7 +69,7 @@ async def test_a_corrupt_output_fails_its_substitution(tmp_path: Path, arm: Arm)
         outputs = out.split()
         assert len(outputs) == 2, out
         await run_subproc(
-            [NIX_BIN, "copy", "--store", store.url, "--to", f"file://{cache}", *outputs],
+            [NIX_BIN, "copy", "--store", store.url, "--to", file_url(cache), *outputs],
             env=dict(store.env),
             nix_config=store.config,
         )
@@ -86,7 +86,7 @@ async def test_a_corrupt_output_fails_its_substitution(tmp_path: Path, arm: Arm)
             got, _out, err, _both = await run_subproc(
                 [
                     *(NIX_BIN, "build", "--store", store.url, "-j", "0", "--file", builds, "independent^*"),
-                    *("--no-link", "--substituters", f"file://{cache}", *sigs, "--substitute"),
+                    *("--no-link", "--substituters", file_url(cache), *sigs, "--substitute"),
                 ],
                 expected_retcode=None,
                 env=dict(store.env),
