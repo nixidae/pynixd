@@ -1466,6 +1466,7 @@ async def _run(
         tracked.enter_context(running(process.pid))
     timed_out: str | None = None
     setup = SetupMessages() if handshake else None
+    log_ended = False
     try:
         with anyio.move_on_after(settings.timeout or None) as overall:
             while True:
@@ -1481,6 +1482,7 @@ async def _run(
                         raise
                     piece = b""
                 if not piece:
+                    log_ended = True
                     break
                 if setup is not None:
                     piece = setup.feed(piece)
@@ -1492,9 +1494,15 @@ async def _run(
             timed_out = f"timed out after {settings.timeout} seconds"
     finally:
         with anyio.CancelScope(shield=True):
-            if timed_out is not None or (setup is not None and setup.error is not None):
+            if not log_ended:
+                # A limit, a set-up error, or a cancelled build: the builder dies with its helper.
                 with contextlib.suppress(ProcessLookupError):
                     process.kill()
+            elif guest is None:
+                # `unprepareBuild` (`derivation-builder.cc:187`): a builder that closed its log may live on, so
+                # Nix kills it. The helper kills the builder and ends as the builder ended.
+                with contextlib.suppress(ProcessLookupError):
+                    process.send_signal(signal.SIGTERM)
             await process.wait()
             os.close(master)
             tracked.close()

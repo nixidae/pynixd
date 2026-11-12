@@ -22,6 +22,7 @@ the build user's processes after the builder too (`killSandbox`, `unix/build/der
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import errno
 import fcntl
@@ -419,10 +420,46 @@ async def _wait_serving(spec: ChildSpec, pid: int, control: socket.socket | None
         os.close(pidfd)
 
 
+def _drop_terminal() -> None:
+    """Close every copy of the build's terminal here, so the log ends when the builder closes it (`timeout.sh:18`).
+
+    Nix's parent holds no copy. Measured in the test guest: the helper held the terminal on fds 68 and 69 as well as
+    1 and 2, and with only 1 and 2 redirected the log never ended.
+    """
+    terminal = os.fstat(1)
+    for name in os.listdir("/proc/self/fd"):
+        fd = int(name)
+        try:
+            same = os.path.samestat(os.fstat(fd), terminal)
+        except OSError:
+            continue
+        if same and fd > 2:
+            os.close(fd)
+    null = os.open(os.devnull, os.O_RDWR)
+    for fd in (1, 2):
+        os.dup2(null, fd)
+    os.close(null)
+
+
+def _kill_on_term(pid: int) -> None:
+    """pynixd sends SIGTERM when the log ends (`unprepareBuild`, `derivation-builder.cc:187`).
+
+    A builder that has exited stays a zombie until `wait4`, so the kill leaves its status as it was.
+    """
+
+    def kill(_sig: int, _frame: object) -> None:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+
+    signal.signal(signal.SIGTERM, kill)
+
+
 def _exit_like(status: int) -> None:
     if os.WIFSIGNALED(status):
         sig = os.WTERMSIG(status)
-        signal.signal(sig, signal.SIG_DFL)
+        # SIGKILL and SIGSTOP take no handler: `signal.signal` refuses them, and the helper then exits 1.
+        if sig not in (signal.SIGKILL, signal.SIGSTOP):
+            signal.signal(sig, signal.SIG_DFL)
         os.kill(os.getpid(), sig)
     os._exit(os.waitstatus_to_exitcode(status) if os.WIFEXITED(status) else 1)
 
@@ -470,11 +507,14 @@ def main() -> None:
         except (OSError, SetupError) as e:
             _report(status_fd, str(e))
         os._exit(1)
+    _drop_terminal()
+    _kill_on_term(pid)
     # Only now an event loop: the `unshare` above refuses a process with a second thread, and a fork copies a loop.
     samples: list[UsageSample] = []
     anyio.run(_wait_serving, spec, pid, control, samples)
     # The sandbox's pid 1 reaps its orphans, so its usage holds theirs too.
     _pid, status, rusage = os.wait4(pid, 0)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
     if not spec["chroot"] and spec["build_user"] is not None:
         try:
             _kill_user(spec["build_user"][0])
