@@ -8,7 +8,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+import structlog
+
 from ..signing import key_settings
+
+_log = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -38,6 +42,40 @@ class SandboxPath:
             return tuple(cls(target, e["source"], bool(e.get("optional"))) for target, e in raw.items())
         words = raw.split() if isinstance(raw, str) else list(raw or ())
         return tuple(cls.parse(entry) for entry in words)
+
+
+@dataclass(frozen=True, slots=True)
+class NotBuiltHere:
+    """Why pynixd's builder leaves a build to the store's daemon."""
+
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalBuilder:
+    """One entry of `external-builders` (`ExternalBuilder`, `derivation-builder.hh:199`)."""
+
+    systems: frozenset[str]
+    program: str
+    args: tuple[str, ...]
+
+    @classmethod
+    def parse_all(cls, raw: Any) -> tuple[ExternalBuilder, ...]:
+        """A list from `nix config show --json`, or its JSON text in an override.
+
+        `from_json` (`derivation-builder.cc:8`) needs every key; a missing one raises `ValueError`.
+        """
+        entries = json.loads(raw) if isinstance(raw, str) else raw
+        if not entries:
+            return ()
+        if not isinstance(entries, list):
+            raise ValueError(f"expected a list of external builders, not {type(entries).__name__}")
+        try:
+            return tuple(
+                cls(frozenset(e["systems"]), str(e["program"]), tuple(str(a) for a in e["args"])) for e in entries
+            )
+        except (KeyError, TypeError) as e:
+            raise ValueError(f"an external builder needs 'systems', 'program' and 'args': {e}") from e
 
 
 @dataclass(frozen=True)
@@ -109,7 +147,9 @@ class BuildSettings:
     """`Store::Config::systemFeatures` (`store-api.cc:381`): the store's own, read when it opens."""
     builders: str = ""
     build_hook: tuple[str, ...] = ()
-    external_builders: bool = False
+    external_builders: tuple[ExternalBuilder, ...] = ()
+    external_builders_feature: bool = False
+    """`Xp::ExternalBuilders`, which `ExternalDerivationBuilder` requires (`external-derivation-builder.cc:19`)."""
 
     @classmethod
     def from_nix_config(
@@ -191,10 +231,15 @@ class BuildSettings:
             raw = value("max-jobs", 1)
             return (os.cpu_count() or 1) if raw == "auto" else int(raw)
 
-        def external_builders() -> bool:
-            """`external-builders` is JSON: a list, or its text in an override."""
-            raw = value("external-builders", ())
-            return bool(json.loads(raw) if isinstance(raw, str) and raw.strip() else raw)
+        def external_builders() -> tuple[ExternalBuilder, ...]:
+            """A bad override is warned about and ignored, as `ClientSettings::apply` does (`daemon.cc:330`)."""
+            if "external-builders" in overrides:
+                try:
+                    return ExternalBuilder.parse_all(overrides["external-builders"])
+                except ValueError as e:
+                    _log.warning("external_builders_ignored", error=str(e))
+            entry = config.get("external-builders")
+            return ExternalBuilder.parse_all(entry["value"]) if entry is not None else ()
 
         sandbox = value("sandbox", True)
         features = words(value("experimental-features", ()))
@@ -240,6 +285,7 @@ class BuildSettings:
             builders=str(value("builders", "") or ""),
             build_hook=tuple(words(value("build-hook", ()))),
             external_builders=external_builders(),
+            external_builders_feature="external-builders" in features,
         )
 
 

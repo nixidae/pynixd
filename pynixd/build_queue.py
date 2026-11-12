@@ -121,6 +121,8 @@ class QueuedBuild:
         self.expected_duration = expected_duration
         self.expected_peak_bytes: int | None = None
         """The median peak memory of the derivation's recent builds; the scheduler reserves it on the chosen store."""
+        self.external_systems: frozenset[str] = frozenset()
+        """The systems an external builder of the local store takes under the client's settings."""
         self.enqueued_at = time.monotonic()
         self.started_at: float | None = None
         self.observation: BuildObservation | None = None

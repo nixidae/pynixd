@@ -88,6 +88,8 @@ class Placeable(Protocol):
     def request(self) -> Derived: ...
     @property
     def builders(self) -> frozenset[StoreId] | None: ...
+    @property
+    def external_systems(self) -> frozenset[str]: ...
     def is_blacklisted(self, store_id: StoreId, /) -> bool: ...
 
 
@@ -505,15 +507,23 @@ def outside_the_session(store: SessionMember, build: Placeable) -> str | None:
     return "another client's builder" if store.session_only else None
 
 
-def incapable_reason(store: Candidate, build: Placeable, features: set[str]) -> str | None:
-    """Why *store* cannot take *build* at all, or `None` when it can."""
+def builds_externally(build: Placeable) -> bool:
+    """An external builder of the local store takes *build* before the platform and feature checks
+    (`derivation-building-goal.cc:343`)."""
+    return build.request.derivation.platform in build.external_systems
+
+
+def incapable_reason(store: Candidate, build: Placeable, features: set[str], *, local: bool = False) -> str | None:
+    """Why *store* cannot take *build* at all, or `None` when it can. *local*: *store* is the local store."""
     if not store.is_healthy:
         return "unhealthy"
     if store.draining:
         return "draining"
     if store.no_schedule:
         return "no_schedule"
-    if not store.supports_derivation(build.request.derivation.platform, features):
+    if not (local and builds_externally(build)) and not store.supports_derivation(
+        build.request.derivation.platform, features
+    ):
         return "lacks the system or a required feature"
     if build.is_blacklisted(store.store_id):
         return "failed this build too often"
@@ -570,8 +580,9 @@ class BuildAllocator[S: Candidate]:
         settings = self.ranker.settings
         order = [self.local_store, *remotes] if settings.local_wins_ties else [*remotes, self.local_store]
         for store in order:
-            reason = (None if store is self.local_store else outside_the_session(store, build)) or incapable_reason(
-                store, build, build_features
+            local = store is self.local_store
+            reason = (None if local else outside_the_session(store, build)) or incapable_reason(
+                store, build, build_features, local=local
             )
             if reason is None:
                 capable.append(store)

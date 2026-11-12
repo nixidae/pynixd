@@ -91,7 +91,7 @@ if TYPE_CHECKING:
     from .buildlog import Output
     from .outputs import Collected
     from .restriction import RecursiveServer
-    from .settings import BuildSettings
+    from .settings import BuildSettings, ExternalBuilder
     from .usage import BuildUsage, UsageSample
 
 _log = structlog.get_logger(__name__)
@@ -123,6 +123,11 @@ def uses_sandbox(drv: BasicDerivation, settings: BuildSettings, *, relocated: bo
     )
 
 
+def external_builder(drv: BasicDerivation, settings: BuildSettings) -> ExternalBuilder | None:
+    """`findExternalDerivationBuilderIfSupported` (`globals.cc:283`): the first entry for the derivation's system."""
+    return next((b for b in settings.external_builders if drv.platform in b.systems), None)
+
+
 def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str, relocated: bool) -> str | None:
     """Why pynixd leaves this build to the daemon, or `None` when it builds it.
 
@@ -133,8 +138,9 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
     builtin = drv.builder.startswith("builtin:")
     if builtin and (reason := _builtin_unsupported(drv, settings)) is not None:
         return reason
-    # A builtin builds on any platform (`derivation-building-goal.cc:420`).
-    if drv.platform != settings.system and drv.platform not in settings.extra_platforms and not builtin:
+    # A builtin builds on any platform (`derivation-building-goal.cc:420`), and an external builder on its own.
+    foreign = drv.platform != settings.system and drv.platform not in settings.extra_platforms
+    if foreign and not builtin and external_builder(drv, settings) is None:
         return f"the platform {drv.platform}"
     if "__json" in drv.env and (reason := structured_attrs_reason(drv.env)) is not None:
         return reason
@@ -206,8 +212,11 @@ def rejection(drv_path: StorePath, drv: BasicDerivation, settings: BuildSettings
     """`reject` (`derivation-building-goal.cc:289`): why this store cannot build *drv*, in Nix's words, or `None`.
 
     Each reason that applies adds its lines, in Nix's order. The hook comes first (`:620`), so a caller asks
-    `hands_off` before it answers with this.
+    `hands_off` before it answers with this. An external builder for the system takes the build before any
+    check (`derivation-building-goal.cc:343`), `max-jobs = 0` included.
     """
+    if external_builder(drv, settings) is not None:
+        return None
     reasons = ""
     if settings.max_jobs == 0:
         reasons += (
@@ -239,12 +248,9 @@ def rejection(drv_path: StorePath, drv: BasicDerivation, settings: BuildSettings
 def hands_off(settings: BuildSettings) -> bool:
     """Whether the daemon would offer a build to a builder before it refused it.
 
-    `findExternalDerivationBuilderIfSupported` (`derivation-building-goal.cc:411`) takes it first. Else the
-    hook declines at once with no machines (`build-remote.cc:116`); `expandBuilderLines` (`machines.cc:98`)
+    The hook declines at once with no machines (`build-remote.cc:116`); `expandBuilderLines` (`machines.cc:98`)
     skips a missing `@file` and throws on any other error, which pynixd counts as machines.
     """
-    if settings.external_builders:
-        return True
     return bool(settings.build_hook) and bool(_builder_lines(settings.builders))
 
 
@@ -693,7 +699,9 @@ async def build(
     layout = engine.layout
     store_dir = str(layout.store_dir)
     drv_name = drv_path.base_name().removesuffix(".drv")
-    chroot = uses_sandbox(drv, settings, relocated=layout.store_dir != layout.real_store_dir)
+    external = external_builder(drv, settings)
+    # `ExternalDerivationBuilder` is a `DerivationBuilderImpl`: no chroot, whatever `sandbox` says.
+    chroot = external is None and uses_sandbox(drv, settings, relocated=layout.store_dir != layout.real_store_dir)
     impure = any(o.kind is OutputKind.IMPURE for o in drv.outputs.values())
     known = _known(drv, realised, drv_name)
     held = {path: PathLock(layout.real_path(path)) for path in known.values()}
@@ -723,7 +731,12 @@ async def build(
                     start_id=settings.start_id,
                     id_count=settings.id_count,
                     user_namespace=chroot,
-                    ids=build_users.IDS_PER_BUILD if "uid-range" in drv.required_system_features else 1,
+                    # `DerivationBuilderImpl::getBuildUser` (`derivation-builder.cc:270`), which the external one keeps.
+                    ids=(
+                        build_users.IDS_PER_BUILD
+                        if "uid-range" in drv.required_system_features and external is None
+                        else 1
+                    ),
                 )
                 if auto
                 else functools.partial(build_users.acquire, pool, settings.build_users_group)
@@ -753,9 +766,12 @@ async def build(
             settled = True
             return LocalBuildResult(BuildResultStatus.ALREADY_VALID, paths=known)
         # `tryToBuild` finds the outputs invalid first, then `makeDerivationBuilder` and `startBuild` throw.
-        refused = _builder_refusal(drv_path, drv, settings, chroot=chroot) or _chroot_refusal(
-            drv, settings, user, chroot=chroot
-        )
+        if external is not None:
+            refused = None if settings.external_builders_feature else missing_feature("external-builders")
+        else:
+            refused = _builder_refusal(drv_path, drv, settings, chroot=chroot) or _chroot_refusal(
+                drv, settings, user, chroot=chroot
+            )
         if refused is not None:
             return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(refused))
         # `derivation-building-goal.cc:503`: an output on disk that is not valid goes before the build.
@@ -796,7 +812,8 @@ async def build(
         rewrites = {hash_placeholder(name): str(path) for name, path in scratch.items()} | {
             path.hash_part(): fallback.hash_part() for path, fallback in redirected.items()
         }
-        build_dir = SANDBOX_BUILD_DIR if chroot else str(paths.tmp)
+        # `tmpDirInSandbox` (`external-derivation-builder.cc:22`): an external builder's environment names `/build`.
+        build_dir = SANDBOX_BUILD_DIR if chroot or external is not None else str(paths.tmp)
         env = build_env(
             drv.env,
             outputs=drv.outputs,
@@ -834,10 +851,10 @@ async def build(
             "private_network": sandboxed,
             "sandbox_uid": 0 if id_range else SANDBOX_UID,
             "sandbox_gid": 0 if id_range else SANDBOX_GID,
-            "work_dir": build_dir,
+            "work_dir": build_dir if external is None else str(paths.tmp),
             "shm_size": settings.sandbox_shm_size,
-            "no_new_privileges": not settings.allow_new_privileges,
-            "filter_syscalls": settings.filter_syscalls,
+            "no_new_privileges": not settings.allow_new_privileges and external is None,
+            "filter_syscalls": settings.filter_syscalls and external is None,
             "fetchurl": fetch,
             "buildenv": _buildenv_spec(drv, builtin_out) if drv.builder == "builtin:buildenv" else None,
             "unpack_channel": (
@@ -857,6 +874,7 @@ async def build(
             "build_user": None if user is None else (user.uid, user.gid),
             "build_groups": [] if user is None else list(user.groups),
             "map_fd": None,
+            "external": None,
             "id_range": id_range,
         }
         # `startBuild` (`derivation-builder.cc:465`): only a build that rewrites hashes, one without the chroot.
@@ -891,6 +909,18 @@ async def build(
                 )
         elif "recursive-nix" in drv.required_system_features and not settings.recursive_nix:
             return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(missing_feature("recursive-nix")))
+        if external is not None:
+            # `startChild` (`external-derivation-builder.cc:33`); builder-rpc-v0 starts the same daemon.
+            for feature in ("recursive-nix", BUILDER_RPC):
+                if feature in drv.required_system_features:
+                    return LocalBuildResult(
+                        BuildResultStatus.MISC_FAILURE,
+                        show_error(f"'{feature}' is not supported yet by external derivation builders"),
+                    )
+            job = await anyio.to_thread.run_sync(
+                _write_external_job, paths, drv, spec, inputs, scratch, layout.real_store_dir, store_dir, user
+            )
+            spec["external"] = [external.program, *external.args, str(job)]
         start = int(time.time())
         log = bytearray()
         lines = BuildLog(settings.log_lines)
@@ -986,7 +1016,10 @@ async def build(
                 build = ActiveBuild(pid, main_uid, cgroup, start, drv_path.name)
                 return engine.active_builds.running(build)
 
-            failure = await _run(paths, spec, settings, drv_path, keep, control, guest, cgroup, user, running)
+            handshake = external is not None
+            failure = await _run(
+                paths, spec, settings, drv_path, keep, control, guest, cgroup, user, running, handshake=handshake
+            )
             # Not `sampler.cancel_scope.cancel()` here: this body runs in that scope, and the read below would be
             # cancelled too. The stack's callback stops the sampler on the way out.
             taken = tuple(samples)
@@ -1142,6 +1175,47 @@ async def build(
                 user.release()
 
 
+def _write_external_job(
+    paths: _Paths,
+    drv: BasicDerivation,
+    spec: ChildSpec,
+    inputs: Iterable[StorePath],
+    scratch: Mapping[str, StorePath],
+    real_store_dir: Path,
+    store_dir: str,
+    user: build_users.BuildUser | None,
+) -> Path:
+    """`build.json` (`external-derivation-builder.cc:37`), with its keys sorted and compact, as `json.dump()` writes.
+
+    NIX-DEVIATION (#27): `startChild` gives the top directory to the build user
+    (`chownToBuilder(topTmpDir)`, `external-derivation-builder.cc:92`). pynixd
+    keeps it, because the helper's job and its usage file are there, and the
+    helper writes the usage file as root after the build. The build user gets
+    `build.json` and the `build` directory. An external program that writes
+    beside `build.json` fails; to reverse this, move the helper's files out of
+    the top directory first.
+    """
+    document = {
+        "version": 1,
+        "builder": drv.builder,
+        "args": spec["args"],
+        "env": spec["env"],
+        "topTmpDir": str(paths.top),
+        "tmpDir": str(paths.tmp),
+        "tmpDirInSandbox": SANDBOX_BUILD_DIR,
+        "storeDir": store_dir,
+        "realStoreDir": str(real_store_dir),
+        "system": drv.platform,
+        "inputPaths": sorted(str(path) for path in inputs),
+        "outputs": {name: str(path) for name, path in scratch.items()},
+    }
+    job = paths.top / "build.json"
+    with open(os.open(job, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as out:
+        out.write(json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+    build_users.chown_to(user, job)
+    return job
+
+
 async def _check_submitted(
     engine: StoreEngine,
     drv_path: StorePath,
@@ -1262,6 +1336,49 @@ async def _compare(
     return LocalBuildResult(BuildResultStatus.BUILT, "", start, stop, paths=known)
 
 
+@dataclass
+class SetupMessages:
+    """`processSandboxSetupMessages` (`derivation-builder.cc:1029`) on the builder's terminal.
+
+    Lines before one that starts with `\\2` are set-up messages, not log. A line that starts with `\\1` is a
+    set-up error.
+
+    NIX-DEVIATION (#27): after `\\1`, `processSandboxSetupMessages` reads a
+    serialised error (`readError`, `derivation-builder.cc:1051`). pynixd takes
+    the line's text instead: only Nix's own child writes that format, and an
+    external program that prints `\\1` gets its own words back rather than a
+    parse failure. Both fail the build with MiscFailure; only the message
+    differs. Reverse it if an external builder emits Nix's error format.
+    """
+
+    pending: bytearray = field(default_factory=bytearray)
+    messages: list[str] = field(default_factory=list)
+    done: bool = False
+    error: str | None = None
+
+    def feed(self, piece: bytes) -> bytes:
+        """The log in *piece*: what follows the `\\2` line."""
+        if self.done:
+            return piece
+        self.pending += piece
+        while not self.done and self.error is None and (end := self.pending.find(b"\n")) >= 0:
+            line = bytes(self.pending[:end])
+            del self.pending[: end + 1]
+            if line.startswith(b"\x02"):
+                self.done = True
+            elif line.startswith(b"\x01"):
+                self.error = (line[1:] + b"\n" + bytes(self.pending)).decode(errors="replace").strip()
+            else:
+                message = line.decode(errors="replace")
+                _log.debug("sandbox_setup", message=message)
+                self.messages.append(message)
+        if not self.done:
+            return b""
+        rest = bytes(self.pending)
+        self.pending.clear()
+        return rest
+
+
 async def _run(
     paths: _Paths,
     spec: ChildSpec,
@@ -1273,12 +1390,15 @@ async def _run(
     cgroup: Path | None = None,
     user: build_users.BuildUser | None = None,
     running: Callable[[int], contextlib.AbstractContextManager[None]] | None = None,
+    *,
+    handshake: bool = False,
 ) -> BuildFailure | _BuilderFailed | None:
     """Run the helper on a pseudoterminal, as `startBuild` does, and wait under the two timeouts.
 
     *control* is the helper's end of the socket it binds added paths on; it closes here once the helper has it.
     With *guest*, the helper runs in a microVM, which reports through files in the top directory, and its VMM
-    joins *cgroup*. *running* holds the helper's pid as an active build while it runs.
+    joins *cgroup*. *running* holds the helper's pid as an active build while it runs. With *handshake*, the
+    builder itself ends its set-up on the terminal (`SetupMessages`): an external builder does.
     """
     spec_file = paths.top / "spec.json"
     maps: socket.socket | None = None
@@ -1344,6 +1464,7 @@ async def _run(
     if running is not None:
         tracked.enter_context(running(process.pid))
     timed_out: str | None = None
+    setup = SetupMessages() if handshake else None
     try:
         with anyio.move_on_after(settings.timeout or None) as overall:
             while True:
@@ -1360,15 +1481,19 @@ async def _run(
                     piece = b""
                 if not piece:
                     break
-                await on_log(piece)
+                if setup is not None:
+                    piece = setup.feed(piece)
+                    if setup.error is not None:
+                        break
+                if piece:
+                    await on_log(piece)
         if overall.cancelled_caught:
             timed_out = f"timed out after {settings.timeout} seconds"
     finally:
         with anyio.CancelScope(shield=True):
-            if timed_out is not None or process.returncode is None:
+            if timed_out is not None or (setup is not None and setup.error is not None):
                 with contextlib.suppress(ProcessLookupError):
-                    if timed_out is not None:
-                        process.kill()
+                    process.kill()
             await process.wait()
             os.close(master)
             tracked.close()
@@ -1379,8 +1504,17 @@ async def _run(
             setup_error = status_file.read().decode(errors="surrogateescape")
     if timed_out is not None:
         return BuildFailure(BuildResultStatus.TIMED_OUT, f"building '{magenta(drv_path)}' {timed_out}")
+    if setup is not None and setup.error is not None:
+        setup_error = setup.error
     if setup_error:
         return BuildFailure(BuildResultStatus.MISC_FAILURE, f"while setting up the build environment: {setup_error}")
+    if setup is not None and not setup.done:
+        ended = _builder_ended(process.returncode)
+        return BuildFailure(
+            BuildResultStatus.MISC_FAILURE,
+            f"while waiting for the build environment for '{magenta(drv_path)}' to initialize "
+            f"({'succeeded' if ended is None else ended.reason}, previous messages: {'|'.join(setup.messages)})",
+        )
     if guest is not None:
         code = vm_returncode(paths.top)
         if code is None:

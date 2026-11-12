@@ -38,6 +38,9 @@ The concrete mapping between a derivation output and its final `StorePath`. For 
 ### Deferred Output
 An output path that cannot be calculated before the build (common in CA derivations). These are resolved "on the fly" by the `DynamicDerivationResolver`.
 
+### External Builder
+A program in Nix's `external-builders` setting that runs the builds of the systems it lists. Nix, or pynixd's own builder, prepares the build as for an unsandboxed one, writes `build.json` in the build's top directory, and runs the program with that file as its last argument. The program prints a line that starts with `\2` when its set-up is done. `external_builder` in `pynixd_store/builder/local.py` selects it, before the platform check.
+
 ### Trampolining
 A Nix-native concept for "unknown output" building (common in CA derivations). It is the process where a build is intercepted because it has "deferred" dependencies that must be resolved first. Once resolved (possibly by triggering sub-builds), the original derivation is updated and re-injected into the build process. In `pynixd`:
 - **`DerivationResolver`** handles pre-build resolution (deferred output, dynamic DrvWithVersion)

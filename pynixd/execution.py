@@ -22,6 +22,7 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID
 from nix_daemon_protocol.logs import LogResult
 from nix_daemon_protocol.protocol import ResultType, Verbosity
 from pynixd_store.build_stats import BuildObservation, identity_of
+from pynixd_store.builder.settings import NotBuiltHere
 from pynixd_store.store_path import StorePath
 
 from . import metrics
@@ -187,7 +188,7 @@ class Sandbox(Answers, Protocol):
 
     async def local_build_settings(
         self, request: BuildDerivationRequest, options: SetOptionsRequest | None, /
-    ) -> BuildSettings | None: ...
+    ) -> BuildSettings | NotBuiltHere: ...
     async def build_here(
         self,
         request: BuildDerivationRequest,
@@ -293,9 +294,12 @@ async def _hold(roots: Roots, paths: Iterable[StorePath], store_id: StoreId) -> 
             raise BackendError(f"pynixd: store {store_id} cannot hold '{path}' against its collector")
 
 
-def _cannot_build_there(store_id: StoreId) -> BackendError:
-    """A build pynixd's builder leaves to a daemon, on a store that runs none. The log names the reason."""
-    return BackendError(f"pynixd: store {store_id} runs no Nix daemon, and pynixd cannot build there")
+def _cannot_build_there(build: QueuedBuild, store_id: StoreId, refusal: NotBuiltHere) -> str:
+    """A build pynixd's builder leaves to a daemon, on a store that runs none. No retry changes the answer."""
+    return (
+        f"pynixd cannot build '{build.request.drv_path}' in store {store_id}: {refusal.reason}, "
+        "and the store runs no Nix daemon to build it"
+    )
 
 
 def with_build_times(resp: BuildDerivationResponse, start: int, stop: int) -> BuildDerivationResponse:
@@ -498,7 +502,7 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
             here = self.here
             if store is self.local_builder and here is not None:
                 settings = await here.local_build_settings(build.request, build.options)
-                if settings is not None:
+                if not isinstance(settings, NotBuiltHere):
                     # `derivation-building-goal.cc:44`, `derivation-goal.cc:67`: the derivation and its outputs.
                     # The collector matches hash parts, so the `.lock` and `.drv.chroot` beside them stay too.
                     roots = here.engine.temp_roots()
@@ -514,13 +518,15 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
                             await roots.close()
                     return
                 if not store.runs_daemon:
-                    raise _cannot_build_there(store.store_id)
+                    await self._fail_unbuildable(build, _cannot_build_there(build, store.store_id, settings))
+                    return
             # A local store with no daemon has none to delegate to: pynixd builds into it itself.
             other = self._sandbox_at(store.store_id)
             if other is not None and not store.runs_daemon:
                 settings = await other.local_build_settings(build.request, build.options)
-                if settings is None:
-                    raise _cannot_build_there(store.store_id)
+                if isinstance(settings, NotBuiltHere):
+                    await self._fail_unbuildable(build, _cannot_build_there(build, store.store_id, settings))
+                    return
                 roots = other.engine.temp_roots()
                 try:
                     await self.send_inputs(build, other, roots)
@@ -607,6 +613,12 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         if build_resp is not None and not completed:
             await self.queue.complete(build.build_id, build_resp)
             self.trigger()
+
+    async def _fail_unbuildable(self, build: QueuedBuild, message: str) -> None:
+        log.info("build_unbuildable", build_id=build.build_id, error=message)
+        await build.post_log_and_fanout(LogNext(text=f"{message}\n"))
+        await self.queue.fail(build.build_id, message, BuildResultStatus.INPUT_REJECTED)
+        self.trigger()
 
     async def build_in_sandbox(
         self,

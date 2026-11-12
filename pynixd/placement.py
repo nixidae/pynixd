@@ -33,6 +33,7 @@ from .allocator import (
     PreferLocal,
     RankedStore,
     RankedStores,
+    builds_externally,
     disk_wait,
     explore_store,
     fit_memory,
@@ -541,7 +542,10 @@ class Placer[S: PlacedStore]:
             local_store.is_healthy
             and not local_store.draining
             and not build.is_blacklisted(local_store.store_id)
-            and local_store.supports_derivation(build.request.derivation.platform, build_features)
+            and (
+                builds_externally(build)
+                or local_store.supports_derivation(build.request.derivation.platform, build_features)
+            )
         )
         no_local_jobs = self.settings.no_local_jobs
         if no_local_jobs is not NoLocalJobs.one_slot and client_forbids_local(self.queue, build):

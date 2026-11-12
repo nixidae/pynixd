@@ -165,6 +165,7 @@ class FakeBuild:
     request: FakeRequest = field(default_factory=FakeRequest)
     builders: frozenset[StoreId] | None = None
     failed_on: frozenset[StoreId] = frozenset()
+    external_systems: frozenset[str] = frozenset()
 
     @classmethod
     def on(cls, platform: str, *, builders: frozenset[StoreId] | None = None) -> FakeBuild:

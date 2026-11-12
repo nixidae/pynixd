@@ -25,7 +25,7 @@ from pynixd.serde import (
     DrvOutput,
     Realisation,
 )
-from pynixd_store.builder.settings import BuildSettings
+from pynixd_store.builder.settings import BuildSettings, NotBuiltHere
 from pynixd_store.store_path import StorePath
 from tests._conftest.placement import FakeConn as FakeConn, FakeStore
 
@@ -115,9 +115,9 @@ class FakeSandbox:
 
     async def local_build_settings(
         self, request: BuildDerivationRequest, options: SetOptionsRequest | None
-    ) -> BuildSettings | None:
+    ) -> BuildSettings | NotBuiltHere:
         del request, options
-        return self.settings
+        return NotBuiltHere("the test's sandbox builds nothing") if self.settings is None else self.settings
 
     async def build_here(
         self,

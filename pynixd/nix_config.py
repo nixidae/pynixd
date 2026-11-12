@@ -116,6 +116,8 @@ class NixConfig(BaseModel):
     eval_profile_file: str | None = None
     eval_profiler: str | None = None
     eval_system: str | None = None
+    external_builders: str | None = None
+    """JSON text: a list of `{systems, program, args}` (`local-settings.hh:649`)."""
     flake_registry: str | None = None
     json_log_path: str | None = None
     lint_absolute_path_literals: str | None = None
@@ -143,7 +145,6 @@ class NixConfig(BaseModel):
     allowed_users: list[str] | None = None
     builders: list[str] | None = None
     experimental_features: list[str] | None = None
-    external_builders: list[str] | None = None
     extra_platforms: list[str] | None = None
     hashed_mirrors: list[str] | None = None
     ignored_acls: list[str] | None = None

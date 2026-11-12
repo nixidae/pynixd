@@ -30,7 +30,7 @@ from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
 from pynixd_store import active_builds, collect
 from pynixd_store.autogc import AutoGC, free_space
 from pynixd_store.builder import hooks, local as local_builder
-from pynixd_store.builder.settings import BuildSettings
+from pynixd_store.builder.settings import BuildSettings, NotBuiltHere
 from pynixd_store.builder.vm import BuildVm
 from pynixd_store.create_store import open_local_store
 from pynixd_store.drv_parser import drv_bytes, from_basic_derivation
@@ -739,7 +739,7 @@ class LocalDBStore(Store):
                 self._left_to_the_daemon(request, "a build only the daemon's builders can run", count=False)
                 return None
         settings = await self.local_build_settings(request, options, count=False)
-        if settings is None:
+        if isinstance(settings, NotBuiltHere):
             return None
 
         async def send(message: LogMessage) -> None:
@@ -751,15 +751,15 @@ class LocalDBStore(Store):
 
     async def local_build_settings(
         self, request: BuildDerivationRequest, options: SetOptionsRequest | None, *, count: bool = True
-    ) -> BuildSettings | None:
-        """The settings pynixd's sandbox builds *request* with, or `None` when the daemon builds it.
+    ) -> BuildSettings | NotBuiltHere:
+        """The settings pynixd's sandbox builds *request* with, or why the daemon builds it.
 
         What `unsupported` or `_check_unsupported` names stays on the daemon. A repair of an output with no
         known path builds it, as `checkPathValidity` finds it absent.
         """
         settings = await self._session_build_settings(request, options)
         if settings is None:
-            return None
+            return NotBuiltHere("pynixd's builder does not build into this store")
         layout = self.engine.layout
         reason = (
             local_builder.unsupported(
@@ -775,7 +775,12 @@ class LocalDBStore(Store):
         if reason is None:
             return settings
         self._left_to_the_daemon(request, reason, count=count)
-        return None
+        return NotBuiltHere(reason)
+
+    async def external_builder_systems(self, options: SetOptionsRequest | None) -> frozenset[str]:
+        """The systems this store's external builders take under the session's settings, the daemon's or pynixd's."""
+        settings = BuildSettings.from_nix_config(await self.engine.nix_config(), _build_overrides(options))
+        return frozenset().union(*(builder.systems for builder in settings.external_builders))
 
     async def _session_build_settings(
         self, request: BuildDerivationRequest, options: SetOptionsRequest | None

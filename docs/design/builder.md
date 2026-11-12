@@ -182,8 +182,10 @@ A `BuildDerivation` that no scheduler places, as in a reverse builder's
 it lacks, or arrive with `max-jobs = 0`. Nix refuses it with InputRejected and
 names each reason that applies (`reject`, `derivation-building-goal.cc:289`);
 pynixd sends the same text (`rejection`). Nix first offers the build to its
-external builders and its build hook. With an external builder or a machine
-in `builders`, pynixd leaves the build to the daemon (`hands_off`).
+build hook, then to an external builder for the derivation's system. With a
+machine in `builders`, pynixd leaves the build to the daemon (`hands_off`).
+pynixd runs an external builder itself (`external_builder`), as Nix does,
+before any of the checks above.
 
 The scheduler sends a builder the client's options with `max-jobs = 1`, as
 Nix's hook does (`build-remote.cc:97`). The client's `--max-jobs 0` means "not

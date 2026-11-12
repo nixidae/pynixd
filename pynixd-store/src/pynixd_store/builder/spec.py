@@ -105,6 +105,9 @@ class ChildSpec(TypedDict):
     map_fd: int | None
     """With *build_user*: the helper writes a byte here after its `unshare`, and reads one back once pynixd has
     written its uid and gid maps. A process in the new namespace cannot map a uid other than its own."""
+    external: list[str] | None
+    """An external builder's argv: the program, its `args` and the job file (`external-derivation-builder.cc:84`).
+    The helper runs it in *work_dir* as the build user, with pynixd's environment, in place of *builder*."""
     id_range: bool
     """A build user of 65536 ids (`getUIDCount() != 1`): the builder is root and gets `/sys` (`:841`), and its
     *cgroup* is the root of a cgroup namespace of its own (`linux-derivation-builder.cc:899`)."""

@@ -274,6 +274,8 @@ class Scheduler:
         queued = self.queue.by_id.get(res[0])
         if queued is not None and queued.expected_peak_bytes is None:
             queued.expected_peak_bytes = peak
+        if queued is not None and isinstance(self.local_store, LocalDBStore):
+            queued.external_systems |= await self.local_store.external_builder_systems(options)
         t_enqueue = time.monotonic()
         self.trigger()
 

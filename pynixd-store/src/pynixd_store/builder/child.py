@@ -299,9 +299,11 @@ def _run_child(spec: ChildSpec, status_fd: int) -> None:
     null = os.open("/dev/null", os.O_RDWR | os.O_CLOEXEC)
     os.dup2(null, 0)
     os.close(null)
+    user = spec["build_user"]
+    if (external := spec["external"]) is not None:
+        _run_external(spec, external, user)
     if spec["fetchurl"] is not None:
         fetchurl.preload_nss()
-    user = spec["build_user"]
     if spec["chroot"]:
         _enter_chroot(spec)
         if user is not None:
@@ -338,6 +340,21 @@ def _run_child(spec: ChildSpec, status_fd: int) -> None:
         # `runChild` (`derivation-builder.cc:1377`): set-up is over, so the error goes to the log, not STATUS_FD.
         os.write(2, f"error: executing '{builder}': {e.strerror}\n".encode(errors="surrogateescape"))
         os._exit(1)
+
+
+def _run_external(spec: ChildSpec, argv: list[str], user: tuple[int, int] | None) -> None:
+    """`ExternalDerivationBuilder::startChild` (`external-derivation-builder.cc:78`): `chdir`, `setUser`, `execv`.
+
+    No seccomp, no `no_new_privs` and no socket scoping, as in Nix: the program may start a VM. The status pipe
+    is close-on-exec, so a failed `execv` is a set-up error and a started program reports on the terminal.
+    """
+    os.chdir(spec["work_dir"])
+    if user is not None:
+        _set_user(spec["build_groups"], user[1], user[0])
+    try:
+        os.execv(argv[0], argv)
+    except OSError as e:
+        raise SetupError(f'executing "{argv[0]}": {e.strerror}') from e
 
 
 def _report(status_fd: int, message: str) -> None:
