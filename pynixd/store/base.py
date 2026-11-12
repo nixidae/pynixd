@@ -100,6 +100,10 @@ class Store(ABC):
         self._background = Background(f"store {self.store_id}")
         self._running: contextlib.AbstractAsyncContextManager[None] | None = None
 
+    def human_readable_uri(self) -> str:
+        """The name a log line gives this store, as `StoreConfig::getHumanReadableURI`; a store with a URL gives that."""
+        return str(self.store_id)
+
     @property
     def feature_matrix(self) -> dict[str, set[str]]:
         if self._feature_matrix is not None:

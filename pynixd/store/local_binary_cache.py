@@ -48,6 +48,9 @@ class LocalBinaryCacheStore(BinaryCacheStore):
     async def close(self) -> None:
         self._started = False
 
+    def human_readable_uri(self) -> str:
+        return f"file://{self.path}"
+
     def file(self, name: str) -> Path:
         """`<dir>/<name>`, as `getFile` joins them."""
         return self.path / name.lstrip("/")
@@ -57,7 +60,7 @@ class LocalBinaryCacheStore(BinaryCacheStore):
         try:
             handle = await anyio.to_thread.run_sync(_open, nar)
         except FileNotFoundError as exc:
-            raise NarGone(f"binary cache '{self.path}' has no file '{narinfo.url}'") from exc
+            raise NarGone(f"file '{narinfo.url}' does not exist in binary cache") from exc
         async for piece in pull(open_codec(narinfo.compression, handle)):
             yield piece
 

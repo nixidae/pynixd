@@ -53,7 +53,10 @@ def _attempt(path: StorePath) -> SubstituteAttempt:
 
 
 class _Engine:
-    """Answers each path as its name says, and roots what it made valid."""
+    """Answers each path as its name says, and roots what it made valid.
+
+    A failed fetch writes its cause to the client, as `SubstitutePathGoal` does.
+    """
 
     def __init__(self) -> None:
         self.asked: list[StorePath] = []
@@ -69,9 +72,13 @@ class _Engine:
         *,
         substitutes: bool = True,
         ids: tuple[str, ...] | None = None,
+        client: _Client | None = None,
     ) -> dict[StorePath, SubstituteAttempt]:
         self.substitutes.append(substitutes)
         attempts = {path: _attempt(path) for path in paths}
+        for path in attempts:
+            if path in (BROKEN, OTHER_BROKEN) and client is not None:
+                await client.send(SimpleNamespace(text="\x1b[31;1merror:\x1b[0m the NAR is gone\n"))
         self.asked.extend(attempts)
         for attempt in attempts.values():
             for produced in attempt.result.produced_paths:
@@ -120,7 +127,7 @@ class TestEnsurePath:
             f"path '{magenta(MISSING)}' is required, but there is no substituter that can build it"
         )
 
-    async def test_a_failed_fetch_logs_its_cause_and_fails_the_same(self) -> None:
+    async def test_a_failed_fetch_reaches_the_client_and_fails_the_same(self) -> None:
         client = _Client()
         with pytest.raises(BackendError, match=re.escape(no_substituter(BROKEN))):
             await _ensure(BROKEN, client)

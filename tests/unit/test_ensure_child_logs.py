@@ -164,6 +164,12 @@ class FakeSubstituteGoal:
     may_reach_a_root_goal = False
     """A substitute goal reaches no root goal. Issue nixidae/nixidae#246."""
 
+    async def subscribe(self, client: object) -> None:
+        del client
+
+    async def unsubscribe(self, client: object) -> None:
+        del client
+
     async def result(self) -> SubstituteAttempt:
         return SubstituteAttempt(found=False, result=goal_success())
 

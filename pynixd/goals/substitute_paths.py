@@ -18,7 +18,7 @@ import structlog
 
 from nix_daemon_protocol.ensure_path import EnsurePathRequest, EnsurePathResponse
 from nix_daemon_protocol.logs import LogNext
-from pynixd_store.hintfmt import ANSI_NORMAL, ANSI_RED, magenta
+from pynixd_store.hintfmt import magenta
 from pynixd_store.store_path import StorePath
 
 from ..exceptions import BackendError
@@ -99,7 +99,7 @@ async def substitute_paths(
 async def substitute(
     engine: GoalEngine, paths: Iterable[StorePath], client: ClientConn | None, hold: Hold | None
 ) -> dict[StorePath, SubstituteAttempt]:
-    """Run the goals; log the cause of each failed fetch, as `PathSubstitutionGoal::tryToRun` does.
+    """Run the goals, which write each copy and the cause of each failed fetch to *client* (`substitution-goal.cc:275`).
 
     A path that no substituter has logs nothing: Nix's goal ends quietly
     with `ecNoSubstituters`.
@@ -107,13 +107,10 @@ async def substitute(
     options = client.options if client is not None else None
     substitutes = options is None or bool(options.use_substitutes)
     ids = await engine.substituter_ids_for(client)
-    attempts = await engine.substitute_paths(paths, hold=hold, substitutes=substitutes, ids=ids)
+    attempts = await engine.substitute_paths(paths, hold=hold, substitutes=substitutes, ids=ids, client=client)
     for path, attempt in attempts.items():
         if not _missed_or_done(attempt):
             log.info("substitute_failed", path=str(path), reason=attempt.result.result.error_msg)
-            if client is not None:
-                cause = attempt.cause or attempt.result.result.error_msg
-                await client.send(LogNext(text=f"{ANSI_RED}error:{ANSI_NORMAL} {cause}\n"))
     return attempts
 
 

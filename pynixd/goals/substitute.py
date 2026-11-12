@@ -2,25 +2,39 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
+import anyio
 import structlog
 
+from nix_daemon_protocol.logs import LogNext, LogStartActivity, LogStopActivity
+from nix_daemon_protocol.protocol import ActivityType, Verbosity
 from pynixd_store.store_path import StorePath
 
+from ..activity import fields, next_activity_id
 from ..serde import BuildResultStatus, IsValidPathRequest
+from ..trust import warning_text
 from .goal import ExecutionGoal
 from .results import GoalResult, goal_failure, goal_success
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from nix_daemon_protocol.logs import LogMessage
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
     from pynixd_store.content_address import ContentAddress
 
+    from ..connection import ClientConn
+    from ..store.base import Store
     from .engine import GoalEngine
 
 log = structlog.get_logger(__name__)
+
+_ANSI_RED = "\x1b[31;1m"
+_ANSI_NORMAL = "\x1b[0m"
 
 UNSIGNED_REFUSAL = "lacks a signature by a trusted key"
 """The words of `LocalStore::addToStore` when no trusted key signed a path (`local-store.cc:1049`)."""
@@ -32,12 +46,15 @@ class SubstituteAttempt:
 
     found: bool
     result: GoalResult
-    cause: str | None = None
-    """Why a found substitute failed, as `PathSubstitutionGoal::tryToRun` prints it (`substitution-goal.cc:275`)."""
 
 
 class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
-    """Substitute one store path and its reference closure."""
+    """Substitute one store path and its reference closure.
+
+    The goal writes its own messages to each client that waits on it, as `PathSubstitutionGoal` does: the
+    copy, and why it failed. One goal serves every request for its path, so a reference that two
+    requests share writes its failure once to each client.
+    """
 
     may_reach_a_root_goal: ClassVar[bool] = False
     """A substitute goal reaches substitute goals alone, and no root goal.
@@ -65,6 +82,39 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
         self.substituter_ids = substituter_ids
         self.repair = repair
         self.ca = ca
+        self._watchers: list[ClientConn] = []
+        self._references: list[SubstitutePathGoal] = []
+        self._watch_lock = anyio.Lock()
+
+    async def subscribe(self, client: ClientConn | None) -> None:
+        """Send *client* the messages of this goal and of the goals for its references."""
+        if client is None:
+            return
+        async with self._watch_lock:
+            if client in self._watchers:
+                return
+            self._watchers.append(client)
+            references = list(self._references)
+        for reference in references:
+            await reference.subscribe(client)
+
+    async def unsubscribe(self, client: ClientConn | None) -> None:
+        """Send *client* nothing more: its request has its answer."""
+        if client is None:
+            return
+        async with self._watch_lock:
+            if client not in self._watchers:
+                return
+            self._watchers.remove(client)
+            references = list(self._references)
+        for reference in references:
+            await reference.unsubscribe(client)
+
+    async def _say(self, message: LogMessage) -> None:
+        async with self._watch_lock:
+            watchers = list(self._watchers)
+        for client in watchers:
+            await client.send(message)
 
     async def _run(self) -> SubstituteAttempt:
         log.debug("substitute_path_start", path=str(self.path), substituters=self.substituter_ids)
@@ -102,6 +152,12 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
             if reference == self.path:
                 continue
             reference_goals.append(await self.engine.get_substitute_path_goal(reference, self.substituter_ids))
+        async with self._watch_lock:
+            self._references = reference_goals
+            watchers = list(self._watchers)
+        for reference_goal in reference_goals:
+            for client in watchers:
+                await reference_goal.subscribe(client)
         log.info(
             "substitute_path_hit",
             path=str(self.path),
@@ -126,7 +182,13 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
                 return SubstituteAttempt(found=True, result=reference_result.result)
 
         log.info("substitute_path_import_start", path=str(self.path), store_id=candidate.store.store_id)
-        import_result = await queue.substitute(self.path, stores, repair=self.repair, ca=self.ca)
+        async with self._copying(candidate.store):
+            import_result = await queue.substitute(self.path, stores, repair=self.repair, ca=self.ca)
+        if import_result.gone:
+            # A substitute that vanished is no substitute, and no failure (`substitution-goal.cc:269`).
+            await self._say(LogNext(text=warning_text(import_result.error)))
+        elif not import_result.substituted and UNSIGNED_REFUSAL not in import_result.error:
+            await self._say(LogNext(text=f"{_ANSI_RED}error:{_ANSI_NORMAL} {import_result.error}\n"))
         if not import_result.substituted:
             # A substitute the daemon refused for its signature is one Nix
             # never takes (`substitution-goal.cc:116`): no substituter, not a
@@ -138,7 +200,6 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
                     f"pynixd: failed to substitute {self.path}: {import_result.error}",
                     BuildResultStatus.TRANSIENT_FAILURE,
                 ),
-                cause=import_result.error,
             )
 
         result = goal_success()
@@ -147,6 +208,38 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
         result.produced_paths.add(self.path)
         result.resolved_outputs["out"] = self.path
         return SubstituteAttempt(found=True, result=result)
+
+    @contextlib.asynccontextmanager
+    async def _copying(self, source: Store) -> AsyncIterator[None]:
+        """`actSubstitute` (`substitution-goal.cc:230`) and the `actCopyPath` of `copyStorePath` (`store-api.cc:914`) under it."""
+        path, uri = str(self.path), source.human_readable_uri()
+        substitute, copy = next_activity_id(), next_activity_id()
+        await self._say(
+            LogStartActivity(
+                act_id=substitute,
+                level=Verbosity.ERROR,
+                type=ActivityType.SUBSTITUTE,
+                text="",
+                fields=fields((path, uri)),
+            )
+        )
+        destination = self.engine.ctx.local_store.human_readable_uri()
+        await self._say(
+            LogStartActivity(
+                act_id=copy,
+                level=Verbosity.INFO,
+                type=ActivityType.COPY_PATH,
+                text=f"copying path '{path}' from '{uri}'",
+                fields=fields((path, uri, destination)),
+                parent=substitute,
+            )
+        )
+        try:
+            yield
+        finally:
+            with anyio.CancelScope(shield=True):
+                await self._say(LogStopActivity(act_id=copy))
+                await self._say(LogStopActivity(act_id=substitute))
 
     async def _is_valid_local_path(self, path: StorePath) -> bool:
         response = await self.engine.ctx.local_store.execute(

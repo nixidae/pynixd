@@ -674,9 +674,9 @@ class SubstitutionQueue:
         except Exception as exc:
             metrics.SUBSTITUTIONS.labels(result="error").inc()
             log.warning("substitution_import_failed", store_id=candidate.store.store_id, path=str(path), exc_info=True)
-            gone = any(isinstance(leaf, NarGone) for leaf in leaves(exc))
+            gone = next((leaf for leaf in leaves(exc) if isinstance(leaf, NarGone)), None)
             return SubstitutionImportResult(
-                substituted=False, path=path, candidate=candidate, error=str(exc), gone=gone
+                substituted=False, path=path, candidate=candidate, error=str(gone or exc), gone=gone is not None
             )
         else:
             metrics.SUBSTITUTIONS.labels(result="ok").inc()

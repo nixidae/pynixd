@@ -431,8 +431,11 @@ class GoalEngine:
         *,
         substitutes: bool = True,
         ids: tuple[str, ...] | None = None,
+        client: ClientConn | None = None,
     ) -> dict[StorePath, SubstituteAttempt]:
         """Substitute each path with its closure, all at once: one goal for each, as `Store::buildPaths` makes.
+
+        Each goal writes its copy and its failure to *client*.
 
         *hold* roots each path the goals made valid for the client's session,
         as the substitution goal of Nix does (`substitution-goal.cc:33`).
@@ -451,7 +454,12 @@ class GoalEngine:
                 attempts: dict[StorePath, SubstituteAttempt] = {}
 
                 async def run_one(path: StorePath, goal: SubstitutePathGoal) -> None:
-                    attempts[path] = await goal.result()
+                    await goal.subscribe(client)
+                    try:
+                        attempts[path] = await goal.result()
+                    finally:
+                        with anyio.CancelScope(shield=True):
+                            await goal.unsubscribe(client)
 
                 async with anyio.create_task_group() as tg:
                     for path, goal in goals.items():

@@ -122,6 +122,9 @@ class HTTPBinaryCacheStore(BinaryCacheStore):
             self._session = None
         self._started = False
 
+    def human_readable_uri(self) -> str:
+        return self.url
+
     def nar_url(self, narinfo: NarInfo) -> str:
         """The cache URL, a slash, and the narinfo's URL, as Nix's `getFile` builds it.
 
@@ -140,7 +143,7 @@ class HTTPBinaryCacheStore(BinaryCacheStore):
             timeout=_TRANSFER_TIMEOUT,
         ) as response:
             if response.status in (403, 404):
-                raise NarGone(f"HTTP cache returned {response.status} for {nar_url}")
+                raise NarGone(f"file '{narinfo.url}' does not exist in binary cache '{self.url}'")
             if response.status != 200:
                 raise RuntimeError(f"HTTP cache returned {response.status} for {nar_url}")
             if narinfo.compression == "none":

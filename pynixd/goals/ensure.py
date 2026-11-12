@@ -1776,10 +1776,17 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
 
     async def _try_substitute_path(self, path: StorePath, ca: ContentAddress | None = None) -> GoalResult | None:
         substitute_goal = await self.engine.get_substitute_path_goal(path, self.substituter_ids, ca=ca)
-        attempt = await self.run_child(substitute_goal)
+        async with self._lock:
+            watchers = list(self._watchers)
+        for client in watchers:
+            await substitute_goal.subscribe(client)
+        try:
+            attempt = await self.run_child(substitute_goal)
+        finally:
+            with anyio.CancelScope(shield=True):
+                for client in watchers:
+                    await substitute_goal.unsubscribe(client)
         if attempt.found:
-            if attempt.cause is not None and not result_succeeded(attempt.result.result):
-                await self._say(f"{_ANSI_RED}error:{_ANSI_NORMAL} {attempt.cause}\n")
             return attempt.result
         return await self._try_substitute_upstream(path)
 

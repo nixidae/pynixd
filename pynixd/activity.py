@@ -37,7 +37,7 @@ def next_activity_id() -> int:
     return next(_act_counter) + (os.getpid() << 32)
 
 
-def _fields(values: Iterable[int | str]) -> list[ActivityField]:
+def fields(values: Iterable[int | str]) -> list[ActivityField]:
     return [
         ActivityField(type=FieldType.STRING, valstr=v)
         if isinstance(v, str)
@@ -77,7 +77,7 @@ class BuildActivity:
                 level=Verbosity.INFO,
                 type=ActivityType.BUILD,
                 text=f"{self._verb} '{self.drv_path}'",
-                fields=_fields((self.drv_path, "", 1, 1)),
+                fields=fields((self.drv_path, "", 1, 1)),
             )
         )
 
@@ -102,7 +102,7 @@ class BuildActivity:
                         level=output.level,
                         type=output.type,
                         text=output.text,
-                        fields=_fields(output.fields),
+                        fields=fields(output.fields),
                         parent=self.id,
                     )
                 )
@@ -115,9 +115,9 @@ class BuildActivity:
             case jsonlog.Stop(id=key):
                 if key in self._children:
                     await self._on_log(LogStopActivity(act_id=self._children.pop(key)))
-            case jsonlog.Result(id=key, type=kind, fields=fields):
+            case jsonlog.Result(id=key, type=kind, fields=values):
                 if key in self._children:
-                    await self._result(self._children[key], kind, fields)
+                    await self._result(self._children[key], kind, values)
 
     async def stop(self) -> None:
         """The builder's activities first: `builderActivities` is declared after `act`."""
@@ -125,8 +125,8 @@ class BuildActivity:
             await self._on_log(LogStopActivity(act_id=self._children.pop(key)))
         await self._on_log(LogStopActivity(act_id=self.id))
 
-    async def _result(self, act_id: int, kind: int, fields: Iterable[int | str]) -> None:
-        await self._on_log(LogResult(act_id=act_id, result_type=kind, fields=_fields(fields)))
+    async def _result(self, act_id: int, kind: int, values: Iterable[int | str]) -> None:
+        await self._on_log(LogResult(act_id=act_id, result_type=kind, fields=fields(values)))
 
 
 class PostBuildHookActivity:
@@ -145,13 +145,13 @@ class PostBuildHookActivity:
                 level=Verbosity.TALKATIVE,
                 type=ActivityType.POST_BUILD_HOOK,
                 text=f"running post-build-hook '{self.hook}'",
-                fields=_fields((self.drv_path,)),
+                fields=fields((self.drv_path,)),
             )
         )
 
     async def line(self, line: str) -> None:
         await self._on_log(
-            LogResult(act_id=self.id, result_type=ResultType.POST_BUILD_LOG_LINE, fields=_fields((line,)))
+            LogResult(act_id=self.id, result_type=ResultType.POST_BUILD_LOG_LINE, fields=fields((line,)))
         )
 
     async def stop(self) -> None:
