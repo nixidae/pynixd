@@ -120,6 +120,9 @@ def pytest_configure(config: pytest.Config) -> None:
     # Off by default, so on here: every build of every suite then runs the
     # trace's path through the scheduler. nixidae/nixidae#1070.
     os.environ.setdefault("PYNIXD_PLACEMENT_TRACE", '{"enabled": true}')
+    # A server that names no SSH port takes a free one: two at the default 2234 in parallel workers collide
+    # ("address already in use", `test_kubernetes_api.py`).
+    os.environ.setdefault("PYNIXD_SSH_PORT", "0")
 
 
 # ── URI helpers ───────────────────────────────────────────────────
