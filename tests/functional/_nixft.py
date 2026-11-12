@@ -8,9 +8,12 @@ others are pynixd with nix-daemon behind it, and pynixd with no daemon. Each arm
 from __future__ import annotations
 
 import contextlib
+import os
+import shutil
 import urllib.parse
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from nix_daemon_protocol.ids import StoreId
@@ -22,7 +25,6 @@ from tests.conftest import make_test_spec
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
-    from pathlib import Path
 
     from pynixd.nix_config import NixConfig
 
@@ -81,3 +83,26 @@ def clear_store(root: Path) -> None:
     """`clearStore` (`common/functions.sh:40`): the next store in *root* starts empty, in the same store directory."""
     for directory in ("store", "var"):
         rmtree_robust(root / directory)
+
+
+def nix_tests() -> Path:
+    """The guest's Nix `tests/functional`: the first of `NIX_FUNCTIONAL_TESTS` (`tests/derivations/guest`)."""
+    return Path(os.environ["NIX_FUNCTIONAL_TESTS"].split(":")[0])
+
+
+def copy_nix_tests(root: Path, *names: str) -> None:
+    """Nix's *names* into *root*, and `config.nix` from `config.nix.in` with the guest's bash and coreutils.
+
+    A sandboxed builder reads them from the host's store, so a build passes `--sandbox-paths /nix/store`.
+    """
+    source = nix_tests()
+    for name in names:
+        shutil.copy(source / name, root / name)
+    bash, date = shutil.which("bash"), shutil.which("date")
+    if bash is None or date is None:
+        raise RuntimeError("the guest has no bash or no coreutils on PATH")
+    config = (source / "config.nix.in").read_text()
+    config = config.replace("@bash@", str(Path(bash).resolve()))
+    config = config.replace("@coreutils@", str(Path(date).resolve().parent))
+    config = config.replace('"@system@"', "builtins.currentSystem")
+    (root / "config.nix").write_text(config)
