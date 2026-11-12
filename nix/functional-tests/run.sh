@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Run Nix's functional test suite against a daemon. `setup.sh` runs first.
+# Run Nix's functional test suite against a daemon. `setup.py` runs first.
 #
 # Inputs:
-#   WORK                 the working directory of setup.sh. Default /scratch/nixft.
+#   WORK                 the working directory of setup.py. Default /scratch/nixft.
 #   JOBS                 tests at a time. Default 1.
 #   NIX_DAEMON_PACKAGE   the package whose `bin/nix daemon` serves the tests.
 #                        Default: the Nix on PATH. Give the pynixd shim here to
@@ -14,11 +14,11 @@ set -euo pipefail
 WORK=${WORK:-/scratch/nixft}
 
 if [[ ! -d "$WORK/build" ]]; then
-    echo "run.sh: no build directory at $WORK/build. Run setup.sh first." >&2
+    echo "run.sh: no build directory at $WORK/build. Run setup.py first." >&2
     exit 2
 fi
 
-# `setup.sh` resolved this name, and the store of each test must hold no
+# `setup.py` resolved this name, and the store of each test must hold no
 # symbolic link in any parent. See the comment there.
 WORK=$(readlink -f "$WORK")
 # The store of each test goes under here. It stays inside the work directory,

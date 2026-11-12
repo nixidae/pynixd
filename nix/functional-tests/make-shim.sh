@@ -10,7 +10,7 @@
 # calls it for `daemon --version`.
 #
 # Inputs:
-#   WORK         the working directory of setup.sh. Default /scratch/nixft.
+#   WORK         the working directory of setup.py. Default /scratch/nixft.
 #   PYNIXD_BIN   the pynixd program. Default: pynixd on PATH.
 #   REAL_NIX     the nix program. Default: nix on PATH.
 #
@@ -115,8 +115,7 @@ fi
 # **The suite uses a relocated store, and pynixd serves one since #176.**
 # `common/vars.sh` exports `NIX_STORE_DIR=$TEST_ROOT/store` and
 # `NIX_STATE_DIR=$TEST_ROOT/var/nix`, so the two directories come straight
-# from the environment of the test. `setup.sh` used to rewrite that layout to
-# a chroot store, and that patch is gone.
+# from the environment of the test.
 #
 # `readlink -f` is necessary. Nix refuses a store when a parent directory of it
 # is a symbolic link, and it says so: "the path ... is a symlink; this is not

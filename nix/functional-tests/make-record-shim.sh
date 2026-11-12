@@ -13,7 +13,7 @@
 # inner package needs no change and does not know that it is inner.
 #
 # Inputs:
-#   WORK        the working directory of setup.sh. Default /scratch/nixft.
+#   WORK        the working directory of setup.py. Default /scratch/nixft.
 #   INNER       the package whose `bin/nix daemon` answers. Required.
 #   REAL_NIX    the nix program, for every command that is not `daemon`.
 #   OUT_ROOT    the directory for the recordings. Required.

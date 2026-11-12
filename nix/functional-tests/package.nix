@@ -69,7 +69,7 @@ let
   scripts = lib.fileset.toSource {
     root = ./.;
     fileset = lib.fileset.unions [
-      ./setup.sh
+      ./setup.py
       ./run.sh
       ./make-shim.sh
       ./make-record-shim.sh
@@ -200,7 +200,7 @@ writeShellApplication {
 
     # One work directory for each version, so two versions never share a build
     # directory or a store. `/tmp` and not `/scratch`: Nix refuses a store
-    # under a symbolic link, and `setup.sh` resolves this path for that reason.
+    # under a symbolic link, and `setup.py` resolves this path for that reason.
     WORK=''${NIXFT_WORK:-/tmp/nanopynix-nixft/$NIXFT_VERSION}
     export WORK
 
@@ -294,7 +294,7 @@ writeShellApplication {
     }
 
     do_setup() {
-      NIX_SRC=$NIX_SRC WORK=$WORK bash "$SCRIPTS/setup.sh"
+      NIX_SRC=$NIX_SRC WORK=$WORK python3 "$SCRIPTS/setup.py"
     }
 
     # The pynixd package for the `NIX_DAEMON_PACKAGE` place. Both the plain
@@ -337,7 +337,7 @@ writeShellApplication {
     control_key() {
       {
         echo "$NIX_PKG" "$NIX_SRC" "$(id -u)" "$*"
-        cat "$SCRIPTS/setup.sh" "$SCRIPTS/run.sh"
+        cat "$SCRIPTS/setup.py" "$SCRIPTS/run.sh"
       } | sha256sum | cut -c1-32
     }
 
