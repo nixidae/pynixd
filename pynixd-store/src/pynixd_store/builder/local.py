@@ -1465,6 +1465,8 @@ async def _run(
     if running is not None:
         tracked.enter_context(running(process.pid))
     timed_out: str | None = None
+    too_long = False
+    log_size = 0
     setup = SetupMessages() if handshake else None
     log_ended = False
     try:
@@ -1489,6 +1491,11 @@ async def _run(
                     if setup.error is not None:
                         break
                 if piece:
+                    # Nix counts what the builder writes after the setup, and drops the chunk that passes the limit.
+                    log_size += len(piece)
+                    if settings.max_build_log_size and log_size > settings.max_build_log_size:
+                        too_long = True
+                        break
                     await on_log(piece)
         if overall.cancelled_caught:
             timed_out = f"timed out after {settings.timeout} seconds"
@@ -1513,6 +1520,13 @@ async def _run(
             setup_error = status_file.read().decode(errors="surrogateescape")
     if timed_out is not None:
         return BuildFailure(BuildResultStatus.TIMED_OUT, f"building '{magenta(drv_path)}' {timed_out}")
+    if too_long:
+        # `doneFailureLogTooLong` (`derivation-building-goal.cc:1304`) names the goal, which prints no colour.
+        return BuildFailure(
+            BuildResultStatus.LOG_LIMIT_EXCEEDED,
+            f"building derivation '{drv_path}' killed after writing more than "
+            f"{settings.max_build_log_size} bytes of log output",
+        )
     if setup is not None and setup.error is not None:
         setup_error = setup.error
     if setup_error:

@@ -108,6 +108,8 @@ class BuildSettings:
     build_cores: int
     max_silent_time: int
     timeout: int
+    max_build_log_size: int
+    """Bytes of builder output before Nix kills the builder (`derivation-building-goal.cc:1031`); 0 is no limit."""
     sandbox_shm_size: str
     allow_new_privileges: bool
     filter_syscalls: bool
@@ -252,6 +254,7 @@ class BuildSettings:
             build_cores=cores or os.cpu_count() or 1,
             max_silent_time=int(value("max-silent-time", 0) or 0),
             timeout=int(value("timeout", 0) or 0),
+            max_build_log_size=int(value("max-build-log-size", 0, alias="build-max-log-size") or 0),
             sandbox_shm_size=str(value("sandbox-dev-shm-size", "50%")),
             allow_new_privileges=boolean(value("allow-new-privileges", False)),
             filter_syscalls=boolean(value("filter-syscalls", True)),
