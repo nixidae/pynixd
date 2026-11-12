@@ -99,6 +99,7 @@ async def run_subproc(
     expected_retcode: int | None = 0,
     nix_config: NixConfig | dict[str, str] | None = None,
     env: dict[str, str] | None = None,
+    stdin: bytes | None = None,
 ) -> tuple[int, str, str, str]:
     """Run a command, streaming stdout/stderr through structlog in real-time.
 
@@ -108,6 +109,7 @@ async def run_subproc(
         expected_retcode: If not None, raise if return code doesn't match. Defaults to 0.
         nix_config: NixConfig object or dict for NIX_CONFIG env var.
         env: Extra environment variables. Updated in place with NIX_SSHOPTS and NIX_CONFIG.
+        stdin: Bytes for the command's standard input, which then ends.
 
     Returns:
         tuple of (returncode, stdout, stderr, combined)
@@ -173,6 +175,10 @@ async def run_subproc(
             async with anyio.create_task_group() as tg:
                 tg.start_soon(stream, "stdout", stdout, proc.stdout)
                 tg.start_soon(stream, "stderr", stderr, proc.stderr)
+                if stdin is not None:
+                    assert proc.stdin is not None
+                    await proc.stdin.send(stdin)
+                    await proc.stdin.aclose()
             await proc.wait()
         except anyio.get_cancelled_exc_class():
             log.warning("run_subproc_cancelled", cmd=shlex.join(str_cmd), pid=proc.pid)
