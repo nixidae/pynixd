@@ -197,10 +197,58 @@ def patch_build_remote(text: str) -> str:
     return insert_after(text, 'rm -rf "$TEST_ROOT/machine"* || true', START_MACHINE0, "build-remote.sh's machine wipe")
 
 
+def replace_line(text: str, old: str, new: str) -> str:
+    """Replace the one line that equals `old` with `new`."""
+    lines = _lines(text)
+    found = [i for i, line in enumerate(lines) if line.rstrip("\n") == old]
+    if len(found) != 1:
+        msg = f"holds {len(found)} lines {old!r}, not 1; the patch is stale"
+        raise StalePatchError(msg)
+    lines[found[0]] = new
+    return "".join(lines)
+
+
+# --- Patches 6 to 8: three scripts run through the daemon -----------------
+#
+# Each script skips under a daemon with `needLocalStore`, and each needs one
+# thing on the daemon's side that the script gives its client. The gate goes,
+# and the daemon gets that thing. nixidae/nixidae#1256.
+GC_SYNC_GATE = 'needLocalStore "the GC test needs a synchronisation point"'
+GC_SYNC = """\
+# Added for the daemon run. The collector reads its two synchronisation
+# points from its own environment (`gc.cc:398`, `:536`), so the daemon needs
+# them. The script makes these two FIFOs below.
+_NIX_TEST_GC_SYNC_1=$TEST_ROOT/test2.fifo _NIX_TEST_GC_SYNC_2=$TEST_ROOT/test.fifo restartDaemon
+"""
+
+FREE_SPACE_GATE = 'needLocalStore "\N{LEFT DOUBLE QUOTATION MARK}min-free\N{RIGHT DOUBLE QUOTATION MARK} and \N{LEFT DOUBLE QUOTATION MARK}max-free\N{RIGHT DOUBLE QUOTATION MARK} are daemon options"'
+FREE_SPACE = """\
+# Added for the daemon run. The daemon reads the free space from this file at
+# its first operation, before the script writes it below, so it starts with the
+# script's first value. `--min-free` and `--max-free` reach the daemon as
+# settings of a trusted client.
+echo 1100 > "$TEST_ROOT/fake-free"
+_NIX_TEST_FREE_SPACE_FILE=$TEST_ROOT/fake-free restartDaemon
+"""
+
+EXTERNAL_BUILDERS_GATE = (
+    "needLocalStore \"'--external-builders' can\N{RIGHT SINGLE QUOTATION MARK}t be used with the daemon\""
+)
+EXTERNAL_BUILDERS = """\
+# Added for the daemon run. The daemon refuses the client's
+# `--external-builders` unless its own configuration has the feature.
+enableFeatures external-builders
+restartDaemon
+"""
+
+
 PATCHES = {
     "common/functions.sh": patch_functions,
     "common/init.sh": patch_init,
     "build-remote.sh": patch_build_remote,
+    "gc-non-blocking.sh": lambda text: replace_line(text, GC_SYNC_GATE, GC_SYNC),
+    "gc-auto.sh": lambda text: replace_line(text, FREE_SPACE_GATE, FREE_SPACE),
+    "external-builders.sh": lambda text: replace_line(text, EXTERNAL_BUILDERS_GATE, EXTERNAL_BUILDERS),
 }
 
 

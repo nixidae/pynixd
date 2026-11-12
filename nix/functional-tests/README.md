@@ -21,7 +21,7 @@ Nix runs the suite two ways, and neither one tests the daemon fully:
 So the ca suite and the dyn-drv suite have **no daemon coverage upstream**.
 
 This directory makes the third mode: one store for each test, as in mode 1,
-and a daemon, as in mode 2. `setup.py` applies four patches to reach it, and
+and a daemon, as in mode 2. `setup.py` applies the patches to reach it, and
 each patch names its reason in the file. A fifth patch rewrote the layout of
 the store of each test, and issue nixidae/nixidae#215 removed it.
 
