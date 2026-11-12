@@ -13,6 +13,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -206,12 +207,14 @@ def _add(control: socket.socket, source: str, target: str) -> dict[str, str | No
 def test_a_path_added_during_the_build_appears_in_the_sandbox(tmp_path: Path) -> None:
     """`addDependency` (`linux-derivation-builder.cc:959`): a bind into the namespace before `pivot_root`.
 
-    It reaches the builder because the sandbox's store is a shared subtree (`:745`).
+    It reaches the builder because the sandbox's store is a shared subtree (`:745`). The builder asks for a
+    path once it runs, so the test waits for it to start: an add before the child binds the store over itself
+    lands under that bind, and the builder never sees it (measured: 3 of 3 with a pause before the bind).
     """
     source = tmp_path / "x-added"
     source.mkdir()
     (source / "file").write_text("late\n")
-    args = ["-c", _WAIT_FOR, "sh", "/store2/x-added", "/store2/done"]
+    args = ["-c", f': > "$3"; {_WAIT_FOR}', "sh", "/store2/x-added", "/store2/done", "/store2/started"]
     spec = _spec(tmp_path / "root", "", args=args, store_dir="/store2")
     (tmp_path / "root/store2").mkdir()
     spec_file = tmp_path / "spec.json"
@@ -232,6 +235,12 @@ def test_a_path_added_during_the_build_appears_in_the_sandbox(tmp_path: Path) ->
         theirs.close()
         ours.settimeout(10)
         try:
+            # No notification reaches the test from the sandbox but its files; 10 s bounds the wait.
+            deadline = time.monotonic() + 10
+            while not (tmp_path / "root/store2/started").exists():
+                if time.monotonic() > deadline or proc.poll() is not None:
+                    raise RuntimeError("the builder did not start")
+                time.sleep(0.05)
             replies = [
                 _add(ours, str(source), "/store2/x-added"),
                 _add(ours, str(source), "/store2/x-added"),
