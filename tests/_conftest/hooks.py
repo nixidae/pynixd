@@ -6,6 +6,7 @@ import functools
 import inspect
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -14,6 +15,7 @@ import anyio
 import pytest
 import structlog
 
+from tests._conftest.census import census
 from tests._conftest.constants import TMP_PREFIX, _log_dir_key, log_folder_name
 
 if TYPE_CHECKING:
@@ -22,6 +24,9 @@ if TYPE_CHECKING:
     import pluggy
 
 log = structlog.get_logger(__name__)
+
+CENSUS_LEAD = 30.0
+"""Seconds before a test's deadline that the process census runs, while the hung daemon still lives."""
 
 
 # ── Session lifecycle ─────────────────────────────────────────────
@@ -92,6 +97,10 @@ def _wrap_with_timeout(item: pytest.Function) -> Callable[..., Awaitable[object]
     @functools.wraps(original_func)
     async def wrapped(*args: object, **kwargs: object) -> object:
         timeout = item.config.getoption("async_test_timeout")
+        # A thread and not a task: a task group around the test would turn its exception into an ExceptionGroup.
+        timer = threading.Timer(max(timeout - CENSUS_LEAD, 0.0), _write_census, (item,))
+        timer.daemon = True
+        timer.start()
         try:
             with anyio.fail_after(timeout):
                 return await original_func(*args, **kwargs)
@@ -102,8 +111,21 @@ def _wrap_with_timeout(item: pytest.Function) -> Callable[..., Awaitable[object]
                 timeout=timeout,
             )
             raise
+        finally:
+            timer.cancel()
 
     return wrapped
+
+
+def _write_census(item: pytest.Item) -> None:
+    """Write what every process under this one waits on into the test's log folder (nixidae/nixidae#1283)."""
+    log_dir = item.config.stash.get(_log_dir_key, None)
+    if log_dir is None:
+        return
+    folder = log_dir / item.path.stem / log_folder_name(item.name)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "census.txt").write_text(census(os.getpid()))
+    log.warning("test_census_written", test=item.nodeid, path=str(folder / "census.txt"))
 
 
 # ── Test reporting ────────────────────────────────────────────────
