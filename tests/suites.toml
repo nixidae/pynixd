@@ -15,9 +15,11 @@
 # for a machine rather than a machine inside one: measured,
 # `test_wire_parity[impure]` timed out at 120.016s on an idle host.
 
+# Workers as in `functional`: 2365 tests ran 177 s in series and 22.7 s alone
+# with workers (nixidae/nixidae#1267).
 [unit]
 path = "tests/unit"
-args = ["--async-test-timeout=600"]
+args = ["--async-test-timeout=600", "--numprocesses=auto", "--dist=worksteal"]
 
 # Its own project with its own config: it does not know `--async-test-timeout`,
 # and pytest answers an unknown option with exit 4 before collecting anything.
