@@ -102,7 +102,30 @@ class Realise:
     out: int
 
 
-type Op = Add | Ask | Derive | Import | Realise
+@dataclass(frozen=True, slots=True)
+class Copy:
+    """A path from another store, as `nix copy` sends it: `AddMultipleToStore`, and op 49 to Determinate."""
+
+    name: str
+    data: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class Root:
+    """A temporary root, held by the client's connection."""
+
+    target: int
+
+
+@dataclass(frozen=True, slots=True)
+class Collect:
+    """A garbage collection: the whole store's live or dead paths, or a delete of `targets`."""
+
+    action: huggorm.GCAction
+    targets: tuple[int, ...]
+
+
+type Op = Add | Ask | Derive | Import | Realise | Copy | Root | Collect
 # A plain value both arms can be compared on: strings, numbers, bools and tuples of them.
 type Plain = str | int | bool | tuple[Plain, ...] | None
 
@@ -141,7 +164,16 @@ derives = st.builds(Derive, name=names, inputs=st.lists(indices, max_size=3).map
 imports = st.builds(Import, name=names, data=st.binary(max_size=256))
 output_names = st.one_of(st.sampled_from(OUTPUT_NAMES), names)
 realises = st.builds(Realise, drv=indices, output=output_names, out=indices)
-operations = st.lists(st.one_of(adds, asks, derives, imports, realises), min_size=1, max_size=12)
+copies = st.builds(Copy, name=names, data=st.binary(max_size=256))
+roots = st.builds(Root, target=indices)
+# Not `DELETE_DEAD`: it empties the store, and every later step then asks about nothing.
+GC_ACTIONS = [huggorm.GCAction.RETURN_LIVE, huggorm.GCAction.RETURN_DEAD, huggorm.GCAction.DELETE_SPECIFIC]
+collects = st.builds(
+    Collect, action=st.sampled_from(GC_ACTIONS), targets=st.lists(indices, min_size=1, max_size=3).map(tuple)
+)
+operations = st.lists(
+    st.one_of(adds, asks, derives, imports, realises, copies, roots, collects), min_size=1, max_size=12
+)
 
 
 class _Nar(huggorm.Sink):  # type: ignore[misc]  # the type gate has no huggorm; see default.nix
@@ -314,6 +346,14 @@ async def _import(store: AsyncStore, staging: AsyncStore, op: Import) -> StorePa
     return path
 
 
+def _gc_options(op: Collect, known: list[StorePath]) -> object:
+    if op.action is not huggorm.GCAction.DELETE_SPECIFIC:
+        return huggorm.GCOptions(action=op.action)
+    targets = [_pick(known, i) for i in op.targets]
+    paths = huggorm.GCSpecificPaths(targets) if KEYED_BY_PATH else targets
+    return huggorm.GCOptions(action=op.action, paths_to_delete=paths)
+
+
 async def _apply(
     store: AsyncStore, uri: str, op: Op, known: list[StorePath], scratch: Path, staging: AsyncStore
 ) -> tuple[Outcome, StorePath | None]:
@@ -338,6 +378,16 @@ async def _apply(
                 realisation = huggorm.Realisation(_drv_output(_pick(known, op.drv), op.output), _pick(known, op.out))
                 await store.register_drv_output(realisation, check_sigs=False)
                 return Outcome(), None
+            case Copy():
+                path = await staging.add_to_store(op.name, op.data)
+                await staging.copy_closure(store, [path], check_sigs=False)
+                return Outcome(value=str(path)), path
+            case Root():
+                await store.add_temp_root(_pick(known, op.target))
+                return Outcome(), None
+            case Collect():
+                results = await store.collect_garbage(_gc_options(op, known))
+                return Outcome(value=(tuple(sorted(results.paths())), results.bytes_freed())), None
     except NixError as error:
         # The client names the store it asked, and the two arms listen on two sockets.
         return Outcome(error=(type(error).__name__, str(error).replace(uri, STORE_URI))), None
@@ -351,6 +401,10 @@ def _on_purpose(op: Op, control: Outcome, pynixd: Outcome) -> bool:
 
     The NIX-DEFECT of `register.register_drv_output`: on 2.34 the control fails an SQLite constraint on an
     output path that is not valid; pynixd names the path.
+
+    The NIX-DEVIATION of `collector.Collection.refuses`: a path that cannot go is refused by both, and pynixd
+    names why. Upstream says "since it is still alive"; Determinate v3.24.0 names a temporary root
+    `{nix-process:<pid>}` (`gc.cc:290`), where pynixd and Determinate's `main` name its file.
     """
     if control.error is None or pynixd.error is None:
         return False
@@ -366,7 +420,17 @@ def _on_purpose(op: Op, control: Outcome, pynixd: Outcome) -> bool:
             and "NOT NULL constraint failed: Realisations.outputPath" in control.error[1]
             and "' is not valid" in pynixd.error[1]
         )
+    if isinstance(op, Collect):
+        return _same_refused_path(control.error[1], pynixd.error[1])
     return False
+
+
+_REFUSED = re.compile(r"Cannot delete path '([^']+)' (since it is still alive|because it's)")
+
+
+def _same_refused_path(control: str, pynixd: str) -> bool:
+    expected, actual = _REFUSED.search(control), _REFUSED.search(pynixd)
+    return expected is not None and actual is not None and expected[1] == actual[1] and actual[2] == "because it's"
 
 
 async def run(arms: dict[str, AsyncStore], ops: list[Op], scratch: Path, staging: AsyncStore) -> Divergence | None:
@@ -390,6 +454,12 @@ async def run(arms: dict[str, AsyncStore], ops: list[Op], scratch: Path, staging
                 kind = "import"
             case Realise():
                 kind = "realise"
+            case Copy():
+                kind = "copy"
+            case Root():
+                kind = "root"
+            case Collect():
+                kind = f"gc {op.action}"
         event(f"{kind}: {'error ' + expected.error[0] if expected.error else 'answered'}")
         if expected != actual and not _on_purpose(op, expected, actual):
             return Divergence(step=step, op=op, control=expected, pynixd=actual)
