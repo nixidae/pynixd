@@ -28,7 +28,7 @@ async def test_a_traced_session_reads_each_operation_whole(tmp_path: Path) -> No
     store_path = tmp_path / "store"
     store_path.mkdir()
     socket_path = tmp_path / "pynixd.sock"
-    local_store = LocalSocketStore(make_test_spec(store_id="local", store_path=store_path, no_probe=True))
+    local_store = LocalSocketStore(make_test_spec(daemon=True, store_id="local", store_path=store_path, no_probe=True))
 
     async with Server(stores={StoreId("local"): local_store}, unix_path=socket_path, ssh_port=None, http_port=None):
         link = await open_unix_connection(socket_path)
