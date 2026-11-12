@@ -3,19 +3,16 @@
 from __future__ import annotations
 
 import base64
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import asyncssh
 import pytest
 
-from pynixd.config import PynixdSettings, SSHSubprocessStoreSpec
+from pynixd.config import ExternalUnixStoreSpec, LocalBinaryCacheSpec, PynixdSettings, SSHSubprocessStoreSpec
 from pynixd.store.daemon import DaemonStore
 from pynixd.store.ssh import SSHSubprocessStore
 from pynixd.store_url import OPENSSH_KNOWN_HOSTS, spec_for
 from pynixd.substituters import ClientSubstituters
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 HOST_KEY = asyncssh.generate_private_key("ssh-ed25519").export_public_key().decode().strip()
 
@@ -77,6 +74,14 @@ def test_the_parameters_nix_reads_reach_the_spec() -> None:
 )
 def test_what_the_registry_cannot_read_is_left_to_the_daemon(url: str) -> None:
     assert spec_for(url) is None
+
+
+def test_a_path_in_a_url_is_percent_decoded() -> None:
+    """Nix decodes each path segment (`url.cc:194`), so a quoted `[` names the directory with a `[` in it."""
+    cache, socket = spec_for("file:///tmp/a%5Bb/cache"), spec_for("unix:///tmp/a%5Bb/sock")
+    assert isinstance(cache, LocalBinaryCacheSpec)
+    assert isinstance(socket, ExternalUnixStoreSpec)
+    assert (cache.path, socket.socket_path) == (Path("/tmp/a[b/cache"), Path("/tmp/a[b/sock"))
 
 
 def test_another_trust_or_key_is_another_store() -> None:

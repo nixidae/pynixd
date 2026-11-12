@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import structlog
 
@@ -111,7 +111,8 @@ def _http(ref: StoreReference) -> StoreSpecBase | None:
 
 
 def _file(ref: StoreReference) -> StoreSpecBase | None:
-    path = Path(ref.authority + ref.path)
+    # Nix decodes each segment of the path (`url.cc:194`): `%5B` is a `[` of the directory's name.
+    path = Path(unquote(ref.authority + ref.path))
     settings = _substituter_settings(ref, _BINARY_CACHE_PARAMS)
     if settings is None or not path.is_absolute():
         return None
@@ -124,7 +125,7 @@ def _unix(ref: StoreReference) -> StoreSpecBase | None:
     if settings is None or not ref.path:
         return None
     settings.setdefault("priority", 0.0)
-    socket_path, store_path = Path(ref.path), Path(ref.params.get("root", "/"))
+    socket_path, store_path = Path(unquote(ref.path)), Path(ref.params.get("root", "/"))
     name = _name("unix", str(socket_path), str(store_path), "trusted" if settings["trusted"] else "")
     return ExternalUnixStoreSpec.model_validate(
         {"store_id": StoreId(name), "socket_path": socket_path, "store_path": store_path, **settings}
