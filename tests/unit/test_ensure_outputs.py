@@ -164,7 +164,12 @@ class FakeEngine:
         return goal
 
     async def get_substitute_path_goal(
-        self, path: StorePath, substituter_ids: tuple[str, ...], *, ca: object = None
+        self,
+        path: StorePath,
+        substituter_ids: tuple[str, ...],
+        *,
+        ca: object = None,
+        keys: object = (),
     ) -> Any:
         """No substituter holds an output, so the goal has to build."""
         del path, substituter_ids, ca

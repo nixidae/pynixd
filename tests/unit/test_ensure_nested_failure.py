@@ -49,7 +49,9 @@ class FakeOuterGoal:
 class FakeEngine:
     ctx = None
 
-    async def get_ensure_derived_path_goal(self, dp: Any, build_mode: int, substituter_ids: Any) -> FakeOuterGoal:
+    async def get_ensure_derived_path_goal(
+        self, dp: Any, build_mode: int, substituter_ids: Any, *, keys: object = ()
+    ) -> FakeOuterGoal:
         del dp, build_mode, substituter_ids
         return FakeOuterGoal()
 

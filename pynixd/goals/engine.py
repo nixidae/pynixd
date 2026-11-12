@@ -34,7 +34,7 @@ from ..serde import (
 from ..store.local_db import LocalDBStore
 from .build_derivation import BuildDerivationGoal
 from .ensure import EnsureDerivedPathGoal
-from .keys import BuildDerivationKey, EnsureDerivedPathKey, SubstitutePathKey
+from .keys import BuildDerivationKey, EnsureDerivedPathKey, SubstitutePathKey, keys_for
 from .query_missing import QueryMissingPlanGoal, daemon_substitutes
 from .requests import BuildPathsWithResultsGoal
 from .results import goal_failure, goal_success, result_succeeded
@@ -45,6 +45,7 @@ if TYPE_CHECKING:
 
     from nix_daemon_protocol.ids import BuildId
     from pynixd_store.content_address import ContentAddress
+    from pynixd_store.signing import KeyOverrides
 
     from ..connection import ClientConn
     from ..context import PynixdContext
@@ -333,7 +334,7 @@ class GoalEngine:
         async with self.running():
             try:
                 ids = await self.substituter_ids_for(client)
-                substitute = await self.get_substitute_path_goal(path, ids, repair=True)
+                substitute = await self.get_substitute_path_goal(path, ids, repair=True, keys=keys_for(client))
                 attempt = await substitute.result()
                 if attempt.found and result_succeeded(attempt.result.result):
                     return
@@ -378,13 +379,15 @@ class GoalEngine:
         path: DerivedPath,
         build_mode: int,
         substituter_ids: tuple[str, ...],
+        *,
+        keys: KeyOverrides = (),
     ) -> EnsureDerivedPathGoal:
-        """Return a deduplicated EnsureDerivedPathGoal for the given derived path."""
-        key = EnsureDerivedPathKey(str(path), substituter_fingerprint(substituter_ids), int(build_mode))
+        """Return a deduplicated EnsureDerivedPathGoal for the given derived path, under the client's *keys*."""
+        key = EnsureDerivedPathKey(str(path), substituter_fingerprint(substituter_ids), int(build_mode), keys)
         async with self._lock:
             goal = self._goals.get(key)
             if goal is None:
-                goal = EnsureDerivedPathGoal(self, path, build_mode, substituter_ids)
+                goal = EnsureDerivedPathGoal(self, path, build_mode, substituter_ids, keys=keys)
                 self._goals[key] = goal
             if not isinstance(goal, EnsureDerivedPathGoal):
                 raise TypeError(f"goal key collision for {key}")
@@ -409,16 +412,17 @@ class GoalEngine:
         *,
         repair: bool = False,
         ca: ContentAddress | None = None,
+        keys: KeyOverrides = (),
     ) -> SubstitutePathGoal:
-        """Return a deduplicated SubstitutePathGoal for the given store path.
+        """Return a deduplicated SubstitutePathGoal for the given store path, under the client's *keys*.
 
         The first caller's *ca* holds, as in `Worker::makePathSubstitutionGoal` (`worker.cc:110`).
         """
-        key = SubstitutePathKey(str(path), substituter_fingerprint(substituter_ids), repair)
+        key = SubstitutePathKey(str(path), substituter_fingerprint(substituter_ids), repair, keys)
         async with self._lock:
             goal = self._goals.get(key)
             if goal is None:
-                goal = SubstitutePathGoal(self, path, substituter_ids, repair=repair, ca=ca)
+                goal = SubstitutePathGoal(self, path, substituter_ids, repair=repair, ca=ca, keys=keys)
                 self._goals[key] = goal
             if not isinstance(goal, SubstitutePathGoal):
                 raise TypeError(f"goal key collision for {key}")
@@ -450,7 +454,8 @@ class GoalEngine:
             ids = self.substituter_ids()
         async with self.running():
             try:
-                goals = {path: await self.get_substitute_path_goal(path, ids) for path in paths}
+                keys = keys_for(client)
+                goals = {path: await self.get_substitute_path_goal(path, ids, keys=keys) for path in paths}
                 attempts: dict[StorePath, SubstituteAttempt] = {}
 
                 async def run_one(path: StorePath, goal: SubstitutePathGoal) -> None:

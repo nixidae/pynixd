@@ -163,12 +163,19 @@ class FakeEngine:
         self.build_goals.append(goal)
         return goal
 
-    async def get_ensure_derived_path_goal(self, dp: Any, build_mode: int, substituter_ids: Any) -> FakeChildGoal:
+    async def get_ensure_derived_path_goal(
+        self, dp: Any, build_mode: int, substituter_ids: Any, *, keys: object = ()
+    ) -> FakeChildGoal:
         del dp, build_mode, substituter_ids
         return FakeChildGoal()
 
     async def get_substitute_path_goal(
-        self, path: StorePath, substituter_ids: tuple[str, ...], *, ca: object = None
+        self,
+        path: StorePath,
+        substituter_ids: tuple[str, ...],
+        *,
+        ca: object = None,
+        keys: object = (),
     ) -> Any:
         del path, substituter_ids, ca
         return FakeSubstituteGoal()

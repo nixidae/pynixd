@@ -63,7 +63,12 @@ class FakeEngine:
         self.substitutions_attempted = 0
 
     async def get_substitute_path_goal(
-        self, path: StorePath, substituter_ids: tuple[str, ...], *, ca: object = None
+        self,
+        path: StorePath,
+        substituter_ids: tuple[str, ...],
+        *,
+        ca: object = None,
+        keys: object = (),
     ) -> Any:
         del path, substituter_ids, ca
         self.substitutions_attempted += 1

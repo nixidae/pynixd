@@ -232,7 +232,12 @@ class FakeEngine:
         return goal
 
     async def get_substitute_path_goal(
-        self, path: StorePath, substituter_ids: tuple[str, ...], *, ca: object = None
+        self,
+        path: StorePath,
+        substituter_ids: tuple[str, ...],
+        *,
+        ca: object = None,
+        keys: object = (),
     ) -> Any:
         del path, substituter_ids, ca
         return FakeSubstituteGoal()
@@ -449,7 +454,9 @@ async def test_a_substituted_resolved_output_is_recorded_under_the_resolved_deri
     """
     engine = FakeEngine(BuildResult(status=BuildResultStatus.BUILT, built_outputs={}))
 
-    async def found(path: StorePath, substituter_ids: tuple[str, ...], *, ca: object = None) -> FoundSubstituteGoal:
+    async def found(
+        path: StorePath, substituter_ids: tuple[str, ...], *, ca: object = None, keys: object = ()
+    ) -> FoundSubstituteGoal:
         del substituter_ids, ca
         return FoundSubstituteGoal(engine.local_store, path)
 

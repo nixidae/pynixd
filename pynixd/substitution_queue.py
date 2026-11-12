@@ -198,7 +198,10 @@ class SubstitutionQueue:
         self.health: dict[StoreId, SubstitutionHealthLog] = {}
         self._probes = Background("SubstitutionQueue")
         """The probes that outlive their lookup: the stragglers of a race, and the unhealthy stores."""
-        self._active_imports: dict[tuple[StorePath, tuple[StoreId, ...], bool], Answer[SubstitutionImportResult]] = {}
+        self._active_imports: dict[
+            tuple[StorePath, tuple[StoreId, ...], bool, bool], Answer[SubstitutionImportResult]
+        ] = {}
+        """Each running import by path, stores, repair, and whether the caller checked the signatures."""
         """One import for each path, substituter set and repair flag: a client must not join an import from another's set."""
         # Created on first use: a limiter needs the running loop.
         self._import_limit: anyio.CapacityLimiter | None = None
@@ -338,6 +341,17 @@ class SubstitutionQueue:
 
         return self._best_candidate_from_cache(path, stores)
 
+    async def get_substituters(
+        self, path: StorePath, stores: Iterable[Store], *, ca: ContentAddress | None = None
+    ) -> list[SubstitutionCandidate]:
+        """Each of *stores* that holds *path*, by priority; the first listed wins a tie. *ca* as for `can_substitute`."""
+        await self._opened()
+        reaching = self._reaching(path, stores, ca)
+        stale_stores = [store for store in reaching if not self._has_cached_result(path, store.store_id)]
+        if stale_stores:
+            await self._query_stores_for_selection(path, stale_stores, ca)
+        return self._candidates_from_cache(path, reaching)
+
     async def substitute(
         self,
         path: StorePath,
@@ -345,15 +359,17 @@ class SubstitutionQueue:
         *,
         repair: bool = False,
         ca: ContentAddress | None = None,
+        checked: bool = False,
     ) -> SubstitutionImportResult:
         """Import *path* from *stores*, the daemon's list without it, once for every caller that asks while it runs.
 
         The import runs in the queue's task group, so a caller that leaves cancels its own wait and not the
         import of the others. With *repair*, the import writes over a valid path (`substitution-goal.cc:236`).
+        *checked* says the caller checked the signatures with the client's keys, which the import does not know.
         """
         await self._opened()
         chosen = tuple(self.substituter_stores() if stores is None else stores)
-        key = (path, tuple(store.store_id for store in chosen), repair)
+        key = (path, tuple(store.store_id for store in chosen), repair, checked)
         answer = self._active_imports.get(key)
         if answer is None:
             answer = Answer()
@@ -365,12 +381,12 @@ class SubstitutionQueue:
         self,
         path: StorePath,
         stores: tuple[Store, ...],
-        key: tuple[StorePath, tuple[StoreId, ...], bool],
+        key: tuple[StorePath, tuple[StoreId, ...], bool, bool],
         answer: Answer[SubstitutionImportResult],
         ca: ContentAddress | None,
     ) -> None:
         try:
-            answer.set(await self._substitute_uncached(path, stores, repair=key[2], ca=ca))
+            answer.set(await self._substitute_uncached(path, stores, repair=key[2], ca=ca, checked=key[3]))
         except Exception as e:
             answer.set_exception(e)
         finally:
@@ -657,7 +673,13 @@ class SubstitutionQueue:
             self._import_limit.total_tokens = self._import_slots
 
     async def _substitute_uncached(
-        self, path: StorePath, stores: tuple[Store, ...], *, repair: bool = False, ca: ContentAddress | None = None
+        self,
+        path: StorePath,
+        stores: tuple[Store, ...],
+        *,
+        repair: bool = False,
+        ca: ContentAddress | None = None,
+        checked: bool = False,
     ) -> SubstitutionImportResult:
         started = time.monotonic()
         candidate = await self.get_substituter(path, stores, ca=ca)
@@ -670,7 +692,7 @@ class SubstitutionQueue:
             # Every import at once took a 512 MB cache guest's harmonia out
             # with an OOM kill: ten megabytes per stream, and no limit.
             async with self.import_limit:
-                await self._import_nar(path, candidate, repair=repair)
+                await self._import_nar(path, candidate, repair=repair, checked=checked)
         except Exception as exc:
             metrics.SUBSTITUTIONS.labels(result="error").inc()
             log.warning("substitution_import_failed", store_id=candidate.store.store_id, path=str(path), exc_info=True)
@@ -689,17 +711,16 @@ class SubstitutionQueue:
             # timing the import alone would hide it.
             metrics.SUBSTITUTION_DURATION.observe(time.monotonic() - started)
 
-    async def _import_nar(self, path: StorePath, candidate: SubstitutionCandidate, *, repair: bool = False) -> None:
-        """Import *path* from *candidate*, checking its signatures unless the store is trusted.
+    async def _import_nar(
+        self, path: StorePath, candidate: SubstitutionCandidate, *, repair: bool = False, checked: bool = False
+    ) -> None:
+        """Import *path* from *candidate*, checking its signatures unless the store is trusted or the caller *checked*.
 
-        NIX-DEVIATION (#27): `substitution-goal.cc:116` skips an unsigned
-        substitute before the download; pynixd learns it from the daemon's
-        refusal after the download. The cost is that download; reverse it once
-        pynixd reads `trusted-public-keys` itself. nixidae/nixidae#1008.
+        `SubstitutePathGoal` checks before the download, with the client's keys (`substitution-goal.cc:116`).
         """
         async with Pieces(self._nar_pieces(path, candidate)) as nar:
             await write_router(self.ctx.local_store).import_nar(
-                candidate.path_info, nar, dont_check_sigs=candidate.store.trusted, repair=repair
+                candidate.path_info, nar, dont_check_sigs=candidate.store.trusted or checked, repair=repair
             )
 
     async def _nar_pieces(self, path: StorePath, candidate: SubstitutionCandidate) -> AsyncGenerator[bytes]:
@@ -709,6 +730,11 @@ class SubstitutionQueue:
             yield chunk
 
     def _best_candidate_from_cache(self, path: StorePath, stores: list[Store]) -> SubstitutionCandidate | None:
+        candidates = self._candidates_from_cache(path, stores)
+        return candidates[0] if candidates else None
+
+    def _candidates_from_cache(self, path: StorePath, stores: list[Store]) -> list[SubstitutionCandidate]:
+        """The cached candidates of *stores*, by priority; `sorted` keeps the listed order of a tie."""
         positive = self.positive.get(path, {})
         candidates = [
             SubstitutionCandidate(
@@ -720,9 +746,7 @@ class SubstitutionQueue:
             for store in stores
             if (result := positive.get(store.store_id)) is not None and result.path_info is not None
         ]
-        if not candidates:
-            return None
-        return min(candidates, key=lambda candidate: candidate.store.priority)
+        return sorted(candidates, key=lambda candidate: candidate.store.priority)
 
     @staticmethod
     def _reaching(path: StorePath, stores: Iterable[Store], ca: ContentAddress | None) -> list[Store]:

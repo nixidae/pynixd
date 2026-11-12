@@ -207,12 +207,19 @@ class FakeEngine:
         self.build_goals.append(goal)
         return goal
 
-    async def get_ensure_derived_path_goal(self, dp: Any, build_mode: int, substituter_ids: Any) -> FakeChildGoal:
+    async def get_ensure_derived_path_goal(
+        self, dp: Any, build_mode: int, substituter_ids: Any, *, keys: object = ()
+    ) -> FakeChildGoal:
         del dp, build_mode, substituter_ids
         return FakeChildGoal()
 
     async def get_substitute_path_goal(
-        self, path: StorePath, substituter_ids: tuple[str, ...], *, ca: object = None
+        self,
+        path: StorePath,
+        substituter_ids: tuple[str, ...],
+        *,
+        ca: object = None,
+        keys: object = (),
     ) -> Any:
         del path, substituter_ids, ca
         return FakeSubstituteGoal()
@@ -349,7 +356,9 @@ async def test_nested_goals_record_the_complete_output_chain(chain: tuple[str, .
             return result
 
     class Engine(FakeEngine):
-        async def get_ensure_derived_path_goal(self, dp: Any, build_mode: int, substituter_ids: Any) -> FakeChildGoal:
+        async def get_ensure_derived_path_goal(
+            self, dp: Any, build_mode: int, substituter_ids: Any, *, keys: object = ()
+        ) -> FakeChildGoal:
             del build_mode, substituter_ids
             requested.append(dp)
             return Child(inner if len(requested) == 1 else StorePath(ROOT_OUT))
@@ -387,7 +396,9 @@ async def test_a_chain_past_a_plain_output_fails_as_nix_fails() -> None:
             return result
 
     class Engine(FakeEngine):
-        async def get_ensure_derived_path_goal(self, dp: Any, build_mode: int, substituter_ids: Any) -> FakeChildGoal:
+        async def get_ensure_derived_path_goal(
+            self, dp: Any, build_mode: int, substituter_ids: Any, *, keys: object = ()
+        ) -> FakeChildGoal:
             del build_mode, substituter_ids
             requested.append(dp)
             return Child()

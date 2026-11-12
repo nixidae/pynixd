@@ -19,6 +19,7 @@ from ..serde import (
 )
 from .dispatch_order import DispatchOrder
 from .goal import ExecutionGoal
+from .keys import keys_for
 from .results import GoalResult, result_succeeded
 
 if TYPE_CHECKING:
@@ -123,7 +124,9 @@ class BuildPathsWithResultsGoal(ExecutionGoal[BuildPathsWithResultsResponse]):
         # Nix keeps the order of the request. Issue nixidae/nixidae#219.
         for serde_path in self.request.derived_paths:
             path = DerivedPath(str(serde_path))
-            goal = await self.engine.get_ensure_derived_path_goal(path, self.request.build_mode, substituter_ids)
+            goal = await self.engine.get_ensure_derived_path_goal(
+                path, self.request.build_mode, substituter_ids, keys=keys_for(self.client)
+            )
             await goal.subscribe(self.client)
             self._root_goals.append((SerdeDerivedPath(value=str(path)), goal))
 

@@ -95,6 +95,8 @@ class FakeEngine:
         path: DerivedPath,
         build_mode: int,
         substituter_ids: tuple[str, ...],
+        *,
+        keys: object = (),
     ) -> FakeEnsureGoal:
         del build_mode, substituter_ids
         goal = self.goals[str(path)]

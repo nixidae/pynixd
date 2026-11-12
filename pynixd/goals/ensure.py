@@ -52,6 +52,7 @@ if TYPE_CHECKING:
 
     from pynixd_store.content_address import ContentAddress
     from pynixd_store.drv_parser import Derivation
+    from pynixd_store.signing import KeyOverrides
 
     from ..connection import ClientConn
     from ..serde import BasicDerivation
@@ -109,6 +110,8 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
     derived_path: DerivedPath
     build_mode: int
     substituter_ids: tuple[str, ...]
+    keys: KeyOverrides = ()
+    """The client's key settings, which every substitute of this goal must meet."""
     _subscribers: list[ClientConn] = field(default_factory=list)
     _watchers: list[ClientConn] = field(default_factory=list)
     """Every client that ever subscribed, for a line that this goal writes.
@@ -365,7 +368,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
 
         Nix checks no contents and builds nothing here, so a good path with no substituter fails.
         """
-        goal = await self.engine.get_substitute_path_goal(store_path, self.substituter_ids, repair=True)
+        goal = await self.engine.get_substitute_path_goal(store_path, self.substituter_ids, repair=True, keys=self.keys)
         attempt = await self.run_child(goal)
         if attempt.found and result_succeeded(attempt.result.result):
             return self._opaque_success(store_path)
@@ -426,7 +429,9 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             )
 
         wrapped = self.derived_path.wrap(inner_drv)
-        remainder_goal = await self.engine.get_ensure_derived_path_goal(wrapped, self.build_mode, self.substituter_ids)
+        remainder_goal = await self.engine.get_ensure_derived_path_goal(
+            wrapped, self.build_mode, self.substituter_ids, keys=self.keys
+        )
         remainder_goal.note_a_parent()
         await remainder_goal.subscribe_many(self._subscribers)
         result = await self.run_child(remainder_goal)
@@ -1341,7 +1346,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
                 await self._contents_good(path)
         failed = False
         for path in paths.values():
-            goal = await self.engine.get_substitute_path_goal(path, self.substituter_ids, repair=True)
+            goal = await self.engine.get_substitute_path_goal(path, self.substituter_ids, repair=True, keys=self.keys)
             attempt = await self.run_child(goal)
             failed = failed or (attempt.found and not result_succeeded(attempt.result.result))
         if failed and (refusal := self._substitutes_failed()) is not None:
@@ -1381,7 +1386,11 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
                 substitutes.append(StorePath(member))
                 continue
             dp = DerivedPath._from_components(drv_path=StorePath(deriver), chain=(), outputs=OutputsAll())
-            rebuilds.append(await self.engine.get_ensure_derived_path_goal(dp, BuildMode.REPAIR, self.substituter_ids))
+            rebuilds.append(
+                await self.engine.get_ensure_derived_path_goal(
+                    dp, BuildMode.REPAIR, self.substituter_ids, keys=self.keys
+                )
+            )
         repaired = True
         if rebuilds:
             async with self._lock:
@@ -1392,7 +1401,9 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             results = await self.run_child(DependencyGroupGoal(self.engine, rebuilds))
             repaired = all(result_succeeded(result.result) for result in results)
         for path in substitutes:
-            substitute = await self.engine.get_substitute_path_goal(path, self.substituter_ids, repair=True)
+            substitute = await self.engine.get_substitute_path_goal(
+                path, self.substituter_ids, repair=True, keys=self.keys
+            )
             attempt = await self.run_child(substitute)
             repaired = repaired and attempt.found and result_succeeded(attempt.result.result)
         if not repaired:
@@ -1593,7 +1604,9 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         for input_drv_path, node in parsed.dynamic_input_drvs.items():
             for child_dp in _child_map_to_derived_paths(StorePath(input_drv_path), node):
                 child_goals.append(
-                    await self.engine.get_ensure_derived_path_goal(child_dp, self._input_mode, self.substituter_ids)
+                    await self.engine.get_ensure_derived_path_goal(
+                        child_dp, self._input_mode, self.substituter_ids, keys=self.keys
+                    )
                 )
                 nodes.append((child_dp.drv_path, child_dp.chain))
 
@@ -1648,7 +1661,9 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
             chain=(),
             outputs=OutputsNames(frozenset({output_name})),
         )
-        return await self.engine.get_ensure_derived_path_goal(dp, self._input_mode, self.substituter_ids)
+        return await self.engine.get_ensure_derived_path_goal(
+            dp, self._input_mode, self.substituter_ids, keys=self.keys
+        )
 
     @property
     def _input_mode(self) -> int:
@@ -1775,7 +1790,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         return answer
 
     async def _try_substitute_path(self, path: StorePath, ca: ContentAddress | None = None) -> GoalResult | None:
-        substitute_goal = await self.engine.get_substitute_path_goal(path, self.substituter_ids, ca=ca)
+        substitute_goal = await self.engine.get_substitute_path_goal(path, self.substituter_ids, ca=ca, keys=self.keys)
         async with self._lock:
             watchers = list(self._watchers)
         for client in watchers:

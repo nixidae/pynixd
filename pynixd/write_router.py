@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import weakref
 from dataclasses import dataclass, field, replace
+from enum import Enum, auto
 from functools import partial
 from typing import TYPE_CHECKING
 
@@ -31,6 +32,7 @@ from nix_daemon_protocol.optimise_store import OptimiseStoreResponse
 from nix_daemon_protocol.protocol import GCAction, Verbosity
 from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.verify_store import VerifyStoreResponse
+from pynixd_store.add import AddError
 from pynixd_store.autogc import AutoGCSettings
 from pynixd_store.collect import GCOptions
 from pynixd_store.content_address import Method, parse_method_algo, text_needs_sha256
@@ -60,6 +62,15 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 _OP_CODES = {op.name: op.code for op in STANDARD_OPERATIONS}
+
+
+class Signatures(Enum):
+    """What the store's settings and a client's keys make of a path's signatures."""
+
+    TRUSTED = auto()
+    UNTRUSTED = auto()
+    UNCHECKED = auto()
+    """No engine reads the store's settings, so the import checks."""
 
 
 @dataclass(frozen=True)
@@ -265,6 +276,19 @@ class WriteRouter:
         if self.engine is None:
             raise RuntimeError(f"store {self.store_id} has no engine")
         return self.engine
+
+    async def signatures(self, info: ValidPathInfo, overrides: Mapping[str, str]) -> Signatures:
+        """`LocalStore::pathInfoIsUntrusted` (`local-store.cc:1036`) under a client's key *overrides*."""
+        if self.engine is None:
+            return Signatures.UNCHECKED
+        settings = await self.engine.settings()
+        if not settings.require_sigs:
+            return Signatures.TRUSTED
+        try:
+            self.engine.check_signatures(info, settings, overrides, [])
+        except AddError:
+            return Signatures.UNTRUSTED
+        return Signatures.TRUSTED
 
     async def _check_signatures(self, info: ValidPathInfo, settings: ImportSettings, client: WriteClient) -> None:
         """`pathInfoIsUntrusted` and its refusal (`local-store.cc:1048`), with the client's key overrides."""

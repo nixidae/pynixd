@@ -306,7 +306,9 @@ async def test_substitute_deduplicates_active_imports(monkeypatch: pytest.Monkey
     queue = SubstitutionQueue(ctx)
     imports = 0
 
-    async def fake_import(path_arg: StorePath, candidate: object, *, repair: bool = False) -> None:
+    async def fake_import(
+        path_arg: StorePath, candidate: object, *, repair: bool = False, checked: bool = False
+    ) -> None:
         nonlocal imports
         del path_arg, candidate
         imports += 1
@@ -343,7 +345,9 @@ async def test_a_waiter_that_leaves_leaves_the_import_to_the_others(monkeypatch:
     imports = 0
     results: list[SubstitutionImportResult] = []
 
-    async def fake_import(path_arg: StorePath, candidate: object, *, repair: bool = False) -> None:
+    async def fake_import(
+        path_arg: StorePath, candidate: object, *, repair: bool = False, checked: bool = False
+    ) -> None:
         nonlocal imports
         del path_arg, candidate
         imports += 1
@@ -387,7 +391,9 @@ async def test_imports_stream_max_substitution_jobs_at_once(monkeypatch: pytest.
     queue.set_import_slots(2)
     running = peak = 0
 
-    async def fake_import(path_arg: StorePath, candidate: object, *, repair: bool = False) -> None:
+    async def fake_import(
+        path_arg: StorePath, candidate: object, *, repair: bool = False, checked: bool = False
+    ) -> None:
         nonlocal running, peak
         del path_arg, candidate
         running += 1

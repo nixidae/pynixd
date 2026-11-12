@@ -295,6 +295,15 @@ _KEY_SETTINGS = {
 }
 
 
+KeyOverrides = tuple[tuple[str, str], ...]
+"""A client's overrides of the settings `key_settings` reads, in name order."""
+
+
+def key_overrides(overrides: Mapping[str, str]) -> KeyOverrides:
+    """The overrides of *overrides* that `key_settings` reads: two clients that differ here trust different keys."""
+    return tuple(sorted((k, v) for k, v in overrides.items() if k.removeprefix("extra-") in _KEY_SETTINGS))
+
+
 def key_settings(
     trusted_public_keys: Sequence[str], secret_key_files: Sequence[str], overrides: Mapping[str, str]
 ) -> tuple[list[str], list[str]]:

@@ -12,11 +12,14 @@ import structlog
 
 from nix_daemon_protocol.logs import LogNext, LogStartActivity, LogStopActivity
 from nix_daemon_protocol.protocol import ActivityType, Verbosity
+from pynixd_store.hintfmt import magenta
 from pynixd_store.store_path import StorePath
 
 from ..activity import fields, next_activity_id
 from ..serde import BuildResultStatus, IsValidPathRequest
+from ..store.local_db import write_router
 from ..trust import warning_text
+from ..write_router import Signatures
 from .goal import ExecutionGoal
 from .results import GoalResult, goal_failure, goal_success
 
@@ -26,9 +29,11 @@ if TYPE_CHECKING:
     from nix_daemon_protocol.logs import LogMessage
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
     from pynixd_store.content_address import ContentAddress
+    from pynixd_store.signing import KeyOverrides
 
     from ..connection import ClientConn
     from ..store.base import Store
+    from ..substitution_queue import SubstitutionCandidate
     from .engine import GoalEngine
 
 log = structlog.get_logger(__name__)
@@ -70,18 +75,20 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
         *,
         repair: bool = False,
         ca: ContentAddress | None = None,
+        keys: KeyOverrides = (),
     ) -> None:
         """Initialize the goal with the path to substitute and eligible substituter IDs.
 
         With *repair*, a valid path is substituted again (`substitution-goal.cc:36`); its references are not.
         *ca* is the path's content address, which lets a substituter of another store directory hold it
-        (`substitution-goal.cc:66`).
+        (`substitution-goal.cc:66`). *keys* are the client's key settings, which the signatures must meet.
         """
         super().__init__(engine)
         self.path = path
         self.substituter_ids = substituter_ids
         self.repair = repair
         self.ca = ca
+        self.keys = keys
         self._watchers: list[ClientConn] = []
         self._references: list[SubstitutePathGoal] = []
         self._watch_lock = anyio.Lock()
@@ -136,7 +143,7 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
 
         queue = scheduler.substitution_queue
         stores = queue.stores_with_ids(self.substituter_ids)
-        candidate = await queue.get_substituter(self.path, stores, ca=self.ca)
+        candidate, checked = await self._first_signed(await queue.get_substituters(self.path, stores, ca=self.ca))
         if candidate is None:
             log.info("substitute_path_miss", path=str(self.path))
             return SubstituteAttempt(
@@ -151,7 +158,9 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
         for reference in sorted(_references(candidate.path_info), key=str):
             if reference == self.path:
                 continue
-            reference_goals.append(await self.engine.get_substitute_path_goal(reference, self.substituter_ids))
+            reference_goals.append(
+                await self.engine.get_substitute_path_goal(reference, self.substituter_ids, keys=self.keys)
+            )
         async with self._watch_lock:
             self._references = reference_goals
             watchers = list(self._watchers)
@@ -183,7 +192,9 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
 
         log.info("substitute_path_import_start", path=str(self.path), store_id=candidate.store.store_id)
         async with self._copying(candidate.store):
-            import_result = await queue.substitute(self.path, stores, repair=self.repair, ca=self.ca)
+            import_result = await queue.substitute(
+                self.path, (candidate.store,), repair=self.repair, ca=self.ca, checked=checked
+            )
         if import_result.gone:
             # A substitute that vanished is no substitute, and no failure (`substitution-goal.cc:269`).
             await self._say(LogNext(text=warning_text(import_result.error)))
@@ -208,6 +219,25 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
         result.produced_paths.add(self.path)
         result.resolved_outputs["out"] = self.path
         return SubstituteAttempt(found=True, result=result)
+
+    async def _first_signed(self, candidates: list[SubstitutionCandidate]) -> tuple[SubstitutionCandidate | None, bool]:
+        """The first of *candidates* the client's keys accept, and whether pynixd checked it (`substitution-goal.cc:116`).
+
+        Nix checks before the download and warns for each substitute it skips, then tries the next substituter.
+        """
+        router = write_router(self.engine.ctx.local_store)
+        for candidate in candidates:
+            if candidate.store.trusted:
+                return candidate, True
+            verdict = await router.signatures(candidate.path_info, dict(self.keys))
+            if verdict is not Signatures.UNTRUSTED:
+                return candidate, verdict is Signatures.TRUSTED
+            text = (
+                f"ignoring substitute for '{magenta(self.path)}' from '{magenta(candidate.store.human_readable_uri())}',"
+                " as it's not signed by any of the keys in 'trusted-public-keys'"
+            )
+            await self._say(LogNext(text=warning_text(text)))
+        return None, False
 
     @contextlib.asynccontextmanager
     async def _copying(self, source: Store) -> AsyncIterator[None]:
