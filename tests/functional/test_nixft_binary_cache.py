@@ -1,4 +1,4 @@
-"""Nix's `binary-cache.sh`, which skips on `needLocalStore`, held to three arms (`_nixft.py`): failing and signed caches.
+"""Nix's `binary-cache.sh`, which skips on `needLocalStore`, held to three arms (`_nixft.py`).
 
 The script needs `--no-require-sigs`, which only a store the client opens itself takes. Through pynixd,
 with nix-daemon and with none, `require-sigs` is off in the store's own configuration (`for_test_store`),
@@ -117,7 +117,7 @@ def _build(builds: Path, cache: Path, *extra: str) -> tuple[str | Path, ...]:
 
 
 async def _make_cache(root: Path) -> tuple[Path, Path, str]:
-    """`binary-cache.sh:16`, `:20`: build `dependencies.nix`, copy its closure to a cache, clear the store."""
+    """`binary-cache.sh:17`, `:19`: build `dependencies.nix`, copy its closure to a cache, clear the store."""
     builds = root / "dependencies.nix"
     builds.write_text(BUILDS)
     cache = root / "cache"
@@ -129,6 +129,142 @@ async def _make_cache(root: Path) -> tuple[Path, Path, str]:
         assert rc == 0, err
     clear_store(root)
     return builds, cache, out_path
+
+
+async def test_a_derivation_instantiates_into_a_cache(tmp_path: Path) -> None:
+    """`binary-cache.sh:12`: `nix-instantiate --store file://...` writes the derivations into the cache.
+
+    The client opens the cache itself, so no arm takes part.
+    """
+    builds = tmp_path / "dependencies.nix"
+    builds.write_text(BUILDS)
+    cache = tmp_path / "cache"
+    async with arm_store(tmp_path, Arm.local, _config()) as store:
+        in_cache = ArmStore(file_url(cache), store.env, store.config)
+        rc, out, err = await _run(in_cache, tmp_path / "xdg", NIX_BIN.with_name("nix-instantiate"), builds, sigs=False)
+    drv = out.strip().rsplit("/", 1)[-1]
+    got = (rc, drv.endswith("-dependencies-top.drv"), (cache / f"{drv[:32]}.narinfo").is_file())
+    assert got == (0, True, True), err
+
+
+async def _build_in(store: ArmStore, root: Path) -> tuple[Path, str]:
+    """`binary-cache.sh:17`: `dependencies.nix` built in *store*."""
+    builds = root / "dependencies.nix"
+    builds.write_text(BUILDS)
+    rc, out, err = await _run(store, root / "xdg", NIX_BIN.with_name("nix-build"), builds, "--no-out-link")
+    assert rc == 0, err
+    return builds, out.strip()
+
+
+@pytest.mark.parametrize("arm", list(Arm))
+async def test_a_closure_copies_to_a_cache(tmp_path: Path, arm: Arm) -> None:
+    """`binary-cache.sh:19`, `:43`: the closure of `top` is three paths in the cache, and `+` stays in a cache URL."""
+    plus = tmp_path / "binary+cache"
+    async with arm_store(tmp_path, arm, _config()) as store:
+        _builds, out_path = await _build_in(store, tmp_path)
+        rc, _out, err = await _run(
+            store, tmp_path / "xdg", NIX_BIN, "copy", "--to", file_url(tmp_path / "cache"), out_path
+        )
+        assert rc == 0, err
+        rc, _out, err = await _run(
+            store, tmp_path / "xdg", NIX_BIN, "copy", "--to", f"{file_url(tmp_path)}/binary+cache", out_path
+        )
+        assert rc == 0, err
+    cache = ArmStore(file_url(tmp_path / "cache"), store.env, store.config)
+    rc, out, err = await _run(cache, tmp_path / "xdg", NIX_BIN, "path-info", "--all", sigs=False)
+    names = sorted(path.rsplit("/", 1)[-1].split("-", 1)[1] for path in out.split())
+    expected = ["dependencies-input-0", "dependencies-input-2", "dependencies-top"]
+    assert (rc, names, plus.is_dir()) == (0, expected, True), err
+
+
+@pytest.mark.parametrize("arm", list(Arm))
+async def test_a_build_log_copies_to_and_from_a_cache(tmp_path: Path, arm: Arm) -> None:
+    """`binary-cache.sh:30` to `:39`: `nix store copy-log` to a cache, and back into a store that lost the log.
+
+    The client reads a log from its store's log directory itself (`LocalFSStore::getBuildLogExact`,
+    `local-fs-store.cc:116`), and writes one through the store (`AddBuildLog`, `daemon.cc:1001`).
+    """
+    cache = file_url(tmp_path / "cache")
+    xdg = tmp_path / "xdg"
+    async with arm_store(tmp_path, arm, _config()) as store:
+        _builds, out_path = await _build_in(store, tmp_path)
+        rc, _out, err = await _run(store, xdg, NIX_BIN, "copy", "--to", cache, out_path)
+        assert rc == 0, err
+        in_cache = ArmStore(cache, store.env, store.config)
+        steps = [await _run(in_cache, xdg, NIX_BIN, "log", out_path, sigs=False)]
+        steps.append(await _run(store, xdg, NIX_BIN, "store", "copy-log", "--to", cache, out_path, sigs=False))
+        steps.append(await _run(in_cache, xdg, NIX_BIN, "log", out_path, sigs=False))
+        shutil.rmtree(tmp_path / "var/log/nix")
+        steps.append(await _run(store, xdg, NIX_BIN, "log", out_path, sigs=False))
+        steps.append(await _run(store, xdg, NIX_BIN, "log", "--substituters", cache, out_path, sigs=False))
+        rc, drv, err = await _run(store, xdg, NIX_BIN.with_name("nix-store"), "-qd", out_path, sigs=False)
+        assert rc == 0, err
+        copy_from = ("store", "copy-log", "--from", cache, f"{drv.strip()}^*")
+        steps.append(await _run(store, xdg, NIX_BIN, *copy_from, sigs=False))
+        steps.append(await _run(store, xdg, NIX_BIN, "log", out_path, sigs=False))
+    got = [(rc, "is not available" in err, "FOO" in out) for rc, out, err in steps]
+    expected = [(1, True, False), (0, False, False), (0, False, True), (1, True, False), (0, False, True)]
+    expected += [(0, False, False), (0, False, True)]
+    assert got == expected, "\n".join(err for _rc, _out, err in steps)
+
+
+def _statuses(out: str) -> list[str]:
+    """The status column of `nix-env -qas`: `---` or `--S` before each name."""
+    return [line.split()[0] for line in out.splitlines() if line.strip()]
+
+
+@pytest.mark.parametrize("force_http", [False, True], ids=["local", "http"])
+@pytest.mark.parametrize("arm", list(Arm))
+async def test_a_cache_substitutes_and_answers_mass_queries_when_it_wants(
+    tmp_path: Path, arm: Arm, force_http: bool
+) -> None:
+    """`binary-cache.sh:45` (`basicDownloadTests`), run at `:81` and, with `_NIX_FORCE_HTTP`, at `:86`.
+
+    `nix-env -qas` asks a cache only when its `nix-cache-info` says `WantMassQuery: 1`. The script appends
+    that line to the cache and clears the client's narinfo cache. Here a copy of the cache takes the line,
+    so its URL is new to every narinfo cache: the client's, pynixd's and nix-daemon's.
+
+    Through pynixd the cache without the line answers too: the NIX-DEVIATION of
+    `LocalDBStore.own_query_substitutable_paths` (`pynixd/store/local_db.py`), which asks every
+    substituter at once and names this cost.
+    """
+    builds, cache, out_path = await _make_cache(tmp_path)
+    mass = tmp_path / "cache-mass"
+    shutil.copytree(cache, mass)
+    with (mass / "nix-cache-info").open("a") as info:
+        info.write("WantMassQuery: 1\n")
+    nix_env, nix_store = NIX_BIN.with_name("nix-env"), NIX_BIN.with_name("nix-store")
+    async with arm_store(tmp_path, arm, _config()) as store:
+
+        async def run(*cmd: str | Path) -> tuple[int, str, str]:
+            return await _run(store, tmp_path / "xdg", *cmd, force_http=force_http)
+
+        queries = [await run(nix_env, "--substituters", file_url(cache), "-f", builds, "-qas", "*")]
+        realised = [await run(nix_store, "--substituters", file_url(cache), "-r", out_path)]
+        executable = bool((await (anyio.Path(out_path) / "program").stat()).st_mode & 0o111)
+    clear_store(tmp_path)
+    async with arm_store(tmp_path, arm, _config()) as store:
+
+        async def run_mass(*cmd: str | Path) -> tuple[int, str, str]:
+            return await _run(store, tmp_path / "xdg", *cmd, force_http=force_http)
+
+        for _ in range(2):
+            queries.append(await run_mass(nix_env, "--substituters", file_url(mass), "-f", builds, "-qas", "*"))
+        prebuilt = await run_mass(nix_env, "-f", builds, "-qas", "*", "--prebuilt-only")
+        realised.append(await run_mass(nix_store, "--substituters", file_url(mass), "-r", out_path))
+        realised.append(await run_mass(nix_store, "--check-validity", out_path))
+        closure = await run_mass(nix_store, "-qR", out_path)
+    everything = [*queries, prebuilt, *realised, closure]
+    got = (
+        [(rc, _statuses(out)) for rc, out, _err in queries],
+        (prebuilt[0], prebuilt[1].strip()),
+        [rc for rc, _out, _err in realised],
+        executable,
+        any(line.endswith("-dependencies-input-2") for line in closure[1].splitlines()),
+    )
+    unasked = "---" if arm is Arm.local else "--S"
+    expected = ([(0, [unasked]), (0, ["--S"]), (0, ["--S"])], (0, ""), [0, 0, 0], True, True)
+    assert got == expected, "\n".join(err for _rc, _out, err in everything)
 
 
 @pytest.mark.parametrize("arm", list(Arm))
