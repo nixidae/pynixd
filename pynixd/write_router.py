@@ -11,10 +11,12 @@ table the router holds. `docs/design/store-engine.md`.
 from __future__ import annotations
 
 import contextlib
+import weakref
 from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import TYPE_CHECKING
 
+import anyio
 import structlog
 from anyio.lowlevel import checkpoint
 
@@ -29,6 +31,7 @@ from nix_daemon_protocol.optimise_store import OptimiseStoreResponse
 from nix_daemon_protocol.protocol import GCAction, Verbosity
 from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.verify_store import VerifyStoreResponse
+from pynixd_store.autogc import AutoGCSettings
 from pynixd_store.collect import GCOptions
 from pynixd_store.content_address import Method, parse_method_algo, text_needs_sha256
 from pynixd_store.errors import PynixdError
@@ -46,6 +49,7 @@ if TYPE_CHECKING:
     from nix_daemon_protocol.signature import Signature
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
     from pynixd_store.add import ImportSettings
+    from pynixd_store.autogc import AutoGC
     from pynixd_store.engine import StoreEngine
     from pynixd_store.source import Source
 
@@ -217,6 +221,11 @@ class WriteRouter:
     #: The store's path-info cache, told of each path the engine adds.
     remember: Callable[[ValidPathInfo], None]
     reasons: Sequence[Callable[[Write, Facts], str | None]] = field(default=REASONS)
+    #: Makes the `LocalStore::autoGC` state of a session; it runs while the engine collects (op 20).
+    new_auto_gc: Callable[[], AutoGC] | None = None
+    _auto_gcs: weakref.WeakKeyDictionary[ClientConn, AutoGC] = field(
+        default_factory=weakref.WeakKeyDictionary, init=False, repr=False
+    )
 
     @classmethod
     def daemon_only(cls, store: DaemonStore) -> WriteRouter:
@@ -287,6 +296,7 @@ class WriteRouter:
                 await self._check_signatures(info, settings, client)
             if root:
                 await client.root(str(info.path))
+            await self.auto_gc_before_import(client.conn)
             await engine.add_to_store(
                 info,
                 source,
@@ -361,6 +371,7 @@ class WriteRouter:
         engine = self._engine()
         settings = await engine.settings()
         method, algo = parse_dump_header(dump, settings.experimental_features)
+        await self.auto_gc_before_import(client.conn)
         path = await engine.add_to_store_from_dump(
             dump.name,
             method,
@@ -444,6 +455,45 @@ class WriteRouter:
             if meter.on_bytes is not None:
                 meter.on_bytes(copied.info.nar_size)
             meter.finish()
+
+    async def _auto_gc(self, conn: ClientConn | None) -> tuple[AutoGC, AutoGCSettings, Mapping[str, str]] | None:
+        """The session's auto-GC and its `min-free` settings, when the engine collects; `None` when the daemon does."""
+        engine = self._root_engine("CollectGarbage")
+        if engine is None or self.new_auto_gc is None or conn is None:
+            return None
+        overrides = conn.options.overrides if conn.options is not None else {}
+        settings = AutoGCSettings.from_nix_config(await engine.nix_config(), overrides)
+        if not settings.enabled:
+            return None
+        auto_gc = self._auto_gcs.get(conn)
+        if auto_gc is None:
+            auto_gc = self._auto_gcs[conn] = self.new_auto_gc()
+        return auto_gc, settings, overrides
+
+    async def auto_gc_before_import(self, conn: ClientConn | None) -> None:
+        """`autoGC()` before an import writes its NAR (`local-store.cc:1151`, `:1533`): it waits for a collection."""
+        found = await self._auto_gc(conn)
+        if found is not None:
+            auto_gc, settings, overrides = found
+            await auto_gc.check(settings, overrides, wait=True)
+
+    async def auto_gc_while_building(self, conn: ClientConn | None) -> None:
+        """`autoGC(false)` while a request builds (`worker.cc:294`): it starts a collection and does not wait.
+
+        NIX-DEVIATION (#27): `Worker::run` checks at each pass of its loop,
+        which wakes on a goal's output and at least every 10 s while
+        `min-free` is set (`worker.cc:395`). A request of pynixd has no such
+        loop, so this checks every `min-free-check-interval`, the rate limit
+        of each check in Nix too. Free space has no notification to wait on.
+        Measure a check that comes later than Nix's to reverse it.
+        """
+        found = await self._auto_gc(conn)
+        if found is None:
+            return
+        auto_gc, settings, overrides = found
+        while True:
+            await auto_gc.check(settings, overrides, wait=False)
+            await anyio.sleep(max(settings.check_interval, 1))
 
     def engine_collects(self) -> bool:
         """Whether CollectGarbage (op 20) takes the engine, which pynixd's own collector (op 101) follows."""

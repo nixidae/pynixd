@@ -261,6 +261,9 @@ class GoalEngine:
             straight: BuildPathsWithResultsResponse = await self._straight_to_the_store(request, client)
             return straight
         async with self.running():
+            local = self.ctx.local_store
+            if isinstance(local, LocalDBStore):
+                self.goal_group.spawn(local.router.auto_gc_while_building, client)
             try:
                 response = await BuildPathsWithResultsGoal(self, request, client).result()
                 if hold is not None:

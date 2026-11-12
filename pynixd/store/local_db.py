@@ -23,11 +23,12 @@ from nix_daemon_protocol.derivation_output import OutputKind
 from nix_daemon_protocol.drv_output import DrvOutput
 from nix_daemon_protocol.operations import STANDARD_OPERATIONS
 from nix_daemon_protocol.opt_microseconds import OptMicroseconds
-from nix_daemon_protocol.protocol import Verbosity
+from nix_daemon_protocol.protocol import GCAction, Verbosity
 from nix_daemon_protocol.realisation import Realisation
 from nix_daemon_protocol.signature import Signature
 from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
-from pynixd_store import active_builds
+from pynixd_store import active_builds, collect
+from pynixd_store.autogc import AutoGC, free_space
 from pynixd_store.builder import hooks, local as local_builder
 from pynixd_store.builder.settings import BuildSettings
 from pynixd_store.builder.vm import BuildVm
@@ -220,6 +221,11 @@ def _aws_credentials(profile: str | None) -> AwsCredentials | None:
     return store_package.resolve_aws_credentials(profile)
 
 
+async def _auto_gc_report(level: Verbosity, text: str) -> None:
+    """An auto-GC has no client to tell: its lines go to the log."""
+    log.debug("auto_gc_line", level=level.name, text=text)
+
+
 class LocalDBStore(Store):
     """pynixd's local store: the engine, the managed daemon, and the router between them.
 
@@ -348,7 +354,23 @@ class LocalDBStore(Store):
         self._big_locks: list[int] = []
         #: Who writes: the engine or the daemon (`write_router.py`).
         self.router = WriteRouter(
-            self.routes, self.engine, DaemonWrites(self._daemon), str(self.store_id), self.add_path_info
+            self.routes,
+            self.engine,
+            DaemonWrites(self._daemon),
+            str(self.store_id),
+            self.add_path_info,
+            new_auto_gc=lambda: AutoGC(free=self._free_space, collect=self._auto_collect, spawn=self._background.spawn),
+        )
+
+    async def _free_space(self) -> int:
+        return await anyio.to_thread.run_sync(free_space, str(self.layout.real_store_dir))
+
+    async def _auto_collect(self, max_freed: int, overrides: Mapping[str, str]) -> None:
+        """The collection of `autoGC` (`gc.cc:1077`): the dead paths, until *max_freed* bytes are gone."""
+        await self.engine.collect_garbage(
+            collect.GCOptions(GCAction.DELETE_DEAD, max_freed=max_freed),
+            settings=await self.engine.gc_settings(overrides),
+            report=_auto_gc_report,
         )
 
     # ── The daemon client ───────────────────────────────────────────
