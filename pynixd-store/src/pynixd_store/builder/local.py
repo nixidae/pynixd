@@ -591,6 +591,10 @@ def _binds(
         for name in ("/etc/resolv.conf", "/etc/services", "/etc/hosts"):
             if os.path.exists(name):
                 binds.setdefault(name, (os.path.realpath(name), False))
+        # `linux-derivation-builder.cc:793`: a fixed-output build reads the CA file a fetch would.
+        ca_file = settings.transfer.ssl_cert_file
+        if ca_file and os.path.exists(ca_file):
+            binds.setdefault("/etc/ssl/certs/ca-certificates.crt", (os.path.realpath(ca_file), True))
     else:
         (root / "etc/hosts").write_text("127.0.0.1 localhost\n::1 localhost\n")
     (root / "etc").chmod(0o555)
@@ -1538,7 +1542,10 @@ async def _run(
     if setup is not None and setup.error is not None:
         setup_error = setup.error
     if setup_error:
-        return BuildFailure(BuildResultStatus.MISC_FAILURE, f"while setting up the build environment: {setup_error}")
+        # `derivation-builder.cc:723` adds a trace, and the message is `Error::msg`, the error rendered with it.
+        return BuildFailure(
+            BuildResultStatus.MISC_FAILURE, show_error(setup_error, ("while setting up the build environment",))
+        )
     if setup is not None and not setup.done:
         ended = _builder_ended(process.returncode)
         return BuildFailure(

@@ -146,23 +146,99 @@ def _loopback_up() -> None:
         fcntl.ioctl(sock.fileno(), SIOCSIFFLAGS, struct.pack("16sh22x", b"lo", IFF_UP | IFF_LOOPBACK | IFF_RUNNING))
 
 
-def _bind(source: str, target: Path, optional: bool) -> None:
-    """`doBind`: a directory is bind-mounted, a file is bind-mounted over a new one, a link is copied."""
+def _open_dirs(root_fd: int, path: str) -> tuple[int | None, bool]:
+    """`createDirsAndOpen` (`linux-derivation-builder.cc:301`): *path*'s directories under the root, made as needed.
+
+    No component is followed as a symlink, and a `..` may not leave the root. Returns the last directory's fd
+    (`None` for the root itself) and whether *path* ends at the root.
+    """
+    fd: int | None = None
+    depth = 0
+    for part in path.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if depth == 0:
+                raise SetupError(f'sandbox path "{path}" escapes the chroot')
+            depth -= 1
+        else:
+            depth += 1
+        parent = root_fd if fd is None else fd
+        flags = os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        try:
+            try:
+                nxt = os.open(part, flags, dir_fd=parent)
+            except FileNotFoundError:
+                os.mkdir(part, 0o777, dir_fd=parent)
+                nxt = os.open(part, flags, dir_fd=parent)
+        except OSError as e:
+            raise SetupError(f'creating directory component "{part}" in the sandbox path "{path}": {e.strerror}') from e
+        if fd is not None:
+            os.close(fd)
+        fd = nxt
+    return fd, depth == 0
+
+
+def _split(target: str) -> tuple[str, str]:
+    """`std::filesystem::path`'s `parent_path` and `filename`.
+
+    A trailing `/` leaves an empty file name, and the parent loses every separator after its last name.
+    """
+    parent, _sep, name = target.rpartition("/")
+    return parent.rstrip("/"), name
+
+
+def _bind(source: str, root: Path, target: str, optional: bool) -> None:
+    """`doBind` (`linux-derivation-builder.cc:246`): bind *source* at *target*, a path relative to *root*.
+
+    A directory is bind-mounted, a file is bind-mounted over a new one, and a symlink is copied.
+    """
+    if not target or target.startswith("/"):
+        raise SetupError(f'invalid path to bind mount in the chroot: "{target}"')
+    parent, name = _split(target)
+    if name in (".", ".."):
+        raise SetupError(f'sandbox path to bind mount in the chroot has an invalid filename: "{target}"')
+    # `PathFmt(chrootRootDirPath / target)`: a trailing `/` of *target* stays.
+    shown = f"{root}/{target}"
     try:
-        st = os.lstat(source)
-    except FileNotFoundError:
+        source_fd = os.open(source, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except (FileNotFoundError, NotADirectoryError) as e:
         if optional:
             return
-        raise SetupError(f"path '{source}' does not exist") from None
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if stat.S_ISLNK(st.st_mode):
-        target.symlink_to(os.readlink(source))
-        return
-    if stat.S_ISDIR(st.st_mode):
-        target.mkdir(exist_ok=True)
-    else:
-        target.touch(exist_ok=True)
-    _mount(source, str(target), None, MS_BIND | MS_REC)
+        raise SetupError(f'getting attributes of path "{source}": {e.strerror}') from e
+    root_fd = os.open(root, os.O_DIRECTORY | os.O_CLOEXEC)
+    opened: list[int] = [source_fd, root_fd]
+    try:
+        st = os.fstat(source_fd)
+        if stat.S_ISDIR(st.st_mode):
+            dir_fd, at_root = _open_dirs(root_fd, target)
+            if dir_fd is not None:
+                opened.append(dir_fd)
+            if at_root or dir_fd is None:
+                raise SetupError(f'sandbox path "{shown}" escapes the chroot')
+            _mount(f"/proc/self/fd/{source_fd}", f"/proc/self/fd/{dir_fd}", None, MS_BIND | MS_REC)
+            return
+        parent_fd, _at_root = _open_dirs(root_fd, parent)
+        if parent_fd is not None:
+            opened.append(parent_fd)
+        in_dir = root_fd if parent_fd is None else parent_fd
+        if stat.S_ISLNK(st.st_mode):
+            try:
+                os.symlink(os.readlink(source), name, dir_fd=in_dir)
+                os.utime(name, ns=(st.st_atime_ns, st.st_mtime_ns), dir_fd=in_dir, follow_symlinks=False)
+            except OSError as e:
+                raise SetupError(f'creating symlink "{shown}": {e.strerror}') from e
+            return
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+        try:
+            dest_fd = os.open(name, flags, 0o666, dir_fd=in_dir)
+        except OSError as e:
+            raise SetupError(f'creating regular file "{shown}": {e.strerror}') from e
+        opened.append(dest_fd)
+        _mount(f"/proc/self/fd/{source_fd}", f"/proc/self/fd/{dest_fd}", None, MS_BIND | MS_REC)
+    finally:
+        for fd in opened:
+            os.close(fd)
 
 
 def _enter_chroot(spec: ChildSpec) -> None:
@@ -180,7 +256,7 @@ def _enter_chroot(spec: ChildSpec) -> None:
     _mount(store, store, None, MS_BIND)
     _mount(None, store, None, MS_SHARED)
     for in_sandbox, source, optional in spec["binds"]:
-        _bind(source, root / in_sandbox.lstrip("/"), optional)
+        _bind(source, root, in_sandbox.lstrip("/"), optional)
 
     (root / "proc").mkdir(exist_ok=True)
     _mount("none", str(root / "proc"), "proc", 0)
@@ -197,8 +273,8 @@ def _enter_chroot(spec: ChildSpec) -> None:
             (root / "dev/ptmx").symlink_to("/dev/pts/ptmx")
             (pts / "ptmx").chmod(0o666)
         else:
-            _bind("/dev/pts", pts, False)
-            _bind("/dev/ptmx", root / "dev/ptmx", False)
+            _bind("/dev/pts", root, "dev/pts", False)
+            _bind("/dev/ptmx", root, "dev/ptmx", False)
 
     os.unshare(os.CLONE_NEWNS)
     os.chdir(root)
@@ -370,12 +446,12 @@ def _add_path(spec: ChildSpec, source: str, target: str) -> str | None:
     store = spec["store_dir"]
     if os.path.dirname(target) != store:
         return f"'{target}' is not a path in the store '{store}'"
-    in_root = Path(spec["root"]) / target.lstrip("/")
+    root = Path(spec["root"])
     # `addDependencyPrep` (`chroot-derivation-builder.cc:117`).
-    if os.path.lexists(in_root):
+    if os.path.lexists(root / target.lstrip("/")):
         return f"store path '{target}' already exists in the sandbox"
     try:
-        _bind(source, in_root, False)
+        _bind(source, root, target.lstrip("/"), False)
     except (OSError, SetupError) as e:
         return str(e)
     return None

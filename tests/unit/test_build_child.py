@@ -134,7 +134,8 @@ def test_a_missing_input_is_a_setup_error_not_a_build_failure(tmp_path: Path) ->
     spec["binds"].append(("/nix/store/missing", str(tmp_path / "missing"), False))
     code, _out, status = _run(tmp_path, spec)
     assert code == 1
-    assert status == f"path '{tmp_path / 'missing'}' does not exist"
+    # `doBind` (`linux-derivation-builder.cc:360`): Nix's own text for a bind source it cannot open.
+    assert status == f'getting attributes of path "{tmp_path / "missing"}": No such file or directory'
 
 
 def test_the_network_is_private_unless_fixed_output(tmp_path: Path) -> None:
