@@ -95,6 +95,7 @@ class Collection:
 
     async def run(self) -> collect.GCResults:
         await self._find_roots()
+        await anyio.to_thread.run_sync(collect.sync_point, collect.SYNC_AFTER_ROOTS)
         try:
             if self.options.paths is None:
                 await self._whole_store()

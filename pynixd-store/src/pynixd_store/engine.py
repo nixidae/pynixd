@@ -609,6 +609,7 @@ class StoreEngine:
             if not await anyio.to_thread.run_sync(collect.try_gc_lock_exclusive, gc_lock):
                 await report(Verbosity.INFO, "waiting for the big garbage collector lock...")
                 await anyio.to_thread.run_sync(collect.wait_gc_lock_exclusive, gc_lock)
+            await anyio.to_thread.run_sync(collect.sync_point, collect.SYNC_AFTER_LOCK)
             server = collect.RootsServer(str(self.layout.store_dir), report)
             outcome: collect.GCResults | Exception
             async with anyio.create_task_group() as tg:

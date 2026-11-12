@@ -70,6 +70,22 @@ def in_nix_test() -> bool:
     return "_NIX_IN_TEST" in os.environ
 
 
+SYNC_AFTER_LOCK = "_NIX_TEST_GC_SYNC_1"
+"""Read with the big lock held, before the roots socket starts (`gc.cc:399`)."""
+SYNC_AFTER_ROOTS = "_NIX_TEST_GC_SYNC_2"
+"""Read after the roots are found, before any deletion (`gc.cc:537`)."""
+
+
+def sync_point(name: str) -> None:
+    """Read the file the variable *name* names, as Nix's collector does for `gc-non-blocking.sh`.
+
+    The suite names a FIFO, so the read waits until the script writes it.
+    """
+    if path := os.environ.get(name):
+        with open(path, "rb") as fifo:  # noqa: PTH123 -- a FIFO; `Path` is only imported for type checking here
+            fifo.read()
+
+
 _TRUE = frozenset({"true", "yes", "1"})
 _FALSE = frozenset({"false", "no", "0"})
 

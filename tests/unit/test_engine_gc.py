@@ -19,13 +19,13 @@ import pytest
 
 from nix_daemon_protocol.protocol import GCAction, Verbosity
 from pynixd_store import verify
-from pynixd_store.collect import GCOptions, GCSettings, path_fmt
+from pynixd_store.collect import SYNC_AFTER_LOCK, SYNC_AFTER_ROOTS, GCOptions, GCSettings, path_fmt
 from pynixd_store.engine import StoreEngine
 from pynixd_store.errors import PynixdError
 from pynixd_store.hintfmt import magenta
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.store_layout import StoreLayout
-from pynixd_store.temp_roots import TempRoots
+from pynixd_store.temp_roots import GC_SOCKET_PATH, TempRoots
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -358,6 +358,60 @@ async def test_a_root_given_to_the_socket_during_the_collection_is_kept(tmp_path
     assert results.paths == {B}
     assert store.valid(A)
     assert (Verbosity.DEBUG, f"got new GC root '{A}'") in lines.lines
+
+
+async def test_the_collector_waits_at_nix_s_two_synchronisation_points(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`gc-non-blocking.sh:27`: a build roots a path while the collector waits after reading the roots.
+
+    The first FIFO is read with the lock held and no roots socket yet (`gc.cc:399`), the second after
+    the roots are found and before any deletion (`gc.cc:537`).
+    """
+    store = _Store(tmp_path)
+    store.add(A)
+    store.add(B)
+    after_lock, after_roots = tmp_path / "sync-1", tmp_path / "sync-2"
+    os.mkfifo(after_lock)
+    os.mkfifo(after_roots)
+    monkeypatch.setenv(SYNC_AFTER_LOCK, str(after_lock))
+    monkeypatch.setenv(SYNC_AFTER_ROOTS, str(after_roots))
+    socket = store.layout.state_dir / GC_SOCKET_PATH
+    roots = TempRoots(store.layout.state_dir)
+    lines = _Lines()
+    collected: list[set[str]] = []
+
+    async def collect(engine: StoreEngine) -> None:
+        results = await engine.collect_garbage(
+            GCOptions(GCAction.DELETE_DEAD), settings=GCSettings(), report=lines.report
+        )
+        collected.append(results.paths)
+
+    async def reader_came(fifo: Path) -> int:
+        # Returns once the collector opened *fifo* to read. A collector that never does leaves the thread
+        # blocked, so a timeout abandons it and the `finally` below opens a reader to free it.
+        return await anyio.to_thread.run_sync(partial(os.open, fifo, os.O_WRONLY), abandon_on_cancel=True)
+
+    try:
+        with anyio.fail_after(10):
+            async with _engine(store) as engine, anyio.create_task_group() as tg:
+                tg.start_soon(collect, engine)
+                fd = await reader_came(after_lock)
+                assert not socket.exists()
+                assert "finding garbage collector roots..." not in lines.at(Verbosity.INFO)
+                os.close(fd)
+                fd = await reader_came(after_roots)
+                assert "finding garbage collector roots..." in lines.at(Verbosity.INFO)
+                assert "deleting garbage..." not in lines.at(Verbosity.INFO)
+                assert await roots.add(A)
+                os.close(fd)
+    finally:
+        await roots.close()
+        for fifo in (after_lock, after_roots):
+            os.close(os.open(fifo, os.O_RDONLY | os.O_NONBLOCK))
+
+    assert collected == [{B}]
+    assert store.valid(A)
 
 
 async def test_keep_derivations_keeps_the_deriver_of_a_live_output(tmp_path: Path) -> None:
