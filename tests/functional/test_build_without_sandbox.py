@@ -79,6 +79,7 @@ async def _serve(
     experimental_features: tuple[str, ...] = (),
     nix_bin: Path = NIX_BIN,
     routes: Mapping[str, OpRoute] | None = None,
+    build_users_group: str | None = None,
     **spec_args: Any,
 ) -> AsyncIterator[tuple[list[str], dict[str, str], Path]]:
     """A fresh `NIX_STORE_DIR` store with `BuildDerivation` on *route*: the build command, its environment, the state.
@@ -92,6 +93,7 @@ async def _serve(
     path = tmp_path / f"{route.name}-{sandbox}.sock"
     nix_config = for_test_store(substituters=(), experimental_features=experimental_features)
     nix_config.sandbox = sandbox
+    nix_config.build_users_group = build_users_group
     spec = make_test_spec(
         store_id="local",
         store_path=base,

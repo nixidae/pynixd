@@ -1193,7 +1193,8 @@ def _write_external_job(
     helper writes the usage file as root after the build. The build user gets
     `build.json` and the `build` directory. An external program that writes
     beside `build.json` fails; to reverse this, move the helper's files out of
-    the top directory first.
+    the top directory first. `tests/root/test_external_builder_users.py` holds
+    both routes to the difference.
     """
     document = {
         "version": 1,
