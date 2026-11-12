@@ -28,7 +28,7 @@ from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from pynixd_store.store_path import StorePath
 
 from .. import metrics
-from ..exceptions import CacheFault, OpNotImplementedError, StoreDirMismatch
+from ..exceptions import CacheFault, NarGone, OpNotImplementedError, StoreDirMismatch
 from ..serde import (
     DrvOutput,
     IsValidPathRequest,
@@ -261,11 +261,18 @@ class BinaryCacheStore(Store):
         return narinfo.file_size if narinfo is not None else 0
 
     async def read_nar(self, path: StorePath, nar_size: int) -> AsyncIterator[bytes]:
-        """The NAR that the narinfo of *path* names, decompressed."""
+        """The NAR that the narinfo of *path* names, decompressed.
+
+        NIX-DEVIATION (#27): `BinaryCacheStore::narFromPath` (`binary-cache-store.cc:553`) takes the narinfo
+        that the substitution goal read, from its narinfo cache, so Nix still fetches
+        a path whose narinfo the cache deleted. pynixd reads the narinfo again and takes a missing one as a
+        substitute gone (`substitution-goal.cc:269`): the goal builds the path. A cache drops a narinfo to
+        stop serving its path. Reverse it if a cache that deletes narinfos makes pynixd build what it could fetch.
+        """
         del nar_size
         narinfo = await self.get_narinfo(path)
         if narinfo is None:
-            raise RuntimeError(f"substituter lost path while streaming: {path}")
+            raise NarGone(f"file '{path.hash_part()}.narinfo' does not exist in binary cache")
         async for chunk in self.stream_nar(narinfo):
             yield chunk
 
