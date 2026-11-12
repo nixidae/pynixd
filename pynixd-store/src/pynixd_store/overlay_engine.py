@@ -183,7 +183,7 @@ class OverlayEngine(StoreEngine):
         upper, rest = await self._split(paths)
         return [*await super().query_path_infos(upper), *await self.lower.query_path_infos(rest)]
 
-    async def register_valid_paths(self, infos: Iterable[ValidPathInfo]) -> None:
+    async def register_valid_paths(self, infos: Iterable[ValidPathInfo], report: Report | None = None) -> None:
         """`LocalOverlayStore::registerValidPaths` (`local-overlay-store.cc:189`): the lower info first, then *infos*.
 
         A path the lower store holds and the upper does not takes the lower
@@ -194,7 +194,7 @@ class OverlayEngine(StoreEngine):
         held = sorted(str(path) for path in await self.lower.query_valid_paths(rest))
         if held:
             await super().register_valid_paths(await self.lower.query_path_infos(held))
-        await super().register_valid_paths(infos)
+        await super().register_valid_paths(infos, report)
 
     async def register_drv_output(
         self, drv: str, output_name: str, out_path: str, sigs: Iterable[Signature], *, by_path: bool

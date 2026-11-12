@@ -294,6 +294,7 @@ class WriteRouter:
                 ignored_acls=settings.ignored_acls,
                 auto_optimise=_override(client, "auto-optimise-store"),
                 fsync=_override(client, "fsync-store-paths"),
+                report=partial(_client_log, client.conn),
             )
         finally:
             engine.invalidate_path_info_cache_for(info.path)
@@ -372,6 +373,7 @@ class WriteRouter:
             ignored_acls=settings.ignored_acls,
             auto_optimise=_override(client, "auto-optimise-store"),
             fsync=_override(client, "fsync-store-paths"),
+            report=partial(_client_log, client.conn),
         )
         meter.finish()
         # `invalidatePathInfoCacheFor`: a path valid before this op may hold a negative entry.

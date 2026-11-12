@@ -264,6 +264,29 @@ async def _refusals(tmp_path: Path, route: str, daemon: bool | None, sends: list
     return answers
 
 
+_DEFERRED = (
+    'Derive([("out","","","")],[],[],"x86_64-linux","/bin/sh",["-c","true"],'
+    '[("builder","/bin/sh"),("name","x"),("out",""),("system","x86_64-linux")])'
+)
+
+
+async def test_a_deferred_output_warns_the_client_as_the_daemon_does(tmp_path: Path) -> None:
+    """`checkInvariants` warns while it registers the `.drv` (`derivations.cc:1334`), and the client prints it."""
+    drv = tmp_path / "x.drv"
+    drv.write_text(_DEFERRED)  # noqa: ASYNC240 -- test setup
+    warned = {}
+    for route in ("pynixd", "daemon"):
+        root, socket = tmp_path / route, tmp_path / f"{route}.sock"
+        async with server(root, socket, route):
+            store = f"unix://{socket}?root={root}"
+            added = await anyio.run_process(
+                [str(NIX_BIN), "store", "add", "--store", store, "--mode", "text", str(drv)], check=True
+            )
+        warned[route] = [line for line in added.stderr.decode().splitlines() if "deferred output" in line]
+    assert warned["pynixd"], warned
+    assert warned["pynixd"] == warned["daemon"]
+
+
 async def test_a_dump_nix_refuses_is_refused_in_nix_words_with_no_daemon(tmp_path: Path) -> None:
     sends = [*_REFUSED_DUMPS, ("f", "fixed:sha256")]
     there = await _refusals(tmp_path, "daemon", None, sends)

@@ -28,7 +28,7 @@ from .content_address import (
 from .drv_hash import make_output_path, output_hashes, output_path_name
 from .drv_parser import BUILDER_RPC, read_drv_file
 from .errors import PynixdError
-from .hintfmt import magenta, missing_feature
+from .hintfmt import WARNING_PREFIX, magenta, missing_feature
 from .queries import (
     ADD_DERIVATION_OUTPUT,
     ADD_REFERENCE,
@@ -77,6 +77,8 @@ class Registration:
     references: frozenset[str]
     derivation_outputs: Mapping[str, str]
     provenance: str | None = None
+    #: What Nix's `warn` prints while it checks the path, in order, prefix and colours included.
+    warnings: tuple[str, ...] = ()
 
 
 def _signatures(sigs: Iterable[Signature]) -> str | None:
@@ -109,8 +111,9 @@ async def prepare(info: ValidPathInfo, layout: StoreLayout, features: Collection
         ca = ContentAddress.parse(str(unkeyed.ca)).render()
 
     outputs: dict[str, str] = {}
+    warnings: list[str] = []
     if path.endswith(_DRV_EXTENSION):
-        outputs = await _derivation_outputs(path, layout, features)
+        outputs = await _derivation_outputs(path, layout, features, warnings)
 
     deriver = str(unkeyed.deriver) if unkeyed.deriver else None
     return Registration(
@@ -125,10 +128,13 @@ async def prepare(info: ValidPathInfo, layout: StoreLayout, features: Collection
         references=references,
         derivation_outputs=outputs,
         provenance=unkeyed.provenance or None,
+        warnings=tuple(warnings),
     )
 
 
-async def _derivation_outputs(drv_path: str, layout: StoreLayout, features: Collection[str]) -> dict[str, str]:
+async def _derivation_outputs(
+    drv_path: str, layout: StoreLayout, features: Collection[str], warnings: list[str]
+) -> dict[str, str]:
     """`readInvalidDerivation`, `checkInvariants` and `outputsAndOptPaths` (`local-store.cc:731`).
 
     Only an output with a path gets a row: a floating, deferred or impure one has none. The parse requires
@@ -143,13 +149,15 @@ async def _derivation_outputs(drv_path: str, layout: StoreLayout, features: Coll
     if (missing := _missing_feature(parsed, drv_name, features)) is not None:
         raise RegistrationError(missing)
     try:
-        return await _check_invariants(parsed, drv_path, drv_name, layout)
+        return await _check_invariants(parsed, drv_path, drv_name, layout, warnings)
     except RegistrationError as error:
         # `Derivation::checkInvariants(store, drvPath)` (`derivations.cc:1398`) traces every check below the name.
         raise error.with_trace(f"while checking derivation '{magenta(drv_path)}'") from None
 
 
-async def _check_invariants(parsed: Derivation, drv_path: str, drv_name: str, layout: StoreLayout) -> dict[str, str]:
+async def _check_invariants(
+    parsed: Derivation, drv_path: str, drv_name: str, layout: StoreLayout, warnings: list[str]
+) -> dict[str, str]:
     """`Derivation::checkInvariants(store)`: the output types and paths, and the variable that names each."""
     store_dir = str(layout.store_dir)
     _check_output_types(parsed)
@@ -187,16 +195,21 @@ async def _check_invariants(parsed: Derivation, drv_path: str, drv_name: str, la
             address = fixed_output_address(output.hash_algo, output.hash_value)
             expected = content_addressed_path(address, output_path_name(drv_name, output.name), (), store_dir)
         elif kind is OutputKind.DEFERRED:
-            # With inputs that hash (`DrvHash`), Nix makes the path a deferred output would have
-            # (`derivations.cc:1315`), and refuses a name no path may carry. A deferred output needs no row.
+            # With inputs that hash (`DrvHash`), Nix makes the path a deferred output would have, refuses a name
+            # no path may carry, and warns that the output should have that path (`derivations.cc:1334`).
+            # A deferred output needs no row.
             if hashes is None:
                 hashes = await output_hashes(parsed, read)
             digest = None if hashes is None else hashes.get(output.name)
             if digest is not None:
                 try:
-                    make_output_path(output.name, bytes.fromhex(digest), drv_name, store_dir)
+                    should_be = make_output_path(output.name, bytes.fromhex(digest), drv_name, store_dir)
                 except ValueError as error:
                     raise RegistrationError(str(error)) from None
+                warnings.append(
+                    f"{WARNING_PREFIX}derivation has incorrect deferred output, should be '{magenta(should_be)}'.\n"
+                    "This will be an error in future versions of Nix; compatibility of CA derivations will be broken."
+                )
             continue
         else:
             continue

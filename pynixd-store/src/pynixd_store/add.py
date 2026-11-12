@@ -50,8 +50,12 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
     from pathlib import Path
 
+    from nix_daemon_protocol.protocol import Verbosity
+
     from .engine import StoreEngine
     from .source import Source
+
+    Report = Callable[[Verbosity, str], Awaitable[None]]
 
 log = structlog.get_logger(__name__)
 
@@ -402,6 +406,7 @@ async def add_nar(
     ignored_acls: frozenset[str] = IGNORED_ACLS,
     auto_optimise: bool | None = None,
     fsync: bool | None = None,
+    report: Report | None = None,
 ) -> None:
     """`LocalStore::addToStore` after the signature check, for a path the client has temp-rooted.
 
@@ -425,7 +430,7 @@ async def add_nar(
         await _restore_into_place(
             engine, info, real, source, await _placement(engine, ignored_acls, repair, auto_optimise, fsync)
         )
-        await engine.register_valid_paths([info])
+        await engine.register_valid_paths([info], report)
         delete_lock = True
     finally:
         lock.release(delete=delete_lock)
@@ -537,6 +542,7 @@ async def add_dump(
     scan: bool = False,
     auto_optimise: bool | None = None,
     fsync: bool | None = None,
+    report: Report | None = None,
 ) -> str:
     """`LocalStore::addToStoreFromDump` (`local-store.cc:1151`) for a flat, text, NAR or Git dump.
 
@@ -601,7 +607,7 @@ async def add_dump(
                         provenance=provenance,
                     ),
                 )
-                await engine.register_valid_paths([info])
+                await engine.register_valid_paths([info], report)
             delete_lock = True
         finally:
             lock.release(delete=delete_lock)

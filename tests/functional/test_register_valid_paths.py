@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import sqlite3
 from contextlib import asynccontextmanager, closing
 from typing import TYPE_CHECKING, Any
@@ -22,6 +23,7 @@ from nix_daemon_protocol.content_address import ContentAddress
 from nix_daemon_protocol.ids import StoreId
 from nix_daemon_protocol.nar_hash import NARHash
 from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
+from nix_daemon_protocol.protocol import Verbosity
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 from pynixd import Server
@@ -234,6 +236,42 @@ async def test_a_deferred_output_needs_a_name_a_path_may_carry(tmp_path: Path) -
     drv = template.model_copy(update={"path": StorePath(path=f"/nix/store/{name}")})
     error = await _refused(nix_b, [drv], "name must not be empty")
     assert error.traces == (f"while checking derivation '{magenta(str(drv.path))}'",)
+
+
+_DEFERRED = (
+    'Derive([("out","","","")],[],[],"x86_64-linux","/bin/sh",["-c","true"],'
+    '[("builder","/bin/sh"),("name","x"),("out",""),("system","x86_64-linux")])'
+)
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+async def test_a_deferred_output_warns_as_nix_does(tmp_path: Path) -> None:
+    """`processDerivationOutputPaths` warns at registration (`derivations.cc:1334`); pynixd sends the same text.
+
+    The control is Nix registering the same `.drv`: `nix store add` reaches `addValidPath` and `checkInvariants`.
+    """
+    drv = tmp_path / "x.drv"
+    drv.write_text(_DEFERRED)  # noqa: ASYNC240 -- test setup
+    nix_a, nix_b = tmp_path / "a", tmp_path / "b"
+    added = await anyio.run_process(
+        [str(NIX_BIN), "store", "add", "--store", str(nix_a), "--mode", "text", str(drv)], check=True
+    )
+    nix_says = [line for line in added.stderr.decode().splitlines() if line]
+    assert any("incorrect deferred output" in line for line in nix_says), nix_says
+    await _nix("store", "info", "--store", str(nix_b))
+    infos = _infos(nix_a)
+    _copy_files(nix_a, nix_b, infos)
+
+    reported: list[tuple[Verbosity, str]] = []
+
+    async def report(level: Verbosity, text: str) -> None:
+        reported.append((level, text))
+
+    async with _store(nix_b) as store:
+        await store.engine.register_valid_paths(infos, report)
+    assert [level for level, _ in reported] == [Verbosity.WARN]
+    assert _ANSI.sub("", reported[0][1]).splitlines() == [_ANSI.sub("", line) for line in nix_says]
+    assert _rows(nix_b, _VALID_PATHS) == _rows(nix_a, _VALID_PATHS)
 
 
 async def test_pynixd_writes_needs_the_opt_in(tmp_path: Path) -> None:

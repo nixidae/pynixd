@@ -355,13 +355,22 @@ class StoreEngine:
         ignored_acls: frozenset[str] = add.IGNORED_ACLS,
         auto_optimise: bool | None = None,
         fsync: bool | None = None,
+        report: Report | None = None,
     ) -> None:
         """`LocalStore::addToStore` (`local-store.cc:1046`) after the signature check.
 
-        *auto_optimise* and *fsync* are the session's overrides; `None` reads the store's setting.
+        *auto_optimise* and *fsync* are the session's overrides; `None` reads the store's setting. *report* gets
+        each warning Nix prints while it registers the path.
         """
         await add.add_nar(
-            self, info, source, repair=repair, ignored_acls=ignored_acls, auto_optimise=auto_optimise, fsync=fsync
+            self,
+            info,
+            source,
+            repair=repair,
+            ignored_acls=ignored_acls,
+            auto_optimise=auto_optimise,
+            fsync=fsync,
+            report=report,
         )
 
     async def import_nar(
@@ -385,6 +394,7 @@ class StoreEngine:
         scan: bool = False,
         auto_optimise: bool | None = None,
         fsync: bool | None = None,
+        report: Report | None = None,
     ) -> str:
         """`LocalStore::addToStoreFromDump` (`local-store.cc:1151`); *scan* is `filterReferences`."""
         return await add.add_dump(
@@ -401,13 +411,15 @@ class StoreEngine:
             scan=scan,
             auto_optimise=auto_optimise,
             fsync=fsync,
+            report=report,
         )
 
-    async def register_valid_paths(self, infos: Iterable[ValidPathInfo]) -> None:
+    async def register_valid_paths(self, infos: Iterable[ValidPathInfo], report: Report | None = None) -> None:
         """Make *infos* valid in Nix's own tables, as `LocalStore::registerValidPaths` does.
 
         The files must already be in the store. `RegistrationError` carries
-        Nix's reason for a path Nix would refuse.
+        Nix's reason for a path Nix would refuse. *report* gets each warning of
+        `checkInvariants`, before the write, where Nix prints it.
         """
         if not self.writes:
             raise RuntimeError(f"store {self._name}: pynixd_writes is off, so pynixd registers no path")
@@ -420,6 +432,10 @@ class StoreEngine:
             await anyio.to_thread.run_sync(os.sync)
         features = settings.experimental_features
         registrations = [await register.prepare(info, self.layout, features) for info in infos]
+        if report is not None:
+            for registration in registrations:
+                for warning in registration.warnings:
+                    await report(Verbosity.WARN, warning)
         async with self.db.acquire_conn() as conn:
             await register.register_valid_paths(conn, registrations, self.db.statements)
         for info in infos:
