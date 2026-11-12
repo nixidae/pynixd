@@ -112,7 +112,8 @@ async def substitute(
         if not _missed_or_done(attempt):
             log.info("substitute_failed", path=str(path), reason=attempt.result.result.error_msg)
             if client is not None:
-                await client.send(LogNext(text=f"{ANSI_RED}error:{ANSI_NORMAL} {attempt.result.result.error_msg}\n"))
+                cause = attempt.cause or attempt.result.result.error_msg
+                await client.send(LogNext(text=f"{ANSI_RED}error:{ANSI_NORMAL} {cause}\n"))
     return attempts
 
 

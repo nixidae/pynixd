@@ -32,6 +32,8 @@ class SubstituteAttempt:
 
     found: bool
     result: GoalResult
+    cause: str | None = None
+    """Why a found substitute failed, as `PathSubstitutionGoal::tryToRun` prints it (`substitution-goal.cc:275`)."""
 
 
 class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
@@ -136,6 +138,7 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
                     f"pynixd: failed to substitute {self.path}: {import_result.error}",
                     BuildResultStatus.TRANSIENT_FAILURE,
                 ),
+                cause=import_result.error,
             )
 
         result = goal_success()

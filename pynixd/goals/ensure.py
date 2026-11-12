@@ -1778,6 +1778,8 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         substitute_goal = await self.engine.get_substitute_path_goal(path, self.substituter_ids, ca=ca)
         attempt = await self.run_child(substitute_goal)
         if attempt.found:
+            if attempt.cause is not None and not result_succeeded(attempt.result.result):
+                await self._say(f"{_ANSI_RED}error:{_ANSI_NORMAL} {attempt.cause}\n")
             return attempt.result
         return await self._try_substitute_upstream(path)
 
