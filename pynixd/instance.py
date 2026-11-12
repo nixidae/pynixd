@@ -37,7 +37,7 @@ from .session_builders import SessionBuilders
 from .state import upstream_in_flight
 from .store import LocalDBStore, LocalStore, Store
 from .store_url import reference_key, substituter_spec
-from .unix_server import UnixServer, start_unix_server
+from .unix_server import UnixServer, bind_unix_server, serve_unix_clients
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
@@ -700,6 +700,15 @@ class Server:
     async def _start_inner(self) -> None:
         """Open stores, start tasks, and bind every listener."""
         local_store = self.ctx.local_store
+        s = self.settings
+
+        # Bind before the store work, as nix-daemon does; accept after it. A
+        # client that connects early waits in the backlog. Nix's functional
+        # suite waits 6 s for the socket (`common/functions.sh:82`), and the
+        # store work took 0.3-0.4 s of a 1.5 s start in its guest (#1302).
+        if s.unix_path:
+            self._ensure_unix_socket_parent(s.unix_path)
+            self.unix_server = await bind_unix_server(s.unix_path)
 
         await self._background.start(self._host_store, local_store, False, None, True)
 
@@ -793,7 +802,6 @@ class Server:
         if self.ctx.session_builders is not None:
             self._spawn(self.ctx.session_builders.run)
 
-        s = self.settings
         if s.ssh_port is not None:
             self.ssh_server = await _optional.ssh_server.start_ssh_server(
                 ctx=self.ctx,
@@ -820,14 +828,8 @@ class Server:
             initiator = _optional.reverse_client.ReverseInitiator(self.ctx, s.reverse_initiator)
             self._spawn(initiator.run)
 
-        if s.unix_path:
-            self._ensure_unix_socket_parent(s.unix_path)
-            self.unix_server = await start_unix_server(
-                ctx=self.ctx,
-                socket_path=s.unix_path,
-                spawn=self._spawn,
-                schedule_mode=s.schedule_mode,
-            )
+        if self.unix_server is not None:
+            serve_unix_clients(self.unix_server, self.ctx, self._spawn, s.schedule_mode)
 
         if s.http_port is not None or s.https_port is not None:
             scheduler = self.ctx.scheduler

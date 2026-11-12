@@ -74,8 +74,13 @@ class UnixServer:
         self.owns_path = owns_path
         self._accepting = anyio.CancelScope()
         self._accept_ended = anyio.Event()
+        self._accept_started = False
 
-    async def accept_loop(self, spawn: Spawn, handle: Callable[[SocketStream], Awaitable[None]]) -> None:
+    def serve(self, spawn: Spawn, handle: Callable[[SocketStream], Awaitable[None]]) -> None:
+        self._accept_started = True
+        spawn(self._accept_loop, spawn, handle)
+
+    async def _accept_loop(self, spawn: Spawn, handle: Callable[[SocketStream], Awaitable[None]]) -> None:
         try:
             with self._accepting:
                 while True:
@@ -95,13 +100,30 @@ class UnixServer:
         # The accept ends before the socket closes: anyio's listener leaves a
         # waiting accept registered on the closed descriptor otherwise.
         self._accepting.cancel()
-        await self._accept_ended.wait()
+        # A start that fails between the bind and the accept loop closes a
+        # listener whose loop never ran, and `_accept_ended` never fires.
+        if self._accept_started:
+            await self._accept_ended.wait()
         await self.listener.aclose()
         # The path is systemd's when it passed the socket: removing it would
         # break the socket unit for the next start.
         if self.owns_path:
             with contextlib.suppress(FileNotFoundError):
                 await anyio.Path(self.socket_path).unlink()
+
+
+async def bind_unix_server(socket_path: Path) -> UnixServer:
+    """Bind and listen on `socket_path`, accepting nothing yet: a client waits in the backlog."""
+    inherited = inherited_listener(socket_path)
+    if inherited is not None:
+        server = UnixServer(await SocketListener.from_socket(inherited), socket_path, owns_path=False)
+        log.info("unix_server_listening", socket_path=socket_path, inherited=True)
+    else:
+        # `create_unix_listener` removes a stale socket at the path first.
+        listener = await anyio.create_unix_listener(socket_path, mode=0o666)
+        server = UnixServer(listener, socket_path, owns_path=True)
+        log.info("unix_server_listening", socket_path=socket_path)
+    return server
 
 
 async def start_unix_server(
@@ -111,6 +133,18 @@ async def start_unix_server(
     schedule_mode: ScheduleMode | None = None,
 ) -> UnixServer:
     """Listen on `socket_path`, and run each client session through *spawn*."""
+    server = await bind_unix_server(socket_path)
+    serve_unix_clients(server, ctx, spawn, schedule_mode)
+    return server
+
+
+def serve_unix_clients(
+    server: UnixServer,
+    ctx: PynixdContext,
+    spawn: Spawn,
+    schedule_mode: ScheduleMode | None = None,
+) -> None:
+    """Accept on `server`, and run each client session through *spawn*. `ctx.trust` must be set."""
 
     async def handle_client(accepted: SocketStream) -> None:
         # An error here must not reach the owner's task group: it would end
@@ -161,14 +195,4 @@ async def start_unix_server(
             anyio.notify_closing(sock)
             await stream.aclose()
 
-    inherited = inherited_listener(socket_path)
-    if inherited is not None:
-        server = UnixServer(await SocketListener.from_socket(inherited), socket_path, owns_path=False)
-        log.info("unix_server_listening", socket_path=socket_path, inherited=True)
-    else:
-        # `create_unix_listener` removes a stale socket at the path first.
-        listener = await anyio.create_unix_listener(socket_path, mode=0o666)
-        server = UnixServer(listener, socket_path, owns_path=True)
-        log.info("unix_server_listening", socket_path=socket_path)
-    spawn(server.accept_loop, spawn, handle_client)
-    return server
+    server.serve(spawn, handle_client)
