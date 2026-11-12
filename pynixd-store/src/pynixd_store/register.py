@@ -418,6 +418,14 @@ async def update_path_hashes(conn: aiosqlite.Connection, path: str, *, nar_hash:
         raise
 
 
+async def _require_valid_output(conn: aiosqlite.Connection, realisation: str, out_path: str) -> None:
+    async with conn.execute(QUERY_VALID_PATH_ID, (out_path,)) as cursor:
+        if await cursor.fetchone() is None:
+            raise RegistrationError(
+                f"cannot register realisation '{magenta(realisation)}': path '{magenta(out_path)}' is not valid"
+            )
+
+
 async def register_drv_output(
     conn: aiosqlite.Connection,
     drv_key: str,
@@ -435,6 +443,12 @@ async def register_drv_output(
     output path merges the signatures in Nix's set order; one with another
     output path raises Nix's own message. `_signatures` orders the set the way
     `Signature::toStrings` does; the empty set writes `""`, not NULL.
+
+    NIX-DEFECT (#23): `LocalStore::registerDrvOutput` (`local-store.cc:653`, Nix 2.34) inserts the output
+    path through `(select id from ValidPaths where path = ?)` without checking it, so an output path that
+    is not valid fails the NOT NULL constraint and the client reads the raw SQLite statement and the
+    database's file name. pynixd refuses that realisation first and names the path. Reported as
+    Lillecarl/nix#423.
     """
     select = QUERY_REALISATION_BY_PATH if by_path else QUERY_REALISATION_BY_HASH
     update = UPDATE_BUILD_TRACE_BY_PATH if by_path else UPDATE_REALISATION_BY_HASH
@@ -444,6 +458,8 @@ async def register_drv_output(
         async with conn.execute(select, (drv_key, output_name)) as cursor:
             row = await cursor.fetchone()
         if row is None:
+            if not by_path:
+                await _require_valid_output(conn, f"{drv_key}!{output_name}", out_path)
             await conn.execute(insert, (drv_key, output_name, out_path, _signatures(sigs) or ""))
         elif row[0] != out_path:
             separator = "^" if by_path else "!"

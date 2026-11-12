@@ -129,12 +129,21 @@ async def test_a_second_output_path_for_one_id_is_refused(tmp_path: Path, by_pat
     assert await _trace(conn, by_path=by_path) == (OUT, "")
 
 
-async def test_an_output_path_that_is_not_valid_fails_the_hash_insert(tmp_path: Path) -> None:
-    """Nix 2.34's `Realisations.outputPath` is a `ValidPaths` id; an invalid path makes the insert fail."""
+async def test_an_output_path_that_is_not_valid_is_refused_by_name(tmp_path: Path) -> None:
+    """Nix 2.34's `Realisations.outputPath` is a `ValidPaths` id, and Nix lets the insert fail on it.
+
+    The NIX-DEFECT of `register.register_drv_output`: pynixd refuses first and names the path, where Nix
+    shows the SQLite statement.
+    """
     conn = await _db(tmp_path)
     missing = "/nix/store/00000000000000000000000000000003-gone"
-    with pytest.raises(aiosqlite.IntegrityError):
+    with pytest.raises(register.RegistrationError) as refused:
         await register.register_drv_output(conn, HASH, "out", missing, [], by_path=False)
+    message = str(refused.value)
+    assert f"{HASH}!out" in message
+    assert f"{missing}" in message
+    assert "is not valid" in message
+    assert "SQLite" not in message
     assert await _trace(conn, by_path=False) is None
 
 
