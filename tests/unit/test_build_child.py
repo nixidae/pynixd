@@ -51,6 +51,7 @@ def _spec(root: Path, script: str, **over: object) -> ChildSpec:
         "shm_size": "50%",
         "no_new_privileges": True,
         "filter_syscalls": True,
+        "require_drop_groups": False,
         "fetchurl": None,
         "buildenv": None,
         "unpack_channel": None,

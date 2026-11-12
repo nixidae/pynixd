@@ -862,6 +862,7 @@ async def build(
             "shm_size": settings.sandbox_shm_size,
             "no_new_privileges": not settings.allow_new_privileges and external is None,
             "filter_syscalls": settings.filter_syscalls and external is None,
+            "require_drop_groups": settings.require_drop_supplementary_groups,
             "fetchurl": fetch,
             "buildenv": _buildenv_spec(drv, builtin_out) if drv.builder == "builtin:buildenv" else None,
             "unpack_channel": (

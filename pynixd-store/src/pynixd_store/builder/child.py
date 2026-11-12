@@ -557,9 +557,17 @@ def main() -> None:
         if spec["build_user"] is not None:
             _kill_user(spec["build_user"][0])
         if spec["chroot"]:
-            if spec["build_user"] is not None:
-                # The supplementary groups stay with a process the gid map does not reach: drop root's.
+            # `linux-derivation-builder.cc:566`: before the user namespace, which cannot drop them. EPERM is an
+            # unprivileged helper's answer, or that of a namespace whose `setgroups` is denied.
+            try:
                 os.setgroups([])
+            except PermissionError:
+                if spec["require_drop_groups"]:
+                    raise SetupError(
+                        "setgroups failed. Set the require-drop-supplementary-groups option to false to skip this step."
+                    ) from None
+            except OSError as e:
+                raise SetupError(f"setgroups failed: {e.strerror}") from e
             flags = os.CLONE_NEWUSER | os.CLONE_NEWPID | os.CLONE_NEWNS | os.CLONE_NEWIPC | os.CLONE_NEWUTS
             if spec["private_network"]:
                 flags |= os.CLONE_NEWNET

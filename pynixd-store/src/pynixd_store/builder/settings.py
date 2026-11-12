@@ -113,6 +113,8 @@ class BuildSettings:
     sandbox_shm_size: str
     allow_new_privileges: bool
     filter_syscalls: bool
+    require_drop_supplementary_groups: bool
+    """`require-drop-supplementary-groups`: whether a chroot build fails when `setgroups` does (`local-settings.hh:422`)."""
     secret_key_files: tuple[str, ...]
     auto_optimise_store: bool
     build_dir: str | None
@@ -258,6 +260,8 @@ class BuildSettings:
             sandbox_shm_size=str(value("sandbox-dev-shm-size", "50%")),
             allow_new_privileges=boolean(value("allow-new-privileges", False)),
             filter_syscalls=boolean(value("filter-syscalls", True)),
+            # The default is `isRootUser()`: the user that runs the builder, which pynixd's helper runs as.
+            require_drop_supplementary_groups=boolean(value("require-drop-supplementary-groups", os.geteuid() == 0)),
             secret_key_files=secret_key_files(),
             auto_optimise_store=boolean(value("auto-optimise-store", False)),
             build_dir=value("build-dir") or None,

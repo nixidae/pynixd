@@ -84,6 +84,8 @@ class ChildSpec(TypedDict):
     shm_size: str
     no_new_privileges: bool
     filter_syscalls: bool
+    require_drop_groups: bool
+    """A chroot build fails when the helper cannot drop its supplementary groups."""
     fetchurl: FetchSpec | None
     """A builtin to run in the sandbox in place of *builder*."""
     buildenv: BuildenvSpec | None
