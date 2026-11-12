@@ -40,6 +40,9 @@ METHODS = [huggorm.ContentAddressMethod.FLAT, huggorm.ContentAddressMethod.NAR, 
 # huggorm and its `nix daemon` are one release, so the client's own version answers for the daemon.
 _VERSION = re.match(r"(\d+)\.(\d+)", huggorm.nix_version())
 CANONICAL_ATERM = _VERSION is not None and (int(_VERSION[1]), int(_VERSION[2])) >= (2, 36)
+# 2.34 keys a realisation by the derivation's hash modulo, 2.35 by its store path (`nix/store/realisation.hh`).
+KEYED_BY_PATH = _VERSION is not None and (int(_VERSION[1]), int(_VERSION[2])) >= (2, 35)
+OUTPUT_NAMES = ["out", "dev"]
 
 
 class Query(StrEnum):
@@ -57,6 +60,7 @@ class Query(StrEnum):
     MISSING = "query_missing"
     NAR = "nar_from_path"
     TRUSTED = "is_trusted_client"
+    REALISATION = "query_realisation"
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +93,16 @@ class Import:
     data: bytes
 
 
-type Op = Add | Ask | Derive | Import
+@dataclass(frozen=True, slots=True)
+class Realise:
+    """Say that output `output` of `drv` turned out to be `out`, as a CA build or `nix copy` of one does."""
+
+    drv: int
+    output: str
+    out: int
+
+
+type Op = Add | Ask | Derive | Import | Realise
 # A plain value both arms can be compared on: strings, numbers, bools and tuples of them.
 type Plain = str | int | bool | tuple[Plain, ...] | None
 
@@ -126,7 +139,9 @@ adds = st.builds(
 asks = st.builds(Ask, query=st.sampled_from(Query), targets=st.lists(indices, min_size=1, max_size=3).map(tuple))
 derives = st.builds(Derive, name=names, inputs=st.lists(indices, max_size=3).map(tuple))
 imports = st.builds(Import, name=names, data=st.binary(max_size=256))
-operations = st.lists(st.one_of(adds, asks, derives, imports), min_size=1, max_size=12)
+output_names = st.one_of(st.sampled_from(OUTPUT_NAMES), names)
+realises = st.builds(Realise, drv=indices, output=output_names, out=indices)
+operations = st.lists(st.one_of(adds, asks, derives, imports, realises), min_size=1, max_size=12)
 
 
 class _Nar(huggorm.Sink):  # type: ignore[misc]  # the type gate has no huggorm; see default.nix
@@ -223,6 +238,23 @@ async def _ask(store: AsyncStore, ask: Ask, known: list[StorePath]) -> Plain:
             return hashlib.sha256(sink.nar()).hexdigest()
         case Query.TRUSTED:
             return str(await store.is_trusted_client())
+        case Query.REALISATION:
+            found = await store.query_realisation(_drv_output(first, OUTPUT_NAMES[0]))
+            if found is None:
+                return None
+            return (
+                found.id().to_string(),
+                str(found.out_path()),
+                tuple(str(sig) for sig in found.signatures()),
+            )
+
+
+def _drv_output(drv: StorePath, output: str) -> object:
+    if KEYED_BY_PATH:
+        return huggorm.DrvOutput(drv, output)
+    # Any hash is a key; this one follows the path, so one derivation has one key.
+    digest = hashlib.sha256(str(drv).encode()).digest()
+    return huggorm.DrvOutput(huggorm.Hash(huggorm.HashAlgorithm.SHA256, digest), output)
 
 
 def _target(path: StorePath) -> object:
@@ -302,25 +334,39 @@ async def _apply(
                 return Outcome(value=str(path)), path
             case Ask():
                 return Outcome(value=await _ask(store, op, known)), None
+            case Realise():
+                realisation = huggorm.Realisation(_drv_output(_pick(known, op.drv), op.output), _pick(known, op.out))
+                await store.register_drv_output(realisation, check_sigs=False)
+                return Outcome(), None
     except NixError as error:
         # The client names the store it asked, and the two arms listen on two sockets.
         return Outcome(error=(type(error).__name__, str(error).replace(uri, STORE_URI))), None
 
 
 def _on_purpose(op: Op, control: Outcome, pynixd: Outcome) -> bool:
-    """A divergence pynixd makes on purpose: the NIX-DEFECT of `drv_parser._check_monotonic`.
+    """A divergence pynixd makes on purpose, where both arms refuse and pynixd says why.
 
-    Before 2.36 the control merges a duplicate input source and refuses the output path; pynixd refuses the
-    duplicate, as master does.
+    The NIX-DEFECT of `drv_parser._check_monotonic`: before 2.36 the control merges a duplicate input
+    source and refuses the output path; pynixd refuses the duplicate, as master does.
+
+    The NIX-DEFECT of `register.register_drv_output`: on 2.34 the control fails an SQLite constraint on an
+    output path that is not valid; pynixd names the path.
     """
-    return (
-        not CANONICAL_ATERM
-        and isinstance(op, Derive)
-        and control.error is not None
-        and pynixd.error is not None
-        and "error parsing derivation" in pynixd.error[1]
-        and ": duplicate store path '" in pynixd.error[1]
-    )
+    if control.error is None or pynixd.error is None:
+        return False
+    if isinstance(op, Derive):
+        return (
+            not CANONICAL_ATERM
+            and "error parsing derivation" in pynixd.error[1]
+            and ": duplicate store path '" in pynixd.error[1]
+        )
+    if isinstance(op, Realise):
+        return (
+            not KEYED_BY_PATH
+            and "NOT NULL constraint failed: Realisations.outputPath" in control.error[1]
+            and "' is not valid" in pynixd.error[1]
+        )
+    return False
 
 
 async def run(arms: dict[str, AsyncStore], ops: list[Op], scratch: Path, staging: AsyncStore) -> Divergence | None:
@@ -342,6 +388,8 @@ async def run(arms: dict[str, AsyncStore], ops: list[Op], scratch: Path, staging
                 kind = "derive"
             case Import():
                 kind = "import"
+            case Realise():
+                kind = "realise"
         event(f"{kind}: {'error ' + expected.error[0] if expected.error else 'answered'}")
         if expected != actual and not _on_purpose(op, expected, actual):
             return Divergence(step=step, op=op, control=expected, pynixd=actual)
