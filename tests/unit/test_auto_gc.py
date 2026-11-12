@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 GC_AUTO = AutoGCSettings(min_free=1024, max_free=2048, check_interval=1)
-"""`gc-auto.sh:69`: `--min-free 1K --max-free 2K --min-free-check-interval 1`."""
+"""`gc-auto.sh:71`:`--min-free 1K --max-free 2K --min-free-check-interval 1`."""
 
 LIVE = "/nix/store/00000000000000000000000000000005-live"
 

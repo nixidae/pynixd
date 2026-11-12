@@ -638,6 +638,13 @@ let
     nix = defaultNix;
     nixGit = pkgs.nixVersions.git;
     nixFloor = pkgs.nixVersions."nix_${lib.replaceStrings [ "." ] [ "_" ] supportedNixFloor}";
+    # The suites whose lines pynixd names: the guests' Nix, master (`build-remote.sh:113`) and Determinate's
+    # (`provenance.sh`).
+    nixFunctionalTests = [
+      "${defaultNix.src}/tests/functional"
+      "${pkgs.nixVersions.git.src}/tests/functional"
+      "${sources.nix-determinate}/tests/functional"
+    ];
   };
 
   tests = rec {

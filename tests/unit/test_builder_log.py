@@ -86,7 +86,7 @@ async def test_a_log_the_store_refuses_keeps_the_build() -> None:
 
 
 async def test_keep_failed_warns_that_the_builder_kept_the_directory() -> None:
-    """`build-remote.sh:113`: the hook's warning, with its hint for a build this machine could run."""
+    """`build-remote.sh:87`: the hook's warning, with its hint for a build this machine could run."""
     warning = kept_on_the_builder(await _build(platform=get_current_system(), keep_failed=True))
     assert warning is not None
     assert "The failed build directory was kept on the remote builder due to `--keep-failed`." in warning

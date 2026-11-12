@@ -273,7 +273,7 @@ def builder_log(build: QueuedBuild, resp: BuildDerivationResponse) -> bytes | No
 def kept_on_the_builder(build: QueuedBuild) -> str | None:
     """The hook's warning for a failed build under `--keep-failed` (`build-remote.cc:328`), or None.
 
-    `build-remote.sh:113` asserts it.
+    `build-remote.sh:87` asserts it.
     """
     if build.options is None or not build.options.keep_failed:
         return None

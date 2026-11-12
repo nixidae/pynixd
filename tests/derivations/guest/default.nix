@@ -29,6 +29,8 @@
   nixFloor,
   # The build VM's launcher and helper, which `tests/functional/test_build_vm.py` runs.
   krunVariables,
+  # Each Nix functional suite `tests/unit/test_nix_script_lines.py` resolves a reference in.
+  nixFunctionalTests ? [ ],
   # The extended set (`@pytest.mark.extended`, nixidae/nixidae#1247) in place of the standard one.
   extended ? false,
   # Each lane a suite in `tests/suites.toml` names: `{ devEnv; nix; }`, the environment with that lane's
@@ -128,6 +130,7 @@ vivariumLib.mkTest (
       hello = "${pkgs.hello}";
       nixGit = "${nixGit}";
       nixFloor = "${nixFloor}";
+      inherit nixFunctionalTests;
 
       /*
         What a build with each nixpkgs builder the suites use needs,
@@ -211,6 +214,9 @@ vivariumLib.mkTest (
         # Without it a failure names `/tmp/pynixd-logs/...`, which dies
         # with the guest.
         PYNIXD_TEST_LOG_DIR = "/artifacts/${name}-logs";
+      }
+      // lib.optionalAttrs (nixFunctionalTests != [ ]) {
+        NIX_FUNCTIONAL_TESTS = lib.concatStringsSep ":" nixFunctionalTests;
       }
       // lib.optionalAttrs (config.resolved.noDaemon.value == "1") {
         # Every test store with no Nix daemon under it

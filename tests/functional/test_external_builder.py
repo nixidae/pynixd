@@ -1,7 +1,7 @@
 """pynixd's builder runs an external builder as `nix-daemon` does (`external-derivation-builder.cc`).
 
 The same derivation for a system no store has, `x68_46-xunil`, builds on each route through a
-program in `external-builders`, as in Nix's `tests/functional/external-builders.sh:21`. The program
+program in `external-builders`, as in Nix's `tests/functional/external-builders.sh:47`. The program
 records its arguments, its working directory and `build.json`, prints set-up lines up to `\\2`, and
 writes the output. Both routes must hand it the same things. The pynixd route's store runs no
 daemon.
