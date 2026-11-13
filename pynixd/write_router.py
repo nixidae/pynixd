@@ -597,7 +597,7 @@ class WriteRouter:
             if engine is not None:
                 log.info("write_fallthrough", op="VerifyStore", subject=None, reason="repair")
                 metrics.OP_FALLTHROUGH.labels(store_id=self.store_id, op="VerifyStore").inc()
-            return await self.daemon.verify_store(check_contents=check_contents, repair=repair)
+            return await self.daemon.verify_store(check_contents=check_contents, repair=repair, client=conn)
         errors = await engine.verify_store(
             check_contents=check_contents, report=partial(_client_log, conn), repair=repair_path if repair else None
         )

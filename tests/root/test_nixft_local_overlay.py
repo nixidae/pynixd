@@ -426,7 +426,7 @@ NO_LOCAL_SUBSTITUTER = pytest.mark.xfail(
     "arm",
     [
         Arm.local,
-        pytest.param(Arm.daemon, marks=NO_LOCAL_SUBSTITUTER),
+        Arm.daemon,
         pytest.param(Arm.pynixd, marks=NO_LOCAL_SUBSTITUTER),
     ],
 )

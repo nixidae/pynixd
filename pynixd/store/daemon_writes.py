@@ -150,10 +150,16 @@ class DaemonWrites:
         response: CollectGarbageResponse = await self.store.execute(request, client=client)
         return response
 
-    async def verify_store(self, *, check_contents: bool, repair: bool) -> VerifyStoreResponse:
-        """VerifyStore (op 35). The daemon takes a repair request and the paths it rebuilds."""
+    async def verify_store(
+        self, *, check_contents: bool, repair: bool, client: ClientConn | None
+    ) -> VerifyStoreResponse:
+        """VerifyStore (op 35). The client's connection carries its options and takes the daemon's lines as they come.
+
+        A repair substitutes (`Store::repairPath`, `build/entry-points.cc:118`), so the daemon needs the client's
+        `substituters`: without them it answered "cannot repair path" for a path the client's substituter held.
+        """
         request = VerifyStoreRequest(check_contents=int(check_contents), repair=int(repair))
-        response: VerifyStoreResponse = await self.store.call(request)
+        response: VerifyStoreResponse = await self.store.call(request, client=client)
         return response
 
     async def add_signatures(self, path: str, sigs: Iterable[Signature]) -> AddSignaturesResponse:
