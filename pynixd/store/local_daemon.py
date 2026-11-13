@@ -196,7 +196,7 @@ class LocalStore(DaemonStore):
             # relocated store.
             self.socket_path = self.layout.socket_path(socket_path.name)
 
-        self.runs_daemon = spec.daemon
+        self.runs_daemon = spec.mode.has_daemon
         if not self.runs_daemon:
             self._features = set(_NO_DAEMON_FEATURES)
         self.monitor_enabled = spec.monitor

@@ -291,6 +291,8 @@ class LocalDBStore(Store):
 
     def __init__(self, spec: LocalSocketStoreSpec) -> None:
         super().__init__(spec)
+        #: Who answers, and whether the storage may change (`pynixd/store_mode.py`).
+        self.mode = spec.mode
         self._daemon = LocalStore(spec)
         # One cache: an engine write forgets the entry that a daemon answer reads.
         self.path_info_cache = self._daemon.path_info_cache
@@ -306,7 +308,7 @@ class LocalDBStore(Store):
         #: pynixd's own local store (`docs/design/store-engine.md`).
         self.engine = (OverlayEngine if self.layout.overlay is not None else StoreEngine)(
             self.layout,
-            writes=spec.pynixd_writes,
+            writes=self.mode.pynixd_writes,
             read_config=lambda: read_nix_config(spec.nix_bin, nix_environment(self.layout, spec.extra_env)),
             on_change=self.forget_path_info,
             name=str(self.store_id),
@@ -338,15 +340,13 @@ class LocalDBStore(Store):
                 raise ValueError(f"op_routes: pynixd has no answer to {_OP_NAMES[op]}; its route is daemon")
             if route is OpRoute.shadow and owned.writes:
                 raise ValueError(f"op_routes: {_OP_NAMES[op]} writes, so it cannot run beside the daemon in shadow")
-            if owned.writes and not spec.pynixd_writes:
+            if owned.writes and not self.mode.pynixd_writes:
                 raise ValueError(f"op_routes: {_OP_NAMES[op]} writes the store, and pynixd_writes is off")
-        #: Whether pynixd itself may change the store (`LocalSocketStoreSpec.pynixd_writes`).
-        self.pynixd_writes = spec.pynixd_writes
         # An answer that writes defaults to the daemon even with writes on: only a route set by hand takes it.
         # With no daemon, every answer is pynixd's.
         self.routes = {
             op: self.configured_routes.get(
-                op, OpRoute.pynixd if not spec.daemon else OpRoute.daemon if owned.writes else owned.default
+                op, OpRoute.pynixd if not self.mode.has_daemon else OpRoute.daemon if owned.writes else owned.default
             )
             for op, owned in self.OWNED.items()
         }
@@ -428,7 +428,7 @@ class LocalDBStore(Store):
 
     async def read_derivation(self, drv_store_path: StorePath | str) -> Derivation | None:
         parsed = await self.engine.read_derivation(str(drv_store_path))
-        if parsed is not None or not self._daemon.runs_daemon:
+        if parsed is not None or not self.mode.has_daemon:
             return parsed
         return await self._daemon.read_derivation(drv_store_path)
 
@@ -536,9 +536,9 @@ class LocalDBStore(Store):
             log.warning("local_store_db_refused", store_id=str(self.store_id), reason=refusal)
             self.engine.db = LocalStoreDB.inactive(self.layout)
         else:
-            if self.layout.read_only:
+            if self.mode.read_only:
                 await anyio.to_thread.run_sync(check_read_only_store, self.layout)
-            elif not self._daemon.runs_daemon:
+            elif not self.mode.has_daemon:
                 # A daemon opens its store when it starts; with none, pynixd opens it. An overlay
                 # opens its lower store as a plain local store, which makes it (`local-overlay-store.cc:50`).
                 config = await self.engine.nix_config()
@@ -729,7 +729,7 @@ class LocalDBStore(Store):
         if session is not None:
             refusal = local_builder.rejection(request.drv_path, request.derivation, session)
             # With no daemon, no build hook takes what pynixd refuses.
-            if refusal is not None and not (local_builder.hands_off(session) and self._daemon.runs_daemon):
+            if refusal is not None and not (local_builder.hands_off(session) and self.mode.has_daemon):
                 return BuildDerivationResponse(
                     result=BuildResult(
                         status=int(BuildResultStatus.INPUT_REJECTED),
@@ -1355,7 +1355,7 @@ class LocalDBStore(Store):
         # worker holds a temporary root for each path it took, which no client holds.
         await self.retire_idle_connections()
         # Nix tidies in the walk; pynixd only with `pynixd_writes`.
-        roots = await self.engine.find_roots(tidy=self.pynixd_writes)
+        roots = await self.engine.find_roots(tidy=self.mode.pynixd_writes)
         return FindRootsResponse.fast(roots=[FindRootsEntry(link=link, target=path) for link, path in roots])
 
     async def own_query_derivation_output_map(
@@ -1463,7 +1463,7 @@ class LocalDBStore(Store):
         db = self.engine.db
         if db.active and not db.statements.provenance:
             return False
-        return self._daemon.keeps_provenance if self._daemon.runs_daemon else db.active
+        return self._daemon.keeps_provenance if self.mode.has_daemon else db.active
 
     async def query_active_builds(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryActiveBuilds (op 48): the builds of pynixd's builder, and those of a daemon that names the feature.

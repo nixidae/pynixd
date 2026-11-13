@@ -704,7 +704,7 @@ class LocalSocketStoreSpec(StoreSpecBase):
         from .store.local_db import LocalDBStore
 
         spec = self.model_copy(update={"store_id": StoreId(store_id)})
-        if spec.use_db:
+        if spec.mode.reads_database:
             return LocalDBStore(spec)
         return LocalStore(spec)
 
