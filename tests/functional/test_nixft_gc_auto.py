@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 __all__ = ["_keep_store_dirs"]
 
-# `gc-auto.sh:29-55`: A sees the three dead paths, reports 100 bytes free, and waits for two to go.
+# `gc-auto.sh:27-53`: A sees the three dead paths, reports 100 bytes free, and waits for two to go.
 BUILD_A = """with import {root}/config.nix; mkDerivation {{
   name = "gc-A";
   buildCommand = ''
@@ -45,7 +45,7 @@ BUILD_A = """with import {root}/config.nix; mkDerivation {{
   '';
 }}"""
 
-# `gc-auto.sh:57-70`: B builds while A waits, and ends when A has ended.
+# `gc-auto.sh:55-68`: B builds while A waits, and ends when A has ended.
 BUILD_B = """with import {root}/config.nix; mkDerivation {{
   name = "gc-B";
   buildCommand = ''
@@ -56,7 +56,7 @@ BUILD_B = """with import {root}/config.nix; mkDerivation {{
   '';
 }}"""
 
-# `gc-auto.sh:72`, `:76`.
+# `gc-auto.sh:70`, `:74`.
 LIMITS = ("--min-free", "1K", "--max-free", "2K", "--min-free-check-interval", "1")
 
 
@@ -71,7 +71,7 @@ async def _build(store: ArmStore, expr: str, result: Path) -> tuple[int, str]:
 
 
 def _unlock(fifo: Path) -> None:
-    """`gc-auto.sh:84`: the open waits for B's `cat`, as `echo unlock > fifo` does."""
+    """`gc-auto.sh:82`: the open waits for B's `cat`, as `echo unlock > fifo` does."""
     with fifo.open("w") as handle:
         handle.write("unlock\n")
 
@@ -80,7 +80,7 @@ def _unlock(fifo: Path) -> None:
 async def test_a_build_short_of_min_free_collects_dead_paths_to_max_free(
     tmp_path: Path, arm: Arm, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`gc-auto.sh:13-89`: of three dead paths one is left, and both concurrent builds succeed.
+    """`gc-auto.sh:11-87`: of three dead paths one is left, and both concurrent builds succeed.
 
     The free space comes from `_NIX_TEST_FREE_SPACE_FILE` (`gc.cc:1020`), which the client, pynixd and
     nix-daemon all read from this process's environment.
