@@ -20,12 +20,12 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-import aiosqlite
 import anyio
 import structlog
 from anyio.lowlevel import checkpoint
 
 from pynixd_store.db_migrations import PLACEMENT_CANDIDATE_TABLE, PLACEMENT_DECISION_TABLE
+from pynixd_store.local_store_db import DatabaseError
 
 if TYPE_CHECKING:
     from pynixd_store.build_stats import StoreEstimate
@@ -278,7 +278,7 @@ class PlacementTrace:
                     written += 1
                 await conn.executemany(INSERT_CANDIDATE, candidates)
                 await conn.commit()
-        except aiosqlite.Error:
+        except DatabaseError:
             log.warning("placement_trace_flush_failed", decisions=written, exc_info=True)
             for item in pending:
                 if isinstance(item, PlacementDecision):
@@ -310,7 +310,7 @@ class PlacementTrace:
                     break
                 # The daemon's own writers get the lock between two chunks.
                 await checkpoint()
-        except aiosqlite.Error:
+        except DatabaseError:
             log.warning("placement_trace_sweep_failed", removed=removed, exc_info=True)
         if removed:
             log.debug("placement_trace_swept", removed=removed)

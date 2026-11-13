@@ -8,13 +8,12 @@ needs a migration does not open, and the daemon answers for the substituter. Rev
 
 from __future__ import annotations
 
-import sqlite3
 from typing import TYPE_CHECKING, Any
 
 from anyio.to_thread import run_sync
 
 from pynixd_store.engine import StoreEngine
-from pynixd_store.local_store_db import LocalStoreDB
+from pynixd_store.local_store_db import DatabaseError, LocalStoreDB
 from pynixd_store.nar_fs import dump_path
 
 from ..exceptions import BackendError, CacheFault, OpNotImplementedError
@@ -155,7 +154,7 @@ class LocalStoreSubstituter(Store):
             found = await self.engine.query_realisation(
                 drv_path.name if by_path else key.drv_hash, key.output_name, by_path=by_path
             )
-        except sqlite3.Error as ex:
+        except DatabaseError as ex:
             raise CacheFault(f"store {self.store_id}: cannot read its realisations") from ex
         if found is None:
             return None

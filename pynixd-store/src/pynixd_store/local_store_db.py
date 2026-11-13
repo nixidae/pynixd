@@ -66,6 +66,9 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+DatabaseError = sqlite3.Error
+"""What a query of the store database raises when the database refuses it; `aiosqlite.Error` is the same class."""
+
 _CHECKPOINT_BUSY_MS = 1000
 
 

@@ -25,7 +25,6 @@ from contextlib import asynccontextmanager, nullcontext
 from itertools import batched
 from typing import TYPE_CHECKING
 
-import aiosqlite
 import anyio
 import structlog
 from anyio.to_thread import run_sync
@@ -47,6 +46,7 @@ from pynixd_store.gc import (
     take_until_below_target,
 )
 from pynixd_store.gc_sql import Bound, SqlPlan, referrer_first
+from pynixd_store.local_store_db import DatabaseError
 
 from .daemon_extensions import (
     PynixdCollectGarbageResponse,
@@ -283,7 +283,7 @@ class Collector:
                         lines,
                     )
                 batch = await plan.order_batch(batch)
-        except aiosqlite.Error:
+        except DatabaseError:
             # Fail closed: a plan the database could not finish deletes nothing.
             log.warning("gc_plan_failed", exc_info=True)
             return self._answered(empty, lines)
