@@ -440,8 +440,8 @@ class BuildVmSpec(BaseModel):
     """A sandboxed build in a libkrun microVM, around the namespace helper (nixidae/nixidae#1186).
 
     The guest sees only the build's input closure, through a read-only DAX share, so it keeps no copy of the
-    store in its own memory. A fixed-output build, and one with a builder socket (`recursive-nix`,
-    `builder-rpc-v0`), stays on the namespace helper alone.
+    store in its own memory. A build without the sandbox, a fixed-output or impure build, a build for another
+    system, and a build as a build user stay on the host (`pynixd_store.builder.site.choose_site`).
     """
 
     memory_mib: int = Field(default=2048, gt=0)

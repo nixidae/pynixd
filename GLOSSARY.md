@@ -41,6 +41,9 @@ An output path that cannot be calculated before the build (common in CA derivati
 ### External Builder
 A program in Nix's `external-builders` setting that runs the builds of the systems it lists. Nix, or pynixd's own builder, prepares the build as for an unsandboxed one, writes `build.json` in the build's top directory, and runs the program with that file as its last argument. The program prints a line that starts with `\2` when its set-up is done. `external_builder` in `pynixd_store/builder/local.py` selects it, before the platform check.
 
+### Build Site
+Where the sandbox helper of a local build runs: `HostSite` on the host's kernel, or `VmSite` in a libkrun microVM. The local builder prepares each build the same way and asks its site for what differs: the recursive builder's socket, the helper's command, how the helper reports its end, and how the build's use of the machine is measured. `choose_site` in `pynixd_store/builder/site.py` picks the site, and says why a build stays on the host.
+
 ### Experiment
 A store spec field that turns on what pynixd does beyond its default, such as `daemon = false` or `build_vm`. Its annotation carries an `Experiment` (`pynixd/experiments.py`), which names the default it replaces, its issue and its tests. `pynixd state` lists the experiments each store has turned on.
 

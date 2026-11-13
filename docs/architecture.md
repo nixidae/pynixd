@@ -73,8 +73,10 @@ A `BuildPaths` or `BuildPathsWithResults` from a client goes through these stage
    and brings the outputs back.
 5. **The build itself.** On the local store, `LocalDBStore` builds with
    `pynixd-store/src/pynixd_store/builder/local.py`, or gives the build to its daemon. The local builder runs
-   the sandbox helper `pynixd-store/src/pynixd_store/builder/child.py`, in a namespace, in a libkrun microVM
-   (`pynixd-store/src/pynixd_store/builder/vm.py`), or through an external builder.
+   the sandbox helper `pynixd-store/src/pynixd_store/builder/child.py`, or an external builder through it. A
+   `BuildSite` (`pynixd-store/src/pynixd_store/builder/site.py`) runs the helper: `HostSite` on the host's
+   kernel, `VmSite` in a libkrun microVM (`pynixd-store/src/pynixd_store/builder/vm.py`). `choose_site` picks
+   one for each build.
 
 A sandboxed builder that asks for recursive Nix reaches a `RestrictedProxy` (`pynixd/recursive.py`).
 

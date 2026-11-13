@@ -18,7 +18,7 @@ import tempfile
 import termios
 import time
 import tty
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -26,7 +26,6 @@ import anyio
 import anyio.from_thread
 import anyio.to_thread
 import structlog
-from anyio.abc import SocketStream
 
 from nix_daemon_protocol.basic_derivation import bool_attr
 from nix_daemon_protocol.build_result import BuildResultStatus
@@ -68,18 +67,9 @@ from .outputs import (
     random_path,
 )
 from .restriction import SOCKET_NAME, RestrictionContext
+from .site import BuilderFailed, BuildPaths, BuildSite, builder_ended, choose_site
 from .spec import AwsCredentials, BuildenvSpec, ChildSpec, FetchSpec
-from .usage import USAGE_NAME, read_usage, with_host
-from .vm import (
-    BUILDER_SOCKET_NAME as VM_BUILDER_SOCKET_NAME,
-    CONTROL_SOCKET_NAME as VM_CONTROL_SOCKET_NAME,
-    VMM_USAGE_NAME,
-    BuildVm,
-    allow as vm_allow,
-    returncode as vm_returncode,
-    status as vm_status,
-    unshareable as vm_unshareable,
-)
+from .usage import USAGE_NAME
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -93,6 +83,7 @@ if TYPE_CHECKING:
     from .restriction import RecursiveServer
     from .settings import BuildSettings, ExternalBuilder
     from .usage import BuildUsage, UsageSample
+    from .vm import BuildVm
 
 _log = structlog.get_logger(__name__)
 
@@ -435,48 +426,6 @@ class LocalBuildResult:
     """The path of each output, on success: built, or valid before."""
 
 
-@dataclass
-class _BuilderFailed:
-    """The builder exited non-zero: `statusToString` without the leading word (`processes.cc:378`)."""
-
-    reason: str
-
-
-@dataclass(frozen=True)
-class _Guest:
-    """A build that runs in a microVM, and the build store paths it sees."""
-
-    vm: BuildVm
-    real_store_dir: Path
-    visible: frozenset[StorePath]
-    sources: tuple[str, ...]
-    """The `sandbox-paths` sources the helper binds."""
-    recursive: bool
-    """The builder has the store's socket."""
-
-
-@dataclass
-class _Paths:
-    top: Path
-    tmp: Path
-    chroot_parent: Path | None
-    root: Path | None
-    """The chroot's root; `None` for a build without the chroot."""
-
-    def remove(self) -> None:
-        for path in (self.chroot_parent, self.top):
-            if path is not None:
-                delete_path(path)
-
-    def keep(self) -> None:
-        """`cleanupBuild(false)` with `keep-failed` (`derivation-builder.cc:1697`): the chroot goes, the build
-        directory stays for anyone to read."""
-        if self.chroot_parent is not None:
-            delete_path(self.chroot_parent)
-        self.top.chmod(0o755)
-        self.tmp.chmod(0o755)
-
-
 def _prepare(
     engine: StoreEngine,
     drv_path: StorePath,
@@ -484,7 +433,7 @@ def _prepare(
     user: build_users.BuildUser | None = None,
     *,
     chroot: bool = True,
-) -> _Paths:
+) -> BuildPaths:
     """`startBuild` up to the environment, and `setupBuildChroot` (`unix/build/chroot.cc:12`) with *chroot*.
 
     With *user*, the build directory is the build user's, and the chroot's root and store its group's.
@@ -509,7 +458,7 @@ def _prepare(
         if user is not None:
             # The build user passes through the top directory, and lists or replaces nothing in it.
             top.chmod(0o711)
-        return _Paths(top, tmp, None, None)
+        return BuildPaths(top, tmp, None, None)
 
     real = layout.real_path(drv_path)
     chroot_parent = real.with_name(f"{real.name}.chroot")
@@ -544,7 +493,7 @@ def _prepare(
     (dev / "fd").symlink_to("/proc/self/fd")
     for i, name in enumerate(("stdin", "stdout", "stderr")):
         (dev / name).symlink_to(f"/proc/self/fd/{i}")
-    return _Paths(top, tmp, chroot_parent, root)
+    return BuildPaths(top, tmp, chroot_parent, root)
 
 
 def _sandbox_store_paths(settings: BuildSettings, store_dir: str) -> set[str]:
@@ -559,7 +508,7 @@ def _sandbox_store_paths(settings: BuildSettings, store_dir: str) -> set[str]:
 
 def _binds(
     engine: StoreEngine,
-    paths: _Paths,
+    paths: BuildPaths,
     inputs: set[StorePath],
     sandbox_closure: set[StorePath],
     settings: BuildSettings,
@@ -716,7 +665,7 @@ async def build(
     for lock in locks:
         # Not cancellable: an abandoned `flock` would hold the lock with no owner to release it.
         await anyio.to_thread.run_sync(lock.acquire)
-    paths: _Paths | None = None
+    paths: BuildPaths | None = None
     user: build_users.BuildUser | None = None
     # Nix deletes the build directory only after a build that succeeded (`cleanupBuild(true)`, `:246`).
     built = False
@@ -940,64 +889,36 @@ async def build(
         control: socket.socket | None = None
         restriction: RestrictionContext | None = None
         submitting = BUILDER_RPC in drv.required_system_features
-        # The guest kernel has no binfmt handler and no IA32 emulation: another system builds on the host's kernel.
-        # The guest maps no build user yet: as root with build users, the namespaces build.
-        in_vm = (
-            vm is not None and chroot and sandboxed and drv.platform in {settings.system, "builtin"} and user is None
+        site, elsewhere = choose_site(
+            drv,
+            settings,
+            vm,
+            chroot=chroot,
+            sandboxed=sandboxed,
+            user=user,
+            real_store_dir=layout.real_store_dir,
+            visible=frozenset(inputs | sandbox_closure),
         )
+        if elsewhere is not None:
+            _log.debug("build_site_host", drv=str(drv_path), reason=elsewhere)
         async with contextlib.AsyncExitStack() as stack:
             if submitting or "recursive-nix" in drv.required_system_features:
                 if recursive is None:
                     raise ValueError("a recursive-nix or builder-rpc-v0 build needs a server for its builder")
-                # `startDaemon` (`derivation-builder.cc:1171`): the socket is up before the builder starts.
                 spec["env"]["NIX_REMOTE"] = f"unix://{build_dir}/{SOCKET_NAME}"
-                if not chroot:
-                    # `addDependencyImpl` (`derivation-builder.cc:901`) binds nothing: the builder sees the store.
-                    restriction = RestrictionContext(
-                        inputs, None, layout.real_store_dir, submitting=submitting, repairing=repairing, binds=False
-                    )
-                    listener = await anyio.to_thread.run_sync(_listen, paths.tmp / SOCKET_NAME)
-                    build_users.chown_to(user, paths.tmp / SOCKET_NAME)
-                elif in_vm:
-                    # The guest's init listens in the build directory, and the image holds no host socket.
-                    restriction = RestrictionContext(
-                        inputs,
-                        None,
-                        layout.real_store_dir,
-                        submitting=submitting,
-                        repairing=repairing,
-                        reveal=functools.partial(vm_allow, paths.top, layout.real_store_dir),
-                    )
-                    controls = await anyio.to_thread.run_sync(_listen, paths.top / VM_CONTROL_SOCKET_NAME)
-                    listener = await anyio.to_thread.run_sync(_listen, paths.top / VM_BUILDER_SOCKET_NAME)
-                    group = await stack.enter_async_context(anyio.create_task_group())
-                    stack.callback(group.cancel_scope.cancel)
-                    group.start_soon(_attach_control, controls, restriction)
-                else:
-                    ours, control = socket.socketpair()
-                    stack.callback(control.close)
-                    stream = await stack.enter_async_context(await SocketStream.from_socket(ours))
-                    restriction = RestrictionContext(
-                        inputs, stream, layout.real_store_dir, submitting=submitting, repairing=repairing
-                    )
-                    listener = await anyio.to_thread.run_sync(_listen, paths.tmp / SOCKET_NAME)
-                    build_users.chown_to(user, paths.tmp / SOCKET_NAME)
-                await stack.enter_async_context(recursive(listener, restriction))
-            guest: _Guest | None = None
-            if in_vm and vm is not None:
-                # The guest has its own `/dev` and `/proc`.
-                sources = tuple(
-                    p.source for p in settings.sandbox_paths if not p.source.startswith(("/dev/", "/proc/"))
+                endpoint = await site.endpoint(
+                    stack,
+                    paths,
+                    inputs,
+                    layout.real_store_dir,
+                    submitting=submitting,
+                    repairing=repairing,
+                    user=user,
                 )
-                if (file := vm_unshareable(sources, layout.real_store_dir)) is not None:
-                    return LocalBuildResult(
-                        BuildResultStatus.MISC_FAILURE,
-                        f"sandbox-paths names the file '{magenta(file)}' in /, which the build VM cannot share",
-                    )
-                guest = _Guest(
-                    vm, layout.real_store_dir, frozenset(inputs | sandbox_closure), sources, restriction is not None
-                )
-            # A VM build's host cgroup holds the VMM, and the guest measures the build in a cgroup of its own.
+                restriction, control = endpoint.restriction, endpoint.control
+                await stack.enter_async_context(recursive(endpoint.listener, restriction))
+            if (refused := site.refusal()) is not None:
+                return LocalBuildResult(BuildResultStatus.MISC_FAILURE, refused)
             cgroup = await stack.enter_async_context(build_cgroup.build_cgroup())
             spec["cgroup"] = None if cgroup is None else str(cgroup)
             if id_range and user is not None:
@@ -1009,14 +930,11 @@ async def build(
                     )
                 for owned in (cgroup, cgroup / "cgroup.procs", cgroup / "cgroup.threads"):
                     build_users.chown_to(user, owned)
-            if guest is not None:
-                spec["cgroup"] = str(build_cgroup.GUEST)
-                spec["cgroup_report"] = True
-                spec["sample_seconds"] = sample_seconds
+            site.configure(spec, sample_seconds)
             samples: list[UsageSample] = []
             sampler = await stack.enter_async_context(anyio.create_task_group())
             stack.callback(sampler.cancel_scope.cancel)
-            if cgroup is not None and sample_seconds > 0 and guest is None:
+            if cgroup is not None and sample_seconds > 0 and site.samples_on_host:
                 sampler.start_soon(build_cgroup.sample_every, cgroup, sample_seconds, samples)
 
             def running(pid: int) -> contextlib.AbstractContextManager[None]:
@@ -1026,26 +944,22 @@ async def build(
 
             handshake = external is not None
             failure = await _run(
-                paths, spec, settings, drv_path, keep, control, guest, cgroup, user, running, handshake=handshake
+                paths,
+                spec,
+                settings,
+                drv_path,
+                keep,
+                site,
+                control,
+                cgroup,
+                user,
+                running,
+                handshake=handshake,
+                recursive=restriction is not None,
             )
             # Not `sampler.cancel_scope.cancel()` here: this body runs in that scope, and the read below would be
             # cancelled too. The stack's callback stops the sampler on the way out.
-            taken = tuple(samples)
-            usage: BuildUsage | None
-            if guest is not None:
-                usage = read_usage(paths.top / USAGE_NAME)
-                host = (
-                    read_usage(paths.top / VMM_USAGE_NAME)
-                    if cgroup is None
-                    else await anyio.to_thread.run_sync(build_cgroup.read, cgroup)
-                )
-                if usage is not None and host is not None:
-                    usage = with_host(usage, host)
-            elif cgroup is not None:
-                read = await anyio.to_thread.run_sync(build_cgroup.read, cgroup)
-                usage = replace(read, samples=taken)
-            else:
-                usage = read_usage(paths.top / USAGE_NAME)
+            usage = await site.usage(paths, cgroup, tuple(samples))
         if on_usage is not None and usage is not None:
             on_usage(usage)
         if restriction is not None:
@@ -1059,7 +973,7 @@ async def build(
         # and none without `keep-build-log` (`:1184`).
         if settings.keep_build_log:
             await engine.add_build_log(drv_path.name, bytes(log))
-        if isinstance(failure, _BuilderFailed):
+        if isinstance(failure, BuilderFailed):
             disk_full = await anyio.to_thread.run_sync(_disk_full, layout.real_store_dir, paths.tmp)
             failure = BuildFailure(
                 BuildResultStatus.TRANSIENT_FAILURE
@@ -1184,7 +1098,7 @@ async def build(
 
 
 def _write_external_job(
-    paths: _Paths,
+    paths: BuildPaths,
     drv: BasicDerivation,
     spec: ChildSpec,
     inputs: Iterable[StorePath],
@@ -1389,25 +1303,26 @@ class SetupMessages:
 
 
 async def _run(
-    paths: _Paths,
+    paths: BuildPaths,
     spec: ChildSpec,
     settings: BuildSettings,
     drv_path: StorePath,
     on_log: Callable[[bytes], Awaitable[None]],
+    site: BuildSite,
     control: socket.socket | None = None,
-    guest: _Guest | None = None,
     cgroup: Path | None = None,
     user: build_users.BuildUser | None = None,
     running: Callable[[int], contextlib.AbstractContextManager[None]] | None = None,
     *,
     handshake: bool = False,
-) -> BuildFailure | _BuilderFailed | None:
+    recursive: bool = False,
+) -> BuildFailure | BuilderFailed | None:
     """Run the helper on a pseudoterminal, as `startBuild` does, and wait under the two timeouts.
 
-    *control* is the helper's end of the socket it binds added paths on; it closes here once the helper has it.
-    With *guest*, the helper runs in a microVM, which reports through files in the top directory, and its VMM
-    joins *cgroup*. *running* holds the helper's pid as an active build while it runs. With *handshake*, the
-    builder itself ends its set-up on the terminal (`SetupMessages`): an external builder does.
+    *site* starts the helper and reads how it ended. *control* is the helper's end of the socket it binds added
+    paths on; it closes here once the helper has it. *recursive*: the builder has the store's socket. *running*
+    holds the helper's pid as an active build while it runs. With *handshake*, the builder itself ends its set-up
+    on the terminal (`SetupMessages`): an external builder does.
     """
     spec_file = paths.top / "spec.json"
     maps: socket.socket | None = None
@@ -1427,41 +1342,19 @@ async def _run(
         # `startBuild` (`derivation-builder.cc:491`).
         os.fchmod(slave, 0o600)
         os.fchown(slave, user.uid, 0)
-    if guest is not None:
-        if paths.chroot_parent is None:
-            raise ValueError("a build VM runs the sandbox only")
-        status_read = status_write = -1
-        await guest.vm.make_disk(paths.top, paths.tmp)
-        argv = guest.vm.argv(
-            top=paths.top,
-            chroot_parent=paths.chroot_parent,
-            real_store_dir=guest.real_store_dir,
-            visible=guest.visible,
-            sources=guest.sources,
-            spec_file=spec_file,
-            build_dir=paths.tmp,
-            recursive=guest.recursive,
-            cgroup=cgroup,
-        )
-        fds: list[int] = []
-        # libkrun connects to the host's sockets by their names in the top directory.
-        cwd: Path | None = paths.top
-    else:
-        status_read, status_write = os.pipe()
-        argv = [sys.executable, "-m", "pynixd_store.builder.child", str(spec_file), str(status_write)]
-        fds = [status_write]
-        cwd = None
+    launch = await site.launch(paths, spec_file, cgroup, recursive=recursive)
+    argv, fds = launch.argv, launch.fds
     if control is not None:
         argv.append(str(control.fileno()))
         fds.append(control.fileno())
     if helper_maps is not None:
         fds.append(helper_maps.fileno())
     try:
-        process = await anyio.open_process(argv, stdin=None, stdout=slave, stderr=slave, pass_fds=fds, cwd=cwd)
+        process = await anyio.open_process(argv, stdin=None, stdout=slave, stderr=slave, pass_fds=fds, cwd=launch.cwd)
     finally:
         os.close(slave)
-        if status_write >= 0:
-            os.close(status_write)
+        if launch.status_write >= 0:
+            os.close(launch.status_write)
         if control is not None:
             control.close()
         if helper_maps is not None:
@@ -1513,7 +1406,7 @@ async def _run(
                 # A limit, a set-up error, or a cancelled build: the builder dies with its helper.
                 with contextlib.suppress(ProcessLookupError):
                     process.kill()
-            elif guest is None:
+            elif site.waits_for_exit:
                 # NIX-DEFECT (#23): `unprepareBuild` (`derivation-builder.cc:187`) kills the builder as its log
                 # ends, since a builder that closed its log may live on. A builder still on its way out then fails
                 # "due to signal 9": coreutils closes its output before it exits. pynixd waits `EXIT_GRACE` for
@@ -1526,11 +1419,7 @@ async def _run(
             await process.wait()
             os.close(master)
             tracked.close()
-    if guest is not None:
-        setup_error = vm_status(paths.top)
-    else:
-        with os.fdopen(status_read, "rb") as status_file:
-            setup_error = status_file.read().decode(errors="surrogateescape")
+    setup_error = site.setup_error(paths, launch)
     if timed_out is not None:
         return BuildFailure(BuildResultStatus.TIMED_OUT, f"building '{magenta(drv_path)}' {timed_out}")
     if too_long:
@@ -1548,46 +1437,13 @@ async def _run(
             BuildResultStatus.MISC_FAILURE, show_error(setup_error, ("while setting up the build environment",))
         )
     if setup is not None and not setup.done:
-        ended = _builder_ended(process.returncode)
+        ended = builder_ended(process.returncode)
         return BuildFailure(
             BuildResultStatus.MISC_FAILURE,
             f"while waiting for the build environment for '{magenta(drv_path)}' to initialize "
             f"({'succeeded' if ended is None else ended.reason}, previous messages: {'|'.join(setup.messages)})",
         )
-    if guest is not None:
-        code = vm_returncode(paths.top)
-        if code is None:
-            return BuildFailure(
-                BuildResultStatus.MISC_FAILURE,
-                f"the build VM of '{magenta(drv_path)}' stopped before its builder ended "
-                f"(pynixd-krun exited with {process.returncode})",
-            )
-        return _builder_ended(code)
-    return _builder_ended(process.returncode)
-
-
-def _builder_ended(code: int | None) -> _BuilderFailed | None:
-    if code is not None and code < 0:
-        return _BuilderFailed(f"failed due to signal {-code} ({signal.strsignal(-code)})")
-    if code:
-        return _BuilderFailed(f"failed with exit code {code}")
-    return None
-
-
-async def _attach_control(listener: socket.socket, restriction: RestrictionContext) -> None:
-    """Give *restriction* the guest helper's control connection, the first one, and close *listener*."""
-    with listener:
-        listener.setblocking(False)
-        while True:
-            await anyio.wait_readable(listener)
-            try:
-                connection, _address = listener.accept()
-            except BlockingIOError:
-                continue
-            break
-    async with await SocketStream.from_socket(connection) as stream:
-        restriction.attach(stream)
-        await anyio.sleep_forever()
+    return site.ended(paths, drv_path, process.returncode)
 
 
 async def _map_build_user(maps: socket.socket, pid: int, user: build_users.BuildUser) -> None:
@@ -1603,22 +1459,6 @@ async def _map_build_user(maps: socket.socket, pid: int, user: build_users.Build
         (proc / "setgroups").write_text("deny")
     (proc / "gid_map").write_text(f"{SANDBOX_GID if single else 0} {user.gid} {user.count}")
     maps.send(b"g")
-
-
-def _listen(path: Path) -> socket.socket:
-    """`createUnixDomainSocket(path, 0600)` (`derivation-builder.cc:1174`).
-
-    It binds through the directory's descriptor: the build directory of a deep store is longer than `sun_path`.
-    """
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    directory = os.open(path.parent, os.O_PATH | os.O_DIRECTORY)
-    try:
-        sock.bind(f"/proc/self/fd/{directory}/{path.name}")
-    finally:
-        os.close(directory)
-    path.chmod(0o600)
-    sock.listen()
-    return sock
 
 
 def _disk_full(*paths: Path) -> bool:
