@@ -20,31 +20,27 @@ from typing import TYPE_CHECKING, Any
 import anyio
 import structlog
 
-from nix_daemon_protocol.constants import FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS, FEATURE_REALISATION_WITH_PATH
 from nix_daemon_protocol.store_dir import on_disk
-from pynixd_store.nix_config import nix_at_least, nix_environment, read_nix_config, read_nix_version
+from pynixd_store.nix_config import nix_environment, read_nix_config
 from pynixd_store.store_path import StorePath
 
 from ..agent import local_monitor
 from ..config import LocalSocketStoreSpec, PynixdSettings
 from ..connection import Connection
-from ..exceptions import NoDaemonError
 from ..line_reader import LineReader
 from ..monitor import DummyResourceMonitor, local_disk
 from ..trust import TrustPolicy
 from ..unix_socket import _SUN_PATH_MAX, open_unix_connection
 from ..wire import UnixNixReader, UnixNixWriter
 from .base import get_current_system
-from .daemon import DaemonStore, ProbeState
+from .daemon import DaemonStore
 
 if TYPE_CHECKING:
     from anyio.abc import ByteReceiveStream, Process
 
-    from nix_daemon_protocol.wire_ops import WireRequest
     from pynixd_store.drv_parser import Derivation
     from pynixd_store.store_layout import StoreLayout
 
-    from ..connection import ClientConn
     from ..monitor import ResourceMonitor
 
 log = structlog.get_logger(__name__)
@@ -72,14 +68,6 @@ once, and not after the whole budget.
 
 _DAEMON_POLL_INTERVAL = 0.05
 """Seconds between two checks. It is the granularity, and not the budget."""
-
-_NO_DAEMON_FEATURES = frozenset({FEATURE_REALISATION_WITH_PATH, FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS})
-"""What a store with no daemon offers: `WorkerProto::latest` of Nix 2.35 (`worker-protocol.cc:20`).
-
-`open_local_store` gives a store of Nix 2.35 its schema, so its realisations are
-in `BuildTraceV3`, keyed by derivation path. A store of Nix 2.34 offers none: its
-schema has the `Realisations` table, keyed by the derivation's hash.
-"""
 
 # `_SUN_PATH_MAX` lives in `..unix_socket`, which owns the length policy:
 # the guard below refuses what no connect can reach, and
@@ -173,6 +161,8 @@ class LocalStore(DaemonStore):
     def __init__(self, spec: LocalSocketStoreSpec) -> None:
         """Configure local daemon paths, socket management, and monitor."""
         super().__init__(spec)
+        if spec.mode.has_daemon is not self.runs_daemon:
+            raise ValueError(f"{type(self).__name__} cannot serve a store whose mode is {spec.mode.answers}")
 
         socket_path = spec.socket_path or Path("pynixd-nix")
         # A relocated store is always ours to start: `NIX_STORE_DIR` names a
@@ -196,9 +186,6 @@ class LocalStore(DaemonStore):
             # relocated store.
             self.socket_path = self.layout.socket_path(socket_path.name)
 
-        self.runs_daemon = spec.mode.has_daemon
-        if not self.runs_daemon:
-            self._features = set(_NO_DAEMON_FEATURES)
         self.monitor_enabled = spec.monitor
         self.daemon_proc: Process | None = None
         self.daemon_ready: anyio.Event | None = None
@@ -239,17 +226,8 @@ class LocalStore(DaemonStore):
 
     async def start(self, sync_paths: bool = True) -> None:
         """Spawn managed daemon and initialize the store."""
-        await self.ensure_daemon()
-        if not self.runs_daemon:
-            self.nix_version = await read_nix_version(self.nix_bin, nix_environment(self.layout, self.extra_env))
-            # `WorkerProto::latest` of Nix 2.34 has no features (`worker-protocol.cc:17` of 2.34).
-            if not nix_at_least(self.nix_version, 2, 35):
-                self._features = set()
-        if (
-            (not self.managed or not self.runs_daemon)
-            and self._feature_matrix is None
-            and self._probe_requested is None
-        ):
+        await self._prepare()
+        if self._features_from_config and self._feature_matrix is None and self._probe_requested is None:
             # The machine's own daemon, or none: nix.conf says what it builds.
             # Probing it with builds waits for free build slots before
             # READY=1, and missed systemd's start timeout on a busy machine
@@ -274,6 +252,15 @@ class LocalStore(DaemonStore):
             await self._kill_daemon()
             raise
 
+    async def _prepare(self) -> None:
+        """What `start` needs before the shared part: here, a daemon to talk to."""
+        await self.ensure_daemon()
+
+    @property
+    def _features_from_config(self) -> bool:
+        """Whether nix.conf, not a probe, says what the store builds: true for the machine's own daemon."""
+        return not self.managed
+
     def config_arguments(self) -> list[str]:
         """What the managed daemon's command line sets of its settings; none for a daemon pynixd did not start."""
         if not self.managed:
@@ -294,8 +281,6 @@ class LocalStore(DaemonStore):
         Always spawns a private nix-daemon subprocess.  Uses an Event
         to coordinate concurrent callers.
         """
-        if not self.runs_daemon:
-            return
         if self.daemon_proc is not None:
             if self.daemon_ready is not None:
                 await self.daemon_ready.wait()
@@ -491,33 +476,8 @@ class LocalStore(DaemonStore):
         await conn.close()
         return True
 
-    async def probe(self) -> None:
-        """With no daemon there is nothing to probe: `start` read what the store builds from nix.conf."""
-        if self.runs_daemon:
-            await super().probe()
-            return
-        self.probe_state = ProbeState.PROBED
-        self._probe_event.set()
-
-    async def call(
-        self,
-        request: WireRequest,
-        client: ClientConn | None = None,
-        suppress_last: bool = False,
-        raise_on_error: bool = False,
-        skip_probe: bool = False,
-    ) -> Any:
-        """Send *request* to the daemon; with no daemon, refuse it by name."""
-        if not self.runs_daemon:
-            raise NoDaemonError(str(self.store_id), type(request).__name__)
-        return await super().call(
-            request, client=client, suppress_last=suppress_last, raise_on_error=raise_on_error, skip_probe=skip_probe
-        )
-
     async def create_conn(self) -> Connection:
         """Connect to the (managed or system) Nix daemon via Unix socket."""
-        if not self.runs_daemon:
-            raise NoDaemonError(str(self.store_id), "a connection to the daemon")
         await self.ensure_daemon()
         conn_id = f"{self.store_id}-{self.conn_counter}"
         log.debug(

@@ -158,10 +158,10 @@ async def test_throughput_pynixd(profiler: pyinstrument.Profiler) -> None:
     client_path.mkdir(parents=True, exist_ok=True)
 
     local_store = LocalSocketStore(
-        make_test_spec(store_id="local", store_path=local_path),
+        make_test_spec(daemon=True, store_id="local", store_path=local_path),
     )
     builder_store = LocalSocketStore(
-        make_test_spec(store_id="builder", store_path=builder_path),
+        make_test_spec(daemon=True, store_id="builder", store_path=builder_path),
     )
 
     async with Server(

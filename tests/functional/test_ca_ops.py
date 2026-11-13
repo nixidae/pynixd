@@ -54,7 +54,7 @@ async def test_ca_simple_build_root_store(
     rmtree_robust(store_path)
 
     store = LocalSocketStore(
-        make_test_spec(store_id="ca-root", store_path=store_path, nix_config=CA_NIX_CONFIG),
+        make_test_spec(daemon=True, store_id="ca-root", store_path=store_path, nix_config=CA_NIX_CONFIG),
     )
 
     async with store:
@@ -86,7 +86,7 @@ async def test_ca_multi_output_build_root_store(
     rmtree_robust(store_path)
 
     store = LocalSocketStore(
-        make_test_spec(store_id="ca-root-multi", store_path=store_path, nix_config=CA_NIX_CONFIG),
+        make_test_spec(daemon=True, store_id="ca-root-multi", store_path=store_path, nix_config=CA_NIX_CONFIG),
     )
 
     async with store:
@@ -120,7 +120,7 @@ async def test_ca_depends_on_ca_root_store(
     rmtree_robust(store_path)
 
     store = LocalSocketStore(
-        make_test_spec(store_id="ca-root-depends", store_path=store_path, nix_config=CA_NIX_CONFIG),
+        make_test_spec(daemon=True, store_id="ca-root-depends", store_path=store_path, nix_config=CA_NIX_CONFIG),
     )
 
     async with store:
@@ -152,7 +152,7 @@ async def test_non_ca_depends_on_ca_root_store(
     rmtree_robust(store_path)
 
     store = LocalSocketStore(
-        make_test_spec(store_id="ca-root-non-ca-depends", store_path=store_path, nix_config=CA_NIX_CONFIG),
+        make_test_spec(daemon=True, store_id="ca-root-non-ca-depends", store_path=store_path, nix_config=CA_NIX_CONFIG),
     )
 
     async with store:
@@ -418,7 +418,7 @@ async def test_ca_query_derivation_output_map_root_store(
     rmtree_robust(store_path)
 
     store = LocalSocketStore(
-        make_test_spec(store_id="ca-root-qdom", store_path=store_path, nix_config=CA_NIX_CONFIG),
+        make_test_spec(daemon=True, store_id="ca-root-qdom", store_path=store_path, nix_config=CA_NIX_CONFIG),
     )
 
     async with store:
@@ -725,7 +725,7 @@ async def test_text_hashed_ca_build_root_store(
     rmtree_robust(store_path)
 
     store = LocalSocketStore(
-        make_test_spec(store_id="ca-root-text", store_path=store_path, nix_config=CA_NIX_CONFIG),
+        make_test_spec(daemon=True, store_id="ca-root-text", store_path=store_path, nix_config=CA_NIX_CONFIG),
     )
 
     async with store:

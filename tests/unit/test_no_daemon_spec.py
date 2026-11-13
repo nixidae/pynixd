@@ -14,7 +14,9 @@ from pynixd.config import LocalSocketStoreSpec
 from pynixd.exceptions import NoDaemonError
 from pynixd.op_routes import OpRoute
 from pynixd.serde import IsValidPathRequest, StorePath
+from pynixd.store.local_daemon import LocalStore
 from pynixd.store.local_db import LocalDBStore
+from pynixd.store.no_daemon import NoDaemonStore
 
 
 def _spec(**update: Any) -> LocalSocketStoreSpec:
@@ -35,6 +37,18 @@ def _spec(**update: Any) -> LocalSocketStoreSpec:
 def test_a_store_with_no_daemon_refuses_what_needs_one(update: dict[str, Any], message: str) -> None:
     with pytest.raises(ValidationError, match=message):
         _spec(**update)
+
+
+def test_the_mode_picks_the_daemon_side_of_the_store() -> None:
+    assert type(LocalDBStore(_spec())._daemon) is NoDaemonStore
+    assert type(LocalDBStore(_spec(daemon=True))._daemon) is LocalStore
+
+
+def test_each_daemon_side_refuses_the_other_mode() -> None:
+    with pytest.raises(ValueError, match="LocalStore cannot serve a store whose mode is daemonless"):
+        LocalStore(_spec())
+    with pytest.raises(ValueError, match="NoDaemonStore cannot serve a store whose mode is shared"):
+        NoDaemonStore(_spec(daemon=True))
 
 
 def test_every_answer_takes_the_pynixd_route() -> None:

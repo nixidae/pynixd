@@ -42,8 +42,9 @@ names the operation.
 - `LocalDBStore` (`pynixd/store/local_db.py`) is the store pynixd serves. It holds three parts:
   - `StoreEngine` (`pynixd-store/src/pynixd_store/engine.py`): the database, the files, the locks and Nix's
     algorithms. It imports nothing of `pynixd`.
-  - `LocalStore` (`pynixd/store/local_daemon.py`): the client of the managed daemon. It is present in every mode,
-    and `daemon = false` makes it start nothing.
+  - The daemon side, chosen by the store's mode (`StoreMode`, `pynixd/store_mode.py`): `LocalStore`
+    (`pynixd/store/local_daemon.py`), the client of the daemon, or `NoDaemonStore` (`pynixd/store/no_daemon.py`)
+    in the `daemonless` mode, which starts nothing and refuses what only a daemon answers.
   - `WriteRouter` (`pynixd/write_router.py`): the one place that chooses who writes, the engine or the daemon,
     and why.
   `pynixd/op_routes.py` gives each operation a route: `daemon`, `shadow` (both answer, and the two answers are

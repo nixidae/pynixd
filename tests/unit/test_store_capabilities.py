@@ -19,7 +19,7 @@ def test_daemon_store_without_handshake_advertises_nothing() -> None:
 
 
 def test_daemon_store_reflects_the_handshake_cache() -> None:
-    store = LocalSocketStore(make_test_spec(store_id="cap"))
+    store = LocalSocketStore(make_test_spec(store_id="cap", daemon=True))
     store._features = {"PynixdState", "PynixdCollectGarbage"}
     assert "PynixdState" in store.features
     assert "PynixdCollectGarbage" in store.features

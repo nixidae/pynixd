@@ -33,7 +33,7 @@ async def test_shutdown_answers_in_flight_op(tmp_path: Path) -> None:
     socket_path = tmp_path / "pynixd.sock"
 
     local_store = LocalSocketStore(
-        make_test_spec(store_id="local", store_path=store_path, no_probe=True),
+        make_test_spec(daemon=True, store_id="local", store_path=store_path, no_probe=True),
     )
 
     async with Server(

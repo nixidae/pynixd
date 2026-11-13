@@ -38,6 +38,7 @@ async def test_handshake_feature_announcement(tmp_path: Path) -> None:
     store_b_path.mkdir(parents=True, exist_ok=True)
     store_b = LocalSocketStore(
         make_test_spec(
+            daemon=True,
             store_id="b-local",
             store_path=store_b_path,
             no_probe=True,

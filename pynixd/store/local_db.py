@@ -59,6 +59,7 @@ from ..write_router import Dump, Write, WriteClient, WriteRouter
 from .base import Store
 from .daemon_writes import DaemonWrites
 from .local_daemon import LocalStore
+from .no_daemon import NoDaemonStore
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Set as AbstractSet
@@ -293,7 +294,7 @@ class LocalDBStore(Store):
         super().__init__(spec)
         #: Who answers, and whether the storage may change (`pynixd/store_mode.py`).
         self.mode = spec.mode
-        self._daemon = LocalStore(spec)
+        self._daemon = (LocalStore if self.mode.has_daemon else NoDaemonStore)(spec)
         # One cache: an engine write forgets the entry that a daemon answer reads.
         self.path_info_cache = self._daemon.path_info_cache
         self.layout = self._daemon.layout
