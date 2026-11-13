@@ -59,6 +59,40 @@ class Bounded:
             await self.skip(self._left)
 
 
+class Prefixed:
+    """`ChainSource` (`serialise.hh:476`): *prefix*, then what *source* gives."""
+
+    def __init__(self, prefix: bytes, source: Source) -> None:
+        self._prefix = memoryview(prefix)
+        self._source = source
+
+    async def read(self, n: int) -> bytes:
+        if not self._prefix:
+            return await self._source.read(n)
+        out = bytes(self._prefix[:n])
+        self._prefix = self._prefix[n:]
+        return out
+
+    async def skip(self, n: int) -> None:
+        taken = min(n, len(self._prefix))
+        self._prefix = self._prefix[taken:]
+        if n > taken:
+            await self._source.skip(n - taken)
+
+
+async def read_up_to(source: Source, limit: int) -> tuple[bytes, bool]:
+    """At most *limit* bytes of *source*, and whether *source* ended before *limit*."""
+    pieces: list[bytes] = []
+    size = 0
+    while size < limit:
+        piece = await source.read(min(CHUNK, limit - size))
+        if not piece:
+            return b"".join(pieces), True
+        pieces.append(piece)
+        size += len(piece)
+    return b"".join(pieces), False
+
+
 class Metered:
     """*source*, with *on_bytes* told the size of each read."""
 

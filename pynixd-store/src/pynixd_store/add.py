@@ -43,7 +43,7 @@ from .errors import PynixdError
 from .hintfmt import magenta
 from .nar_fs import BadArchive, dump_path, restore_path
 from .signing import check_signatures, key_settings, public_keys
-from .source import BlockingReader
+from .source import BlockingReader, Prefixed, read_up_to
 from .utils import MTIME_STORE, nix32_encode
 
 if TYPE_CHECKING:
@@ -84,6 +84,7 @@ class ImportSettings:
     auto_optimise_store: bool = False
     fsync_store_paths: bool = False
     sync_before_registering: bool = False
+    nar_buffer_size: int = 32 * 1024 * 1024
     ignored_acls: frozenset[str] = IGNORED_ACLS
     #: The daemon's own `experimental-features`; a client's are ignored (`daemon.cc:278`).
     experimental_features: frozenset[str] = frozenset()
@@ -101,6 +102,7 @@ class ImportSettings:
             fsync_store_paths=bool(value("fsync-store-paths")),
             # Not on Windows (`local-settings.hh:252`).
             sync_before_registering=bool(config.get("sync-before-registering", {}).get("value", False)),
+            nar_buffer_size=int(config.get("nar-buffer-size", {}).get("value", 32 * 1024 * 1024)),
             ignored_acls=frozenset(value("ignored-acls")),
             experimental_features=frozenset(_words(value("experimental-features"))),
         )
@@ -549,14 +551,26 @@ async def add_dump(
     With *repair* it restores over a valid path (`local-store.cc:1249`). With *scan* the references are
     those of *references* the dump names (`filterReferences`), for `AddToStoreScanning`.
 
-    The path is known only once the dump is read, so the dump goes to a
-    temporary directory first, as Nix does with a dump past `narBufferSize`.
-    *root* temp-roots the path before the validity check.
+    The path is known only once the dump is read. A dump of at most
+    `nar-buffer-size` whose hash needs no files is hashed in memory, and a path
+    already valid then writes nothing, as in Nix: a read-only store answers it
+    (`read-only-store.sh:21`). Any other dump goes to a temporary directory
+    first. *root* temp-roots the path before the validity check.
     """
+    prefix, whole = b"", False
+    if not scan and method is not Method.GIT:
+        prefix, whole = await read_up_to(source, (await engine.settings()).nar_buffer_size)
+    if whole:
+        hasher = new_hash(algo)
+        hasher.update(prefix)
+        path = _dump_path(ContentAddress(method, algo, hasher.digest()), name, references, engine)
+        await root(path)
+        if not repair and await engine.is_valid_path_uncached(path):
+            return path
     temp = await anyio.to_thread.run_sync(TempDir.create, engine.layout.real_store_dir)
     try:
         staged = temp.path / "x"
-        reader = HashingReader(BlockingReader(source), algo)
+        reader = HashingReader(BlockingReader(Prefixed(prefix, source)), algo)
         # A Git dump comes as a NAR (`daemon.cc:430`).
         restore = _restore_flat if method in (Method.FLAT, Method.TEXT) else restore_path
         try:
@@ -572,14 +586,11 @@ async def add_dump(
             found = await anyio.to_thread.run_sync(scan_for_references, staged, candidates)
             references = frozenset(str(ref) for ref in found)
         ca = ContentAddress(method, algo, digest)
-        store_dir = str(engine.layout.store_dir)
-        try:
-            path = content_addressed_path(ca, name, references, store_dir)
-        except ValueError as error:
-            raise AddError(str(error)) from error
-        await root(path)
-        if not repair and await engine.is_valid_path_uncached(path):
-            return path
+        if not whole:
+            path = _dump_path(ca, name, references, engine)
+            await root(path)
+            if not repair and await engine.is_valid_path_uncached(path):
+                return path
         real = engine.layout.real_store_dir / path.rsplit("/", 1)[-1]
         lock = PathLock(real)
         # Not cancellable: an abandoned `flock` would hold the lock with no owner to release it.
@@ -615,6 +626,13 @@ async def add_dump(
     finally:
         with anyio.CancelScope(shield=True):
             await anyio.to_thread.run_sync(temp.remove)
+
+
+def _dump_path(ca: ContentAddress, name: str, references: frozenset[str], engine: StoreEngine) -> str:
+    try:
+        return content_addressed_path(ca, name, references, str(engine.layout.store_dir))
+    except ValueError as error:
+        raise AddError(str(error)) from error
 
 
 async def _placement(
