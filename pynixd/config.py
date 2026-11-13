@@ -565,6 +565,31 @@ class LocalSocketStoreSpec(StoreSpecBase):
     names it. It needs `use_db`, `pynixd_writes` and a store pynixd manages.
     nixidae/nixidae#1155.
     """
+    read_only: bool = False
+    """Serve the store as `local?read-only=true` serves it: pynixd changes nothing in it.
+
+    pynixd takes no big lock and no temporary root, and opens the database
+    `mode=ro`, so it sees what another writer commits. A store with no
+    database refuses to start. A write of a path already valid succeeds, and
+    any other write fails as Nix's does. With a daemon, the daemon opens the
+    store read-only and takes every write. nixidae/nixidae#1309.
+
+    NIX-DEVIATION (#27): `LocalStore::openDB` opens every read-only store's
+    database `SQLiteOpenMode::Immutable` (`local-store.cc:514`), and its manual
+    allows the mode only on a read-only file system. pynixd opens `mode=ro`
+    unless `immutable` says the storage cannot change, so a read-only pynixd
+    may serve a store another process writes. A managed daemon still opens it
+    immutable. To reverse: a deployment that never serves a live store.
+    """
+    immutable: bool = False
+    """The storage of a `read_only` store cannot change: a read-only medium, or a snapshot.
+
+    SQLite then reads it with `immutable=1`, as a temporary file: no lock, no
+    `-wal` and no `-shm` (`pager.c:5034` of SQLite 3.53). `mode=ro` cannot open
+    a WAL database in a directory pynixd may not write once its `-shm` is gone:
+    it must create one (`os_unix.c:5031`). Wrong when anything writes the store:
+    an immutable reader sees no frame the `-wal` holds.
+    """
     build_vm: BuildVmSpec | None = None
     """Run pynixd's sandboxed builds in a microVM; `None` runs them in the namespace helper alone."""
     usage_sample_seconds: float = Field(default=5.0, ge=0)
@@ -577,6 +602,17 @@ class LocalSocketStoreSpec(StoreSpecBase):
             raise ValueError(f"op_routes names no operation of the protocol: {', '.join(unknown)}")
         if not self.use_db and any(route is not OpRoute.daemon for route in self.op_routes.values()):
             raise ValueError("op_routes: a store with use_db = false answers every operation through the daemon")
+        if self.immutable and not self.read_only:
+            raise ValueError("immutable needs read_only: storage that cannot change takes no write")
+        if self.read_only:
+            if not self.use_db:
+                raise ValueError("read_only needs use_db: pynixd reads the database to answer a read-only store")
+            if self.overlay is not None:
+                raise ValueError("read_only takes no overlay: an overlay store writes its upper layer")
+            if self.daemon and self.pynixd_writes:
+                raise ValueError(
+                    "read_only with a daemon needs pynixd_writes off: the read-only daemon takes each write"
+                )
         if not self.daemon:
             if not self.use_db:
                 raise ValueError("daemon = false needs use_db: with no daemon, pynixd reads the database itself")
@@ -611,10 +647,11 @@ class LocalSocketStoreSpec(StoreSpecBase):
     def layout(self) -> StoreLayout:
         """The three directories of the store that this spec names."""
         if self.store_dir is not None and self.state_dir is not None:
-            return StoreLayout.relocated_store(self.store_dir, self.state_dir, self.log_dir)
+            layout = StoreLayout.relocated_store(self.store_dir, self.state_dir, self.log_dir)
+            return layout.as_read_only(immutable=self.immutable) if self.read_only else layout
         layout = StoreLayout.chroot(self.store_path)
         if self.overlay is None:
-            return layout
+            return layout.as_read_only(immutable=self.immutable) if self.read_only else layout
         return layout.with_overlay(
             Overlay(
                 lower=StoreLayout.chroot(self.overlay.lower_store),

@@ -759,7 +759,7 @@ class DaemonProxy:
             # `<root>/nix/var/nix` for a chroot store and `NIX_STATE_DIR` for
             # a relocated one. `StoreLayout` answers both. Issue nixidae/nixidae#215.
             layout = self.local_store.layout
-            self._temp_roots = TempRoots(layout.state_dir)
+            self._temp_roots = TempRoots(layout.state_dir, read_only=layout.read_only)
         if await self._temp_roots.add(path):
             return
         # NIX-DEVIATION (#27): Nix fails `AddTempRoot` when it cannot write

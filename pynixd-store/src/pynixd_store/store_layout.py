@@ -94,6 +94,12 @@ class StoreLayout:
     overlay: Overlay | None = None
     """The lower store and the upper layer, for a `local-overlay://` store of a chroot root."""
 
+    read_only: bool = False
+    """`local?read-only=true` (`local-store.hh:108`): no lock, no temporary root, and no write."""
+
+    immutable: bool = False
+    """The storage of a read-only store cannot change, so SQLite may read it with no lock (`immutable=1`)."""
+
     def with_overlay(self, overlay: Overlay) -> StoreLayout:
         """This chroot store as the merged directory of *overlay*."""
         if self.relocated:
@@ -101,6 +107,12 @@ class StoreLayout:
         if overlay.lower.relocated or overlay.lower.overlay is not None:
             raise ValueError("the lower store of an overlay store is a plain local store of a root")
         return replace(self, overlay=overlay)
+
+    def as_read_only(self, *, immutable: bool = False) -> StoreLayout:
+        """This store, opened as `read-only=true` opens it. An overlay writes its upper layer, so it has no such mode."""
+        if self.overlay is not None:
+            raise ValueError("an overlay store writes its upper layer, so it opens no store read-only")
+        return replace(self, read_only=True, immutable=immutable)
 
     @classmethod
     def chroot(cls, root: Path | None) -> StoreLayout:
@@ -190,6 +202,9 @@ class StoreLayout:
         read the directory as a chroot root and make `<dir>/nix/store`.
         `daemon_environment` carries that shape instead.
         """
+        if self.read_only:
+            params = {} if self.relocated else {"root": str(self.chroot_root())}
+            return ["--store", f"local?{urlencode({**params, 'read-only': 'true'}, quote_via=quote, safe='/')}"]
         if self.relocated:
             return []
         root = self.chroot_root()
@@ -211,6 +226,8 @@ class StoreLayout:
         Last, because an `experimental-features` setting after them would replace the set.
         `LocalOverlayStoreConfig::experimentalFeature` (`local-overlay-store.hh:81`): the daemon refuses the URI without it.
         """
+        if self.read_only:
+            return ["--extra-experimental-features", "read-only-local-store"]
         return [] if self.overlay is None else ["--extra-experimental-features", "local-overlay-store"]
 
     def daemon_environment(self) -> dict[str, str]:

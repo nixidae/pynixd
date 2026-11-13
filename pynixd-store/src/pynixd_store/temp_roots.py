@@ -84,9 +84,14 @@ class TempRoots:
     `DaemonProxy.add_temp_root` gives the root to the daemon instead.
     """
 
-    def __init__(self, state: Path) -> None:
-        """Prepare a roots file under `state`, and open nothing yet."""
+    def __init__(self, state: Path, *, read_only: bool = False) -> None:
+        """Prepare a roots file under `state`, and open nothing yet.
+
+        *read_only* is a read-only store: `add` holds every root and writes nothing, as
+        `LocalStore::addTempRoot` (`gc.cc:86`) does, because nothing can be deleted from that store.
+        """
         self.state = state
+        self.read_only = read_only
         self.dir = state / TEMP_ROOTS_DIR
         self.path = self.dir / f"{PYNIXD_TEMP_ROOTS_PREFIX}{os.getpid()}-{next(_names)}"
         self._fd: int | None = None
@@ -119,6 +124,8 @@ class TempRoots:
         # A `StorePath` is already normalized, so stringifying it is enough:
         # parsing it again costs a prefix strip per root, 7177 times a build.
         root = str(path) if isinstance(path, StorePath) else str(StorePath(str(path)))
+        if self.read_only:
+            return True
         if self._disabled:
             return False
         if self._add_inline(root):

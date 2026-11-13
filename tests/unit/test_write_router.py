@@ -45,6 +45,8 @@ def _info(ca: str = "") -> ValidPathInfo:
 
 
 class _Engine:
+    read_only = False
+
     def __init__(self, *, writable: bool = True, **settings: Any) -> None:
         self.writable = writable
         self._settings = ImportSettings(**settings)

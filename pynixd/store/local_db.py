@@ -32,7 +32,7 @@ from pynixd_store.autogc import AutoGC, free_space
 from pynixd_store.builder import hooks, local as local_builder
 from pynixd_store.builder.settings import BuildSettings, NotBuiltHere
 from pynixd_store.builder.vm import BuildVm
-from pynixd_store.create_store import open_local_store
+from pynixd_store.create_store import check_read_only_store, open_local_store
 from pynixd_store.drv_parser import drv_bytes, from_basic_derivation
 from pynixd_store.engine import StoreEngine, hashes_self_reference_positions
 from pynixd_store.errors import PynixdError
@@ -536,7 +536,9 @@ class LocalDBStore(Store):
             log.warning("local_store_db_refused", store_id=str(self.store_id), reason=refusal)
             self.engine.db = LocalStoreDB.inactive(self.layout)
         else:
-            if not self._daemon.runs_daemon:
+            if self.layout.read_only:
+                await anyio.to_thread.run_sync(check_read_only_store, self.layout)
+            elif not self._daemon.runs_daemon:
                 # A daemon opens its store when it starts; with none, pynixd opens it. An overlay
                 # opens its lower store as a plain local store, which makes it (`local-overlay-store.cc:50`).
                 config = await self.engine.nix_config()

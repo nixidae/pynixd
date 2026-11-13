@@ -14,7 +14,7 @@ import urllib.parse
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from nix_daemon_protocol.ids import StoreId
 from pynixd import Server
@@ -45,18 +45,31 @@ class ArmStore:
 
 
 @contextlib.asynccontextmanager
-async def arm_store(root: Path, arm: Arm, nix_config: NixConfig, server_lines: str = "") -> AsyncIterator[ArmStore]:
+async def arm_store(
+    root: Path,
+    arm: Arm,
+    nix_config: NixConfig,
+    server_lines: str = "",
+    *,
+    read_only: bool = False,
+    immutable: bool = False,
+) -> AsyncIterator[ArmStore]:
     """*arm*'s store in *root*, configured by *nix_config*: the client's own, or pynixd's and its daemon's.
 
     *server_lines* go in front of the servers' `NIX_CONFIG`, which `NixConfig` writes with `extra-` settings
-    that add to the guest's `nix.conf` and cannot replace it.
+    that add to the guest's `nix.conf` and cannot replace it. *read_only* and *immutable* serve the store as
+    `LocalSocketStoreSpec` says; the local arm's client asks for that itself, with `local?read-only=true`.
     """
     store, state, logs = root / "store", root / "var/nix", root / "var/log/nix"
     env = {"NIX_STORE_DIR": str(store), "NIX_STATE_DIR": str(state), "NIX_LOG_DIR": str(logs)}
     if arm is Arm.local:
         yield ArmStore("local", env, nix_config)
         return
-    socket = root / f"{arm}.sock"
+    socket = root / f"{arm}{'-ro' if read_only else ''}.sock"
+    # The daemon's socket is not in the state directory, which a step may make read-only (`read-only-store.sh:41`).
+    modes: dict[str, Any] = {"socket_path": root / f"{arm}-nix.sock"}  # spec fields, typed by `LocalSocketStoreSpec`
+    if read_only:
+        modes |= {"read_only": True, "immutable": immutable, "pynixd_writes": arm is not Arm.daemon}
     spec = make_test_spec(
         store_id="local",
         store_path=root / arm,
@@ -68,6 +81,7 @@ async def arm_store(root: Path, arm: Arm, nix_config: NixConfig, server_lines: s
         state_dir=state,
         log_dir=logs,
         extra_env={"NIX_CONFIG": f"{server_lines}\n{nix_config.to_nix_config_env()}"} if server_lines else None,
+        **modes,
     )
     env["NIX_STATE_DIR"] = str(root / "client")
     async with Server(stores={StoreId("local"): LocalDBStore(spec)}, unix_path=socket, ssh_port=None, http_port=None):

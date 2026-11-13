@@ -290,6 +290,20 @@ def open_local_store(layout: StoreLayout, config: Mapping[str, Any], nix_version
     return lock
 
 
+def check_read_only_store(layout: StoreLayout) -> None:
+    """What `LocalStore`'s constructor asks of a read-only store (`local-store.cc:259-279`): a current schema.
+
+    It creates no directory, takes no big lock, and writes nothing.
+    """
+    current = _schema(layout.db_path.parent / "schema")
+    if current == 0:
+        raise PynixdError("database does not exist, and cannot be created in read-only mode")
+    if current < SCHEMA_VERSION:
+        raise PynixdError("database schema needs migrating, but this cannot be done in read-only mode")
+    if current > SCHEMA_VERSION:
+        raise PynixdError(f"current Nix store schema is version {current}, but I only support {SCHEMA_VERSION}")
+
+
 def _write_synced(path: Path, data: bytes) -> None:
     """`writeFile(path, data, 0666, FsSync::Yes)`: the umask applies, as it does to Nix's `open`."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_CLOEXEC, 0o666)

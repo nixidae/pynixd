@@ -350,9 +350,12 @@ class SyncReader:
     as long as a Python call and not for a thread hop.
     """
 
-    def __init__(self, db_path: Path, statements: PathInfoStatements = WITHOUT_PROVENANCE) -> None:
+    def __init__(
+        self, db_path: Path, statements: PathInfoStatements = WITHOUT_PROVENANCE, *, immutable: bool = False
+    ) -> None:
         self.db_path = db_path
         self.statements = statements
+        self.immutable = immutable
         self._conn: sqlite3.Connection | None = None
         self._unavailable = False
 
@@ -361,7 +364,7 @@ class SyncReader:
             return None
         if self._conn is None:
             try:
-                conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+                conn = sqlite3.connect(database_uri(self.db_path, read_only=True, immutable=self.immutable), uri=True)
                 # A read must never be what stops a store from working. The
                 # write path of the store is Nix's, and pynixd waits behind it
                 # here rather than failing the query.
@@ -452,10 +455,14 @@ class LocalStoreDB:
         read_only: bool,
         reference_flush_interval: float,
         max_conns: int = 8,
+        *,
+        immutable: bool = False,
     ) -> None:
         self.db_path = db_path
         self.store_path = store_path
-        self.read_only: bool = read_only
+        self.read_only: bool = read_only or immutable
+        #: The database of storage that cannot change (`StoreLayout.immutable`), read with no lock.
+        self.immutable = immutable
         self.reference_flush_interval = reference_flush_interval
         self.flush_retry_seconds = 1.0
         """The first backoff of a flush the database refused; it doubles.
@@ -552,7 +559,7 @@ class LocalStoreDB:
         """
         if not self.active or self.db_path is None:
             return None
-        return SyncReader(self.db_path, self.statements)
+        return SyncReader(self.db_path, self.statements, immutable=self.immutable)
 
     @asynccontextmanager
     async def acquire_conn(self) -> AsyncIterator[aiosqlite.Connection]:
@@ -563,7 +570,8 @@ class LocalStoreDB:
         this file is Nix's own database, and a pooled connection that kept a
         transaction held its lock for four hours on 2026-10-06 (#697).
         """
-        if not self.active:
+        db_path = self.db_path
+        if db_path is None:
             raise RuntimeError("Database not active")
 
         await self._sem.acquire()
@@ -575,8 +583,7 @@ class LocalStoreDB:
                     conn = self._idle_conns.pop()
 
             if conn is None:
-                mode = "ro" if self.read_only else "rw"
-                uri = f"file:{self.db_path}?mode={mode}"
+                uri = database_uri(db_path, read_only=self.read_only, immutable=self.immutable)
                 # Thirty seconds of busy wait, not five: this file is the
                 # Nix daemon's own database, and under heavy builders a
                 # flush that gives up early used to take the whole pool
@@ -692,13 +699,14 @@ class LocalStoreDB:
         if db_path is None:
             return cls.inactive(layout, reference_flush_interval=reference_flush_interval)
 
-        read_only = read_only or not os.access(db_path.parent, os.W_OK)
+        read_only = read_only or layout.read_only or not os.access(db_path.parent, os.W_OK)
 
         instance = cls(
             db_path=db_path,
             store_path=layout.real_store_dir,
             read_only=read_only,
             reference_flush_interval=reference_flush_interval,
+            immutable=layout.immutable,
         )
         try:
             async with instance.acquire_conn() as db:
@@ -752,7 +760,7 @@ class LocalStoreDB:
                 await instance.close_db_pool()
             return cls.inactive(layout, reference_flush_interval=reference_flush_interval)
 
-        instance.schema = await apply_migrations(db_path, read_only=read_only)
+        instance.schema = await apply_migrations(db_path, read_only=read_only, immutable=layout.immutable)
         if not instance.schema.usable:
             log.warning(
                 "pynixd_tables_unavailable",
@@ -1302,6 +1310,17 @@ def _size_or_none(path: Path) -> int | None:
         return path.stat().st_size
     except OSError:
         return None
+
+
+def database_uri(db_path: Path, *, read_only: bool, immutable: bool = False) -> str:
+    """The SQLite URI of *db_path*. *immutable* is storage that cannot change (`StoreLayout.immutable`).
+
+    `immutable=1` takes no lock and reads no `-wal` or `-shm`, so it needs no write permission, and a live
+    writer's frames are invisible to it.
+    """
+    if immutable:
+        return f"file:{db_path}?mode=ro&immutable=1"
+    return f"file:{db_path}?mode={'ro' if read_only else 'rw'}"
 
 
 def resolve_db_path(layout: StoreLayout) -> Path | None:

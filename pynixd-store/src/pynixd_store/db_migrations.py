@@ -457,7 +457,7 @@ def _repair_reason(version: int, tables: frozenset[str]) -> str | None:
     return f"the database records schema version {version}, but {', '.join(sorted(missing))} is missing"
 
 
-async def apply_migrations(db_path: Path, *, read_only: bool) -> SchemaState:
+async def apply_migrations(db_path: Path, *, read_only: bool, immutable: bool = False) -> SchemaState:
     """Bring the pynixd tables of `db_path` up to `TARGET_VERSION`.
 
     This never raises. Every failure gives a `SchemaState` with `usable`
@@ -473,7 +473,8 @@ async def apply_migrations(db_path: Path, *, read_only: bool) -> SchemaState:
     if TARGET_VERSION == 0:
         return SchemaState(version=0, usable=True)
 
-    mode = "ro" if read_only else "rw"
+    mode = "ro&immutable=1" if immutable else "ro" if read_only else "rw"
+    read_only = read_only or immutable
     try:
         # A connection of its own, and not one from the pool. The migration
         # drives its transaction by hand, so it must own the connection's

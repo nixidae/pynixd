@@ -102,10 +102,12 @@ class Facts:
 
     writable: bool
     settings: ImportSettings
+    read_only: bool = False
+    """A read-only store: the engine takes each write, and SQLite refuses the first change, as in Nix."""
 
 
 def _database(write: Write, facts: Facts) -> str | None:
-    return None if facts.writable else "the store database is not writable"
+    return None if facts.writable or facts.read_only else "the store database is not writable"
 
 
 def parse_dump_header(dump: Dump, features: frozenset[str]) -> tuple[Method, str]:
@@ -250,7 +252,9 @@ class WriteRouter:
         """Why the daemon takes *write*, or `None` when the engine does."""
         if self.engine is None or self.route(write.op) is not OpRoute.pynixd:
             return f"{write.op} takes the daemon route"
-        facts = Facts(writable=self.engine.writable, settings=await self.engine.settings())
+        facts = Facts(
+            writable=self.engine.writable, settings=await self.engine.settings(), read_only=self.engine.read_only
+        )
         return first_reason(write, facts, self.reasons)
 
     async def engine_takes(self, write: Write) -> bool:

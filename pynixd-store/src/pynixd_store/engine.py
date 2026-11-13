@@ -159,6 +159,11 @@ class StoreEngine:
     def writable(self) -> bool:
         return self.db.active and not self.db.read_only
 
+    @property
+    def read_only(self) -> bool:
+        """A read-only store (`StoreLayout.read_only`): each write goes on until SQLite refuses its first change."""
+        return self.layout.read_only
+
     async def is_valid_path_uncached(self, path: str) -> bool:
         """`isValidPathUncached`: the table itself, never the path-info cache."""
         async with self.db.acquire_conn() as conn, conn.execute(IS_VALID_PATH, (path,)) as cursor:
@@ -423,7 +428,8 @@ class StoreEngine:
         """
         if not self.writes:
             raise RuntimeError(f"store {self._name}: pynixd_writes is off, so pynixd registers no path")
-        if not self.writable:
+        # A read-only store goes on: SQLite refuses the insert with Nix's message (`read-only-store.sh:32`).
+        if not self.writable and not self.read_only:
             raise RuntimeError(f"store {self._name}: pynixd cannot write the store database")
         infos = list(infos)
         settings = await self.settings()
