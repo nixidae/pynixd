@@ -15,33 +15,26 @@ import sys
 import time
 from collections import deque
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import anyio
 import structlog
 
-from nix_daemon_protocol.store_dir import on_disk
-from pynixd_store.nix_config import nix_environment, read_nix_config
 from pynixd_store.store_path import StorePath
 
-from ..agent import local_monitor
-from ..config import LocalSocketStoreSpec, PynixdSettings
+from ..config import LocalSocketStoreSpec
 from ..connection import Connection
 from ..line_reader import LineReader
-from ..monitor import DummyResourceMonitor, local_disk
-from ..trust import TrustPolicy
 from ..unix_socket import _SUN_PATH_MAX, open_unix_connection
 from ..wire import UnixNixReader, UnixNixWriter
-from .base import get_current_system
 from .daemon import DaemonStore
+from .local_host import LocalHost
 
 if TYPE_CHECKING:
     from anyio.abc import ByteReceiveStream, Process
 
     from pynixd_store.drv_parser import Derivation
-    from pynixd_store.store_layout import StoreLayout
 
-    from ..monitor import ResourceMonitor
 
 log = structlog.get_logger(__name__)
 
@@ -87,18 +80,6 @@ _DAEMON_POLL_INTERVAL = 0.05
 # nothing about the fault. Issue #44.
 
 
-def feature_matrix_from_nix_config(config: dict[str, Any]) -> dict[str, set[str]]:
-    """What a daemon builds, from the output of `nix config show --json`.
-
-    The daemon decides with these settings whether it can build a
-    derivation itself: `system` and `extra-platforms` for the platform,
-    `system-features` for every one of them.
-    """
-    systems = {config["system"]["value"], *config["extra-platforms"]["value"]}
-    features = set(config["system-features"]["value"])
-    return {system: set(features) for system in systems}
-
-
 def _refuse_a_socket_path_python_cannot_reach(socket_path: Path) -> None:
     """Fail now, with the number, rather than after the start-up budget.
 
@@ -119,32 +100,7 @@ def _refuse_a_socket_path_python_cannot_reach(socket_path: Path) -> None:
     )
 
 
-def _sandbox_fallback_arguments(layout: StoreLayout) -> list[str]:
-    """Refuse the silent sandbox fallback for a store Nix has diverted.
-
-    **A diverted store that falls back to no sandbox cannot build anything.**
-    nix 2.34.8 `derivation-builder.cc:2111` forces the sandbox on when
-    `storeDir != realStoreDir`, because only the chroot puts the real
-    directory at the store path the builder writes to. Twelve lines later, at
-    `:2120`, a system without mount and PID namespaces turns it back off with
-    `debug()` and `sandbox-fallback` left at its default of true. The builder
-    then writes to `/nix/store/<hash>-<name>`, which is the store of the
-    machine, and Nix looks for the output under the real directory and finds
-    nothing.
-
-    That is how a GitHub runner answered `failed to produce output path` for
-    `echo x86_64-linux > $out`. The runner blocks unprivileged user
-    namespaces, so `mountAndPidNamespacesSupported()` is false there and true
-    on every developer machine. The fallback is right for a store at
-    `/nix/store` and wrong for every store pynixd relocates, so it goes off
-    here and stays on there. Issue #47.
-    """
-    if layout.store_dir == layout.real_store_dir:
-        return []
-    return ["--option", "sandbox-fallback", "false"]
-
-
-class LocalStore(DaemonStore):
+class LocalStore(LocalHost, DaemonStore):
     """Connects to a local nix-daemon via Unix socket.
 
     Manages a private daemon subprocess for isolated store paths. The root
@@ -161,19 +117,8 @@ class LocalStore(DaemonStore):
     def __init__(self, spec: LocalSocketStoreSpec) -> None:
         """Configure local daemon paths, socket management, and monitor."""
         super().__init__(spec)
-        if spec.mode.has_daemon is not self.runs_daemon:
-            raise ValueError(f"{type(self).__name__} cannot serve a store whose mode is {spec.mode.answers}")
 
         socket_path = spec.socket_path or Path("pynixd-nix")
-        # A relocated store is always ours to start: `NIX_STORE_DIR` names a
-        # store that no daemon of the machine serves.
-        #
-        # `spec.managed` overrides that, because the inference reads a store at
-        # `/` as the store of the machine and a container can hold its own.
-        # See `LocalSocketStoreSpec.managed`.
-        self.managed = (
-            spec.managed if spec.managed is not None else (self.layout.relocated or self.store_path != Path("/"))
-        )
         if socket_path.is_absolute():
             self.socket_path = socket_path
         elif not self.managed:
@@ -186,7 +131,6 @@ class LocalStore(DaemonStore):
             # relocated store.
             self.socket_path = self.layout.socket_path(socket_path.name)
 
-        self.monitor_enabled = spec.monitor
         self.daemon_proc: Process | None = None
         self.daemon_ready: anyio.Event | None = None
         self._daemon_log_scope: anyio.CancelScope | None = None
@@ -197,48 +141,14 @@ class LocalStore(DaemonStore):
         # another coroutine is already waiting for incoming data" and every
         # startup failure reported that instead of its own cause.
         self._recent_output: deque[str] = deque(maxlen=_RECENT_OUTPUT_LINES)
-        self.nix_config = spec.nix_config
-        self.extra_env = spec.extra_env or {}
-        self._trust_policy: TrustPolicy | None = None
-        self.extra_args = spec.extra_args or []
-        self.settings = spec.settings or PynixdSettings()
-        self._probe_requested = spec.probe
 
         # Register atexit handler to ensure a private daemon is killed even
         # if close() is never called. The system daemon is never ours to kill.
-        if self.managed and self.runs_daemon:
+        if self.managed:
             atexit.register(self._atexit_kill_daemon)
-
-        monitor: ResourceMonitor = (
-            local_monitor(
-                self.pressure_settings, self.on_pressure_sample, [get_current_system()], self._replace_monitor
-            )
-            if self.monitor_enabled
-            else DummyResourceMonitor(self.pressure_settings, self.on_pressure_sample)
-        )
-        monitor.disk_fn = local_disk(self.layout.real_store_dir)
-        self.monitor: ResourceMonitor | None = monitor
-
-    def _replace_monitor(self, monitor: ResourceMonitor) -> None:
-        monitor.disk_fn = local_disk(self.layout.real_store_dir)
-        self.monitor = monitor
-        monitor.start(self._background)
 
     async def start(self, sync_paths: bool = True) -> None:
         """Spawn managed daemon and initialize the store."""
-        await self._prepare()
-        if self._features_from_config and self._feature_matrix is None and self._probe_requested is None:
-            # The machine's own daemon, or none: nix.conf says what it builds.
-            # Probing it with builds waits for free build slots before
-            # READY=1, and missed systemd's start timeout on a busy machine
-            # (#58).
-            self._feature_matrix = feature_matrix_from_nix_config(await self.read_nix_config())
-            self._probe = False
-            log.info(
-                "store_features_from_config",
-                store_id=self.store_id,
-                feature_matrix={k: sorted(v) for k, v in self._feature_matrix.items()},
-            )
         try:
             await super().start(sync_paths=sync_paths)
         except BaseException:
@@ -258,22 +168,8 @@ class LocalStore(DaemonStore):
 
     @property
     def _features_from_config(self) -> bool:
-        """Whether nix.conf, not a probe, says what the store builds: true for the machine's own daemon."""
+        """True for the machine's own daemon: a managed one is probed."""
         return not self.managed
-
-    def config_arguments(self) -> list[str]:
-        """What the managed daemon's command line sets of its settings; none for a daemon pynixd did not start."""
-        if not self.managed:
-            return []
-        return [
-            *self.layout.daemon_arguments(),
-            "--option",
-            "build-dir",
-            str(self.layout.build_dir),
-            *_sandbox_fallback_arguments(self.layout),
-            *self.extra_args,
-            *self.layout.daemon_features(),
-        ]
 
     async def ensure_daemon(self) -> None:
         """Ensure a daemon is reachable, spawning one if needed.
@@ -385,20 +281,6 @@ class LocalStore(DaemonStore):
             f"within {_DAEMON_START_TIMEOUT:g}s (pid={self.daemon_proc.pid}): {stderr_output!r}",
         )
 
-    async def trust_policy(self) -> TrustPolicy:
-        """`trusted-users`, `allowed-users` and `build-users-group`, as this store's Nix reads them.
-
-        Read once: nix-daemon reads its configuration once, at start, too.
-        """
-        if self._trust_policy is None:
-            self._trust_policy = TrustPolicy.from_nix_config(await self.read_nix_config())
-        return self._trust_policy
-
-    async def read_nix_config(self) -> dict[str, Any]:
-        """`nix config show --json` in the daemon's environment, so includes,
-        `extra-` settings and `NIX_CONFIG` resolve as they do for nix-daemon."""
-        return await read_nix_config(self.nix_bin, nix_environment(self.layout, self.extra_env))
-
     def _recent_output_text(self) -> str:
         """The last lines the daemon wrote, for a start-up error message.
 
@@ -496,21 +378,8 @@ class LocalStore(DaemonStore):
         await conn.connect()
         return conn
 
-    async def read_derivation(self, drv_store_path: StorePath | str) -> Derivation | None:
-        """Fast-path: read .drv file directly from the filesystem."""
-        from pynixd_store.drv_parser import parse_drv_bytes
-
-        # `on_disk` and not `self.store_path / "nix" / "store" / ...`.
-        # `real_store_dir()` is where the files of the store are, and a chroot
-        # store puts them somewhere other than the directory a store path
-        # names. See `read_drv_file` in `drv_parser.py`.
-        drv_file = Path(on_disk(str(StorePath(str(drv_store_path)))))
-        try:
-            contents = drv_file.read_bytes()
-        except (FileNotFoundError, OSError):
-            return await super().read_derivation(drv_store_path)
-
-        return await parse_drv_bytes(contents)
+    async def _read_derivation_without_file(self, drv_store_path: StorePath | str) -> Derivation | None:
+        return await DaemonStore.read_derivation(self, drv_store_path)
 
     async def close(self) -> None:
         """Close stores, stop monitor and terminate managed daemon if any."""

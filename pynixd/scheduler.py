@@ -42,7 +42,7 @@ from .placement_trace import PlacementTrace
 from .serde import (
     BuildDerivationResponse,
 )
-from .store import DaemonStore, LocalDBStore
+from .store import LocalDBStore, ScheduledStore
 from .store.local_db import write_router
 from .store.transfer import stream_paths_store_to_store
 from .substitution_queue import SubstitutionQueue
@@ -99,7 +99,7 @@ class Scheduler:
         self.estimator = TransferEstimator(
             self.local_store, lambda: self.stores, ctx.stores, self.ranker.settings, self.trace
         )
-        self.placer: Placer[DaemonStore] = Placer(
+        self.placer: Placer[ScheduledStore] = Placer(
             queue=self.queue,
             local=self.local_builder,
             stores=lambda: self.stores,
@@ -112,7 +112,7 @@ class Scheduler:
             spawn=self._spawn_worker,
         )
         local = self.local_store
-        self.executor: Executor[DaemonStore, LocalStore | LocalDBStore, LocalDBStore] = Executor(
+        self.executor: Executor[ScheduledStore, LocalStore | LocalDBStore, LocalDBStore] = Executor(
             queue=self.queue,
             local=local,
             local_builder=self.local_builder,
@@ -138,7 +138,7 @@ class Scheduler:
         store = self.ctx.stores.get(store_id)
         return store if isinstance(store, LocalDBStore) and store is not self.local_store else None
 
-    def _current(self, store_id: StoreId) -> DaemonStore | None:
+    def _current(self, store_id: StoreId) -> ScheduledStore | None:
         """The store under *store_id* now: a reverse builder that reconnects is a new object under the same id."""
         store = self.ctx.stores.get(store_id)
         return None if store is None else store.daemon_client
@@ -149,7 +149,7 @@ class Scheduler:
         return self.placer.held_by_pressure
 
     @property
-    def stores(self) -> dict[StoreId, DaemonStore]:
+    def stores(self) -> dict[StoreId, ScheduledStore]:
         return {
             store_id: client
             for store_id, store in self.ctx.stores.items()
@@ -183,7 +183,7 @@ class Scheduler:
         """Signal that a scheduling pass is needed."""
         self.trigger_event.set()
 
-    def on_store_added(self, store: DaemonStore, dynamic: bool = False) -> None:
+    def on_store_added(self, store: ScheduledStore, dynamic: bool = False) -> None:
         """Hook called by Server when a new store is added.
 
         If dynamic=True, the store's feature_matrix is also registered in
@@ -299,7 +299,7 @@ class Scheduler:
                 self._workers = None
                 tg.cancel_scope.cancel()
 
-    def _spawn_worker(self, build: QueuedBuild, store: DaemonStore) -> None:
+    def _spawn_worker(self, build: QueuedBuild, store: ScheduledStore) -> None:
         workers = self._workers
         if workers is None:
             raise RuntimeError("builds run only inside Scheduler.workers")
@@ -307,7 +307,7 @@ class Scheduler:
         build.worker = scope
         workers.start_soon(self._run_worker, build, store, scope)
 
-    async def _run_worker(self, build: QueuedBuild, store: DaemonStore, scope: anyio.CancelScope) -> None:
+    async def _run_worker(self, build: QueuedBuild, store: ScheduledStore, scope: anyio.CancelScope) -> None:
         # One crashed build must not cancel its siblings in the group.
         try:
             # A cancel from before the start lands at the first await only,

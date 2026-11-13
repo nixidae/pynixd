@@ -21,7 +21,7 @@ from ._base import Handler
 
 if TYPE_CHECKING:
     from ..serde.context import RequestContext
-    from ..store.daemon import DaemonStore
+    from ..store.scheduled import ScheduledStore
 
 logger = structlog.get_logger(__name__)
 
@@ -42,7 +42,7 @@ class NarFromPathHandler(Handler):
     async def serve(self, ctx: RequestContext, req: NarFromPathRequest) -> None:
         """Stream the NAR of the decoded *req*."""
         # 2. Query path info to determine nar_size
-        store: DaemonStore | LocalDBStore = ctx.proxy.local_store
+        store: ScheduledStore | LocalDBStore = ctx.proxy.local_store
         info_resp = await store.execute(QueryPathInfoRequest(path=req.path))
         if (not info_resp.valid or info_resp.info is None) and (
             mapped_store := ctx.proxy.store_for_output_path(str(req.path))

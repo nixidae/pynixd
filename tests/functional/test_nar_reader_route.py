@@ -29,6 +29,11 @@ def _shadow_matches(store_id: str) -> float:
     return REGISTRY.get_sample_value("pynixd_op_shadow_total", labels) or 0.0
 
 
+def _written_to_the_daemon(store: LocalDBStore) -> int:
+    """Bytes the store wrote to its daemon's transfer connections; a daemonless store has none."""
+    return sum(pool.traffic_totals()[1] for pool in store.daemon_client.pools if pool.lane == "transfer")
+
+
 @pytest.mark.parametrize("route", [OpRoute.pynixd, OpRoute.shadow])
 async def test_a_copy_reads_the_source_on_the_route_of_op_38(tmp_path: Path, route: OpRoute) -> None:
     src_root, dst_root = tmp_path / "src", tmp_path / "dst"
@@ -45,10 +50,10 @@ async def test_a_copy_reads_the_source_on_the_route_of_op_38(tmp_path: Path, rou
     )
     dst = LocalSocketStore(make_test_spec(daemon=True, store_id=f"{store_id}-dst", store_path=dst_root, no_probe=True))
     async with src, dst:
-        _, written_before = src.daemon_client.transfer_pool.traffic_totals()
+        written_before = _written_to_the_daemon(src)
         matches_before = _shadow_matches(store_id)
         await stream_paths_store_to_store(src, dst, [path])
-        _, written_after = src.daemon_client.transfer_pool.traffic_totals()
+        written_after = _written_to_the_daemon(src)
         valid = await dst.execute(IsValidPathRequest(path=StorePath(path=str(path))))
 
     # The destination daemon checks the NAR hash of what it imports.

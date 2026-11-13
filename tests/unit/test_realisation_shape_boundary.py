@@ -62,7 +62,7 @@ def _store(monkeypatch: pytest.MonkeyPatch, features: set[str]) -> Any:
     async def _fake_hashes(parsed: Any, read: Any) -> dict[str, str]:
         return {"out": DIGEST}
 
-    monkeypatch.setattr("pynixd.store.daemon.output_hashes", _fake_hashes)
+    monkeypatch.setattr("pynixd.store.scheduled.output_hashes", _fake_hashes)
     store = SimpleNamespace(
         store_id="local",
         features=features,
@@ -128,7 +128,7 @@ async def test_uncomputable_hash_refuses(monkeypatch: pytest.MonkeyPatch) -> Non
     async def _no_hashes(parsed: Any, read: Any) -> None:
         return None
 
-    monkeypatch.setattr("pynixd.store.daemon.output_hashes", _no_hashes)
+    monkeypatch.setattr("pynixd.store.scheduled.output_hashes", _no_hashes)
     with pytest.raises(BackendError, match="not computable"):
         await DaemonStore.query_realisation(store, request)
     assert store.forwarded == []

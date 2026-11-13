@@ -377,7 +377,7 @@ class LocalDBStore(Store):
     # ── The daemon client ───────────────────────────────────────────
 
     @property
-    def daemon_client(self) -> LocalStore:
+    def daemon_client(self) -> LocalStore | NoDaemonStore:
         return self._daemon
 
     @property

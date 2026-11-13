@@ -43,8 +43,8 @@ if TYPE_CHECKING:
     from .context import PynixdContext
     from .scheduler import Scheduler
     from .store.base import Store
-    from .store.daemon import DaemonStore
     from .store.pool import ConnectionPool
+    from .store.scheduled import ScheduledStore
 
 KNOWN_SECTIONS: tuple[str, ...] = (
     "queue",
@@ -216,7 +216,7 @@ def _experiments_section(ctx: PynixdContext) -> list[ExperimentRow]:
     return [row for store in ctx.stores.values() for row in store.experiments]
 
 
-def _limit_of(store: DaemonStore | None, now: float) -> LimitRow | None:
+def _limit_of(store: ScheduledStore | None, now: float) -> LimitRow | None:
     """A daemon store's build limit and its last sample; an HTTP cache has none."""
     if store is None:
         return None

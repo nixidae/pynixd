@@ -14,6 +14,7 @@ from pynixd.config import LocalSocketStoreSpec
 from pynixd.exceptions import NoDaemonError
 from pynixd.op_routes import OpRoute
 from pynixd.serde import IsValidPathRequest, StorePath
+from pynixd.store.daemon import DaemonStore
 from pynixd.store.local_daemon import LocalStore
 from pynixd.store.local_db import LocalDBStore
 from pynixd.store.no_daemon import NoDaemonStore
@@ -59,7 +60,7 @@ def test_every_answer_takes_the_pynixd_route() -> None:
 async def test_the_daemon_client_refuses_by_name_and_starts_nothing() -> None:
     store = LocalDBStore(_spec())
     await store._daemon.ensure_daemon()
-    assert store._daemon.daemon_proc is None
+    assert not isinstance(store._daemon, DaemonStore)
     with pytest.raises(NoDaemonError, match="no answer of its own to IsValidPathRequest"):
         await store.call(IsValidPathRequest(path=StorePath(path="/nix/store/" + "a" * 32 + "-x")))
     with pytest.raises(NoDaemonError, match="a connection to the daemon"):

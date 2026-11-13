@@ -57,7 +57,7 @@ if TYPE_CHECKING:
 
     from .connection import ClientConn, Connection
     from .serde import SetOptionsRequest
-    from .store.daemon import DaemonStore
+    from .store.scheduled import ScheduledStore
 
 log = structlog.get_logger(__name__)
 
@@ -241,7 +241,7 @@ class WriteRouter:
     )
 
     @classmethod
-    def daemon_only(cls, store: DaemonStore) -> WriteRouter:
+    def daemon_only(cls, store: ScheduledStore) -> WriteRouter:
         """The router of a store pynixd does not write itself: every write goes to its daemon."""
         return cls({}, None, DaemonWrites(store), str(store.store_id), store.add_path_info)
 

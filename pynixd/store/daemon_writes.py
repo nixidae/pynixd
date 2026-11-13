@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 
     from ..connection import ClientConn, Connection
     from ..serde import SetOptionsRequest
-    from .daemon import DaemonStore
+    from .scheduled import ScheduledStore
 
 
 async def _answer_beside_send[T](
@@ -113,7 +113,7 @@ async def _answer_beside_send[T](
 class DaemonWrites:
     """The write operations of *store*'s daemon."""
 
-    def __init__(self, store: DaemonStore) -> None:
+    def __init__(self, store: ScheduledStore) -> None:
         self.store = store
 
     @property

@@ -1,27 +1,31 @@
 """The daemon side of a daemonless local store: the store's facts, and no daemon (nixidae/nixidae#1155).
 
 `LocalDBStore` holds a `LocalStore` in a mode with a daemon and a `NoDaemonStore`
-in the `daemonless` mode (`pynixd/store_mode.py`). Both give the layout, the
-monitor and what the store builds; this one reads the Nix version and nix.conf
-instead of a daemon, and refuses every operation it would send to one.
+in the `daemonless` mode (`pynixd/store_mode.py`). Both are a `LocalHost`: the
+layout, the monitor, nix.conf and what the store builds. This one has no
+connection pool, no reconnect loop and no probe, and refuses every operation it
+would send to a daemon.
 """
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING, Any
 
 from nix_daemon_protocol.constants import FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS, FEATURE_REALISATION_WITH_PATH
 from pynixd_store.nix_config import nix_at_least, nix_environment, read_nix_version
 
 from ..exceptions import NoDaemonError
-from .local_daemon import LocalStore
-from .scheduled import ProbeState
+from .local_host import LocalHost
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from nix_daemon_protocol.wire_ops import WireRequest
 
     from ..config import LocalSocketStoreSpec
     from ..connection import ClientConn, Connection
+    from ..serde import SetOptionsRequest
 
 __all__ = ["NoDaemonStore"]
 
@@ -34,9 +38,7 @@ schema has the `Realisations` table, keyed by the derivation's hash.
 """
 
 
-class NoDaemonStore(LocalStore):
-    runs_daemon = False
-
+class NoDaemonStore(LocalHost):
     def __init__(self, spec: LocalSocketStoreSpec) -> None:
         super().__init__(spec)
         self._features = set(_NO_DAEMON_FEATURES)
@@ -47,17 +49,11 @@ class NoDaemonStore(LocalStore):
         if not nix_at_least(self.nix_version, 2, 35):
             self._features = set()
 
-    @property
-    def _features_from_config(self) -> bool:
-        return True
-
     async def ensure_daemon(self) -> None:
         """There is no daemon to start or reach."""
 
-    async def probe(self) -> None:
-        """There is nothing to probe: `start` read what the store builds from nix.conf."""
-        self.probe_state = ProbeState.PROBED
-        self._probe_event.set()
+    def _refuse(self, what: str) -> NoDaemonError:
+        return NoDaemonError(str(self.store_id), what)
 
     async def call(
         self,
@@ -67,7 +63,52 @@ class NoDaemonStore(LocalStore):
         raise_on_error: bool = False,
         skip_probe: bool = False,
     ) -> Any:
-        raise NoDaemonError(str(self.store_id), type(request).__name__)
+        raise self._refuse(type(request).__name__)
+
+    async def execute(
+        self,
+        request: WireRequest,
+        client: ClientConn | None = None,
+        suppress_last: bool = False,
+        skip_probe: bool = False,
+        mark: bool = True,
+    ) -> Any:
+        if not skip_probe:
+            await self.probe()
+        raise self._refuse(type(request).__name__)
 
     async def create_conn(self) -> Connection:
-        raise NoDaemonError(str(self.store_id), "a connection to the daemon")
+        raise self._refuse("a connection to the daemon")
+
+    @contextlib.asynccontextmanager
+    async def build_conn(self, options: SetOptionsRequest | None = None) -> AsyncIterator[Connection]:
+        raise self._refuse("a connection to the daemon")
+        yield  # pragma: no cover  # an async generator needs a yield; the raise comes first
+
+    @contextlib.asynccontextmanager
+    async def transfer_conn(self, options: SetOptionsRequest | None = None) -> AsyncIterator[Connection]:
+        raise self._refuse("a connection to the daemon")
+        yield  # pragma: no cover  # an async generator needs a yield; the raise comes first
+
+    async def answer_handshake(self) -> None:
+        raise self._refuse("a connection to the daemon")
+
+    async def sign_path_info(
+        self, request: Any, client: Any = None, suppress_last: bool = False, conn: Connection | None = None
+    ) -> Any:
+        raise self._refuse(type(request).__name__)
+
+    async def is_valid_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        raise self._refuse(type(request).__name__)
+
+    async def query_path_info(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        raise self._refuse(type(request).__name__)
+
+    async def query_path_from_hash_part(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        raise self._refuse(type(request).__name__)
+
+    async def query_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        raise self._refuse(type(request).__name__)
+
+    async def nar_from_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
+        raise self._refuse(type(request).__name__)

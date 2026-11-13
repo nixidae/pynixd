@@ -23,14 +23,12 @@ from nix_daemon_protocol.protocol import ResultType
 from nix_daemon_protocol.store_dir import store_prefix
 from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
 from nix_daemon_protocol.wire_ops import WireRequest
-from pynixd_store.drv_hash import output_hashes
 from pynixd_store.drv_parser import drv_bytes, parse_drv_bytes
 from pynixd_store.hintfmt import magenta
 from pynixd_store.utils import random_nix32_hash
 
 from .. import metrics, wire
 from .._lazy import ssh_errors
-from ..constants import FEATURE_REALISATION_WITH_PATH
 from ..exceptions import BackendError, PynixdError
 from ..serde import (
     AddToStoreRequest,
@@ -287,7 +285,6 @@ class DaemonStore(ScheduledStore):
         self._reconnect_scope: anyio.CancelScope | None = None
         self._reconnect_trigger = anyio.Event()
         self._reconnect_delay = self.reconnect_min_delay
-        self._on_reconnect: Callable[[], Awaitable[None]] | None = None
 
     @property
     def daemon_client(self) -> DaemonStore:
@@ -303,16 +300,6 @@ class DaemonStore(ScheduledStore):
     def in_flight(self) -> int:
         """Number of currently active connections."""
         return sum(pool.active_connections for pool in self.pools)
-
-    async def until_idle(self) -> None:
-        """Return once no pool of this store has a connection out."""
-        while busy := [pool for pool in self.pools if pool.active_connections]:
-            await busy[0].until_idle()
-
-    @property
-    def pool_stats(self) -> str:
-        """Human-readable pool statistics string."""
-        return " ".join(f"{pool.lane}: {pool.stats}" for pool in self.pools)
 
     def build_conn(self, options: SetOptionsRequest | None = None) -> AbstractAsyncContextManager[Connection]:
         """Acquire a connection for build operations."""
@@ -922,84 +909,6 @@ class DaemonStore(ScheduledStore):
         if not isinstance(response, QueryRealisationResponse):
             return response
         return answer_in_both_shapes(response, request)
-
-    async def request_in_the_shape_this_store_reads(self, request: Any) -> Any:
-        """Fill the missing shape of op 42/43, or refuse.
-
-        **Every hop negotiates apart, and a verbatim forward crosses one.**
-        The client decoded this request under its own set, and the pooled
-        connection will encode it under this store's. The two shapes of a
-        realisation reference share no byte: the old one carries the hash of
-        the derivation and the new one the path. A request that holds only
-        the shape the store did not agree to would reach the wire as an
-        empty string -- a `None` scalar writes `""` -- or as a model the
-        writer cannot fill. Never as the value the client sent. Issue #84.
-
-        pynixd's own queries carry both shapes and pass through untouched:
-        `realisations_of` of `goals/realisations.py` and
-        `_register_realisations` of `goals/ensure.py` fill each field, and
-        the codec drops the one the store did not agree to. Only a request
-        from a client can hold one shape alone.
-
-        New to old fills the hash from the derivation, which this store
-        holds. Old to new has no answer anywhere: the old shape carries the
-        hash and not the path, and no index maps one to the other. That
-        direction refuses loudly instead of writing an empty path.
-        """
-        store_reads_new = FEATURE_REALISATION_WITH_PATH in self.features
-        keyed = request.keyed_drv_output
-        old = getattr(request, "drv_output", None) or getattr(request, "realisation", None)
-        if store_reads_new and old is not None and keyed is None:
-            raise BackendError(
-                f"store {self.store_id} offers 'realisation-with-path-not-hash' but the request carries "
-                "only the old shape; the derivation path cannot be recovered from the output hash",
-            )
-        if not store_reads_new and keyed is not None and old is None:
-            update: dict[str, object] = {"drv_output": await self._old_drv_output_id(keyed)}
-            if getattr(request, "unkeyed_realisation", None) is not None:
-                update["realisation"] = await self._old_realisation(keyed, request.unkeyed_realisation)
-            elif hasattr(request, "unkeyed_realisation"):
-                raise BackendError(
-                    f"store {self.store_id} does not offer 'realisation-with-path-not-hash' and the request "
-                    "carries half of the new shape: the key without the body",
-                )
-            return request.model_copy(update=update)
-        return request
-
-    async def _old_drv_output_id(self, keyed: Any) -> DrvOutput:
-        """The old-shape id of a new-shape derivation output.
-
-        The hash comes from the derivation this store holds, read the way
-        `realisations_of` of `goals/realisations.py` reads it. A derivation
-        the store does not hold, or whose closure gives no hash, refuses:
-        the all-zero id that Nix writes when it has no hash would query a
-        realisation that was never registered.
-        """
-        drv_path = str(keyed.drv_path)
-        output_name = keyed.output_name
-        parsed = await self.read_derivation(drv_path)
-        hashes = await output_hashes(parsed, self.read_derivation) if parsed is not None else None
-        digest = hashes.get(output_name) if hashes else None
-        if digest is None:
-            raise BackendError(
-                f"store {self.store_id} does not offer 'realisation-with-path-not-hash' and the hash of "
-                f"{drv_path}!{output_name} is not computable",
-            )
-        return DrvOutput(f"sha256:{digest}!{output_name}")
-
-    async def _old_realisation(self, keyed: Any, unkeyed: Any) -> Realisation:
-        """The old-shape whole of a new-shape key and body.
-
-        The JSON of `Realisation` carries the bare `<hash>-<name>`, while
-        `UnkeyedRealisation` carries the whole path; `_bare_path` of
-        `nix_daemon_protocol.build_result` is that translation.
-        """
-        bare = str(unkeyed.out_path).removeprefix(store_prefix())
-        return Realisation(
-            id=await self._old_drv_output_id(keyed),
-            out_path=StorePath(bare),
-            signatures=sorted(unkeyed.signatures),
-        )
 
     async def add_multiple_to_store(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """AddMultipleToStore (op 44) — delegate to daemon."""

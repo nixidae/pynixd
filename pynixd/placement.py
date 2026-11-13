@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     from .build_queue import BuildQueue, QueuedBuild
     from .config import StoreRankingSettings
     from .placement_trace import PlacementTrace
-    from .store import DaemonStore
+    from .store import ScheduledStore
     from .store.base import Store
 
 log = structlog.get_logger(__name__)
@@ -218,7 +218,7 @@ class TransferEstimator:
     def __init__(
         self,
         local_store: Store,
-        stores: Callable[[], Mapping[StoreId, DaemonStore]],
+        stores: Callable[[], Mapping[StoreId, ScheduledStore]],
         answers: Mapping[StoreId, AnswersValidity],
         settings: StoreRankingSettings,
         trace: PlacementTrace,
@@ -268,7 +268,7 @@ class TransferEstimator:
                 return None, None
             return await db.expected_build_ms_on(identity, str(store_id))
 
-        async def measure(store: DaemonStore) -> None:
+        async def measure(store: ScheduledStore) -> None:
             expected = await db.expected_bytes(identity, str(store.store_id), local_id=str(local_id))
             link = await self._link(store.store_id)
             missing = await missing_input_bytes(store, self.answers, sizes)

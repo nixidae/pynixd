@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pynixd.store.local_daemon import _sandbox_fallback_arguments
+from pynixd.store.local_host import _sandbox_fallback_arguments
 from pynixd_store.store_layout import StoreLayout
 
 

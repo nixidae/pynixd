@@ -28,7 +28,7 @@ from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 from pynixd import Server
 from pynixd.serde import QueryPathInfoRequest, StorePath
-from pynixd.store import LocalDBStore, Store
+from pynixd.store import LocalDBStore, LocalStore, Store
 from pynixd_store.drv_parser import parse_drv
 from pynixd_store.hintfmt import magenta
 from pynixd_store.local_store_db import LocalStoreDB
@@ -303,7 +303,9 @@ async def test_a_pooled_worker_sees_a_registration_at_once(tmp_path: Path) -> No
         local = server.ctx.local_store
         assert isinstance(local, LocalDBStore)
         assert (await local.execute(asked, skip_probe=True)).valid is False
-        [(worker, _)] = local.daemon_client.transfer_pool.idle_conns
+        daemon = local.daemon_client
+        assert isinstance(daemon, LocalStore)
+        [(worker, _)] = daemon.transfer_pool.idle_conns
         assert "QueryPathInfo" in " ".join(worker.op_log), worker.op_log
         await local.register_valid_paths(plain)
         assert (await local.execute(asked, skip_probe=True)).valid is True

@@ -22,9 +22,9 @@ if TYPE_CHECKING:
     from .scheduler import Scheduler
     from .session_builders import SessionBuilders
     from .store.base import Store
-    from .store.daemon import DaemonStore
     from .store.local_daemon import LocalStore
     from .store.local_db import LocalDBStore
+    from .store.scheduled import ScheduledStore
 
 
 OUTPUT_LOCATIONS_KEPT = 100_000
@@ -81,7 +81,7 @@ class PynixdContext:
     or it reports a path that pynixd can serve as missing.
     """
 
-    def store_for_output_path(self, path: str) -> DaemonStore | None:
+    def store_for_output_path(self, path: str) -> ScheduledStore | None:
         """The backend that holds *path*, or `None` when no backend does.
 
         `None` means only that this map does not know the path. The local

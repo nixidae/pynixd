@@ -50,6 +50,9 @@ A store spec field that turns on what pynixd does beyond its default, such as `d
 ### Store Mode
 How a local store runs, named on two axes. Who answers: `proxy` (the daemon answers everything), `daemon-writes` (pynixd reads the database, the daemon makes every change), `shared` (pynixd may also write, by route) or `daemonless` (no daemon). The storage: `live`, `read-only` or `immutable`. `StoreMode.of` in `pynixd/store_mode.py` derives it from the spec's five flags and refuses a combination with no mode; `LocalSocketStoreSpec.mode` gives it. A `LocalDBStore` holds a `LocalStore` for its daemon in a mode with one, and a `NoDaemonStore` (`pynixd/store/no_daemon.py`) in the `daemonless` mode: the store's facts, read from Nix and nix.conf, and a refusal for each operation that needs a daemon.
 
+### Scheduled Store
+What the scheduler reads of a store it places builds on: what it builds, its host's pressure, its build limit and its health (`ScheduledStore`, `pynixd/store/scheduled.py`). `DaemonStore` adds the wire to a Nix daemon: pools, probes and reconnect. `LocalHost` (`pynixd/store/local_host.py`) adds what a store on this machine knows: nix.conf, the machine's samples and the derivation files. `LocalStore` is both, and `NoDaemonStore` is a `LocalHost` alone.
+
 ### Trampolining
 A Nix-native concept for "unknown output" building (common in CA derivations). It is the process where a build is intercepted because it has "deferred" dependencies that must be resolved first. Once resolved (possibly by triggering sub-builds), the original derivation is updated and re-injected into the build process. In `pynixd`:
 - **`DerivationResolver`** handles pre-build resolution (deferred output, dynamic DrvWithVersion)

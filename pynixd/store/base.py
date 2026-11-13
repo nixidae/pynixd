@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from ..state_models import ExperimentRow
     from .daemon import DaemonStore
     from .local_db import LocalDBStore
+    from .scheduled import ScheduledStore
 
 
 log = structlog.get_logger(__name__)
@@ -162,7 +163,7 @@ class Store(ABC):
         return 0
 
     @property
-    def daemon_client(self) -> DaemonStore | None:
+    def daemon_client(self) -> ScheduledStore | None:
         """The worker-protocol client that builds and transfers for this store, or `None`.
 
         The scheduler builds on it and the substitution queue streams a NAR

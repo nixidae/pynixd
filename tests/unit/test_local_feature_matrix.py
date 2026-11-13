@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pynixd.store.local_daemon import feature_matrix_from_nix_config
+from pynixd.store.local_host import feature_matrix_from_nix_config
 
 
 def setting(value: object) -> dict[str, object]:

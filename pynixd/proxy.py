@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     from .store import LocalDBStore, LocalStore, Store
     from .wire import NixReader, NixWriter
 
-from .store import DaemonStore as DaemonStore
+from .store import DaemonStore as DaemonStore, ScheduledStore
 
 log = structlog.get_logger(__name__)
 
@@ -660,8 +660,8 @@ class DaemonProxy:
         queue = scheduler.substitution_queue if scheduler is not None else None
         return await pynixd_substitutes(self.local_store, self.client, queue)
 
-    def store_for_output_path(self, path: str) -> DaemonStore | None:
-        """Look up the DaemonStore that produced a given output path."""
+    def store_for_output_path(self, path: str) -> ScheduledStore | None:
+        """Look up the store that produced a given output path."""
         return self.ctx.store_for_output_path(path)
 
     def _force_substitute_on_destination(self, request: QueryValidPathsRequest) -> None:
