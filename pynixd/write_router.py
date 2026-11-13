@@ -32,7 +32,7 @@ from nix_daemon_protocol.optimise_store import OptimiseStoreResponse
 from nix_daemon_protocol.protocol import GCAction, Verbosity
 from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.verify_store import VerifyStoreResponse
-from pynixd_store.add import AddError
+from pynixd_store.add import AddError, valid_dump
 from pynixd_store.autogc import AutoGCSettings
 from pynixd_store.collect import GCOptions
 from pynixd_store.content_address import Method, parse_method_algo, text_needs_sha256
@@ -276,6 +276,32 @@ class WriteRouter:
         metrics.OP_FALLTHROUGH.labels(store_id=self.store_id, op=write.op).inc()
         return False
 
+    async def _valid_dump(
+        self, write: Write, dump: Dump, source: Source, client: WriteClient
+    ) -> tuple[ValidPathInfo | None, Source]:
+        """The info of a dump the store holds already, so the daemon is not asked to add it; and the source.
+
+        An evaluation adds each derivation file again, and most are valid: 1420 of one `firefox.drvPath`, each
+        a round trip to the daemon of 1.05 ms (nixidae/nixidae#419). Nix answers a valid path from its database
+        and writes nothing (`local-store.cc:1151`), so pynixd does the same without the daemon. A repair goes to
+        the daemon, and so does a header Nix refuses: the daemon's refusal is the answer.
+        """
+        engine = self.engine
+        if write.repair or engine is None or not engine.db.active:
+            return None, source
+        try:
+            method, algo = parse_dump_header(dump, (await engine.settings()).experimental_features)
+        except ValueError:
+            return None, source
+        path, source = await valid_dump(engine, dump.name, method, algo, dump.references, source, root=client.root)
+        if path is None:
+            return None, source
+        info = await engine.query_path_info(path)
+        if info is None:
+            return None, source
+        # The rest of the dump is empty: `valid_dump` read all of it.
+        return info, source
+
     def _engine(self) -> StoreEngine:
         if self.engine is None:
             raise RuntimeError(f"store {self.store_id} has no engine")
@@ -381,6 +407,10 @@ class WriteRouter:
             raise ValueError("AddToStore carries its dump")
         meter = _add_meter(client)
         if not await self.engine_takes(write):
+            valid, source = await self._valid_dump(write, dump, source, client)
+            if valid is not None:
+                meter.finish()
+                return await sign(valid, None)
             info = await self.daemon.add_to_store_from_dump(
                 dump.name,
                 dump.method_algo,

@@ -628,6 +628,41 @@ async def add_dump(
             await anyio.to_thread.run_sync(temp.remove)
 
 
+async def valid_dump(
+    engine: StoreEngine,
+    name: str,
+    method: Method,
+    algo: str,
+    references: frozenset[str],
+    source: Source,
+    *,
+    root: Callable[[str], Awaitable[None]],
+) -> tuple[str | None, Source]:
+    """The path of a dump that is valid already, and the source to read the dump from otherwise.
+
+    The check `add_dump` makes before it writes anything (`local-store.cc:1151`), for a dump that goes to the
+    daemon: at most `nar-buffer-size` of it is read and hashed, and *root* holds the path before the check. A
+    dump that is larger, a Git dump, or one Nix cannot make a path of gives `None`, and the source given back
+    holds the bytes read, then the rest.
+    """
+    if method is Method.GIT:
+        return None, source
+    prefix, whole = await read_up_to(source, (await engine.settings()).nar_buffer_size)
+    rest = Prefixed(prefix, source)
+    if not whole:
+        return None, rest
+    hasher = new_hash(algo)
+    hasher.update(prefix)
+    try:
+        path = content_addressed_path(
+            ContentAddress(method, algo, hasher.digest()), name, references, str(engine.layout.store_dir)
+        )
+    except ValueError:
+        return None, rest
+    await root(path)
+    return (path if await engine.is_valid_path_uncached(path) else None), rest
+
+
 def _dump_path(ca: ContentAddress, name: str, references: frozenset[str], engine: StoreEngine) -> str:
     try:
         return content_addressed_path(ca, name, references, str(engine.layout.store_dir))

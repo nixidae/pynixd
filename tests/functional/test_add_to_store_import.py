@@ -22,6 +22,7 @@ from nix_daemon_protocol.content_address import ContentAddress
 from nix_daemon_protocol.store_path import StorePath
 from pynixd.exceptions import BackendError
 from pynixd.serde.context import ReadContext, WriteContext
+from pynixd.store.daemon_writes import DaemonWrites
 from pynixd_store.content_address import text_needs_sha256
 from pynixd_store.engine import StoreEngine
 from pynixd_store.hintfmt import magenta, missing_feature
@@ -168,6 +169,38 @@ async def test_each_mode_of_a_raw_client_adds_as_the_daemon_does(tmp_path: Path,
         assert rows(b, query) == rows(c, query)
     for path, *_ in rows(b, VALID_PATHS):
         assert files(b, path) == files(c, path), path
+
+
+async def test_a_dump_the_store_holds_is_answered_without_the_daemon(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nix answers op 7 for a valid path from its database and writes nothing (`local-store.cc:1151`).
+
+    On the daemon route pynixd does the same, and the daemon sees only the first add. An evaluation sends one
+    op 7 for each derivation file, and most are valid: 1420 for one `firefox.drvPath` (nixidae/nixidae#419).
+    """
+    forwarded: list[str] = []
+    forward = DaemonWrites.add_to_store_from_dump
+
+    async def counting(writes: DaemonWrites, name: str, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401 -- the forward's own answer
+        forwarded.append(name)
+        return await forward(writes, name, *args, **kwargs)
+
+    monkeypatch.setattr(DaemonWrites, "add_to_store_from_dump", counting)
+    tree, flat = _inputs(tmp_path)
+    sends = [
+        ("tree", "fixed:r:sha256", b"".join(dump_path(tree))),
+        ("flat", "fixed:sha256", flat.read_bytes()),  # noqa: ASYNC240 -- test setup
+        ("note", "text:sha256", b"a note\n"),
+    ]
+    root, socket = tmp_path / "c", tmp_path / "daemon.sock"
+    async with server(root, socket, "daemon"), client(socket) as conn:
+        first = [(await _send(conn, name, cam, dump)).info.model_dump() for name, cam, dump in sends]
+        assert forwarded == [name for name, *_ in sends]
+        forwarded.clear()
+        again = [(await _send(conn, name, cam, dump)).info.model_dump() for name, cam, dump in sends]
+    assert forwarded == []
+    assert again == first
 
 
 def _corrupt(root: Path, path: str) -> None:
