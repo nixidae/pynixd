@@ -22,6 +22,7 @@ from .constants import STALL_TRACEBACK_MAX_BYTES
 from .experiments import Experiment
 from .nix_config import NixConfig
 from .op_routes import OPERATION_NAMES, OpRoute
+from .store_mode import StoreMode
 
 
 class ScheduleMode(StrEnum):
@@ -637,24 +638,12 @@ class LocalSocketStoreSpec(StoreSpecBase):
         unknown = sorted(set(self.op_routes) - OPERATION_NAMES)
         if unknown:
             raise ValueError(f"op_routes names no operation of the protocol: {', '.join(unknown)}")
-        if not self.use_db and any(route is not OpRoute.daemon for route in self.op_routes.values()):
+        mode = self.mode
+        if not mode.reads_database and any(route is not OpRoute.daemon for route in self.op_routes.values()):
             raise ValueError("op_routes: a store with use_db = false answers every operation through the daemon")
-        if self.immutable and not self.read_only:
-            raise ValueError("immutable needs read_only: storage that cannot change takes no write")
-        if self.read_only:
-            if not self.use_db:
-                raise ValueError("read_only needs use_db: pynixd reads the database to answer a read-only store")
-            if self.overlay is not None:
-                raise ValueError("read_only takes no overlay: an overlay store writes its upper layer")
-            if self.daemon and self.pynixd_writes:
-                raise ValueError(
-                    "read_only with a daemon needs pynixd_writes off: the read-only daemon takes each write"
-                )
-        if not self.daemon:
-            if not self.use_db:
-                raise ValueError("daemon = false needs use_db: with no daemon, pynixd reads the database itself")
-            if not self.pynixd_writes:
-                raise ValueError("daemon = false needs pynixd_writes: with no daemon, pynixd writes the store itself")
+        if mode.read_only and self.overlay is not None:
+            raise ValueError("read_only takes no overlay: an overlay store writes its upper layer")
+        if not mode.has_daemon:
             if self.managed is False:
                 raise ValueError("daemon = false needs a store pynixd manages, not the machine's own daemon")
             if routed := sorted(op for op, route in self.op_routes.items() if route is not OpRoute.pynixd):
@@ -680,6 +669,17 @@ class LocalSocketStoreSpec(StoreSpecBase):
         if self.overlay is not None and self.store_dir is not None:
             raise ValueError("overlay needs a chroot root: a relocated store has none")
         return self
+
+    @property
+    def mode(self) -> StoreMode:
+        """The mode the five flags name (`pynixd/store_mode.py`); `ValueError` when they name none."""
+        return StoreMode.of(
+            use_db=self.use_db,
+            daemon=self.daemon,
+            pynixd_writes=self.pynixd_writes,
+            read_only=self.read_only,
+            immutable=self.immutable,
+        )
 
     def layout(self) -> StoreLayout:
         """The three directories of the store that this spec names."""

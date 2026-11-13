@@ -47,6 +47,9 @@ Where the sandbox helper of a local build runs: `HostSite` on the host's kernel,
 ### Experiment
 A store spec field that turns on what pynixd does beyond its default, such as `daemon = false` or `build_vm`. Its annotation carries an `Experiment` (`pynixd/experiments.py`), which names the default it replaces, its issue and its tests. `pynixd state` lists the experiments each store has turned on.
 
+### Store Mode
+How a local store runs, named on two axes. Who answers: `proxy` (the daemon answers everything), `daemon-writes` (pynixd reads the database, the daemon makes every change), `shared` (pynixd may also write, by route) or `daemonless` (no daemon). The storage: `live`, `read-only` or `immutable`. `StoreMode.of` in `pynixd/store_mode.py` derives it from the spec's five flags and refuses a combination with no mode; `LocalSocketStoreSpec.mode` gives it.
+
 ### Trampolining
 A Nix-native concept for "unknown output" building (common in CA derivations). It is the process where a build is intercepted because it has "deferred" dependencies that must be resolved first. Once resolved (possibly by triggering sub-builds), the original derivation is updated and re-injected into the build process. In `pynixd`:
 - **`DerivationResolver`** handles pre-build resolution (deferred output, dynamic DrvWithVersion)
