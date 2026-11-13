@@ -11,7 +11,6 @@ and then up to 9.4 s, and the liveness probe killed the process. Issue #507.
 from __future__ import annotations
 
 import asyncio
-import time
 import tracemalloc
 from typing import Any, cast
 
@@ -20,7 +19,12 @@ import pytest
 
 from nix_daemon_protocol.constants import STDERR_ERROR, STDERR_LAST, STDERR_RESULT
 from nix_daemon_protocol.io import BytesWriter
-from nix_daemon_protocol.logs import ActivityField, LogError, LogResult
+from nix_daemon_protocol.logs import (
+    _YIELD_EVERY,  # noqa: PLC2701 -- the stream's own interval is the bound under test
+    ActivityField,
+    LogError,
+    LogResult,
+)
 from nix_daemon_protocol.protocol import FieldType, ResultType
 from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest
 from pynixd.connection import ClientConn, Connection
@@ -36,11 +40,13 @@ _TRACED_MESSAGES = 10_000
 _HELD_LIMIT = 4 * 1024 * 1024
 """Measured at the midpoint of `_TRACED_MESSAGES`: 0.27 MiB streamed, 9.1 MiB with `keep_logs=True`."""
 
-_MAX_GAP = 0.5
-"""The longest the stream may hold the event loop, in seconds.
+_MAX_GAP_MESSAGES = 2 * _YIELD_EVERY
+"""The most messages the stream may read between two turns of the event loop.
 
-Measured in the guest under the harness's profiler: 22 ms to 86 ms per 256
-messages. Without the yield the gap is the whole stream."""
+Counted, not timed: a wall-clock gap measured the scheduler of a loaded guest
+too (1.423 s once among gaps of 0.03 s, nixidae/nixidae#1323). A read may end
+inside a message, so one yield interval and one more. Without the yield the gap
+is the whole stream."""
 
 
 def _progress() -> bytes:
@@ -195,16 +201,15 @@ async def test_a_long_stream_lets_the_event_loop_run() -> None:
     """
     daemon = _Daemon(_MESSAGES, _answer())
     conn = _connection(daemon)
-    gaps: list[float] = []
+    gaps: list[int] = []
     done = anyio.Event()
 
     async def tick() -> None:
-        last = time.monotonic()
+        last = daemon.sent
         while not done.is_set():
             await anyio.sleep(0)
-            now = time.monotonic()
-            gaps.append(now - last)
-            last = now
+            gaps.append(daemon.sent - last)
+            last = daemon.sent
 
     async with anyio.create_task_group() as tg:
         tg.start_soon(tick)
@@ -213,7 +218,8 @@ async def test_a_long_stream_lets_the_event_loop_run() -> None:
             await conn.call(QueryValidPathsRequest(paths=set(), substitute=1), client=cast("Any", _Client(daemon)))
         finally:
             done.set()
-    assert max(gaps) < _MAX_GAP, f"the loop waited {max(gaps):.3f} s for the stream"
+    assert daemon.sent == _MESSAGES
+    assert max(gaps) <= _MAX_GAP_MESSAGES, f"the loop waited for {max(gaps)} messages of the stream"
 
 
 async def test_an_error_ends_the_stream_once() -> None:
