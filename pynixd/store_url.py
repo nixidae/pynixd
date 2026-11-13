@@ -29,6 +29,7 @@ from .config import (
     ExternalUnixStoreSpec,
     HTTPBinaryCacheSpec,
     LocalBinaryCacheSpec,
+    LocalStoreSubstituterSpec,
     S3BinaryCacheSpec,
     SSHSubprocessStoreSpec,
 )
@@ -57,10 +58,20 @@ class StoreReference:
 
     @classmethod
     def parse(cls, url: str) -> StoreReference:
-        """*url* in parts; a repeated parameter keeps its last value."""
+        """*url* in parts, as `StoreReference::parse` (`store-reference.cc:72`); a repeated parameter keeps its last value.
+
+        A string with no scheme and a `/` names the local store at that root, and `local` with parameters the local
+        store they set (`store-reference.cc:103`, `:111`). `local` alone is the machine's store, and keeps no scheme.
+        """
         split = urlsplit(url)
-        params = {key: values[-1] for key, values in parse_qs(split.query, keep_blank_values=True).items()}
-        return cls(split.scheme, split.netloc, split.path, MappingProxyType(params))
+        params = MappingProxyType(
+            {key: values[-1] for key, values in parse_qs(split.query, keep_blank_values=True).items()}
+        )
+        if not split.scheme and "/" in split.path:
+            return cls("local", "", split.path, params)
+        if not split.scheme and split.path == "local" and params:
+            return cls("local", "", "", params)
+        return cls(split.scheme, split.netloc, split.path, params)
 
 
 def _flag(value: str | None) -> bool | None:
@@ -134,6 +145,21 @@ def _unix(ref: StoreReference) -> StoreSpecBase | None:
     return ExternalUnixStoreSpec.model_validate(
         {"store_id": StoreId(name), "socket_path": socket_path, "store_path": store_path, **settings}
     )
+
+
+def _local(ref: StoreReference) -> StoreSpecBase | None:
+    """Nix's `LocalStoreConfig` at a chroot root (`local-fs-store.cc:21`), as a store that only substitutes.
+
+    `?root=` wins over the path, as in Nix. With neither, it is the machine's own store, and the daemon answers.
+    """
+    settings = _substituter_settings(ref, frozenset({"root"}))
+    root = ref.params["root"] if "root" in ref.params else unquote(ref.authority + ref.path)
+    if settings is None or not root.startswith("/"):
+        return None
+    settings.setdefault("priority", 0.0)
+    store_path = Path(posixpath.normpath(root))
+    name = _name("local", str(store_path), "trusted" if settings["trusted"] else "")
+    return LocalStoreSubstituterSpec.model_validate({"store_id": StoreId(name), "store_path": store_path, **settings})
 
 
 _S3_PARAMS: Final = frozenset({"profile", "region", "scheme", "endpoint", "addressing-style"})
@@ -256,6 +282,7 @@ SCHEMES: Final[Mapping[str, Callable[[StoreReference], StoreSpecBase | None]]] =
         "https": _http,
         "file": _file,
         "unix": _unix,
+        "local": _local,
         "ssh-ng": _ssh_ng,
         "s3": _s3,
     }

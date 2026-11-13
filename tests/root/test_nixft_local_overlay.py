@@ -362,8 +362,8 @@ async def test_optimise_drops_the_upper_copy_of_a_lower_path(tmp_path: Path, arm
             assert not upper.exists(), "optimise-inner.sh:51"
 
 
-async def _verify(tmp_path: Path, arm: Arm, *, repair: bool) -> None:
-    """`verify-inner.sh:23` to `:63`, and with *repair* to `:69`."""
+async def _verify(tmp_path: Path, arm: Arm, *, repair: str | None) -> None:
+    """`verify-inner.sh:23` to `:63`, and with *repair*, a substituter URL with `{}` for the backup's root, to `:69`."""
     src = _sources(tmp_path)
     async with overlay_volume() as stores:
         lower = await _init_lower(stores, src)
@@ -398,13 +398,14 @@ async def _verify(tmp_path: Path, arm: Arm, *, repair: bool) -> None:
             )
             assert f"path '{dummy}' was modified! expected hash" in err, f"verify-inner.sh:62: {err}"
             assert lower_only not in err, f"verify-inner.sh:63: {err}"
-            if not repair:
+            if repair is None:
                 return
+            substituter = repair.format(backup)
 
             config = (
-                store.config.model_copy(update={"substituters": [str(backup)]})
+                store.config.model_copy(update={"substituters": [substituter]})
                 if isinstance(store.config, NixConfig)
-                else {**store.config, "substituters": str(backup)}
+                else {**store.config, "substituters": substituter}
             )
             _rc, out, err = await _run(store.url, config, "nix-store", "--verify", "--check-contents", "--repair")
             assert f"copying path '{missing}'" in out + err, f"verify-inner.sh:68: {err}"
@@ -414,25 +415,25 @@ async def _verify(tmp_path: Path, arm: Arm, *, repair: bool) -> None:
 @pytest.mark.parametrize("arm", list(Arm))
 async def test_verify_finds_the_corrupted_paths_the_upper_database_holds(tmp_path: Path, arm: Arm) -> None:
     """`verify-inner.sh:23` to `:63`: verify reads the merged directory, and skips a path only the lower store holds."""
-    await _verify(tmp_path, arm, repair=False)
+    await _verify(tmp_path, arm, repair=None)
 
 
-NO_LOCAL_SUBSTITUTER = pytest.mark.xfail(
-    strict=True, reason="pynixd opens no local store as a substituter: nixidae/nixidae#1312"
-)
+@pytest.mark.parametrize("url", ["{}", "local://{}", "local?root={}"])
+@pytest.mark.parametrize("arm", list(Arm))
+async def test_verify_repairs_from_a_local_store_substituter(tmp_path: Path, arm: Arm, url: str) -> None:
+    """`verify-inner.sh:66` to `:69`: `--repair` copies the corrupted paths back from a backup store named by its path.
+
+    `verify-inner.sh:66` names the store by its path. The other two URLs name the same store, and pynixd opens each.
+    """
+    await _verify(tmp_path, arm, repair=url)
 
 
 @pytest.mark.parametrize(
-    "arm",
-    [
-        Arm.local,
-        Arm.daemon,
-        pytest.param(Arm.pynixd, marks=NO_LOCAL_SUBSTITUTER),
-    ],
+    "arm", [Arm.local, Arm.daemon, pytest.param(Arm.pynixd, marks=pytest.mark.skip(reason="this arm runs no daemon"))]
 )
-async def test_verify_repairs_from_a_local_store_substituter(tmp_path: Path, arm: Arm) -> None:
-    """`verify-inner.sh:66` to `:69`: `--repair` copies the corrupted paths back from a backup store named by its path."""
-    await _verify(tmp_path, arm, repair=True)
+async def test_nix_daemon_repairs_from_a_substituter_pynixd_does_not_open(tmp_path: Path, arm: Arm) -> None:
+    """`verify-inner.sh:66` to `:69` with a setting pynixd does not read: the client's options reach nix-daemon."""
+    await _verify(tmp_path, arm, repair="local?root={0}&state={0}/nix/var/nix")
 
 
 async def _trigger_stale_file_handle(stores: Stores, store: ArmStore, src: Path) -> tuple[int, str] | None:

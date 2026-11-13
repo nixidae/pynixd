@@ -8,7 +8,13 @@ from pathlib import Path
 import asyncssh
 import pytest
 
-from pynixd.config import ExternalUnixStoreSpec, LocalBinaryCacheSpec, PynixdSettings, SSHSubprocessStoreSpec
+from pynixd.config import (
+    ExternalUnixStoreSpec,
+    LocalBinaryCacheSpec,
+    LocalStoreSubstituterSpec,
+    PynixdSettings,
+    SSHSubprocessStoreSpec,
+)
 from pynixd.store.daemon import DaemonStore
 from pynixd.store.ssh import SSHSubprocessStore
 from pynixd.store_url import OPENSSH_KNOWN_HOSTS, spec_for
@@ -83,6 +89,26 @@ def test_a_path_in_a_url_is_percent_decoded() -> None:
     assert isinstance(cache, LocalBinaryCacheSpec)
     assert isinstance(socket, ExternalUnixStoreSpec)
     assert (cache.path, socket.socket_path) == (Path("/tmp/a[b/cache"), Path("/tmp/a[b/sock"))
+
+
+@pytest.mark.parametrize(
+    "url", ["/srv/backup", "local:///srv/backup", "local?root=/srv/backup", "local://x?root=/srv/backup"]
+)
+def test_a_local_store_url_opens_the_store_at_its_root(url: str) -> None:
+    """`store-reference.cc:103` and `:111`: a path and `local` with `?root=` name one local store; `?root=` wins."""
+    spec = spec_for(url)
+    assert isinstance(spec, LocalStoreSubstituterSpec)
+    assert spec.store_path == Path("/srv/backup")
+    assert (spec.priority, spec.trusted, spec.no_schedule, spec.gc_enabled) == (0, False, True, False)
+    same = spec_for("/srv/backup/")
+    assert same is not None
+    assert spec.reference_key() == same.reference_key()
+
+
+@pytest.mark.parametrize("url", ["local", "auto", "daemon", "local?trusted=1", "relative/backup", "/srv/b?state=/s"])
+def test_the_machines_store_and_unread_local_settings_stay_with_the_daemon(url: str) -> None:
+    """`local` alone is the machine's store (`store-reference.cc:103`); pynixd reads no `state`, so the daemon answers."""
+    assert spec_for(url) is None
 
 
 def test_another_trust_or_key_is_another_store() -> None:

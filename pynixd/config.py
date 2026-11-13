@@ -56,6 +56,7 @@ if TYPE_CHECKING:
         LocalBinaryCacheStore,
         LocalDBStore,
         LocalStore,
+        LocalStoreSubstituter,
         S3BinaryCacheStore,
         SSHSocketStore,
         SSHSubprocessStore,
@@ -660,6 +661,29 @@ class ExternalUnixStoreSpec(StoreSpecBase):
         return ExternalUnixStore(
             self.model_copy(update={"store_id": StoreId(store_id)}),
         )
+
+
+class LocalStoreSubstituterSpec(StoreSpecBase):
+    """A local store at the chroot root `store_path` that pynixd only reads: a substituter URL's `local` store.
+
+    Only a substituter URL makes one (`store_url`), so no configuration file names this type.
+    """
+
+    type: Literal["local-store-substituter"] = "local-store-substituter"
+    scheduleable: bool = False
+    no_schedule: bool = True
+    gc_enabled: bool = False
+    probe: bool | None = False
+
+    def reference_key(self) -> object | None:
+        """The root, the trust and `want-mass-query`."""
+        return ("local", self.store_path, self.trusted, self.want_mass_query)
+
+    def to_store(self, store_id: str) -> LocalStoreSubstituter:
+        """Build a ``LocalStoreSubstituter`` from this spec."""
+        from .store import LocalStoreSubstituter
+
+        return LocalStoreSubstituter(self.model_copy(update={"store_id": StoreId(store_id)}))
 
 
 class ReverseStoreSpec(StoreSpecBase):
