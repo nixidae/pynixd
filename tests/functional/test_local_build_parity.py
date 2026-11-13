@@ -1537,7 +1537,10 @@ EXECUTABLE_NAR = (
 
 @contextlib.asynccontextmanager
 async def _http(tmp_path: Path) -> AsyncIterator[tuple[str, dict[str, Any]]]:
-    """The files the fetches ask for, at `localhost`: the name must resolve inside the sandbox.
+    """The files the fetches ask for, at the address the server binds.
+
+    Not `localhost`: curl tries `::1` first, and another test's server can hold the same port number there. A
+    pynixd cache did once and answered 401 (nixidae/nixidae#1321).
 
     *seen* records the path and User-Agent of each request. `/bucket/held` sets `seen["arrived"]` and answers
     once `seen["release"]` is set.
@@ -1580,7 +1583,7 @@ async def _http(tmp_path: Path) -> AsyncIterator[tuple[str, dict[str, Any]]]:
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", 0).start()
     try:
-        yield f"http://localhost:{runner.addresses[0][1]}", seen
+        yield f"http://127.0.0.1:{runner.addresses[0][1]}", seen
     finally:
         await runner.cleanup()
 
