@@ -16,6 +16,8 @@ closure of the rest, and walks no path across the two.
 from __future__ import annotations
 
 import os
+import re
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import anyio
@@ -49,6 +51,47 @@ class LowerPathNeedsSync(Exception):
     pynixd without `pynixd_writes` leaves that write, and so the answer, to
     the daemon.
     """
+
+
+def _unescape_mount_field(field: str) -> str:
+    """A field of `/proc/self/mounts`: the kernel writes a space, a tab, a newline and `\\` as octal escapes."""
+    return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), field)
+
+
+def mounted_correctly(mounts: str, overlay: Overlay, real_store_dir: Path) -> bool:
+    """`check-mount` (`local-overlay-store.cc:49`): the last mount at *real_store_dir* is OverlayFS over these layers.
+
+    Mounts stack, so the last entry at the directory is the mount in effect. It must be OverlayFS, its
+    `lowerdir` the lower store's real store directory, alone, and its `upperdir` the upper layer.
+
+    NIX-DEFECT (#23): Nix matches `/proc/self/mounts` with the regex `(^|\\n)overlay <dir> `
+    (`local-overlay-store.cc:54`). That reads the mount's source, which `mount` takes from its caller, and
+    not the file system type, and it skips a later mount of another type over the overlay. pynixd splits the
+    fields and compares the type of the last mount; Lillecarl/nix#431.
+    """
+    options: str | None = None
+    for line in mounts.splitlines():
+        fields = line.split(" ")
+        if len(fields) >= 4 and Path(_unescape_mount_field(fields[1])) == real_store_dir:
+            options = _unescape_mount_field(fields[3]) if fields[2] == "overlay" else None
+    if options is None:
+        return False
+    found = dict(option.partition("=")[::2] for option in options.split(","))
+    return found.get("lowerdir") == str(overlay.lower.real_store_dir) and found.get("upperdir") == str(
+        overlay.upper_layer
+    )
+
+
+def check_mount(layout: StoreLayout) -> None:
+    """Refuse an overlay store whose mount `mounted_correctly` rejects, with Nix's text (`local-overlay-store.cc:71`).
+
+    It blocks: run it in a thread.
+    """
+    if layout.overlay is None or not layout.overlay.check_mount:
+        return
+    mounts = Path("/proc/self/mounts").read_text()
+    if not mounted_correctly(mounts, layout.overlay, layout.real_store_dir):
+        raise PynixdError(f"overlay filesystem {collect.path_fmt(layout.real_store_dir)} mounted incorrectly")
 
 
 def _forget_nothing(_path: StorePath) -> None:

@@ -39,7 +39,7 @@ from pynixd_store.errors import PynixdError
 from pynixd_store.hintfmt import magenta, missing_feature, show_error
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.nix_config import nix_environment, read_nix_config, read_nix_config_text, read_nix_version
-from pynixd_store.overlay_engine import LowerPathNeedsSync, OverlayEngine
+from pynixd_store.overlay_engine import LowerPathNeedsSync, OverlayEngine, check_mount
 from pynixd_store.signing import SecretKey, hash_keyed_realisation_fingerprint, realisation_fingerprint
 from pynixd_store.source import Pieces
 
@@ -519,7 +519,13 @@ class LocalDBStore(Store):
 
     @contextlib.asynccontextmanager
     async def _run(self) -> AsyncIterator[None]:
-        """The daemon client's lifetime holds the engine's: the database opens after the daemon creates it."""
+        """The daemon client's lifetime holds the engine's: the database opens after the daemon creates it.
+
+        An overlay's mount is checked first, as Nix checks it when it opens the store
+        (`local-overlay-store.cc:49`). The daemon checks it per connection, so it starts, and each probe of
+        its socket fails until `_DAEMON_START_TIMEOUT`: measured 30 s.
+        """
+        await anyio.to_thread.run_sync(check_mount, self.layout)
         async with self._daemon, super()._run():
             yield
 
