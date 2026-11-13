@@ -87,15 +87,19 @@ A sandboxed builder that asks for recursive Nix reaches a `RestrictedProxy` (`py
   and `pynixd-store/src/pynixd_store/optimise.py`.
 - `pynixd state` (`pynixd/state.py`) reports what the instance holds.
 
-## Experiments today
+## Experiments
 
-Each switch is in a different place. nixidae/nixidae#1318 gives them one shape.
+An experiment is a field of `LocalSocketStoreSpec` whose annotation carries an `Experiment`
+(`pynixd/experiments.py`): what its default does, its issue, and its tests. `pynixd state` lists each store's
+experiments that are off their default, in the section `experiments`. `tests/unit/test_experiments.py` holds
+this table to the declarations.
 
-| experiment | switch |
+| switch | turns on |
 | --- | --- |
-| an operation answered by pynixd | `op_routes` in the store spec (`pynixd/op_routes.py`) |
-| no daemon under pynixd | `daemon = false` in the store spec |
-| pynixd writes the store | `pynixd_writes` in the store spec |
-| a read-only or immutable store | `read_only`, `immutable` in the store spec |
-| builds in a libkrun microVM | `build_vm` in the store spec |
-| external builders | Nix's `external-builders` setting |
+| `op_routes` | an operation answered by pynixd, or by both sides and compared |
+| `pynixd_writes` | pynixd writes the store |
+| `daemon` | at `false`: no daemon under pynixd |
+| `read_only` | a read-only store; `immutable` when its storage cannot change |
+| `build_vm` | sandboxed builds in a libkrun microVM |
+
+Nix's `external-builders` is a Nix setting that pynixd's builder follows, not an experiment of pynixd.

@@ -19,6 +19,7 @@ from pynixd_store.s3_url import https_url
 from pynixd_store.store_layout import Overlay, StoreLayout
 
 from .constants import STALL_TRACEBACK_MAX_BYTES
+from .experiments import Experiment
 from .nix_config import NixConfig
 from .op_routes import OPERATION_NAMES, OpRoute
 
@@ -540,14 +541,28 @@ class LocalSocketStoreSpec(StoreSpecBase):
     extra_args: list[str] | None = None
     use_db: bool = True
     monitor: bool = True
-    op_routes: dict[str, OpRoute] = Field(default_factory=dict)
+    op_routes: Annotated[
+        dict[str, OpRoute],
+        Experiment(
+            replaces="each operation takes the route its answer declares",
+            issue=1155,
+            tests=("tests/unit/test_op_routes.py",),
+        ),
+    ] = Field(default_factory=dict)
     """The route of each named operation: `daemon`, `shadow` or `pynixd`.
 
     Keyed by the operation's name, `QueryReferrers`. An operation left out
     takes the default its answer declares; `pynixd/op_routes.py` says what
     each route does. The store refuses to start on a route it cannot take.
     """
-    pynixd_writes: bool = False
+    pynixd_writes: Annotated[
+        bool,
+        Experiment(
+            replaces="the daemon makes every change to the store",
+            issue=1155,
+            tests=("tests/unit/test_write_router.py",),
+        ),
+    ] = False
     """Whether pynixd itself may change the store: its files, its database, its state directory.
 
     Off, every answer that writes goes to the daemon, whatever `op_routes`
@@ -556,7 +571,14 @@ class LocalSocketStoreSpec(StoreSpecBase):
     reaping a dead process's temporary roots file) leaves that to the
     daemon. The test suites turn it on; a deployment turns it on by hand.
     """
-    daemon: bool = True
+    daemon: Annotated[
+        bool,
+        Experiment(
+            replaces="a Nix daemon under pynixd answers what pynixd does not",
+            issue=1155,
+            tests=("tests/unit/test_no_daemon_spec.py", "tests/functional/test_no_daemon_refusals.py"),
+        ),
+    ] = True
     """Whether a Nix daemon runs under pynixd for this store.
 
     Off, pynixd opens the store itself (`pynixd_store.create_store`), starts
@@ -565,7 +587,15 @@ class LocalSocketStoreSpec(StoreSpecBase):
     names it. It needs `use_db`, `pynixd_writes` and a store pynixd manages.
     nixidae/nixidae#1155.
     """
-    read_only: bool = False
+    read_only: Annotated[
+        bool,
+        Experiment(
+            replaces="pynixd and its daemon may change the store",
+            issue=1309,
+            tests=("tests/unit/test_read_only_db.py", "tests/functional/test_nixft_read_only_store.py"),
+            details=("immutable",),
+        ),
+    ] = False
     """Serve the store as `local?read-only=true` serves it: pynixd changes nothing in it.
 
     pynixd takes no big lock and no temporary root, and opens the database
@@ -590,7 +620,14 @@ class LocalSocketStoreSpec(StoreSpecBase):
     it must create one (`os_unix.c:5031`). Wrong when anything writes the store:
     an immutable reader sees no frame the `-wal` holds.
     """
-    build_vm: BuildVmSpec | None = None
+    build_vm: Annotated[
+        BuildVmSpec | None,
+        Experiment(
+            replaces="a sandboxed build runs in the namespace helper alone",
+            issue=1186,
+            tests=("tests/functional/test_build_vm.py",),
+        ),
+    ] = None
     """Run pynixd's sandboxed builds in a microVM; `None` runs them in the namespace helper alone."""
     usage_sample_seconds: float = Field(default=5.0, ge=0)
     """Seconds between two samples of a running build's cgroup (`builder/cgroup.py`); 0 takes none."""

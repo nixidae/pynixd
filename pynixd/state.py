@@ -23,6 +23,7 @@ from .state_models import (
     Benchmark,
     BuildRow,
     ClientRow,
+    ExperimentRow,
     LimitRow,
     PoolRow,
     QueueCounts,
@@ -49,6 +50,7 @@ KNOWN_SECTIONS: tuple[str, ...] = (
     "queue",
     "builds",
     "stores",
+    "experiments",
     "sessions",
     "clients",
     "upstream",
@@ -66,6 +68,7 @@ def collect(ctx: PynixdContext, wants: list[str] | None = None) -> StateReport:
         queue=_queue_section(ctx) if "queue" in wanted else None,
         builds=_builds_section(ctx) if "builds" in wanted else None,
         stores=_stores_section(ctx) if "stores" in wanted else None,
+        experiments=_experiments_section(ctx) if "experiments" in wanted else None,
         sessions=ctx.sessions.by_transport() if "sessions" in wanted else None,
         clients=_clients_section(ctx) if "clients" in wanted else None,
         upstream=upstream_in_flight(ctx) if "upstream" in wanted else None,
@@ -206,6 +209,11 @@ def _stores_section(ctx: PynixdContext) -> dict[str, StoreRow]:
         )
         for store_id, store in ctx.stores.items()
     }
+
+
+def _experiments_section(ctx: PynixdContext) -> list[ExperimentRow]:
+    """The experiments each store has turned on (`pynixd/experiments.py`)."""
+    return [row for store in ctx.stores.values() for row in store.experiments]
 
 
 def _limit_of(store: DaemonStore | None, now: float) -> LimitRow | None:

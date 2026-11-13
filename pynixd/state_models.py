@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 WaitReason = Literal["unwanted", "local_slot", "pressure", "scheduling"]
 """What a pending build waits for. `WAITS_FOR` words each one."""
@@ -115,6 +115,18 @@ class StoreRow(_Model):
     limit: LimitRow | None = None
 
 
+class ExperimentRow(_Model):
+    """One experiment a store has turned on (`pynixd/experiments.py`)."""
+
+    store: str
+    switch: str
+    """The store spec field."""
+    value: JsonValue
+    details: dict[str, JsonValue] = {}
+    """The fields that qualify the switch, as the experiment declares them."""
+    issue: int
+
+
 class StoreTransfer(_Model):
     bytes_in: int = 0
     bytes_out: int = 0
@@ -161,6 +173,7 @@ class StateReport(_Model):
     queue: QueueCounts | None = None
     builds: list[BuildRow] | None = None
     stores: dict[str, StoreRow] | None = None
+    experiments: list[ExperimentRow] | None = None
     sessions: dict[str, int] | None = None
     clients: list[ClientRow] | None = None
     upstream: list[UpstreamRow] | None = None

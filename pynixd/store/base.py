@@ -20,6 +20,7 @@ from cachetools import TTLCache
 from nix_daemon_protocol.store_dir import store_dir
 from pynixd_store.background import Background
 
+from ..experiments import active
 from ..trust import TrustPolicy
 from .realisation_query import query_realisation_over_wire
 
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
     from ..config import StoreSpecBase
     from ..connection import ClientConn, Connection
     from ..serde import DrvOutput, Realisation
+    from ..state_models import ExperimentRow
     from .daemon import DaemonStore
     from .local_db import LocalDBStore
 
@@ -84,6 +86,7 @@ class Store(ABC):
         """A store of a client's `builders`: only that client's builds go here (`pynixd/session_builders.py`)."""
         self.reference_key: object | None = spec.reference_key()
         """The key of the substituter URL this store stands for: `StoreSpecBase.reference_key`."""
+        self.experiments: list[ExperimentRow] = active(spec, str(spec.store_id))
         self.gc_defer = spec.gc_defer
         """Here and not in `DaemonStore`: an HTTP binary cache is the store
         this flag exists for, and it speaks no worker protocol."""

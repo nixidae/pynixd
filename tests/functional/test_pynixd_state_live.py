@@ -66,6 +66,8 @@ async def test_state_local_sections_through_a_live_daemon(tmp_path: Path) -> Non
     assert "unix" in payload["sessions"]
     assert payload["transfers"]["bytes_received"] >= 0
     assert set(payload["totals"]) == {"builds_completed", "sessions_accepted"}
+    assert payload["experiments"] == [row.model_dump(mode="json") for row in ctrl_local.experiments]
+    assert "pynixd_writes" in {row["switch"] for row in payload["experiments"] if row["store"] == "local"}
 
 
 async def test_state_federated_merges_a_registered_builder(tmp_path: Path) -> None:
