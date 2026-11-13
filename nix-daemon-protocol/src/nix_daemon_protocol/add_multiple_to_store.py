@@ -13,7 +13,10 @@ from .constants import FEATURE_VERSIONED_ADD_TO_STORE_MULTIPLE, proto
 from .wire_ops import WireRequest, WireResponse
 
 UNVERSIONED_PATH_INFO = proto(1, 16)
-"""The version of each path info in the stream of a peer without `versionedAddToStoreMultiple` (`daemon.cc:554`)."""
+"""The version of each path info in the stream of a peer without `versionedAddToStoreMultiple`.
+
+Nix reads it at `daemon.cc:554`.
+"""
 
 
 def path_info_version(version: int, features: frozenset[str]) -> tuple[int, frozenset[str]]:

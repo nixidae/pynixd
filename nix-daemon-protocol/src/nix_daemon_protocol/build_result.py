@@ -47,10 +47,11 @@ class BuildResultStatus(IntEnum):
     NOT_DETERMINISTIC = 12
     NO_SUBSTITUTERS = 14
     CANCELLED = 16
-    """Determinate v3.24.0's result of a goal that never finished (`goal.hh:172`, `common-protocol.cc:111`).
+    """Determinate v3.24.0's result of a goal that never finished.
 
-    Determinate writes it to every peer. Upstream reads no status above 14,
-    so `wire_status` sends `MiscFailure`, which Determinate's client also
+    It is at `goal.hh:172` and `common-protocol.cc:111`. Determinate writes
+    it to every peer. Upstream reads no status above 14, so `wire_status`
+    sends `MiscFailure`, which Determinate's client also
     counts as cancelled (`build-result.hh:218`).
     """
 

@@ -32,5 +32,9 @@ Designs: options weighed against measurements, and the one recommended.
 :maxdepth: 1
 :caption: Design
 
+design/builder
+design/daemonless
+design/store-engine
+design/store-model
 design/upgrade-handover
 ```

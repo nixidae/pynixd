@@ -295,15 +295,6 @@ The standard operations below live in `nix_daemon_protocol`. Operations in the `
 
 ---
 
-### Op 103 — QueryPathInfos
-
-```{eval-rst}
-.. automodule:: pynixd.daemon_extensions.query_path_infos
-   :members:
-```
-
----
-
 ### Op 104 — QueryClosure
 
 ```{eval-rst}
