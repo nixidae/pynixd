@@ -24,8 +24,8 @@ import anyio
 import structlog
 from anyio.lowlevel import checkpoint
 
-from pynixd_store.db_migrations import PLACEMENT_CANDIDATE_TABLE, PLACEMENT_DECISION_TABLE
 from pynixd_store.local_store_db import DatabaseError
+from pynixd_store.placement_tables import DecisionWrite, ObservationWrite
 
 if TYPE_CHECKING:
     from pynixd_store.build_stats import StoreEstimate
@@ -101,36 +101,6 @@ class _Observed:
     observation_id: int
 
 
-INSERT_DECISION = f"""
-INSERT INTO {PLACEMENT_DECISION_TABLE}
-(decidedAtMs, passId, buildId, attempt, drvPath, name, system, shape, outcome, reason, chosenStoreId,
- queuedMs, expectedBuildMs, preferLocal, localCanBuild, localSlotFull, localWaitMs, weights)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-"""
-
-INSERT_CANDIDATE = f"""
-INSERT OR REPLACE INTO {PLACEMENT_CANDIDATE_TABLE}
-(decisionId, storeId, rank, reason, chosen, roomy, failedHere,
- cpuUtilization, cpuIdlePoints, cpuPsi, cpuPsiPoints, ioPsi, ioPsiPoints, unmonitoredPoints,
- inFlight, concurrencyPoints, assignedThisPass, herdPoints, scorePenalty, loadScore, threshold, passed,
- transferSeconds, transferPoints, priority, finalScore,
- inputsBytes, pullBytes, sendBytesPerS, receiveBytesPerS, dispatchMs, buildMs, buildSource,
- shipMs, pullMs, slotWaitMs, totalMs)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-"""
-
-SET_OBSERVATION = f"UPDATE {PLACEMENT_DECISION_TABLE} SET observationId = ? WHERE id = ?"
-
-# The oldest rows first: ids grow with time, so the scan stops at the chunk.
-SWEEP_CHUNK_END = f"""
-SELECT max(id), count(*) FROM (
-    SELECT id FROM {PLACEMENT_DECISION_TABLE} WHERE decidedAtMs < ? ORDER BY id LIMIT ?
-)
-"""
-SWEEP_CANDIDATES = f"DELETE FROM {PLACEMENT_CANDIDATE_TABLE} WHERE decisionId <= ?"
-SWEEP_DECISIONS = f"DELETE FROM {PLACEMENT_DECISION_TABLE} WHERE id <= ?"
-
-
 def _ms(seconds: float | None) -> int | None:
     return round(seconds * 1000) if seconds is not None else None
 
@@ -162,12 +132,12 @@ def decision_row(decision: PlacementDecision) -> tuple[object, ...]:
     )
 
 
-def candidate_row(decision_id: int, candidate: CandidateTrace) -> tuple[object, ...]:
+def candidate_row(candidate: CandidateTrace) -> tuple[object, ...]:
+    """A candidate's row, without the `decisionId` the write puts first."""
     terms = candidate.breakdown
     estimate = candidate.estimate
     link = estimate.link if estimate is not None else None
     return (
-        decision_id,
         candidate.store_id,
         candidate.rank,
         candidate.reason,
@@ -262,29 +232,24 @@ class PlacementTrace:
         dropped, self.dropped = self.dropped, 0
         if dropped:
             log.warning("placement_trace_dropped", dropped=dropped, limit=self.settings.buffer_limit)
-        written = 0
+        writes = [
+            ObservationWrite(item.decision, item.observation_id)
+            if isinstance(item, _Observed)
+            else DecisionWrite(item, decision_row(item), [candidate_row(c) for c in item.candidates])
+            for item in pending
+        ]
         try:
-            async with db.acquire_conn() as conn:
-                candidates: list[tuple[object, ...]] = []
-                for item in pending:
-                    if isinstance(item, _Observed):
-                        if item.decision.row_id is not None:
-                            await conn.execute(SET_OBSERVATION, (item.observation_id, item.decision.row_id))
-                        continue
-                    cursor = await conn.execute(INSERT_DECISION, decision_row(item))
-                    item.row_id = cursor.lastrowid
-                    if item.row_id is not None:
-                        candidates += [candidate_row(item.row_id, c) for c in item.candidates]
-                    written += 1
-                await conn.executemany(INSERT_CANDIDATE, candidates)
-                await conn.commit()
+            return await db.placements.write(writes)
         except DatabaseError:
-            log.warning("placement_trace_flush_failed", decisions=written, exc_info=True)
+            log.warning(
+                "placement_trace_flush_failed",
+                decisions=sum(isinstance(w, DecisionWrite) for w in writes),
+                exc_info=True,
+            )
             for item in pending:
                 if isinstance(item, PlacementDecision):
                     item.row_id = None
             return 0
-        return written
 
     async def sweep(self, now_ms: int | None = None) -> int:
         """Delete the decisions older than `max_age`, chunk by chunk; answer how many."""
@@ -295,16 +260,7 @@ class PlacementTrace:
         cutoff = now_ms - int(self.settings.max_age * 1000)
         removed = 0
         try:
-            while True:
-                async with db.acquire_conn() as conn:
-                    async with conn.execute(SWEEP_CHUNK_END, (cutoff, self.settings.sweep_chunk)) as cursor:
-                        row = await cursor.fetchone()
-                    if row is None or row[0] is None:
-                        break
-                    end, count = int(row[0]), int(row[1])
-                    await conn.execute(SWEEP_CANDIDATES, (end,))
-                    await conn.execute(SWEEP_DECISIONS, (end,))
-                    await conn.commit()
+            while count := await db.placements.sweep_chunk(cutoff, self.settings.sweep_chunk):
                 removed += count
                 if count < self.settings.sweep_chunk:
                     break
