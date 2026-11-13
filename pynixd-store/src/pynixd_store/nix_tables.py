@@ -1,7 +1,8 @@
-"""The reads of Nix's own tables in a local store's SQLite database: `ValidPaths`, `Refs`, `DerivationOutputs` and the realisations.
+"""Nix's own tables in a local store's SQLite database: `ValidPaths`, `Refs`, `DerivationOutputs` and the realisations.
 
 Each method answers with store paths and `ValidPathInfo`, never with a row or
-a cursor. The SQL is in `queries.py`. pynixd's own tables are `LocalStoreDB`'s.
+a cursor. The SQL is in `queries.py` and `register.py`. pynixd's own tables
+are `LocalStoreDB`'s.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
 
+from . import register
 from .queries import (
     IS_VALID_PATH,
     QUERY_ALL_VALID_PATHS,
@@ -60,7 +62,7 @@ def path_info(row: tuple[Any, ...], references: Iterable[str]) -> ValidPathInfo:
 
 
 class NixTables:
-    """The queries of Nix's `LocalStore` over its own tables, on the pool of *db*."""
+    """The queries and writes of Nix's `LocalStore` over its own tables, on the pool of *db*."""
 
     def __init__(self, db: LocalStoreDB) -> None:
         self._db = db
@@ -149,3 +151,28 @@ class NixTables:
         for drv_path, output_name, output_path in rows:
             maps.setdefault(StorePath(path=drv_path), {})[output_name] = StorePath(path=output_path)
         return maps
+
+    # Each write is one transaction of its own, in `register.py`. A caller never holds a connection.
+
+    async def register_valid_paths(self, registrations: list[register.Registration]) -> None:
+        async with self._db.acquire_conn() as conn:
+            await register.register_valid_paths(conn, registrations, self._db.statements)
+
+    async def add_signatures(self, path: str, sigs: Iterable[Signature]) -> bool:
+        """Merge *sigs* into the path's signatures; `False` when the path is not valid."""
+        async with self._db.acquire_conn() as conn:
+            return await register.add_signatures(conn, path, sigs)
+
+    async def register_drv_output(
+        self, drv: str, output_name: str, out_path: str, sigs: Iterable[Signature], *, by_path: bool
+    ) -> None:
+        async with self._db.acquire_conn() as conn:
+            await register.register_drv_output(conn, drv, output_name, out_path, sigs, by_path=by_path)
+
+    async def invalidate_path(self, path: str) -> None:
+        async with self._db.acquire_conn() as conn:
+            await register.invalidate_path(conn, path)
+
+    async def update_path_hashes(self, path: str, *, nar_hash: str, nar_size: int) -> None:
+        async with self._db.acquire_conn() as conn:
+            await register.update_path_hashes(conn, path, nar_hash=nar_hash, nar_size=nar_size)

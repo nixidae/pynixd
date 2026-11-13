@@ -19,6 +19,8 @@ import pytest
 from nix_daemon_protocol.signature import Signature
 from pynixd_store import register
 from pynixd_store.engine import StoreEngine
+from pynixd_store.nix_tables import NixTables
+from pynixd_store.queries import WITHOUT_PROVENANCE
 from pynixd_store.store_layout import StoreLayout
 
 if TYPE_CHECKING:
@@ -154,6 +156,8 @@ class _EngineDB:
         self._conn = conn
         self.active = active
         self.read_only = read_only
+        self.statements = WITHOUT_PROVENANCE
+        self.nix = NixTables(self)  # type: ignore[arg-type]  # the stand-in has the pool NixTables reads
 
     @contextlib.asynccontextmanager
     async def acquire_conn(self) -> AsyncIterator[aiosqlite.Connection]:

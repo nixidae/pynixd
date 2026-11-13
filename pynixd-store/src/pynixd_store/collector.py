@@ -23,7 +23,7 @@ from anyio.lowlevel import checkpoint
 from nix_daemon_protocol.protocol import GCAction, Verbosity
 from nix_daemon_protocol.store_path import StorePath
 
-from . import collect, register
+from . import collect
 from .errors import PynixdError
 from .hintfmt import ANSI_NORMAL, ANSI_RED, magenta
 from .liveness import unlink_stale_auto_roots, walk_root_sources
@@ -334,8 +334,7 @@ class Collection:
         if referrers:
             names = ", ".join(f"'{referrer}'" for referrer in sorted(referrers, key=_base_name))
             raise PathInUse(f"cannot delete path '{magenta(path)}' because it is in use by {magenta(names)}")
-        async with self.engine.db.acquire_conn() as conn:
-            await register.invalidate_path(conn, path)
+        await self.engine.db.nix.invalidate_path(path)
         self.engine.invalidate_path_info_cache_for(path)
 
     async def _delete_from_store(self, base_name: str, *, known: bool) -> None:

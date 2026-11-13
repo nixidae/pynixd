@@ -366,8 +366,7 @@ class StoreEngine:
             for registration in registrations:
                 for warning in registration.warnings:
                     await report(Verbosity.WARN, warning)
-        async with self.db.acquire_conn() as conn:
-            await register.register_valid_paths(conn, registrations, self.db.statements)
+        await self.db.nix.register_valid_paths(registrations)
         for info in infos:
             self._on_change(info.path)
 
@@ -384,9 +383,7 @@ class StoreEngine:
             raise RuntimeError(f"store {self._name}: pynixd_writes is off, so pynixd signs no path")
         if not self.writable:
             raise RuntimeError(f"store {self._name}: pynixd cannot write the store database")
-        async with self.db.acquire_conn() as conn:
-            valid = await register.add_signatures(conn, path, sigs)
-        if not valid:
+        if not await self.db.nix.add_signatures(path, sigs):
             raise register.RegistrationError(
                 f"cannot add signatures to '{magenta(path)}': it is not a valid store path"
             )
@@ -406,8 +403,7 @@ class StoreEngine:
             raise RuntimeError(f"store {self._name}: pynixd_writes is off, so pynixd registers no realisation")
         if not self.writable:
             raise RuntimeError(f"store {self._name}: pynixd cannot write the store database")
-        async with self.db.acquire_conn() as conn:
-            await register.register_drv_output(conn, drv, output_name, out_path, sigs, by_path=by_path)
+        await self.db.nix.register_drv_output(drv, output_name, out_path, sigs, by_path=by_path)
 
     async def add_build_log(self, drv: str, log: bytes) -> None:
         """`LocalStore::addBuildLog` (`local-store.cc:1645`): record *drv*'s build log under `logDir`.
@@ -620,8 +616,7 @@ class StoreEngine:
         return errors
 
     async def _invalidate_path(self, path: str) -> None:
-        async with self.db.acquire_conn() as conn:
-            await register.invalidate_path(conn, path)
+        await self.db.nix.invalidate_path(path)
         self._on_change(StorePath(path=path))
 
     async def _check_store_hashes(
@@ -681,6 +676,5 @@ class StoreEngine:
         return errors
 
     async def _fill_hashes(self, path: str, *, nar_hash: str, nar_size: int) -> None:
-        async with self.db.acquire_conn() as conn:
-            await register.update_path_hashes(conn, path, nar_hash=nar_hash, nar_size=nar_size)
+        await self.db.nix.update_path_hashes(path, nar_hash=nar_hash, nar_size=nar_size)
         self._on_change(StorePath(path=path))
