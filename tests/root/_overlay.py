@@ -99,8 +99,11 @@ async def overlay_arm(
     root: Path | None = None,
     lower: Path | None = None,
     upper: Path | None = None,
+    remount_hook: Path | None = None,
 ) -> AsyncIterator[ArmStore]:
     """*arm*'s store over *stores*, with any of the three paths replaced as `Stores.url` replaces them.
+
+    *remount_hook* is `remount-hook`: in the URL on the local arm, as `delete-duplicate-inner.sh:30` puts it.
 
     The local arm's client opens the `local-overlay://` URL itself. The two pynixd arms serve a chroot store
     at the merged directory whose spec names the overlay, and the client reaches it over `unix://`.
@@ -109,7 +112,8 @@ async def overlay_arm(
         update={"experimental_features": [*(nix_config.experimental_features or []), FEATURE]}
     )
     if arm is Arm.local:
-        yield ArmStore(stores.url(root=root, lower=lower, upper=upper), {}, nix_config)
+        hook = "" if remount_hook is None else f"&remount-hook={remount_hook}"
+        yield ArmStore(stores.url(root=root, lower=lower, upper=upper) + hook, {}, nix_config)
         return
     merged = root or stores.merged
     socket = socket_dir / f"{arm}.sock"
@@ -118,7 +122,9 @@ async def overlay_arm(
         store_path=merged,
         no_probe=True,
         nix_config=nix_config,
-        overlay=OverlaySpec(lower_store=lower or stores.lower, upper_layer=upper or stores.upper),
+        overlay=OverlaySpec(
+            lower_store=lower or stores.lower, upper_layer=upper or stores.upper, remount_hook=remount_hook
+        ),
         daemon=arm is Arm.daemon,
         op_routes={"BuildDerivation": OpRoute.daemon if arm is Arm.daemon else OpRoute.pynixd},
     )

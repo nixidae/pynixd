@@ -219,3 +219,85 @@ async def test_the_overlay_answers_as_its_lower_store(tmp_path: Path, arm: Arm) 
                                  "path-from-hash-part", hash_part, line="check-post-init-inner.sh:71")),
             ):  # fmt: skip
                 assert found == lower.out, f"check-post-init-inner.sh:{line}"
+
+
+@pytest.mark.parametrize("arm", list(Arm))
+async def test_an_add_of_a_lower_path_copies_nothing_up(tmp_path: Path, arm: Arm) -> None:
+    """`redundant-add-inner.sh:22` to `:35`: the overlay store adds a path its lower store holds, and copies nothing.
+
+    `:25` stats `$storeBTop/nix/store/...`, a directory the upper layer never has, so it passes whatever the store
+    did. The port checks the upper layer itself, as `:35` does.
+    """
+    src = _sources(tmp_path)
+    async with overlay_volume() as stores:
+        await _init_lower(stores, src)
+        async with mounted(stores), overlay_arm(stores, arm, _config(), tmp_path) as store:
+            lower_path = await _in_a(stores, "nix-store", "--add", src / "dummy", line="redundant-add-inner.sh:22")
+            assert not _real(stores.upper, lower_path).exists(), "redundant-add-inner.sh:25"
+            from_b = await _in_b(store, "nix-store", "--add", src / "dummy", line="redundant-add-inner.sh:27")
+            assert from_b == lower_path, "redundant-add-inner.sh:29"
+            assert _real(stores.lower / "nix/store", lower_path).exists(), "redundant-add-inner.sh:32"
+            assert not _real(stores.upper, lower_path).exists(), "redundant-add-inner.sh:35"
+
+
+def _seed_2(src: Path, *attr: str) -> list[str | Path]:
+    """`hermetic.nix` with seed 2 and its final references (`delete-refs-inner.sh:20`), or one of its inputs."""
+    return [
+        src / "hermetic.nix", "--no-out-link", "--arg", "busybox", busybox(), "--arg", "withFinalRefs", "true",
+        "--arg", "seed", "2", *attr,
+    ]  # fmt: skip
+
+
+async def _refused_delete(url: str | Path, config: NixConfig | dict[str, str], path: str, line: int) -> None:
+    rc, _out, err = await _run(url, config, "nix-store", "--delete", path)
+    assert (rc, "Cannot delete path" in err) == (1, True), f"delete-refs-inner.sh:{line}: {err}"
+
+
+@pytest.mark.parametrize("arm", list(Arm))
+async def test_a_path_that_a_path_refers_to_is_not_deleted(tmp_path: Path, arm: Arm) -> None:
+    """`delete-refs-inner.sh:20` to `:40`: a referenced path stays, in either store, until its referrer goes."""
+    src = _sources(tmp_path)
+    async with overlay_volume() as stores:
+        await _init_lower(stores, src)
+        async with mounted(stores), overlay_arm(stores, arm, _config(), tmp_path) as store:
+            hermetic = await _in_b(store, "nix-build", *_seed_2(src), line="delete-refs-inner.sh:20")
+            inputs = [
+                await _in_b(store, "nix-build", *_seed_2(src, "-A", f"passthru.input{n}", "-j0"),
+                            line=f"delete-refs-inner.sh:{20 + n}")
+                for n in (1, 2, 3)
+            ]  # fmt: skip
+            for line, path in zip((26, 27, 28), inputs, strict=True):
+                await _refused_delete(store.url, store.config, path, line)
+            for line, path in ((32, inputs[1]), (33, inputs[2])):
+                await _refused_delete(stores.lower, _config(), path, line)
+            await _in_b(store, "nix-store", "--delete", hermetic, line="delete-refs-inner.sh:36")
+            await _in_b(store, "nix-store", "--delete", inputs[2], line="delete-refs-inner.sh:39")
+            await _in_b(store, "nix-store", "--delete", inputs[1], line="delete-refs-inner.sh:40")
+
+
+@pytest.mark.parametrize("arm", list(Arm))
+async def test_a_delete_of_a_duplicate_uncovers_the_lower_copy(
+    tmp_path: Path, arm: Arm, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`delete-duplicate-inner.sh:20` to `:38`: a path in both layers goes from the upper one, and the hook remounts."""
+    # `common.sh:28` exports it, so Nix's `remount.sh` runs with it, from the client or from pynixd.
+    monkeypatch.setenv("LIBMOUNT_FORCE_MOUNT2", "always")
+    src = _sources(tmp_path)
+    (src / "local-overlay-store").mkdir()
+    copy_nix_tests(src, "local-overlay-store/delete-duplicate.sh", "local-overlay-store/remount.sh")
+    added = src / "local-overlay-store/delete-duplicate.sh"
+    async with overlay_volume() as stores:
+        await _init_lower(stores, src)
+        hook = src / "local-overlay-store/remount.sh"
+        async with mounted(stores), overlay_arm(stores, arm, _config(), tmp_path, remount_hook=hook) as store:
+            upper_path = await _in_b(store, "nix-store", "--add", added, line="delete-duplicate-inner.sh:20")
+            lower_path = await _in_a(stores, "nix-store", "--add", added, line="delete-duplicate-inner.sh:21")
+            assert upper_path == lower_path, "delete-duplicate-inner.sh:22"
+            merged, lower = (
+                _real(stores.merged / "nix/store", upper_path),
+                _real(stores.lower / "nix/store", lower_path),
+            )
+            assert merged.stat().st_ino != lower.stat().st_ino, "delete-duplicate-inner.sh:27"
+            await _in_b(store, "nix-store", "--delete", upper_path, line="delete-duplicate-inner.sh:30")
+            assert not _real(stores.upper, upper_path).exists(), "delete-duplicate-inner.sh:33"
+            assert merged.stat().st_ino == lower.stat().st_ino, "delete-duplicate-inner.sh:38"
