@@ -174,15 +174,19 @@ let
   # the documents a test holds to the code.
   testSrc = lib.fileset.toSource {
     root = ./.;
-    fileset = filesOf (
-      pythonExtensions
-      ++ [
-        "nix"
-        "sh"
-        "md"
-        "c"
-      ]
-    );
+    fileset = lib.fileset.unions [
+      (filesOf (
+        pythonExtensions
+        ++ [
+          "nix"
+          "sh"
+          "md"
+          "c"
+        ]
+      ))
+      # `docs/architecture.md` names it, and `tests/unit/test_architecture_doc.py` checks each name.
+      ./GLOSSARY.md
+    ];
   };
 
   nanopynix = import sources.nanopynix { inherit sources; };

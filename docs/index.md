@@ -5,6 +5,7 @@
 :caption: Contents
 
 getting-started
+architecture
 umbrella
 options
 daemon-protocol/index
