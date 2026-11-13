@@ -1370,9 +1370,9 @@ class LocalDBStore(Store):
         derivation path; Nix 2.34 by the hash of each output
         (`staticOutputHashes`, `store-api.cc:406` of 2.34).
 
-        A derivation that is not valid goes to the daemon, which refuses it
-        with Nix's own error. So does one whose file pynixd cannot read or
-        whose hashes the closure cannot give.
+        A derivation that is not valid gets Nix's refusal of `queryValidPathId`
+        (`local-store.cc:900`), with or without a daemon. One whose file pynixd
+        cannot read, or whose hashes the closure cannot give, goes to the daemon.
         """
         from nix_daemon_protocol.constants import FEATURE_REALISATION_WITH_PATH
         from nix_daemon_protocol.query_derivation_output_map import QueryDerivationOutputMapResponse
@@ -1380,7 +1380,7 @@ class LocalDBStore(Store):
 
         items = await self.engine.query_static_derivation_outputs(str(request.path))
         if items is None:
-            return None
+            raise PynixdError(f"path '{magenta(str(request.path))}' is not valid")
         if "ca-derivations" not in (await self.trust_policy()).experimental_features:
             return QueryDerivationOutputMapResponse.fast(items=items)
 

@@ -25,6 +25,7 @@ from pynixd.serde import StorePath
 from pynixd.store.local_db import LocalDBStore
 from pynixd.trust import TrustPolicy
 from pynixd_store import drv_hash
+from pynixd_store.errors import PynixdError
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.store_layout import StoreLayout
 
@@ -114,10 +115,11 @@ class TestWithoutCaDerivations:
         _store_db(tmp_path)
         assert await _ask(tmp_path, EMPTY_DRV) == {}
 
-    async def test_a_derivation_that_is_not_valid_goes_to_the_daemon(self, tmp_path: Path) -> None:
-        """`queryValidPathId` throws "path is not valid"; the daemon says so with Nix's words."""
+    async def test_a_derivation_that_is_not_valid_is_refused_as_nix_refuses_it(self, tmp_path: Path) -> None:
+        """`queryValidPathId` throws "path is not valid" (`local-store.cc:900`); a store with no daemon must say it."""
         _store_db(tmp_path)
-        assert await _ask(tmp_path, GONE_DRV) is None
+        with pytest.raises(PynixdError, match=r"^path '.*00000000000000000000000000000005-gone\.drv.*' is not valid$"):
+            await _ask(tmp_path, GONE_DRV)
 
 
 @pytest.mark.anyio
