@@ -335,7 +335,13 @@ class GoalEngine:
             try:
                 ids = await self.substituter_ids_for(client)
                 substitute = await self.get_substitute_path_goal(path, ids, repair=True, keys=keys_for(client))
-                attempt = await substitute.result()
+                # The client reads "copying path" from the goal's messages (`verify-inner.sh:68`).
+                await substitute.subscribe(client)
+                try:
+                    attempt = await substitute.result()
+                finally:
+                    with anyio.CancelScope(shield=True):
+                        await substitute.unsubscribe(client)
                 if attempt.found and result_succeeded(attempt.result.result):
                     return
                 engine = self._local_db().engine
