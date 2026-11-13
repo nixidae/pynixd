@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from nix_daemon_protocol.protocol import Verbosity
 
     from .engine import StoreEngine
+    from .local_store_db import SyncReader
     from .source import Source
 
     Report = Callable[[Verbosity, str], Awaitable[None]]
@@ -637,6 +638,7 @@ async def valid_dump(
     source: Source,
     *,
     root: Callable[[str], Awaitable[None]],
+    reader: SyncReader | None = None,
 ) -> tuple[str | None, Source]:
     """The path of a dump that is valid already, and the source to read the dump from otherwise.
 
@@ -660,7 +662,7 @@ async def valid_dump(
     except ValueError:
         return None, rest
     await root(path)
-    return (path if await engine.is_valid_path_uncached(path) else None), rest
+    return (path if await engine.is_valid_path(path, reader=reader) else None), rest
 
 
 def _dump_path(ca: ContentAddress, name: str, references: frozenset[str], engine: StoreEngine) -> str:

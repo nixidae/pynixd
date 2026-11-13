@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from pynixd_store.add import ImportSettings
     from pynixd_store.autogc import AutoGC
     from pynixd_store.engine import StoreEngine
+    from pynixd_store.local_store_db import SyncReader
     from pynixd_store.source import Source
 
     from .connection import ClientConn, Connection
@@ -195,6 +196,8 @@ class WriteClient:
     #: Holds a path for the session (`local-store.cc:1052`). nixidae/nixidae#1007.
     root: Callable[[str], Awaitable[None]] = _no_root
     metered: bool = False
+    #: The session's synchronous reader of the store database: a read on it skips the pool's thread hop.
+    reader: SyncReader | None = None
 
 
 def _add_meter(client: WriteClient) -> metrics.TransferMeter:
@@ -293,10 +296,12 @@ class WriteRouter:
             method, algo = parse_dump_header(dump, (await engine.settings()).experimental_features)
         except ValueError:
             return None, source
-        path, source = await valid_dump(engine, dump.name, method, algo, dump.references, source, root=client.root)
+        path, source = await valid_dump(
+            engine, dump.name, method, algo, dump.references, source, root=client.root, reader=client.reader
+        )
         if path is None:
             return None, source
-        info = await engine.query_path_info(path)
+        info = await engine.query_path_info(path, reader=client.reader)
         if info is None:
             return None, source
         # The rest of the dump is empty: `valid_dump` read all of it.

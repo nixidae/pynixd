@@ -22,4 +22,5 @@ def write_client(ctx: RequestContext) -> WriteClient:
         conn=client,
         root=root,
         metered=ctx.proxy.metrics_enabled,
+        reader=client.sync_reader if client is not None else None,
     )
