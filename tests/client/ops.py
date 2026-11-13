@@ -350,8 +350,7 @@ def _gc_options(op: Collect, known: list[StorePath]) -> object:
     if op.action is not huggorm.GCAction.DELETE_SPECIFIC:
         return huggorm.GCOptions(action=op.action)
     targets = [_pick(known, i) for i in op.targets]
-    paths = huggorm.GCSpecificPaths(targets) if KEYED_BY_PATH else targets
-    return huggorm.GCOptions(action=op.action, paths_to_delete=paths)
+    return huggorm.GCOptions(action=op.action, paths_to_delete=huggorm.GCSpecificPaths(targets))
 
 
 async def _apply(
