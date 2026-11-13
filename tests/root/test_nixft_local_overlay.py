@@ -10,20 +10,17 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import anyio
 import pytest
 
+from pynixd.nix_config import NixConfig
 from pynixd_store.errors import PynixdError
 from tests._conftest.nix_config import for_test_store
 from tests.conftest import NIX_BIN, run_subproc
 from tests.functional._nixft import Arm, ArmStore, copy_nix_tests
 from tests.functional._unshared_groups import busybox
 from tests.root._overlay import Stores, mounted, overlay_arm, overlay_volume, remount
-
-if TYPE_CHECKING:
-    from pynixd.nix_config import NixConfig
 
 pytestmark = pytest.mark.skipif(os.geteuid() != 0, reason="an OverlayFS mount needs root")
 
@@ -301,3 +298,193 @@ async def test_a_delete_of_a_duplicate_uncovers_the_lower_copy(
             await _in_b(store, "nix-store", "--delete", upper_path, line="delete-duplicate-inner.sh:30")
             assert not _real(stores.upper, upper_path).exists(), "delete-duplicate-inner.sh:33"
             assert merged.stat().st_ino == lower.stat().st_ino, "delete-duplicate-inner.sh:38"
+
+
+@pytest.mark.parametrize("arm", list(Arm))
+async def test_the_collector_keeps_a_rooted_path_and_empties_the_upper_layer(tmp_path: Path, arm: Arm) -> None:
+    """`gc-inner.sh:19` to `:58`: a rooted build survives two collections, and goes with its root.
+
+    `:54` tests `$outPath`, the store path on the host, which the merged store never put there; the port tests
+    the merged directory, as `:47` reads it.
+    """
+    src = _sources(tmp_path)
+    async with overlay_volume() as stores:
+        await _init_lower(stores, src)
+        async with mounted(stores), overlay_arm(stores, arm, _config(), tmp_path) as store:
+            out_path = await _in_b(
+                store, "nix-build", src / "hermetic.nix", "--no-out-link", "--arg", "busybox", busybox(),
+                "--arg", "seed", "2", line="gc-inner.sh:19",
+            )  # fmt: skip
+            roots = stores.merged / "nix/var/nix/gcroots"
+            roots.mkdir(parents=True, exist_ok=True)
+            (roots / "foo").symlink_to(out_path)
+            found = await _in_b(store, "nix-store", "-q", "--roots", out_path, line="gc-inner.sh:26")
+            assert found == f"{roots / 'foo'} -> {out_path}", "gc-inner.sh:26"
+            for flag, line in (("--print-roots", 28), ("--print-live", 29)):
+                assert out_path in await _in_b(store, "nix-store", "--gc", flag, line=f"gc-inner.sh:{line}"), line
+            dead = await _in_b(store, "nix-store", "--gc", "--print-dead", line="gc-inner.sh:30")
+            assert not any(entry.endswith(out_path) for entry in dead.splitlines()), "gc-inner.sh:30"
+            rc, _out, err = await _run(store.url, store.config, "nix-store", "--delete", out_path)
+            assert rc == 1, f"gc-inner.sh:34: {err}"
+            merged = _real(stores.merged / "nix/store", out_path)
+            assert merged.exists(), "gc-inner.sh:35"
+            for entry in stores.merged.iterdir():
+                (entry.parent / f"{entry.name}.lock").touch()
+                (entry.parent / f"{entry.name}.chroot").touch()
+            await _in_b(store, "nix-collect-garbage", line="gc-inner.sh:44")
+            assert merged.exists(), "gc-inner.sh:47"
+            (roots / "foo").unlink()
+            await _in_b(store, "nix-collect-garbage", line="gc-inner.sh:51")
+            assert not merged.exists(), "gc-inner.sh:54"
+            assert list(stores.upper.iterdir()) == [], "gc-inner.sh:58"
+
+
+@pytest.mark.parametrize("arm", list(Arm))
+async def test_optimise_drops_the_upper_copy_of_a_lower_path(tmp_path: Path, arm: Arm) -> None:
+    """`optimise-inner.sh:20` to `:51`: a path in both layers keeps only its lower copy."""
+    src = _sources(tmp_path)
+    duplicate = tmp_path / "dup-file"
+    duplicate.write_text("Duplicate\n")
+    async with overlay_volume() as stores:
+        await _init_lower(stores, src)
+        async with mounted(stores), overlay_arm(stores, arm, _config(), tmp_path) as store:
+            path = await _in_b(store, "nix-store", "--add", duplicate, line="optimise-inner.sh:24")
+            await _in_a(stores, "nix-store", "--add", duplicate, line="optimise-inner.sh:27")
+            await remount(stores)
+            lower, upper = _real(stores.lower / "nix/store", path), _real(stores.upper, path)
+            merged = _real(stores.merged / "nix/store", path)
+            assert upper.stat().st_ino == merged.stat().st_ino, "optimise-inner.sh:41"
+            assert upper.stat().st_ino != lower.stat().st_ino, "optimise-inner.sh:42"
+            await _in_b(store, "nix-store", "--optimise", line="optimise-inner.sh:45")
+            await remount(stores)
+            assert lower.exists(), "optimise-inner.sh:49"
+            assert merged.exists(), "optimise-inner.sh:50"
+            assert not upper.exists(), "optimise-inner.sh:51"
+
+
+async def _verify(tmp_path: Path, arm: Arm, *, repair: bool) -> None:
+    """`verify-inner.sh:23` to `:63`, and with *repair* to `:69`."""
+    src = _sources(tmp_path)
+    async with overlay_volume() as stores:
+        lower = await _init_lower(stores, src)
+        async with mounted(stores), overlay_arm(stores, arm, _config(), tmp_path) as store:
+            await _in_b(store, "nix-store", "--realise", lower.drv, line="verify-inner.sh:23")
+            dummy = await _in_b(store, "nix-store", "--add", src / "dummy", line="verify-inner.sh:26")
+            lower_only = await _add_text(
+                stores.lower, _config(), tmp_path, "lower-only", "Only in lower store", "verify-inner.sh:29"
+            )
+            await _in_b(store, "nix-store", "--verify", "--check-contents", line="verify-inner.sh:32")
+            backup = stores.volume / "backup"
+            backup.mkdir()
+            rc, _out, err, _both = await run_subproc(
+                ["cp", "-ar", stores.merged / "nix", backup], expected_retcode=None
+            )
+            assert rc == 0, f"verify-inner.sh:37: {err}"
+
+            input_drv = next((stores.lower / "nix/store").glob("*-hermetic-input-1.drv"))
+            input_drv.unlink()
+            for corrupt in (
+                next((stores.lower / "nix/store").glob("*-dummy")),
+                _real(stores.lower / "nix/store", lower_only),
+            ):
+                corrupt.write_bytes(b"")
+            await remount(stores)
+
+            rc, _out, err = await _run(store.url, store.config, "nix-store", "--verify", "--check-contents")
+            assert rc == 1, f"verify-inner.sh:60: {err}"
+            missing = f"/nix/store/{input_drv.name}"
+            assert f"path '{missing}' disappeared, but it still has valid referrers!" in err, (
+                f"verify-inner.sh:61: {err}"
+            )
+            assert f"path '{dummy}' was modified! expected hash" in err, f"verify-inner.sh:62: {err}"
+            assert lower_only not in err, f"verify-inner.sh:63: {err}"
+            if not repair:
+                return
+
+            config = (
+                store.config.model_copy(update={"substituters": [str(backup)]})
+                if isinstance(store.config, NixConfig)
+                else {**store.config, "substituters": str(backup)}
+            )
+            _rc, out, err = await _run(store.url, config, "nix-store", "--verify", "--check-contents", "--repair")
+            assert f"copying path '{missing}'" in out + err, f"verify-inner.sh:68: {err}"
+            assert f"copying path '{dummy}'" in out + err, f"verify-inner.sh:69: {err}"
+
+
+@pytest.mark.parametrize("arm", list(Arm))
+async def test_verify_finds_the_corrupted_paths_the_upper_database_holds(tmp_path: Path, arm: Arm) -> None:
+    """`verify-inner.sh:23` to `:63`: verify reads the merged directory, and skips a path only the lower store holds."""
+    await _verify(tmp_path, arm, repair=False)
+
+
+NO_LOCAL_SUBSTITUTER = pytest.mark.xfail(
+    strict=True, reason="pynixd opens no local store as a substituter: nixidae/nixidae#1312"
+)
+
+
+@pytest.mark.parametrize(
+    "arm",
+    [
+        Arm.local,
+        pytest.param(Arm.daemon, marks=NO_LOCAL_SUBSTITUTER),
+        pytest.param(Arm.pynixd, marks=NO_LOCAL_SUBSTITUTER),
+    ],
+)
+async def test_verify_repairs_from_a_local_store_substituter(tmp_path: Path, arm: Arm) -> None:
+    """`verify-inner.sh:66` to `:69`: `--repair` copies the corrupted paths back from a backup store named by its path."""
+    await _verify(tmp_path, arm, repair=True)
+
+
+async def _trigger_stale_file_handle(stores: Stores, store: ArmStore, src: Path) -> tuple[int, str] | None:
+    """`triggerStaleFileHandle` (`stale-file-handle-inner.sh:23`): the first step that fails, or `None`."""
+    build: list[str | Path] = [
+        "nix-build",
+        src / "hermetic.nix",
+        "--arg",
+        "busybox",
+        busybox(),
+        "--arg",
+        "seed",
+        "1",
+        "--no-out-link",
+    ]
+    steps: list[tuple[str | Path, NixConfig | dict[str, str], list[str | Path]]] = [
+        (stores.lower, _config(), ["nix-store", "--gc"]),
+        (store.url, store.config, build),
+        (stores.lower, _config(), build),
+        (store.url, store.config, ["nix-store", "--gc"]),
+        (stores.lower, _config(), ["nix-store", "--gc"]),
+        (store.url, store.config, build),
+    ]
+    for url, config, (program, *args) in steps:
+        rc, _out, err = await _run(url, config, str(program), *args)
+        if rc != 0:
+            return rc, err
+    return None
+
+
+@pytest.mark.parametrize("arm", list(Arm))
+async def test_a_remount_hook_keeps_the_store_usable_after_a_collection(
+    tmp_path: Path, arm: Arm, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`stale-file-handle-inner.sh:43` to `:51`: a collection through the upper layer, then a build, with no hook and with one.
+
+    Without the hook Nix expects `Stale file handle`, and skips the script on any other answer (`:43`). Measured
+    on Linux 7.2.4: no stale handle, and the last build fails on every arm, the local one with `creating file
+    ".../busybox": File exists`. The port asserts nothing of that round, and requires every step of the round
+    with the hook to pass.
+    """
+    monkeypatch.setenv("LIBMOUNT_FORCE_MOUNT2", "always")
+    src = _sources(tmp_path)
+    (src / "local-overlay-store").mkdir()
+    copy_nix_tests(src, "local-overlay-store/remount.sh")
+    async with overlay_volume() as stores:
+        await _init_lower(stores, src)
+        async with mounted(stores):
+            async with overlay_arm(stores, arm, _config(), tmp_path) as store:
+                await _trigger_stale_file_handle(stores, store, src)
+            await remount(stores)
+            hook = src / "local-overlay-store/remount.sh"
+            async with overlay_arm(stores, arm, _config(), tmp_path, remount_hook=hook) as store:
+                failed = await _trigger_stale_file_handle(stores, store, src)
+            assert failed is None, f"stale-file-handle-inner.sh:51: {failed}"
