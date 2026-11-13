@@ -14,8 +14,8 @@ from nix_daemon_protocol.constants import FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS
 from pynixd_store.nix_config import nix_at_least, nix_environment, read_nix_version
 
 from ..exceptions import NoDaemonError
-from .daemon import ProbeState
 from .local_daemon import LocalStore
+from .scheduled import ProbeState
 
 if TYPE_CHECKING:
     from nix_daemon_protocol.wire_ops import WireRequest

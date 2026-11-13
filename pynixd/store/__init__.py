@@ -27,10 +27,7 @@ if TYPE_CHECKING:
         get_current_system as get_current_system,
     )
     from .binary_cache import BinaryCacheStore as BinaryCacheStore
-    from .daemon import (
-        DaemonStore as DaemonStore,
-        ProbeState as ProbeState,
-    )
+    from .daemon import DaemonStore as DaemonStore
     from .external_unix import ExternalUnixStore as ExternalUnixStore
     from .http_binary_cache import HTTPBinaryCacheStore as HTTPBinaryCacheStore
     from .local import LocalSocketStore as LocalSocketStore
@@ -42,6 +39,10 @@ if TYPE_CHECKING:
     from .s3_binary_cache import (
         S3BinaryCacheStore as S3BinaryCacheStore,
         resolve_aws_credentials as resolve_aws_credentials,
+    )
+    from .scheduled import (
+        ProbeState as ProbeState,
+        ScheduledStore as ScheduledStore,
     )
     from .ssh import (
         SSHSocketStore as SSHSocketStore,
@@ -58,7 +59,8 @@ ORIGIN: dict[str, str] = {
     "LocalSocketStore": "local",
     "LocalStore": "local_daemon",
     "LocalStoreSubstituter": "local_store_substituter",
-    "ProbeState": "daemon",
+    "ProbeState": "scheduled",
+    "ScheduledStore": "scheduled",
     "ReverseStore": "reverse",
     "S3BinaryCacheStore": "s3_binary_cache",
     "SSHSocketStore": "ssh",
@@ -84,6 +86,7 @@ __all__ = [
     "S3BinaryCacheStore",
     "SSHSocketStore",
     "SSHSubprocessStore",
+    "ScheduledStore",
     "Store",
     "get_current_system",
     "is_binary_cache",
