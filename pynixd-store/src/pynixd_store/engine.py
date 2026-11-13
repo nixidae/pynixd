@@ -9,21 +9,16 @@ above it (a path that changed) come in as callables.
 
 from __future__ import annotations
 
-import json
 import os
 from functools import partial
 from typing import TYPE_CHECKING
 
 import anyio.to_thread
 
-from nix_daemon_protocol.content_address import ContentAddress
-from nix_daemon_protocol.nar_hash import NARHash
-from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
 from nix_daemon_protocol.protocol import GCAction, Verbosity
 from nix_daemon_protocol.signature import Signature
 from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
-from nix_daemon_protocol.wire_time import Time
 
 from . import add, build_log, collect, optimise, register, roots, verify
 from .active_builds import ActiveBuilds
@@ -34,21 +29,7 @@ from .hintfmt import WARNING_PREFIX, magenta, show_error
 from .liveness import unlink_stale_auto_roots, walk_roots
 from .local_store_db import LocalStoreDB
 from .nix_config import nix_at_least
-from .queries import (
-    IS_VALID_PATH,
-    QUERY_ALL_VALID_PATHS,
-    QUERY_CLOSURE,
-    QUERY_DERIVATION_OUTPUT_MAP_BATCH,
-    QUERY_DERIVATION_OUTPUTS,
-    QUERY_PATH_FROM_HASH_PART,
-    QUERY_PATH_FROM_NAR_HASH,
-    QUERY_REALISATION_BY_HASH,
-    QUERY_REALISATION_BY_PATH,
-    QUERY_REFERENCES_BATCH,
-    QUERY_REFERRERS,
-    QUERY_VALID_DERIVERS,
-    QUERY_VALID_PATHS,
-)
+from .nix_tables import path_info
 from .temp_roots import GC_SOCKET_PATH, TempRoots
 from .utils import nix32_encode
 
@@ -65,25 +46,6 @@ if TYPE_CHECKING:
 
     Report = Callable[[Verbosity, str], Awaitable[None]]
     Repair = Callable[[str], Awaitable[None]]
-
-
-def path_info(row: tuple[Any, ...], references: Iterable[str]) -> ValidPathInfo:
-    """A `ValidPaths` row and its references, as `LocalStore::queryPathInfoInternal` reads them (`local-store.cc:667`)."""
-    path, deriver, nar_hash, registration_time, nar_size, ultimate, sigs, ca, provenance = row
-    return ValidPathInfo(
-        path=StorePath(path=path),
-        info=UnkeyedValidPathInfo(
-            deriver=StorePath(path=deriver or ""),
-            nar_hash=NARHash(hash=nar_hash),
-            references={StorePath(path=reference) for reference in references},
-            registration_time=Time(ts=registration_time),
-            nar_size=nar_size or 0,
-            ultimate=bool(ultimate),
-            sigs={Signature(**Signature.from_str(sig)) for sig in (sigs or "").split()},
-            ca=ContentAddress(value=ca or ""),
-            provenance=provenance or "",
-        ),
-    )
 
 
 def hashes_self_reference_positions(nix_version: str) -> bool:
@@ -166,8 +128,7 @@ class StoreEngine:
 
     async def is_valid_path_uncached(self, path: str) -> bool:
         """`isValidPathUncached`: the table itself, never the path-info cache."""
-        async with self.db.acquire_conn() as conn, conn.execute(IS_VALID_PATH, (path,)) as cursor:
-            return await cursor.fetchone() is not None
+        return await self.db.nix.is_valid_path(path)
 
     async def query_path_info(self, path: str, *, reader: SyncReader | None = None) -> ValidPathInfo | None:
         """`queryPathInfoUncached`: the info of a valid path, or `None`.
@@ -179,11 +140,7 @@ class StoreEngine:
         if found is not None:
             row, references = found
             return None if row is None else path_info(row, references)
-        async with self.db.execute(self.db.statements.path_info_with_refs, (path,)) as cursor:
-            rows = [tuple(r) for r in await cursor.fetchall()]
-        if not rows:
-            return None
-        return path_info(rows[0][:9], {r[9] for r in rows if r[9] is not None})
+        return await self.db.nix.path_info(path)
 
     async def read_derivation(self, drv_path: str) -> Derivation | None:
         """`Store::readDerivation`: the parsed `.drv` file, or `None` when it is not on disk."""
@@ -194,25 +151,19 @@ class StoreEngine:
         valid = reader.is_valid_path(path) if reader is not None else None
         if valid is not None:
             return valid
-        async with self.db.execute(IS_VALID_PATH, (path,)) as cursor:
-            return await cursor.fetchone() is not None
-
-    async def _paths(self, query: str, params: tuple[Any, ...] = (), column: int = 0) -> set[StorePath]:
-        async with self.db.execute(query, params) as cursor:
-            rows = await cursor.fetchall()
-        return {StorePath(path=row[column]) for row in rows}
+        return await self.db.nix.is_valid_path(path)
 
     async def query_all_valid_paths(self) -> set[StorePath]:
         """`LocalStore::queryAllValidPaths` (`local-store.cc:822`)."""
-        return await self._paths(QUERY_ALL_VALID_PATHS)
+        return await self.db.nix.all_valid_paths()
 
     async def query_valid_paths(self, paths: Iterable[str]) -> set[StorePath]:
         """The valid ones of *paths*, without substitution (`Store::queryValidPaths`)."""
-        return await self._paths(QUERY_VALID_PATHS, (json.dumps(list(paths)),))
+        return await self.db.nix.valid_paths(paths)
 
     async def query_referrers(self, path: str) -> set[StorePath]:
         """`LocalStore::queryReferrers`: the paths whose references name *path*."""
-        return await self._paths(QUERY_REFERRERS, (path,))
+        return await self.db.nix.referrers(path)
 
     async def query_gc_referrers(self, path: str) -> set[StorePath]:
         """`queryGCReferrers`, and the referrers `invalidatePathChecked` reads: this store's own database alone.
@@ -227,43 +178,28 @@ class StoreEngine:
 
     async def query_valid_derivers(self, path: str) -> set[StorePath]:
         """`LocalStore::queryValidDerivers`: the valid derivations that name *path* as an output."""
-        return await self._paths(QUERY_VALID_DERIVERS, (path,), column=1)
+        return await self.db.nix.valid_derivers(path)
 
     async def query_path_from_hash_part(self, hash_part: str) -> StorePath | None:
         """`LocalStore::queryPathFromHashPart` (`local-store.cc:958`): the valid path with this hash part."""
         prefix = f"{self.layout.store_dir}/{hash_part}"
-        upper = prefix[:-1] + chr(ord(prefix[-1]) + 1)
-        async with self.db.execute(QUERY_PATH_FROM_HASH_PART, (prefix, upper)) as cursor:
-            row = await cursor.fetchone()
-        return None if row is None else StorePath(path=row[0])
+        return await self.db.nix.path_in_range(prefix, prefix[:-1] + chr(ord(prefix[-1]) + 1))
 
     async def query_path_from_nar_hash(self, nar_hash: str) -> StorePath | None:
         """A valid path whose NAR has this base-16 SHA-256 hash. Nix writes `ValidPaths.hash` as `sha256:<base16>`."""
-        async with self.db.execute(QUERY_PATH_FROM_NAR_HASH, (f"sha256:{nar_hash}",)) as cursor:
-            row = await cursor.fetchone()
-        return None if row is None else StorePath(path=row[0])
+        return await self.db.nix.path_from_nar_hash(f"sha256:{nar_hash}")
 
     async def query_closure(self, paths: Iterable[str]) -> set[StorePath]:
         """`computeFSClosure` of *paths* over the references."""
-        return await self._paths(QUERY_CLOSURE, (json.dumps(list(paths)),))
+        return await self.db.nix.closure(paths)
 
     async def query_closure_with_info(self, paths: Iterable[str]) -> list[ValidPathInfo]:
         """The closure of *paths*, each with its info."""
-        async with self.db.execute(self.db.statements.closure_with_info, (json.dumps(list(paths)),)) as cursor:
-            rows = await cursor.fetchall()
-        return [path_info(row[:9], (row[9] or "").split()) for row in rows]
+        return await self.db.nix.closure_with_info(paths)
 
     async def query_path_infos(self, paths: Iterable[str]) -> list[ValidPathInfo]:
         """The info of each valid one of *paths*."""
-        paths_json = json.dumps(list(paths))
-        async with self.db.execute(self.db.statements.path_infos_batch, (paths_json,)) as cursor:
-            rows = await cursor.fetchall()
-        async with self.db.execute(QUERY_REFERENCES_BATCH, (paths_json,)) as cursor:
-            reference_rows = await cursor.fetchall()
-        references: dict[str, set[str]] = {}
-        for referrer, reference in reference_rows:
-            references.setdefault(referrer, set()).add(reference)
-        return [path_info(tuple(row), references.get(row[0], ())) for row in rows]
+        return await self.db.nix.path_infos(paths)
 
     async def query_realisation(
         self, drv: str, output_name: str, *, by_path: bool
@@ -274,32 +210,20 @@ class StoreEngine:
         (`realisation-with-path-not-hash`) the derivation's base name, else
         the derivation's hash (`sha256:<hex>`).
         """
-        query = QUERY_REALISATION_BY_PATH if by_path else QUERY_REALISATION_BY_HASH
-        async with self.db.execute(query, (drv, output_name)) as cursor:
-            row = await cursor.fetchone()
-        if row is None:
+        found = await self.db.nix.realisation(drv, output_name, by_path=by_path)
+        if found is None:
             return None
+        output, texts = found
         # Nix orders a `std::set<Signature>` by key name, then signature.
-        signatures = sorted((Signature(text) for text in (row[1] or "").split()), key=lambda s: (s.name, s.signature))
-        return StorePath(path=row[0]), signatures
+        return output, sorted((Signature(text) for text in texts), key=lambda s: (s.name, s.signature))
 
     async def query_static_derivation_outputs(self, drv_path: str) -> dict[str, StorePath] | None:
         """The outputs of a derivation whose path is known statically, or `None` when the derivation is not valid."""
-        async with self.db.execute(QUERY_DERIVATION_OUTPUTS, (drv_path,)) as cursor:
-            rows = await cursor.fetchall()
-        if not rows:
-            return None
-        return {name: StorePath(path=path) for _drv, name, path in rows if name is not None}
+        return await self.db.nix.derivation_outputs(drv_path)
 
     async def query_derivation_output_maps(self, drv_paths: Iterable[str]) -> dict[StorePath, dict[str, StorePath]]:
         """The static outputs of each valid one of *drv_paths*."""
-        async with self.db.execute(QUERY_DERIVATION_OUTPUT_MAP_BATCH, (json.dumps(list(drv_paths)),)) as cursor:
-            rows = await cursor.fetchall()
-        maps: dict[StorePath, dict[str, StorePath]] = {}
-        # `DerivationOutputs.path` is NOT NULL in Nix's schema.
-        for drv_path, output_name, output_path in rows:
-            maps.setdefault(StorePath(path=drv_path), {})[output_name] = StorePath(path=output_path)
-        return maps
+        return await self.db.nix.derivation_output_maps(drv_paths)
 
     async def find_roots(self, *, tidy: bool) -> list[tuple[str, str]]:
         """`LocalStore::findRoots` (`gc.cc:319`): each `(link, target)`, ordered by target, then link.

@@ -51,6 +51,7 @@ from .db_migrations import (
     SchemaState,
     apply_migrations,
 )
+from .nix_tables import NixTables
 from .queries import IS_VALID_PATH, WITHOUT_PROVENANCE, PathInfoStatements, path_info_statements
 from .store_layout import StoreLayout
 from .store_path import StorePath
@@ -506,6 +507,9 @@ class LocalStoreDB:
 
         self.statements = WITHOUT_PROVENANCE
         """The `ValidPaths` statements for the columns this database has. `open` checks for `provenance` once."""
+
+        self.nix = NixTables(self)
+        """The reads of Nix's own tables."""
 
         self.synchronous: str | None = None
         """`pragma synchronous` for a writing connection: `NORMAL`, or `OFF` without `fsync-metadata`
