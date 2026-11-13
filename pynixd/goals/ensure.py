@@ -22,6 +22,7 @@ from pynixd_store.hintfmt import (
 )
 from pynixd_store.store_path import StorePath
 
+from ..build_result import result_succeeded
 from ..derived_path import DerivedPath, OutputsAll, OutputsNames
 from ..exceptions import BackendError
 from ..serde import (
@@ -45,7 +46,7 @@ from .goal import Goal, GoalHolder
 from .query_missing import daemon_substitutes, substitutes_allowed
 from .realisations import realisations_of, substitutable_realisations
 from .resolution import _nix_drv_name, resolve_derivation, resolve_dynamic_derivation, unparse_basic_derivation
-from .results import GoalResult, goal_failure, goal_success, result_succeeded
+from .results import GoalResult, goal_failure, goal_success
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping

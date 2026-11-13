@@ -11,6 +11,7 @@ import structlog
 
 from pynixd_store.store_path import StorePath
 
+from ..build_result import result_succeeded
 from ..exceptions import DelegationLoopError
 from ..serde import (
     BuildDerivationRequest,
@@ -20,7 +21,7 @@ from ..serde import (
     IsValidPathRequest,
 )
 from .goal import ExecutionGoal
-from .results import GoalResult, goal_failure, result_succeeded
+from .results import GoalResult, goal_failure
 
 if TYPE_CHECKING:
     from nix_daemon_protocol.ids import BuildId

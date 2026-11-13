@@ -18,6 +18,7 @@ from pynixd_store.hintfmt import magenta
 from pynixd_store.store_path import StorePath
 from pynixd_store.verify import RepairError
 
+from ..build_result import result_succeeded
 from ..derived_path import DerivedPath, OutputsAll
 from ..exceptions import BackendError
 from ..op_routes import OpRoute
@@ -37,7 +38,7 @@ from .ensure import EnsureDerivedPathGoal
 from .keys import BuildDerivationKey, EnsureDerivedPathKey, SubstitutePathKey, keys_for
 from .query_missing import QueryMissingPlanGoal, daemon_substitutes
 from .requests import BuildPathsWithResultsGoal
-from .results import goal_failure, goal_success, result_succeeded
+from .results import goal_failure, goal_success
 from .substitute import SubstituteAttempt, SubstitutePathGoal, substituter_fingerprint
 
 if TYPE_CHECKING:

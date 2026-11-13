@@ -65,9 +65,9 @@ from pynixd_store.collect import in_nix_test
 from pynixd_store.content_address import parse_method_algo
 from pynixd_store.hintfmt import magenta
 
+from .build_result import result_succeeded
 from .exceptions import BackendError, ClosingError, PynixdError
 from .goals.engine import _build_failure_message
-from .goals.results import result_succeeded
 from .handlers.nar_from_path import NarFromPathHandler
 from .proxy import BUILDER_ONLY_OPS, DaemonProxy
 from .serde.auth import Role

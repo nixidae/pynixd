@@ -7,8 +7,8 @@ no status above 14. nixidae/nixidae#1279.
 
 from __future__ import annotations
 
+from pynixd.build_result import result_succeeded
 from pynixd.execution import machine_fault
-from pynixd.goals.results import result_succeeded
 from pynixd.serde import MAX_WIRE_STATUS, BuildResult, BuildResultStatus
 
 CANCELLED = 16

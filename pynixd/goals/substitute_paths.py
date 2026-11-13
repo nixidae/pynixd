@@ -21,12 +21,12 @@ from nix_daemon_protocol.logs import LogNext
 from pynixd_store.hintfmt import magenta
 from pynixd_store.store_path import StorePath
 
+from ..build_result import result_succeeded
 from ..exceptions import BackendError
 from ..op_routes import OpRoute
 from ..store.local_db import LocalDBStore
 from ..trust import warning_text
 from .query_missing import daemon_substitutes
-from .results import result_succeeded
 
 if TYPE_CHECKING:
     from collections.abc import Iterable

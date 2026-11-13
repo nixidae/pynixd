@@ -18,9 +18,10 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
+from pynixd.build_result import result_succeeded
 from pynixd.derived_path import DerivedPath
 from pynixd.goals.ensure import EnsureDerivedPathGoal
-from pynixd.goals.results import GoalResult, goal_failure, result_succeeded
+from pynixd.goals.results import GoalResult, goal_failure
 from pynixd.serde import BuildMode, BuildResultStatus
 from tests.goal_group import result_of
 

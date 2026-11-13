@@ -16,10 +16,10 @@ import anyio
 import pytest
 
 from nix_daemon_protocol.exceptions import DaemonProtocolError
+from pynixd.build_result import result_succeeded
 from pynixd.config import PynixdSettings
 from pynixd.derived_path import DerivedPath
 from pynixd.goals.ensure import EnsureDerivedPathGoal
-from pynixd.goals.results import result_succeeded
 from pynixd.serde import (
     BuildMode,
     EnsurePathRequest,

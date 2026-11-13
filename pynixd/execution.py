@@ -28,9 +28,9 @@ from pynixd_store.store_path import StorePath
 from . import metrics
 from ._lazy import ssh_errors
 from .allocator import outside_the_session
+from .build_result import failure, result_succeeded
 from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from .exceptions import BackendError, BuilderGone, InfrastructureError, error_text, leaves
-from .goals.results import failure, result_succeeded
 from .placement import client_forbids_local, ms_since
 from .serde import (
     AddTempRootRequest,

@@ -1,10 +1,11 @@
-"""BuildResult helpers for goal implementations."""
+"""What a goal answers: a `BuildResult` and the outputs it found."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from ..build_result import failure, success
 from ..serde import BuildResult, BuildResultStatus
 
 if TYPE_CHECKING:
@@ -66,40 +67,6 @@ class GoalResult:
         result.resolved_outputs = {output_name: path}
         result.produced_paths.add(path)
         return result
-
-
-def failure(message: str, status: BuildResultStatus = BuildResultStatus.MISC_FAILURE) -> BuildResult:
-    """Create a BuildResult representing a failure with the given message and status."""
-    return BuildResult(
-        status=status,
-        error_msg=message,
-        times_built=0,
-        is_non_deterministic=0,
-        start_time=0,
-        stop_time=0,
-        built_outputs={},
-    )
-
-
-def success(status: BuildResultStatus = BuildResultStatus.ALREADY_VALID) -> BuildResult:
-    """Create a BuildResult representing a successful outcome."""
-    return BuildResult(
-        status=status,
-        error_msg="",
-        times_built=0,
-        is_non_deterministic=0,
-        start_time=0,
-        stop_time=0,
-        built_outputs={},
-    )
-
-
-def result_succeeded(result: BuildResult) -> bool:
-    """Return True if the BuildResult status indicates success."""
-    try:
-        return BuildResultStatus(result.status).is_success
-    except ValueError:
-        return False
 
 
 def goal_failure(message: str, status: BuildResultStatus = BuildResultStatus.MISC_FAILURE) -> GoalResult:

@@ -31,8 +31,8 @@ import anyio
 import pytest
 
 from nix_daemon_protocol.ids import StoreId
+from pynixd.build_result import result_succeeded
 from pynixd.goals.engine import GoalEngine
-from pynixd.goals.results import result_succeeded
 from pynixd.instance import Server
 from pynixd.serde import (
     BuildMode,

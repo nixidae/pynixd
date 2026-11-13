@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import anyio
 import structlog
 
+from ..build_result import result_succeeded
 from ..derived_path import DerivedPath
 from ..exceptions import BackendError
 from ..serde import (
@@ -20,7 +21,7 @@ from ..serde import (
 from .dispatch_order import DispatchOrder
 from .goal import ExecutionGoal
 from .keys import keys_for
-from .results import GoalResult, result_succeeded
+from .results import GoalResult
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

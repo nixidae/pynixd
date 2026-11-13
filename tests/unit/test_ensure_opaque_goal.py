@@ -20,11 +20,11 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 
 from nix_daemon_protocol.ids import StoreId
+from pynixd.build_result import result_succeeded
 from pynixd.config import StoreSpecBase
 from pynixd.context import PynixdContext
 from pynixd.derived_path import DerivedPath
 from pynixd.goals.ensure import EnsureDerivedPathGoal
-from pynixd.goals.results import result_succeeded
 from pynixd.serde import BuildMode, IsValidPathResponse
 from pynixd.store.daemon import DaemonStore
 from pynixd_store.store_path import StorePath
