@@ -510,7 +510,13 @@ class WriteRouter:
         loop, so this checks every `min-free-check-interval`, the rate limit
         of each check in Nix too. Free space has no notification to wait on.
         Measure a check that comes later than Nix's to reverse it.
+
+        A build on the daemon route leaves this to the daemon's worker, which
+        has the client's `min-free` and checks as it builds: both collecting
+        took every dead path where Nix leaves one (`gc-auto.sh:44`).
         """
+        if self.route("BuildDerivation") is not OpRoute.pynixd:
+            return
         found = await self._auto_gc(conn)
         if found is None:
             return
