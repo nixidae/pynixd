@@ -581,6 +581,9 @@ let
     format = mkCheck "format" [ pkgs.ruff ] "ruff format --check .";
     lint = mkCheck "lint" [ pkgs.ruff ] "ruff check .";
     types = mkCheck "types" [ pkgs.zuban ] typeCheck;
+    # Sphinx treats a warning as an error, and the exported repository's Pages
+    # run is the only other build: nixidae/nixidae#1319.
+    docs = pynixd-docs;
 
     # Does each committed workflow still say what its ci/workflows/*.nix says?
     #

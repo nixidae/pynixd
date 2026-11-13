@@ -137,8 +137,8 @@ ghalib.evalWorkflow {
           '';
         }
         {
-          name = "Format, lint, types and the package";
-          run = "nix build --file . checks.format checks.lint checks.types checks.packagedHelper --no-link --print-build-logs";
+          name = "Format, lint, types, docs and the package";
+          run = "nix build --file . checks.format checks.lint checks.types checks.docs checks.packagedHelper --no-link --print-build-logs";
         }
         # One process each: five basenames exist in both (`test_build_vm.py`,
         # ...), and pytest's default import mode refuses the second at
