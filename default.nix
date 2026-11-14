@@ -80,6 +80,11 @@ let
       ''
         makeWrapper ${lib.getExe venv} $out/bin/pynixd ${lib.escapeShellArgs wrapperArgs}
       '';
+  # The tarball a machine without Nix unpacks into /nix; nixidae/nixidae#1365.
+  installerTarball = import ./nix/installer {
+    inherit pkgs package;
+    nix = defaultNix;
+  };
   library = pkgs.python3Packages.callPackage ./nix/pynixd.nix {
     pythonBuilder = pkgs.python3Packages.buildPythonPackage;
     nix-daemon-protocol = daemon-protocol;
@@ -753,6 +758,12 @@ let
       }
     );
 
+    # The tarball installed on a guest with no Nix.
+    installer = pkgs.callPackage ./tests/derivations/installer {
+      inherit package vivariumLib;
+      tarball = installerTarball;
+    };
+
     daemonByNix = byNix daemon;
     switchByNix = byNix switch;
   };
@@ -808,5 +819,6 @@ in
       laneShells
       defaultNix
       ;
+    installer = installerTarball;
   };
 }
