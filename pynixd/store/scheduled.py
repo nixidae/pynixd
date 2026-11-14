@@ -293,6 +293,25 @@ class ScheduledStore(Store):
 
     # ── Realisation requests ─────────────────────────────────────────
 
+    def query_this_store_cannot_key(self, request: Any) -> bool:
+        """Whether a QueryRealisation (op 43) holds only the old shape, and this store reads the new.
+
+        NIX-DEVIATION (#27): a Nix 2.35 daemon refuses that request, because
+        `Serialise<DrvOutput>::read` throws (`worker-protocol.cc:493`, 2.35.3).
+        Nix 2.34 then aborts its daemon worker on the error reply, so a 2.34
+        daemon that substitutes from pynixd dies (nixidae/nixidae#1354).
+        pynixd answers "no realisation" instead. A query that misses is a
+        correct answer: the client builds, or asks its next substituter. The
+        cost is a rebuild of a content-addressed output that this store holds
+        under the new key. Measure such rebuilds from 2.34 clients to reverse
+        this. A registration (op 42) in the old shape still refuses.
+        """
+        return (
+            FEATURE_REALISATION_WITH_PATH in self.features
+            and request.keyed_drv_output is None
+            and getattr(request, "drv_output", None) is not None
+        )
+
     async def request_in_the_shape_this_store_reads(self, request: Any) -> Any:
         """Fill the missing shape of op 42/43, or refuse.
 
@@ -314,7 +333,9 @@ class ScheduledStore(Store):
         New to old fills the hash from the derivation, which this store
         holds. Old to new has no answer anywhere: the old shape carries the
         hash and not the path, and no index maps one to the other. That
-        direction refuses loudly instead of writing an empty path.
+        direction refuses loudly instead of writing an empty path. A query
+        in that direction does not get here: `query_this_store_cannot_key`
+        answers it first.
         """
         store_reads_new = FEATURE_REALISATION_WITH_PATH in self.features
         keyed = request.keyed_drv_output

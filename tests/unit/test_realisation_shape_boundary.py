@@ -73,6 +73,7 @@ def _store(monkeypatch: pytest.MonkeyPatch, features: set[str]) -> Any:
     # The real boundary logic, bound to the fake: `query_realisation` reaches
     # the helpers through `self`, and the fake holds no methods of its own.
     for name in (
+        "query_this_store_cannot_key",
         "request_in_the_shape_this_store_reads",
         "_old_drv_output_id",
         "_old_realisation",
@@ -110,13 +111,30 @@ async def test_new_shape_register_to_old_store_gains_the_whole_realisation(
     assert sorted(forwarded.realisation.signatures) == ["sig"]
 
 
-async def test_old_shape_query_to_new_store_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The path cannot be recovered from the hash; no index maps one to the other."""
+async def test_old_shape_query_to_new_store_gets_no_realisation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The path cannot be recovered from the hash, so the answer is a miss.
+
+    Nix 2.34 aborts its daemon worker on an error reply (nixidae/nixidae#1354).
+    """
     store = _store(monkeypatch, {FEATURE})
     request = ndp.QueryRealisationRequest(drv_output=_old_id(), keyed_drv_output=None)
 
+    answer = await DaemonStore.query_realisation(store, request)
+
+    assert answer.realisations == []
+    assert answer.present == 0
+    assert answer.realisation is None
+    assert store.forwarded == []
+
+
+async def test_old_shape_register_to_new_store_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A registration has no miss to answer: an empty path is never written."""
+    store = _store(monkeypatch, {FEATURE})
+    realisation = ndp.Realisation(id=_old_id(), out_path=ndp.StorePath(OUT_BARE), signatures=[ndp.Signature("sig")])
+    request = ndp.RegisterDrvOutputRequest(realisation=realisation, keyed_drv_output=None, unkeyed_realisation=None)
+
     with pytest.raises(BackendError, match="cannot be recovered"):
-        await DaemonStore.query_realisation(store, request)
+        await DaemonStore.register_drv_output(store, request)
     assert store.forwarded == []
 
 

@@ -20,7 +20,6 @@ from nix_daemon_protocol.ids import StoreId
 from nix_daemon_protocol.keyed_drv_output import KeyedDrvOutput
 from nix_daemon_protocol.query_realisation import QueryRealisationRequest
 from pynixd.config import LocalSocketStoreSpec
-from pynixd.exceptions import BackendError
 from pynixd.serde import StorePath
 from pynixd.store.local_db import LocalDBStore
 from pynixd.trust import TrustPolicy
@@ -133,8 +132,14 @@ class TestQueryRealisation:
         assert answer.present == 0
         assert answer.realisation is None
 
-    async def test_a_hash_cannot_ask_a_store_that_reads_paths(self, tmp_path: Path) -> None:
-        """The daemon route refuses the same: no index maps the hash to the path."""
+    async def test_a_hash_asking_a_store_that_reads_paths_gets_no_realisation(self, tmp_path: Path) -> None:
+        """No index maps the hash to the path, so the answer is a miss, not an error.
+
+        Nix 2.34 aborts its daemon worker on an error reply (nixidae/nixidae#1354).
+        """
         _store_db(tmp_path)
-        with pytest.raises(BackendError, match="cannot be recovered"):
-            await _ask(tmp_path, _by_hash(), reads_paths=True)
+        answer = await _ask(tmp_path, _by_hash(), reads_paths=True)
+        assert answer is not None
+        assert answer.realisations == []
+        assert answer.present == 0
+        assert answer.realisation is None

@@ -901,6 +901,8 @@ class DaemonStore(ScheduledStore):
         list read as "no realisation" to a client with the feature.
         nixidae/nixidae#1006.
         """
+        if self.query_this_store_cannot_key(request):
+            return QueryRealisationResponse()
         response = await self.call(
             await self.request_in_the_shape_this_store_reads(request),
             client=client,

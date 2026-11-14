@@ -1211,6 +1211,8 @@ class LocalDBStore(Store):
 
         if "ca-derivations" not in (await self.trust_policy()).experimental_features:
             return QueryRealisationResponse()
+        if self._daemon.query_this_store_cannot_key(request):
+            return QueryRealisationResponse()
         shaped = await self._daemon.request_in_the_shape_this_store_reads(request)
         by_path = FEATURE_REALISATION_WITH_PATH in self.features
         if by_path:
