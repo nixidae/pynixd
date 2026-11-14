@@ -62,6 +62,8 @@ log = structlog.get_logger(__name__)
 
 IGNORED_ACLS = frozenset({"security.selinux", "system.nfs4_acl", "security.csm"})
 """The default of `ignored-acls` (`local-settings.hh`)."""
+SUPPORTS_ACL = hasattr(os, "listxattr")
+"""Python has `listxattr` on Linux alone, where Nix sets `NIX_SUPPORT_ACL`."""
 
 _COUNTER = itertools.count(random.getrandbits(32))
 
@@ -104,7 +106,8 @@ class ImportSettings:
             # Not on Windows (`local-settings.hh:252`).
             sync_before_registering=bool(config.get("sync-before-registering", {}).get("value", False)),
             nar_buffer_size=int(config.get("nar-buffer-size", {}).get("value", 32 * 1024 * 1024)),
-            ignored_acls=frozenset(value("ignored-acls")),
+            # Only with `NIX_SUPPORT_ACL`, Linux's (`local-settings.hh:607`).
+            ignored_acls=frozenset(config.get("ignored-acls", {}).get("value", IGNORED_ACLS)),
             experimental_features=frozenset(_words(value("experimental-features"))),
         )
 
@@ -356,7 +359,8 @@ def canonicalise(
             continue
         seen.add((st.st_dev, st.st_ino))
         try:
-            names = os.listxattr(at, follow_symlinks=False)
+            # `NIX_SUPPORT_ACL` (`posix-fs-canonicalise.cc:61`): Linux's; Nix on darwin keeps every attribute.
+            names = os.listxattr(at, follow_symlinks=False) if SUPPORTS_ACL else []
         except OSError as error:
             if error.errno not in (errno.ENOTSUP, errno.ENODATA):
                 raise
