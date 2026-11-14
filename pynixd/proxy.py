@@ -640,20 +640,6 @@ class DaemonProxy:
             f"Extension operation {type(request).__name__} (op={request.op}) not supported by any configured store",
         )
 
-    async def is_valid_path(self, request: IsValidPathRequest) -> WireResponse:
-        """IsValidPath (op 1): the local store's own answer where it has one, else `execute`.
-
-        The same answer as `execute` gives, with `_mapped_output_response` applied: a path a
-        builder store holds is valid.
-        """
-        valid = await self.local_store.own_valid_path(request.path, self.client)
-        if valid is None:
-            response: WireResponse = await self.execute(request)
-            return response
-        if not valid and self.store_for_output_path(str(request.path)) is not None:
-            valid = True
-        return IsValidPathResponse.fast(valid=valid)
-
     async def _mapped_output_response(
         self, request: WireRequest, local_resp: WireResponse | None
     ) -> WireResponse | None:

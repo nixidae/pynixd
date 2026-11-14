@@ -20,7 +20,6 @@ from . import (
     build_derivation,  # noqa: F401
     collect_garbage,  # noqa: F401
     find_roots,  # noqa: F401
-    is_valid_path,  # noqa: F401
     nar_from_path,  # noqa: F401
     optimise_store,  # noqa: F401
     pynixd_collect_garbage,  # noqa: F401

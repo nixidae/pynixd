@@ -255,11 +255,6 @@ class Store(ABC):
         """Execute an operation on this store."""
         ...
 
-    async def own_valid_path(self, path: StorePath, client: ClientConn) -> bool | None:
-        """`IsValidPath` as pynixd answers it from this store's database, or `None`: `execute` answers then."""
-        del path, client
-        return None
-
     async def download_size(self, path: StorePath) -> int:
         """The bytes a substitute of *path* downloads, 0 when unknown (`misc.cc:139`)."""
         return 0
