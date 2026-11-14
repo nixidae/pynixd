@@ -117,6 +117,8 @@ async def test_a_build_user_builds_in_the_vm_and_owns_what_it_writes(tmp_path: P
     assert again == "again"
 
 
+# 24-26 s, the slowest case of the root suite: it copies Nix's closure into the store first.
+@pytest.mark.extended
 async def test_a_recursive_builder_as_a_build_user_reaches_the_store_in_the_vm(tmp_path: Path) -> None:
     """The guest's socket is the build user's: a root-owned 0600 socket refuses the builder."""
     nix = "/".join(os.path.realpath(NIX_BIN).split("/")[:4])

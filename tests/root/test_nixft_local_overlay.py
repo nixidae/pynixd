@@ -25,6 +25,9 @@ from tests.root._overlay import Stores, mounted, overlay_arm, overlay_volume, re
 pytestmark = pytest.mark.skipif(os.geteuid() != 0, reason="an OverlayFS mount needs root")
 
 MOUNTED_INCORRECTLY = re.compile(r"overlay filesystem .* mounted incorrectly")
+#: The local and daemon arms hold Nix to itself, the reference the pynixd arm answers to, so they run in the
+#: extended set (nixidae/nixidae#1247): they took about two thirds of this file's 160-180 s in the standard run.
+ARMS = [arm if arm is Arm.pynixd else pytest.param(arm, marks=pytest.mark.extended) for arm in Arm]
 
 
 def _config() -> NixConfig:
@@ -77,7 +80,7 @@ async def _doctor(stores: Stores, arm: Arm, tmp_path: Path, **paths: Path) -> tu
 
 
 @pytest.mark.parametrize("bad", ["root", "lower", "upper"])
-@pytest.mark.parametrize("arm", list(Arm))
+@pytest.mark.parametrize("arm", ARMS)
 async def test_an_overlay_mounted_elsewhere_is_refused(tmp_path: Path, arm: Arm, bad: str) -> None:
     """`bad-uris.sh:21` to `:30`: a store whose root, lower store or upper layer the mount does not name."""
     bad_root = tmp_path / "bad_test"
@@ -140,7 +143,7 @@ async def _add_text(
     return await _ok(url, config, "nix-store", "--add", home / name, line=line)
 
 
-@pytest.mark.parametrize("arm", list(Arm))
+@pytest.mark.parametrize("arm", ARMS)
 async def test_a_path_added_below_shows_through_after_a_remount(tmp_path: Path, arm: Arm) -> None:
     """`add-lower-inner.sh:20` to `:31`: a path added to each store is in the merged directory."""
     src = _sources(tmp_path)
@@ -159,7 +162,7 @@ async def test_a_path_added_below_shows_through_after_a_remount(tmp_path: Path, 
             assert _real(stores.merged / "nix/store", lower_path).exists(), "add-lower-inner.sh:31"
 
 
-@pytest.mark.parametrize("arm", list(Arm))
+@pytest.mark.parametrize("arm", ARMS)
 async def test_a_build_lands_in_the_upper_layer(tmp_path: Path, arm: Arm) -> None:
     """`build-inner.sh:21` to `:30`: a build in the overlay store writes the upper layer only."""
     src = _sources(tmp_path)
@@ -180,7 +183,7 @@ async def _diff(a: Path, b: Path) -> tuple[int, str]:
     return rc, out
 
 
-@pytest.mark.parametrize("arm", list(Arm))
+@pytest.mark.parametrize("arm", ARMS)
 async def test_the_overlay_answers_as_its_lower_store(tmp_path: Path, arm: Arm) -> None:
     """`check-post-init-inner.sh:22` to `:71`: each query of a lower path answers as the lower store answers it."""
     src = _sources(tmp_path)
@@ -218,7 +221,7 @@ async def test_the_overlay_answers_as_its_lower_store(tmp_path: Path, arm: Arm) 
                 assert found == lower.out, f"check-post-init-inner.sh:{line}"
 
 
-@pytest.mark.parametrize("arm", list(Arm))
+@pytest.mark.parametrize("arm", ARMS)
 async def test_an_add_of_a_lower_path_copies_nothing_up(tmp_path: Path, arm: Arm) -> None:
     """`redundant-add-inner.sh:22` to `:35`: the overlay store adds a path its lower store holds, and copies nothing.
 
@@ -250,7 +253,7 @@ async def _refused_delete(url: str | Path, config: NixConfig | dict[str, str], p
     assert (rc, "Cannot delete path" in err) == (1, True), f"delete-refs-inner.sh:{line}: {err}"
 
 
-@pytest.mark.parametrize("arm", list(Arm))
+@pytest.mark.parametrize("arm", ARMS)
 async def test_a_path_that_a_path_refers_to_is_not_deleted(tmp_path: Path, arm: Arm) -> None:
     """`delete-refs-inner.sh:20` to `:40`: a referenced path stays, in either store, until its referrer goes."""
     src = _sources(tmp_path)
@@ -272,7 +275,7 @@ async def test_a_path_that_a_path_refers_to_is_not_deleted(tmp_path: Path, arm: 
             await _in_b(store, "nix-store", "--delete", inputs[1], line="delete-refs-inner.sh:40")
 
 
-@pytest.mark.parametrize("arm", list(Arm))
+@pytest.mark.parametrize("arm", ARMS)
 async def test_a_delete_of_a_duplicate_uncovers_the_lower_copy(
     tmp_path: Path, arm: Arm, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -300,7 +303,7 @@ async def test_a_delete_of_a_duplicate_uncovers_the_lower_copy(
             assert merged.stat().st_ino == lower.stat().st_ino, "delete-duplicate-inner.sh:38"
 
 
-@pytest.mark.parametrize("arm", list(Arm))
+@pytest.mark.parametrize("arm", ARMS)
 async def test_the_collector_keeps_a_rooted_path_and_empties_the_upper_layer(tmp_path: Path, arm: Arm) -> None:
     """`gc-inner.sh:19` to `:58`: a rooted build survives two collections, and goes with its root.
 
@@ -339,7 +342,7 @@ async def test_the_collector_keeps_a_rooted_path_and_empties_the_upper_layer(tmp
             assert list(stores.upper.iterdir()) == [], "gc-inner.sh:58"
 
 
-@pytest.mark.parametrize("arm", list(Arm))
+@pytest.mark.parametrize("arm", ARMS)
 async def test_optimise_drops_the_upper_copy_of_a_lower_path(tmp_path: Path, arm: Arm) -> None:
     """`optimise-inner.sh:20` to `:51`: a path in both layers keeps only its lower copy."""
     src = _sources(tmp_path)
@@ -412,14 +415,14 @@ async def _verify(tmp_path: Path, arm: Arm, *, repair: str | None) -> None:
             assert f"copying path '{dummy}'" in out + err, f"verify-inner.sh:69: {err}"
 
 
-@pytest.mark.parametrize("arm", list(Arm))
+@pytest.mark.parametrize("arm", ARMS)
 async def test_verify_finds_the_corrupted_paths_the_upper_database_holds(tmp_path: Path, arm: Arm) -> None:
     """`verify-inner.sh:23` to `:63`: verify reads the merged directory, and skips a path only the lower store holds."""
     await _verify(tmp_path, arm, repair=None)
 
 
 @pytest.mark.parametrize("url", ["{}", "local://{}", "local?root={}"])
-@pytest.mark.parametrize("arm", list(Arm))
+@pytest.mark.parametrize("arm", ARMS)
 async def test_verify_repairs_from_a_local_store_substituter(tmp_path: Path, arm: Arm, url: str) -> None:
     """`verify-inner.sh:66` to `:69`: `--repair` copies the corrupted paths back from a backup store named by its path.
 
@@ -464,7 +467,7 @@ async def _trigger_stale_file_handle(stores: Stores, store: ArmStore, src: Path)
     return None
 
 
-@pytest.mark.parametrize("arm", list(Arm))
+@pytest.mark.parametrize("arm", ARMS)
 async def test_a_remount_hook_keeps_the_store_usable_after_a_collection(
     tmp_path: Path, arm: Arm, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -66,3 +66,5 @@ args = ["--async-test-timeout=600"]
 path = "tests/root"
 args = ["--async-test-timeout=600"]
 user = "root"
+# The overlay file's reference arms and the recursive build-user VM build: past the budget.
+extended = true
