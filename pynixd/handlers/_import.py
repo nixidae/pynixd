@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import structlog
 
@@ -21,7 +21,6 @@ if TYPE_CHECKING:
 
     from ..serde.context import RequestContext
     from ..store.daemon import DaemonStore
-    from ..store.scheduled import ScheduledStore
 
 logger = structlog.get_logger(__name__)
 
@@ -54,13 +53,16 @@ async def pull_backend_references(ctx: RequestContext, references: Iterable[Stor
     Any client may cause a pull, as any client may already read these paths
     through `NarFromPath`.
     """
-    by_store: dict[str, tuple[ScheduledStore, set[StorePath]]] = {}
+    by_store: dict[str, tuple[DaemonStore | LocalDBStore, set[StorePath]]] = {}
     for ref in references:
         if str(ref) in sent or (store := ctx.proxy.store_for_output_path(str(ref))) is None:
             continue
         by_store.setdefault(store.store_id, (store, set()))[1].add(ref)
     if not by_store:
         return
+    # A backend opens after pynixd starts serving: a client may copy before it can answer.
+    if (scheduler := ctx.proxy.scheduler) is not None and scheduler.stores_opened is not None:
+        await scheduler.stores_opened.wait()
     # Rooted before the check, so the local GC cannot take one in between.
     for _, refs in by_store.values():
         for ref in refs:
@@ -72,7 +74,7 @@ async def pull_backend_references(ctx: RequestContext, references: Iterable[Stor
         if missing := refs - set(held.paths):
             logger.info("pull_backend_references", store_id=store.store_id, paths=sorted(map(str, missing)))
             await stream_paths_store_to_store(
-                cast("DaemonStore", store), ctx.proxy.local_store, missing, peer_store_id=store.store_id, direction="in"
+                store, ctx.proxy.local_store, missing, peer_store_id=store.store_id, direction="in"
             )
 
 

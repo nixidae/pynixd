@@ -171,6 +171,12 @@ class Store(ABC):
         """
         return None
 
+    @property
+    def output_source(self) -> DaemonStore | LocalDBStore | None:
+        """The store that answers for and streams what this store built, or `None`: an HTTP binary cache builds
+        nothing."""
+        return None
+
     async def trust_policy(self) -> TrustPolicy:
         """Who may use this store and who is trusted. Nix's defaults here;
         `LocalStore` reads what its Nix reads."""

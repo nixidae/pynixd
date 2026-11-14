@@ -156,9 +156,10 @@ async def test_a_backend_that_left_the_fleet_is_not_a_location() -> None:
 
 
 def test_the_lookup_ignores_a_store_that_does_not_speak_the_wire() -> None:
-    """Only a store with a daemon client can serve a mapped read, so only one counts."""
+    """Only a store that serves what it built (`Store.output_source`) can serve a mapped read, so only one
+    counts: an HTTP binary cache builds nothing."""
     ctx = _context(
-        {StoreId("cache"): cast("Store", SimpleNamespace(daemon_client=None))},
+        {StoreId("cache"): cast("Store", SimpleNamespace(output_source=None))},
         {_OUTPUT: StoreId("cache")},
     )
     assert ctx.store_for_output_path(_OUTPUT) is None

@@ -388,6 +388,12 @@ class LocalDBStore(Store):
         return self._daemon
 
     @property
+    def output_source(self) -> LocalDBStore:
+        """This store: it answers from its database and its disk, and its daemon client may be a `NoDaemonStore`,
+        which answers nothing of its own (nixidae/nixidae#1356)."""
+        return self
+
+    @property
     def features(self) -> AbstractSet[str]:
         return self._daemon.features
 

@@ -290,6 +290,10 @@ class DaemonStore(ScheduledStore):
     def daemon_client(self) -> DaemonStore:
         return self
 
+    @property
+    def output_source(self) -> DaemonStore:
+        return self
+
     # ── Connection pool ─────────────────────────────────────────────
 
     @property
