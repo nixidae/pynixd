@@ -12,8 +12,8 @@ the same signal.
 With a third argument, *CONTROL_FD*, the helper serves `_add_path` on that socket while the builder runs.
 
 Unprivileged, the helper maps its own uid and gid to the sandbox ids, as Nix does without build users. As
-root with a build user, pynixd writes the maps (`ChildSpec.map_fd`), and the helper sets up the sandbox as host
-root until it becomes the sandbox uid, as Nix's child does.
+root with a build user, a process the helper forks writes the maps (`_start_mapper`), and the helper sets up the
+sandbox as host root until it becomes the sandbox uid, as Nix's child does.
 
 Without the chroot (`ChildSpec.chroot`), the helper does what `LinuxDerivationBuilder` does: no namespace, and
 the builder runs as the build user itself. No PID namespace ends what the builder leaves, so the helper kills
@@ -133,12 +133,53 @@ def _kill_user(uid: int) -> None:
         raise SetupError(f"cannot kill processes for uid '{uid}'")
 
 
-def _await_maps(map_fd: int) -> None:
-    """Tell pynixd the namespace exists, and wait until it has mapped the build user into it."""
-    os.write(map_fd, b"u")
-    if os.read(map_fd, 1) != b"g":
-        raise SetupError("pynixd did not map the build user")
-    os.close(map_fd)
+def _build_user_maps(spec: ChildSpec) -> tuple[str, str]:
+    """The uid and gid maps of `startChild` (`linux-derivation-builder.cc:627`) for the build user."""
+    if spec["build_user"] is None:
+        raise SetupError("no build user to map")
+    uid, gid = spec["build_user"]
+    count = spec["build_ids"]
+    return f"{spec['sandbox_uid']} {uid} {count}", f"{spec['sandbox_gid']} {gid} {count}"
+
+
+def _start_mapper(spec: ChildSpec) -> tuple[int, socket.socket]:
+    """A process that maps the build user into this helper's user namespace once the helper says it exists.
+
+    A process in the new namespace cannot map an id other than its own, so Nix's parent writes the maps. This
+    helper's parent may be out of reach (in a build VM, pynixd sees no guest process), so the helper forks the
+    writer itself before its `unshare`: a root process outside the namespace.
+    """
+    ours, theirs = socket.socketpair()
+    helper = os.getpid()
+    uid_map, gid_map = _build_user_maps(spec)
+    pid = os.fork()
+    if pid == 0:
+        try:
+            ours.close()
+            _prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+            if theirs.recv(1) != b"u":
+                os._exit(0)
+            proc = Path("/proc", str(helper))
+            (proc / "uid_map").write_text(uid_map)
+            if spec["build_ids"] == 1:
+                (proc / "setgroups").write_text("deny")
+            (proc / "gid_map").write_text(gid_map)
+            theirs.send(b"g")
+        except OSError as e:
+            print(f"pynixd: mapping the build user: {e}", file=sys.stderr)
+            os._exit(1)
+        os._exit(0)
+    theirs.close()
+    return pid, ours
+
+
+def _await_mapper(pid: int, mapper: socket.socket) -> None:
+    with mapper:
+        mapper.send(b"u")
+        answer = mapper.recv(1)
+    _pid, status = os.waitpid(pid, 0)
+    if answer != b"g" or status != 0:
+        raise SetupError("cannot map the build user into the sandbox's user namespace")
 
 
 def _loopback_up() -> None:
@@ -568,14 +609,15 @@ def main() -> None:
                     ) from None
             except OSError as e:
                 raise SetupError(f"setgroups failed: {e.strerror}") from e
+            mapper = _start_mapper(spec) if spec["build_user"] is not None else None
             flags = os.CLONE_NEWUSER | os.CLONE_NEWPID | os.CLONE_NEWNS | os.CLONE_NEWIPC | os.CLONE_NEWUTS
             if spec["private_network"]:
                 flags |= os.CLONE_NEWNET
             if spec["id_range"] and spec["cgroup"] is not None:
                 flags |= os.CLONE_NEWCGROUP
             os.unshare(flags)
-            if spec["map_fd"] is not None:
-                _await_maps(spec["map_fd"])
+            if mapper is not None:
+                _await_mapper(*mapper)
             else:
                 _map_ids(spec, uid, gid)
     except (OSError, SetupError) as e:

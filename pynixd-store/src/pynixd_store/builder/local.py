@@ -838,7 +838,7 @@ async def build(
             "sample_seconds": 0,
             "build_user": None if user is None else (user.uid, user.gid),
             "build_groups": [] if user is None else list(user.groups),
-            "map_fd": None,
+            "build_ids": 1 if user is None else user.count,
             "external": None,
             "id_range": id_range,
         }
@@ -1337,11 +1337,6 @@ async def _run(
     on the terminal (`SetupMessages`): an external builder does.
     """
     spec_file = paths.top / "spec.json"
-    maps: socket.socket | None = None
-    helper_maps: socket.socket | None = None
-    if user is not None and spec["chroot"]:
-        maps, helper_maps = socket.socketpair()
-        spec = {**spec, "map_fd": helper_maps.fileno()}
     # 0600: without the chroot the build user can reach the top directory, and the job may hold a netrc.
     with open(os.open(spec_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as job:
         job.write(json.dumps(spec))
@@ -1359,8 +1354,6 @@ async def _run(
     if control is not None:
         argv.append(str(control.fileno()))
         fds.append(control.fileno())
-    if helper_maps is not None:
-        fds.append(helper_maps.fileno())
     try:
         process = await anyio.open_process(argv, stdin=None, stdout=slave, stderr=slave, pass_fds=fds, cwd=launch.cwd)
     finally:
@@ -1369,11 +1362,6 @@ async def _run(
             os.close(launch.status_write)
         if control is not None:
             control.close()
-        if helper_maps is not None:
-            helper_maps.close()
-    if maps is not None and user is not None:
-        with maps:
-            await _map_build_user(maps, process.pid, user)
     tracked = contextlib.ExitStack()
     if running is not None:
         tracked.enter_context(running(process.pid))
@@ -1456,21 +1444,6 @@ async def _run(
             f"({'succeeded' if ended is None else ended.reason}, previous messages: {'|'.join(setup.messages)})",
         )
     return site.ended(paths, drv_path, process.returncode)
-
-
-async def _map_build_user(maps: socket.socket, pid: int, user: build_users.BuildUser) -> None:
-    """The parent's half of `startChild` (`linux-derivation-builder.cc:627`): map the build user into the helper's
-    new user namespace once it says that namespace exists. A helper that failed first closes its end."""
-    await anyio.wait_readable(maps)
-    if maps.recv(1) != b"u":
-        return
-    proc = Path("/proc", str(pid))
-    single = user.count == 1
-    (proc / "uid_map").write_text(f"{SANDBOX_UID if single else 0} {user.uid} {user.count}")
-    if single:
-        (proc / "setgroups").write_text("deny")
-    (proc / "gid_map").write_text(f"{SANDBOX_GID if single else 0} {user.gid} {user.count}")
-    maps.send(b"g")
 
 
 def _disk_full(*paths: Path) -> bool:

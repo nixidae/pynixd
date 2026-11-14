@@ -104,9 +104,8 @@ class ChildSpec(TypedDict):
     """The build user's host uid and gid, as root; `None` maps the helper's own ids."""
     build_groups: list[int]
     """Without *chroot*, the build user's supplementary groups, which the builder keeps."""
-    map_fd: int | None
-    """With *build_user*: the helper writes a byte here after its `unshare`, and reads one back once pynixd has
-    written its uid and gid maps. A process in the new namespace cannot map a uid other than its own."""
+    build_ids: int
+    """With *build_user*: how many ids from its uid and gid on the build owns (`getUIDCount`)."""
     external: list[str] | None
     """An external builder's argv: the program, its `args` and the job file (`external-derivation-builder.cc:84`).
     The helper runs it in *work_dir* as the build user, with pynixd's environment, in place of *builder*."""

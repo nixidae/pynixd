@@ -45,7 +45,7 @@ def _spec(root: Path, script: str, **over: object) -> ChildSpec:
         "sandbox_gid": 100,
         "build_user": None,
         "build_groups": [],
-        "map_fd": None,
+        "build_ids": 1,
         "id_range": False,
         "external": None,
         "work_dir": "/build",
