@@ -537,17 +537,25 @@ def _binds(
             binds.setdefault(name, (name, False))
     if not sandboxed:
         (root / "etc/nsswitch.conf").write_text("hosts: files dns\nservices: files\n")
-        for name in ("/etc/resolv.conf", "/etc/services", "/etc/hosts"):
-            if os.path.exists(name):
-                binds.setdefault(name, (os.path.realpath(name), False))
-        # `linux-derivation-builder.cc:793`: a fixed-output build reads the CA file a fetch would.
-        ca_file = settings.transfer.ssl_cert_file
-        if ca_file and os.path.exists(ca_file):
-            binds.setdefault("/etc/ssl/certs/ca-certificates.crt", (os.path.realpath(ca_file), True))
     else:
         (root / "etc/hosts").write_text("127.0.0.1 localhost\n::1 localhost\n")
     (root / "etc").chmod(0o555)
     return [(target, source, optional) for target, (source, optional) in sorted(binds.items())]
+
+
+def _network_files(settings: BuildSettings, binds: list[tuple[str, str, bool]]) -> list[tuple[str, str, bool]]:
+    """The host files a fixed-output build reads to reach the network, as `(target, source, optional)`.
+
+    `sandbox-paths` wins over each: a target it binds already is left out.
+    """
+    taken = {target for target, _, _ in binds}
+    files = [(name, os.path.realpath(name), False) for name in ("/etc/resolv.conf", "/etc/services", "/etc/hosts")]
+    files = [file for file in files if os.path.exists(file[0])]
+    # `linux-derivation-builder.cc:793`: a fixed-output build reads the CA file a fetch would.
+    ca_file = settings.transfer.ssl_cert_file
+    if ca_file and os.path.exists(ca_file):
+        files.append(("/etc/ssl/certs/ca-certificates.crt", os.path.realpath(ca_file), True))
+    return [file for file in files if file[0] not in taken]
 
 
 async def _export_references(
@@ -919,6 +927,10 @@ async def build(
                 await stack.enter_async_context(recursive(endpoint.listener, restriction))
             if (refused := site.refusal()) is not None:
                 return LocalBuildResult(BuildResultStatus.MISC_FAILURE, refused)
+            if chroot and not sandboxed and paths.root is not None:
+                files = _network_files(settings, spec["binds"])
+                spec["binds"] = [*spec["binds"], *await anyio.to_thread.run_sync(site.host_files, paths.root, files)]
+            await site.start(stack, paths)
             cgroup = await stack.enter_async_context(build_cgroup.build_cgroup())
             spec["cgroup"] = None if cgroup is None else str(cgroup)
             if id_range and user is not None:

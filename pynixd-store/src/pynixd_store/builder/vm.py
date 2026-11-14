@@ -13,12 +13,17 @@ A `recursive-nix` or `builder-rpc-v0` builder reaches the store's socket through
 at the socket's place in the build directory and joins each connection to the host's socket in the top
 directory. The helper gets its control socket the same way, as descriptor 4. A path the builder adds joins the
 build store's allowlist before the helper binds it.
+
+A fixed-output or impure build gets eth0, a NIC on a socketpair whose other end passt serves (`uplink`). The
+guest has the same fixed addresses in every build: passt translates them to the host's own sockets.
 """
 
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable
+import socket
+from collections.abc import AsyncIterator, Iterable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -45,6 +50,16 @@ CONTROL_SOCKET_NAME = "vm-control.sock"
 CONTROL_FD = 4
 #: How long the guest caches a store lookup that finds nothing: the longest build is the bound that matters.
 NEGATIVE_TIMEOUT_MS = 24 * 3600 * 1000
+#: The guest's side of passt's network, the same for every build. passt answers for the gateway and the resolver.
+#: Not slirp's 10.0.2.15: a QEMU or vivarium guest has that address, and a fetch to the host's own address would
+#: reach the build VM itself (measured in the functional guest).
+GUEST_ADDRESS = "10.90.35.2"
+GUEST_PREFIX = 24
+GUEST_GATEWAY = "10.90.35.1"
+GUEST_DNS = "10.90.35.3"
+#: passt's own MTU.
+GUEST_MTU = 65520
+PASST_LOG_NAME = "vm-passt.log"
 
 
 @dataclass(frozen=True)
@@ -62,13 +77,18 @@ class BuildVm:
     dax_window_mib: int
     disk_gib: int
     """The build directory's size. The image is sparse: the host pays for what the build writes."""
+    passt: Path | None = None
+    """passt, which gives a fixed-output or impure build its network; `None` keeps those builds on the host."""
 
     @classmethod
-    def from_environment(cls, *, memory_mib: int, cpus: int, dax_window_mib: int, disk_gib: int) -> BuildVm:
+    def from_environment(
+        cls, *, memory_mib: int, cpus: int, dax_window_mib: int, disk_gib: int, network: bool = False
+    ) -> BuildVm:
         """What the package names: the launcher (`PYNIXD_KRUN`), the init (`PYNIXD_KRUN_INIT`), the helper's
         interpreter (`PYNIXD_KRUN_PYTHON`) and its closure (`PYNIXD_KRUN_CLOSURE`, a file of store paths), and
-        `mkfs.xfs` (`PYNIXD_KRUN_MKFS`)."""
-        names = ("PYNIXD_KRUN", "PYNIXD_KRUN_INIT", "PYNIXD_KRUN_PYTHON", "PYNIXD_KRUN_CLOSURE", "PYNIXD_KRUN_MKFS")
+        `mkfs.xfs` (`PYNIXD_KRUN_MKFS`); with *network*, passt (`PYNIXD_KRUN_PASST`)."""
+        names: tuple[str, ...] = ("PYNIXD_KRUN", "PYNIXD_KRUN_INIT", "PYNIXD_KRUN_PYTHON", "PYNIXD_KRUN_CLOSURE")
+        names += ("PYNIXD_KRUN_MKFS", *(("PYNIXD_KRUN_PASST",) if network else ()))
         missing = [name for name in names if name not in os.environ]
         if missing:
             raise ValueError(f"build_vm needs {', '.join(missing)} in the environment; the pynixd package sets them")
@@ -83,6 +103,7 @@ class BuildVm:
             cpus=cpus,
             dax_window_mib=dax_window_mib,
             disk_gib=disk_gib,
+            passt=Path(os.environ["PYNIXD_KRUN_PASST"]) if network else None,
         )
 
     async def make_disk(self, top: Path, build_dir: Path) -> None:
@@ -108,6 +129,7 @@ class BuildVm:
         spec_file: Path,
         build_dir: Path,
         recursive: bool = False,
+        net_fd: int | None = None,
         cgroup: Path | None = None,
     ) -> list[str]:
         """The launcher's command line, after it writes the allowlists into *top*.
@@ -117,8 +139,9 @@ class BuildVm:
         writable, as Nix binds it read-write and the host's permissions decide (`programs.ccache`'s cache): a
         directory is a share of its own, and a file is a share of its parent that shows the file alone, because
         virtio-fs mounts only a directory. The helper reads *spec_file* and gets `top/vm-status` as its file
-        descriptor 3. A *recursive* build gets the two sockets of the module's docstring. The launcher must run in
-        *top*. The VMM joins *cgroup*, and the launcher writes the VMM's rusage to `top/vm-usage.json`.
+        descriptor 3. A *recursive* build gets the two sockets of the module's docstring. The guest's NIC is on
+        *net_fd*, passt's peer (`uplink`). The launcher must run in *top*. The VMM joins *cgroup*, and the
+        launcher writes the VMM's rusage to `top/vm-usage.json`.
         """
         shown: dict[Path, set[str]] = {
             real_store_dir: {str(real_store_dir / path.name) for path in visible},
@@ -178,6 +201,8 @@ class BuildVm:
                 f"--vsock-fd={CONTROL_FD}:{CONTROL_SOCKET_NAME}",
                 f"--vsock-listen={build_dir / SOCKET_NAME}:{BUILDER_SOCKET_NAME}",
             ]
+        if net_fd is not None:
+            argv.append(f"--net={net_fd}:{GUEST_ADDRESS}/{GUEST_PREFIX}:{GUEST_GATEWAY}:{GUEST_MTU}")
         if cgroup is not None:
             argv.append(f"--cgroup={cgroup}")
         argv += [
@@ -277,3 +302,54 @@ def status(top: Path) -> str:
         return (top / STATUS_NAME).read_bytes().decode(errors="surrogateescape")
     except FileNotFoundError:
         return ""
+
+
+@asynccontextmanager
+async def uplink(passt: Path, top: Path) -> AsyncIterator[int]:
+    """The VM's end of a socketpair that *passt* serves, for the launcher's `--net`; passt's log in *top*.
+
+    passt exits when every copy of this end is closed: the launcher's when the VMM ends, this one at the exit.
+    It forwards no port into the guest and maps no host loopback. DNS to `GUEST_DNS` goes to the first resolver
+    of the host's `/etc/resolv.conf`, which passt reaches from the host, `127.0.0.53` included.
+    """
+    ours, theirs = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        with (top / PASST_LOG_NAME).open("wb") as log:
+            process = await anyio.open_process(
+                [
+                    str(passt),
+                    "--foreground",
+                    "--quiet",
+                    "--fd",
+                    str(theirs.fileno()),
+                    "--address",
+                    f"{GUEST_ADDRESS}/{GUEST_PREFIX}",
+                    "--gateway",
+                    GUEST_GATEWAY,
+                    "--dns-forward",
+                    GUEST_DNS,
+                    "--map-host-loopback",
+                    "none",
+                    "--mtu",
+                    str(GUEST_MTU),
+                ],
+                stdin=None,
+                stdout=log,
+                stderr=log,
+                pass_fds=(theirs.fileno(),),
+            )
+    except BaseException:
+        ours.close()
+        raise
+    finally:
+        theirs.close()
+    try:
+        yield ours.fileno()
+    finally:
+        ours.close()
+        with anyio.CancelScope(shield=True):
+            with anyio.move_on_after(5):
+                await process.wait()
+            if process.returncode is None:
+                process.kill()
+                await process.wait()

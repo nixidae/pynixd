@@ -261,8 +261,20 @@ is a read-only DAX share with an allowlist: the build store shows the input
 closure, and the host's store the closure of the package's venv, whose
 interpreter runs the helper. The guest's page cache keeps no copy of either.
 
-A fixed-output build stays on the namespace helper, by User's choice
-(2026-11-06). So does a build for a system other than the store's own: the
+A fixed-output or impure build stays on the namespace helper unless
+`build_vm.network` is on (User, 2026-11-14, over the 2026-11-06 choice). Then
+the guest gets eth0, a virtio-net NIC on a socketpair that one passt process
+per build serves: passt carries the guest's sockets out through the host's,
+forwards no port in, maps no host loopback, and sends DNS to the host's
+resolver. The guest has fixed addresses in 10.90.35.0/24, not slirp's
+10.0.2.15, which a QEMU or vivarium host has itself. The build's
+`resolv.conf` names passt, and its `hosts`, `services` and CA file are
+copies in the chroot, because a file in `/` is no share. libkrun's TSI was
+the other way in: it switches every socket of the guest kernel over, so a
+namespace in the guest would not keep a sandboxed build off the network, and
+a guest's listen binds on the host. A sandboxed build gets no NIC.
+
+A build for a system other than the store's own stays on the host: the
 guest kernel has no binfmt handler, and emulation in a VM is slow. A `recursive-nix` or `builder-rpc-v0` builder reaches the
 store's socket over vsock, with no TSI: the guest's init listens at the
 socket's place in the build directory and joins each connection to a host

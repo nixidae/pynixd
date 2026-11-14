@@ -34,12 +34,14 @@ from .usage import USAGE_NAME, read_usage, with_host
 from .vm import (
     BUILDER_SOCKET_NAME as VM_BUILDER_SOCKET_NAME,
     CONTROL_SOCKET_NAME as VM_CONTROL_SOCKET_NAME,
+    GUEST_DNS as VM_GUEST_DNS,
     VMM_USAGE_NAME,
     BuildVm,
     allow as vm_allow,
     returncode as vm_returncode,
     status as vm_status,
     unshareable as vm_unshareable,
+    uplink as vm_uplink,
 )
 
 if TYPE_CHECKING:
@@ -152,6 +154,15 @@ class BuildSite(ABC):
         """Why this site cannot run the build, after the recursive socket is up; `None` when it can."""
         return None
 
+    def host_files(self, root: Path, files: list[tuple[str, str, bool]]) -> list[tuple[str, str, bool]]:
+        """The binds that give the sandbox each host file of *files*, a fixed-output build's network files."""
+        del root
+        return files
+
+    async def start(self, stack: contextlib.AsyncExitStack, paths: BuildPaths) -> None:
+        """Start what the build needs beside the helper, for as long as *stack* holds."""
+        del stack, paths
+
     @abstractmethod
     def configure(self, spec: ChildSpec, sample_seconds: float) -> None:
         """Set the parts of the helper's job that this site decides."""
@@ -249,6 +260,10 @@ class VmSite(BuildSite):
     visible: frozenset[StorePath]
     sources: tuple[str, ...]
     """The `sandbox-paths` sources the helper binds."""
+    network: bool = False
+    """A fixed-output or impure build: the guest gets a NIC that passt serves."""
+    net_fd: int | None = None
+    """The VM's end of passt's socketpair, once `start` made it."""
     waits_for_exit: bool = False
     samples_on_host: bool = False
 
@@ -279,6 +294,32 @@ class VmSite(BuildSite):
         group.start_soon(_attach_control, controls, restriction)
         return Endpoint(listener, restriction)
 
+    def host_files(self, root: Path, files: list[tuple[str, str, bool]]) -> list[tuple[str, str, bool]]:
+        """Copies in the chroot: a file in `/` is no share of its own, and the store holds the CA file outside the
+        build's closure. A fetch reads them as it starts, so a copy serves as a bind does. The guest's resolver is
+        passt's, not the host's."""
+        etc = root / "etc"
+        etc.chmod(0o755)
+        try:
+            for target, source, optional in files:
+                if optional and not os.path.exists(source):
+                    continue
+                copy = root / target.lstrip("/")
+                copy.parent.mkdir(parents=True, exist_ok=True)
+                if target == "/etc/resolv.conf":
+                    copy.write_text(f"nameserver {VM_GUEST_DNS}\n")
+                else:
+                    copy.write_bytes(Path(source).read_bytes())
+        finally:
+            etc.chmod(0o555)
+        return []
+
+    async def start(self, stack: contextlib.AsyncExitStack, paths: BuildPaths) -> None:
+        if self.network:
+            if self.vm.passt is None:
+                raise ValueError("a build VM without passt has no network")
+            self.net_fd = await stack.enter_async_context(vm_uplink(self.vm.passt, paths.top))
+
     def refusal(self) -> str | None:
         if (file := vm_unshareable(self.sources, self.real_store_dir)) is not None:
             return f"sandbox-paths names the file '{magenta(file)}' in /, which the build VM cannot share"
@@ -302,10 +343,11 @@ class VmSite(BuildSite):
             spec_file=spec_file,
             build_dir=paths.tmp,
             recursive=recursive,
+            net_fd=self.net_fd,
             cgroup=cgroup,
         )
         # libkrun connects to the host's sockets by their names in the top directory.
-        return Launch(argv, [], paths.top)
+        return Launch(argv, [] if self.net_fd is None else [self.net_fd], paths.top)
 
     def setup_error(self, paths: BuildPaths, launch: Launch) -> str:
         return vm_status(paths.top)
@@ -353,8 +395,8 @@ def choose_site(
         return host, None
     if not chroot:
         return host, "the build has no sandbox"
-    if not sandboxed:
-        return host, "a fixed-output or impure build reaches the network"
+    if not sandboxed and vm.passt is None:
+        return host, "a fixed-output or impure build reaches the network, and the build VM has none"
     # The guest kernel has no binfmt handler and no IA32 emulation: another system builds on the host's kernel.
     if drv.platform not in {settings.system, "builtin"}:
         return host, f"the build is for {drv.platform}, not {settings.system}"
@@ -363,7 +405,7 @@ def choose_site(
         return host, "the build runs as a build user"
     # The guest has its own `/dev` and `/proc`.
     sources = tuple(p.source for p in settings.sandbox_paths if not p.source.startswith(("/dev/", "/proc/")))
-    return VmSite(vm, real_store_dir, visible, sources), None
+    return VmSite(vm, real_store_dir, visible, sources, network=not sandboxed), None
 
 
 async def _attach_control(listener: socket.socket, restriction: RestrictionContext) -> None:

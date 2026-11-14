@@ -50,6 +50,7 @@ let
     PYNIXD_KRUN_PYTHON = "${venv}/lib/venv/bin/python";
     PYNIXD_KRUN_CLOSURE = "${pkgs.closureInfo { rootPaths = [ venv ]; }}/store-paths";
     PYNIXD_KRUN_MKFS = "${lib.getBin pkgs.xfsprogs}/bin/mkfs.xfs";
+    PYNIXD_KRUN_PASST = lib.getExe' pkgs.passt "passt";
   };
 
   package =

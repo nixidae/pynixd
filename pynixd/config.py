@@ -442,7 +442,8 @@ class BuildVmSpec(BaseModel):
 
     The guest sees only the build's input closure, through a read-only DAX share, so it keeps no copy of the
     store in its own memory. A build without the sandbox, a fixed-output or impure build, a build for another
-    system, and a build as a build user stay on the host (`pynixd_store.builder.site.choose_site`).
+    system, and a build as a build user stay on the host (`pynixd_store.builder.site.choose_site`), and so do a
+    fixed-output and an impure build unless `network` is on.
     """
 
     memory_mib: int = Field(default=2048, gt=0)
@@ -453,6 +454,23 @@ class BuildVmSpec(BaseModel):
     disk_gib: int = Field(default=1024, gt=0)
     """The build directory's size: a sparse XFS image on the host's disk, which costs what the build writes
     and a 64 MiB log. A build that fills it fails with ENOSPC; the host's memory never holds it."""
+    network: Annotated[
+        bool,
+        Experiment(
+            replaces="a fixed-output or impure build runs in the namespace helper alone",
+            issue=1186,
+            tests=("tests/functional/test_build_vm.py",),
+        ),
+    ] = False
+    """Run fixed-output and impure builds in the VM too, on a NIC that passt serves.
+
+    passt carries the guest's TCP, UDP and ICMP out through the host's own sockets, and the guest's DNS to the
+    host's resolver. NIX-DEVIATION (#27): Nix's fixed-output sandbox shares the host's network namespace
+    (`linux-derivation-builder.cc:576`: `CLONE_NEWNET` for a sandboxed derivation alone), so a fetch reaches every service on the host's loopback and can listen
+    on the host's interfaces. In the VM a fetch reaches neither: passt maps no host loopback and forwards no
+    port to the guest. A fetch from `http://127.0.0.1:...` fails here and works in Nix. Measure how many
+    fixed-output builds fetch from the host's loopback to reverse it. A sandboxed build gets no NIC.
+    """
 
 
 class OverlaySpec(BaseModel):

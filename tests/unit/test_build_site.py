@@ -6,6 +6,7 @@ would run in its microVM stays on the host.
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -72,6 +73,20 @@ def test_a_sandboxed_build_for_the_stores_system_runs_in_the_vm(platform: str) -
     assert site == VmSite(VM, REAL, VISIBLE, ())
 
 
+def test_a_vm_with_passt_runs_a_fixed_output_build_on_its_network() -> None:
+    with_passt = dataclasses.replace(VM, passt=Path("/nix/store/hhhh-passt/bin/passt"))
+    site, reason = _choose(vm=with_passt, sandboxed=False)
+    assert reason is None
+    assert site == VmSite(with_passt, REAL, VISIBLE, (), network=True)
+
+
+def test_a_sandboxed_build_gets_no_network_in_a_vm_that_has_one() -> None:
+    """The guard: a guest's network reaches what the host reaches, so only a fetch gets it."""
+    site, _ = _choose(vm=dataclasses.replace(VM, passt=Path("/nix/store/hhhh-passt/bin/passt")))
+    assert isinstance(site, VmSite)
+    assert site.network is False
+
+
 def test_the_vm_takes_the_sandbox_paths_but_dev_and_proc() -> None:
     site, _ = _choose(config={"sandbox-paths": "/bin/sh=/nix/store/cccc-busybox/bin/sh /dev/kvm /proc/cpuinfo"})
     assert isinstance(site, VmSite)
@@ -82,7 +97,7 @@ def test_the_vm_takes_the_sandbox_paths_but_dev_and_proc() -> None:
     ("kwargs", "reason"),
     [
         ({"chroot": False}, "the build has no sandbox"),
-        ({"sandboxed": False}, "a fixed-output or impure build reaches the network"),
+        ({"sandboxed": False}, "a fixed-output or impure build reaches the network, and the build VM has none"),
         ({"platform": "aarch64-linux"}, "the build is for aarch64-linux, not x86_64-linux"),
         ({"user": BuildUser(uid=30000, gid=30000, fd=-1, count=1)}, "the build runs as a build user"),
     ],

@@ -5,14 +5,20 @@ The guest suite's functional guest has `/dev/kvm` and the `PYNIXD_KRUN*` variabl
 
 from __future__ import annotations
 
+import base64
 import contextlib
+import fcntl
+import hashlib
 import json
 import os
+import socket
 import sqlite3
+import struct
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from aiohttp import web
 
 from nix_daemon_protocol.ids import StoreId
 from pynixd import Server
@@ -51,6 +57,8 @@ KERNEL = (
 
 
 STRING_BYTES = 1 << 24
+#: `SIOCGIFADDR`, `ioctl_list(2)`: an interface's IPv4 address.
+SIOCGIFADDR = 0x8915
 # Four subshells hold a 16 MiB string each at once: the guest cgroup counts them together.
 PARALLEL = (
     'derivation { name = "vm-parallel"; system = builtins.currentSystem; builder = "/bin/sh"; '
@@ -326,3 +334,101 @@ async def test_a_builder_rpc_builder_in_the_vm_submits_its_output(tmp_path: Path
 
     assert path.endswith("-vm-rpc"), log
     assert (tmp_path / "vm/store" / path.lstrip("/")).read_text().strip() != os.uname().release, log
+
+
+# A fixed output whose content is the builder's kernel release: its hash holds only on the kernel it names.
+FIXED_KERNEL = (
+    'derivation { name = "vm-fixed-kernel"; system = builtins.currentSystem; builder = "/bin/sh"; '
+    'outputHashMode = "flat"; outputHashAlgo = "sha256"; outputHash = "@HASH@"; '
+    'args = [ "-c" "read r < /proc/sys/kernel/osrelease; echo $r > $out" ]; }'
+)
+FETCHED = b"fetched through passt\n"
+
+
+def _network_vm() -> BuildVmSpec:
+    return BuildVmSpec(memory_mib=512, cpus=1, network=True)
+
+
+def _own_address() -> str | None:
+    """An IPv4 address of this machine that is not on its loopback: what a fetch in the VM can reach."""
+    for _index, name in socket.if_nameindex():
+        if name == "lo":
+            continue
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            try:
+                packed = fcntl.ioctl(probe.fileno(), SIOCGIFADDR, struct.pack("256s", name.encode()[:15]))
+            except OSError:
+                continue
+        return socket.inet_ntoa(packed[20:24])
+    return None
+
+
+@contextlib.asynccontextmanager
+async def _http(host: str) -> AsyncIterator[str]:
+    """`FETCHED` at `/file`, on *host*."""
+
+    async def handle(_request: web.Request) -> web.Response:
+        return web.Response(body=FETCHED)
+
+    app = web.Application()
+    app.router.add_route("GET", "/file", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, host, 0).start()
+    try:
+        yield f"http://{host}:{runner.addresses[0][1]}"
+    finally:
+        await runner.cleanup()
+
+
+def _fetch(name: str, url: str) -> str:
+    digest = base64.b64encode(hashlib.sha256(FETCHED).digest()).decode()
+    return f'import <nix/fetchurl.nix> {{ name = "{name}"; url = "{url}/file"; hash = "sha256-{digest}"; }}'
+
+
+async def test_a_fixed_output_build_runs_on_the_guest_kernel(tmp_path: Path) -> None:
+    """The proof that the VM ran the fixed-output build: on the host's kernel its hash does not hold."""
+    async with _serve(tmp_path, "vm", _network_vm()) as url:
+        path, _log = await _build(url, KERNEL)
+        release = (tmp_path / "vm/store" / path.lstrip("/")).read_text()
+        fixed = FIXED_KERNEL.replace("@HASH@", hashlib.sha256(release.encode()).hexdigest())
+        fixed_path, _log = await _build(url, fixed)
+    assert (tmp_path / "vm/store" / fixed_path.lstrip("/")).read_text() == release
+    assert release.strip() != os.uname().release
+
+
+async def test_a_vm_without_a_network_builds_a_fixed_output_on_the_host(tmp_path: Path) -> None:
+    """The default: `network` off keeps a fixed-output build on the namespaces, as before."""
+    async with _serve(tmp_path, "vm", BuildVmSpec(memory_mib=512, cpus=1)) as url:
+        path, _log = await _build(url, KERNEL)
+        release = (tmp_path / "vm/store" / path.lstrip("/")).read_text()
+        fixed = FIXED_KERNEL.replace("@HASH@", hashlib.sha256(release.encode()).hexdigest())
+        rc, _out, err, _both = await run_subproc(
+            [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--expr", fixed], expected_retcode=None
+        )
+    assert rc != 0
+    assert "hash mismatch" in err
+
+
+async def test_a_fixed_output_build_in_the_vm_fetches_through_passt(tmp_path: Path) -> None:
+    host = _own_address()
+    if host is None:
+        pytest.skip("this machine has no address off its loopback")
+    async with _http(host) as base, _serve(tmp_path, "vm", _network_vm()) as url:
+        path, _log = await _build(url, _fetch("vm-fetch", base))
+    assert (tmp_path / "vm/store" / path.lstrip("/")).read_bytes() == FETCHED
+
+
+async def test_a_fetch_in_the_vm_does_not_reach_the_hosts_loopback(tmp_path: Path) -> None:
+    """The deviation `BuildVmSpec.network` names: the namespaces reach a server on 127.0.0.1, the VM does not."""
+    async with _http("127.0.0.1") as base:
+        async with _serve(tmp_path, "ns", None) as url:
+            here, _log = await _build(url, _fetch("ns-loopback", base))
+        async with _serve(tmp_path, "vm", _network_vm()) as url:
+            rc, _out, err, _both = await run_subproc(
+                [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--expr", _fetch("vm-loopback", base)],
+                expected_retcode=None,
+            )
+    assert (tmp_path / "ns/store" / here.lstrip("/")).read_bytes() == FETCHED
+    assert rc != 0
+    assert "Could not connect to server" in err

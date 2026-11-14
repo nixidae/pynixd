@@ -30,7 +30,13 @@ def _vm() -> BuildVm:
     )
 
 
-def _argv(tmp_path: Path, real_store: Path, sources: tuple[str, ...] = (), cgroup: Path | None = None) -> list[str]:
+def _argv(
+    tmp_path: Path,
+    real_store: Path,
+    sources: tuple[str, ...] = (),
+    cgroup: Path | None = None,
+    net_fd: int | None = None,
+) -> list[str]:
     return _vm().argv(
         top=tmp_path / "top",
         chroot_parent=real_store / "ffff-x.drv.chroot",
@@ -40,6 +46,7 @@ def _argv(tmp_path: Path, real_store: Path, sources: tuple[str, ...] = (), cgrou
         spec_file=tmp_path / "top/spec.json",
         build_dir=tmp_path / "top/build",
         cgroup=cgroup,
+        net_fd=net_fd,
     )
 
 
@@ -191,6 +198,17 @@ def test_a_build_without_the_socket_has_no_vsock(tmp_path: Path) -> None:
     argv = _argv(tmp_path, tmp_path / "root/nix/store")
     assert not [a for a in argv if a.startswith("--vsock")]
     assert argv[-1] == "3"
+
+
+def test_a_build_without_passt_has_no_nic(tmp_path: Path) -> None:
+    (tmp_path / "top").mkdir()
+    assert not [a for a in _argv(tmp_path, tmp_path / "root/nix/store") if a.startswith("--net")]
+
+
+def test_a_network_build_gets_a_nic_on_passts_peer(tmp_path: Path) -> None:
+    (tmp_path / "top").mkdir()
+    argv = _argv(tmp_path, tmp_path / "root/nix/store", net_fd=7)
+    assert [a for a in argv if a.startswith("--net")] == ["--net=7:10.90.35.2/24:10.90.35.1:65520"]
 
 
 def test_only_a_file_in_the_root_is_unshareable(tmp_path: Path) -> None:
