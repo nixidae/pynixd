@@ -4,7 +4,7 @@
  *   pynixd-krun --init FILE --cpus N --memory MIB [--dax-window BYTES] [--negative-timeout MS]
  *               [--ro DIR:ALLOWLIST]... [--rw DIR]... [--rw-allow DIR:ALLOWLIST]...
  *               [--disk IMAGE:DIR]... [--vsock-fd N:SOCKET]... [--vsock-listen PATH:SOCKET]...
- *               [--cgroup DIR] [--usage PATH]
+ *               [--net FD:ADDRESS/PREFIX:GATEWAY:MTU] [--cgroup DIR] [--usage PATH]
  *               --cwd DIR --status PATH --exit PATH [--uid N --gid N] -- COMMAND [ARG]...
  *
  * The guest boots libkrunfw's kernel on a root that holds only --init (as
@@ -26,7 +26,12 @@
  * sun_path holds 108 bytes. COMMAND gets a connection to a --vsock-fd SOCKET as
  * its file descriptor N. The init listens at a --vsock-listen PATH, a path in
  * the guest, and joins each connection to a new one to its SOCKET. The vsock
- * device carries nothing else: no TSI, so the guest has no network.
+ * device carries nothing else: no TSI, so the guest has no network through it.
+ *
+ * --net gives the guest eth0, a virtio-net NIC on FD, a connected stream
+ * socket passt serves. The init sets ADDRESS/PREFIX, the MTU and the default
+ * route through GATEWAY; IPv6 comes from passt's router advertisements.
+ * Without --net the guest has lo alone.
  *
  * The init runs COMMAND in --cwd, a directory on a share, as --uid and --gid (this process's own by default),
  * the owners the shares show. It opens --status as its file descriptor 3, and writes
@@ -65,6 +70,16 @@
 #define MAX_DIRS 512
 #define MAX_PORTS 8
 #define FIRST_PORT 1024
+
+/*
+ * Receive offloads only, as vivarium's launcher takes them
+ * (vivarium/pkgs/krun-launch/vivarium-krun.c): without a GUEST_TSO feature the
+ * driver posts 1518-byte receive buffers and drops passt's 65520-byte frames.
+ */
+#define VIRTIO_NET_F_GUEST_CSUM 1
+#define VIRTIO_NET_F_GUEST_TSO4 7
+#define VIRTIO_NET_F_GUEST_TSO6 8
+#define NET_FEATURES ((1u << VIRTIO_NET_F_GUEST_CSUM) | (1u << VIRTIO_NET_F_GUEST_TSO4) | (1u << VIRTIO_NET_F_GUEST_TSO6))
 
 static bool push_to_stderr(void *userdata, KrunStr s)
 {
@@ -123,7 +138,7 @@ static void usage(void)
     fprintf(stderr, "usage: pynixd-krun --init FILE --cpus N --memory MIB [--dax-window BYTES] [--negative-timeout MS]\n"
                     "                   [--ro DIR:ALLOWLIST]... [--rw DIR]... [--rw-allow DIR:ALLOWLIST]...\n"
                     "                   [--disk IMAGE:DIR]... [--vsock-fd N:SOCKET]... [--vsock-listen PATH:SOCKET]...\n"
-                    "                   [--cgroup DIR] [--usage PATH]\n"
+                    "                   [--net FD:ADDRESS/PREFIX:GATEWAY:MTU] [--cgroup DIR] [--usage PATH]\n"
                     "                   --cwd DIR --status PATH --exit PATH [--uid N --gid N] -- COMMAND [ARG]...\n");
 }
 
@@ -229,7 +244,7 @@ static int add_file(KrunFsOverlay overlay, const char *path, const char *data, s
 int main(int argc, char *argv[])
 {
     enum { INIT = 256, CPUS, MEMORY, DAX, RO, RW, RW_ALLOW, DISK, NEGATIVE, STATUS, EXIT, UID, GID, CWD, VSOCK_FD, VSOCK_LISTEN,
-           CGROUP, USAGE };
+           CGROUP, USAGE, NET };
     static const struct option options[] = {
         {"init", required_argument, NULL, INIT},     {"cpus", required_argument, NULL, CPUS},
         {"memory", required_argument, NULL, MEMORY}, {"dax-window", required_argument, NULL, DAX},
@@ -240,6 +255,7 @@ int main(int argc, char *argv[])
         {"uid", required_argument, NULL, UID},       {"gid", required_argument, NULL, GID},
         {"vsock-fd", required_argument, NULL, VSOCK_FD}, {"vsock-listen", required_argument, NULL, VSOCK_LISTEN},
         {"cgroup", required_argument, NULL, CGROUP}, {"usage", required_argument, NULL, USAGE},
+        {"net", required_argument, NULL, NET},
         {NULL, 0, NULL, 0},
     };
     const char *init = NULL, *status = NULL, *exit_path = NULL, *cwd = NULL, *cgroup = NULL, *usage_path = NULL;
@@ -248,6 +264,9 @@ int main(int argc, char *argv[])
     struct disk disks[MAX_DISKS];
     struct port ports[MAX_PORTS];
     int nshares = 0, ndisks = 0, nports = 0, c;
+    long net_fd = -1;
+    /* What the init reads as CONFIG "net": "ADDRESS PREFIX GATEWAY MTU". */
+    char net[96] = "";
 
     while ((c = getopt_long(argc, argv, "", options, NULL)) != -1) {
         bool ok = true;
@@ -258,6 +277,15 @@ int main(int argc, char *argv[])
         case EXIT: exit_path = optarg; break;
         case CGROUP: cgroup = optarg; break;
         case USAGE: usage_path = optarg; break;
+        case NET: {
+            char address[16], gateway[16], rest;
+            unsigned prefix, mtu;
+            ok = sscanf(optarg, "%ld:%15[0-9.]/%u:%15[0-9.]:%u%c", &net_fd, address, &prefix, gateway, &mtu, &rest) == 5 &&
+                 net_fd >= 0 && prefix <= 32 && mtu >= 68 && mtu <= 65535;
+            if (ok)
+                snprintf(net, sizeof net, "%s %u %s %u\n", address, prefix, gateway, mtu);
+            break;
+        }
         case CPUS: ok = parse_long(optarg, 1, 255, &cpus); break;
         case MEMORY: ok = parse_long(optarg, 1, UINT32_MAX, &memory); break;
         case DAX: ok = parse_long(optarg, 0, INT64_MAX, &dax_window); break;
@@ -410,6 +438,8 @@ int main(int argc, char *argv[])
         add_file(overlay, ".pynixd/exit", exit_path, strlen(exit_path), 0444) ||
         add_file(overlay, ".pynixd/ids", ids, strlen(ids), 0444))
         return 1;
+    if (net_fd >= 0 && add_file(overlay, ".pynixd/net", net, strlen(net), 0444))
+        return 1;
 
     KrunMmioDeviceManager devices = krun_mmio_device_manager_new();
 
@@ -464,6 +494,14 @@ int main(int argc, char *argv[])
         CHECK(KrunBlockDevice blk = krun_block_device_new(KRUN_STR(id), KRUN_STR(disks[i].image), KRUN_DISK_FORMAT_RAW, &err));
         krun_block_device_set_sync_mode(blk, KRUN_SYNC_MODE_NONE);
         krun_mmio_device_manager_add(devices, blk);
+    }
+
+    if (net_fd >= 0) {
+        /* Locally administered, as passt's own default guest MAC. */
+        static const uint8_t mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
+        CHECK(KrunNetDevice nic =
+                  krun_net_device_new_unixstream_fd(KRUN_STR("eth0"), (int)net_fd, KRUN_BYTES(mac), NET_FEATURES, 0, &err));
+        krun_mmio_device_manager_add(devices, nic);
     }
 
     if (nports > 0) {

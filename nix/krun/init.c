@@ -14,6 +14,8 @@
  *   vsock    one port per line: "fd PORT N", a connection to the host's PORT
  *            as the command's descriptor N; or "listen PORT PATH", a Unix
  *            socket at PATH whose every connection joins a new one to PORT
+ *   net      optional: "ADDRESS PREFIX GATEWAY MTU", the IPv4 configuration of
+ *            eth0, the NIC passt serves; without it the guest has lo alone
  *
  * A listen socket is the build's: its owner is the command's uid, mode 0600.
  * Its relay runs outside the command's namespaces, as that uid.
@@ -47,6 +49,11 @@
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
+
+#include <arpa/inet.h>
+#include <net/if.h>
+#include <net/route.h>
+#include <netinet/in.h>
 
 #include <linux/vm_sockets.h>
 
@@ -194,6 +201,74 @@ static char *read_path(const char *name)
     char *path = slurp(name, &len);
     path[strcspn(path, "\n")] = '\0';
     return path;
+}
+
+static void set_ipv4(int s, const char *name, unsigned long request, const char *address)
+{
+    struct ifreq ifr = {0};
+    strncpy(ifr.ifr_name, name, IFNAMSIZ - 1);
+    struct sockaddr_in *sin = (struct sockaddr_in *)&ifr.ifr_addr;
+    sin->sin_family = AF_INET;
+    if (inet_pton(AF_INET, address, &sin->sin_addr) != 1) {
+        errno = EINVAL;
+        fail(address);
+    }
+    if (ioctl(s, request, &ifr) != 0)
+        fail(name);
+}
+
+static void link_up(int s, const char *name)
+{
+    struct ifreq ifr = {0};
+    strncpy(ifr.ifr_name, name, IFNAMSIZ - 1);
+    if (ioctl(s, SIOCGIFFLAGS, &ifr) != 0)
+        fail(name);
+    ifr.ifr_flags |= IFF_UP;
+    if (ioctl(s, SIOCSIFFLAGS, &ifr) != 0)
+        fail(name);
+}
+
+/* lo, and eth0 as CONFIG "net" says. IPv6 on eth0 comes from passt's router
+ * advertisements, which the kernel takes once the link is up. */
+static void configure_network(void)
+{
+    int s = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (s < 0)
+        fail("socket");
+    link_up(s, "lo");
+    if (access(CONFIG "net", R_OK) == 0) {
+        char address[INET_ADDRSTRLEN], gateway[INET_ADDRSTRLEN];
+        unsigned prefix, mtu;
+        char *net = read_path(CONFIG "net");
+        if (sscanf(net, "%15s %u %15s %u", address, &prefix, gateway, &mtu) != 4 || prefix > 32) {
+            errno = EINVAL;
+            fail(CONFIG "net");
+        }
+        set_ipv4(s, "eth0", SIOCSIFADDR, address);
+        char mask[INET_ADDRSTRLEN];
+        struct in_addr bits = {.s_addr = htonl(prefix ? ~0u << (32 - prefix) : 0)};
+        inet_ntop(AF_INET, &bits, mask, sizeof mask);
+        set_ipv4(s, "eth0", SIOCSIFNETMASK, mask);
+        struct ifreq ifr = {0};
+        strncpy(ifr.ifr_name, "eth0", IFNAMSIZ - 1);
+        ifr.ifr_mtu = (int)mtu;
+        if (ioctl(s, SIOCSIFMTU, &ifr) != 0)
+            fail("eth0 mtu");
+        link_up(s, "eth0");
+        struct rtentry route = {0};
+        struct sockaddr_in *dst = (struct sockaddr_in *)&route.rt_dst;
+        struct sockaddr_in *via = (struct sockaddr_in *)&route.rt_gateway;
+        struct sockaddr_in *genmask = (struct sockaddr_in *)&route.rt_genmask;
+        dst->sin_family = via->sin_family = genmask->sin_family = AF_INET;
+        if (inet_pton(AF_INET, gateway, &via->sin_addr) != 1) {
+            errno = EINVAL;
+            fail(gateway);
+        }
+        route.rt_flags = RTF_UP | RTF_GATEWAY;
+        if (ioctl(s, SIOCADDRT, &route) != 0)
+            fail("default route");
+    }
+    close(s);
 }
 
 static int write_all(int fd, const char *buf, ssize_t n)
@@ -351,6 +426,7 @@ int main(void)
     mount_base();
     mount_shares();
     mount_disks();
+    configure_network();
     char **argv = read_argv();
     char *status = read_path(CONFIG "status");
     /* Not the root: a null fs cannot list a directory. */
