@@ -10,8 +10,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
+
 from nix_daemon_protocol import proto
 from nix_daemon_protocol.add_temp_root import AddTempRootResponse
+from nix_daemon_protocol.build_paths_with_results import BuildPathsWithResultsResponse
 from nix_daemon_protocol.context import WriteContext
 from nix_daemon_protocol.io import BytesWriter
 from nix_daemon_protocol.is_valid_path import IsValidPathResponse
@@ -55,3 +58,18 @@ async def test_fast_reports_the_fields_it_set() -> None:
 
     assert response.info is None
     assert response.__pydantic_fields_set__ == {"valid", "logs"}
+
+
+async def test_fast_runs_each_factory_per_response() -> None:
+    """A field with a factory default gets its own value, as `__init__` gives it."""
+    first = BuildPathsWithResultsResponse.fast()
+    second = BuildPathsWithResultsResponse.fast()
+
+    assert first.results == []
+    assert first.results is not second.results
+    assert await _encode(first) == await _encode(BuildPathsWithResultsResponse())
+
+
+async def test_fast_refuses_a_field_the_response_lacks() -> None:
+    with pytest.raises(TypeError, match="IsValidPathResponse has no field 'nope'"):
+        IsValidPathResponse.fast(valid=True, nope=1)

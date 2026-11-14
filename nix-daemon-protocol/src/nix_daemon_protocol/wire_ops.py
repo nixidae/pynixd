@@ -6,6 +6,7 @@ both ``wire_message`` (WireModel, WireField) and ``logs`` (WireLogs).
 
 from __future__ import annotations
 
+import functools
 from typing import TYPE_CHECKING, Any, ClassVar, Self
 
 from .constants import FEATURE_OPEN_TELEMETRY, MINIMUM_PROTOCOL, proto_str
@@ -14,9 +15,20 @@ from .logs import WireLogs
 from .wire_message import WireField, WireModel, _compiled_or_none, _wire_plan
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from .context import ReadContext, WriteContext
 
 WIRE_REGISTRY: dict[int, type[WireRequest]] = {}
+
+
+@functools.cache
+def _fast_defaults(cls: type[WireResponse]) -> tuple[dict[str, Any], tuple[tuple[str, Callable[[], Any]], ...]]:
+    """What `WireResponse.fast` fills for a field the caller leaves out: the static defaults, and the factories."""
+    plan = _wire_plan(cls)  # type: ignore[arg-type]  # zuban-bug: zuban checks type[BaseModel] against Hashable through BaseModel's __eq__-derived __hash__ = None; mypy accepts the class object
+    defaults = [(name, is_factory, value) for name, is_factory, value in plan.defaults if name != "logs"]
+    static = {name: value for name, is_factory, value in defaults if not is_factory}
+    return static, tuple((name, value) for name, is_factory, value in defaults if is_factory)
 
 
 class WireRequest(WireModel):
@@ -112,29 +124,30 @@ class WireResponse(WireModel):
         shared log would carry one operation's warnings into another's
         answer. The log is built by hand and not by `model_construct`: an
         empty log needs no validation, and `model_construct` cost half of
-        this constructor.
+        this constructor. Both objects take their whole `__dict__` in one
+        assignment, as `model_construct` does: one `object.__setattr__` per
+        field made this 1.9 us and not 1.3 (nixidae/nixidae#1345).
         """
-        fields = cls.model_fields
-        for name in body:
-            if name not in fields:
-                raise TypeError(f"{cls.__name__} has no field {name!r}")
-        plan = _wire_plan(cls, 0, frozenset())
-        obj = cls.__new__(cls)
-        object.__setattr__(obj, "__pydantic_fields_set__", set(body) | {"logs"})
-        object.__setattr__(obj, "__pydantic_extra__", None)
-        object.__setattr__(obj, "__pydantic_private__", None)
+        if not body.keys() <= cls.model_fields.keys():
+            unknown = sorted(body.keys() - cls.model_fields.keys())
+            raise TypeError(f"{cls.__name__} has no field {unknown[0]!r}")
+        static, factories = _fast_defaults(cls)
+        values = dict(static)
+        for name, factory in factories:
+            if name not in body:
+                values[name] = factory()
+        values.update(body)
         logs = WireLogs.__new__(WireLogs)
+        object.__setattr__(logs, "__dict__", {"messages": []})
         object.__setattr__(logs, "__pydantic_fields_set__", {"messages"})
         object.__setattr__(logs, "__pydantic_extra__", None)
         object.__setattr__(logs, "__pydantic_private__", None)
-        object.__setattr__(logs, "messages", [])
-        object.__setattr__(obj, "logs", logs)
-        for name, is_factory, value in plan.defaults:
-            if name == "logs" or name in body:
-                continue
-            object.__setattr__(obj, name, value() if is_factory else value)
-        for name, value in body.items():
-            object.__setattr__(obj, name, value)
+        values["logs"] = logs
+        obj = cls.__new__(cls)
+        object.__setattr__(obj, "__dict__", values)
+        object.__setattr__(obj, "__pydantic_fields_set__", set(body) | {"logs"})
+        object.__setattr__(obj, "__pydantic_extra__", None)
+        object.__setattr__(obj, "__pydantic_private__", None)
         return obj
 
     @property
