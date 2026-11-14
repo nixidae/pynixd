@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, ClassVar
 
 from ..serde import AddBuildLogRequest
 from ..serde.auth import Role
-from ..serde.context import ReadContext
 from ..store.local_db import write_router
 from ..wire import FramedReader
 from ._base import Handler
@@ -28,7 +27,7 @@ class AddBuildLogHandler(Handler):
         unread, and the client drops the connection, as it does against Nix.
         """
         req = await AddBuildLogRequest.from_reader(
-            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
+            ctx.proxy.read_context,
         )
         if ctx.role < Role.ADMIN:
             await ctx.proxy.send_error("you are not privileged to add logs")

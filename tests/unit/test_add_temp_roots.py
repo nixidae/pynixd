@@ -66,6 +66,7 @@ async def test_handler_holds_every_path_of_the_set() -> None:
         standard_features=frozenset(),
         add_temp_root=record,
     )
+    proxy.read_context = ReadContext(reader=proxy.r, version=proxy.version, features=proxy.standard_features)
     resp = cast(
         "AddTempRootsResponse",
         await AddTempRootsHandler().handle(cast("RequestContext", SimpleNamespace(proxy=proxy))),

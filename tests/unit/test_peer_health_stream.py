@@ -55,6 +55,7 @@ async def _ctx(local: Any, client: Client, interval_ms: int) -> Any:
         local_store=local,
         client=client,
     )
+    proxy.read_context = ReadContext(reader=proxy.r, version=proxy.version, features=proxy.standard_features)
     return SimpleNamespace(proxy=proxy, role=Role.ADMIN)
 
 

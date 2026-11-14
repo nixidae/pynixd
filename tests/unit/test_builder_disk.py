@@ -27,7 +27,7 @@ from pynixd.handlers.pynixd_host_health import PynixdHostHealthHandler
 from pynixd.monitor import PeerHealthMonitor
 from pynixd.psi import DiskSpace, SystemHealth
 from pynixd.serde.auth import Role
-from pynixd.serde.context import WriteContext
+from pynixd.serde.context import ReadContext, WriteContext
 from pynixd.wire import BytesReader, BytesWriter
 from tests._conftest.execution import fake_executor
 from tests._conftest.placement import FakeBuild, FakeMonitor, FakeStore
@@ -98,6 +98,7 @@ async def test_a_pynixd_peer_answers_its_hosts_health_and_disk(tmp_path: Path) -
         standard_features=frozenset(),
         local_store=SimpleNamespace(layout=SimpleNamespace(real_store_dir=tmp_path)),
     )
+    proxy.read_context = ReadContext(reader=proxy.r, version=proxy.version, features=proxy.standard_features)
 
     answer = await PynixdHostHealthHandler().handle(cast("Any", SimpleNamespace(proxy=proxy, role=Role.ADMIN)))
 

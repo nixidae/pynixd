@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, ClassVar
 from ..exceptions import ClosingError
 from ..serde import AddPermRootRequest
 from ..serde.auth import Role
-from ..serde.context import ReadContext
 from ..store.local_db import write_router
 from ._base import Handler
 
@@ -29,7 +28,7 @@ class AddPermRootHandler(Handler):
                 "and probably want to do that instead."
             )
         req = await AddPermRootRequest.from_reader(
-            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
+            ctx.proxy.read_context,
         )
         return await write_router(ctx.proxy.local_store).add_perm_root(
             req.store_path, req.gc_root, hold=ctx.proxy.add_temp_root

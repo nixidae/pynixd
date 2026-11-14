@@ -2,7 +2,7 @@
 
 `op_loop` is called unbound (`DaemonProxy.op_loop(proxy)`), so this needs
 every attribute the loop touches: `r`, `w`, `client`, `dispatch`,
-`send_error`, `version`, `standard_features`, `_op_timing`, `_op_metrics`
+`send_error`, `version`, `standard_features`, `write_context`, `_op_timing`, `_op_metrics`
 and `_metrics_enabled`. When the
 loop grows a new attribute, this is the one place to add it, and every
 loop test fails together instead of one fake drifting silently.
@@ -43,6 +43,7 @@ class LoopProxy:
         self.w = SimpleNamespace(drain=self._nothing)
         self.version = None
         self.standard_features: frozenset[str] = frozenset()
+        self.write_context = SimpleNamespace(writer=self.w, version=self.version, features=self.standard_features)
         self._response = response
         self.client = SimpleNamespace(flush=self._nothing)
         self.errors: list[str] = []

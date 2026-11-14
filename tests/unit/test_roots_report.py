@@ -122,6 +122,10 @@ class FakeProxy:
         self.client: Any = None
         self.errors: list[str] = []
 
+    @property
+    def read_context(self) -> ReadContext:
+        return ReadContext(reader=self.r, version=self.version, features=self.standard_features)
+
     async def send_error(self, message: str) -> None:
         self.errors.append(message)
 

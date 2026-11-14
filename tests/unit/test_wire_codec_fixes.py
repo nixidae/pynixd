@@ -19,7 +19,7 @@ from pynixd.goals.ensure import _only_wanted_outputs  # noqa: PLC2701 -- the fil
 from pynixd.handlers.add_build_log import AddBuildLogHandler
 from pynixd.serde import BuildResult, BuildResultStatus, StorePath
 from pynixd.serde.auth import Role
-from pynixd.serde.context import WriteContext
+from pynixd.serde.context import ReadContext, WriteContext
 from pynixd.store.daemon import answer_in_both_shapes
 from pynixd.wire import BytesReader, BytesWriter
 
@@ -70,6 +70,7 @@ async def test_add_build_log_forwards_the_framed_log_and_a_base_name() -> None:
     proxy = SimpleNamespace(
         r=reader, version=PROTOCOL_VERSION, standard_features=frozenset(), client=None, local_store=upstream
     )
+    proxy.read_context = ReadContext(reader=proxy.r, version=proxy.version, features=proxy.standard_features)
 
     answer = await AddBuildLogHandler().handle(cast("Any", SimpleNamespace(proxy=proxy, role=Role.ADMIN)))
 

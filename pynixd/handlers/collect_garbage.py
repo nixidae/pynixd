@@ -12,7 +12,6 @@ from ..constants import FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS
 from ..exceptions import ClosingError
 from ..serde import CollectGarbageRequest, CollectGarbageResponse, LogError
 from ..serde.auth import Role
-from ..serde.context import ReadContext
 from ..store.local_db import write_router
 from ._base import Handler
 
@@ -55,7 +54,7 @@ class CollectGarbageHandler(Handler):
     async def handle(self, ctx: RequestContext) -> object | None:
         """Decode the request, refuse what Nix refuses, then route it."""
         req = await CollectGarbageRequest.from_reader(
-            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
+            ctx.proxy.read_context,
         )
         # The client and the daemon negotiate the feature apart, so either
         # side may lack it. Nix 2.35's own refusal, before `startWork`

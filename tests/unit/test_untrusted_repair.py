@@ -32,7 +32,7 @@ from pynixd.handlers.add_to_store_nar import AddToStoreNarHandler
 from pynixd.handlers.nar_from_path import NarFromPathHandler
 from pynixd.serde import AddToStoreRequest
 from pynixd.serde.auth import Role
-from pynixd.serde.context import WriteContext
+from pynixd.serde.context import ReadContext, WriteContext
 from pynixd.wire import BytesReader, BytesWriter
 
 if TYPE_CHECKING:
@@ -85,6 +85,7 @@ async def _handle(handler: Any, request: WireRequest, role: Role, upstream: Upst
         store_for_output_path=lambda _path: None,
         metrics_enabled=False,
     )
+    proxy.read_context = ReadContext(reader=proxy.r, version=proxy.version, features=proxy.standard_features)
     await handler.handle(cast("Any", SimpleNamespace(proxy=proxy, role=role)))
 
 

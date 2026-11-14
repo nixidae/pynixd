@@ -8,7 +8,6 @@ from nix_daemon_protocol.logs import LogNext
 
 from ..serde import SetOptionsRequest, SetOptionsResponse
 from ..serde.auth import Role
-from ..serde.context import ReadContext
 from ..serde.protocol import Verbosity
 from ..trust import restrict_overrides, warning_text
 from ._base import Handler
@@ -36,7 +35,7 @@ class SetOptionsHandler(Handler):
         about to do the work, so nothing goes upstream here.
         """
         req = await SetOptionsRequest.from_reader(
-            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
+            ctx.proxy.read_context,
         )
 
         resp = SetOptionsResponse()

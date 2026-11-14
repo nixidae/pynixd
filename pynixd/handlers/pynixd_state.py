@@ -13,7 +13,6 @@ from .. import state as state_collector
 from ..daemon_extensions.pynixd_state import PynixdStateRequest, PynixdStateResponse
 from ..exceptions import OpNotImplementedError
 from ..serde.auth import Role
-from ..serde.context import ReadContext
 from ..state_models import FederatedError, StateReport
 from ._base import Handler
 
@@ -88,7 +87,7 @@ class PynixdStateHandler(Handler):
     async def handle(self, ctx: RequestContext) -> object | None:
         """Decode PynixdState request, verify admin auth, collect sections."""
         req = await PynixdStateRequest.from_reader(
-            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
+            ctx.proxy.read_context,
         )
 
         if ctx.role < Role.ADMIN:

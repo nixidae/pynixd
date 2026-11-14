@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, ClassVar
 
 from ..serde import SignPathInfoRequest
 from ..serde.auth import Role
-from ..serde.context import ReadContext
 from ._base import Handler
 
 if TYPE_CHECKING:
@@ -21,7 +20,7 @@ class SignPathInfoHandler(Handler):
     async def handle(self, ctx: RequestContext) -> object | None:
         """Decode SignPathInfo request, verify admin auth, execute via daemon, return response."""
         req = await SignPathInfoRequest.from_reader(
-            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
+            ctx.proxy.read_context,
         )
 
         if ctx.role < Role.ADMIN:

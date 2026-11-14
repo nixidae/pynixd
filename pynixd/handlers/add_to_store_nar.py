@@ -13,7 +13,6 @@ from nix_daemon_protocol.add_to_store_nar import (
 
 from ..exceptions import ClosingError
 from ..serde.auth import Role
-from ..serde.context import ReadContext
 from ..store.local_db import write_router
 from ..wire import FramedReader
 from ..write_router import Write
@@ -35,7 +34,7 @@ class AddToStoreNarHandler(Handler):
         """Decode the request, apply the untrusted-client rules, and import or forward the framed NAR."""
         structlog.contextvars.bind_contextvars(operation=type(self).__name__)
         req = await AddToStoreNarRequest.from_reader(
-            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
+            ctx.proxy.read_context,
         )
         # `daemon.cc:936`, before `startWork`: repair is not atomic.
         if req.repair and ctx.role < Role.ADMIN:

@@ -42,7 +42,7 @@ from pynixd.handlers.collect_garbage import CollectGarbageHandler
 from pynixd.handlers.pynixd_collect_garbage import PynixdCollectGarbageHandler
 from pynixd.serde import CollectGarbageRequest, CollectGarbageResponse
 from pynixd.serde.auth import Role
-from pynixd.serde.context import WriteContext
+from pynixd.serde.context import ReadContext, WriteContext
 from pynixd.serde.protocol import GCAction
 from pynixd.store.base import Store
 from pynixd.store.daemon import DaemonStore
@@ -133,6 +133,10 @@ class FakeProxy:
         """What `Collector` is built from. The collector itself is patched."""
         self.client: Any = None
         """No downstream client: the collector buffers its lines only."""
+
+    @property
+    def read_context(self) -> ReadContext:
+        return ReadContext(reader=self.r, version=self.version, features=self.standard_features)
 
     async def send_error(self, message: str) -> None:
         self.errors.append(message)

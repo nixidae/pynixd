@@ -8,7 +8,6 @@ from pynixd_store.store_path import StorePath
 
 from ..serde import VerifyStoreRequest
 from ..serde.auth import Role
-from ..serde.context import ReadContext
 from ..store.local_db import write_router
 from ._base import Handler
 
@@ -24,7 +23,7 @@ class VerifyStoreHandler(Handler):
     async def handle(self, ctx: RequestContext) -> object | None:
         """Decode the request, refuse an untrusted repair as `daemon.cc:896` does, then route it."""
         req = await VerifyStoreRequest.from_reader(
-            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
+            ctx.proxy.read_context,
         )
 
         if req.repair and ctx.role < Role.ADMIN:

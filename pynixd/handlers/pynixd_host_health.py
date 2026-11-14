@@ -21,7 +21,6 @@ from ..monitor import SAMPLED_FILES, DummyResourceMonitor, cores_from, create_mo
 from ..psi import SystemHealth
 from ..serde import LogNext
 from ..serde.auth import Role
-from ..serde.context import ReadContext
 from ._base import Handler
 
 if TYPE_CHECKING:
@@ -36,7 +35,7 @@ class PynixdHostHealthHandler(Handler):
     async def handle(self, ctx: RequestContext) -> object | None:
         """Read one sample of this host and answer it as JSON."""
         await PynixdHostHealthRequest.from_reader(
-            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
+            ctx.proxy.read_context,
         )
         if ctx.role < Role.ADMIN:
             await ctx.proxy.send_error("Operation 'PynixdHostHealth' requires administrative privileges.")
@@ -65,7 +64,7 @@ class PynixdHostHealthStreamHandler(Handler):
     async def handle(self, ctx: RequestContext) -> object | None:
         """Forward samples until the controller closes the session."""
         request = await PynixdHostHealthStreamRequest.from_reader(
-            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
+            ctx.proxy.read_context,
         )
         if ctx.role < Role.ADMIN:
             await ctx.proxy.send_error("Operation 'PynixdHostHealthStream' requires administrative privileges.")

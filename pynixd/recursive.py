@@ -71,7 +71,6 @@ from .goals.engine import _build_failure_message
 from .handlers.nar_from_path import NarFromPathHandler
 from .proxy import BUILDER_ONLY_OPS, DaemonProxy
 from .serde.auth import Role
-from .serde.context import ReadContext, RequestContext
 from .store import LocalDBStore
 from .unix_socket import as_link
 from .wire import FramedReader, UnixNixReader, UnixNixWriter
@@ -185,9 +184,9 @@ class RestrictedProxy(DaemonProxy):
                 # `daemon.cc:345`, before `startWork`.
                 raise ClosingError(f"Operation {magenta(str(op_num))} not allowed inside derivation")
             if op_num == SubmitOutputRequest.op:
-                return self._submit(await SubmitOutputRequest.from_reader(self._read_context()))
+                return self._submit(await SubmitOutputRequest.from_reader(self.read_context))
             if op_num == AddToStoreScanningRequest.op:
-                return await self._add_scanning(await AddToStoreScanningRequest.from_reader(self._read_context()))
+                return await self._add_scanning(await AddToStoreScanningRequest.from_reader(self.read_context))
         elif op_num in BUILDER_ONLY_OPS:
             # `daemon.cc:353`: `SubmitOutput` is `RecursiveSubmitted`'s alone, and `Recursive` of Nix 2.35 has no
             # `AddToStoreScanning`.
@@ -197,14 +196,14 @@ class RestrictedProxy(DaemonProxy):
         if op_num in _PASSED:
             return await super().dispatch(op_num)
         if op_num == NarFromPathRequest.op:
-            req = await NarFromPathRequest.from_reader(self._read_context())
+            req = await NarFromPathRequest.from_reader(self.read_context)
             if not self.restriction.is_allowed(req.path):
                 # NIX-DEVIATION (#27) of `NarFromPathHandler`: Nix throws after `stopWork` and closes the session.
                 raise ClosingError(f"cannot dump unknown path {_quoted(str(req.path))} in recursive Nix")
-            await NarFromPathHandler().serve(self._request_context(), req)
+            await NarFromPathHandler().serve(self.request_context, req)
             return None
         if op_num == BuildDerivationRequest.op:
-            req_drv = await BuildDerivationRequest.from_reader(self._read_context())
+            req_drv = await BuildDerivationRequest.from_reader(self.read_context)
             outputs = req_drv.derivation.outputs.values()
             if not (outputs and all(output.is_ca for output in outputs)):
                 raise RestrictedError("you are not privileged to build input-addressed derivations")
@@ -213,7 +212,7 @@ class RestrictedProxy(DaemonProxy):
         if wire_cls is None or wire_cls.is_extension:
             # `performOp` (`daemon.cc:1007`): an operation Nix does not know ends the session.
             raise ClosingError(f"invalid operation {op_num}")
-        return await self.execute(await wire_cls.from_reader(self._read_context()))
+        return await self.execute(await wire_cls.from_reader(self.read_context))
 
     async def _add(self, op_num: int) -> WireResponse | None:
         """`RestrictedStore::addToStore` and `addToStoreFromDump`: the store adds the path, then the build does."""
@@ -290,12 +289,6 @@ class RestrictedProxy(DaemonProxy):
         """The answer of the store behind the restriction (`next`)."""
         response: WireResponse = await super().execute(request)
         return response
-
-    def _read_context(self) -> ReadContext:
-        return ReadContext(reader=self.r, version=self.version, features=self.standard_features)
-
-    def _request_context(self) -> RequestContext:
-        return RequestContext(proxy=self, role=self.role, version=self.version, username=self.username)
 
     async def execute(self, request: WireRequest) -> WireResponse:  # type: ignore[override]  # one request type
         allowed = self.restriction.is_allowed

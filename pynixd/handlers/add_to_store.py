@@ -12,7 +12,6 @@ from ..daemon_extensions.sign_path_info import SignPathInfoRequest
 from ..exceptions import ClosingError
 from ..serde import AddToStoreRequest
 from ..serde.auth import Role
-from ..serde.context import ReadContext
 from ..store.local_db import write_router
 from ..wire import FramedReader
 from ..write_router import Dump, Write
@@ -37,7 +36,7 @@ class AddToStoreHandler(Handler):
         """Decode the request, then add the framed dump in pynixd or forward it to the daemon."""
         logger.debug("received_op")
         req = await AddToStoreRequest.from_reader(
-            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
+            ctx.proxy.read_context,
         )
         # `daemon.cc:414`, before `startWork`: repair is not atomic, and
         # the upstream connection is root's, so the daemon would allow it.

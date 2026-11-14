@@ -45,7 +45,7 @@ class AddMultipleToStoreHandler(Handler):
         """Decode the header, apply the untrusted-client rules, and import or forward the framed paths."""
         structlog.contextvars.bind_contextvars(operation=type(self).__name__)
         req = await AddMultipleToStoreRequest.from_reader(
-            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
+            ctx.proxy.read_context,
         )
         # `daemon.cc:500`, before `startWork`: repair is not atomic.
         if req.repair and ctx.role < Role.ADMIN:

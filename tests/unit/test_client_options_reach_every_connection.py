@@ -39,7 +39,7 @@ from pynixd.serde import (
     Verbosity,
 )
 from pynixd.serde.auth import Role
-from pynixd.serde.context import WriteContext
+from pynixd.serde.context import ReadContext, WriteContext
 from pynixd.store.pool import ConnectionPool
 from pynixd.trust import TrustPolicy
 from pynixd.wire import PROTOCOL_VERSION, STDERR_LAST, BytesReader, BytesWriter
@@ -181,6 +181,10 @@ class FakeProxy:
         self.local_store = FakeStore()
         self.client = ClientConn(BytesWriter("client"))
         self.ctx = SimpleNamespace(trust=TrustPolicy())
+
+    @property
+    def read_context(self) -> ReadContext:
+        return ReadContext(reader=self.r, version=self.version, features=self.standard_features)
 
 
 @dataclass

@@ -8,6 +8,7 @@ and dispatches them to request type handle() classmethods.
 from __future__ import annotations
 
 import time
+from functools import cached_property
 from typing import TYPE_CHECKING, Any, cast
 
 import anyio
@@ -93,6 +94,21 @@ class DaemonProxy:
     are acquired from the local_store pool per-operation and returned
     immediately, keeping pool usage minimal.
     """
+
+    @cached_property
+    def read_context(self) -> ReadContext:
+        """What a request of this client decodes with. One for the session: the handshake fixed its fields."""
+        return ReadContext(reader=self.r, version=self.version, features=self.standard_features)
+
+    @cached_property
+    def write_context(self) -> WriteContext:
+        """What a response to this client encodes with, built once after the handshake as `read_context` is."""
+        return WriteContext.from_proxy(self)
+
+    @cached_property
+    def request_context(self) -> RequestContext:
+        """What a handler of this client's operations reads, built once after the handshake."""
+        return RequestContext(proxy=self, role=self.role, version=self.version, username=self.username)
 
     @property
     def repairs_adds(self) -> bool:
@@ -495,7 +511,7 @@ class DaemonProxy:
                     await self.client.flush()
                     t_encoded = time.monotonic()
                     responding = True
-                    await response.to_writer(WriteContext.from_proxy(self))
+                    await response.to_writer(self.write_context)
                     await self.w.drain()
                     self._note_encode_time(op_num, t_encoded)
                 # else: already handled (streaming, error, etc.)
@@ -693,14 +709,7 @@ class DaemonProxy:
             raise ClosingError(f"invalid operation {op_num}")
         # NEW: try new handler registry first
         if handler_cls := HANDLER_REGISTRY.get(op_num):
-            response = await handler_cls().handle(
-                RequestContext(
-                    proxy=self,
-                    role=self.role,
-                    version=self.version,
-                    username=self.username,
-                )
-            )
+            response = await handler_cls().handle(self.request_context)
             return cast(
                 "WireResponse | None",
                 response,
@@ -708,9 +717,7 @@ class DaemonProxy:
 
         # NEW: try serde wire registry for handler-less ops
         if wire_cls := WIRE_REGISTRY.get(op_num):
-            req = await wire_cls.from_reader(
-                ReadContext(reader=self.r, version=self.version, features=self.standard_features),
-            )
+            req = await wire_cls.from_reader(self.read_context)
             executed: WireResponse | None = await self.execute(req)
             return executed
 

@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, ClassVar
 from ..gc import Collector
 from ..serde import PynixdCollectGarbageRequest
 from ..serde.auth import Role
-from ..serde.context import ReadContext
 from ._base import Handler
 
 if TYPE_CHECKING:
@@ -22,7 +21,7 @@ class PynixdCollectGarbageHandler(Handler):
     async def handle(self, ctx: RequestContext) -> object | None:
         """Decode PynixdCollectGarbage request, verify admin auth, run the collector."""
         req = await PynixdCollectGarbageRequest.from_reader(
-            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
+            ctx.proxy.read_context,
         )
 
         if ctx.role < Role.ADMIN:

@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 from ..serde import AddTempRootRequest, AddTempRootResponse
-from ..serde.context import ReadContext
 from ._base import Handler
 
 if TYPE_CHECKING:
@@ -30,7 +29,7 @@ class AddTempRootHandler(Handler):
     async def handle(self, ctx: RequestContext) -> object | None:
         """Decode the path, hold it for this session, and report success."""
         req = await AddTempRootRequest.from_reader(
-            ReadContext(reader=ctx.proxy.r, version=ctx.proxy.version, features=ctx.proxy.standard_features),
+            ctx.proxy.read_context,
         )
         await ctx.proxy.add_temp_root(req.path)
         return AddTempRootResponse.fast(value=1)  # type: ignore[return-value]  # the base returns object | None
