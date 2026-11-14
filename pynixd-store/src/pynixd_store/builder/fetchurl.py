@@ -18,6 +18,7 @@ import lzma
 import os
 import random
 import re
+import sys
 import time
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -85,8 +86,11 @@ S3_RETRYABLE = frozenset(
 S3_ERROR_CODE = re.compile(r"<Error>.*?<Code>([^<]+)</Code>", re.DOTALL)
 STATUS_LINE = re.compile(r"HTTP/[^ ]+ +([0-9]+)(.*)", re.IGNORECASE | re.DOTALL)
 
-#: The libcurl that pycurl loaded: dlopen by soname answers the loaded copy.
-_libcurl = ctypes.CDLL("libcurl.so.4")
+
+#: The libcurl that pycurl loaded. On Linux dlopen by soname answers the loaded copy. On darwin a symbol looked up
+#: through pycurl's own image comes from what pycurl links: the process also holds `/usr/lib/libcurl.4.dylib`, an
+#: older curl whose messages differ ("Couldn't connect to server").
+_libcurl = ctypes.CDLL(pycurl.__file__ if sys.platform == "darwin" else "libcurl.so.4")
 _libcurl.curl_easy_strerror.restype = ctypes.c_char_p
 _libcurl.curl_easy_strerror.argtypes = [ctypes.c_int]
 _libc = ctypes.CDLL(None, use_errno=True)
