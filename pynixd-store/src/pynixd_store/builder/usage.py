@@ -6,6 +6,7 @@ The helper writes `USAGE_NAME` in the build's top directory after its builder en
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -73,8 +74,8 @@ def from_rusage(usage: resource.struct_rusage) -> BuildUsage:
         source=UsageSource.RUSAGE,
         cpu_user_us=round(usage.ru_utime * 1_000_000),
         cpu_system_us=round(usage.ru_stime * 1_000_000),
-        # Linux counts `ru_maxrss` in KiB (`getrusage(2)`).
-        peak_memory_bytes=usage.ru_maxrss * 1024,
+        # Linux counts `ru_maxrss` in KiB (`getrusage(2)`), darwin in bytes.
+        peak_memory_bytes=usage.ru_maxrss * (1 if sys.platform == "darwin" else 1024),
         io_read_bytes=usage.ru_inblock * BLOCK_BYTES,
         io_write_bytes=usage.ru_oublock * BLOCK_BYTES,
     )

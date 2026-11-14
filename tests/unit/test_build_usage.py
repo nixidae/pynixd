@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import resource
+import sys
 from typing import TYPE_CHECKING
 
 from pynixd_store.builder.usage import BuildUsage, UsageSource, from_rusage, read_usage, write_usage
@@ -12,6 +13,7 @@ if TYPE_CHECKING:
 
 
 def test_rusage_becomes_microseconds_and_bytes() -> None:
+    """`ru_maxrss` is KiB on Linux and bytes on darwin (`getrusage(2)` of each)."""
     fields = [0.0] * 16
     fields[0], fields[1], fields[2] = 1.5, 0.25, 2048
     fields[9], fields[10] = 3, 4
@@ -21,7 +23,7 @@ def test_rusage_becomes_microseconds_and_bytes() -> None:
         source=UsageSource.RUSAGE,
         cpu_user_us=1_500_000,
         cpu_system_us=250_000,
-        peak_memory_bytes=2048 * 1024,
+        peak_memory_bytes=2048 * (1 if sys.platform == "darwin" else 1024),
         io_read_bytes=3 * 512,
         io_write_bytes=4 * 512,
     )
