@@ -207,6 +207,9 @@ def _reserve(path: Path, size: int) -> None:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_CLOEXEC, 0o600)
         try:
             try:
+                # `HAVE_POSIX_FALLOCATE` (`local-store.cc`): darwin has none and takes the write.
+                if not hasattr(os, "posix_fallocate"):
+                    raise OSError("no posix_fallocate")
                 os.posix_fallocate(fd, 0, size)
             except OSError:
                 os.write(fd, b"X" * size)
