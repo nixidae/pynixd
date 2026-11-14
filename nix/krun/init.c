@@ -9,7 +9,8 @@
  *   status   a path, opened for writing as file descriptor 3
  *   exit     a path, where the command's end is written: "exit N" or "signal N";
  *            or "init MESSAGE", the init's error that stopped the guest first
- *   ids      "UID GID": who the command runs as
+ *   ids      "UID GID SOCKET_UID SOCKET_GID": who the command runs as, and who
+ *            owns each listen socket
  *   cwd      the directory the command starts in
  *   disks    one directory per line: where /dev/vda, /dev/vdb, ... mount, as XFS
  *   vsock    one port per line: "fd PORT N", a connection to the host's PORT
@@ -18,8 +19,10 @@
  *   net      optional: "ADDRESS PREFIX GATEWAY MTU", the IPv4 configuration of
  *            eth0, the NIC passt serves; without it the guest has lo alone
  *
- * A listen socket is the build's: its owner is the command's uid, mode 0600.
- * Its relay runs outside the command's namespaces, as that uid.
+ * A listen socket is the build's: its owner is SOCKET_UID, mode 0600. Its
+ * relay runs outside the command's namespaces, as the command's uid: as root
+ * with a build user, a relay as the build uid would die in the helper's
+ * kill(-1) of that uid.
  *
  * The shares show their files with the host's owners, so the command runs as
  * the uid that owns the build's directories, as it does on the host. As root it
@@ -421,7 +424,7 @@ static void serve(int listener, unsigned port, unsigned uid, unsigned gid)
 
 /* Connects or listens for each line of the vsock file. The command's
  * descriptors wait at PARKED_FD and up. */
-static int open_ports(unsigned uid, unsigned gid, int targets[MAX_PORTS])
+static int open_ports(unsigned uid, unsigned gid, unsigned socket_uid, unsigned socket_gid, int targets[MAX_PORTS])
 {
     size_t len;
     char *text = slurp(CONFIG "vsock", &len);
@@ -437,7 +440,7 @@ static int open_ports(unsigned uid, unsigned gid, int targets[MAX_PORTS])
             close(sock);
             targets[n++] = fd;
         } else if (sscanf(line, "listen %u %4095s", &port, path) == 2) {
-            serve(listen_at(path, uid, gid), port, uid, gid);
+            serve(listen_at(path, socket_uid, socket_gid), port, uid, gid);
         } else {
             errno = EINVAL;
             fail(line);
@@ -465,15 +468,15 @@ int main(void)
     char *cwd = read_path(CONFIG "cwd");
     if (chdir(cwd) != 0)
         fail(cwd);
-    unsigned uid, gid;
+    unsigned uid, gid, socket_uid, socket_gid;
     char *ids = read_path(CONFIG "ids");
-    if (sscanf(ids, "%u %u", &uid, &gid) != 2) {
+    if (sscanf(ids, "%u %u %u %u", &uid, &gid, &socket_uid, &socket_gid) != 4) {
         errno = EINVAL;
         fail(CONFIG "ids");
     }
     make_build_cgroup(uid, gid);
     int targets[MAX_PORTS];
-    int nports = open_ports(uid, gid, targets);
+    int nports = open_ports(uid, gid, socket_uid, socket_gid, targets);
 
     int master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
     if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0)

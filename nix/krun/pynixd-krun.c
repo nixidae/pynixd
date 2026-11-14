@@ -5,7 +5,8 @@
  *               [--ro DIR:ALLOWLIST]... [--rw DIR]... [--rw-allow DIR:ALLOWLIST]...
  *               [--disk IMAGE:DIR]... [--vsock-fd N:SOCKET]... [--vsock-listen PATH:SOCKET]...
  *               [--net FD:ADDRESS/PREFIX:GATEWAY:MTU] [--cgroup DIR] [--usage PATH]
- *               --cwd DIR --status PATH --exit PATH [--uid N --gid N] -- COMMAND [ARG]...
+ *               --cwd DIR --status PATH --exit PATH [--uid N --gid N] [--socket-owner UID:GID]
+ *               -- COMMAND [ARG]...
  *
  * The guest boots libkrunfw's kernel on a root that holds only --init (as
  * /init), its configuration and the mount points. Each --ro and --rw share is
@@ -34,8 +35,9 @@
  * Without --net the guest has lo alone.
  *
  * The init runs COMMAND in --cwd, a directory on a share, as --uid and --gid (this process's own by default),
- * the owners the shares show. It opens --status as its file descriptor 3, and writes
- * how COMMAND ended to --exit. Both are paths in the guest, on a --rw share.
+ * the owners the shares show. A --vsock-listen socket belongs to --socket-owner (the command's ids by
+ * default): a command that runs as root gives the build user its socket. The init opens --status as the
+ * command's file descriptor 3, and writes how COMMAND ended to --exit. Both are paths in the guest, on a --rw share.
  * The guest's console is this process's stdout. libkrun takes the process
  * over, and the guest's reset ends it. PYNIXD_KRUN_LOG_LEVEL is libkrun's log
  * level: 0 off to 5 trace, errors by default. PYNIXD_KRUN_CMDLINE goes on the
@@ -139,7 +141,8 @@ static void usage(void)
                     "                   [--ro DIR:ALLOWLIST]... [--rw DIR]... [--rw-allow DIR:ALLOWLIST]...\n"
                     "                   [--disk IMAGE:DIR]... [--vsock-fd N:SOCKET]... [--vsock-listen PATH:SOCKET]...\n"
                     "                   [--net FD:ADDRESS/PREFIX:GATEWAY:MTU] [--cgroup DIR] [--usage PATH]\n"
-                    "                   --cwd DIR --status PATH --exit PATH [--uid N --gid N] -- COMMAND [ARG]...\n");
+                    "                   --cwd DIR --status PATH --exit PATH [--uid N --gid N] [--socket-owner UID:GID]\n"
+                    "                   -- COMMAND [ARG]...\n");
 }
 
 static int join_cgroup(const char *dir)
@@ -244,7 +247,7 @@ static int add_file(KrunFsOverlay overlay, const char *path, const char *data, s
 int main(int argc, char *argv[])
 {
     enum { INIT = 256, CPUS, MEMORY, DAX, RO, RW, RW_ALLOW, DISK, NEGATIVE, STATUS, EXIT, UID, GID, CWD, VSOCK_FD, VSOCK_LISTEN,
-           CGROUP, USAGE, NET };
+           CGROUP, USAGE, NET, SOCKET_OWNER };
     static const struct option options[] = {
         {"init", required_argument, NULL, INIT},     {"cpus", required_argument, NULL, CPUS},
         {"memory", required_argument, NULL, MEMORY}, {"dax-window", required_argument, NULL, DAX},
@@ -255,11 +258,12 @@ int main(int argc, char *argv[])
         {"uid", required_argument, NULL, UID},       {"gid", required_argument, NULL, GID},
         {"vsock-fd", required_argument, NULL, VSOCK_FD}, {"vsock-listen", required_argument, NULL, VSOCK_LISTEN},
         {"cgroup", required_argument, NULL, CGROUP}, {"usage", required_argument, NULL, USAGE},
-        {"net", required_argument, NULL, NET},
+        {"net", required_argument, NULL, NET},       {"socket-owner", required_argument, NULL, SOCKET_OWNER},
         {NULL, 0, NULL, 0},
     };
     const char *init = NULL, *status = NULL, *exit_path = NULL, *cwd = NULL, *cgroup = NULL, *usage_path = NULL;
     long cpus = 0, memory = 0, dax_window = 0, negative_timeout = 0, uid = (long)getuid(), gid = (long)getgid();
+    long socket_uid = -1, socket_gid = -1;
     struct share shares[MAX_SHARES];
     struct disk disks[MAX_DISKS];
     struct port ports[MAX_PORTS];
@@ -292,6 +296,12 @@ int main(int argc, char *argv[])
         case NEGATIVE: ok = parse_long(optarg, 0, INT64_MAX, &negative_timeout); break;
         case UID: ok = parse_long(optarg, 0, UINT32_MAX - 1, &uid); break;
         case GID: ok = parse_long(optarg, 0, UINT32_MAX - 1, &gid); break;
+        case SOCKET_OWNER: {
+            char rest;
+            ok = sscanf(optarg, "%ld:%ld%c", &socket_uid, &socket_gid, &rest) == 2 && socket_uid >= 0 &&
+                 socket_uid < UINT32_MAX && socket_gid >= 0 && socket_gid < UINT32_MAX;
+            break;
+        }
         case RO:
         case RW_ALLOW: {
             char *colon = strrchr(optarg, ':');
@@ -392,8 +402,9 @@ int main(int argc, char *argv[])
     }
 
     /* The configuration the init reads from /.pynixd. */
-    char ids[32];
-    snprintf(ids, sizeof ids, "%ld %ld\n", uid, gid);
+    char ids[64];
+    snprintf(ids, sizeof ids, "%ld %ld %ld %ld\n", uid, gid, socket_uid < 0 ? uid : socket_uid,
+             socket_gid < 0 ? gid : socket_gid);
     char *mounts = NULL, *args = NULL;
     size_t mounts_len = 0, args_len = 0;
     FILE *m = open_memstream(&mounts, &mounts_len);
