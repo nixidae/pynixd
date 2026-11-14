@@ -58,6 +58,7 @@ from ..serde import (
     BuildMode,
     BuildResult,
     BuildResultStatus,
+    IsValidPathRequest,
     StorePath,
 )
 from ..write_router import Dump, Write, WriteClient, WriteRouter
@@ -629,6 +630,22 @@ class LocalDBStore(Store):
         theirs = await daemon.execute(request, client=client, suppress_last=suppress_last, skip_probe=skip_probe)
         await self._shadow(owned, request, client, theirs)
         return theirs
+
+    async def own_valid_path(self, path: StorePath, client: ClientConn) -> bool | None:
+        """What `execute` answers to `IsValidPath` on the pynixd route, without the request around it.
+
+        An evaluation sends one `IsValidPath` for each derivation: 49193 of one NixOS system
+        (nixidae/nixidae#1345). The generic route cost 4.3 us of each 33.5 us answer. `None` on any
+        other route, an inactive database, or an overlay path the daemon must answer: `execute` does then.
+        """
+        if self.routes.get(IsValidPathRequest.op) is not OpRoute.pynixd or not self.db.active:
+            return None
+        await self._daemon.probe()
+        self.db.mark_paths((str(path),))
+        try:
+            return await self.engine.is_valid_path(str(path), reader=client.sync_reader)
+        except LowerPathNeedsSync:
+            return None
 
     async def _own_answer(
         self, owned: Owned, request: WireRequest, client: ClientConn | None, suppress_last: bool
