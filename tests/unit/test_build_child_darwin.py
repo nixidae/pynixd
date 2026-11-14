@@ -5,6 +5,7 @@ darwin only: `sandbox_init_with_parameters` and `posix_spawn`'s `POSIX_SPAWN_SET
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import socket
@@ -14,10 +15,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from pynixd_store.builder import darwin
 from pynixd_store.builder.spec import ChildSpec, DarwinSpec
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+IPC_CREAT = 0o1000
 
 pytestmark = pytest.mark.skipif(sys.platform != "darwin", reason="the darwin sandbox profile")
 
@@ -33,7 +37,7 @@ def _spec(tmp_path: Path, script: str, *, sandbox: bool = True, **over: object) 
     store = tmp_path / "store"
     store.mkdir()
     out = store / "00000000000000000000000000000000-out"
-    darwin: DarwinSpec = {
+    profile: DarwinSpec = {
         "sandbox": sandbox,
         "paths": [(p, p, False) for p in (*HOST_PATHS, str(build))],
         "inputs": [],
@@ -46,7 +50,7 @@ def _spec(tmp_path: Path, script: str, *, sandbox: bool = True, **over: object) 
         "allow_local_networking": False,
         "platform": "aarch64-darwin",
     }
-    darwin.update(over)  # type: ignore[typeddict-item]  # the tests vary one key at a time
+    profile.update(over)  # type: ignore[typeddict-item]  # the tests vary one key at a time
     spec: ChildSpec = {
         "builder": "/bin/sh",
         "args": ["-c", script],
@@ -75,7 +79,7 @@ def _spec(tmp_path: Path, script: str, *, sandbox: bool = True, **over: object) 
         "cgroup": None,
         "cgroup_report": False,
         "sample_seconds": 0,
-        "darwin": darwin,
+        "darwin": profile,
     }
     return spec, out
 
@@ -157,3 +161,29 @@ def test_the_network_is_closed_unless_fixed_output_or_asked_for_locally(
         code, log, status = _run(tmp_path, spec)
     assert (code, status) == (0, ""), log
     assert log.splitlines()[-1] == ("reached" if reached else "closed")
+
+
+def test_a_build_users_system_v_ipc_objects_are_removed() -> None:
+    """`cleanupSysVIPCForUser` (`darwin-derivation-builder.cc:209`), run on this test's own uid.
+
+    It removes every object the uid owns, so the test skips when the uid owns one already.
+    """
+    uid = os.getuid()
+    if any(darwin.sysv_ipc_keys(uid).values()):
+        pytest.skip("this uid owns System V IPC objects that the clean-up would remove")
+    libc = ctypes.CDLL(None, use_errno=True)
+    key = 0x5059_0000 | (os.getpid() & 0xFFFF)
+    made = {
+        "shm": libc.shmget(key, 4096, IPC_CREAT | 0o600),
+        "msg": libc.msgget(key, IPC_CREAT | 0o600),
+        "sem": libc.semget(key, 1, IPC_CREAT | 0o600),
+    }
+    try:
+        assert all(i != -1 for i in made.values()), (made, ctypes.get_errno())
+        assert darwin.sysv_ipc_keys(uid) == {"shm": [key], "msg": [key], "sem": [key]}
+        darwin.cleanup_sysv_ipc(uid)
+        assert darwin.sysv_ipc_keys(uid) == {"shm": [], "msg": [], "sem": []}
+    finally:
+        libc.shmctl(made["shm"], darwin.IPC_RMID, None)
+        libc.msgctl(made["msg"], darwin.IPC_RMID, None)
+        libc.semctl(made["sem"], 0, darwin.IPC_RMID)

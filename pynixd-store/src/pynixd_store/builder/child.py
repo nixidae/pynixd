@@ -141,6 +141,14 @@ def _kill_user(uid: int) -> None:
         raise SetupError(f"cannot kill processes for uid '{uid}'")
 
 
+def _kill_sandbox(spec: ChildSpec, uid: int) -> None:
+    """`killSandbox`: the build user's processes, and on darwin its System V IPC objects
+    (`darwin-derivation-builder.cc:304`)."""
+    _kill_user(uid)
+    if spec["darwin"] is not None:
+        darwin.cleanup_sysv_ipc(uid)
+
+
 def _build_user_maps(spec: ChildSpec) -> tuple[str, str]:
     """The uid and gid maps of `startChild` (`linux-derivation-builder.cc:627`) for the build user."""
     if spec["build_user"] is None:
@@ -667,7 +675,7 @@ def main() -> None:
             Path(spec["cgroup"], "cgroup.procs").write_text(str(os.getpid()))
         uid, gid = os.getuid(), os.getgid()
         if spec["build_user"] is not None:
-            _kill_user(spec["build_user"][0])
+            _kill_sandbox(spec, spec["build_user"][0])
         if spec["chroot"]:
             # `linux-derivation-builder.cc:566`: before the user namespace, which cannot drop them. EPERM is an
             # unprivileged helper's answer, or that of a namespace whose `setgroups` is denied.
@@ -718,7 +726,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     if not spec["chroot"] and spec["build_user"] is not None:
         try:
-            _kill_user(spec["build_user"][0])
+            _kill_sandbox(spec, spec["build_user"][0])
         except SetupError as e:
             _report(status_fd, str(e))
     os.close(status_fd)

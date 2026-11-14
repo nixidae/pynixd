@@ -7,10 +7,12 @@ one; a darwin build always has one of the two.
 
 from __future__ import annotations
 
+import ctypes
 import os
 import posixpath
 import re
 import stat
+import struct
 from typing import TYPE_CHECKING, Any
 
 from nix_daemon_protocol.basic_derivation import bool_attr, structured_attrs
@@ -289,6 +291,68 @@ def profile(spec: DarwinSpec) -> str:
         text += f'\t(literal "{directory}")\n'
     text += ")\n"
     return text + spec["additional_profile"]
+
+
+class _IpcsCommand(ctypes.Structure):
+    """`struct IpcsCommand` (`darwin-derivation-builder.cc:25`): the cursor of a `kern.sysv.ipcs.*` walk."""
+
+    _fields_ = (
+        ("magic", ctypes.c_uint32),
+        ("op", ctypes.c_uint32),
+        ("cursor", ctypes.c_uint32),
+        ("datalen", ctypes.c_uint32),
+        ("data", ctypes.c_void_p),
+    )
+
+
+IPCS_MAGIC = 0x00000001
+IPC_RMID = 0
+#: Each kind: its sysctl, the iteration op, and `sizeof` its `*id_ds`, measured against the macOS 14.4 SDK.
+#: Each one starts with `struct ipc_perm`, whose `uid` is at offset 0 and `_key` at 20.
+IPC_KINDS = {
+    "shm": (b"kern.sysv.ipcs.shm", 0x00000002, 76),
+    "msg": (b"kern.sysv.ipcs.msg", 0x00000200, 116),
+    "sem": (b"kern.sysv.ipcs.sem", 0x00000020, 72),
+}
+
+
+def sysv_ipc_keys(uid: int) -> dict[str, list[int]]:
+    """The key of each System V IPC object *uid* owns, by kind (`shm`, `msg`, `sem`)."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    keys: dict[str, list[int]] = {}
+    for kind, (sysctl, op, size) in IPC_KINDS.items():
+        data = ctypes.create_string_buffer(size)
+        command = _IpcsCommand(IPCS_MAGIC, op, 0, size, ctypes.cast(data, ctypes.c_void_p))
+        length = ctypes.c_size_t(ctypes.sizeof(command))
+        found = keys.setdefault(kind, [])
+        while True:
+            ctypes.memset(data, 0, size)
+            if libc.sysctlbyname(
+                sysctl, ctypes.byref(command), ctypes.byref(length), ctypes.byref(command), ctypes.sizeof(command)
+            ):
+                break
+            owner, key = struct.unpack_from("=I", data.raw, 0)[0], struct.unpack_from("=i", data.raw, 20)[0]
+            if owner == uid:
+                found.append(key)
+    return keys
+
+
+def cleanup_sysv_ipc(uid: int) -> None:
+    """`cleanupSysVIPCForUser` (`darwin-derivation-builder.cc:209`): darwin has no IPC namespace, so a build
+    user's objects outlive its processes. Each one goes by its key, and a failure is skipped, as in Nix."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    keys = sysv_ipc_keys(uid)
+    ids = {
+        "shm": [i for key in keys["shm"] if (i := libc.shmget(key, 0, 0)) != -1],
+        "msg": [i for key in keys["msg"] if (i := libc.msgget(key, 0)) != -1],
+        "sem": [i for key in keys["sem"] if (i := libc.semget(key, 0, 0)) != -1],
+    }
+    for i in ids["shm"]:
+        libc.shmctl(i, IPC_RMID, None)
+    for i in ids["msg"]:
+        libc.msgctl(i, IPC_RMID, None)
+    for i in ids["sem"]:
+        libc.semctl(i, 0, IPC_RMID)
 
 
 def global_tmp_dir(environ: Mapping[str, str]) -> str:

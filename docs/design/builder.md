@@ -275,10 +275,13 @@ never a chroot: the builder runs on the host, at its scratch paths, as for
 - The kernel matches a rule against the real path. A store or build directory
   under a symlink (`/tmp`, `/var/folders`) breaks the profile, under Nix too.
 
+With a build user, the helper also removes that user's System V IPC objects
+before and after the build, as `cleanupSysVIPCForUser` does: darwin has no IPC
+namespace, so they outlive the processes.
+
 Not yet: `recursive-nix` and `builder-rpc-v0` stay on the daemon, because the
-store's socket binds through `/proc/self/fd`. After the build Nix also removes
-the build user's System V IPC objects (`cleanupSysVIPCForUser`); pynixd does
-not yet. `pre-build-hook` is not run on any platform.
+store's socket binds through `/proc/self/fd`. `pre-build-hook` is not run on
+any platform (nixidae/nixidae#1370).
 
 `tests/functional/test_build_darwin.py` builds each case with no daemon and on
 Nix's own darwin builder, and compares the two. It runs on a darwin host only.
