@@ -14,9 +14,12 @@ import os
 import socket
 import sqlite3
 import struct
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import anyio
+import anyio.abc
 import pytest
 from aiohttp import web
 
@@ -432,3 +435,74 @@ async def test_a_fetch_in_the_vm_does_not_reach_the_hosts_loopback(tmp_path: Pat
     assert (tmp_path / "ns/store" / here.lstrip("/")).read_bytes() == FETCHED
     assert rc != 0
     assert "Could not connect to server" in err
+
+
+# Two fixed-output builds at once, each sending UDP from one fixed source port to an echo server that answers once
+# both have sent: each must get its own reply. Each holds its socket open after it, so a reply the other VM's passt
+# took is not rescued by that VM ending. passt keeps a guest's source port on the host by default, so the two VMs
+# would bind one host port.
+SAME_PORT = 40035
+UDP_ECHO = """
+let python = builtins.storePath "@PYTHON@"; in
+seed: derivation {
+  name = "vm-udp-${toString seed}"; system = builtins.currentSystem;
+  builder = "${python}/bin/python3";
+  outputHashMode = "flat"; outputHashAlgo = "sha256"; outputHash = "@HASH@";
+  args = [ "-c" ''
+    import os, socket, sys, time
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("", @PORT@))
+    s.settimeout(2)
+    for attempt in range(3):
+        s.sendto(b"${toString seed}", ("@HOST@", @ECHO@))
+        try:
+            got, _ = s.recvfrom(64)
+        except TimeoutError:
+            continue
+        if got == b"${toString seed}":
+            open(os.environ["out"], "w").write("ok\\n")
+            time.sleep(10)
+            sys.exit(0)
+    sys.exit("no reply of its own")
+  '' ];
+}
+"""
+
+
+@contextlib.asynccontextmanager
+async def _udp_echo(host: str, senders: int) -> AsyncIterator[int]:
+    """A UDP echo server on *host* that holds every answer until *senders* distinct payloads arrived."""
+    async with await anyio.create_udp_socket(local_host=host) as udp, anyio.create_task_group() as tg:
+
+        async def echo() -> None:
+            held: list[tuple[bytes, tuple[str, int]]] = []
+            seen: set[bytes] = set()
+            async for data, address in udp:
+                seen.add(data)
+                held.append((data, address))
+                if len(seen) >= senders:
+                    for answer, to in held:
+                        await udp.sendto(answer, *to)
+                    held.clear()
+
+        tg.start_soon(echo)
+        yield udp.extra(anyio.abc.SocketAttribute.local_port)
+        tg.cancel_scope.cancel()
+
+
+async def test_two_vms_at_once_each_get_the_replies_to_their_own_udp_port(tmp_path: Path) -> None:
+    """`pynixd/nix/passt/0001-*.patch`: without `--no-udp-port-keep`, one of the two loses its replies."""
+    host = _own_address()
+    if host is None:
+        pytest.skip("this machine has no address off its loopback")
+    python = "/".join(os.path.realpath(sys.executable).split("/")[:4])
+    async with _udp_echo(host, 2) as echo, _serve(tmp_path, "vm", _network_vm()) as url:
+        expr = (
+            UDP_ECHO.replace("@PYTHON@", python)
+            .replace("@HASH@", hashlib.sha256(b"ok\n").hexdigest())
+            .replace("@PORT@", str(SAME_PORT))
+            .replace("@HOST@", host)
+            .replace("@ECHO@", str(echo))
+        )
+        out, log = await _build(url, f"let f = {expr}; in [ (f 1) (f 2) ]", "--max-jobs", "2")
+    assert len(out.split()) == 2, log

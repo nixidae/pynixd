@@ -1,0 +1,114 @@
+passt: let the kernel pick the host source port of outbound UDP
+
+`--no-udp-port-keep`: for a UDP flow the guest starts, the host side gets a
+port the kernel picks, as passt already does for TCP (`fwd.c`,
+`fwd_nat_from_tap`). Without it the host side binds the guest's own source
+port, with SO_REUSEADDR (`util.c`).
+
+pynixd runs one passt per build VM, and every guest runs the same kernel.
+Two guests that use the same source port to reach one resolver bind the
+same host port in two passt processes, and the replies reach only one of
+them. Measured on dynhetz, 100 build VMs at once, 5000 lookups each run:
+7, 3, 1 and 1 lookups failed with EAI_AGAIN after both of glibc's 5 s
+attempts; passt's --pcap showed those queries with no reply, from ports two
+concurrent guests shared. On the host's own namespaces: 0 of 5000.
+
+`udp_flow_new` reads the port back with getsockname when the kernel picked
+it, as it does for an address the kernel picked.
+
+To report upstream (passt.top), once pynixd has measured it.
+
+diff -ruN a/conf.c b/conf.c
+--- a/conf.c	2026-11-14 18:15:46.189222469 +0100
++++ b/conf.c	2026-11-14 18:16:12.364656553 +0100
+@@ -652,6 +652,7 @@
+ 		"  --no-dhcpv6		Disable DHCPv6 server\n"
+ 		"  --no-ra		Disable router advertisements\n"
+ 		"  --freebind		Bind to any address for forwarding\n"
++		"  --no-udp-port-keep	Kernel picks host source port of outbound UDP\n"
+ 		"  --no-map-gw		Don't map gateway address to host\n"
+ 		"  --chroot-fallback	Use chroot() if pivot_root() fails\n"
+ 		"  -4, --ipv4-only	Enable IPv4 operation only\n"
+@@ -1273,6 +1274,7 @@
+ 		{"no-splice",	no_argument,		&c->no_splice,	1 },
+ 		{"splice-only",	no_argument,		&c->splice_only, 1 },
+ 		{"freebind",	no_argument,		&c->freebind,	1 },
++		{"no-udp-port-keep", no_argument,	&c->no_udp_port_keep, 1 },
+ 		{"no-map-gw",	no_argument,		&no_map_gw,	1 },
+ 		{"ipv4-only",	no_argument,		NULL,		'4' },
+ 		{"ipv6-only",	no_argument,		NULL,		'6' },
+diff -ruN a/fwd.c b/fwd.c
+--- a/fwd.c	2026-11-14 18:15:46.191222483 +0100
++++ b/fwd.c	2026-11-14 18:16:12.364656553 +0100
+@@ -922,7 +922,7 @@
+ 
+ 	/* Let the kernel pick a host side source port */
+ 	tgt->oport = 0;
+-	if (proto == IPPROTO_UDP) {
++	if (proto == IPPROTO_UDP && !c->no_udp_port_keep) {
+ 		/* But for UDP we preserve the source port */
+ 		tgt->oport = ini->eport;
+ 	}
+diff -ruN a/passt.1 b/passt.1
+--- a/passt.1	2026-11-14 18:15:46.193222497 +0100
++++ b/passt.1	2026-11-14 18:16:12.364656553 +0100
+@@ -373,6 +373,15 @@
+ point the forwarding will immediately start operating.
+ 
+ .TP
++.BR \-\-no-udp-port-keep
++For a UDP flow the guest or namespace starts, let the kernel pick the host
++side source port, as for TCP. By default, the host side keeps the guest's
++source port. Two instances whose guests use the same source port to reach
++the same destination then bind the same host port, and the replies reach
++only one of them. Use this when several instances run on one host, each
++with its own guest, as build sandboxes do.
++
++.TP
+ .BR \-\-map-host-loopback " " \fIaddr
+ Translate \fIaddr\fR to refer to the host. Packets from the guest to
+ \fIaddr\fR will be redirected to the host.  On the host such packets
+diff -ruN a/passt.h b/passt.h
+--- a/passt.h	2026-11-14 18:15:46.193222497 +0100
++++ b/passt.h	2026-11-14 18:16:12.365399217 +0100
+@@ -214,6 +214,7 @@
+  * @splice_only:	Only enable loopback forwarding
+  * @host_lo_to_ns_lo:	Map host loopback addresses to ns loopback addresses
+  * @freebind:		Allow binding of non-local addresses for forwarding
++ * @no_udp_port_keep:	Let the kernel pick the host source port of outbound UDP
+  * @chroot_fallback:	Use chroot() in case pivot_root() fails
+  * @low_wmem:		Low probed net.core.wmem_max
+  * @low_rmem:		Low probed net.core.rmem_max
+@@ -300,6 +301,7 @@
+ 	int splice_only;
+ 	int host_lo_to_ns_lo;
+ 	int freebind;
++	int no_udp_port_keep;
+ 	bool chroot_fallback;
+ 
+ 	int low_wmem;
+diff -ruN a/udp_flow.c b/udp_flow.c
+--- a/udp_flow.c	2026-11-14 18:15:46.198069423 +0100
++++ b/udp_flow.c	2026-11-14 18:16:23.459801818 +0100
+@@ -162,7 +162,8 @@
+ 				goto cancel;
+ 	}
+ 
+-	if (uflow->s[TGTSIDE] >= 0 && inany_is_unspecified(&tgt->oaddr)) {
++	if (uflow->s[TGTSIDE] >= 0 &&
++	    (inany_is_unspecified(&tgt->oaddr) || !tgt->oport)) {
+ 		/* When we target a socket, we connect() it, but might not
+ 		 * always bind(), leaving the kernel to pick our address.  In
+ 		 * that case connect() will implicitly bind() the socket, but we
+@@ -179,7 +180,10 @@
+ 			flow_perror(uflow, "Unable to determine local address");
+ 			goto cancel;
+ 		}
+-		if (port != tgt->oport) {
++		if (!tgt->oport) {
++			/* --no-udp-port-keep: the kernel picked it */
++			uflow->f.side[TGTSIDE].oport = port;
++		} else if (port != tgt->oport) {
+ 			flow_err_ratelimit(uflow, now, "Unexpected local port");
+ 			goto cancel;
+ 		}

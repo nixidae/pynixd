@@ -44,13 +44,17 @@ let
     guest's allowlist shows the helper the venv's closure and nothing else
     of the host's store.
   */
+  # One passt per build VM: each needs its own host UDP ports (nix/passt/0001-*.patch says why).
+  passt = pkgs.passt.overrideAttrs (old: {
+    patches = (old.patches or [ ]) ++ [ ./nix/passt/0001-udp-kernel-picked-host-port.patch ];
+  });
   krunVariables = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
     PYNIXD_KRUN = lib.getExe krun;
     PYNIXD_KRUN_INIT = "${krun.init}/bin/pynixd-krun-init";
     PYNIXD_KRUN_PYTHON = "${venv}/lib/venv/bin/python";
     PYNIXD_KRUN_CLOSURE = "${pkgs.closureInfo { rootPaths = [ venv ]; }}/store-paths";
     PYNIXD_KRUN_MKFS = "${lib.getBin pkgs.xfsprogs}/bin/mkfs.xfs";
-    PYNIXD_KRUN_PASST = lib.getExe' pkgs.passt "passt";
+    PYNIXD_KRUN_PASST = lib.getExe' passt "passt";
   };
 
   package =

@@ -330,6 +330,8 @@ async def uplink(passt: Path, top: Path) -> AsyncIterator[int]:
                     GUEST_DNS,
                     "--map-host-loopback",
                     "none",
+                    # VMs at once must not share a host UDP port: pynixd/nix/passt/0001-*.patch.
+                    "--no-udp-port-keep",
                     "--mtu",
                     str(GUEST_MTU),
                 ],
