@@ -1422,12 +1422,13 @@ class PynixdSettings(BaseSettings):
     # it is a dict update, and the benchmark reads it.
     metrics_enabled: bool = True
 
-    # Sign paths added through `AddToStore` with pynixd's own keys, by relay
-    # (`SignPathInfo`) or by decomposing (local sign, then `AddSignatures`).
-    # Off: nothing populates the signing keys in the standard deployment,
-    # where the step is a pool acquire and an upstream round trip per added
-    # path for zero signatures. An operator with signing keys sets this true,
-    # and added paths carry pynixd's signature again.
+    # Sign what an admin adds. pynixd's own store (`LocalDBStore`) signs
+    # AddToStoreNar and AddMultipleToStore with its `secret-key-files`;
+    # another store signs `AddToStore` alone, by relay (`SignPathInfo`) or by
+    # decomposing (local sign, then `AddSignatures`). An AddToStore dump is
+    # content-addressed, so its path vouches for it. Off, as Nix signs build
+    # outputs alone. A store that others build in turns it on: a client
+    # that trusts only this store's key takes back what admins pushed.
     sign_added_paths: bool = False
 
     @classmethod

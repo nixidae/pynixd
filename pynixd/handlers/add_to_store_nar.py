@@ -17,7 +17,7 @@ from ..store.local_db import write_router
 from ..wire import FramedReader
 from ..write_router import Write
 from ._base import Handler
-from ._import import write_client
+from ._import import sign_admins_paths, write_client
 
 if TYPE_CHECKING:
     from ..serde.context import RequestContext
@@ -66,4 +66,5 @@ class AddToStoreNarHandler(Handler):
         finally:
             # The `FramedSource` destructor (`daemon.cc:946`): the rest of the NAR, so the session goes on.
             await frames.ensure_eof()
+        await sign_admins_paths(ctx, {str(req.info.path): req.info.info})
         return AddToStoreNarResponse()

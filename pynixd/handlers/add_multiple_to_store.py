@@ -24,11 +24,12 @@ from ..store.local_db import write_router
 from ..wire import FramedReader
 from ..write_router import Write
 from ._base import Handler
-from ._import import write_client
+from ._import import sign_admins_paths, write_client
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+    from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
     from pynixd_store.source import Source
 
     from ..serde.context import RequestContext
@@ -55,10 +56,11 @@ class AddMultipleToStoreHandler(Handler):
             req = req.model_copy(update={"dont_check_sigs": 0})
 
         frames = FramedReader(ctx.proxy.r)
+        added: dict[str, UnkeyedValidPathInfo] = {}
         try:
             count = await frames.read_uint64()
             version, features = path_info_version(ctx.proxy.version, ctx.proxy.standard_features)
-            async with contextlib.aclosing(_paths(frames, count, version, features)) as paths:
+            async with contextlib.aclosing(_paths(frames, count, version, features, added)) as paths:
                 await write_router(ctx.proxy.local_store).add_multiple_to_store(
                     Write(op=req.name, repair=bool(req.repair) or ctx.proxy.repairs_adds),
                     count,
@@ -79,11 +81,16 @@ class AddMultipleToStoreHandler(Handler):
             if ctx.proxy.metrics_enabled:
                 metrics.NAR_FORWARD_EOF_TIMEOUTS.inc()
             logger.warning("add_multiple_forward_source_eof_timeout", count=count)
+        await sign_admins_paths(ctx, added)
         return AddMultipleToStoreResponse()
 
 
 async def _paths(
-    frames: FramedReader, count: int, version: int, features: frozenset[str]
+    frames: FramedReader,
+    count: int,
+    version: int,
+    features: frozenset[str],
+    seen: dict[str, UnkeyedValidPathInfo] | None = None,
 ) -> AsyncGenerator[tuple[ValidPathInfo, Source]]:
     """The paths of a client's AddMultipleToStore stream, each NAR `Bounded`.
 
@@ -94,5 +101,7 @@ async def _paths(
     for _ in range(count):
         info = await ValidPathInfo.from_reader(ReadContext(reader=frames, version=version, features=features))
         nar = Bounded(frames, info.info.nar_size)
+        if seen is not None:
+            seen[str(info.path)] = info.info
         yield info, nar
         await nar.finish()

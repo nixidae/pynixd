@@ -10,7 +10,8 @@ were signed, so only the builds it placed elsewhere failed.
 from __future__ import annotations
 
 import base64
-from typing import TYPE_CHECKING
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 import nacl.signing
 import pytest
@@ -19,6 +20,7 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from nix_daemon_protocol.signature import Signature
 from pynixd.build_queue import BuildQueue
 from pynixd.config import LocalSocketStoreSpec
+from pynixd.handlers._import import sign_admins_paths
 from pynixd.serde import (
     BuildDerivationResponse,
     BuildResult,
@@ -30,6 +32,7 @@ from pynixd.serde import (
     UnkeyedValidPathInfo,
     ValidPathInfo,
 )
+from pynixd.serde.auth import Role
 from pynixd.store.local_db import LocalDBStore
 from pynixd_store.add import ImportSettings
 from pynixd_store.signing import PublicKey, check_signatures
@@ -39,6 +42,8 @@ from tests._conftest.placement import FakeStore
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
+
+    from pynixd.serde.context import RequestContext
 
 OUTPUT = "/nix/store/00000000000000000000000000000001-out"
 BUILDER = StoreId("sg1-n1")
@@ -159,7 +164,7 @@ class TestSignPulled:
         file, _public = _key(tmp_path, "pynixd-a")
         store = _Store(tmp_path, [file], [])
 
-        with pytest.raises(Exception, match="is not valid after the pull"):
+        with pytest.raises(Exception, match="is not valid, so pynixd cannot sign it"):
             await store.store.sign_pulled([StorePath(OUTPUT)])
 
     @pytest.mark.anyio
@@ -169,3 +174,63 @@ class TestSignPulled:
 
         with pytest.raises(FileNotFoundError):
             await store.store.sign_pulled([StorePath(OUTPUT)])
+
+
+class TestSignAdded:
+    """`sign_added_paths`: what an admin adds, signed by its content (review of nixidae/nixidae#1009's case)."""
+
+    @staticmethod
+    def _store(tmp_path: Path, *, on: bool = True) -> tuple[_Store, PublicKey]:
+        file, public = _key(tmp_path, "pynixd-a")
+        store = _Store(tmp_path, [file], [OUTPUT])
+        store.store.settings = store.store.settings.model_copy(update={"sign_added_paths": on})
+        return store, public
+
+    @pytest.mark.anyio
+    async def test_signs_a_path_whose_stored_content_is_what_the_admin_sent(self, tmp_path: Path) -> None:
+        store, public = self._store(tmp_path)
+
+        await store.store.sign_added({OUTPUT: store.infos[OUTPUT].info})
+
+        assert store.vouched(OUTPUT, {"pynixd-a": public}) == 1
+
+    @pytest.mark.anyio
+    async def test_leaves_other_content_under_the_same_path_unsigned(self, tmp_path: Path) -> None:
+        """An admin's copy of a path that is already valid is skipped unread: the store holds someone else's NAR."""
+        store, _public = self._store(tmp_path)
+
+        other = store.infos[OUTPUT].info.model_copy(update={"nar_hash": NARHash("1" * 64)})
+
+        await store.store.sign_added({OUTPUT: other})
+
+        assert store.added == {}
+
+    @pytest.mark.anyio
+    async def test_leaves_other_references_under_the_same_path_unsigned(self, tmp_path: Path) -> None:
+        """The signature covers the references too: same NAR, other references, another claim."""
+        store, _public = self._store(tmp_path)
+        other = store.infos[OUTPUT].info.model_copy(
+            update={"references": {StorePath("/nix/store/00000000000000000000000000000002-other")}}
+        )
+
+        await store.store.sign_added({OUTPUT: other})
+
+        assert store.added == {}
+
+    @pytest.mark.anyio
+    async def test_signs_nothing_with_the_setting_off(self, tmp_path: Path) -> None:
+        store, _public = self._store(tmp_path, on=False)
+
+        await store.store.sign_added({OUTPUT: None})
+
+        assert store.added == {}
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(("role", "signed"), [(Role.ADMIN, True), (Role.USER, False)])
+    async def test_signs_for_an_admin_alone(self, tmp_path: Path, role: Role, signed: bool) -> None:
+        store, _public = self._store(tmp_path)
+        ctx = cast("RequestContext", SimpleNamespace(role=role, proxy=SimpleNamespace(local_store=store.store)))
+
+        assert await sign_admins_paths(ctx, {OUTPUT: None}) is signed
+
+        assert bool(store.added) is signed

@@ -71,6 +71,7 @@ if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
 
     from nix_daemon_protocol.logs import LogMessage
+    from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
     from nix_daemon_protocol.wire_ops import WireRequest
     from pynixd_store.add import ImportSettings
@@ -1042,14 +1043,47 @@ class LocalDBStore(Store):
         settings, never a client's: a session cannot name the key. A bad key
         file fails the collection, as it fails a local build.
         """
+        await self.sign_paths(out_paths)
+
+    async def sign_added(self, sent: Mapping[str, UnkeyedValidPathInfo | None]) -> None:
+        """Sign what an admin added, when `sign_added_paths` is on.
+
+        *sent* maps each path to the info the admin sent, or `None` for a
+        content-addressed add, whose path fixes its content. A path already
+        valid is skipped unread, so a stored NAR hash or reference set that
+        differs is someone else's, and stays unsigned: the signature covers both.
+
+        NIX-DIVERGENCE: Nix signs build outputs alone (`derivation-builder.cc:1605`).
+        A store that others build in hands back what its admins pushed too, and
+        a client that trusts only this store's key refuses it unsigned. The
+        caller checks the role: an untrusted client's path carries no
+        attestation of pynixd's key (nixidae/nixidae#1009).
+        """
+        if self.settings.sign_added_paths:
+            await self.sign_paths(sent.keys(), expected=sent)
+
+    async def sign_paths(
+        self, paths: Iterable[StorePath | str], *, expected: Mapping[str, UnkeyedValidPathInfo | None] | None = None
+    ) -> None:
+        """Sign each valid path with this store's `secret-key-files`; none signs nothing.
+
+        With *expected*, a path whose stored NAR hash or references differ stays unsigned.
+        """
         keys = [SecretKey.from_file(Path(file)) for file in (await self.engine.settings()).secret_key_files]
         if not keys:
             return
         router = write_router(self)
-        for path in out_paths:
+        for path in paths:
             info = await self.engine.query_path_info(str(path))
             if info is None:
-                raise PynixdError(f"path '{path}' is not valid after the pull, so pynixd cannot sign it")
+                raise PynixdError(f"path '{path}' is not valid, so pynixd cannot sign it")
+            want = (expected or {}).get(str(path))
+            if want is not None and (
+                info.info.nar_hash != want.nar_hash
+                or {str(ref) for ref in info.info.references} != {str(ref) for ref in want.references}
+            ):
+                log.warning("sign_skipped_other_content", path=str(path))
+                continue
             sigs = {Signature(sign_path_info(key, info)) for key in keys}
             await router.add_signatures(str(path), sigs)
 
