@@ -2,18 +2,28 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
+
+import structlog
+
+from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest
 
 from ..serde.auth import Role
 from ..store.local_db import LocalDBStore
+from ..store.transfer import stream_paths_store_to_store
 from ..write_router import WriteClient
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Container, Iterable, Mapping
 
     from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
+    from pynixd_store.store_path import StorePath
 
     from ..serde.context import RequestContext
+    from ..store.daemon import DaemonStore
+    from ..store.scheduled import ScheduledStore
+
+logger = structlog.get_logger(__name__)
 
 
 def write_client(ctx: RequestContext) -> WriteClient:
@@ -30,6 +40,40 @@ def write_client(ctx: RequestContext) -> WriteClient:
         metered=ctx.proxy.metrics_enabled,
         reader=client.sync_reader if client is not None else None,
     )
+
+
+async def pull_backend_references(ctx: RequestContext, references: Iterable[StorePath], sent: Container[str]) -> None:
+    """Bring into the local store each reference that only a backend holds, before the add that needs it.
+
+    pynixd answers "valid" for a path in `ctx.output_locations` even after the
+    local store lost it, so a client skips that path and sends only its
+    referrers. The local store refuses a referrer while the reference is
+    missing there. nixidae/nixidae#1351. *sent*: paths that need no pull, as
+    the client sends them itself.
+
+    Any client may cause a pull, as any client may already read these paths
+    through `NarFromPath`.
+    """
+    by_store: dict[str, tuple[ScheduledStore, set[StorePath]]] = {}
+    for ref in references:
+        if str(ref) in sent or (store := ctx.proxy.store_for_output_path(str(ref))) is None:
+            continue
+        by_store.setdefault(store.store_id, (store, set()))[1].add(ref)
+    if not by_store:
+        return
+    # Rooted before the check, so the local GC cannot take one in between.
+    for _, refs in by_store.values():
+        for ref in refs:
+            await ctx.proxy.add_temp_root(ref)
+    held = await ctx.proxy.local_store.execute(
+        QueryValidPathsRequest(paths={ref for _, refs in by_store.values() for ref in refs}), client=ctx.proxy.client
+    )
+    for store, refs in by_store.values():
+        if missing := refs - set(held.paths):
+            logger.info("pull_backend_references", store_id=store.store_id, paths=sorted(map(str, missing)))
+            await stream_paths_store_to_store(
+                cast("DaemonStore", store), ctx.proxy.local_store, missing, peer_store_id=store.store_id, direction="in"
+            )
 
 
 async def sign_admins_paths(ctx: RequestContext, sent: Mapping[str, UnkeyedValidPathInfo | None]) -> bool:

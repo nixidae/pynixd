@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 from typing import TYPE_CHECKING, ClassVar
 
 import anyio
@@ -24,13 +25,14 @@ from ..store.local_db import write_router
 from ..wire import FramedReader
 from ..write_router import Write
 from ._base import Handler
-from ._import import sign_admins_paths, write_client
+from ._import import pull_backend_references, sign_admins_paths, write_client
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Container, Iterable
 
     from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
     from pynixd_store.source import Source
+    from pynixd_store.store_path import StorePath
 
     from ..serde.context import RequestContext
 
@@ -60,7 +62,8 @@ class AddMultipleToStoreHandler(Handler):
         try:
             count = await frames.read_uint64()
             version, features = path_info_version(ctx.proxy.version, ctx.proxy.standard_features)
-            async with contextlib.aclosing(_paths(frames, count, version, features, added)) as paths:
+            pull = functools.partial(pull_backend_references, ctx)
+            async with contextlib.aclosing(_paths(frames, count, version, features, added, pull)) as paths:
                 await write_router(ctx.proxy.local_store).add_multiple_to_store(
                     Write(op=req.name, repair=bool(req.repair) or ctx.proxy.repairs_adds),
                     count,
@@ -91,15 +94,23 @@ async def _paths(
     version: int,
     features: frozenset[str],
     seen: dict[str, UnkeyedValidPathInfo] | None = None,
+    pull: Callable[[Iterable[StorePath], Container[str]], Awaitable[None]] | None = None,
 ) -> AsyncGenerator[tuple[ValidPathInfo, Source]]:
     """The paths of a client's AddMultipleToStore stream, each NAR `Bounded`.
 
     A frame holds the end of one NAR and the start of the next path's info, so
     each NAR is read to its end before the next info: `EnsureRead::finish`
-    (`daemon.cc:564`) skips a valid path's NAR unread.
+    (`daemon.cc:564`) skips a valid path's NAR unread. *pull* runs on each
+    path's references before the path goes on, skipping the paths sent so far
+    and the references it already saw: one check per reference and op.
     """
+    done: set[str] = set()
     for _ in range(count):
         info = await ValidPathInfo.from_reader(ReadContext(reader=frames, version=version, features=features))
+        done.add(str(info.path))
+        if pull is not None:
+            await pull(info.info.references, done)
+            done.update(map(str, info.info.references))
         nar = Bounded(frames, info.info.nar_size)
         if seen is not None:
             seen[str(info.path)] = info.info

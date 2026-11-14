@@ -17,7 +17,7 @@ from ..store.local_db import write_router
 from ..wire import FramedReader
 from ..write_router import Write
 from ._base import Handler
-from ._import import sign_admins_paths, write_client
+from ._import import pull_backend_references, sign_admins_paths, write_client
 
 if TYPE_CHECKING:
     from ..serde.context import RequestContext
@@ -53,6 +53,7 @@ class AddToStoreNarHandler(Handler):
 
         frames = FramedReader(ctx.proxy.r)
         try:
+            await pull_backend_references(ctx, req.info.info.references, {str(req.info.path)})
             await write_router(ctx.proxy.local_store).add_to_store(
                 Write(
                     op=req.name,

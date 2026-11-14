@@ -16,7 +16,7 @@ from ..store.local_db import write_router
 from ..wire import FramedReader
 from ..write_router import Dump, Write
 from ._base import Handler
-from ._import import write_client
+from ._import import pull_backend_references, write_client
 
 if TYPE_CHECKING:
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
@@ -58,6 +58,7 @@ class AddToStoreHandler(Handler):
 
         frames = FramedReader(ctx.proxy.r)
         try:
+            await pull_backend_references(ctx, req.references, ())
             info = await write_router(ctx.proxy.local_store).add_to_store_from_dump(
                 Write(op=req.name, repair=bool(req.repair) or ctx.proxy.repairs_adds, dump=dump),
                 frames,
