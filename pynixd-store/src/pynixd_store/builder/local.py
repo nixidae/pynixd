@@ -132,9 +132,6 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
     """
     if not sys.platform.startswith("linux") and not DARWIN:
         return "pynixd builds on Linux and darwin only"
-    # The store's socket is bound through `/proc/self/fd` and served to a helper in namespaces.
-    if DARWIN and {"recursive-nix", BUILDER_RPC} & set(drv.required_system_features):
-        return "recursive-nix or builder-rpc-v0 on darwin"
     builtin = drv.builder.startswith("builtin:")
     if builtin and (reason := _builtin_unsupported(drv, settings)) is not None:
         return reason

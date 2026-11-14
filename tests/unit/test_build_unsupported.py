@@ -93,20 +93,6 @@ def test_darwin_refuses_what_its_builder_refuses(
         assert message in refused
 
 
-def test_darwin_leaves_a_recursive_build_to_the_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The store's socket for a recursive builder binds through `/proc/self/fd`, which darwin lacks."""
-    monkeypatch.setattr(local, "DARWIN", True)
-    drv = BasicDerivation(
-        outputs={"out": PLAIN},
-        platform="x86_64-linux",
-        builder="/bin/sh",
-        env={"requiredSystemFeatures": "recursive-nix"},
-    )
-    assert unsupported(drv, _settings("true"), store_dir="/nix/store", relocated=False) == (
-        "recursive-nix or builder-rpc-v0 on darwin"
-    )
-
-
 @pytest.mark.parametrize(
     ("config", "reason"),
     [

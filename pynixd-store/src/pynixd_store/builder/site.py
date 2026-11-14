@@ -13,6 +13,7 @@ import functools
 import os
 import signal
 import socket
+import subprocess
 import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
@@ -441,14 +442,47 @@ async def _attach_control(listener: socket.socket, restriction: RestrictionConte
 def listen(path: Path) -> socket.socket:
     """`createUnixDomainSocket(path, 0600)` (`derivation-builder.cc:1174`).
 
-    It binds through the directory's descriptor: the build directory of a deep store is longer than `sun_path`.
+    The build directory of a deep store is longer than `sun_path`. On Linux it binds through the directory's
+    descriptor; on darwin a long path binds from its directory (`_bind_in_directory`).
     """
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    directory = os.open(path.parent, os.O_PATH | os.O_DIRECTORY)
     try:
-        sock.bind(f"/proc/self/fd/{directory}/{path.name}")
-    finally:
-        os.close(directory)
+        if sys.platform == "linux":
+            directory = os.open(path.parent, os.O_PATH | os.O_DIRECTORY)
+            try:
+                sock.bind(f"/proc/self/fd/{directory}/{path.name}")
+            finally:
+                os.close(directory)
+        elif len(os.fsencode(path)) < SUN_PATH_DARWIN:
+            sock.bind(str(path))
+        else:
+            _bind_in_directory(sock, path)
+    except BaseException:
+        sock.close()
+        raise
     path.chmod(0o600)
     sock.listen()
     return sock
+
+
+SUN_PATH_DARWIN = 104
+"""`sizeof(sockaddr_un.sun_path)` on darwin, the terminating NUL included."""
+
+
+def _bind_in_directory(sock: socket.socket, path: Path) -> None:
+    """`bindConnectProcHelper` (`unix-domain-socket.cc:56`): bind *sock* by its base name from its directory.
+
+    darwin has no `/proc/self/fd`. Nix forks a process that changes directory; pynixd runs threads, so a fork is
+    unsafe here, and a new interpreter that inherits the socket does the same.
+    """
+    script = "import os, socket, sys; os.chdir(sys.argv[1]); socket.socket(fileno=int(sys.argv[2])).bind(sys.argv[3])"
+    fd = sock.fileno()
+    done = subprocess.run(
+        [sys.executable, "-I", "-c", script, str(path.parent), str(fd), path.name],
+        pass_fds=(fd,),
+        capture_output=True,
+        check=False,
+    )
+    if done.returncode != 0:
+        reason = done.stderr.decode(errors="replace").strip().splitlines()[-1:] or ["no reason"]
+        raise OSError(f"cannot bind to socket at '{path}': {reason[0]}")

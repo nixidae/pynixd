@@ -279,9 +279,13 @@ With a build user, the helper also removes that user's System V IPC objects
 before and after the build, as `cleanupSysVIPCForUser` does: darwin has no IPC
 namespace, so they outlive the processes.
 
-Not yet: `recursive-nix` and `builder-rpc-v0` stay on the daemon, because the
-store's socket binds through `/proc/self/fd`. `pre-build-hook` is not run on
-any platform (nixidae/nixidae#1370).
+A `recursive-nix` builder reaches the store's socket in its build directory,
+which both profiles let it connect to. Darwin has no `/proc/self/fd`, so a
+socket path longer than `sun_path` binds from its directory in a short-lived
+process, as Nix's `bindConnectProcHelper` does. As in Nix, a path the builder
+adds stays outside the profile, which is fixed when the build starts.
+
+Not yet: `pre-build-hook` is not run on any platform (nixidae/nixidae#1370).
 
 `tests/functional/test_build_darwin.py` builds each case with no daemon and on
 Nix's own darwin builder, and compares the two. It runs on a darwin host only.

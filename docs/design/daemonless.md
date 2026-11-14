@@ -144,7 +144,6 @@ holds the current list.
 | case | what Nix does |
 | --- | --- |
 | a build on any system but Linux and darwin | builds |
-| a `recursive-nix` or `builder-rpc-v0` build on darwin | builds |
 
 ## The switch
 

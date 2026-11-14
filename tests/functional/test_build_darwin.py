@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import platform
 import sqlite3
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -28,7 +30,6 @@ from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator
-    from pathlib import Path
 
 pytestmark = pytest.mark.skipif(sys.platform != "darwin", reason="Nix's darwin builder is the reference")
 
@@ -61,24 +62,29 @@ def _drv(name: str, body: str, extra: str = "") -> str:
 
 
 @contextlib.asynccontextmanager
-async def _serve(tmp_path: Path, daemon: bool, sandbox: str) -> AsyncIterator[tuple[list[str], dict[str, str], Path]]:
+async def _serve(
+    tmp_path: Path, daemon: bool, sandbox: str, *, recursive: bool = False
+) -> AsyncIterator[tuple[list[str], dict[str, str], Path]]:
     """A fresh `NIX_STORE_DIR` store: Nix's builder with *daemon*, pynixd's with no daemon at all.
 
-    One directory for both, so every store path is the same; each store replaces the other's.
+    One directory for both, so every store path is the same; each store replaces the other's. With *recursive*,
+    the store takes `recursive-nix`, and a derivation may name the host store as an impure host dependency.
     """
     # The kernel matches the profile against real paths, and `/tmp` is `/private/tmp`.
     base = tmp_path.resolve() / sandbox
     rmtree_robust(base)
     store, state, logs = base / "store", base / "var/nix", base / "var/log/nix"
     path = tmp_path / f"{'daemon' if daemon else 'pynixd'}-{sandbox}.sock"
-    nix_config = for_test_store(substituters=())
+    nix_config = for_test_store(substituters=(), experimental_features=("recursive-nix",) if recursive else ())
     nix_config.sandbox = sandbox
+    if recursive:
+        nix_config.allowed_impure_host_deps = ["/nix/store"]
     spec = make_test_spec(
         store_id="local",
         store_path=base,
         no_probe=True,
         # The probe-less default names Linux systems.
-        feature_matrix={SYSTEM: set()},
+        feature_matrix={SYSTEM: {"recursive-nix"} if recursive else set()},
         nix_config=nix_config,
         # With no daemon, `make_test_spec` routes every answer on trial to pynixd.
         op_routes={"BuildDerivation": OpRoute.daemon if daemon else OpRoute.pynixd},
@@ -109,8 +115,10 @@ def _rows(state: Path) -> tuple[list[tuple[Any, ...]], list[tuple[str, str]]]:
     return valid, refs
 
 
-async def _build(tmp_path: Path, daemon: bool, sandbox: str, expr: str, *, expected: int = 0) -> dict[str, Any]:
-    async with _serve(tmp_path, daemon, sandbox) as (nix, env, state):
+async def _build(
+    tmp_path: Path, daemon: bool, sandbox: str, expr: str, *, expected: int = 0, recursive: bool = False
+) -> dict[str, Any]:
+    async with _serve(tmp_path, daemon, sandbox, recursive=recursive) as (nix, env, state):
         rc, out, err, _both = await run_subproc(
             [*nix[:1], "build", *nix[1:], "--no-link", "--print-out-paths", "--print-build-logs", "--expr", expr],
             expected_retcode=expected,
@@ -163,3 +171,30 @@ async def test_a_sandbox_profile_under_sandbox_true_is_refused_in_nix_words(tmp_
     there = await _build(tmp_path, True, "true", expr, expected=1)
     assert "specifies a sandbox profile" in there["error"], there["error"]
     assert here["error"] == there["error"]
+
+
+#: The builder adds a file through the build's socket and refers to it. Nix's settings files and caches are
+#: outside the profile, so they point into the build directory.
+RECURSIVE = """export NIX_STORE_DIR=$NIX_STORE NIX_CONF_DIR=$TMPDIR XDG_CACHE_HOME=$TMPDIR/cache
+echo darwin-recursive > in
+p=$(@BIN@/nix-store --add in)
+echo added $p
+echo $p > $out"""
+
+
+@pytest.mark.parametrize("sandbox", ["true", "false"])
+async def test_a_recursive_build_adds_through_the_builds_socket(tmp_path: Path, sandbox: str) -> None:
+    """`recursive-nix` on darwin: the store's socket in the build directory, which both profiles reach."""
+    bin_dir = Path(os.path.realpath(NIX_BIN)).parent
+    expr = _drv(
+        "darwin-recursive",
+        RECURSIVE.replace("@BIN@", str(bin_dir)),
+        'requiredSystemFeatures = [ "recursive-nix" ]; __impureHostDeps = [ "/nix/store" ];',
+    )
+    here = await _build(tmp_path, False, sandbox, expr, recursive=True)
+    there = await _build(tmp_path, True, sandbox, expr, recursive=True)
+    assert there["log"][-1].startswith("darwin-recursive> added "), there["log"]
+    assert here["log"] == there["log"]
+    assert here["contents"] == there["contents"]
+    assert here["info"] == there["info"]
+    assert here["rows"] == there["rows"]
