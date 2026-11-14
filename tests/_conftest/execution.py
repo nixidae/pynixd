@@ -104,6 +104,7 @@ class FakeSandbox:
     db: FakeRecords = field(default_factory=FakeRecords)
     roots: FakeRoots = field(default_factory=FakeRoots)
     hooks: list[set[StorePath]] = field(default_factory=list)
+    signed: list[set[StorePath]] = field(default_factory=list)
 
     @property
     def engine(self) -> FakeEngine:
@@ -141,6 +142,9 @@ class FakeSandbox:
         del request, options, on_log
         self.hooks.append(set(out_paths))
         return self.hook_failure
+
+    async def sign_pulled(self, out_paths: Iterable[StorePath]) -> None:
+        self.signed.append(set(out_paths))
 
 
 type End = FakeStore | FakeLocal | FakeSandbox

@@ -40,7 +40,12 @@ from pynixd_store.hintfmt import magenta, missing_feature, show_error
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.nix_config import nix_environment, read_nix_config, read_nix_config_text, read_nix_version
 from pynixd_store.overlay_engine import LowerPathNeedsSync, OverlayEngine, check_mount
-from pynixd_store.signing import SecretKey, hash_keyed_realisation_fingerprint, realisation_fingerprint
+from pynixd_store.signing import (
+    SecretKey,
+    hash_keyed_realisation_fingerprint,
+    realisation_fingerprint,
+    sign_path_info,
+)
 from pynixd_store.source import Pieces
 
 from .. import metrics, store as store_package
@@ -1027,6 +1032,26 @@ class LocalDBStore(Store):
         if not settings.post_build_hook:
             return None
         return await self._post_build_hook(settings, request.drv_path, out_paths, on_log)
+
+    async def sign_pulled(self, out_paths: Iterable[StorePath]) -> None:
+        """Sign the outputs of a build on another store with this store's `secret-key-files`.
+
+        NIX-DIVERGENCE: Nix copies a hook build's outputs back unsigned
+        (`build-remote.cc:432`). pynixd fronts its builders, so a client that
+        trusts pynixd's key trusts what they built too. The store's own
+        settings, never a client's: a session cannot name the key. A bad key
+        file fails the collection, as it fails a local build.
+        """
+        keys = [SecretKey.from_file(Path(file)) for file in (await self.engine.settings()).secret_key_files]
+        if not keys:
+            return
+        router = write_router(self)
+        for path in out_paths:
+            info = await self.engine.query_path_info(str(path))
+            if info is None:
+                raise PynixdError(f"path '{path}' is not valid after the pull, so pynixd cannot sign it")
+            sigs = {Signature(sign_path_info(key, info)) for key in keys}
+            await router.add_signatures(str(path), sigs)
 
     async def _post_build_hook(
         self,

@@ -205,6 +205,7 @@ class Sandbox(Answers, Protocol):
         on_log: Callable[[LogMessage], Awaitable[None]],
         /,
     ) -> str | None: ...
+    async def sign_pulled(self, out_paths: Iterable[StorePath], /) -> None: ...
 
 
 class Streams[E](Protocol):
@@ -864,6 +865,10 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
                 build.observation.pull_bytes = pulled
         finally:
             await self._record_observation(build, resp)
+        # The outputs alone: the pull brings their closure, which pynixd did
+        # not build. A client's own builder signs nothing with pynixd's key.
+        if self.here is not None and store is not self.local_builder and not store.session_only:
+            await self.here.sign_pulled(all_output_paths)
         # After the pull, and not before it: `_ensure_opaque` answers success
         # for a path named here, and a failed pull left nothing local to serve.
         for path in all_output_paths:
