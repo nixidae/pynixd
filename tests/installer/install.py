@@ -46,7 +46,9 @@ async def work(vms: Machines, vm: Machine) -> None:
     settings = vms.settings
     await vm.fail("test -e /nix/var/nix/db/db.sqlite")
     await vm.succeed(f"zstd -dc {settings['tarball']} | tar -x -C /")
-    await vm.succeed("/nix/.pynixd/install --trusted-user tester", timeout=300)
+    # As ghanix passes a job's settings: `experimental-features` here must not turn off pynixd's build users.
+    await vm.succeed("echo 'experimental-features = nix-command' > /tmp/extra.conf")
+    await vm.succeed("/nix/.pynixd/install --trusted-user tester --extra-conf /tmp/extra.conf", timeout=300)
     print("[test] installed")
 
     await vm.succeed("systemctl is-active pynixd.service pynixd.socket")
@@ -58,7 +60,9 @@ async def work(vms: Machines, vm: Machine) -> None:
     content = (await vm.succeed(f"cat {out}")).strip()
     if content != "built":
         raise AssertionError(f"{out} holds {content!r}")
-    print(f"[test] built {out}")
+    # Without build users a root daemon builds as root, and the build still succeeds: the lock is the proof.
+    await vm.succeed("test -e /nix/var/nix/userpool2/slot-0")
+    print(f"[test] built {out} as an auto-allocated build user")
 
     # Signed: a client cannot turn off `require-sigs`, but a trusted one may name the key.
     await as_tester(vm, f"{NIX} key generate-secret --key-name check > /tmp/check.key")

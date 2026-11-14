@@ -58,17 +58,27 @@ def _run(argv: list[str], *, stdin: Path | None = None) -> None:
 
 
 def nix_conf(bundle: Bundle, trusted_users: list[str], extra: str) -> str:
-    """The machine's `nix.conf`: builds as auto-allocated users, so the installer adds no account."""
-    lines = [
-        "build-users-group =",
-        "auto-allocate-uids = true",
-        "experimental-features = nix-command flakes auto-allocate-uids cgroups",
-        "use-cgroups = true",
-        f"trusted-users = {' '.join(['root', *trusted_users])}",
+    """The machine's `nix.conf`: builds as auto-allocated users, so the installer adds no account.
+
+    `extra` goes between the defaults and what pynixd's builds need. A later
+    line replaces an earlier one, so `extra` may replace a default but not the
+    build users: `experimental-features = nix-command` there would otherwise
+    turn off `auto-allocate-uids`, and every build would fail.
+    """
+    defaults = [
+        "experimental-features = nix-command flakes",
         "max-jobs = auto",
         f"ssl-cert-file = {bundle.cacert}/etc/ssl/certs/ca-bundle.crt",
     ]
-    return "\n".join(lines) + "\n" + extra
+    required = [
+        "build-users-group =",
+        "auto-allocate-uids = true",
+        "use-cgroups = true",
+        "extra-experimental-features = auto-allocate-uids cgroups",
+        f"extra-trusted-users = {' '.join(['root', *trusted_users])}",
+    ]
+    body = extra if not extra or extra.endswith("\n") else extra + "\n"
+    return "\n".join(defaults) + "\n" + body + "\n".join(required) + "\n"
 
 
 def pynixd_conf() -> dict[str, object]:  # object: JSON, which `PynixdSettings` parses
