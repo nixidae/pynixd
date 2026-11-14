@@ -118,6 +118,24 @@ def _map_ids(spec: ChildSpec, uid: int, gid: int) -> None:
     Path("/proc/self/gid_map").write_text(f"{spec['sandbox_gid']} {gid} 1")
 
 
+def _kill_all() -> None:
+    """`kill(-1, SIGKILL)`, the caller left out.
+
+    darwin's libc `kill` follows POSIX, and a POSIX `kill(-1)` signals the caller too: the killer died, and every
+    build user's build failed with "cannot kill processes". Nix calls the system call with `posix` false
+    (`processes.cc:181`). Not through `syscall()`: it is variadic, and on arm64 darwin passes variadic arguments
+    on the stack, which ctypes cannot do. libc's `__kill(pid, sig, posix)` is that system call, not variadic.
+    """
+    if LINUX:
+        os.kill(-1, signal.SIGKILL)
+        return
+    kill = _libc.__kill
+    kill.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
+    if kill(-1, signal.SIGKILL, 0) == -1:
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err))
+
+
 def _kill_user(uid: int) -> None:
     """`killUser` (`processes.cc:160`): `kill(-1)` as *uid* reaches every process of *uid*."""
     pid = os.fork()
@@ -126,19 +144,26 @@ def _kill_user(uid: int) -> None:
             os.setuid(uid)
             while True:
                 try:
-                    os.kill(-1, signal.SIGKILL)
+                    _kill_all()
                     break
                 except OSError as e:
                     if e.errno in (errno.ESRCH, errno.EPERM):
                         break
                     if e.errno != errno.EINTR:
                         raise
-        except OSError:
+        except OSError as e:
+            os.write(2, f"pynixd: killing the processes of uid {uid}: {e}\n".encode())
             os._exit(1)
         os._exit(0)
     _pid, status = os.waitpid(pid, 0)
     if status != 0:
-        raise SetupError(f"cannot kill processes for uid '{uid}'")
+        # `processes.cc:198` adds `statusToString` (`processes.cc:378`).
+        if os.WIFSIGNALED(status):
+            sig = os.WTERMSIG(status)
+            ended = f"failed due to signal {sig} ({signal.strsignal(sig)})"
+        else:
+            ended = f"failed with exit code {os.waitstatus_to_exitcode(status)}"
+        raise SetupError(f"cannot kill processes for uid '{uid}': {ended}")
 
 
 def _kill_sandbox(spec: ChildSpec, uid: int) -> None:
