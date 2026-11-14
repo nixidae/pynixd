@@ -35,10 +35,11 @@ from .vm import (
     BUILDER_SOCKET_NAME as VM_BUILDER_SOCKET_NAME,
     CONTROL_SOCKET_NAME as VM_CONTROL_SOCKET_NAME,
     GUEST_DNS as VM_GUEST_DNS,
+    STATUS_NAME as VM_STATUS_NAME,
     VMM_USAGE_NAME,
     BuildVm,
     allow as vm_allow,
-    returncode as vm_returncode,
+    ending as vm_ending,
     status as vm_status,
     unshareable as vm_unshareable,
     uplink as vm_uplink,
@@ -355,14 +356,23 @@ class VmSite(BuildSite):
     def ended(
         self, paths: BuildPaths, drv_path: StorePath, returncode: int | None
     ) -> BuildFailure | BuilderFailed | None:
-        code = vm_returncode(paths.top)
-        if code is None:
+        end = vm_ending(paths.top)
+        if end is not None and end.returncode is not None:
+            return builder_ended(end.returncode)
+        if end is not None:
             return BuildFailure(
-                BuildResultStatus.MISC_FAILURE,
-                f"the build VM of '{magenta(drv_path)}' stopped before its builder ended "
-                f"(pynixd-krun exited with {returncode})",
+                BuildResultStatus.MISC_FAILURE, f"the build VM of '{magenta(drv_path)}' stopped: {end.init_error}"
             )
-        return builder_ended(code)
+        # The helper's process makes the status file, so it tells a guest that stopped while booting from one
+        # that stopped under the builder. So does the VMM's CPU time.
+        started = "after" if (paths.top / VM_STATUS_NAME).exists() else "before"
+        vmm = read_usage(paths.top / VMM_USAGE_NAME)
+        cpu = "" if vmm is None else f", its VMM used {(vmm.cpu_user_us + vmm.cpu_system_us) / 1e6:.2f} s of CPU"
+        return BuildFailure(
+            BuildResultStatus.MISC_FAILURE,
+            f"the build VM of '{magenta(drv_path)}' stopped {started} the init started the helper, with no word "
+            f"from either (pynixd-krun exited with {returncode}{cpu})",
+        )
 
     async def usage(
         self, paths: BuildPaths, cgroup: Path | None, samples: tuple[UsageSample, ...]

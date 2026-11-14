@@ -14,8 +14,9 @@ import pytest
 from nix_daemon_protocol.basic_derivation import BasicDerivation
 from nix_daemon_protocol.derivation_output import DerivationOutput
 from nix_daemon_protocol.store_path import StorePath
+from pynixd_store.builder.outputs import BuildFailure
 from pynixd_store.builder.settings import BuildSettings
-from pynixd_store.builder.site import HostSite, VmSite, choose_site
+from pynixd_store.builder.site import BuilderFailed, BuildPaths, HostSite, VmSite, choose_site
 from pynixd_store.builder.users import BuildUser
 from pynixd_store.builder.vm import BuildVm
 
@@ -33,6 +34,45 @@ VM = BuildVm(
     dax_window_mib=64,
     disk_gib=1,
 )
+
+
+DRV = StorePath("/nix/store/cccccccccccccccccccccccccccccccc-x.drv")
+
+
+def _ended(top: Path) -> BuildFailure | BuilderFailed | None:
+    paths = BuildPaths(top=top, tmp=top / "build", chroot_parent=None, root=None)
+    return VmSite(VM, REAL, VISIBLE, ()).ended(paths, DRV, 0)
+
+
+def test_a_vm_build_ends_as_its_helper_did(tmp_path: Path) -> None:
+    (tmp_path / "vm-exit").write_text("exit 0\n")
+    assert _ended(tmp_path) is None
+    (tmp_path / "vm-exit").write_text("exit 3\n")
+    assert _ended(tmp_path) == BuilderFailed("failed with exit code 3")
+
+
+def test_a_vm_that_stopped_on_its_init_error_names_it(tmp_path: Path) -> None:
+    (tmp_path / "vm-exit").write_text("init /dev/hvc0: No such file or directory\n")
+    failure = _ended(tmp_path)
+    assert isinstance(failure, BuildFailure)
+    assert failure.message.endswith("stopped: /dev/hvc0: No such file or directory")
+
+
+def test_a_vm_that_stopped_with_no_word_says_how_far_it_got(tmp_path: Path) -> None:
+    """nixidae/nixidae#1350: whether the helper started, and the VMM's CPU time, tell a boot from a build."""
+    failure = _ended(tmp_path)
+    assert isinstance(failure, BuildFailure)
+    assert "stopped before the init started the helper" in failure.message
+    assert "pynixd-krun exited with 0)" in failure.message
+    (tmp_path / "vm-status").touch()
+    (tmp_path / "vm-usage.json").write_text(
+        '{"source": "rusage", "cpu_user_us": 1500000, "cpu_system_us": 250000, '
+        '"peak_memory_bytes": 1, "io_read_bytes": 0, "io_write_bytes": 0}\n'
+    )
+    failure = _ended(tmp_path)
+    assert isinstance(failure, BuildFailure)
+    assert "stopped after the init started the helper" in failure.message
+    assert "pynixd-krun exited with 0, its VMM used 1.75 s of CPU)" in failure.message
 
 
 def _drv(platform: str = "x86_64-linux") -> BasicDerivation:

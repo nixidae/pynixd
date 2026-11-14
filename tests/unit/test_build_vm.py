@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from nix_daemon_protocol.store_path import StorePath
-from pynixd_store.builder.vm import BuildVm, allow, returncode, status, unshareable
+from pynixd_store.builder.vm import BuildVm, GuestEnd, allow, ending, status, unshareable
 
 HELPER = "/nix/store/aaaa-venv"
 INPUT = "/nix/store/bbbb-input"
@@ -217,12 +217,14 @@ def test_only_a_file_in_the_root_is_unshareable(tmp_path: Path) -> None:
     assert unshareable([f"{SHELL}/bin/busybox", str(tmp_path), str(tmp_path / "netrc")], real) is None
 
 
-def test_the_guest_reports_an_exit_a_signal_or_nothing(tmp_path: Path) -> None:
-    assert returncode(tmp_path) is None
+def test_the_guest_reports_an_exit_a_signal_its_init_error_or_nothing(tmp_path: Path) -> None:
+    assert ending(tmp_path) is None
     assert status(tmp_path) == ""
     (tmp_path / "vm-exit").write_text("exit 7\n")
-    assert returncode(tmp_path) == 7
+    assert ending(tmp_path) == GuestEnd(7)
     (tmp_path / "vm-exit").write_text("signal 9\n")
-    assert returncode(tmp_path) == -9
+    assert ending(tmp_path) == GuestEnd(-9)
+    (tmp_path / "vm-exit").write_text("init /nonexistent: No such file or directory\n")
+    assert ending(tmp_path) == GuestEnd(None, "/nonexistent: No such file or directory")
     (tmp_path / "vm-status").write_text("mounting: denied")
     assert status(tmp_path) == "mounting: denied"

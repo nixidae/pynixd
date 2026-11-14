@@ -7,7 +7,8 @@
  *   mounts   one share per line: "TAG ro PATH" or "TAG rw PATH"
  *   argv     the command, each argument ended by a NUL byte
  *   status   a path, opened for writing as file descriptor 3
- *   exit     a path, where the command's end is written: "exit N" or "signal N"
+ *   exit     a path, where the command's end is written: "exit N" or "signal N";
+ *            or "init MESSAGE", the init's error that stopped the guest first
  *   ids      "UID GID": who the command runs as
  *   cwd      the directory the command starts in
  *   disks    one directory per line: where /dev/vda, /dev/vdb, ... mount, as XFS
@@ -70,10 +71,28 @@ static void stop(void)
         pause();
 }
 
+/* The exit file, once the shares are up: fail() records its error there too, so the host knows why the guest
+ * stopped when no console carried the line. */
+static const char *exit_record;
+
 static void fail(const char *what)
 {
-    dprintf(STDERR_FILENO, "pynixd-krun-init: %s: %s\n", what, strerror(errno));
+    const char *reason = strerror(errno);
+    dprintf(STDERR_FILENO, "pynixd-krun-init: %s: %s\n", what, reason);
+    int out = exit_record ? open(exit_record, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600) : -1;
+    if (out >= 0) {
+        dprintf(out, "init %s: %s\n", what, reason);
+        close(out);
+    }
     stop();
+}
+
+/* In the command's process: its stderr is the terminal the init relays, and a reboot would end the guest before
+ * the line reaches the console. As the build's uid, reboot fails and the process would wait forever. */
+static void child_fail(const char *what)
+{
+    dprintf(STDERR_FILENO, "pynixd-krun-init: %s: %s\n", what, strerror(errno));
+    _exit(127);
 }
 
 static char *slurp(const char *path, size_t *len)
@@ -110,14 +129,22 @@ static void make_raw(int fd)
 
 /* The root has no /dev/console, so the kernel starts PID 1 with no standard
  * descriptors: until hvc0 is open, an error goes nowhere. libkrunfw's kernel
- * mounts devtmpfs itself (CONFIG_DEVTMPFS_MOUNT). */
+ * mounts devtmpfs itself (CONFIG_DEVTMPFS_MOUNT). Without hvc0 the init goes on
+ * with /dev/null, and fails once the exit file can record why. */
+static int console_errno;
+
 static int open_console(void)
 {
     if (mount("devtmpfs", "/dev", "devtmpfs", MS_NOSUID, NULL) != 0 && errno != EBUSY)
         stop();
     int console = open("/dev/hvc0", O_RDWR | O_NOCTTY);
-    if (console < 0)
-        stop();
+    if (console < 0) {
+        console_errno = errno;
+        int null = open("/dev/null", O_RDWR);
+        for (int fd = 0; null >= 0 && fd < 3; fd++)
+            dup2(null, fd);
+        return -1;
+    }
     make_raw(console);
     for (int fd = 0; fd < 3; fd++)
         dup2(console, fd);
@@ -425,6 +452,11 @@ int main(void)
     int console = open_console();
     mount_base();
     mount_shares();
+    exit_record = read_path(CONFIG "exit");
+    if (console < 0) {
+        errno = console_errno;
+        fail("/dev/hvc0");
+    }
     mount_disks();
     configure_network();
     char **argv = read_argv();
@@ -433,7 +465,6 @@ int main(void)
     char *cwd = read_path(CONFIG "cwd");
     if (chdir(cwd) != 0)
         fail(cwd);
-    char *exit_path = read_path(CONFIG "exit");
     unsigned uid, gid;
     char *ids = read_path(CONFIG "ids");
     if (sscanf(ids, "%u %u", &uid, &gid) != 2) {
@@ -458,7 +489,7 @@ int main(void)
         int null = open("/dev/null", O_RDONLY);
         int status_fd = open(status, O_WRONLY | O_CREAT | O_TRUNC, 0600);
         if (slave < 0 || null < 0 || status_fd < 0)
-            fail("open the command's files");
+            child_fail("open the command's files");
         ioctl(slave, TIOCSCTTY, 0);
         dup2(null, STDIN_FILENO);
         dup2(slave, STDOUT_FILENO);
@@ -466,7 +497,7 @@ int main(void)
         dup2(status_fd, 3);
         for (int i = 0; i < nports; i++)
             if (dup2(PARKED_FD + i, targets[i]) < 0)
-                fail("move a port to its descriptor");
+                child_fail("move a port to its descriptor");
         for (int fd = 4; fd < PARKED_FD + MAX_PORTS; fd++) {
             bool kept = false;
             for (int i = 0; i < nports; i++)
@@ -475,9 +506,9 @@ int main(void)
                 close(fd);
         }
         if (setgroups(0, NULL) != 0 || setgid(gid) != 0 || setuid(uid) != 0)
-            fail("drop to the build's uid");
+            child_fail("drop to the build's uid");
         execv(argv[0], argv);
-        fail(argv[0]);
+        child_fail(argv[0]);
     }
 
     char buf[65536];
@@ -496,9 +527,9 @@ int main(void)
     while (waitpid(child, &wstatus, 0) < 0)
         if (errno != EINTR)
             fail("waitpid");
-    int out = open(exit_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    int out = open(exit_record, O_WRONLY | O_CREAT | O_TRUNC, 0600);
     if (out < 0)
-        fail(exit_path);
+        fail(exit_record);
     if (WIFSIGNALED(wstatus))
         dprintf(out, "signal %d\n", WTERMSIG(wstatus));
     else

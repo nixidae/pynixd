@@ -285,15 +285,28 @@ def _outermost(shown: dict[Path, set[str]]) -> dict[Path, set[str]]:
     return merged
 
 
-def returncode(top: Path) -> int | None:
-    """How the helper ended, as `Popen.returncode` says it (a signal is negative), or `None` when the guest wrote
-    nothing: it stopped before the helper did."""
+@dataclass(frozen=True)
+class GuestEnd:
+    """What the guest's init wrote to `top/vm-exit`."""
+
+    returncode: int | None
+    """How the helper ended, as `Popen.returncode` says it (a signal is negative); `None` when the init stopped the
+    guest first."""
+    init_error: str | None = None
+    """The init's own error, the one that stopped the guest."""
+
+
+def ending(top: Path) -> GuestEnd | None:
+    """How the guest ended, or `None` when it wrote nothing: it stopped before the helper did, and before its init
+    could say why."""
     try:
-        how, _, number = (top / EXIT_NAME).read_text().partition(" ")
+        how, _, rest = (top / EXIT_NAME).read_text().rstrip("\n").partition(" ")
     except FileNotFoundError:
         return None
-    code = int(number)
-    return -code if how == "signal" else code
+    if how == "init":
+        return GuestEnd(None, rest)
+    code = int(rest)
+    return GuestEnd(-code if how == "signal" else code)
 
 
 def status(top: Path) -> str:
