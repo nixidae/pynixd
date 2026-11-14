@@ -127,6 +127,14 @@ def test_a_sandboxed_build_gets_no_network_in_a_vm_that_has_one() -> None:
     assert site.network is False
 
 
+def test_a_build_as_one_build_user_runs_in_the_vm() -> None:
+    """nixidae/nixidae#1192: the helper is the guest's root and maps the build user itself."""
+    user = BuildUser(uid=30000, gid=30001, fd=-1, count=1)
+    site, why = _choose(user=user)
+    assert why is None
+    assert site == VmSite(VM, REAL, VISIBLE, (), user=user)
+
+
 def test_the_vm_takes_the_sandbox_paths_but_dev_and_proc() -> None:
     site, _ = _choose(config={"sandbox-paths": "/bin/sh=/nix/store/cccc-busybox/bin/sh /dev/kvm /proc/cpuinfo"})
     assert isinstance(site, VmSite)
@@ -139,7 +147,7 @@ def test_the_vm_takes_the_sandbox_paths_but_dev_and_proc() -> None:
         ({"chroot": False}, "the build has no sandbox"),
         ({"sandboxed": False}, "a fixed-output or impure build reaches the network, and the build VM has none"),
         ({"platform": "aarch64-linux"}, "the build is for aarch64-linux, not x86_64-linux"),
-        ({"user": BuildUser(uid=30000, gid=30000, fd=-1, count=1)}, "the build runs as a build user"),
+        ({"user": BuildUser(uid=30000, gid=30000, fd=-1, count=65536)}, "the build runs as a range of ids"),
     ],
 )
 def test_a_build_the_vm_cannot_run_stays_on_the_host_and_says_why(kwargs: dict[str, object], reason: str) -> None:

@@ -265,6 +265,9 @@ class VmSite(BuildSite):
     """A fixed-output or impure build: the guest gets a NIC that passt serves."""
     net_fd: int | None = None
     """The VM's end of passt's socketpair, once `start` made it."""
+    user: build_users.BuildUser | None = None
+    """As root, the build user. The helper runs as the guest's root and maps it, as it does on the host, and the
+    VMM, as root, writes each share's file as the guest process that asked for it."""
     waits_for_exit: bool = False
     samples_on_host: bool = False
 
@@ -346,6 +349,7 @@ class VmSite(BuildSite):
             recursive=recursive,
             net_fd=self.net_fd,
             cgroup=cgroup,
+            socket_owner=None if self.user is None else (self.user.uid, self.user.gid),
         )
         # libkrun connects to the host's sockets by their names in the top directory.
         return Launch(argv, [] if self.net_fd is None else [self.net_fd], paths.top)
@@ -410,12 +414,12 @@ def choose_site(
     # The guest kernel has no binfmt handler and no IA32 emulation: another system builds on the host's kernel.
     if drv.platform not in {settings.system, "builtin"}:
         return host, f"the build is for {drv.platform}, not {settings.system}"
-    # The guest maps no build user yet: as root with build users, the namespaces build.
-    if user is not None:
-        return host, "the build runs as a build user"
+    # A uid-range build's ids need the guest's cgroup namespace and `/sys`, which the VM does not give yet.
+    if user is not None and user.count != 1:
+        return host, "the build runs as a range of ids"
     # The guest has its own `/dev` and `/proc`.
     sources = tuple(p.source for p in settings.sandbox_paths if not p.source.startswith(("/dev/", "/proc/")))
-    return VmSite(vm, real_store_dir, visible, sources, network=not sandboxed), None
+    return VmSite(vm, real_store_dir, visible, sources, network=not sandboxed, user=user), None
 
 
 async def _attach_control(listener: socket.socket, restriction: RestrictionContext) -> None:

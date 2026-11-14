@@ -36,6 +36,7 @@ def _argv(
     sources: tuple[str, ...] = (),
     cgroup: Path | None = None,
     net_fd: int | None = None,
+    socket_owner: tuple[int, int] | None = None,
 ) -> list[str]:
     return _vm().argv(
         top=tmp_path / "top",
@@ -47,6 +48,7 @@ def _argv(
         build_dir=tmp_path / "top/build",
         cgroup=cgroup,
         net_fd=net_fd,
+        socket_owner=socket_owner,
     )
 
 
@@ -209,6 +211,15 @@ def test_a_network_build_gets_a_nic_on_passts_peer(tmp_path: Path) -> None:
     (tmp_path / "top").mkdir()
     argv = _argv(tmp_path, tmp_path / "root/nix/store", net_fd=7)
     assert [a for a in argv if a.startswith("--net")] == ["--net=7:10.90.35.2/24:10.90.35.1:65520"]
+
+
+def test_a_build_user_owns_the_socket_and_the_helper_stays_the_launchers(tmp_path: Path) -> None:
+    """As root, the helper is the guest's root (no `--uid`), and a recursive build's socket the build user's."""
+    (tmp_path / "top").mkdir()
+    real = tmp_path / "root/nix/store"
+    assert not [a for a in _argv(tmp_path, real) if a.startswith(("--socket-owner", "--uid"))]
+    argv = _argv(tmp_path, real, socket_owner=(30000, 30001))
+    assert [a for a in argv if a.startswith(("--socket-owner", "--uid"))] == ["--socket-owner=30000:30001"]
 
 
 def test_only_a_file_in_the_root_is_unshareable(tmp_path: Path) -> None:

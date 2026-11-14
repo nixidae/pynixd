@@ -131,6 +131,7 @@ class BuildVm:
         recursive: bool = False,
         net_fd: int | None = None,
         cgroup: Path | None = None,
+        socket_owner: tuple[int, int] | None = None,
     ) -> list[str]:
         """The launcher's command line, after it writes the allowlists into *top*.
 
@@ -141,7 +142,8 @@ class BuildVm:
         virtio-fs mounts only a directory. The helper reads *spec_file* and gets `top/vm-status` as its file
         descriptor 3. A *recursive* build gets the two sockets of the module's docstring. The guest's NIC is on
         *net_fd*, passt's peer (`uplink`). The launcher must run in *top*. The VMM joins *cgroup*, and the
-        launcher writes the VMM's rusage to `top/vm-usage.json`.
+        launcher writes the VMM's rusage to `top/vm-usage.json`. A recursive build's socket belongs to
+        *socket_owner*, the build user when the helper runs as root.
         """
         shown: dict[Path, set[str]] = {
             real_store_dir: {str(real_store_dir / path.name) for path in visible},
@@ -205,6 +207,8 @@ class BuildVm:
             argv.append(f"--net={net_fd}:{GUEST_ADDRESS}/{GUEST_PREFIX}:{GUEST_GATEWAY}:{GUEST_MTU}")
         if cgroup is not None:
             argv.append(f"--cgroup={cgroup}")
+        if socket_owner is not None:
+            argv.append(f"--socket-owner={socket_owner[0]}:{socket_owner[1]}")
         argv += [
             f"--usage={top / VMM_USAGE_NAME}",
             f"--cwd={top}",
