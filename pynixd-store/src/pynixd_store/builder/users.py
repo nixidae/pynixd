@@ -12,10 +12,12 @@ import fcntl
 import grp
 import os
 import pwd
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_STATE_DIR = Path("/nix/var/nix")
+LINUX = sys.platform == "linux"
 IDS_PER_BUILD = 1 << 16
 """`maxIdsPerBuild` on Linux (`local-settings.hh:131`): the ids of one `auto-allocate-uids` slot."""
 
@@ -43,8 +45,8 @@ class BuildUser:
 
 
 def use_build_users(group: str, auto_allocate_uids: bool) -> bool:
-    """`useBuildUsers` (`user-lock.cc:237`)."""
-    return bool(group or auto_allocate_uids) and os.geteuid() == 0
+    """`useBuildUsers` (`user-lock.cc:237`): off Linux, `auto-allocate-uids` alone takes no build user (`:242`)."""
+    return bool(group or (auto_allocate_uids and LINUX)) and os.geteuid() == 0
 
 
 def pool_dir(state_dir: Path, relocated: bool, *, auto: bool = False) -> Path:
@@ -87,8 +89,8 @@ def acquire(pool: Path, group: str) -> BuildUser | None:
         if uid in (os.getuid(), os.geteuid()):
             os.close(fd)
             raise BuildUserError(f"the Nix user should not be a member of '{group}'")
-        # `SimpleUserLock::acquire` (`user-lock.cc:123`).
-        groups = tuple(g for g in os.getgrouplist(name, user.pw_gid) if g != entry.gr_gid)
+        # `SimpleUserLock::acquire` (`user-lock.cc:117`): Linux only; elsewhere the builder keeps no other group.
+        groups = tuple(g for g in os.getgrouplist(name, user.pw_gid) if g != entry.gr_gid) if LINUX else ()
         return BuildUser(uid, entry.gr_gid, fd, groups)
     return None
 
