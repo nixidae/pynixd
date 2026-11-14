@@ -47,8 +47,11 @@ each sweep below removes everything under its prefix, so a shared prefix would
 delete the stores of a test that another worker runs."""
 _OWN = f"-{_WORKER}" if _WORKER else ""
 
-STORE_PREFIX = Path(f"/tmp/pynixd-stores{_OWN}")
-SESSION_STORE_PREFIX = Path(f"/tmp/pynixd-session-stores{_OWN}")
+_TMP = os.path.realpath("/tmp")
+"""`/private/tmp` on darwin: Nix refuses a store under a symlink ("is a symlink; this is not allowed for the
+Nix store and its parent directories"). `/tmp` on Linux."""
+STORE_PREFIX = Path(f"{_TMP}/pynixd-stores{_OWN}")
+SESSION_STORE_PREFIX = Path(f"{_TMP}/pynixd-session-stores{_OWN}")
 HELLO = ("--file", "<nixpkgs>", "hello")
 """A real package with a real closure, as installables of `nix`.
 
