@@ -42,7 +42,7 @@ from ..drv_parser import BUILDER_RPC as BUILDER_RPC
 from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta, missing_feature, show_error
 from ..s3_url import S3URLError, parse as parse_s3_url
 from ..signing import SecretKey, fingerprint
-from . import buildenv, cgroup as build_cgroup, hooks, users as build_users
+from . import buildenv, cgroup as build_cgroup, darwin, hooks, users as build_users
 from .buildlog import BuildLog
 from .env import (
     HOME_DIR,
@@ -68,7 +68,7 @@ from .outputs import (
 )
 from .restriction import SOCKET_NAME, RestrictionContext
 from .site import BuilderFailed, BuildPaths, BuildSite, builder_ended, choose_site
-from .spec import AwsCredentials, BuildenvSpec, ChildSpec, FetchSpec
+from .spec import AwsCredentials, BuildenvSpec, ChildSpec, DarwinSpec, FetchSpec
 from .usage import USAGE_NAME
 
 if TYPE_CHECKING:
@@ -101,6 +101,9 @@ DISK_FULL_BYTES = 8 * 1024 * 1024
 
 DEV_FILES = ("/dev/full", "/dev/null", "/dev/random", "/dev/tty", "/dev/urandom", "/dev/zero")
 
+DARWIN = sys.platform == "darwin"
+"""`DarwinDerivationBuilder`: never a chroot; `useSandbox` picks the sandbox profile instead."""
+
 
 def uses_sandbox(drv: BasicDerivation, settings: BuildSettings, *, relocated: bool) -> bool:
     """`makeDerivationBuilder` (`unix/build/derivation-builder.cc:1751`): whether the build gets the chroot.
@@ -127,8 +130,11 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
 
     *relocated* is whether the store's real directory is not its logical one (`isRelocatedStore`).
     """
-    if not sys.platform.startswith("linux"):
-        return "pynixd builds on Linux only"
+    if not sys.platform.startswith("linux") and not DARWIN:
+        return "pynixd builds on Linux and darwin only"
+    # The store's socket is bound through `/proc/self/fd` and served to a helper in namespaces.
+    if DARWIN and {"recursive-nix", BUILDER_RPC} & set(drv.required_system_features):
+        return "recursive-nix or builder-rpc-v0 on darwin"
     builtin = drv.builder.startswith("builtin:")
     if builtin and (reason := _builtin_unsupported(drv, settings)) is not None:
         return reason
@@ -158,11 +164,20 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
     return None
 
 
-def _builder_refusal(drv_path: StorePath, drv: BasicDerivation, settings: BuildSettings, *, chroot: bool) -> str | None:
+def _builder_refusal(
+    drv_path: StorePath, drv: BasicDerivation, settings: BuildSettings, *, use_sandbox: bool, relocated: bool
+) -> str | None:
     """What `makeDerivationBuilder` (`derivation-builder.cc:1751`) throws before the build starts, or `None`."""
     if settings.sandbox == "true" and bool_attr(drv.env, "__noChroot", default=False):
         return f"derivation '{magenta(drv_path)}' has '__noChroot' set, but that's not allowed when 'sandbox' is 'true'"
-    if not chroot and "uid-range" in drv.required_system_features:
+    if DARWIN and settings.sandbox == "true" and darwin.additional_profile(drv.env):
+        return (
+            f"derivation '{magenta(drv_path)}' specifies a sandbox profile, "
+            "but this is only allowed when 'sandbox' is 'relaxed'"
+        )
+    if DARWIN and relocated:
+        return "building using a diverted store is not supported on this platform"
+    if not use_sandbox and "uid-range" in drv.required_system_features:
         return "feature 'uid-range' is only supported in sandboxed builds"
     return None
 
@@ -664,8 +679,10 @@ async def build(
     store_dir = str(layout.store_dir)
     drv_name = drv_path.base_name().removesuffix(".drv")
     external = external_builder(drv, settings)
+    relocated = layout.store_dir != layout.real_store_dir
+    use_sandbox = uses_sandbox(drv, settings, relocated=relocated)
     # `ExternalDerivationBuilder` is a `DerivationBuilderImpl`: no chroot, whatever `sandbox` says.
-    chroot = external is None and uses_sandbox(drv, settings, relocated=layout.store_dir != layout.real_store_dir)
+    chroot = external is None and use_sandbox and not DARWIN
     impure = any(o.kind is OutputKind.IMPURE for o in drv.outputs.values())
     known = _known(drv, realised, drv_name)
     held = {path: PathLock(layout.real_path(path)) for path in known.values()}
@@ -698,7 +715,7 @@ async def build(
                     # `DerivationBuilderImpl::getBuildUser` (`derivation-builder.cc:270`), which the external one keeps.
                     ids=(
                         build_users.IDS_PER_BUILD
-                        if "uid-range" in drv.required_system_features and external is None
+                        if "uid-range" in drv.required_system_features and external is None and not DARWIN
                         else 1
                     ),
                 )
@@ -733,9 +750,9 @@ async def build(
         if external is not None:
             refused = None if settings.external_builders_feature else missing_feature("external-builders")
         else:
-            refused = _builder_refusal(drv_path, drv, settings, chroot=chroot) or _chroot_refusal(
-                drv, settings, user, chroot=chroot
-            )
+            refused = _builder_refusal(
+                drv_path, drv, settings, use_sandbox=use_sandbox, relocated=relocated
+            ) or _chroot_refusal(drv, settings, user, chroot=chroot)
         if refused is not None:
             return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(refused))
         # `derivation-building-goal.cc:503`: an output on disk that is not valid goes before the build.
@@ -772,6 +789,36 @@ async def build(
             return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(str(e)))
         fixed = any(o.kind is OutputKind.CA_FIXED for o in drv.outputs.values())
         sandboxed = not (fixed or impure)
+        darwin_spec: DarwinSpec | None = None
+        if DARWIN and external is None:
+            # `DarwinDerivationBuilder::prepareSandbox` (`darwin-derivation-builder.cc:36`), with or without the sandbox.
+            defaults = {p.target: (p.source, p.optional) for p in settings.sandbox_paths} | {
+                str(p): (str(p), False) for p in sandbox_closure
+            }
+            try:
+                in_sandbox = darwin.paths_in_sandbox(
+                    defaults,
+                    str(paths.tmp),
+                    store_dir,
+                    str(drv_path),
+                    darwin.string_set_attr(drv.env, "__impureHostDeps") or [],
+                    list(settings.allowed_impure_host_deps),
+                )
+            except ValueError as e:
+                return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(str(e)))
+            darwin_spec = {
+                "sandbox": use_sandbox,
+                "paths": [(target, source, optional) for target, (source, optional) in sorted(in_sandbox.items())],
+                "inputs": sorted(str(p) for p in inputs),
+                "scratch": [str(scratch[name]) for name in sorted(scratch)],
+                "store_dir": store_dir,
+                "network": not sandboxed,
+                "log_violations": settings.darwin_log_sandbox_violations,
+                "additional_profile": darwin.additional_profile(drv.env),
+                "build_top": str(paths.tmp),
+                "allow_local_networking": darwin.allow_local_networking(drv.env),
+                "platform": drv.platform,
+            }
         # `inputRewrites` (`derivation-builder.cc:435`): each output builds at its scratch path.
         rewrites = {hash_placeholder(name): str(path) for name, path in scratch.items()} | {
             path.hash_part(): fallback.hash_part() for path, fallback in redirected.items()
@@ -817,8 +864,9 @@ async def build(
             "sandbox_gid": 0 if id_range else SANDBOX_GID,
             "work_dir": build_dir if external is None else str(paths.tmp),
             "shm_size": settings.sandbox_shm_size,
-            "no_new_privileges": not settings.allow_new_privileges and external is None,
-            "filter_syscalls": settings.filter_syscalls and external is None,
+            # Linux's: `PR_SET_NO_NEW_PRIVS` and seccomp. darwin's profile denies setuid and setgid files itself.
+            "no_new_privileges": not settings.allow_new_privileges and external is None and not DARWIN,
+            "filter_syscalls": settings.filter_syscalls and external is None and not DARWIN,
             "require_drop_groups": settings.require_drop_supplementary_groups,
             "fetchurl": fetch,
             "buildenv": _buildenv_spec(drv, builtin_out) if drv.builder == "builtin:buildenv" else None,
@@ -841,6 +889,7 @@ async def build(
             "build_ids": 1 if user is None else user.count,
             "external": None,
             "id_range": id_range,
+            "darwin": darwin_spec,
         }
         # `startBuild` (`derivation-builder.cc:465`): only a build that rewrites hashes, one without the chroot.
         if not chroot and os.path.exists(HOME_DIR):
@@ -954,7 +1003,8 @@ async def build(
                 build = ActiveBuild(pid, main_uid, cgroup, start, drv_path.name)
                 return engine.active_builds.running(build)
 
-            handshake = external is not None
+            # An external builder, and darwin's helper after its profile, end the set-up with `\2`.
+            handshake = external is not None or darwin_spec is not None
             failure = await _run(
                 paths,
                 spec,

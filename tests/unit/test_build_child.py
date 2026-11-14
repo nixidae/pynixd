@@ -47,6 +47,7 @@ def _spec(root: Path, script: str, **over: object) -> ChildSpec:
         "build_groups": [],
         "build_ids": 1,
         "id_range": False,
+        "darwin": None,
         "external": None,
         "work_dir": "/build",
         "shm_size": "50%",

@@ -67,6 +67,32 @@ class UnpackChannelSpec(TypedDict):
     src: str | None
 
 
+class DarwinSpec(TypedDict):
+    """What `DarwinDerivationBuilder` reads to write its sandbox profile and start the builder."""
+
+    sandbox: bool
+    """`useSandbox`: the full profile; `False` gives the minimal one."""
+    paths: list[tuple[str, str, bool]]
+    """`getPathsInSandbox`: (path, source, optional), before the inputs."""
+    inputs: list[str]
+    """The input closure."""
+    scratch: list[str]
+    """The scratch output paths, which the builder writes."""
+    store_dir: str
+    network: bool
+    """`!isSandboxed()`: a fixed-output or impure build reaches the network."""
+    log_violations: bool
+    """`darwin-log-sandbox-violations`."""
+    additional_profile: str
+    """`__sandboxProfile`."""
+    build_top: str
+    """The builder's directory, the profile's `_NIX_BUILD_TOP`."""
+    allow_local_networking: bool
+    """`__darwinAllowLocalNetworking`."""
+    platform: str
+    """The derivation's system, which picks the slice of a universal builder (`execBuilder`)."""
+
+
 class ChildSpec(TypedDict):
     builder: str
     args: list[str]
@@ -112,3 +138,6 @@ class ChildSpec(TypedDict):
     id_range: bool
     """A build user of 65536 ids (`getUIDCount() != 1`): the builder is root and gets `/sys` (`:841`), and its
     *cgroup* is the root of a cgroup namespace of its own (`linux-derivation-builder.cc:899`)."""
+    darwin: DarwinSpec | None
+    """On darwin, the sandbox profile's inputs: the helper applies it after `setUser` and ends its set-up with
+    `\\2` on the terminal, as Nix's child does. `None` on Linux and for an external builder."""

@@ -7,6 +7,7 @@ import pytest
 from nix_daemon_protocol.basic_derivation import BasicDerivation
 from nix_daemon_protocol.derivation_output import DerivationOutput
 from nix_daemon_protocol.store_path import StorePath
+from pynixd_store.builder import local
 from pynixd_store.builder.local import _builder_refusal, _chroot_refusal, _user_refusal, unsupported, uses_sandbox
 from pynixd_store.builder.settings import BuildSettings
 from pynixd_store.builder.users import BuildUser
@@ -59,9 +60,51 @@ def test_no_chroot_with_sandbox_true_is_refused_in_nix_words() -> None:
     """`makeDerivationBuilder` (`derivation-builder.cc:1760`) throws; pynixd's build refuses it the same way."""
     assert _reason(PLAIN, "true", relocated=True, no_chroot=True) is None
     drv_path = StorePath("/nix/store/00000000000000000000000000000000-x.drv")
-    refused = _builder_refusal(drv_path, _drv(PLAIN, no_chroot=True), _settings("true"), chroot=True)
+    refused = _builder_refusal(
+        drv_path, _drv(PLAIN, no_chroot=True), _settings("true"), use_sandbox=True, relocated=False
+    )
     assert refused is not None
     assert "has '__noChroot' set, but that's not allowed when 'sandbox' is 'true'" in refused
+
+
+@pytest.mark.parametrize(
+    ("sandbox", "profile", "relocated", "message"),
+    [
+        ("true", "(allow default)", False, "specifies a sandbox profile, but this is only allowed when 'sandbox' is"),
+        ("relaxed", "(allow default)", False, None),
+        ("true", "", False, None),
+        ("relaxed", "", True, "building using a diverted store is not supported on this platform"),
+    ],
+)
+def test_darwin_refuses_what_its_builder_refuses(
+    monkeypatch: pytest.MonkeyPatch, sandbox: str, profile: str, relocated: bool, message: str | None
+) -> None:
+    """`makeDerivationBuilder` (`derivation-builder.cc:1765`, `:1785`) on darwin, before the build starts."""
+    monkeypatch.setattr(local, "DARWIN", True)
+    drv = BasicDerivation(
+        outputs={"out": PLAIN}, platform="aarch64-darwin", builder="/bin/sh", env={"__sandboxProfile": profile}
+    )
+    drv_path = StorePath("/nix/store/00000000000000000000000000000000-x.drv")
+    refused = _builder_refusal(drv_path, drv, _settings(sandbox), use_sandbox=True, relocated=relocated)
+    if message is None:
+        assert refused is None
+    else:
+        assert refused is not None
+        assert message in refused
+
+
+def test_darwin_leaves_a_recursive_build_to_the_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The store's socket for a recursive builder binds through `/proc/self/fd`, which darwin lacks."""
+    monkeypatch.setattr(local, "DARWIN", True)
+    drv = BasicDerivation(
+        outputs={"out": PLAIN},
+        platform="x86_64-linux",
+        builder="/bin/sh",
+        env={"requiredSystemFeatures": "recursive-nix"},
+    )
+    assert unsupported(drv, _settings("true"), store_dir="/nix/store", relocated=False) == (
+        "recursive-nix or builder-rpc-v0 on darwin"
+    )
 
 
 @pytest.mark.parametrize(

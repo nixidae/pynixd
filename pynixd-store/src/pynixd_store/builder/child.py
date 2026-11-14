@@ -40,14 +40,16 @@ from dataclasses import replace
 from pathlib import Path
 
 import anyio
-import seccomp
 from anyio.abc import SocketStream
 from anyio.streams.buffered import BufferedByteReceiveStream
 
 from ..hintfmt import magenta, show_error
-from . import buildenv, cgroup as build_cgroup, fetchurl, unpack_channel
-from .spec import ChildSpec
+from . import buildenv, cgroup as build_cgroup, darwin, fetchurl, unpack_channel
+from .spec import ChildSpec, DarwinSpec
 from .usage import UsageSample, from_rusage, write_usage
+
+if sys.platform == "linux":
+    import seccomp
 
 MS_BIND = 4096
 MS_REC = 16384
@@ -77,8 +79,14 @@ XATTR_CALLS = (
     "lsetxattr",
     "fsetxattr",
 )
+POSIX_SPAWN_SETEXEC = 0x40
+#: `CPU_TYPE_ARM64` and `CPU_TYPE_X86_64` of `<mach/machine.h>`.
+CPU_TYPES = {"aarch64-darwin": 0x0100000C, "x86_64-darwin": 0x01000007}
+LINUX = sys.platform == "linux"
 
 _libc = ctypes.CDLL(None, use_errno=True)
+#: Where the open descriptors are listed: darwin's fdesc file system holds only the process's own.
+FD_DIR = "/proc/self/fd" if LINUX else "/dev/fd"
 
 
 class SetupError(Exception):
@@ -398,9 +406,10 @@ def _set_user(groups: list[int] | None, gid: int, uid: int) -> None:
         os.setgroups(groups)
     os.setgid(gid)
     os.setuid(uid)
-    _prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
-    if os.getppid() == 1:
-        raise SetupError("the sandbox helper died")
+    if LINUX:
+        _prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+        if os.getppid() == 1:
+            raise SetupError("the sandbox helper died")
 
 
 def _close_extra_fds(keep: int) -> None:
@@ -420,25 +429,33 @@ def _run_child(spec: ChildSpec, status_fd: int) -> None:
     user = spec["build_user"]
     if (external := spec["external"]) is not None:
         _run_external(spec, external, user)
-    if spec["fetchurl"] is not None:
+    # `preloadNSS` is glibc's (`globals.cc:537`).
+    if spec["fetchurl"] is not None and LINUX:
         fetchurl.preload_nss()
     if spec["chroot"]:
         _enter_chroot(spec)
         if user is not None:
             # `setUser` (`linux-derivation-builder.cc:930`): host root until here, so the binds read what root may.
             _set_user(None, spec["sandbox_gid"], spec["sandbox_uid"])
-    elif user is not None:
+    elif user is not None and spec["darwin"] is None:
         # `DerivationBuilderImpl::setUser` (`derivation-builder.cc:1037`).
         _set_user(spec["build_groups"], user[1], user[0])
     if spec["no_new_privileges"]:
         _prctl(PR_SET_NO_NEW_PRIVS, 1)
     if spec["filter_syscalls"]:
         _filter_syscalls(spec["no_new_privileges"])
-    _scope_abstract_sockets()
+    if LINUX:
+        _scope_abstract_sockets()
     os.chdir(spec["work_dir"])
     _close_extra_fds(status_fd)
     resource.setrlimit(resource.RLIMIT_CORE, (0, resource.RLIM_INFINITY))
     os.umask(0o022)
+    if (darwin_spec := spec["darwin"]) is not None:
+        # `runChild` (`derivation-builder.cc:987`): darwin's `setUser` is the user, then the profile.
+        if user is not None:
+            _set_user(spec["build_groups"], user[1], user[0])
+        _enter_profile(darwin_spec)
+        os.write(2, b"\x02\n")
     if spec["fetchurl"] is not None:
         fetchurl.run(spec["fetchurl"])
     if spec["buildenv"] is not None:
@@ -453,11 +470,63 @@ def _run_child(spec: ChildSpec, status_fd: int) -> None:
         os._exit(1)
     argv = [os.path.basename(builder), *spec["args"]]
     try:
-        os.execve(builder, argv, spec["env"])
+        if darwin_spec is not None:
+            _spawn_exec(builder, argv, spec["env"], darwin_spec["platform"])
+        else:
+            os.execve(builder, argv, spec["env"])
     except OSError as e:
         # `runChild` (`derivation-builder.cc:1377`): set-up is over, so the error goes to the log, not STATUS_FD.
         os.write(2, f"error: executing '{builder}': {e.strerror}\n".encode(errors="surrogateescape"))
         os._exit(1)
+
+
+def _enter_profile(spec: DarwinSpec) -> None:
+    """`DarwinDerivationBuilder::setUser` (`darwin-derivation-builder.cc:41`) after the user: apply the profile.
+
+    A profile the kernel refuses ends the helper on the terminal before `\\2`, as Nix's child does (`:176`).
+    """
+    try:
+        text = darwin.profile(spec)
+    except darwin.ProfileError as e:
+        raise SetupError(str(e)) from e
+    if os.environ.get("_NIX_TEST_NO_SANDBOX") == "1":
+        return
+    words = [os.fsencode(word) for word in darwin.parameters(spec, os.environ)]
+    params = (ctypes.c_char_p * (len(words) + 1))(*words, None)
+    error = ctypes.c_char_p()
+    init = _libc.sandbox_init_with_parameters
+    init.argtypes = [ctypes.c_char_p, ctypes.c_uint64, ctypes.POINTER(ctypes.c_char_p), ctypes.POINTER(ctypes.c_char_p)]
+    if init(text.encode(), 0, params, ctypes.byref(error)):
+        reason = "(null)" if error.value is None else error.value.decode(errors="surrogateescape")
+        os.write(2, f"failed to configure sandbox: {reason}\n".encode(errors="surrogateescape"))
+        os._exit(1)
+
+
+def _spawn_exec(builder: str, argv: list[str], env: dict[str, str], platform: str) -> None:
+    """`DarwinDerivationBuilder::execBuilder` (`darwin-derivation-builder.cc:183`): `posix_spawn` as an exec.
+
+    The derivation's system picks the slice of a universal binary, and a native one leaves Rosetta.
+    Returns only on failure, with the error raised.
+    """
+    attr = ctypes.c_void_p()
+    if _libc.posix_spawnattr_init(ctypes.byref(attr)):
+        raise OSError(ctypes.get_errno(), "failed to initialize builder")
+    if _libc.posix_spawnattr_setflags(ctypes.byref(attr), ctypes.c_short(POSIX_SPAWN_SETEXEC)):
+        raise OSError(ctypes.get_errno(), "failed to initialize builder")
+    if (cpu := CPU_TYPES.get(platform)) is not None:
+        if platform == "aarch64-darwin":
+            affinity = ctypes.c_int(0)
+            _libc.sysctlbyname(
+                b"kern.curproc_arch_affinity", None, None, ctypes.byref(affinity), ctypes.sizeof(affinity)
+            )
+        cpu_type = ctypes.c_int(cpu)
+        _libc.posix_spawnattr_setbinpref_np(ctypes.byref(attr), 1, ctypes.byref(cpu_type), None)
+    c_argv = (ctypes.c_char_p * (len(argv) + 1))(*[os.fsencode(a) for a in argv], None)
+    words = [os.fsencode(f"{name}={value}") for name, value in env.items()]
+    c_env = (ctypes.c_char_p * (len(words) + 1))(*words, None)
+    # On success `POSIX_SPAWN_SETEXEC` replaces this process, as `execve` does; the result is an errno.
+    err = _libc.posix_spawn(None, os.fsencode(builder), None, ctypes.byref(attr), c_argv, c_env)
+    raise OSError(err, os.strerror(err))
 
 
 def _run_external(spec: ChildSpec, argv: list[str], user: tuple[int, int] | None) -> None:
@@ -544,7 +613,7 @@ def _drop_terminal() -> None:
     1 and 2, and with only 1 and 2 redirected the log never ended.
     """
     terminal = os.fstat(1)
-    for name in os.listdir("/proc/self/fd"):
+    for name in os.listdir(FD_DIR):
         fd = int(name)
         try:
             same = os.path.samestat(os.fstat(fd), terminal)
@@ -589,7 +658,9 @@ def main() -> None:
     if control is not None:
         control.set_inheritable(False)
     try:
-        _prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+        # darwin has no parent death signal, and neither has Nix's child there.
+        if LINUX:
+            _prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
         spec: ChildSpec = json.loads(Path(spec_path).read_text())
         # Before the fork, so that the builder starts in it. The interpreter's own pages stay charged to pynixd.
         if spec["cgroup"] is not None:
@@ -627,7 +698,8 @@ def main() -> None:
     pid = os.fork()
     if pid == 0:
         try:
-            _prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+            if LINUX:
+                _prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
             _run_child(spec, status_fd)
             raise SetupError(f"executing '{spec['builder']}' returned")
         except (OSError, SetupError) as e:
@@ -637,7 +709,10 @@ def main() -> None:
     _kill_on_term(pid)
     # Only now an event loop: the `unshare` above refuses a process with a second thread, and a fork copies a loop.
     samples: list[UsageSample] = []
-    anyio.run(_wait_serving, spec, pid, control, samples)
+    # On darwin there is no pidfd, no control socket (`unsupported` keeps recursive builds off) and no cgroup:
+    # `wait4` alone waits.
+    if LINUX:
+        anyio.run(_wait_serving, spec, pid, control, samples)
     # The sandbox's pid 1 reaps its orphans, so its usage holds theirs too.
     _pid, status, rusage = os.wait4(pid, 0)
     signal.signal(signal.SIGTERM, signal.SIG_IGN)

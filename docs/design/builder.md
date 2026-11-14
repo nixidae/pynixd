@@ -251,6 +251,38 @@ less the expected peaks of the builds it runs, is below that figure. When no
 store has the room, the store with the most room goes first, and the
 placement trace says why.
 
+## darwin
+
+On darwin pynixd builds as `DarwinDerivationBuilder` does
+(`darwin/build/darwin-derivation-builder.cc`), nixidae/nixidae#1367. There is
+never a chroot: the builder runs on the host, at its scratch paths, as for
+`sandbox = false` on Linux. `useSandbox` picks a sandbox profile instead.
+
+- The store side (`local.py`) refuses what `makeDerivationBuilder` refuses on
+  darwin: a diverted store, and `__sandboxProfile` under `sandbox = true`. It
+  then runs `getPathsInSandbox`: `sandbox-paths`, the build directory, and
+  each `__impureHostDeps` path, which must be under `allowed-impure-host-deps`.
+- The helper (`child.py`) does what Nix's child does after `setUser`: it
+  writes the profile (`darwin.py`) and applies it with
+  `sandbox_init_with_parameters`, writes `\2` to end the set-up, and starts
+  the builder with `posix_spawn` and `POSIX_SPAWN_SETEXEC`. The derivation's
+  system picks the slice of a universal binary.
+- The full profile denies by default and opens the scratch outputs, the paths
+  above, the input closure and their parent directories. A fixed-output or
+  impure build adds the network rules; `__darwinAllowLocalNetworking` opens
+  localhost. Without the sandbox, the minimal profile only denies setuid and
+  setgid files.
+- The kernel matches a rule against the real path. A store or build directory
+  under a symlink (`/tmp`, `/var/folders`) breaks the profile, under Nix too.
+
+Not yet: `recursive-nix` and `builder-rpc-v0` stay on the daemon, because the
+store's socket binds through `/proc/self/fd`. After the build Nix also removes
+the build user's System V IPC objects (`cleanupSysVIPCForUser`); pynixd does
+not yet. `pre-build-hook` is not run on any platform.
+
+`tests/functional/test_build_darwin.py` builds each case with no daemon and on
+Nix's own darwin builder, and compares the two. It runs on a darwin host only.
+
 ## The build VM
 
 `build_vm` on a local-socket store runs the same helper in a libkrun

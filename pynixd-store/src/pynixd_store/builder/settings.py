@@ -154,6 +154,9 @@ class BuildSettings:
     external_builders: tuple[ExternalBuilder, ...] = ()
     external_builders_feature: bool = False
     """`Xp::ExternalBuilders`, which `ExternalDerivationBuilder` requires (`external-derivation-builder.cc:19`)."""
+    allowed_impure_host_deps: tuple[str, ...] = ()
+    """`allowed-impure-host-deps`: the prefixes a derivation's `__impureHostDeps` may name (darwin)."""
+    darwin_log_sandbox_violations: bool = False
 
     @classmethod
     def from_nix_config(
@@ -293,6 +296,8 @@ class BuildSettings:
             build_hook=tuple(words(value("build-hook", ()))),
             external_builders=external_builders(),
             external_builders_feature="external-builders" in features,
+            allowed_impure_host_deps=tuple(words(value("allowed-impure-host-deps", ()))),
+            darwin_log_sandbox_violations=boolean(value("darwin-log-sandbox-violations", False)),
         )
 
 
