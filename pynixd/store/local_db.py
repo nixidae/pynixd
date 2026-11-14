@@ -80,6 +80,7 @@ if TYPE_CHECKING:
     from pynixd_store.builder.usage import BuildUsage
     from pynixd_store.content_address import ContentAddress
     from pynixd_store.drv_parser import Derivation
+    from pynixd_store.local_store_db import SyncReader
 
     from ..config import LocalSocketStoreSpec
     from ..connection import ClientConn, Connection
@@ -1168,15 +1169,24 @@ class LocalDBStore(Store):
         """
         from pynixd.serde import IsValidPathResponse
 
-        valid = await self.engine.is_valid_path(str(request.path), reader=getattr(client, "sync_reader", None))
+        valid = await self.engine.is_valid_path(str(request.path), reader=self._session_reader(client))
         return IsValidPathResponse.fast(valid=valid)
+
+    def _session_reader(self, client: Any) -> SyncReader | None:
+        """*client*'s synchronous reader when it reads this store's database, else `None`.
+
+        A session opens its reader on the local store. A backend that answers for that session, a path
+        `ctx.output_locations` maps to it, reads its own database through the pool (nixidae/nixidae#1358).
+        """
+        reader: SyncReader | None = getattr(client, "sync_reader", None)
+        return reader if reader is not None and reader.db_path == self.db.db_path else None
 
     async def own_query_path_info(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         """QueryPathInfo: the path-info cache, then the engine."""
         from pynixd.serde import QueryPathInfoResponse
 
         info = self.get_path_info(request.path) or await self.engine.query_path_info(
-            str(request.path), reader=getattr(client, "sync_reader", None)
+            str(request.path), reader=self._session_reader(client)
         )
         if info is None:
             return QueryPathInfoResponse.fast(valid=False)
