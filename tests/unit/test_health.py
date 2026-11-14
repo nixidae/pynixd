@@ -152,3 +152,52 @@ class TestTheConfiguredThreshold:
         server = Server(settings=settings)
 
         assert server.loop_lag._window == 7.5  # noqa: SLF001
+
+
+def _dumped_while_running(server: Server, stall: float) -> bool:
+    """Whether the watchdog dumps a stall of *stall* seconds before it ends.
+
+    The watchdog checks once per interval, so the latest check that can fall
+    inside the stall is one interval before its end. That check has to fire
+    wherever the polling phase lands.
+    """
+    dog = server.stall_watchdog
+    if dog is None:
+        return False
+    dog.beat()
+    return dog._check(dog._last_beat + stall - dog._interval)  # noqa: SLF001
+
+
+class TestAStallThatFailsHealthIsDumped:
+    """The dump threshold follows `health_loop_lag_max`.
+
+    sg1, 2026-11-14: stalls of 5-10 s held `/healthz` at 503 until the
+    kubelet killed pynixd, and the dump threshold sat at 30 s. No stack was
+    written for the stalls that killed it.
+    """
+
+    def test_a_stall_just_past_the_health_limit_is_dumped(self) -> None:
+        server = Server(settings=_stock())
+        stall = server.settings.health_loop_lag_max + 0.01
+
+        assert not _server_with_lag(stall, _stock()).health().ok
+        assert _dumped_while_running(server, stall)
+
+    def test_a_raised_health_limit_raises_the_dump_threshold(self) -> None:
+        """A node told to tolerate 30 s stalls does not dump every 5 s one."""
+        raised = PynixdSettings(unix_path=None, ssh_port=None, health_loop_lag_max=30.0)
+        server = Server(settings=raised)
+
+        assert not _dumped_while_running(server, 5.0)
+        assert _dumped_while_running(server, 30.01)
+
+    def test_an_explicit_threshold_wins(self) -> None:
+        settings = PynixdSettings(unix_path=None, ssh_port=None, stall_traceback_seconds=60.0)
+        server = Server(settings=settings)
+
+        assert not _dumped_while_running(server, 30.0)
+
+    def test_zero_still_disables_it(self) -> None:
+        settings = PynixdSettings(unix_path=None, ssh_port=None, stall_traceback_seconds=0)
+
+        assert Server(settings=settings).stall_watchdog is None

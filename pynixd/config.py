@@ -1239,7 +1239,18 @@ class PynixdSettings(BaseSettings):
     # process is serving again, or one bad transfer holds the pod unhealthy.
     health_loop_lag_window: float = 30.0
     # Dump every thread's Python stack when the loop stops beating for this
-    # long. 0 disables it.
+    # long. 0 disables it. `None` is half of `health_loop_lag_max`
+    # (`stall_traceback_threshold`).
+    #
+    # **At or under the health limit, never above it.** A stall that fails
+    # `/healthz` is the stall that gets the pod killed, so it is the one that
+    # needs a stack. Above the limit, a run of shorter stalls holds the probe
+    # failing until the kubelet kills the pod, and nothing is dumped: on sg1
+    # on 2026-11-14, three stalls of 5-10 s and fifteen of 2.5-5 s killed
+    # pynixd, with the threshold at 30 s and no dump written.
+    #
+    # Half, and not equal: the watchdog checks once a second, so a dump
+    # threshold at the limit itself misses most stalls just past it.
     #
     # **This exists because the failure is not reproducible.** A push on
     # nixlab2 sat at 100% CPU for about ten minutes with no progress, having
@@ -1251,11 +1262,7 @@ class PynixdSettings(BaseSettings):
     # It works for the case that matters: CPU-bound Python releases the GIL
     # every switch interval, so the watchdog runs even while the loop does not.
     # A stall inside a C call that holds the GIL would defeat it.
-    #
-    # Well above `health_loop_lag_max`, because this writes a large amount to
-    # stderr and a stall long enough to fail a probe is not by itself a fault
-    # worth a stack dump. The ten-minute case is.
-    stall_traceback_seconds: float = 30.0
+    stall_traceback_seconds: float | None = None
     # A second place to write the stall dump, which a container restart cannot
     # take away. `None` writes to stderr only.
     #
@@ -1442,6 +1449,13 @@ class PynixdSettings(BaseSettings):
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         """Configure settings source priority: init > env > JSON config file."""
         return (init_settings, env_settings, _ConfigFileSource(settings_cls))
+
+    @property
+    def stall_traceback_threshold(self) -> float:
+        """Seconds of stall before the watchdog dumps stacks; 0 when it is off."""
+        if self.stall_traceback_seconds is None:
+            return self.health_loop_lag_max / 2
+        return self.stall_traceback_seconds
 
     def to_stores(self) -> dict[StoreId, Store]:
         """Convert all store specs to live Store instances."""
