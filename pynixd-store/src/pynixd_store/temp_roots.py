@@ -48,20 +48,21 @@ TEMP_ROOTS_DIR = "temproots"
 # The collector answers one byte for each root that it takes.
 COLLECTOR_ACK = b"1"
 
-# How long to wait before pynixd asks the collector again, and how many times.
-# The collector is between two states when it refuses the socket: it holds the
-# big lock, and it has not made the socket yet.
-#
-# NIX-DEVIATION (#27): `addTempRoot` at `gc.cc:95-135` waits 100 ms and tries
-# again with no limit. pynixd gives up after 10 s, because a client waits for
-# the answer and a daemon that never answers is worse than an error. The cost
-# is an error where Nix would still be waiting; reverse it if a collector is
-# measured to stay in that state longer than 10 s.
 PYNIXD_TEMP_ROOTS_PREFIX = "pynixd-"
 """The name of pynixd's own temporary-roots files starts with this."""
 
 RETRY_DELAY = 0.1
-RETRY_LIMIT = 100
+"""How long a root waits before it asks the collector again, with no limit, as `addTempRoot` does (`gc.cc:95-135`).
+
+A collector can hold the big lock with no socket for long. A daemon worker
+that aborts keeps its lock while the kernel dumps its core: 18 s on dynhetz,
+and a limit of 10 s failed the evaluation that sent the root
+(nixidae/nixidae#1386). The wait sleeps on the event loop, so the session's
+cancellation ends it.
+"""
+
+WAIT_REPORTED_AFTER = 5.0
+"""A root that waits this long for the collector logs it once."""
 
 _names = itertools.count()
 
@@ -133,7 +134,7 @@ class TempRoots:
         async with self._lock:
             if self._disabled:
                 return False
-            await run_sync(self._add, root)
+            await self._wait_for_the_collector(root)
         return not self._disabled
 
     async def close(self) -> None:
@@ -206,11 +207,22 @@ class TempRoots:
             self._gc_lock_fd = os.open(self.state / GC_LOCK_FILE, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
         return self._gc_lock_fd
 
-    def _add(self, root: str) -> None:
-        try:
-            self._add_or_raise(root)
-        except OSError as exc:
-            self._disable(exc)
+    async def _wait_for_the_collector(self, root: str) -> None:
+        started = time.monotonic()
+        reported = False
+        while not await run_sync(self._try_the_collector, root):
+            waited = time.monotonic() - started
+            if not reported and waited >= WAIT_REPORTED_AFTER:
+                reported = True
+                log.warning(
+                    "temp_root_waits_for_collector",
+                    root=root,
+                    waited_s=round(waited, 1),
+                    detail="a process holds gc.lock for writing and its roots socket does not answer",
+                )
+            await anyio.sleep(RETRY_DELAY)
+        if reported:
+            log.info("temp_root_collector_answered", root=root, waited_s=round(time.monotonic() - started, 1))
 
     def _disable(self, exc: OSError) -> None:
         self._disabled = True
@@ -225,23 +237,23 @@ class TempRoots:
             ),
         )
 
-    def _add_or_raise(self, root: str) -> None:
-        """The collector is running: the socket takes the root, then the file.
+    def _try_the_collector(self, root: str) -> bool:
+        """One attempt while the collector runs: the socket takes the root, then the file.
 
         `_write_root` failed its lock, so the collector holds the big lock. It
         read the `temproots` directory before this root existed, so the socket
         is how it learns about the root now. The file still gets it as well,
-        for the next run of the collector.
+        for the next run of the collector. False asks the caller to try again;
+        True is held, or disabled.
         """
-        for _ in range(RETRY_LIMIT):
+        try:
             if self._tell_the_collector(root):
                 self._write_raw(root)
-                return
-            if self._write_root(root):
-                return
-            time.sleep(RETRY_DELAY)
-
-        raise RuntimeError(f"pynixd: the collector did not take the temporary root {root!r}")
+                return True
+            return self._write_root(root)
+        except OSError as exc:
+            self._disable(exc)
+            return True
 
     def _hold_the_gc_lock(self, gc_lock: int) -> bool:
         """True when the collector is not running, and pynixd may write.

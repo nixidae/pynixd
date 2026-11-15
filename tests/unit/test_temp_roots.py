@@ -13,12 +13,16 @@ import shutil
 import socket
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import anyio
+import anyio.from_thread
 import pytest
 
 from nix_daemon_protocol.store_path import StorePath
+from pynixd_store import temp_roots
 from pynixd_store.temp_roots import TempRoots
 
 if TYPE_CHECKING:
@@ -245,3 +249,59 @@ async def test_a_root_added_while_the_collector_runs_goes_over_the_socket(short_
     finally:
         await roots.close()
         collector.stop()
+
+
+def _hold_the_big_lock(state: Path) -> int:
+    """A collector that holds `gc.lock` for writing and serves no socket, as one does while the kernel dumps its core."""
+    fd = os.open(state / "gc.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
+@pytest.mark.anyio
+async def test_a_root_waits_for_a_collector_with_no_socket(short_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Nix's `addTempRoot` asks again with no limit (`gc.cc:95-135`), and pynixd does too.
+
+    Counted in attempts, not seconds: pynixd gave up after 100, and a dying
+    worker held the lock for 18 s on dynhetz (nixidae/nixidae#1386).
+    """
+    monkeypatch.setattr(temp_roots, "RETRY_DELAY", 0)
+    lock = _hold_the_big_lock(short_path)
+    roots = TempRoots(short_path)
+    attempts = 0
+    asked = anyio.Event()
+    tell = roots._tell_the_collector  # noqa: SLF001 -- each call is one attempt
+
+    def counted(root: str) -> bool:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 300:
+            anyio.from_thread.run_sync(asked.set)
+        return tell(root)
+
+    monkeypatch.setattr(roots, "_tell_the_collector", counted)
+    try:
+        with anyio.fail_after(30):
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(roots.add, PATH_A)
+                await asked.wait()
+                os.close(lock)
+        assert read_roots(roots.path) == [PATH_A]
+    finally:
+        await roots.close()
+
+
+@pytest.mark.anyio
+async def test_a_waiting_root_ends_with_its_session(short_path: Path) -> None:
+    """The wait sleeps on the event loop, so a cancelled session does not hold a worker thread."""
+    lock = _hold_the_big_lock(short_path)
+    roots = TempRoots(short_path)
+    started = time.monotonic()
+    try:
+        with anyio.move_on_after(0.5) as scope:
+            await roots.add(PATH_A)
+        assert scope.cancelled_caught
+        assert time.monotonic() - started < 2
+    finally:
+        os.close(lock)
+        await roots.close()
