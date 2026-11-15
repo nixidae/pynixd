@@ -9,13 +9,15 @@ package's venv: `PYNIXD_DARWIN_VM_PYTHON` and `PYNIXD_DARWIN_VM_CLOSURE`, from
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
 import pytest
 
 from pynixd.config import DarwinBuildVmSpec
-from tests.functional.test_build_darwin import PROBE, _build, _drv
+from tests.conftest import run_subproc
+from tests.functional.test_build_darwin import ALONE, PROBE, _build, _drv, _serve
 
 SNAPSHOT = os.environ.get("PYNIXD_DARWIN_VM_SNAPSHOT")
 
@@ -42,6 +44,21 @@ async def test_a_build_in_the_vm_matches_nixs_darwin_builder(tmp_path: Path) -> 
     assert here["contents"] == there["contents"] == "built\n"
     assert here["info"] == there["info"]
     assert here["rows"] == there["rows"]
+
+
+async def test_keep_failed_keeps_the_guests_build_directory(tmp_path: Path) -> None:
+    """The build directory is a tmpfs in the guest; `keep-failed` copies a failed build's back to the host."""
+    expr = _drv("darwin-kept", "echo left > here; exit 3")
+    async with _serve(tmp_path, False, "true", darwin_build_vm=_vm()) as (nix, env, _state):
+        _rc, _out, err, _both = await run_subproc(
+            [*nix[:1], "build", *nix[1:], "--no-link", "--keep-failed", "--expr", expr],
+            expected_retcode=1,
+            env=dict(env),
+            nix_config=ALONE,
+        )
+    kept = re.search(r'note: keeping build directory "([^"]+)"', err)
+    assert kept is not None, err
+    assert (Path(kept[1]) / "here").read_text() == "left\n"
 
 
 async def test_a_build_in_the_vm_runs_on_the_guests_kernel(tmp_path: Path) -> None:

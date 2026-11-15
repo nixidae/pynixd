@@ -7,9 +7,10 @@ same paths. Three virtio-fs shares give it what the build may see, each at its h
   the build store is the host's). A tmpfs over it takes what the builder writes, the outputs among it.
 - `host`: the host's store, read-only, with the helper's closure as its allowlist, when the build store is
   another one.
-- `top`: the build's top directory, writable: the spec, the build directory, and the helper's status and usage.
+- `top`: the build's top directory, writable: the spec, and the helper's status and usage. The build directory
+  in it is a tmpfs in the guest (`darwin_vm_guest`).
 
-After the helper ends, the guest copies each output into `top/vm-out` (`darwin_vm_guest`). The launcher moves it
+After the helper ends, the guest copies each output into `top/vm-out`. The launcher moves it
 to its place in the store, where `collect_outputs` finds it as after a build on the host. A virtio-fs share
 cannot be the upper layer of a union: it hides the layer below (`macos-guest-spike/README.md`).
 
@@ -45,8 +46,11 @@ from .vm import EXIT_NAME, VMM_USAGE_NAME
 if TYPE_CHECKING:
     from anyio.abc import Process
 
+    from .site import BuildPaths
+
 JOB_NAME = "darwin-vm.json"
 OUTPUTS_NAME = "vm-out"
+KEPT_NAME = "vm-build"
 HOST_STORE = Path("/nix/store")
 #: The run directory holds QEMU's sockets, and a top directory is longer than darwin's `sun_path`.
 RUN_PARENT = Path("/private/tmp")
@@ -96,10 +100,18 @@ class DarwinBuildVm:
         )
 
     def write_job(
-        self, top: Path, spec_file: Path, store_dir: Path, visible: frozenset[str], outputs: list[str]
+        self,
+        paths: BuildPaths,
+        spec_file: Path,
+        store_dir: Path,
+        visible: frozenset[str],
+        outputs: list[str],
+        *,
+        keep_failed: bool,
     ) -> Path:
-        """The launcher's job in *top*: *visible* are the build store's paths the guest may see, *outputs* the
-        store paths the builder may make."""
+        """The launcher's job in the top directory: *visible* are the build store's paths the guest may see,
+        *outputs* the store paths the builder may make."""
+        top = paths.top
         job = {
             "snapshot": str(self.snapshot),
             "python": str(self.python),
@@ -107,6 +119,8 @@ class DarwinBuildVm:
             "visible": sorted(visible),
             "helper": sorted(self.helper_closure),
             "top": str(top),
+            "build": str(paths.tmp),
+            "keep_failed": keep_failed,
             "spec": str(spec_file),
             "outputs": outputs,
         }
@@ -294,6 +308,10 @@ async def _run(job: dict[str, Any], run: Path) -> None:
             reason = last.decode(errors="replace").strip().splitlines()[-1:] or ["the guest ended the connection"]
             (top / EXIT_NAME).write_text(f"init {reason[0]}\n")
         _move_outputs(top / OUTPUTS_NAME, store_dir)
+        if (kept := top / KEPT_NAME).is_dir():
+            build = Path(job["build"])
+            delete_path(build)
+            os.rename(kept, build)
 
 
 def _move_outputs(outputs: Path, store_dir: Path) -> None:

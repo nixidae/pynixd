@@ -307,6 +307,10 @@ and macOS release.
   launcher moves it into the store, so `collect_outputs` reads it as after a
   host build. A virtio-fs share cannot be the upper layer of a union mount:
   it hides the layer below.
+- The build directory is a tmpfs in the guest. A file made on the writable
+  share costs about 3 ms: unpacking and copying 3786 files took 23 s there,
+  and 5 s on a tmpfs (2.5 s on the host). With `keep-failed`, the guest
+  copies a failed build's directory back.
 - The guest reports as the Linux build VM does: `vm-status`, `vm-exit`, and
   the VMM's usage. A watchdog kills QEMU and the share servers when the
   launcher dies, because darwin has no parent-death signal.

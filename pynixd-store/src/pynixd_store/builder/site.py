@@ -408,6 +408,8 @@ class DarwinVmSite(BuildSite):
     visible: frozenset[StorePath]
     outputs: list[str]
     """The store paths the builder may make, at their real place."""
+    keep_failed: bool = False
+    """`keep-failed`: the guest copies a failed build's directory back from its tmpfs."""
     waits_for_exit: bool = False
     samples_on_host: bool = False
 
@@ -429,7 +431,9 @@ class DarwinVmSite(BuildSite):
 
     async def launch(self, paths: BuildPaths, spec_file: Path, cgroup: Path | None, *, recursive: bool) -> Launch:
         visible = frozenset(str(self.real_store_dir / path.name) for path in self.visible)
-        job = self.vm.write_job(paths.top, spec_file, self.real_store_dir, visible, self.outputs)
+        job = self.vm.write_job(
+            paths, spec_file, self.real_store_dir, visible, self.outputs, keep_failed=self.keep_failed
+        )
         return Launch([sys.executable, "-I", "-m", "pynixd_store.builder.darwin_vm", str(job)])
 
     def setup_error(self, paths: BuildPaths, launch: Launch) -> str:
@@ -507,11 +511,11 @@ def _choose_darwin(  # noqa: PLR0913 -- choose_site's arguments that a darwin bu
         return host, "the build has no sandbox"
     if drv.platform not in {settings.system, "builtin"}:
         return host, f"the build is for {drv.platform}, not {settings.system}"
-    # The builder's socket is in the build directory, which the guest sees through a share: a socket there
-    # reaches nothing on the host.
+    # The builder's socket is in the build directory, a tmpfs in the guest: a socket there reaches nothing on the
+    # host.
     if {"recursive-nix", "builder-rpc-v0"} & set(drv.required_system_features):
         return host, "a recursive build reaches the store's socket, which the darwin build VM does not carry"
-    return DarwinVmSite(vm, real_store_dir, visible, outputs), None
+    return DarwinVmSite(vm, real_store_dir, visible, outputs, keep_failed=settings.keep_failed), None
 
 
 async def _attach_control(listener: socket.socket, restriction: RestrictionContext) -> None:
