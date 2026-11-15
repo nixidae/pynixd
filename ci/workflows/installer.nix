@@ -69,25 +69,76 @@ ghalib.evalWorkflow {
         inherit matrix;
       };
       timeout-minutes = 60;
-      ghanix.checkout.enable = true;
-      steps = [
-        (steps.downloadArtifact { inherit artifactName; })
-        (steps.installPynixd {
-          tarball = "file://\${{ github.workspace }}";
+      ghanix = {
+        checkout.enable = true;
+        nix.install = {
+          enable = true;
+          daemon = "pynixd";
+          pynixdArtifact = artifactName;
           inherit settings;
-        })
+        };
+      };
+      steps = [
         {
           name = "pynixd is the only daemon";
           run = "systemctl is-active pynixd.service && ! pidof nix-daemon && nix store info";
         }
         {
           name = "Build the tarball through pynixd";
-          run = ''nix build --file . internal.installer --print-out-paths --no-link > rebuilt && diff "$GITHUB_WORKSPACE/out-path" rebuilt'';
+          run = ''nix build --file . internal.installer --print-out-paths --no-link > rebuilt && diff "$RUNNER_TEMP/pynixd-tarball/out-path" rebuilt'';
         }
         {
           name = "pynixd's journal";
           "if" = "\${{ !cancelled() }}";
           run = "sudo journalctl -u pynixd.service --no-pager";
+        }
+      ];
+    };
+
+    /*
+      The release `nix.install.pynixdTarball` names, replaced from main once
+      both systems' `runner` passed. One tag, moved to the commit each time,
+      so the release names the commit that built what it holds. `pynixd-`
+      names the source: every source shares one tag namespace.
+    */
+    publish = {
+      needs = "runner";
+      "if" = "github.ref == 'refs/heads/main'";
+      runs-on = "ubuntu-latest";
+      timeout-minutes = 15;
+      permissions.contents = "write";
+      # A later push waits, so two runs never replace the assets at once.
+      concurrency = {
+        group = "pynixd-installer-publish";
+        cancel-in-progress = false;
+      };
+      ghanix.freeDiskSpace.enable = false;
+      steps = [
+        {
+          name = "Download both tarballs";
+          uses = "actions/download-artifact@main";
+          timeout-minutes = 10;
+          "with" = {
+            pattern = "pynixd-tarball-*";
+            path = "\${{ runner.temp }}/release";
+            merge-multiple = true;
+          };
+        }
+        {
+          name = "Replace the release";
+          timeout-minutes = 10;
+          shell = "bash";
+          env = {
+            GH_TOKEN = "\${{ github.token }}";
+            TAG = "pynixd-installer";
+          };
+          run = lib.concatStringsSep " && " [
+            ''cd "$RUNNER_TEMP/release"''
+            ''(gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --target "$GITHUB_SHA" --prerelease --title "pynixd installer" --notes "pynixd as the only Nix daemon of a machine: nixidae/nixidae#1365")''
+            ''gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true > /dev/null''
+            ''gh release upload "$TAG" pynixd-*.tar.zst --clobber''
+            ''gh release edit "$TAG" --notes "pynixd as the only Nix daemon of a machine: nixidae/nixidae#1365. Built from $GITHUB_SHA."''
+          ];
         }
       ];
     };
