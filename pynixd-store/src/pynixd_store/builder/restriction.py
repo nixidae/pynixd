@@ -39,7 +39,7 @@ class RestrictionContext:
 
     *submitting* is a `builder-rpc-v0` build: the builder submits its outputs (`RecursiveSubmitted`). *control*
     is the helper's control socket; without one, `attach` gives it once the helper connects. *reveal* runs for
-    each path the builder adds, before the helper binds it. Without *binds* (no sandbox) a path only joins.
+    each path the builder adds, before the helper binds it. Without *binds* (no chroot) the helper binds nothing.
     With *repairing*, the build repairs its outputs, and each path the builder adds replaces what the store holds.
     """
 
@@ -93,11 +93,11 @@ class RestrictionContext:
             if self.is_allowed(path):
                 return
             self.added.add(path)
+            if self._reveal is not None:
+                await anyio.to_thread.run_sync(self._reveal, path)
             if not self._binds:
                 return
             source = str(self._real_store_dir / path.name)
-            if self._reveal is not None:
-                await anyio.to_thread.run_sync(self._reveal, path)
             await self._attached.wait()
             if self._control is None or self._replies is None:
                 raise RuntimeError("the control socket is attached and missing")

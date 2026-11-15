@@ -40,8 +40,9 @@ import anyio
 from anyio.abc import SocketStream
 
 from ..add import delete_path
+from .restriction import SOCKET_NAME
 from .usage import from_rusage, write_usage
-from .vm import EXIT_NAME, VMM_USAGE_NAME
+from .vm import EXIT_NAME, STORE_ALLOWLIST_NAME, VMM_USAGE_NAME
 
 if TYPE_CHECKING:
     from anyio.abc import Process
@@ -51,7 +52,11 @@ if TYPE_CHECKING:
 JOB_NAME = "darwin-vm.json"
 OUTPUTS_NAME = "vm-out"
 KEPT_NAME = "vm-build"
+HOST_ALLOWLIST_NAME = "vm-allowlist-host"
 HOST_STORE = Path("/nix/store")
+#: The guest relays each connection to the builder's socket to this host port, which QEMU gives to the unix socket
+#: `run/vsock.sock_<port>`.
+BUILDER_VSOCK_PORT = 3041
 #: The run directory holds QEMU's sockets, and a top directory is longer than darwin's `sun_path`.
 RUN_PARENT = Path("/private/tmp")
 #: Measured in the spike: a fresh guest once ignored one handshake for good; each is retried.
@@ -108,9 +113,11 @@ class DarwinBuildVm:
         outputs: list[str],
         *,
         keep_failed: bool,
+        recursive: bool,
     ) -> Path:
         """The launcher's job in the top directory: *visible* are the build store's paths the guest may see,
-        *outputs* the store paths the builder may make."""
+        *outputs* the store paths the builder may make. With *recursive*, the guest relays the builder's socket
+        to pynixd's, at the same path on the host."""
         top = paths.top
         job = {
             "snapshot": str(self.snapshot),
@@ -121,6 +128,7 @@ class DarwinBuildVm:
             "top": str(top),
             "build": str(paths.tmp),
             "keep_failed": keep_failed,
+            "builder_socket": str(paths.tmp / SOCKET_NAME) if recursive else None,
             "spec": str(spec_file),
             "outputs": outputs,
         }
@@ -227,9 +235,20 @@ async def _run(job: dict[str, Any], run: Path) -> None:
          str(run / "overlay.qcow2")]
     )  # fmt: skip
     separate = store_dir != HOST_STORE
-    shown = set(job["visible"]) if separate else {*job["visible"], *job["helper"]}
-    (top / "vm-allowlist-store").write_text("".join(f"{p}\n" for p in sorted(shown)))
-    (top / "vm-allowlist-host").write_text("".join(f"{p}\n" for p in job["helper"]))
+    shown, host = set(job["visible"]), set(job["helper"])
+    # The profile's paths in a store: an impure host dependency, such as the host's store for a recursive build.
+    darwin = json.loads(Path(job["spec"]).read_text())["darwin"]
+    for _target, source, _optional in darwin["paths"]:
+        if Path(source).is_relative_to(store_dir):
+            shown.add(source)
+        elif Path(source).is_relative_to(HOST_STORE):
+            host.add(source)
+    if not separate:
+        shown |= host
+    (top / STORE_ALLOWLIST_NAME).write_text("".join(f"{p}\n" for p in sorted(shown)))
+    (top / HOST_ALLOWLIST_NAME).write_text("".join(f"{p}\n" for p in sorted(host)))
+    if job["builder_socket"] is not None:
+        (run / f"vsock.sock_{BUILDER_VSOCK_PORT}").symlink_to(job["builder_socket"])
     empty = run / "empty"
     empty.mkdir()
     async with contextlib.AsyncExitStack() as stack:
@@ -240,9 +259,9 @@ async def _run(job: dict[str, Any], run: Path) -> None:
             stack.push_async_callback(_end, proc)
             return proc
 
-        await started(await server("store", store_dir, "--allowlist", str(top / "vm-allowlist-store")))
+        await started(await server("store", store_dir, "--allowlist", str(top / STORE_ALLOWLIST_NAME)))
         if separate:
-            await started(await server("host", HOST_STORE, "--allowlist", str(top / "vm-allowlist-host")))
+            await started(await server("host", HOST_STORE, "--allowlist", str(top / HOST_ALLOWLIST_NAME)))
         else:
             # The snapshot has the device; QEMU needs a server behind it.
             await started(await server("host", empty))

@@ -186,9 +186,12 @@ def _choose_darwin(
     )
 
 
-@pytest.mark.parametrize("platform", ["aarch64-darwin", "builtin"])
-def test_a_sandboxed_darwin_build_runs_in_the_darwin_vm(platform: str) -> None:
-    assert _choose_darwin(platform) == (DarwinVmSite(DARWIN_VM, REAL, VISIBLE, OUTPUTS), None)
+@pytest.mark.parametrize(
+    ("platform", "features"), [("aarch64-darwin", ""), ("builtin", ""), ("aarch64-darwin", "recursive-nix")]
+)
+def test_a_sandboxed_darwin_build_runs_in_the_darwin_vm(platform: str, features: str) -> None:
+    """A recursive build too: the guest relays the builder's socket to the host's."""
+    assert _choose_darwin(platform, features=features) == (DarwinVmSite(DARWIN_VM, REAL, VISIBLE, OUTPUTS), None)
 
 
 @pytest.mark.parametrize(
@@ -196,10 +199,6 @@ def test_a_sandboxed_darwin_build_runs_in_the_darwin_vm(platform: str) -> None:
     [
         ({"sandbox": False}, "the build has no sandbox"),
         ({"platform": "x86_64-darwin"}, "the build is for x86_64-darwin, not aarch64-darwin"),
-        (
-            {"features": "recursive-nix"},
-            "a recursive build reaches the store's socket, which the darwin build VM does not carry",
-        ),
     ],
 )
 def test_a_darwin_build_the_vm_cannot_run_stays_on_the_host_and_says_why(

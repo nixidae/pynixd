@@ -314,8 +314,12 @@ and macOS release.
 - The guest reports as the Linux build VM does: `vm-status`, `vm-exit`, and
   the VMM's usage. A watchdog kills QEMU and the share servers when the
   launcher dies, because darwin has no parent-death signal.
-- A build without the sandbox, one for another system and a recursive one
-  stay on the host (`choose_site`).
+- A recursive build's socket is in the build directory. The guest listens
+  there and relays each connection over vsock to the host, where pynixd
+  listens at the same path. A path the builder adds joins the store share's
+  allowlist.
+- A build without the sandbox and one for another system stay on the host
+  (`choose_site`).
 
 The snapshot is machine state: `darwin_builder.py save` with `PYNIXD=1`
 makes it (`vivarium/docs/design/macos-guest-spike`). A start is ready in

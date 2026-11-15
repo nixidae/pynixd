@@ -424,7 +424,20 @@ class DarwinVmSite(BuildSite):
         repairing: bool,
         user: build_users.BuildUser | None,
     ) -> Endpoint:
-        raise ValueError("choose_site keeps a recursive build out of the darwin build VM")
+        """The host's socket, as for a build on the host; the guest relays its own to it. A path the builder adds
+        joins the store share's allowlist."""
+        restriction = RestrictionContext(
+            inputs,
+            None,
+            real_store_dir,
+            submitting=submitting,
+            repairing=repairing,
+            reveal=functools.partial(vm_allow, paths.top, real_store_dir),
+            binds=False,
+        )
+        listener = await anyio.to_thread.run_sync(listen, paths.tmp / SOCKET_NAME)
+        build_users.chown_to(user, paths.tmp / SOCKET_NAME)
+        return Endpoint(listener, restriction)
 
     def configure(self, spec: ChildSpec, sample_seconds: float) -> None:
         """The helper measures with `wait4`, as on a darwin host."""
@@ -432,7 +445,13 @@ class DarwinVmSite(BuildSite):
     async def launch(self, paths: BuildPaths, spec_file: Path, cgroup: Path | None, *, recursive: bool) -> Launch:
         visible = frozenset(str(self.real_store_dir / path.name) for path in self.visible)
         job = self.vm.write_job(
-            paths, spec_file, self.real_store_dir, visible, self.outputs, keep_failed=self.keep_failed
+            paths,
+            spec_file,
+            self.real_store_dir,
+            visible,
+            self.outputs,
+            keep_failed=self.keep_failed,
+            recursive=recursive,
         )
         return Launch([sys.executable, "-I", "-m", "pynixd_store.builder.darwin_vm", str(job)])
 
@@ -511,10 +530,6 @@ def _choose_darwin(  # noqa: PLR0913 -- choose_site's arguments that a darwin bu
         return host, "the build has no sandbox"
     if drv.platform not in {settings.system, "builtin"}:
         return host, f"the build is for {drv.platform}, not {settings.system}"
-    # The builder's socket is in the build directory, a tmpfs in the guest: a socket there reaches nothing on the
-    # host.
-    if {"recursive-nix", "builder-rpc-v0"} & set(drv.required_system_features):
-        return host, "a recursive build reaches the store's socket, which the darwin build VM does not carry"
     return DarwinVmSite(vm, real_store_dir, visible, outputs, keep_failed=settings.keep_failed), None
 
 
