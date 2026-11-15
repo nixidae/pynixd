@@ -133,6 +133,8 @@ ghalib.evalWorkflow {
           working-directory = "/";
           env = {
             GH_TOKEN = "\${{ github.token }}";
+            # With no checkout, `gh` has no `.git` to read the repository from.
+            GH_REPO = "\${{ github.repository }}";
             TAG = "pynixd-installer";
           };
           run = lib.concatStringsSep " && " [
