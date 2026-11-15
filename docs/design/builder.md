@@ -290,6 +290,34 @@ Not yet: `pre-build-hook` is not run on any platform (nixidae/nixidae#1370).
 `tests/functional/test_build_darwin.py` builds each case with no daemon and on
 Nix's own darwin builder, and compares the two. It runs on a darwin host only.
 
+### The darwin build VM
+
+With `darwin_build_vm`, a sandboxed darwin build runs in a macOS guest that
+starts from a snapshot (`darwin_vm.py`, nixidae/nixidae#1168). The guest runs
+the same helper with the same spec, profile and scratch paths; the guest's
+kernel adds what darwin's profile cannot give: its own processes, users, IPC
+and macOS release.
+
+- Three virtio-fs shares, each at its host path: the build store, read-only
+  and filtered to the input closure; the host's store, filtered to the
+  helper's venv, when the build store is another one; and the top directory,
+  writable. darwin-virtiofsd serves them.
+- A tmpfs over the store share takes what the builder writes. After the
+  helper ends, the guest copies each output into the top directory, and the
+  launcher moves it into the store, so `collect_outputs` reads it as after a
+  host build. A virtio-fs share cannot be the upper layer of a union mount:
+  it hides the layer below.
+- The guest reports as the Linux build VM does: `vm-status`, `vm-exit`, and
+  the VMM's usage. A watchdog kills QEMU and the share servers when the
+  launcher dies, because darwin has no parent-death signal.
+- A build without the sandbox, one for another system and a recursive one
+  stay on the host (`choose_site`).
+
+The snapshot is machine state: `darwin_builder.py save` with `PYNIXD=1`
+makes it (`vivarium/docs/design/macos-guest-spike`). A start is ready in
+about 0.35 s. `tests/functional/test_build_darwin_vm.py` builds in the guest
+and compares with Nix's darwin builder; it needs `PYNIXD_DARWIN_VM_SNAPSHOT`.
+
 ## The build VM
 
 `build_vm` on a local-socket store runs the same helper in a libkrun

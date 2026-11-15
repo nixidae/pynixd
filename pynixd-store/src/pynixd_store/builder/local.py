@@ -79,6 +79,7 @@ if TYPE_CHECKING:
 
     from ..engine import StoreEngine
     from .buildlog import Output
+    from .darwin_vm import DarwinBuildVm
     from .outputs import Collected
     from .restriction import RecursiveServer
     from .settings import BuildSettings, ExternalBuilder
@@ -654,7 +655,7 @@ async def build(
     check: bool = False,
     repair: bool = False,
     recursive: RecursiveServer | None = None,
-    vm: BuildVm | None = None,
+    vm: BuildVm | DarwinBuildVm | None = None,
     on_usage: Callable[[BuildUsage], None] | None = None,
     sample_seconds: float = 0,
     aws_credentials: Callable[[str | None], AwsCredentials | None] | None = None,
@@ -952,6 +953,8 @@ async def build(
             user=user,
             real_store_dir=layout.real_store_dir,
             visible=frozenset(inputs | sandbox_closure),
+            darwin_sandbox=darwin_spec is not None and use_sandbox,
+            outputs=[str(layout.real_path(scratch[name])) for name in sorted(scratch)],
         )
         if elsewhere is not None:
             _log.debug("build_site_host", drv=str(drv_path), reason=elsewhere)

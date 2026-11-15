@@ -473,6 +473,18 @@ class BuildVmSpec(BaseModel):
     """
 
 
+class DarwinBuildVmSpec(BaseModel):
+    """A sandboxed darwin build in a macOS guest started from a snapshot (nixidae/nixidae#1168).
+
+    The guest runs the darwin helper, profile and all, and sees the build's input closure alone through a
+    read-only share. A build without the sandbox, a build for another system and a recursive build stay on the
+    host (`pynixd_store.builder.site.choose_site`).
+    """
+
+    snapshot: Path
+    """A directory `darwin_builder.py save` made with `PYNIXD=1` (`vivarium/docs/design/macos-guest-spike`)."""
+
+
 class OverlaySpec(BaseModel):
     """A `local-overlay://` store: `store_path` is the merged directory, an OverlayFS mount that pynixd does not make.
 
@@ -648,6 +660,15 @@ class LocalSocketStoreSpec(StoreSpecBase):
         ),
     ] = None
     """Run pynixd's sandboxed builds in a microVM; `None` runs them in the namespace helper alone."""
+    darwin_build_vm: Annotated[
+        DarwinBuildVmSpec | None,
+        Experiment(
+            replaces="a sandboxed darwin build runs under the darwin profile on the host",
+            issue=1168,
+            tests=("tests/functional/test_build_darwin_vm.py",),
+        ),
+    ] = None
+    """Run pynixd's sandboxed darwin builds in a macOS guest; `None` runs them on the host."""
     usage_sample_seconds: float = Field(default=5.0, ge=0)
     """Seconds between two samples of a running build's cgroup (`builder/cgroup.py`); 0 takes none."""
 

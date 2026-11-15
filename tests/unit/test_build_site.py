@@ -7,6 +7,7 @@ would run in its microVM stays on the host.
 from __future__ import annotations
 
 import dataclasses
+import signal
 from pathlib import Path
 
 import pytest
@@ -14,9 +15,10 @@ import pytest
 from nix_daemon_protocol.basic_derivation import BasicDerivation
 from nix_daemon_protocol.derivation_output import DerivationOutput
 from nix_daemon_protocol.store_path import StorePath
+from pynixd_store.builder.darwin_vm import DarwinBuildVm
 from pynixd_store.builder.outputs import BuildFailure
 from pynixd_store.builder.settings import BuildSettings
-from pynixd_store.builder.site import BuilderFailed, BuildPaths, HostSite, VmSite, choose_site
+from pynixd_store.builder.site import BuilderFailed, BuildPaths, DarwinVmSite, HostSite, VmSite, choose_site
 from pynixd_store.builder.users import BuildUser
 from pynixd_store.builder.vm import BuildVm
 
@@ -155,3 +157,68 @@ def test_a_build_the_vm_cannot_run_stays_on_the_host_and_says_why(kwargs: dict[s
     assert isinstance(site, HostSite)
     assert site.chroot == kwargs.get("chroot", True)
     assert why == reason
+
+
+DARWIN_VM = DarwinBuildVm(
+    snapshot=Path("/var/snap"), python=Path("/nix/store/aaaa-venv/bin/python"), helper_closure=frozenset()
+)
+OUTPUTS = ["/nix/store/00000000000000000000000000000000-x"]
+
+
+def _choose_darwin(
+    platform: str = "aarch64-darwin", sandbox: bool = True, features: str = ""
+) -> tuple[object, str | None]:
+    settings = BuildSettings.from_nix_config({}, {"system": "aarch64-darwin"})
+    drv = BasicDerivation(
+        outputs={"out": PLAIN}, platform=platform, builder="/bin/sh", env={"requiredSystemFeatures": features}
+    )
+    return choose_site(
+        drv,
+        settings,
+        DARWIN_VM,
+        chroot=False,
+        sandboxed=True,
+        user=None,
+        real_store_dir=REAL,
+        visible=VISIBLE,
+        darwin_sandbox=sandbox,
+        outputs=OUTPUTS,
+    )
+
+
+@pytest.mark.parametrize("platform", ["aarch64-darwin", "builtin"])
+def test_a_sandboxed_darwin_build_runs_in_the_darwin_vm(platform: str) -> None:
+    assert _choose_darwin(platform) == (DarwinVmSite(DARWIN_VM, REAL, VISIBLE, OUTPUTS), None)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "reason"),
+    [
+        ({"sandbox": False}, "the build has no sandbox"),
+        ({"platform": "x86_64-darwin"}, "the build is for x86_64-darwin, not aarch64-darwin"),
+        (
+            {"features": "recursive-nix"},
+            "a recursive build reaches the store's socket, which the darwin build VM does not carry",
+        ),
+    ],
+)
+def test_a_darwin_build_the_vm_cannot_run_stays_on_the_host_and_says_why(
+    kwargs: dict[str, object], reason: str
+) -> None:
+    site, why = _choose_darwin(**kwargs)  # type: ignore[arg-type]  # each case names one keyword of `_choose_darwin`
+    assert site == HostSite(chroot=False)
+    assert why == reason
+
+
+def test_a_darwin_vm_build_ends_as_its_helper_did_or_names_why_the_vm_stopped(tmp_path: Path) -> None:
+    paths = BuildPaths(top=tmp_path, tmp=tmp_path / "build", chroot_parent=None, root=None)
+    site = DarwinVmSite(DARWIN_VM, REAL, VISIBLE, OUTPUTS)
+    failure = site.ended(paths, DRV, 1)
+    assert isinstance(failure, BuildFailure)
+    assert failure.message.endswith("stopped: its launcher exited with 1 and said nothing")
+    (tmp_path / "vm-exit").write_text("init QEMU exited with 1 before the guest answered\n")
+    failure = site.ended(paths, DRV, 1)
+    assert isinstance(failure, BuildFailure)
+    assert failure.message.endswith("stopped: QEMU exited with 1 before the guest answered")
+    (tmp_path / "vm-exit").write_text("signal 9\n")
+    assert site.ended(paths, DRV, 0) == BuilderFailed(f"failed due to signal 9 ({signal.strsignal(9)})")

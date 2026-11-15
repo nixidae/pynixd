@@ -30,6 +30,7 @@ from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
 from pynixd_store import active_builds, collect
 from pynixd_store.autogc import AutoGC, free_space
 from pynixd_store.builder import hooks, local as local_builder
+from pynixd_store.builder.darwin_vm import DarwinBuildVm
 from pynixd_store.builder.settings import BuildSettings, NotBuiltHere
 from pynixd_store.builder.vm import BuildVm
 from pynixd_store.create_store import check_read_only_store, open_local_store
@@ -338,6 +339,8 @@ class LocalDBStore(Store):
                 network=spec.build_vm.network,
             )
             if spec.build_vm is not None
+            else DarwinBuildVm.from_environment(spec.darwin_build_vm.snapshot)
+            if spec.darwin_build_vm is not None
             else None
         )
         self.configured_routes = {_OP_CODES[name]: route for name, route in spec.op_routes.items()}

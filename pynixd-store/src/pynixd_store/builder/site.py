@@ -29,6 +29,7 @@ from nix_daemon_protocol.build_result import BuildResultStatus
 from ..add import delete_path
 from ..hintfmt import magenta
 from . import cgroup as build_cgroup, users as build_users
+from .darwin_vm import DarwinBuildVm
 from .outputs import BuildFailure
 from .restriction import SOCKET_NAME, RestrictionContext
 from .usage import USAGE_NAME, read_usage, with_host
@@ -58,6 +59,7 @@ __all__ = [
     "BuildPaths",
     "BuildSite",
     "BuilderFailed",
+    "DarwinVmSite",
     "Endpoint",
     "HostSite",
     "Launch",
@@ -393,21 +395,89 @@ class VmSite(BuildSite):
         return usage
 
 
+@dataclass
+class DarwinVmSite(BuildSite):
+    """The darwin helper runs in a macOS guest started from a snapshot (`darwin_vm.py`, nixidae/nixidae#1168).
+
+    The guest reports through files in the top directory, as the Linux build VM does, and the launcher moves the
+    outputs into the store before it exits.
+    """
+
+    vm: DarwinBuildVm
+    real_store_dir: Path
+    visible: frozenset[StorePath]
+    outputs: list[str]
+    """The store paths the builder may make, at their real place."""
+    waits_for_exit: bool = False
+    samples_on_host: bool = False
+
+    async def endpoint(
+        self,
+        stack: contextlib.AsyncExitStack,
+        paths: BuildPaths,
+        inputs: set[StorePath],
+        real_store_dir: Path,
+        *,
+        submitting: bool,
+        repairing: bool,
+        user: build_users.BuildUser | None,
+    ) -> Endpoint:
+        raise ValueError("choose_site keeps a recursive build out of the darwin build VM")
+
+    def configure(self, spec: ChildSpec, sample_seconds: float) -> None:
+        """The helper measures with `wait4`, as on a darwin host."""
+
+    async def launch(self, paths: BuildPaths, spec_file: Path, cgroup: Path | None, *, recursive: bool) -> Launch:
+        visible = frozenset(str(self.real_store_dir / path.name) for path in self.visible)
+        job = self.vm.write_job(paths.top, spec_file, self.real_store_dir, visible, self.outputs)
+        return Launch([sys.executable, "-I", "-m", "pynixd_store.builder.darwin_vm", str(job)])
+
+    def setup_error(self, paths: BuildPaths, launch: Launch) -> str:
+        return vm_status(paths.top)
+
+    def ended(
+        self, paths: BuildPaths, drv_path: StorePath, returncode: int | None
+    ) -> BuildFailure | BuilderFailed | None:
+        end = vm_ending(paths.top)
+        if end is not None and end.returncode is not None:
+            return builder_ended(end.returncode)
+        reason = end.init_error if end is not None else f"its launcher exited with {returncode} and said nothing"
+        return BuildFailure(
+            BuildResultStatus.MISC_FAILURE, f"the darwin build VM of '{magenta(drv_path)}' stopped: {reason}"
+        )
+
+    async def usage(
+        self, paths: BuildPaths, cgroup: Path | None, samples: tuple[UsageSample, ...]
+    ) -> BuildUsage | None:
+        usage = read_usage(paths.top / USAGE_NAME)
+        host = read_usage(paths.top / VMM_USAGE_NAME)
+        if usage is not None and host is not None:
+            return with_host(usage, host)
+        return usage
+
+
 def choose_site(
     drv: BasicDerivation,
     settings: BuildSettings,
-    vm: BuildVm | None,
+    vm: BuildVm | DarwinBuildVm | None,
     *,
     chroot: bool,
     sandboxed: bool,
     user: build_users.BuildUser | None,
     real_store_dir: Path,
     visible: frozenset[StorePath],
+    darwin_sandbox: bool = False,
+    outputs: list[str] | None = None,
 ) -> tuple[BuildSite, str | None]:
-    """The site of a build, and why it is not the microVM when the store has one."""
+    """The site of a build, and why it is not the store's build VM when the store has one.
+
+    *darwin_sandbox*: a darwin build that uses the sandbox, whose outputs are *outputs*.
+    """
     host = HostSite(chroot=chroot)
     if vm is None:
         return host, None
+    if isinstance(vm, DarwinBuildVm):
+        return _choose_darwin(drv, settings, vm, host, darwin_sandbox, real_store_dir, visible, outputs or [])
     if not chroot:
         return host, "the build has no sandbox"
     if not sandboxed and vm.passt is None:
@@ -421,6 +491,27 @@ def choose_site(
     # The guest has its own `/dev` and `/proc`.
     sources = tuple(p.source for p in settings.sandbox_paths if not p.source.startswith(("/dev/", "/proc/")))
     return VmSite(vm, real_store_dir, visible, sources, network=not sandboxed, user=user), None
+
+
+def _choose_darwin(  # noqa: PLR0913 -- choose_site's arguments that a darwin build reads
+    drv: BasicDerivation,
+    settings: BuildSettings,
+    vm: DarwinBuildVm,
+    host: HostSite,
+    sandbox: bool,
+    real_store_dir: Path,
+    visible: frozenset[StorePath],
+    outputs: list[str],
+) -> tuple[BuildSite, str | None]:
+    if not sandbox:
+        return host, "the build has no sandbox"
+    if drv.platform not in {settings.system, "builtin"}:
+        return host, f"the build is for {drv.platform}, not {settings.system}"
+    # The builder's socket is in the build directory, which the guest sees through a share: a socket there
+    # reaches nothing on the host.
+    if {"recursive-nix", "builder-rpc-v0"} & set(drv.required_system_features):
+        return host, "a recursive build reaches the store's socket, which the darwin build VM does not carry"
+    return DarwinVmSite(vm, real_store_dir, visible, outputs), None
 
 
 async def _attach_control(listener: socket.socket, restriction: RestrictionContext) -> None:

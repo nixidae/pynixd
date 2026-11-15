@@ -63,12 +63,19 @@ def _drv(name: str, body: str, extra: str = "") -> str:
 
 @contextlib.asynccontextmanager
 async def _serve(
-    tmp_path: Path, daemon: bool, sandbox: str, *, recursive: bool = False
+    tmp_path: Path,
+    daemon: bool,
+    sandbox: str,
+    *,
+    recursive: bool = False,
+    impure_host_deps: tuple[str, ...] = (),
+    **settings: Any,
 ) -> AsyncIterator[tuple[list[str], dict[str, str], Path]]:
     """A fresh `NIX_STORE_DIR` store: Nix's builder with *daemon*, pynixd's with no daemon at all.
 
     One directory for both, so every store path is the same; each store replaces the other's. With *recursive*,
     the store takes `recursive-nix`, and a derivation may name the host store as an impure host dependency.
+    *impure_host_deps* are more `allowed-impure-host-deps`, and *settings* more of the store's settings.
     """
     # The kernel matches the profile against real paths, and `/tmp` is `/private/tmp`.
     base = tmp_path.resolve() / sandbox
@@ -77,8 +84,9 @@ async def _serve(
     path = tmp_path / f"{'daemon' if daemon else 'pynixd'}-{sandbox}.sock"
     nix_config = for_test_store(substituters=(), experimental_features=("recursive-nix",) if recursive else ())
     nix_config.sandbox = sandbox
-    if recursive:
-        nix_config.allowed_impure_host_deps = ["/nix/store"]
+    allowed = [*(["/nix/store"] if recursive else []), *impure_host_deps]
+    if allowed:
+        nix_config.allowed_impure_host_deps = allowed
     spec = make_test_spec(
         store_id="local",
         store_path=base,
@@ -94,6 +102,7 @@ async def _serve(
         log_dir=logs,
         # `<state>/daemon-socket/pynixd-nix` under a test's directory passes darwin's 104 bytes.
         socket_path=tmp_path / f"{sandbox}.nix",
+        **settings,
     )
     env = {"NIX_STORE_DIR": str(store), "NIX_STATE_DIR": str(base / "client"), "NIX_LOG_DIR": str(logs)}
     async with Server(stores={StoreId("local"): LocalDBStore(spec)}, unix_path=path, ssh_port=None, http_port=None):
@@ -116,9 +125,18 @@ def _rows(state: Path) -> tuple[list[tuple[Any, ...]], list[tuple[str, str]]]:
 
 
 async def _build(
-    tmp_path: Path, daemon: bool, sandbox: str, expr: str, *, expected: int = 0, recursive: bool = False
+    tmp_path: Path,
+    daemon: bool,
+    sandbox: str,
+    expr: str,
+    *,
+    expected: int = 0,
+    recursive: bool = False,
+    impure_host_deps: tuple[str, ...] = (),
+    **spec: Any,
 ) -> dict[str, Any]:
-    async with _serve(tmp_path, daemon, sandbox, recursive=recursive) as (nix, env, state):
+    serving = _serve(tmp_path, daemon, sandbox, recursive=recursive, impure_host_deps=impure_host_deps, **spec)
+    async with serving as (nix, env, state):
         rc, out, err, _both = await run_subproc(
             [*nix[:1], "build", *nix[1:], "--no-link", "--print-out-paths", "--print-build-logs", "--expr", expr],
             expected_retcode=expected,

@@ -56,6 +56,20 @@ let
     PYNIXD_KRUN_MKFS = "${lib.getBin pkgs.xfsprogs}/bin/mkfs.xfs";
     PYNIXD_KRUN_PASST = lib.getExe' passt "passt";
   };
+  /*
+    What the darwin build VM (`darwin_build_vm`) runs in the guest: this
+    venv's interpreter, which the guest reads from the host's store through
+    an allowlist of the venv's closure. QEMU and darwin-virtiofsd come from
+    the snapshot, which names those it was saved with.
+  */
+  darwinVmVariables = lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
+    PYNIXD_DARWIN_VM_PYTHON = "${venv}/lib/venv/bin/python";
+    PYNIXD_DARWIN_VM_CLOSURE = "${pkgs.closureInfo { rootPaths = [ venv ]; }}/store-paths";
+  };
+  # The same, for a shell to source: `tests/functional/test_build_darwin_vm.py` runs in the dev shell.
+  darwinVmEnv = pkgs.writeText "pynixd-darwin-vm.env" (
+    lib.concatStrings (lib.mapAttrsToList (name: value: "export ${name}=${value}\n") darwinVmVariables)
+  );
 
   package =
     let
@@ -65,7 +79,7 @@ let
           "--set-default"
           name
           value
-        ]) ({ PYNIXD_AGENTS = builtins.toJSON agents; } // krunVariables)
+        ]) ({ PYNIXD_AGENTS = builtins.toJSON agents; } // krunVariables // darwinVmVariables)
       );
     in
     pkgs.runCommand "pynixd-${library.version}"
@@ -823,6 +837,8 @@ in
       tests
       laneShells
       defaultNix
+      darwinVmVariables
+      darwinVmEnv
       ;
     installer = installerTarball;
   };
