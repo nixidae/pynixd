@@ -36,17 +36,16 @@ from pynixd.goals.resolution import (
     resolve_dynamic_derivation,
 )
 from pynixd.goals.results import GoalResult, goal_success
-from pynixd.goals.substitute import SubstituteAttempt
 from pynixd.serde import BuildMode, IsValidPathResponse, QueryRealisationRequest, QueryRealisationResponse
 from pynixd.trust import TrustPolicy
 from pynixd_store.drv_parser import ChildMapNode, Derivation
 from pynixd_store.store_layout import StoreLayout
 from pynixd_store.store_path import DrvOutput, StorePath
+from tests.goal_fakes import FakeChildGoal as SharedChildGoal, FakeGoalEngine
 from tests.goal_group import result_of
 
 if TYPE_CHECKING:
     from pynixd.goals.engine import GoalEngine
-    from pynixd.serde import BuildDerivationRequest
 
 ROOT_DRV = "/nix/store/00000000000000000000000000000001-rootCA.drv"
 DEP_DRV = "/nix/store/00000000000000000000000000000002-dependent.drv"
@@ -141,50 +140,13 @@ class FakeLocalStore:
         return IsValidPathResponse(valid=str(request.path) == LEGACY_OUT)
 
 
-class FakeBuildGoal:
-    may_reach_a_root_goal = False
-    """A build goal reaches no root goal, so a caller keeps its place. Issue nixidae/nixidae#246."""
-
-    def __init__(self, request: BuildDerivationRequest) -> None:
-        self.request = request
-
-    async def subscribe(self, client: Any) -> None:
-        del client
-
-    async def start(self) -> None:
-        """`Goal.start` begins the build and does not wait. Issue nixidae/nixidae#246."""
-
-    async def wait_until_it_reached_the_queue(self) -> None:
-        """This fake needs no queue, so the build is on it at once."""
-
-    async def result(self) -> GoalResult:
-        return goal_success()
-
-
-class FakeChildGoal:
+class FakeChildGoal(SharedChildGoal):
     """The input derivation, already built, and the path it produced."""
-
-    may_reach_a_root_goal = True
-    """The goal of an input can reach a root goal of the request. Issue nixidae/nixidae#246."""
-
-    def note_a_parent(self) -> None:
-        """The goal of an input has a goal that waits for it."""
-
-    async def subscribe_many(self, clients: list[Any]) -> None:
-        del clients
 
     async def result(self) -> GoalResult:
         result = goal_success()
         result.resolved_outputs = {"out": StorePath(ROOT_OUT)}
         return result.with_dynamic_outputs(StorePath(ROOT_DRV))
-
-
-class FakeSubstituteGoal:
-    may_reach_a_root_goal = False
-    """A substitute goal reaches no root goal. Issue nixidae/nixidae#246."""
-
-    async def result(self) -> SubstituteAttempt:
-        return SubstituteAttempt(found=False, result=goal_success())
 
 
 class FakeContext:
@@ -194,35 +156,12 @@ class FakeContext:
         self.trust = TrustPolicy(experimental_features=("ca-derivations",))
 
 
-class FakeEngine:
-    substitution_queue = None
-    """No backend: the goal asks the daemon only for a client that names a substituter."""
+class FakeEngine(FakeGoalEngine):
+    child_goal = FakeChildGoal
 
     def __init__(self) -> None:
+        super().__init__()
         self.ctx = FakeContext()
-        self.build_goals: list[FakeBuildGoal] = []
-
-    async def get_build_derivation_goal(self, request: BuildDerivationRequest) -> FakeBuildGoal:
-        goal = FakeBuildGoal(request)
-        self.build_goals.append(goal)
-        return goal
-
-    async def get_ensure_derived_path_goal(
-        self, dp: Any, build_mode: int, substituter_ids: Any, *, keys: object = ()
-    ) -> FakeChildGoal:
-        del dp, build_mode, substituter_ids
-        return FakeChildGoal()
-
-    async def get_substitute_path_goal(
-        self,
-        path: StorePath,
-        substituter_ids: tuple[str, ...],
-        *,
-        ca: object = None,
-        keys: object = (),
-    ) -> Any:
-        del path, substituter_ids, ca
-        return FakeSubstituteGoal()
 
 
 async def _sent(drv_path: str = DEP_DRV) -> Any:

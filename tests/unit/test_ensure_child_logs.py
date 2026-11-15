@@ -28,7 +28,6 @@ from pynixd.goals.ensure import (
     EnsureDerivedPathGoal,
 )
 from pynixd.goals.results import GoalResult, goal_success
-from pynixd.goals.substitute import SubstituteAttempt
 from pynixd.serde import (
     BuildMode,
     BuildResult,
@@ -40,11 +39,11 @@ from pynixd.serde import (
 from pynixd_store.drv_parser import Derivation
 from pynixd_store.store_layout import StoreLayout
 from pynixd_store.store_path import DrvOutput, StorePath
+from tests.goal_fakes import FakeChildGoal as SharedChildGoal, FakeGoalEngine
 from tests.goal_group import result_of
 
 if TYPE_CHECKING:
     from pynixd.goals.engine import GoalEngine
-    from pynixd.serde import BuildDerivationRequest
 
 TOP_DRV = "/nix/store/00000000000000000000000000000001-top.drv"
 INPUT_DRV = "/nix/store/00000000000000000000000000000002-input.drv"
@@ -119,27 +118,7 @@ class FakeLocalStore:
         return IsValidPathResponse(valid=False)
 
 
-class FakeBuildGoal:
-    may_reach_a_root_goal = False
-    """A build goal reaches no root goal, so a caller keeps its place. Issue nixidae/nixidae#246."""
-
-    def __init__(self, request: BuildDerivationRequest) -> None:
-        self.request = request
-
-    async def subscribe(self, client: Any) -> None:
-        del client
-
-    async def start(self) -> None:
-        """`Goal.start` begins the build and does not wait. Issue nixidae/nixidae#246."""
-
-    async def wait_until_it_reached_the_queue(self) -> None:
-        """This fake needs no queue, so the build is on it at once."""
-
-    async def result(self) -> GoalResult:
-        return goal_success()
-
-
-class FakeChildGoal:
+class FakeChildGoal(SharedChildGoal):
     """The goal of the input derivation, and who watches it."""
 
     may_reach_a_root_goal = True
@@ -161,20 +140,6 @@ class FakeChildGoal:
         return result.with_dynamic_outputs(StorePath(INPUT_DRV))
 
 
-class FakeSubstituteGoal:
-    may_reach_a_root_goal = False
-    """A substitute goal reaches no root goal. Issue nixidae/nixidae#246."""
-
-    async def subscribe(self, client: object) -> None:
-        del client
-
-    async def unsubscribe(self, client: object) -> None:
-        del client
-
-    async def result(self) -> SubstituteAttempt:
-        return SubstituteAttempt(found=False, result=goal_success())
-
-
 class FakeContext:
     def __init__(self) -> None:
         self.local_store = FakeLocalStore()
@@ -185,35 +150,12 @@ class FakeContext:
         return None
 
 
-class FakeEngine:
-    substitution_queue = None
-    """No backend: the goal asks the daemon only for a client that names a substituter."""
+class FakeEngine(FakeGoalEngine):
+    child_goal = FakeChildGoal
 
     def __init__(self) -> None:
+        super().__init__()
         self.ctx = FakeContext()
-        self.child_goals: list[FakeChildGoal] = []
-
-    async def get_build_derivation_goal(self, request: BuildDerivationRequest) -> FakeBuildGoal:
-        return FakeBuildGoal(request)
-
-    async def get_ensure_derived_path_goal(
-        self, dp: Any, build_mode: int, substituter_ids: Any, *, keys: object = ()
-    ) -> FakeChildGoal:
-        del dp, build_mode, substituter_ids
-        goal = FakeChildGoal()
-        self.child_goals.append(goal)
-        return goal
-
-    async def get_substitute_path_goal(
-        self,
-        path: StorePath,
-        substituter_ids: tuple[str, ...],
-        *,
-        ca: object = None,
-        keys: object = (),
-    ) -> Any:
-        del path, substituter_ids, ca
-        return FakeSubstituteGoal()
 
 
 @pytest.mark.anyio
@@ -230,8 +172,9 @@ async def test_the_client_watches_the_goal_of_each_input() -> None:
 
     await result_of(goal)
 
-    assert len(engine.child_goals) == 1
-    assert engine.child_goals[0].subscribers == [client]
+    (child,) = engine.child_goals
+    assert isinstance(child, FakeChildGoal)
+    assert child.subscribers == [client]
 
 
 @pytest.mark.anyio

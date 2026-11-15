@@ -30,12 +30,12 @@ import pytest
 from pynixd.derived_path import DerivedPath
 from pynixd.goals.ensure import EnsureDerivedPathGoal
 from pynixd.goals.results import GoalResult, goal_success
-from pynixd.goals.substitute import SubstituteAttempt
 from pynixd.serde import BuildMode, DrvOutput as SerdeDrvOutput, IsValidPathResponse, Realisation
 from pynixd_store.drv_parser import Derivation
 from pynixd_store.store_layout import StoreLayout
 from pynixd_store.store_path import DrvOutput, StorePath
 from pynixd_store.utils import nix32_encode
+from tests.goal_fakes import FakeSubstituteGoal
 from tests.goal_group import result_of
 
 if TYPE_CHECKING:
@@ -131,16 +131,6 @@ class FakeBuildGoal:
         )
         result.resolved_outputs = {name: StorePath(path) for name, path in _OUT_PATH.items()}
         return result
-
-
-class FakeSubstituteGoal:
-    """A substituter that holds nothing."""
-
-    may_reach_a_root_goal = False
-    """A substitute goal reaches no root goal. Issue nixidae/nixidae#246."""
-
-    async def result(self) -> SubstituteAttempt:
-        return SubstituteAttempt(found=False, result=goal_success())
 
 
 class FakeContext:

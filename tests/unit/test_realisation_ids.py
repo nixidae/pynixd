@@ -51,6 +51,7 @@ from pynixd_store.drv_hash import output_hashes
 from pynixd_store.drv_parser import parse_drv
 from pynixd_store.store_layout import StoreLayout
 from pynixd_store.store_path import StorePath
+from tests.goal_fakes import FakeSubstituteGoal
 from tests.goal_group import result_of
 
 if TYPE_CHECKING:
@@ -190,14 +191,6 @@ class FakeBuildGoal:
             if realisation.out_path is not None:
                 self.store.valid.add(str(realisation.out_path))
         return GoalResult(result=self.response)
-
-
-class FakeSubstituteGoal:
-    may_reach_a_root_goal = False
-    """A substitute goal reaches no root goal. Issue nixidae/nixidae#246."""
-
-    async def result(self) -> SubstituteAttempt:
-        return SubstituteAttempt(found=False, result=goal_success())
 
 
 class FoundSubstituteGoal:
