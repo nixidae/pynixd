@@ -11,8 +11,6 @@ import contextlib
 import re
 from typing import TYPE_CHECKING, Any
 
-from prometheus_client import REGISTRY
-
 from nix_daemon_protocol.ids import StoreId
 from pynixd import Server
 from pynixd.config import ExternalUnixStoreSpec, ScheduleMode
@@ -27,6 +25,7 @@ from pynixd.serde import (
 )
 from pynixd.store import ExternalUnixStore, LocalDBStore
 from pynixd.store.base import get_current_system
+from tests._conftest.metrics import fallthroughs
 from tests._conftest.nix_config import for_test_store
 from tests.conftest import make_test_spec
 
@@ -57,16 +56,6 @@ def _request(name: str, system: str, features: str) -> BuildDerivationRequest:
             env=env,
         ),
         build_mode=BuildMode.NORMAL,
-    )
-
-
-def _fallthrough() -> float:
-    return sum(
-        sample.value
-        for metric in REGISTRY.collect()
-        if metric.name == "pynixd_op_fallthrough"
-        for sample in metric.samples
-        if sample.name == "pynixd_op_fallthrough_total" and sample.labels.get("op") == "BuildDerivation"
     )
 
 
@@ -123,9 +112,9 @@ async def _answers(
 
 
 async def test_a_build_this_store_cannot_run_is_refused_as_the_daemon_refuses_it(tmp_path: Path) -> None:
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _answers(tmp_path, OpRoute.pynixd, "plain", builders=[NO_MACHINES])
-    assert _fallthrough() == before, "the daemon refused a build of the pynixd route"
+    assert fallthroughs("BuildDerivation") == before, "the daemon refused a build of the pynixd route"
     there = await _answers(tmp_path, OpRoute.daemon, "plain", builders=[NO_MACHINES])
 
     assert here == there
@@ -159,9 +148,9 @@ async def test_max_jobs_zero_refuses_every_build_as_the_daemon_refuses_it(tmp_pa
 
 async def test_a_build_the_daemons_builders_may_take_is_left_to_the_daemon(tmp_path: Path) -> None:
     """With a machine, the hook answers first: here it finds none of the right type and declines."""
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _answers(tmp_path, OpRoute.pynixd, "machine", daemon=True, builders=[A_MACHINE])
-    assert _fallthrough() == before + 3, "pynixd refused a build the daemon's builders could take"
+    assert fallthroughs("BuildDerivation") == before + 3, "pynixd refused a build the daemon's builders could take"
     there = await _answers(tmp_path, OpRoute.daemon, "machine", builders=[A_MACHINE])
 
     assert here == there
@@ -170,9 +159,9 @@ async def test_a_build_the_daemons_builders_may_take_is_left_to_the_daemon(tmp_p
 
 async def test_with_no_daemon_a_build_its_builders_may_take_is_refused_as_the_daemon_refuses_it(tmp_path: Path) -> None:
     """No daemon runs the build hook, so pynixd refuses what it leaves to one. nixidae/nixidae#1155."""
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _answers(tmp_path, OpRoute.pynixd, "machine-alone", daemon=False, builders=[A_MACHINE])
-    assert _fallthrough() == before, "pynixd left a build to a daemon it does not run"
+    assert fallthroughs("BuildDerivation") == before, "pynixd left a build to a daemon it does not run"
     there = await _answers(tmp_path, OpRoute.daemon, "machine", builders=[A_MACHINE])
 
     assert here == there

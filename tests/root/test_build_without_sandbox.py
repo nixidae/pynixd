@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-from prometheus_client import REGISTRY
 
 from nix_daemon_protocol.ids import StoreId
 from nix_daemon_protocol.store_dir import real_store_dir, set_real_store_dir, set_store_dir, store_dir
@@ -23,6 +22,7 @@ from pynixd.op_routes import OpRoute
 from pynixd.store import LocalDBStore
 from pynixd_store.builder import cgroup as build_cgroup
 from tests._conftest.helpers import rmtree_robust
+from tests._conftest.metrics import fallthroughs
 from tests._conftest.nix_config import for_test_store
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
@@ -56,16 +56,6 @@ def _keep_store_dirs() -> Iterator[None]:
 @pytest.fixture(autouse=True)
 def _clean() -> None:
     rmtree_robust(HERE)
-
-
-def _fallthrough() -> float:
-    return sum(
-        sample.value
-        for metric in REGISTRY.collect()
-        if metric.name == "pynixd_op_fallthrough"
-        for sample in metric.samples
-        if sample.name == "pynixd_op_fallthrough_total" and sample.labels.get("op") == "BuildDerivation"
-    )
 
 
 def _build_uids() -> set[int]:
@@ -133,9 +123,9 @@ async def test_an_unsandboxed_build_runs_as_the_build_user_and_leaves_nothing(
             yield None
 
         monkeypatch.setattr(build_cgroup, "build_cgroup", no_cgroup)
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     ids, output = await _build_who(tmp_path, OpRoute.pynixd)
-    assert _fallthrough() == before, "the daemon built the pynixd route's build"
+    assert fallthroughs("BuildDerivation") == before, "the daemon built the pynixd route's build"
     uid, gid, *groups = ids
 
     assert uid in _build_uids(), f"uid {uid} built, not a build user"

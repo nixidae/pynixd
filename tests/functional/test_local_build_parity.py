@@ -36,6 +36,7 @@ from pynixd_store.nar_fs import dump_path
 from tests._conftest.census import descendants
 from tests._conftest.config import NIX_FLOOR_BIN, NIX_GIT_BIN
 from tests._conftest.constants import _NO_PROBE_FEATURE_MATRIX
+from tests._conftest.metrics import fallthroughs
 from tests._conftest.nix_config import for_test_store
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
@@ -612,9 +613,9 @@ async def test_structured_attrs_reach_the_builder_as_the_daemon_writes_them(tmp_
 
     `writeShell` declares a float only when its single-precision value is whole (`parsed-derivations.cc:131`).
     """
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _structured(tmp_path, OpRoute.pynixd)
-    assert _fallthrough() == before, "pynixd's sandbox builds parity-structured"
+    assert fallthroughs("BuildDerivation") == before, "pynixd's sandbox builds parity-structured"
     there = await _structured(tmp_path, OpRoute.daemon)
 
     assert here == there
@@ -804,16 +805,6 @@ CA_TOP = (
 )
 
 
-def _fallthrough() -> float:
-    return sum(
-        sample.value
-        for metric in REGISTRY.collect()
-        if metric.name == "pynixd_op_fallthrough"
-        for sample in metric.samples
-        if sample.name == "pynixd_op_fallthrough_total" and sample.labels.get("op") == "BuildDerivation"
-    )
-
-
 # Nix 2.34 keys a realisation by the derivation's hash, and its `outputPath` is a `ValidPaths` id.
 TRACE = "SELECT drvPath, outputName, outputPath, signatures FROM BuildTraceV3 ORDER BY drvPath, outputName"
 HASH_KEYED_TRACE = (
@@ -913,9 +904,9 @@ async def test_a_check_or_repair_of_a_floating_output_compares_with_its_realisat
     Two of Nix's answers are wrong, and pynixd's differ there alone. A check that builds something else passes
     (Lillecarl/nix#403), and a repair finds the output corrupt and leaves it so (Lillecarl/nix#400).
     """
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _floating_rebuilt(tmp_path, OpRoute.pynixd)
-    assert _fallthrough() == before, "the daemon built a check or a repair of the pynixd route"
+    assert fallthroughs("BuildDerivation") == before, "the daemon built a check or a repair of the pynixd route"
     there = await _floating_rebuilt(tmp_path, OpRoute.daemon)
 
     for step in ("built", "checked"):
@@ -945,9 +936,9 @@ async def test_a_floating_output_lands_where_the_daemon_puts_it(tmp_path: Path) 
     key = tmp_path / "secret"
     _rc, secret, _err, _both = await run_subproc([NIX_BIN, "key", "generate-secret", "--key-name", "parity-1"])
     key.write_text(secret)
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _floating(tmp_path, OpRoute.pynixd, key)
-    assert _fallthrough() == before, "pynixd's sandbox builds every floating derivation"
+    assert fallthroughs("BuildDerivation") == before, "pynixd's sandbox builds every floating derivation"
     there = await _floating(tmp_path, OpRoute.daemon, key)
 
     assert here["paths"] == there["paths"]
@@ -970,12 +961,12 @@ async def test_a_floating_output_on_a_nix_2_34_store_is_keyed_by_the_derivations
     key = tmp_path / "secret"
     _rc, secret, _err, _both = await run_subproc([NIX_BIN, "key", "generate-secret", "--key-name", "parity-1"])
     key.write_text(secret)
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     # The guest's own daemon is Nix 2.35. A 2.34 daemon that asks it for a realisation fails the build: 2.35
     # cannot read the hash-keyed id (`worker-protocol.cc:491`). That is no part of what this test compares.
     alone = ("--option", "substituters", "")
     here = await _floating(tmp_path, OpRoute.pynixd, key, NIX_FLOOR_BIN, HASH_KEYED_TRACE, alone)
-    assert _fallthrough() == before, "the daemon built a floating derivation of a Nix 2.34 store"
+    assert fallthroughs("BuildDerivation") == before, "the daemon built a floating derivation of a Nix 2.34 store"
     there = await _floating(tmp_path, OpRoute.daemon, key, NIX_FLOOR_BIN, HASH_KEYED_TRACE, alone)
 
     for name in ("paths", "info", "valid", "refs", "trace", "log"):
@@ -1093,9 +1084,9 @@ async def _impure_env(tmp_path: Path, route: OpRoute) -> list[str]:
 
 async def test_impure_env_reaches_a_fixed_output_build_as_the_daemon_passes_it(tmp_path: Path) -> None:
     """`initEnv` reads `impure-env` before the environment (`derivation-builder.cc:762`)."""
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _impure_env(tmp_path, OpRoute.pynixd)
-    assert _fallthrough() == before, "pynixd's sandbox builds parity-impure-env"
+    assert fallthroughs("BuildDerivation") == before, "pynixd's sandbox builds parity-impure-env"
     there = await _impure_env(tmp_path, OpRoute.daemon)
 
     assert here == there
@@ -1284,9 +1275,9 @@ async def _flat_with_references(tmp_path: Path, route: OpRoute) -> tuple[int, li
 
 async def test_a_flat_fixed_output_with_a_reference_fails_as_the_daemon_fails_it(tmp_path: Path) -> None:
     """`makeFixedOutputPath` (`store-dir-config.cc:119`) refuses a flat address with references."""
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _flat_with_references(tmp_path, OpRoute.pynixd)
-    assert _fallthrough() == before
+    assert fallthroughs("BuildDerivation") == before
     there = await _flat_with_references(tmp_path, OpRoute.daemon)
     assert here == there
 
@@ -1340,9 +1331,9 @@ async def test_a_check_or_repair_of_an_impure_derivation_builds_it_again(tmp_pat
     A check then fails in `assertPathValidity` (`:417`), as the daemon's does. The daemon's repair fails to move
     the old output into itself (Lillecarl/nix#404); pynixd's replaces it.
     """
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _impure_rebuilt(tmp_path, OpRoute.pynixd)
-    assert _fallthrough() == before, "the daemon built a check or a repair of the pynixd route"
+    assert fallthroughs("BuildDerivation") == before, "the daemon built a check or a repair of the pynixd route"
     there = await _impure_rebuilt(tmp_path, OpRoute.daemon)
 
     assert here["built"] == there["built"]
@@ -1402,9 +1393,9 @@ async def _impure(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
 async def test_an_impure_derivation_builds_where_the_daemon_builds_it(tmp_path: Path) -> None:
     """`registerOutputs` addresses an impure output as a floating one (`derivation-builder.cc:1469`) and registers
     no realisation (`:1667`); `initEnv` passes `impureEnvVars` and no `NIX_OUTPUT_CHECKED` (`:749`, `:761`)."""
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _impure(tmp_path, OpRoute.pynixd)
-    assert _fallthrough() == before, "pynixd's sandbox builds parity-impure"
+    assert fallthroughs("BuildDerivation") == before, "pynixd's sandbox builds parity-impure"
     there = await _impure(tmp_path, OpRoute.daemon)
 
     assert here == there
@@ -1458,9 +1449,9 @@ async def test_a_derivation_in_the_export_graph_without_an_output_path_fails_as_
 ) -> None:
     """`exportReferences` (`store-api.cc:850`) throws a plain `Error`, which `Store::buildDerivation` answers
     as `MISC_FAILURE` with its text (`entry-points.cc:89`)."""
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _export_errors(tmp_path, OpRoute.pynixd)
-    assert _fallthrough() == before
+    assert fallthroughs("BuildDerivation") == before
     there = await _export_errors(tmp_path, OpRoute.daemon)
 
     assert here == there
@@ -1505,9 +1496,9 @@ async def _git_outputs(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
 async def test_a_git_hashed_output_lands_where_the_daemon_puts_it(tmp_path: Path) -> None:
     """`newInfoFromCA` hashes a Git output with `git::dumpHash`, no modulo (`derivation-builder.cc:1366`), and
     `makeFixedOutputPath` refuses its references (`store-dir-config.cc:119`)."""
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _git_outputs(tmp_path, OpRoute.pynixd)
-    assert _fallthrough() == before, "pynixd's sandbox builds each Git-hashed derivation"
+    assert fallthroughs("BuildDerivation") == before, "pynixd's sandbox builds each Git-hashed derivation"
     there = await _git_outputs(tmp_path, OpRoute.daemon)
 
     assert here == there
@@ -1731,9 +1722,9 @@ async def test_builtin_fetchurl_fetches_what_the_daemon_fetches(
     _aws_environment(tmp_path, monkeypatch)
     # One server for both runs: the URL is part of the derivation, so its port must not change.
     async with _http(tmp_path) as (base, seen):
-        before = _fallthrough()
+        before = fallthroughs("BuildDerivation")
         here = await _fetches(tmp_path, OpRoute.pynixd, base, seen)
-        assert _fallthrough() == before, "pynixd's sandbox runs every builtin:fetchurl"
+        assert fallthroughs("BuildDerivation") == before, "pynixd's sandbox runs every builtin:fetchurl"
         there = await _fetches(tmp_path, OpRoute.daemon, base, seen)
 
     assert here == there
@@ -1868,9 +1859,9 @@ async def _profiles(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
 async def test_builtin_buildenv_builds_the_profile_the_daemon_builds(tmp_path: Path) -> None:
     """`builtinBuildenv` (`builtins/buildenv.cc:173`): merged directories, priorities, a propagated package,
     the skipped names, its two warnings, and the errors of a conflict and of both collisions."""
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _profiles(tmp_path, OpRoute.pynixd)
-    assert _fallthrough() == before, "pynixd's sandbox runs every builtin:buildenv"
+    assert fallthroughs("BuildDerivation") == before, "pynixd's sandbox runs every builtin:buildenv"
     there = await _profiles(tmp_path, OpRoute.daemon)
 
     assert here == there
@@ -1959,9 +1950,9 @@ async def test_builtin_unpack_channel_unpacks_what_the_daemon_unpacks(tmp_path: 
     """`builtinUnpackChannel` (`builtins/unpack-channel.cc:6`) over `unpackTarfile` (`tarfile.cc:202`): a tar.xz
     with a closed directory, a hard link and a symbolic link, a zip, and the errors of an empty tarball, one of
     two files, one that is no archive, and a channel name with a separator."""
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _channels(tmp_path, OpRoute.pynixd)
-    assert _fallthrough() == before, "pynixd's sandbox runs every builtin:unpack-channel"
+    assert fallthroughs("BuildDerivation") == before, "pynixd's sandbox runs every builtin:unpack-channel"
     there = await _channels(tmp_path, OpRoute.daemon)
 
     assert here == there
@@ -2012,9 +2003,9 @@ async def test_a_rebuild_checks_what_the_daemon_checks(tmp_path: Path) -> None:
 
     `registerOutputs` (`derivation-builder.cc:1546`) and `DerivationGoal` (`derivation-goal.cc:143`).
     """
-    before = _sent("BuildPathsWithResults"), _sent("BuildDerivation"), _fallthrough()
+    before = _sent("BuildPathsWithResults"), _sent("BuildDerivation"), fallthroughs("BuildDerivation")
     here = await _rebuilds(tmp_path, OpRoute.pynixd)
-    assert (_sent("BuildPathsWithResults"), _sent("BuildDerivation"), _fallthrough()) == before, (
+    assert (_sent("BuildPathsWithResults"), _sent("BuildDerivation"), fallthroughs("BuildDerivation")) == before, (
         "pynixd's sandbox checks every rebuild"
     )
     there = await _rebuilds(tmp_path, OpRoute.daemon)
@@ -2065,9 +2056,9 @@ async def _keeps(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
 async def test_keep_failed_keeps_what_the_daemon_keeps(tmp_path: Path) -> None:
     """`cleanupBuild(false)` (`derivation-builder.cc:1697`): a failed build's directory stays, opened to 0755, and
     a check that differs leaves the rebuilt output at `<path>.check` (`:1553`). A build that succeeds keeps none."""
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _keeps(tmp_path, OpRoute.pynixd)
-    assert _fallthrough() == before, "the daemon built a keep-failed build of the pynixd route"
+    assert fallthroughs("BuildDerivation") == before, "the daemon built a keep-failed build of the pynixd route"
     there = await _keeps(tmp_path, OpRoute.daemon)
 
     assert here == there
@@ -2098,9 +2089,9 @@ async def _diff_hooked(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
 
 async def test_a_diff_hook_fails_as_the_daemon_fails_it_when_not_root(tmp_path: Path) -> None:
     """`handleDiffHook` (`derivation-builder.cc:121`) drops the groups of a daemon that is not root, which fails."""
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _diff_hooked(tmp_path, OpRoute.pynixd)
-    assert _fallthrough() == before, "the daemon checked the pynixd route's build"
+    assert fallthroughs("BuildDerivation") == before, "the daemon checked the pynixd route's build"
     there = await _diff_hooked(tmp_path, OpRoute.daemon)
 
     assert here == there
@@ -2177,9 +2168,9 @@ async def test_a_post_build_hook_runs_as_the_daemon_runs_it(tmp_path: Path, inhe
     The hook gets the derivation, its outputs and the settings in its environment, and each line it writes is
     a result of its own activity. A `NIX_CONFIG` in the daemon's environment replaces the settings (`:1125`).
     """
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _post_build_hooked(tmp_path, OpRoute.pynixd, inherited=inherited)
-    assert _fallthrough() == before, "the daemon built a post-build-hook build of the pynixd route"
+    assert fallthroughs("BuildDerivation") == before, "the daemon built a post-build-hook build of the pynixd route"
     there = await _post_build_hooked(tmp_path, OpRoute.daemon, inherited=inherited)
 
     for name in POST_BUILD_CASES:
@@ -2246,9 +2237,9 @@ async def test_a_repair_rebuilds_what_the_daemon_finds_corrupt(tmp_path: Path) -
     Both routes check the same paths and print the same lines. The daemon then builds nothing and leaves the
     corrupt path (Lillecarl/nix#393); pynixd builds it again, so its client also reads `repairing outputs of`.
     """
-    before = _sent("BuildPathsWithResults"), _sent("BuildDerivation"), _fallthrough()
+    before = _sent("BuildPathsWithResults"), _sent("BuildDerivation"), fallthroughs("BuildDerivation")
     here = await _repairs(tmp_path, OpRoute.pynixd)
-    assert (_sent("BuildPathsWithResults"), _sent("BuildDerivation"), _fallthrough()) == before, (
+    assert (_sent("BuildPathsWithResults"), _sent("BuildDerivation"), fallthroughs("BuildDerivation")) == before, (
         "pynixd's goals and sandbox repair every case"
     )
     there = await _repairs(tmp_path, OpRoute.daemon)
@@ -2437,9 +2428,9 @@ async def test_a_recursive_nix_build_builds_what_the_daemon_builds(tmp_path: Pat
 
     The builder reaches its inputs and what it adds or builds, and nothing else (`recursive.sh`).
     """
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _recursive(tmp_path, OpRoute.pynixd)
-    assert _fallthrough() == before, "pynixd's sandbox builds a recursive-nix derivation"
+    assert fallthroughs("BuildDerivation") == before, "pynixd's sandbox builds a recursive-nix derivation"
     there = await _recursive(tmp_path, OpRoute.daemon)
 
     for key in ("top", "contents", "info", "valid", "refs", "log"):
@@ -2534,9 +2525,9 @@ async def test_a_builder_rpc_build_builds_what_the_daemon_builds(tmp_path: Path)
     (`derivation-builder-impl.cc:715`): the builder submits its outputs over the allowlist of `daemon.cc:329`."""
     if NIX_GIT_BIN is None:
         pytest.skip("NIX_GIT_BIN names no Nix of the master branch")
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _rpc(tmp_path, OpRoute.pynixd, NIX_GIT_BIN)
-    assert _fallthrough() == before, "pynixd's sandbox builds a builder-rpc-v0 derivation"
+    assert fallthroughs("BuildDerivation") == before, "pynixd's sandbox builds a builder-rpc-v0 derivation"
     there = await _rpc(tmp_path, OpRoute.daemon, NIX_GIT_BIN)
 
     for key in ("paths", "contents", "info", "valid", "refs", "trace", "log"):

@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-from prometheus_client import REGISTRY
 
 from nix_daemon_protocol.ids import StoreId
 from pynixd import Server
@@ -22,6 +21,7 @@ from pynixd.op_routes import OpRoute
 from pynixd.store import LocalDBStore
 from tests._conftest.constants import _NO_PROBE_FEATURE_MATRIX
 from tests._conftest.helpers import rmtree_robust
+from tests._conftest.metrics import fallthroughs
 from tests._conftest.nix_config import for_test_store
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
@@ -47,16 +47,6 @@ WHO = (
 @pytest.fixture(autouse=True)
 def _clean() -> None:
     rmtree_robust(HERE)
-
-
-def _fallthrough() -> float:
-    return sum(
-        sample.value
-        for metric in REGISTRY.collect()
-        if metric.name == "pynixd_op_fallthrough"
-        for sample in metric.samples
-        if sample.name == "pynixd_op_fallthrough_total" and sample.labels.get("op") == "BuildDerivation"
-    )
 
 
 @contextlib.asynccontextmanager
@@ -109,10 +99,10 @@ async def _build_who(tmp_path: Path, route: OpRoute) -> tuple[str, os.stat_resul
 
 async def test_a_uid_range_build_is_root_over_a_whole_slot(tmp_path: Path) -> None:
     """Sandbox root maps to the slot's first uid, 65536 ids long, and gets `/sys` and a writable `/etc`."""
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     maps, output, written = await _build_who(tmp_path, OpRoute.pynixd)
 
-    assert _fallthrough() == before, "the daemon built the pynixd route's build"
+    assert fallthroughs("BuildDerivation") == before, "the daemon built the pynixd route's build"
     assert maps == f"0 {START_ID} {IDS_PER_BUILD} / 0 {START_ID} {IDS_PER_BUILD} / sys / etc"
     assert (written.st_uid, written.st_gid) == (START_ID, START_ID), "the slot's first uid did not write"
     assert output.st_uid == 0, "a registered output belongs to root"

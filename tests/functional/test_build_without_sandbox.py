@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any
 
 import anyio
 import pytest
-from prometheus_client import REGISTRY
 
 from nix_daemon_protocol.ids import StoreId
 from nix_daemon_protocol.store_dir import real_store_dir, set_real_store_dir, set_store_dir, store_dir
@@ -27,6 +26,7 @@ from pynixd.store import LocalDBStore
 from tests._conftest.config import NIX_GIT_BIN
 from tests._conftest.constants import _NO_PROBE_FEATURE_MATRIX
 from tests._conftest.helpers import rmtree_robust
+from tests._conftest.metrics import fallthroughs
 from tests._conftest.nix_config import for_test_store
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
@@ -57,16 +57,6 @@ def _drv(name: str, body: str, extra: str = "") -> str:
     return (
         f'derivation {{ name = "{name}"; system = builtins.currentSystem; builder = "/bin/sh"; {extra} '
         f"args = [ (builtins.toFile \"{name}.sh\" ''\n{body}\n'') ]; }}"
-    )
-
-
-def _fallthrough() -> float:
-    return sum(
-        sample.value
-        for metric in REGISTRY.collect()
-        if metric.name == "pynixd_op_fallthrough"
-        for sample in metric.samples
-        if sample.name == "pynixd_op_fallthrough_total" and sample.labels.get("op") == "BuildDerivation"
     )
 
 
@@ -176,9 +166,11 @@ async def _probe(tmp_path: Path, route: OpRoute, sandbox: str, extra: str) -> di
 async def test_an_unsandboxed_build_runs_on_the_host_as_the_daemons_does(tmp_path: Path) -> None:
     """`__noChroot` under `sandbox = relaxed`, and any derivation under `sandbox = false`, see the host."""
     for sandbox, extra in (("relaxed", "__noChroot = true;"), ("false", "")):
-        before = _fallthrough()
+        before = fallthroughs("BuildDerivation")
         here = await _probe(tmp_path, OpRoute.pynixd, sandbox, extra)
-        assert _fallthrough() == before, f"the daemon built the pynixd route's build with sandbox = {sandbox}"
+        assert fallthroughs("BuildDerivation") == before, (
+            f"the daemon built the pynixd route's build with sandbox = {sandbox}"
+        )
         there = await _probe(tmp_path, OpRoute.daemon, sandbox, extra)
 
         assert here["contents"] == there["contents"] == f"{socket_module.gethostname()} host here\n"
@@ -282,9 +274,9 @@ async def test_a_rebuild_without_the_sandbox_rewrites_hashes_as_the_daemon_does(
     That holds for a check, a repair, and a build with one output valid already. Each step compares the store
     directory, every output's files and the database with the daemon's.
     """
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _rebuilt(tmp_path, OpRoute.pynixd)
-    assert _fallthrough() == before, "the daemon built a rebuild of the pynixd route"
+    assert fallthroughs("BuildDerivation") == before, "the daemon built a rebuild of the pynixd route"
     there = await _rebuilt(tmp_path, OpRoute.daemon)
 
     dev = next(name for name in here["built"]["trees"] if name.endswith("-dev"))
@@ -341,9 +333,9 @@ async def _fixed(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
 
 async def test_an_unsandboxed_fixed_output_lands_where_the_daemon_puts_it(tmp_path: Path) -> None:
     """`relaxed` builds a fixed output outside the chroot (`derivation-builder.cc:1777`), at its final path."""
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _fixed(tmp_path, OpRoute.pynixd)
-    assert _fallthrough() == before
+    assert fallthroughs("BuildDerivation") == before
     there = await _fixed(tmp_path, OpRoute.daemon)
 
     assert here == there
@@ -438,9 +430,9 @@ def _without_times(info: Any) -> Any:
 async def test_a_recursive_nix_build_without_the_sandbox_builds_what_the_daemon_builds(tmp_path: Path) -> None:
     """`startDaemon` (`derivation-builder.cc:802`) puts the socket in the real build directory, and
     `addDependencyImpl` (`:901`) binds nothing: the builder sees the whole store, the restricted store does not."""
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _recursive(tmp_path, OpRoute.pynixd)
-    assert _fallthrough() == before, "the daemon built the pynixd route's recursive-nix build"
+    assert fallthroughs("BuildDerivation") == before, "the daemon built the pynixd route's recursive-nix build"
     there = await _recursive(tmp_path, OpRoute.daemon)
 
     for key in ("top", "contents", "info", "valid", "refs", "log"):
@@ -526,9 +518,9 @@ async def test_a_builder_rpc_build_without_the_sandbox_builds_what_the_daemon_bu
     """`RecursiveSubmitted` (`unix-derivation-builder.cc:672`) outside the chroot: the builder submits each output."""
     if NIX_GIT_BIN is None:
         pytest.skip("NIX_GIT_BIN names no Nix of the master branch")
-    before = _fallthrough()
+    before = fallthroughs("BuildDerivation")
     here = await _rpc(tmp_path, OpRoute.pynixd, NIX_GIT_BIN)
-    assert _fallthrough() == before, "the daemon built the pynixd route's builder-rpc-v0 build"
+    assert fallthroughs("BuildDerivation") == before, "the daemon built the pynixd route's builder-rpc-v0 build"
     there = await _rpc(tmp_path, OpRoute.daemon, NIX_GIT_BIN)
 
     for key in ("paths", "contents", "valid", "refs", "trace", "log"):
@@ -602,9 +594,11 @@ async def test_a_check_of_a_builder_rpc_build_compares_what_it_submits(tmp_path:
     if NIX_GIT_BIN is None:
         pytest.skip("NIX_GIT_BIN names no Nix of the master branch")
     for noise in ("same", "$u"):
-        before = _fallthrough()
+        before = fallthroughs("BuildDerivation")
         here = await _rpc_checked(tmp_path, OpRoute.pynixd, NIX_GIT_BIN, noise)
-        assert _fallthrough() == before, f"the daemon checked the pynixd route's builder-rpc-v0 build ({noise})"
+        assert fallthroughs("BuildDerivation") == before, (
+            f"the daemon checked the pynixd route's builder-rpc-v0 build ({noise})"
+        )
         there = await _rpc_checked(tmp_path, OpRoute.daemon, NIX_GIT_BIN, noise)
         assert here["checked"] == here["trace"] and there["checked"] == there["trace"], (here, there)
         if noise == "same":
@@ -651,9 +645,11 @@ async def test_a_repair_of_a_builder_rpc_build_replaces_what_the_builder_submits
     if NIX_GIT_BIN is None:
         pytest.skip("NIX_GIT_BIN names no Nix of the master branch")
     for adds in (OpRoute.pynixd, OpRoute.daemon):
-        before = _fallthrough()
+        before = fallthroughs("BuildDerivation")
         here = await _rpc_repaired(tmp_path, OpRoute.pynixd, NIX_GIT_BIN, adds)
-        assert _fallthrough() == before, f"the daemon repaired the pynixd route's builder-rpc-v0 build ({adds.name})"
+        assert fallthroughs("BuildDerivation") == before, (
+            f"the daemon repaired the pynixd route's builder-rpc-v0 build ({adds.name})"
+        )
         assert here["rc"] == 0, here
         assert here["contents"] == "same\n", here
     there = await _rpc_repaired(tmp_path, OpRoute.daemon, NIX_GIT_BIN, OpRoute.pynixd)
@@ -722,9 +718,9 @@ async def test_a_check_or_repair_of_a_nested_path_builds_the_derivation_it_ends_
     """`derivation-trampoline-goal.cc:103`: the derivation that makes the inner one builds in normal mode, and only
     the inner one is checked or repaired. The daemon repairs nothing with `ca-derivations` (Lillecarl/nix#400)."""
     for noise in ("same", "$u"):
-        before = _fallthrough()
+        before = fallthroughs("BuildDerivation")
         here = await _nested(tmp_path, OpRoute.pynixd, noise)
-        assert _fallthrough() == before, f"the daemon built the pynixd route's nested path ({noise})"
+        assert fallthroughs("BuildDerivation") == before, f"the daemon built the pynixd route's nested path ({noise})"
         there = await _nested(tmp_path, OpRoute.daemon, noise)
         checked, rechecked = here["--rebuild"], there["--rebuild"]
         assert checked["rc"] == rechecked["rc"] == (0 if noise == "same" else 1), (here, there)
