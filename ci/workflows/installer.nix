@@ -128,6 +128,9 @@ ghalib.evalWorkflow {
           name = "Replace the release";
           timeout-minutes = 10;
           shell = "bash";
+          # This job has no checkout, so the workflow-wide `pynixd` directory
+          # does not exist, and the runner fails the step before bash starts.
+          working-directory = "/";
           env = {
             GH_TOKEN = "\${{ github.token }}";
             TAG = "pynixd-installer";
