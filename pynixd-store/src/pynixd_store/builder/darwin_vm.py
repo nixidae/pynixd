@@ -230,7 +230,8 @@ async def _run(job: dict[str, Any], run: Path) -> None:
     def at(name: str) -> str:
         return name if Path(name).is_absolute() else str(snapshot / name)
 
-    await anyio.run_process(["cp", "-c", at(manifest["aux"]), str(run / "aux.img")])
+    # macOS's cp: `-c` clones the file. GNU cp, first on a dev shell's PATH, has no `-c`.
+    await anyio.run_process(["/bin/cp", "-c", at(manifest["aux"]), str(run / "aux.img")])
     await anyio.run_process(
         [manifest["qemuImg"], "create", "-q", "-f", "qcow2", "-F", "qcow2", "-b", at(manifest["overlay"]),
          str(run / "overlay.qcow2")]
