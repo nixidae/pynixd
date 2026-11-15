@@ -97,8 +97,9 @@ class RecordingStore(DaemonStore):
         suppress_last: bool = False,
         raise_on_error: bool = False,
         skip_probe: bool = False,
+        keep_logs: bool = False,
     ) -> Any:
-        del client, suppress_last, raise_on_error, skip_probe
+        del client, suppress_last, raise_on_error, skip_probe, keep_logs
         self.sent.append(type(request).__name__)
         if isinstance(request, CollectGarbageRequest):
             return CollectGarbageResponse(paths_deleted=set(self.deleted), bytes_freed=0, obsolete=0)

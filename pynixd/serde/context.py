@@ -51,11 +51,11 @@ class ReadContext(ProtocolReadContext):
         cls,
         conn: Connection,
         client: ClientConn | None = None,
-        buffer_logs: bool | None = None,
+        buffer_logs: bool = False,
         raise_on_error: bool = True,
     ) -> ReadContext:
-        if buffer_logs is None:
-            buffer_logs = client is None
+        # Kept with no one asking, a substituting call's progress grew pynixd
+        # by 5 GiB on sg1 (nixidae/nixidae#1349, #1383). An error is kept always.
         return cls(
             reader=conn.r,
             version=conn.version,

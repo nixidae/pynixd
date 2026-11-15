@@ -346,7 +346,7 @@ class Connection:
         # The daemon answers `SetOptions` with the log stream alone, so this
         # reads that stream and discards it. A failure here is a failure of
         # the connection, and the caller sees it on its own request.
-        await type(options).response_type.from_reader(ReadContext.from_conn(self, buffer_logs=False))
+        await type(options).response_type.from_reader(ReadContext.from_conn(self))
         self.applied_options = options
 
     async def send_request(self, request: WireRequest, traceparent: str = "") -> None:
@@ -368,7 +368,7 @@ class Connection:
         suppress_last: bool = False,
         raise_on_error: bool = False,
         options: SetOptionsRequest | None = None,
-        keep_logs: bool | None = None,
+        keep_logs: bool = False,
     ) -> Any:
         """Send an operation on the established connection.
 
@@ -381,9 +381,10 @@ class Connection:
             options: The option set to apply first. Defaults to the set of
                 *client*. A build reads it from the queue instead, because the
                 build runs after the request of the client returned.
-            keep_logs: Keep the stream in the response as well. Defaults to
-                keeping it only when no *client* receives it: a substituting
-                operation sends one message per chunk it copies. Issue #507.
+            keep_logs: Keep the stream in the response, for a caller that
+                reads `resp.logs.messages`. An error is kept always. A
+                substituting operation sends one message per chunk it copies,
+                so a kept stream grows with the copy. Issues #507, #1383.
         """
         if not self.connected:
             raise RuntimeError(f"Connection {self.id!r} not connected")

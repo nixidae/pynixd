@@ -433,6 +433,7 @@ class DaemonStore(ScheduledStore):
         suppress_last: bool = False,
         raise_on_error: bool = False,
         skip_probe: bool = False,
+        keep_logs: bool = False,
     ) -> Any:
         """Send a wire request over a pooled connection."""
         if not skip_probe:
@@ -446,15 +447,13 @@ class DaemonStore(ScheduledStore):
         try:
             with anyio.fail_after(bound) as whole_read:
                 async with pool(options) as conn:
-                    # A download reports progress per chunk; with no client, keep errors only
-                    # (`_nested_context`, #1349).
                     call = functools.partial(
                         conn.call,
                         request,
                         client=client,
                         suppress_last=suppress_last,
                         raise_on_error=raise_on_error,
-                        keep_logs=False if _downloads(request) else None,
+                        keep_logs=keep_logs,
                     )
                     if not _downloads(request):
                         return await call()
@@ -745,7 +744,7 @@ class DaemonStore(ScheduledStore):
             build_mode=BuildMode.NORMAL,
         )
         try:
-            resp = await self.call(request, skip_probe=True)
+            resp = await self.call(request, skip_probe=True, keep_logs=True)
             accepted = resp.result.status in (
                 BuildResultStatus.BUILT,
                 BuildResultStatus.SUBSTITUTED,

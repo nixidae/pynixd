@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import pytest
 
@@ -28,14 +28,17 @@ PATH_C = "/nix/store/22222222222222222222222222222222-c"
 class _FakeStore:
     """A daemon that planned two paths, and nothing else."""
 
+    kept: ClassVar[list[bool]] = []
+
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self.request: Any = None
 
     async def start(self, **kwargs: Any) -> None:
         return None
 
-    async def execute(self, request: Any) -> PynixdCollectGarbageResponse:
+    async def call(self, request: Any, *, keep_logs: bool = False) -> PynixdCollectGarbageResponse:
         self.request = request
+        self.kept.append(keep_logs)
         return PynixdCollectGarbageResponse(
             store_paths={StorePath(PATH_C), StorePath(PATH_B)},
             bytes=30,
@@ -79,3 +82,12 @@ async def test_paths_stay_quiet_by_default(monkeypatch: pytest.MonkeyPatch, caps
     await gc_cli._gc_main(_args(monkeypatch))
 
     assert capsys.readouterr().out.splitlines() == ["dry-run: 2 paths, up to 30 bytes"]
+
+
+@pytest.mark.anyio
+async def test_the_daemon_lines_are_kept_for_printing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The CLI prints the daemon's log lines, and a call with no client keeps none unless asked (nixidae/nixidae#1383)."""
+    _FakeStore.kept.clear()
+    await gc_cli._gc_main(_args(monkeypatch))
+
+    assert _FakeStore.kept == [True]

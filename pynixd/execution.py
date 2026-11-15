@@ -133,7 +133,7 @@ class BuildConn(Protocol):
         suppress_last: bool = False,
         raise_on_error: bool = False,
         options: SetOptionsRequest | None = None,
-        keep_logs: bool | None = None,
+        keep_logs: bool = False,
     ) -> Any: ...
 
 

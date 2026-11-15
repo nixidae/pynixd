@@ -60,12 +60,13 @@ async def _gc_main(args: argparse.Namespace) -> None:
 
     async with open_pynixd(settings, args.socket, PynixdCollectGarbageRequest.name) as store:
         try:
-            resp = await store.execute(
+            resp = await store.call(
                 PynixdCollectGarbageRequest(
                     action=action,
                     has_limit=args.limit is not None,
                     limit=args.limit or 0,
-                )
+                ),
+                keep_logs=True,
             )
         except Exception:
             log.exception("gc_failed")

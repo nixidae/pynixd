@@ -143,6 +143,7 @@ class StatsTestStore(LocalStore):
         suppress_last: bool = False,
         raise_on_error: bool = False,
         skip_probe: bool = False,
+        keep_logs: bool = False,
     ) -> Any:
         return await super().call(
             request,
@@ -150,6 +151,7 @@ class StatsTestStore(LocalStore):
             suppress_last,
             raise_on_error,
             skip_probe=skip_probe,
+            keep_logs=keep_logs,
         )
 
 

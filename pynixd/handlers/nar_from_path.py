@@ -83,7 +83,7 @@ class NarFromPathHandler(Handler):
             await conn.w.drain()
 
             # 4. Read stderr logs from daemon
-            logs = await WireLogs.from_reader(ReadContext.from_conn(conn))
+            logs = await WireLogs.from_reader(ReadContext.from_conn(conn, buffer_logs=True))
 
             # 5. Write logs to client
             await ctx.proxy.client.flush()

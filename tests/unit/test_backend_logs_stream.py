@@ -259,6 +259,23 @@ async def test_a_download_with_no_client_keeps_no_progress() -> None:
         )
 
 
+async def test_a_call_with_no_client_keeps_only_what_it_asks_for() -> None:
+    """Any op, not only a substituting `QueryValidPaths`: a goal with no client downloads too.
+
+    nixidae/nixidae#1383. The kept stream is for a caller that reads it, and
+    that caller says so with `keep_logs=True`.
+    """
+    request = QueryValidPathsRequest(paths=set(), substitute=0)
+    resp = await _connection(_Daemon(_TRACED_MESSAGES, _answer())).call(request)
+    assert resp.logs.messages == [], f"{len(resp.logs.messages)} messages kept with no one to read them"
+
+    resp = await _connection(_Daemon(3, _answer())).call(request, keep_logs=True)
+    assert len(resp.logs.messages) == 3
+
+    with pytest.raises(BackendError, match="substituter refused"):
+        await _connection(_Daemon(3, _error("substituter refused"))).call(request, raise_on_error=True)
+
+
 async def test_an_error_ends_the_stream_once() -> None:
     """The error is not streamed: the caller reports it, so a streamed copy doubles it."""
     daemon = _Daemon(3, _error("substituter refused"))

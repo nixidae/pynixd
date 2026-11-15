@@ -56,6 +56,7 @@ def _store(root: Path, **routes: OpRoute) -> tuple[LocalDBStore, list[Any]]:
         suppress_last: bool = False,
         raise_on_error: bool = False,
         skip_probe: bool = False,
+        keep_logs: bool = False,
     ) -> Any:
         asked.append(request)
         if isinstance(request, IsValidPathRequest):
