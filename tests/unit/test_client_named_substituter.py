@@ -35,6 +35,7 @@ from pynixd.serde import (
     Verbosity,
 )
 from pynixd.substitution_queue import SubstitutionAvailability, SubstitutionQueue
+from tests.substitution_fakes import ServesAsBackends
 
 if TYPE_CHECKING:
     from pynixd.connection import ClientConn
@@ -94,18 +95,11 @@ class FakeUpstream:
         return None
 
 
-class _Backends:
+class _Backends(ServesAsBackends):
     """pynixd's backends, which hold nothing, beside a daemon configured with *uncovered*."""
 
     def __init__(self, *uncovered: str) -> None:
         self.uncovered = uncovered
-
-    async def substituters_for(self, client: Any) -> tuple[object, ...] | None:
-        """The daemon for a client naming no backend's substituter or an uncovered one; else this fake, as pynixd's backends."""
-        options = getattr(client, "options", None)
-        if options is not None and not options.use_substitutes:
-            return ()
-        return None if client_names_a_substituter(client) or self.uncovered else (self,)
 
     async def can_substitute(
         self, path: StorePath, stores: object = None, *, ca: object = None

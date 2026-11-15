@@ -9,7 +9,6 @@ import anyio
 import pytest
 
 from pynixd.goals.engine import GoalEngine
-from pynixd.goals.query_missing import client_names_a_substituter
 from pynixd.serde import (
     DerivedPath as SerdeDerivedPath,
     DrvOutput as SerdeDrvOutput,
@@ -25,6 +24,7 @@ from pynixd.substitution_queue import SubstitutionAvailability
 from pynixd_store.content_address import ContentAddress, Method
 from pynixd_store.drv_parser import ChildMapNode, Derivation
 from pynixd_store.store_path import DrvOutput
+from tests.substitution_fakes import ServesAsBackends
 
 if TYPE_CHECKING:
     from pynixd.context import PynixdContext
@@ -65,7 +65,7 @@ class FakeLocalStore:
         return self.derivations.get(str(drv_store_path))
 
 
-class FakeSubstitutionQueue:
+class FakeSubstitutionQueue(ServesAsBackends):
     uncovered: tuple[str, ...] = ()
     store_id = "fake-backend"
     priority = 1.0
@@ -81,13 +81,6 @@ class FakeSubstitutionQueue:
         self.queries: list[str] = []
         self.addresses: list[ContentAddress | None] = []
 
-    async def substituters_for(self, client: Any) -> tuple[object, ...] | None:
-        """The daemon for a client naming no backend's substituter or an uncovered one; else this fake, as pynixd's backends."""
-        options = getattr(client, "options", None)
-        if options is not None and not options.use_substitutes:
-            return ()
-        return None if client_names_a_substituter(client) or self.uncovered else (self,)
-
     async def can_substitute(
         self, path: StorePath, stores: object = None, *, ca: ContentAddress | None = None
     ) -> SubstitutionAvailability:
@@ -102,7 +95,7 @@ class FakeSubstitutionQueue:
         del key, drv_path, by_path
 
 
-class BlockingSubstitutionQueue:
+class BlockingSubstitutionQueue(ServesAsBackends):
     uncovered: tuple[str, ...] = ()
     store_id = "fake-backend"
     priority = 1.0
@@ -112,13 +105,6 @@ class BlockingSubstitutionQueue:
         self.releasing_path = releasing_path
         self.releasing_path_queried = anyio.Event()
         self.queries: list[str] = []
-
-    async def substituters_for(self, client: Any) -> tuple[object, ...] | None:
-        """The daemon for a client naming no backend's substituter or an uncovered one; else this fake, as pynixd's backends."""
-        options = getattr(client, "options", None)
-        if options is not None and not options.use_substitutes:
-            return ()
-        return None if client_names_a_substituter(client) or self.uncovered else (self,)
 
     async def find_realisation(self, key: Any, drv_path: Any, *, by_path: bool) -> None:
         """As one of pynixd's backends, this fake holds no realisation."""

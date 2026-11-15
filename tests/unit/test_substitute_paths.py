@@ -21,7 +21,6 @@ from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest
 from pynixd.config import LocalSocketStoreSpec
 from pynixd.exceptions import BackendError
 from pynixd.goals.engine import GoalEngine
-from pynixd.goals.query_missing import client_names_a_substituter
 from pynixd.goals.results import goal_failure, goal_success
 from pynixd.goals.substitute import SubstituteAttempt
 from pynixd.goals.substitute_paths import ensure_path, no_substituter, pynixd_substitutes, substitute_paths
@@ -30,6 +29,7 @@ from pynixd.serde import IsValidPathResponse, StorePath as WirePath
 from pynixd.store.local_db import LocalDBStore
 from pynixd_store.hintfmt import magenta
 from pynixd_store.store_path import StorePath
+from tests.substitution_fakes import ServesAsBackends
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -182,16 +182,9 @@ def _local(root: Path, **routes: OpRoute) -> LocalDBStore:
     )
 
 
-class _Queue:
+class _Queue(ServesAsBackends):
     def __init__(self, *uncovered: str) -> None:
         self.uncovered = uncovered
-
-    async def substituters_for(self, client: Any) -> tuple[object, ...] | None:
-        """The daemon for a client naming no backend's substituter or an uncovered one; else this fake, as pynixd's backends."""
-        options = getattr(client, "options", None)
-        if options is not None and not options.use_substitutes:
-            return ()
-        return None if client_names_a_substituter(client) or self.uncovered else (self,)
 
 
 class TestWhoSubstitutes:
