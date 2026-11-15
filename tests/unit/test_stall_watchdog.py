@@ -16,6 +16,7 @@ running it proves that.
 from __future__ import annotations
 
 import io
+import signal
 import sys
 import threading
 import time
@@ -228,20 +229,52 @@ async def test_it_fires_against_a_real_cpu_bound_stall() -> None:
     assert threading.current_thread() is threading.main_thread()
 
 
-async def test_a_c_call_holding_the_gil_is_named_while_it_runs(tmp_path: Path) -> None:
-    """The watchdog thread cannot run during such a call; `faulthandler` can.
-
-    101 of 107 dumps on dynhetz showed the loop idle, because the Python
-    thread dumped after the call returned. nixidae/nixidae#1139. In a child
-    process: a thread of another test that exits during the dump segfaults
-    the suite (nixidae/nixidae#1143).
-    """
+async def _stall_child(tmp_path: Path, mode: str) -> tuple[str, str]:
+    """Run one stall of `stall_gil_child.py`; its stdout and its log."""
     log = tmp_path / "stall.log"
     child = Path(__file__).with_name("stall_gil_child.py")
-    result = await anyio.run_process([sys.executable, str(child), str(log)], check=False)
+    result = await anyio.run_process([sys.executable, str(child), str(log), mode], check=False)
+    assert result.returncode == 0, f"exit {result.returncode}: {result.stderr.decode()}"
+    return result.stdout.decode(), log.read_text()
 
-    assert result.returncode == 0, result.stderr.decode()
-    assert "_hold_the_gil" in log.read_text(), "no dump named the call while it ran"
+
+async def test_a_c_call_holding_the_gil_is_named_while_it_runs(tmp_path: Path) -> None:
+    """The watchdog thread cannot run during such a call; the signal can.
+
+    101 of 107 dumps on dynhetz showed the loop idle, because the Python
+    thread dumped after the call returned. nixidae/nixidae#1139.
+    """
+    _, log = await _stall_child(tmp_path, "c-call")
+    assert "_hold_the_gil" in log, "no dump named the call while it ran"
+
+
+async def test_the_gil_dump_survives_threads_that_exit(tmp_path: Path) -> None:
+    """2000 dumps while 20 threads start and exit.
+
+    `faulthandler.dump_traceback_later` segfaulted 3 of 3 runs of this
+    shape, as it walks every thread's state with no lock. nixidae/nixidae#1349.
+    """
+    out, log = await _stall_child(tmp_path, "churn")
+    assert "survived 2000 stalls" in out
+    named = log.count("_hold_the_gil")
+    # SIGALRM goes to the process, so some miss the loop thread: 25 of 2000
+    # idle, 130 under the whole standard set at once.
+    assert named >= 1000, f"{named} of 2000 dumps named the stalled call"
+
+
+async def test_a_long_collection_writes_a_line(tmp_path: Path) -> None:
+    """The single-thread dump cannot say a collection runs; this line does."""
+    out, log = await _stall_child(tmp_path, "gc")
+    assert "garbage collection of generation 2 took" in log
+    assert "long collections 0" not in out
+
+
+async def test_the_signal_does_not_cut_a_blocking_call_short(tmp_path: Path) -> None:
+    """SIGALRM lands in a sleep; the sleep goes on to its end."""
+    out, log = await _stall_child(tmp_path, "syscall")
+    slept = float(out.split("slept ", 1)[1].split("s", 1)[0])
+    assert slept >= 0.3
+    assert "_syscall" in log, "the signal did not arrive during the sleep"
 
 
 def test_the_gil_dump_is_off_by_default() -> None:
@@ -249,6 +282,21 @@ def test_the_gil_dump_is_off_by_default() -> None:
     thread = dog.start()
     try:
         assert dog._fault_stream is None
+        assert signal.getsignal(signal.SIGALRM) is signal.SIG_DFL
     finally:
         dog.stop()
         thread.join(timeout=5)
+
+
+def test_the_signal_dump_goes_to_the_sink(tmp_path: Path) -> None:
+    """A liveness kill takes stderr; the sink survives, so the dump goes there."""
+    sink = tmp_path / "stalls.txt"
+    dog = StallWatchdog(threshold=0.2, interval=3600, stream=sys.stderr, path=sink, gil_dump=True)
+    thread = dog.start()
+    try:
+        assert dog._fault_stream is not None
+        assert dog._fault_stream.name == str(sink)
+    finally:
+        dog.stop()
+        thread.join(timeout=5)
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)

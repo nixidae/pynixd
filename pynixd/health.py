@@ -21,7 +21,10 @@ the useful form of this number is a graph that rises before anything restarts.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import faulthandler
+import gc
+import signal
 import sys
 import threading
 import time
@@ -82,19 +85,31 @@ class StallWatchdog:
     CPU-bound Python releases the GIL every switch interval, so this thread
     is scheduled even while the loop never yields.
 
-    **A C call that holds the GIL defeats this thread, and `faulthandler`
-    covers it when asked to (`gil_dump`).** The thread runs only after the
-    call returns, so its dump shows the loop idle: 101 of 107 dumps on
-    dynhetz did (nixidae/nixidae#1139). `faulthandler.dump_traceback_later`
-    dumps from a C thread without the GIL, while the call still runs, and
-    names the Python frame that made it. Every beat re-arms it, so it fires
-    once per stall, to stderr only.
+    **A C call that holds the GIL defeats this thread, and a signal covers
+    it when asked to (`gil_dump`).** The thread runs only after the call
+    returns, so its dump shows the loop idle: 101 of 107 dumps on dynhetz did
+    (nixidae/nixidae#1139). Every beat re-arms a one-shot `ITIMER_REAL`, so
+    SIGALRM arrives once per stall, while the call still runs. `faulthandler`'s
+    C handler then dumps the stack of the thread it interrupted.
 
-    **Off by default, because that dump can crash the process.** It walks
-    the thread list without the lock that guards it, so a thread exiting
-    during the dump segfaults CPython 3.14.7: 3 of 3 runs of 3000 dumps
-    against 20 exiting threads each (nixidae/nixidae#1143). anyio's worker
-    threads exit after 10 s idle, so in a daemon a long stall can meet one.
+    **One thread, not `faulthandler.dump_traceback_later`.** That walks every
+    thread's state from a C thread without the lock that guards the list. A
+    thread that exits during the walk frees its state under it, and CPython
+    3.14.7 segfaults: 3 of 3 runs of 3000 dumps against 20 exiting threads.
+    CPython keeps it lock-free on purpose (python/cpython#140815). The signal
+    dump reads only the interrupted thread, which cannot exit meanwhile:
+    3 of 3 runs survived the same churn.
+
+    **SIGALRM goes to the process, not to one thread.** Linux prefers the
+    main thread, the loop's, while it runs. Under that churn 1 to 6 of 3000
+    dumps named another thread. Of 2000 stalls, 25 idle and 130 under load
+    named another thread or none. A
+    dump has no thread id, so the Python dump that follows it says which
+    threads exist.
+
+    **The single-thread dump cannot say "Garbage-collecting"**; only the
+    all-threads walk prints that. So a collection longer than the threshold
+    writes its own line, with its generation and duration.
 
     One dump per stall, not one per check, or a ten-minute stall writes
     hundreds.
@@ -131,13 +146,33 @@ class StallWatchdog:
         self._reported_full = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._fault_stream: TextIO | None = None
+        self._owned_fault_stream: TextIO | None = None
+        self.long_collections = 0
+        self._gc_started = 0.0
 
     def beat(self) -> None:
         """Record that the loop is still running callbacks."""
         self._last_beat = time.monotonic()
         self._armed = True
         if self._fault_stream is not None:
-            faulthandler.dump_traceback_later(self.threshold, file=self._fault_stream)
+            signal.setitimer(signal.ITIMER_REAL, self.threshold)
+
+    def _on_gc(self, phase: str, info: dict[str, int]) -> None:
+        """Write a line for a collection that took as long as a stall."""
+        if phase == "start":
+            self._gc_started = time.perf_counter()
+            return
+        took = time.perf_counter() - self._gc_started
+        if took < self.threshold:
+            return
+        self.long_collections += 1
+        text = (
+            f"pynixd: {datetime.now(tz=UTC).isoformat()} garbage collection of "
+            f"generation {info['generation']} took {took:.2f}s: {info['collected']} "
+            f"collected, {info['uncollectable']} uncollectable"
+        )
+        print(text, file=self._stream if self._stream is not None else sys.stderr, flush=True)
+        self._write_sink(text)
 
     def _check(self, now: float) -> bool:
         """Whether a dump is due. Separate from the thread so a test can drive it."""
@@ -248,17 +283,39 @@ class StallWatchdog:
             if self._check(time.monotonic()):
                 self.dump()
 
-    def start(self, loop: asyncio.AbstractEventLoop | None = None) -> threading.Thread:
-        self._loop = loop
+    def _signal_dump_target(self) -> TextIO | None:
+        """Where the signal dump goes: the sink file when there is one.
+
+        The dump carries no timestamp, so it shares a file with the Python
+        dump that follows it. That dump survives a liveness kill only in the
+        sink, and so must this one. It bypasses the sink's cap, as a C handler
+        cannot check one; a dump is one stack, and one per stall.
+        """
+        if self._path is not None:
+            try:
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                self._owned_fault_stream = self._path.open("a", encoding="utf-8")  # noqa: SIM115 -- open until stop()
+            except OSError as exc:
+                self.sink_errors += 1
+                print(f"pynixd: could not open {self._path} for the GIL dump: {exc}", file=sys.stderr, flush=True)
+            else:
+                return self._owned_fault_stream
         stream = self._stream if self._stream is not None else sys.stderr
         try:
             stream.fileno()
         except (OSError, ValueError):
             # `faulthandler` writes to a descriptor; a buffer has none.
-            pass
-        else:
-            if self.gil_dump and self.threshold > 0:
-                self._fault_stream = stream
+            return None
+        return stream
+
+    def start(self, loop: asyncio.AbstractEventLoop | None = None) -> threading.Thread:
+        """Start the thread. Call it on the loop's thread, which SIGALRM prefers."""
+        self._loop = loop
+        if self.threshold > 0:
+            gc.callbacks.append(self._on_gc)
+            if self.gil_dump and (target := self._signal_dump_target()) is not None:
+                faulthandler.register(signal.SIGALRM, file=target, all_threads=False, chain=False)
+                self._fault_stream = target
                 self.beat()
         thread = threading.Thread(target=self.run, name="pynixd-stall-watchdog", daemon=True)
         thread.start()
@@ -266,9 +323,16 @@ class StallWatchdog:
 
     def stop(self) -> None:
         self._stop.set()
+        with contextlib.suppress(ValueError):  # never started, or stopped twice
+            gc.callbacks.remove(self._on_gc)
         if self._fault_stream is not None:
             self._fault_stream = None
-            faulthandler.cancel_dump_traceback_later()
+            # The timer first: SIGALRM with no handler ends the process.
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            faulthandler.unregister(signal.SIGALRM)
+        if self._owned_fault_stream is not None:
+            self._owned_fault_stream.close()
+            self._owned_fault_stream = None
 
 
 def _await_chain(awaitable: object) -> Iterator[FrameType]:
