@@ -104,5 +104,6 @@ this table to the declarations.
 | `daemon` | at `false`: no daemon under pynixd |
 | `read_only` | a read-only store; `immutable` when its storage cannot change |
 | `build_vm` | sandboxed builds in a libkrun microVM |
+| `darwin_build_vm` | sandboxed darwin builds in a macOS guest |
 
 Nix's `external-builders` is a Nix setting that pynixd's builder follows, not an experiment of pynixd.
