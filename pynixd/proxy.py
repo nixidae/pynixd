@@ -24,11 +24,19 @@ from nix_daemon_protocol.wire_ops import WIRE_REGISTRY, WireResponse
 from pynixd_store.temp_roots import TempRoots
 
 from . import metrics, wire
-from ._lazy import ssh_connection_lost
+from ._lazy import ssh_connection_lost, ssh_errors
 from .config import ScheduleMode
 from .connection import ClientConn
 from .derived_path import DerivedPath
-from .exceptions import ClosingError, OpNotImplementedError, error_text, error_traces
+from .exceptions import (
+    BackendError,
+    ClosingError,
+    InfrastructureError,
+    NoDaemonError,
+    OpNotImplementedError,
+    error_text,
+    error_traces,
+)
 from .goals import GoalEngine
 from .goals.substitute_paths import ensure_path, pynixd_substitutes, substitute_paths
 from .handlers._base import HANDLER_REGISTRY
@@ -643,32 +651,74 @@ class DaemonProxy:
     async def _mapped_output_response(
         self, request: WireRequest, local_resp: WireResponse | None
     ) -> WireResponse | None:
+        # Every read asks the backend the map names, and none answers from the
+        # map alone: a backend that lost the path made IsValidPath say "valid"
+        # while QueryPathInfo said "not valid", and a client trusting the first
+        # failed on the second. A mapping the backend denies is dropped.
         if isinstance(request, QueryPathInfoRequest):
             if local_resp is not None and getattr(local_resp, "valid", False):
                 return None
             store = self.store_for_output_path(str(request.path))
             if store is None:
                 return None
-            return cast("WireResponse", await store.execute(request, client=self.client))
+            resp = await store.execute(request, client=self.client)
+            if not getattr(resp, "valid", False):
+                self._forget_output(str(request.path), store)
+            return cast("WireResponse", resp)
 
         if isinstance(request, IsValidPathRequest):
             if local_resp is not None and getattr(local_resp, "valid", False):
                 return None
-            if self.store_for_output_path(str(request.path)) is None:
+            if not await self._backend_holds({request.path}):
                 return None
             # A constant of the declared type: nothing to coerce or refuse.
             return IsValidPathResponse.fast(valid=True)
 
         if isinstance(request, QueryValidPathsRequest):
-            paths = set(getattr(local_resp, "paths", set())) if local_resp is not None else set()
-            for path in request.paths:
-                if self.store_for_output_path(str(path)) is not None:
-                    paths.add(path)
-            if local_resp is not None and paths == getattr(local_resp, "paths", set()):
+            local_paths = set(getattr(local_resp, "paths", set())) if local_resp is not None else set()
+            held = await self._backend_holds(set(request.paths) - local_paths)
+            if not held and local_resp is not None:
                 return None
-            return QueryValidPathsResponse(paths=paths)
+            return QueryValidPathsResponse(paths=local_paths | held)
 
         return None
+
+    async def _backend_holds(self, paths: set[StorePath]) -> set[StorePath]:
+        """Those of *paths* the backend `ctx.output_locations` names for each still holds."""
+        by_store: dict[int, tuple[DaemonStore | LocalDBStore, set[StorePath]]] = {}
+        for path in paths:
+            store = self.store_for_output_path(str(path))
+            if store is not None:
+                by_store.setdefault(id(store), (store, set()))[1].add(path)
+        held: set[StorePath] = set()
+        for store, asked in by_store.values():
+            try:
+                resp = await store.execute(QueryValidPathsRequest(paths=asked, substitute=0), client=self.client)
+            except (
+                TimeoutError,
+                BackendError,
+                InfrastructureError,
+                NoDaemonError,
+                OSError,
+                EOFError,
+                *ssh_errors(),
+            ) as error:
+                # Unreachable is not "lost": the mapping stays for a later read.
+                log.warning("output_location_unreachable", store_id=store.store_id, error=str(error))
+                continue
+            found = set(getattr(resp, "paths", set()))
+            held |= found
+            for path in asked - found:
+                self._forget_output(str(path), store)
+        return held
+
+    def _forget_output(self, path: str, store: DaemonStore | LocalDBStore) -> None:
+        # Only this store's mapping: a build elsewhere may have remapped the
+        # path while the read waited.
+        if self.ctx.output_locations.get(path) != store.store_id:
+            return
+        log.info("output_location_stale", path=path, store_id=store.store_id)
+        del self.ctx.output_locations[path]
 
     async def _pynixd_substitutes(self) -> bool:
         """Whether pynixd's goals, and not the daemon, substitute for this client (`goals/substitute_paths.py`)."""
