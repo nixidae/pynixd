@@ -27,10 +27,9 @@ from pynixd.serde import (
     IsValidPathRequest,
     IsValidPathResponse,
     SetOptionsRequest,
-    TimeSpan,
-    Verbosity,
 )
 from pynixd_store.store_path import StorePath
+from tests._conftest.client_options import set_options
 
 if TYPE_CHECKING:
     from pynixd.connection import ClientConn
@@ -42,21 +41,7 @@ _PATH = StorePath("/nix/store/11111111111111111111111111111111-cached")
 
 def _options(**overrides: str) -> SetOptionsRequest:
     """A `SetOptions` request with every field, because no field has a default."""
-    return SetOptionsRequest(
-        keep_failed=False,
-        keep_going=False,
-        try_fallback=False,
-        verbosity=Verbosity.ERROR,
-        max_build_jobs=1,
-        max_silent_time=TimeSpan(0),
-        obsolete_use_build_hook=True,
-        build_verbosity=Verbosity.ERROR,
-        obsolete_log_type=0,
-        obsolete_print_build_trace=0,
-        build_cores=1,
-        use_substitutes=True,
-        overrides=overrides,
-    )
+    return set_options(overrides=overrides)
 
 
 class FakeLocalStore:

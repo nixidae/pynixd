@@ -8,31 +8,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from nix_daemon_protocol.protocol import Verbosity
-from nix_daemon_protocol.wire_time import TimeSpan
 from pynixd.execution import builder_options
 from pynixd.serde import SetOptionsRequest
+from tests._conftest.client_options import set_options
 
 LOCAL: Any = object()
 BUILDER: Any = object()
 
 
 def _options(max_build_jobs: int) -> SetOptionsRequest:
-    return SetOptionsRequest(
-        keep_failed=False,
-        keep_going=False,
-        try_fallback=False,
-        verbosity=Verbosity.ERROR,
-        max_build_jobs=max_build_jobs,
-        max_silent_time=TimeSpan(0),
-        obsolete_use_build_hook=True,
-        build_verbosity=Verbosity.ERROR,
-        obsolete_log_type=0,
-        obsolete_print_build_trace=0,
-        build_cores=1,
-        use_substitutes=True,
-        overrides={"keep-outputs": "true"},
-    )
+    return set_options(max_build_jobs=max_build_jobs, overrides={"keep-outputs": "true"})
 
 
 def test_a_builder_gets_one_job_whatever_the_client_set() -> None:

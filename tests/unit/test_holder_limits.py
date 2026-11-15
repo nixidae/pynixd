@@ -28,10 +28,9 @@ from pynixd.serde import (
     BuildResultStatus,
     SetOptionsRequest,
     StorePath,
-    TimeSpan,
-    Verbosity,
 )
 from pynixd.wire import BytesWriter
+from tests._conftest.client_options import set_options
 from tests.goal_group import goals_running, result_of
 from tests.unit.test_build_derivation_goal import FakeEngine
 
@@ -43,21 +42,7 @@ if TYPE_CHECKING:
 
 
 def _options(*, silent: int = 0, timeout: int | None = None) -> SetOptionsRequest:
-    return SetOptionsRequest(
-        keep_failed=False,
-        keep_going=False,
-        try_fallback=False,
-        verbosity=Verbosity.ERROR,
-        max_build_jobs=1,
-        max_silent_time=TimeSpan(silent),
-        obsolete_use_build_hook=True,
-        build_verbosity=Verbosity.ERROR,
-        obsolete_log_type=0,
-        obsolete_print_build_trace=0,
-        build_cores=1,
-        use_substitutes=True,
-        overrides={} if timeout is None else {"timeout": str(timeout)},
-    )
+    return set_options(max_silent_time=silent, overrides={} if timeout is None else {"timeout": str(timeout)})
 
 
 def test_a_holder_enforces_only_what_the_owner_leaves() -> None:

@@ -33,9 +33,8 @@ from pynixd.serde import (
     BuildResultStatus,
     SetOptionsRequest,
     StorePath,
-    TimeSpan,
-    Verbosity,
 )
+from tests._conftest.client_options import set_options
 from tests._conftest.placement import FakeStore as PlacedStore, FixedRanking, Spawned, fake_placer
 
 _BUILDER = StoreId("builder1")
@@ -43,21 +42,7 @@ _BUILDER = StoreId("builder1")
 
 def _options(max_build_jobs: int) -> SetOptionsRequest:
     """A `SetOptions` request with every field, because no field has a default."""
-    return SetOptionsRequest(
-        keep_failed=False,
-        keep_going=False,
-        try_fallback=False,
-        verbosity=Verbosity.ERROR,
-        max_build_jobs=max_build_jobs,
-        max_silent_time=TimeSpan(0),
-        obsolete_use_build_hook=True,
-        build_verbosity=Verbosity.ERROR,
-        obsolete_log_type=0,
-        obsolete_print_build_trace=0,
-        build_cores=1,
-        use_substitutes=True,
-        overrides={},
-    )
+    return set_options(max_build_jobs=max_build_jobs)
 
 
 class FakeStore:

@@ -22,12 +22,11 @@ from pynixd.serde import (
     IsValidPathResponse,
     QueryMissingRequest,
     SetOptionsRequest,
-    TimeSpan,
-    Verbosity,
 )
 from pynixd.substitution_queue import SubstitutionAvailability
 from pynixd_store.drv_parser import Derivation
 from pynixd_store.store_path import DrvOutput
+from tests._conftest.client_options import set_options
 from tests.substitution_fakes import ServesAsBackends
 
 if TYPE_CHECKING:
@@ -70,21 +69,7 @@ def _available(size: int, *references: str) -> SubstitutionAvailability:
 
 
 def _options(*, use_substitutes: bool) -> SetOptionsRequest:
-    return SetOptionsRequest(
-        keep_failed=False,
-        keep_going=False,
-        try_fallback=False,
-        verbosity=Verbosity.ERROR,
-        max_build_jobs=1,
-        max_silent_time=TimeSpan(0),
-        obsolete_use_build_hook=True,
-        build_verbosity=Verbosity.ERROR,
-        obsolete_log_type=0,
-        obsolete_print_build_trace=0,
-        build_cores=1,
-        use_substitutes=use_substitutes,
-        overrides={},
-    )
+    return set_options(use_substitutes=use_substitutes)
 
 
 async def _plan(

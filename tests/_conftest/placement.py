@@ -25,9 +25,8 @@ from pynixd.serde import (
     AddTempRootsRequest,
     BasicDerivation,
     SetOptionsRequest,
-    TimeSpan,
-    Verbosity,
 )
+from tests._conftest.client_options import set_options
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
@@ -262,18 +261,4 @@ def fake_placer(
 
 def options(max_build_jobs: int) -> SetOptionsRequest:
     """A client's `SetOptions` with every field, because no field has a default."""
-    return SetOptionsRequest(
-        keep_failed=False,
-        keep_going=False,
-        try_fallback=False,
-        verbosity=Verbosity.ERROR,
-        max_build_jobs=max_build_jobs,
-        max_silent_time=TimeSpan(0),
-        obsolete_use_build_hook=True,
-        build_verbosity=Verbosity.ERROR,
-        obsolete_log_type=0,
-        obsolete_print_build_trace=0,
-        build_cores=0,
-        use_substitutes=True,
-        overrides={},
-    )
+    return set_options(max_build_jobs=max_build_jobs, build_cores=0)

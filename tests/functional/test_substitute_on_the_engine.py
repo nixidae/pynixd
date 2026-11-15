@@ -31,11 +31,12 @@ from pynixd import Server
 from pynixd.config import HTTPBinaryCacheSpec, LocalBinaryCacheSpec, S3BinaryCacheSpec
 from pynixd.connection import Connection
 from pynixd.exceptions import BackendError
-from pynixd.serde import SetOptionsRequest, TimeSpan, Verbosity
+from pynixd.serde import SetOptionsRequest
 from pynixd.store import LocalDBStore, Store
 from pynixd.store_url import spec_for
 from pynixd.unix_socket import open_unix_connection
 from pynixd.wire import UnixNixReader, UnixNixWriter
+from tests._conftest.client_options import set_options
 from tests._conftest.nix_config import for_test_store
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
@@ -179,21 +180,7 @@ async def lab(
 
 def _options(**overrides: str) -> SetOptionsRequest:
     """A `SetOptions` request with every field, because no field has a default."""
-    return SetOptionsRequest(
-        keep_failed=False,
-        keep_going=False,
-        try_fallback=False,
-        verbosity=Verbosity.ERROR,
-        max_build_jobs=1,
-        max_silent_time=TimeSpan(0),
-        obsolete_use_build_hook=True,
-        build_verbosity=Verbosity.ERROR,
-        obsolete_log_type=0,
-        obsolete_print_build_trace=0,
-        build_cores=1,
-        use_substitutes=True,
-        overrides=overrides,
-    )
+    return set_options(overrides=overrides)
 
 
 @asynccontextmanager
