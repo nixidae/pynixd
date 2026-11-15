@@ -37,6 +37,7 @@ from .vm import (
     BUILDER_SOCKET_NAME as VM_BUILDER_SOCKET_NAME,
     CONTROL_SOCKET_NAME as VM_CONTROL_SOCKET_NAME,
     GUEST_DNS as VM_GUEST_DNS,
+    ROSETTA_SYSTEM as VM_ROSETTA_SYSTEM,
     STATUS_NAME as VM_STATUS_NAME,
     VMM_USAGE_NAME,
     BuildVm,
@@ -271,6 +272,8 @@ class VmSite(BuildSite):
     user: build_users.BuildUser | None = None
     """As root, the build user. The helper runs as the guest's root and maps it, as it does on the host, and the
     VMM, as root, writes each share's file as the guest process that asked for it."""
+    tso: bool = False
+    """An x86_64 build under Rosetta, whose vCPUs keep x86's memory order."""
     waits_for_exit: bool = False
     samples_on_host: bool = False
 
@@ -353,6 +356,7 @@ class VmSite(BuildSite):
             net_fd=self.net_fd,
             cgroup=cgroup,
             socket_owner=None if self.user is None else (self.user.uid, self.user.gid),
+            tso=self.tso,
         )
         # libkrun connects to the host's sockets by their names in the top directory.
         return Launch(argv, [] if self.net_fd is None else [self.net_fd], paths.top)
@@ -505,15 +509,17 @@ def choose_site(
         return host, "the build has no sandbox"
     if not sandboxed and vm.passt is None:
         return host, "a fixed-output or impure build reaches the network, and the build VM has none"
-    # The guest kernel has no binfmt handler and no IA32 emulation: another system builds on the host's kernel.
-    if drv.platform not in {settings.system, "builtin"}:
+    # On Linux the guest kernel has no binfmt handler and no IA32 emulation: another system builds on the host's
+    # kernel. On a Mac the guest builds Linux's systems (`BuildVm.foreign_systems`).
+    if drv.platform not in {settings.system, "builtin"} and not vm.builds(drv.platform):
         return host, f"the build is for {drv.platform}, not {settings.system}"
     # A uid-range build's ids need the guest's cgroup namespace and `/sys`, which the VM does not give yet.
     if user is not None and user.count != 1:
         return host, "the build runs as a range of ids"
     # The guest has its own `/dev` and `/proc`.
     sources = tuple(p.source for p in settings.sandbox_paths if not p.source.startswith(("/dev/", "/proc/")))
-    return VmSite(vm, real_store_dir, visible, sources, network=not sandboxed, user=user), None
+    tso = drv.platform == VM_ROSETTA_SYSTEM and vm.rosetta is not None
+    return VmSite(vm, real_store_dir, visible, sources, network=not sandboxed, user=user, tso=tso), None
 
 
 def _choose_darwin(  # noqa: PLR0913 -- choose_site's arguments that a darwin build reads

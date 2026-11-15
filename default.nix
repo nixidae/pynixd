@@ -57,6 +57,44 @@ let
     PYNIXD_KRUN_PASST = lib.getExe' passt "passt";
   };
   /*
+    The build VM on a Mac: the launcher is this system's, and the guest's
+    kernel, init and helper are aarch64-linux builds, which a Linux builder
+    makes. Rosetta in the guest runs x86_64-linux builds. No passt, which
+    is Linux-only. Not in the package's wrapper: pynixd for a Mac would
+    then need a Linux builder to build.
+  */
+  linuxGuest = import ./. {
+    inherit sources;
+    system = "aarch64-linux";
+  };
+  krunDarwinVariables = lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "aarch64-darwin") {
+    PYNIXD_KRUN = lib.getExe krun;
+    PYNIXD_KRUN_INIT = "${linuxGuest.internal.krun.init}/bin/pynixd-krun-init";
+    PYNIXD_KRUN_KERNEL = "${linuxGuest.internal.krun.kernel}/share/libkrunfw/Image";
+    PYNIXD_KRUN_PYTHON = "${linuxGuest.internal.venv}/lib/venv/bin/python";
+    PYNIXD_KRUN_CLOSURE = "${
+      pkgs.closureInfo { rootPaths = [ linuxGuest.internal.venv ]; }
+    }/store-paths";
+    PYNIXD_KRUN_MKFS = "${lib.getBin pkgs.e2fsprogs}/bin/mke2fs";
+    # Nix's Linux `SANDBOX_SHELL`.
+    PYNIXD_KRUN_SANDBOX_SHELL = "${linuxGuest.internal.pkgs.pkgsStatic.busybox}/bin/busybox";
+  };
+  # For a shell to source: `tests/functional/test_build_vm_darwin.py` runs in the dev shell on a Mac, and builds
+  # with a static busybox of each Linux system.
+  krunDarwinEnv = pkgs.writeText "pynixd-krun-darwin.env" (
+    lib.concatStrings (
+      lib.mapAttrsToList (name: value: "export ${name}=${value}\n") (
+        krunDarwinVariables
+        // {
+          PYNIXD_TEST_BUSYBOX_AARCH64_LINUX = krunDarwinVariables.PYNIXD_KRUN_SANDBOX_SHELL;
+          PYNIXD_TEST_BUSYBOX_X86_64_LINUX = "${
+            (import sources.nixpkgs { system = "x86_64-linux"; }).pkgsStatic.busybox
+          }/bin/busybox";
+        }
+      )
+    )
+  );
+  /*
     What the darwin build VM (`darwin_build_vm`) runs in the guest: this
     venv's interpreter, which the guest reads from the host's store through
     an allowlist of the venv's closure. QEMU and darwin-virtiofsd come from
@@ -839,6 +877,9 @@ in
       defaultNix
       darwinVmVariables
       darwinVmEnv
+      venv
+      krunDarwinVariables
+      krunDarwinEnv
       ;
     installer = installerTarball;
   };

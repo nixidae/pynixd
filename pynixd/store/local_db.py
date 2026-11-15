@@ -71,6 +71,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Set as AbstractSet
     from contextlib import AbstractAsyncContextManager
 
+    from nix_daemon_protocol.basic_derivation import BasicDerivation
     from nix_daemon_protocol.logs import LogMessage
     from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
@@ -339,9 +340,11 @@ class LocalDBStore(Store):
                 network=spec.build_vm.network,
             )
             if spec.build_vm is not None
-            else DarwinBuildVm.from_environment(spec.darwin_build_vm.snapshot)
-            if spec.darwin_build_vm is not None
             else None
+        )
+        #: A Mac's two: the build VM is Linux's, and the darwin build VM darwin's.
+        self.darwin_build_vm = (
+            DarwinBuildVm.from_environment(spec.darwin_build_vm.snapshot) if spec.darwin_build_vm is not None else None
         )
         self.configured_routes = {_OP_CODES[name]: route for name, route in spec.op_routes.items()}
         for op, route in self.configured_routes.items():
@@ -775,6 +778,12 @@ class LocalDBStore(Store):
         verbosity = options.verbosity if options is not None else Verbosity.INFO
         return await self.build_here(request, settings, send, verbosity)
 
+    def _vm_for(self, drv: BasicDerivation, settings: BuildSettings) -> BuildVm | DarwinBuildVm | None:
+        """The VM a build of *drv* may run in: on a Mac, the Linux build VM for a Linux build, else the darwin one."""
+        if self.darwin_build_vm is None or local_builder.in_linux_guest(drv, settings, self.build_vm):
+            return self.build_vm
+        return self.darwin_build_vm
+
     async def local_build_settings(
         self, request: BuildDerivationRequest, options: SetOptionsRequest | None, *, count: bool = True
     ) -> BuildSettings | NotBuiltHere:
@@ -793,6 +802,7 @@ class LocalDBStore(Store):
                 settings,
                 store_dir=str(layout.store_dir),
                 relocated=layout.store_dir != layout.real_store_dir,
+                vm=self.build_vm,
             )
             or await self._realisations_unsupported(request)
             or await self._check_unsupported(request, settings)
@@ -966,7 +976,7 @@ class LocalDBStore(Store):
                 check=checking,
                 repair=repairing,
                 recursive=self.recursive_server,
-                vm=self.build_vm,
+                vm=self._vm_for(request.derivation, settings),
                 on_usage=used.append,
                 sample_seconds=self.usage_sample_seconds,
                 aws_credentials=_aws_credentials,

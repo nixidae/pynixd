@@ -69,13 +69,15 @@ async def _serve(
     *,
     recursive: bool = False,
     impure_host_deps: tuple[str, ...] = (),
+    systems: tuple[str, ...] = (),
     **settings: Any,
 ) -> AsyncIterator[tuple[list[str], dict[str, str], Path]]:
     """A fresh `NIX_STORE_DIR` store: Nix's builder with *daemon*, pynixd's with no daemon at all.
 
     One directory for both, so every store path is the same; each store replaces the other's. With *recursive*,
     the store takes `recursive-nix`, and a derivation may name the host store as an impure host dependency.
-    *impure_host_deps* are more `allowed-impure-host-deps`, and *settings* more of the store's settings.
+    *impure_host_deps* are more `allowed-impure-host-deps`, *systems* more systems the store builds, and
+    *settings* more of the store's settings.
     """
     # The kernel matches the profile against real paths, and `/tmp` is `/private/tmp`.
     base = tmp_path.resolve() / sandbox
@@ -92,7 +94,7 @@ async def _serve(
         store_path=base,
         no_probe=True,
         # The probe-less default names Linux systems.
-        feature_matrix={SYSTEM: {"recursive-nix"} if recursive else set()},
+        feature_matrix={system: {"recursive-nix"} if recursive else set() for system in (SYSTEM, *systems)},
         nix_config=nix_config,
         # With no daemon, `make_test_spec` routes every answer on trial to pynixd.
         op_routes={"BuildDerivation": OpRoute.daemon if daemon else OpRoute.pynixd},

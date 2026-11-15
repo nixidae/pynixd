@@ -18,7 +18,7 @@ import tempfile
 import termios
 import time
 import tty
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -67,9 +67,11 @@ from .outputs import (
     random_path,
 )
 from .restriction import SOCKET_NAME, RestrictionContext
+from .settings import SandboxPath
 from .site import BuilderFailed, BuildPaths, BuildSite, builder_ended, choose_site
 from .spec import AwsCredentials, BuildenvSpec, ChildSpec, DarwinSpec, FetchSpec
 from .usage import USAGE_NAME
+from .vm import BuildVm
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -84,7 +86,6 @@ if TYPE_CHECKING:
     from .restriction import RecursiveServer
     from .settings import BuildSettings, ExternalBuilder
     from .usage import BuildUsage, UsageSample
-    from .vm import BuildVm
 
 _log = structlog.get_logger(__name__)
 
@@ -121,15 +122,27 @@ def uses_sandbox(drv: BasicDerivation, settings: BuildSettings, *, relocated: bo
     )
 
 
+def _reaches_network(drv: BasicDerivation) -> bool:
+    return any(o.kind in (OutputKind.CA_FIXED, OutputKind.IMPURE) for o in drv.outputs.values())
+
+
+def in_linux_guest(drv: BasicDerivation, settings: BuildSettings, vm: BuildVm | DarwinBuildVm | None) -> bool:
+    """Whether a Mac builds *drv* in its Linux build VM: the helper's job is then Linux's, not darwin's."""
+    return isinstance(vm, BuildVm) and vm.builds(drv.platform) and external_builder(drv, settings) is None
+
+
 def external_builder(drv: BasicDerivation, settings: BuildSettings) -> ExternalBuilder | None:
     """`findExternalDerivationBuilderIfSupported` (`globals.cc:283`): the first entry for the derivation's system."""
     return next((b for b in settings.external_builders if drv.platform in b.systems), None)
 
 
-def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str, relocated: bool) -> str | None:
+def unsupported(
+    drv: BasicDerivation, settings: BuildSettings, *, store_dir: str, relocated: bool, vm: BuildVm | None = None
+) -> str | None:
     """Why pynixd leaves this build to the daemon, or `None` when it builds it.
 
-    *relocated* is whether the store's real directory is not its logical one (`isRelocatedStore`).
+    *relocated* is whether the store's real directory is not its logical one (`isRelocatedStore`). *vm* is the
+    store's build VM, which on a Mac builds Linux's systems too.
     """
     if not sys.platform.startswith("linux") and not DARWIN:
         return "pynixd builds on Linux and darwin only"
@@ -138,8 +151,11 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
         return reason
     # A builtin builds on any platform (`derivation-building-goal.cc:420`), and an external builder on its own.
     foreign = drv.platform != settings.system and drv.platform not in settings.extra_platforms
-    if foreign and not builtin and external_builder(drv, settings) is None:
+    in_guest = in_linux_guest(drv, settings, vm)
+    if foreign and not builtin and not in_guest and external_builder(drv, settings) is None:
         return f"the platform {drv.platform}"
+    if in_guest and vm is not None and vm.passt is None and _reaches_network(drv):
+        return f"a fixed-output or impure {drv.platform} build needs the build VM's network, which this host has not"
     if "__json" in drv.env and (reason := structured_attrs_reason(drv.env)) is not None:
         return reason
     try:
@@ -163,17 +179,26 @@ def unsupported(drv: BasicDerivation, settings: BuildSettings, *, store_dir: str
 
 
 def _builder_refusal(
-    drv_path: StorePath, drv: BasicDerivation, settings: BuildSettings, *, use_sandbox: bool, relocated: bool
+    drv_path: StorePath,
+    drv: BasicDerivation,
+    settings: BuildSettings,
+    *,
+    use_sandbox: bool,
+    relocated: bool,
+    darwin_host: bool = DARWIN,
 ) -> str | None:
-    """What `makeDerivationBuilder` (`derivation-builder.cc:1751`) throws before the build starts, or `None`."""
+    """What `makeDerivationBuilder` (`derivation-builder.cc:1751`) throws before the build starts, or `None`.
+
+    *darwin_host*: the build runs under the darwin helper, not in a Mac's Linux build VM.
+    """
     if settings.sandbox == "true" and bool_attr(drv.env, "__noChroot", default=False):
         return f"derivation '{magenta(drv_path)}' has '__noChroot' set, but that's not allowed when 'sandbox' is 'true'"
-    if DARWIN and settings.sandbox == "true" and darwin.additional_profile(drv.env):
+    if darwin_host and settings.sandbox == "true" and darwin.additional_profile(drv.env):
         return (
             f"derivation '{magenta(drv_path)}' specifies a sandbox profile, "
             "but this is only allowed when 'sandbox' is 'relaxed'"
         )
-    if DARWIN and relocated:
+    if darwin_host and relocated:
         return "building using a diverted store is not supported on this platform"
     if not use_sandbox and "uid-range" in drv.required_system_features:
         return "feature 'uid-range' is only supported in sandboxed builds"
@@ -678,9 +703,20 @@ async def build(
     drv_name = drv_path.base_name().removesuffix(".drv")
     external = external_builder(drv, settings)
     relocated = layout.store_dir != layout.real_store_dir
-    use_sandbox = uses_sandbox(drv, settings, relocated=relocated)
+    # A Linux build on a Mac: the helper in the guest is Linux's, and its job is the one Linux's builder gets.
+    linux_guest = in_linux_guest(drv, settings, vm)
+    darwin_host = DARWIN and not linux_guest
+    if linux_guest and isinstance(vm, BuildVm):
+        # A Mac's `sandbox-paths` are darwin's (`/usr/lib`, `/private/tmp`, ...): bound in a Linux chroot,
+        # `/private/tmp` hides a test store's paths under it. A Linux build gets Linux's default instead.
+        shell = () if vm.sandbox_shell is None else (SandboxPath("/bin/sh", str(vm.sandbox_shell), False),)
+        settings = replace(settings, sandbox_paths=shell)
+    # NIX-DEVIATION (#27): a Mac's `sandbox` setting is for darwin builds; Nix's Linux builder has its own
+    # nix.conf, whose default is the sandbox. The build VM runs a sandboxed build only, so a Linux build always
+    # gets the sandbox. Measure how many Linux builds on a Mac need `__noChroot` to reverse it.
+    use_sandbox = linux_guest or uses_sandbox(drv, settings, relocated=relocated)
     # `ExternalDerivationBuilder` is a `DerivationBuilderImpl`: no chroot, whatever `sandbox` says.
-    chroot = external is None and use_sandbox and not DARWIN
+    chroot = external is None and use_sandbox and not darwin_host
     impure = any(o.kind is OutputKind.IMPURE for o in drv.outputs.values())
     known = _known(drv, realised, drv_name)
     held = {path: PathLock(layout.real_path(path)) for path in known.values()}
@@ -713,7 +749,7 @@ async def build(
                     # `DerivationBuilderImpl::getBuildUser` (`derivation-builder.cc:270`), which the external one keeps.
                     ids=(
                         build_users.IDS_PER_BUILD
-                        if "uid-range" in drv.required_system_features and external is None and not DARWIN
+                        if "uid-range" in drv.required_system_features and external is None and not darwin_host
                         else 1
                     ),
                 )
@@ -749,7 +785,7 @@ async def build(
             refused = None if settings.external_builders_feature else missing_feature("external-builders")
         else:
             refused = _builder_refusal(
-                drv_path, drv, settings, use_sandbox=use_sandbox, relocated=relocated
+                drv_path, drv, settings, use_sandbox=use_sandbox, relocated=relocated, darwin_host=darwin_host
             ) or _chroot_refusal(drv, settings, user, chroot=chroot)
         if refused is not None:
             return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(refused))
@@ -788,7 +824,7 @@ async def build(
         fixed = any(o.kind is OutputKind.CA_FIXED for o in drv.outputs.values())
         sandboxed = not (fixed or impure)
         darwin_spec: DarwinSpec | None = None
-        if DARWIN and external is None:
+        if darwin_host and external is None:
             # `DarwinDerivationBuilder::prepareSandbox` (`darwin-derivation-builder.cc:36`), with or without the sandbox.
             defaults = {p.target: (p.source, p.optional) for p in settings.sandbox_paths} | {
                 str(p): (str(p), False) for p in sandbox_closure
@@ -863,8 +899,8 @@ async def build(
             "work_dir": build_dir if external is None else str(paths.tmp),
             "shm_size": settings.sandbox_shm_size,
             # Linux's: `PR_SET_NO_NEW_PRIVS` and seccomp. darwin's profile denies setuid and setgid files itself.
-            "no_new_privileges": not settings.allow_new_privileges and external is None and not DARWIN,
-            "filter_syscalls": settings.filter_syscalls and external is None and not DARWIN,
+            "no_new_privileges": not settings.allow_new_privileges and external is None and not darwin_host,
+            "filter_syscalls": settings.filter_syscalls and external is None and not darwin_host,
             "require_drop_groups": settings.require_drop_supplementary_groups,
             "fetchurl": fetch,
             "buildenv": _buildenv_spec(drv, builtin_out) if drv.builder == "builtin:buildenv" else None,

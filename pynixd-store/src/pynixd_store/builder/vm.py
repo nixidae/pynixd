@@ -16,12 +16,18 @@ build store's allowlist before the helper binds it.
 
 A fixed-output or impure build gets eth0, a NIC on a socketpair whose other end passt serves (`uplink`). The
 guest has the same fixed addresses in every build: passt translates them to the host's own sockets.
+
+On a Mac (nixidae/nixidae#1149) the guest is the same aarch64-linux guest on Hypervisor.framework, and builds
+aarch64-linux, and x86_64-linux through Rosetta. libkrunfw is a Linux library, so the launcher boots the kernel
+file `kernel` names. The build directory's image is ext4: mkfs.xfs builds on Linux only. No passt, so a
+fixed-output or impure Linux build has no site on a Mac.
 """
 
 from __future__ import annotations
 
 import os
 import socket
+import sys
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -60,6 +66,10 @@ GUEST_DNS = "10.90.35.3"
 #: passt's own MTU.
 GUEST_MTU = 65520
 PASST_LOG_NAME = "vm-passt.log"
+#: Apple's Rosetta for Linux, which macOS installs with `softwareupdate --install-rosetta`.
+ROSETTA_DIR = Path("/Library/Apple/usr/libexec/oah/RosettaLinux")
+GUEST_SYSTEM = "aarch64-linux"
+ROSETTA_SYSTEM = "x86_64-linux"
 
 
 @dataclass(frozen=True)
@@ -79,6 +89,15 @@ class BuildVm:
     """The build directory's size. The image is sparse: the host pays for what the build writes."""
     passt: Path | None = None
     """passt, which gives a fixed-output or impure build its network; `None` keeps those builds on the host."""
+    kernel: Path | None = None
+    """The guest kernel, a raw arm64 Image, on a Mac; `None` boots libkrunfw's."""
+    rosetta: Path | None = None
+    """Apple's RosettaLinux directory, which runs x86_64 binaries in the guest; `None` builds no x86_64-linux."""
+    foreign_systems: frozenset[str] = frozenset()
+    """The systems other than the host's that the guest builds: on a Mac, Linux's."""
+    sandbox_shell: Path | None = None
+    """On a Mac, a static Linux busybox: a Linux build's `/bin/sh`, as Nix's Linux default `sandbox-paths` has it
+    (`SANDBOX_SHELL`). The Mac's own `sandbox-paths` are darwin's."""
 
     @classmethod
     def from_environment(
@@ -86,13 +105,22 @@ class BuildVm:
     ) -> BuildVm:
         """What the package names: the launcher (`PYNIXD_KRUN`), the init (`PYNIXD_KRUN_INIT`), the helper's
         interpreter (`PYNIXD_KRUN_PYTHON`) and its closure (`PYNIXD_KRUN_CLOSURE`, a file of store paths), and
-        `mkfs.xfs` (`PYNIXD_KRUN_MKFS`); with *network*, passt (`PYNIXD_KRUN_PASST`)."""
+        the build directory's `mkfs.xfs` or, on a Mac, `mke2fs` (`PYNIXD_KRUN_MKFS`); with *network*, passt
+        (`PYNIXD_KRUN_PASST`). On a Mac, also the guest's kernel (`PYNIXD_KRUN_KERNEL`) and a Linux build's
+        `/bin/sh` (`PYNIXD_KRUN_SANDBOX_SHELL`); Rosetta is used when macOS has it installed."""
+        darwin = sys.platform == "darwin"
         names: tuple[str, ...] = ("PYNIXD_KRUN", "PYNIXD_KRUN_INIT", "PYNIXD_KRUN_PYTHON", "PYNIXD_KRUN_CLOSURE")
-        names += ("PYNIXD_KRUN_MKFS", *(("PYNIXD_KRUN_PASST",) if network else ()))
+        names += ("PYNIXD_KRUN_MKFS", *(("PYNIXD_KRUN_KERNEL", "PYNIXD_KRUN_SANDBOX_SHELL") if darwin else ()))
+        names += ("PYNIXD_KRUN_PASST",) if network else ()
         missing = [name for name in names if name not in os.environ]
         if missing:
             raise ValueError(f"build_vm needs {', '.join(missing)} in the environment; the pynixd package sets them")
+        if darwin and network:
+            raise ValueError("build_vm: network needs passt, which runs on Linux only")
+        if darwin and dax_window_mib == 0:
+            raise ValueError("build_vm: dax_window_mib is above 0 on a Mac, where libkrun maps no empty window")
         closure = Path(os.environ["PYNIXD_KRUN_CLOSURE"]).read_text().split()
+        rosetta = ROSETTA_DIR if darwin and (ROSETTA_DIR / "rosetta").exists() else None
         return cls(
             launcher=Path(os.environ["PYNIXD_KRUN"]),
             init=Path(os.environ["PYNIXD_KRUN_INIT"]),
@@ -104,6 +132,12 @@ class BuildVm:
             dax_window_mib=dax_window_mib,
             disk_gib=disk_gib,
             passt=Path(os.environ["PYNIXD_KRUN_PASST"]) if network else None,
+            kernel=Path(os.environ["PYNIXD_KRUN_KERNEL"]) if darwin else None,
+            sandbox_shell=Path(os.environ["PYNIXD_KRUN_SANDBOX_SHELL"]) if darwin else None,
+            rosetta=rosetta,
+            foreign_systems=(
+                frozenset({GUEST_SYSTEM, *((ROSETTA_SYSTEM,) if rosetta else ())}) if darwin else frozenset()
+            ),
         )
 
     async def make_disk(self, top: Path, build_dir: Path) -> None:
@@ -111,12 +145,22 @@ class BuildVm:
         there for the builder), with their owners.
 
         `mkfs.xfs -p DIR` fills the image from a directory, unprivileged. A 64 MiB log, the least XFS takes: the
-        default log of a 1 TiB image is 513 MB of the host's disk (measured), this one 65 MB, in 48 ms.
+        default log of a 1 TiB image is 513 MB of the host's disk (measured), this one 65 MB, in 48 ms. `mke2fs -d
+        DIR` does the same for ext4; no journal, as a build directory need not outlive a crash.
         """
         image = top / DISK_NAME
         with image.open("wb") as file:
             file.truncate(self.disk_gib * 1024**3)
-        await anyio.run_process([str(self.mkfs), "-q", "-K", "-l", "size=64m", "-p", str(build_dir), str(image)])
+        if self.mkfs.name == "mke2fs":
+            argv = [str(self.mkfs), "-q", "-F", "-t", "ext4", "-O", "^has_journal", "-m", "0"]
+            argv += ["-E", "nodiscard,lazy_itable_init=1", "-d", str(build_dir), str(image)]
+        else:
+            argv = [str(self.mkfs), "-q", "-K", "-l", "size=64m", "-p", str(build_dir), str(image)]
+        await anyio.run_process(argv)
+
+    def builds(self, system: str) -> bool:
+        """Whether the guest builds for *system* while the host does not."""
+        return system in self.foreign_systems
 
     def argv(
         self,
@@ -132,6 +176,7 @@ class BuildVm:
         net_fd: int | None = None,
         cgroup: Path | None = None,
         socket_owner: tuple[int, int] | None = None,
+        tso: bool = False,
     ) -> list[str]:
         """The launcher's command line, after it writes the allowlists into *top*.
 
@@ -143,7 +188,8 @@ class BuildVm:
         descriptor 3. A *recursive* build gets the two sockets of the module's docstring. The guest's NIC is on
         *net_fd*, passt's peer (`uplink`). The launcher must run in *top*. The VMM joins *cgroup*, and the
         launcher writes the VMM's rusage to `top/vm-usage.json`. A recursive build's socket belongs to
-        *socket_owner*, the build user when the helper runs as root.
+        *socket_owner*, the build user when the helper runs as root. With *tso*, an x86_64 build under Rosetta,
+        the vCPUs keep x86's memory order.
         """
         shown: dict[Path, set[str]] = {
             real_store_dir: {str(real_store_dir / path.name) for path in visible},
@@ -209,6 +255,12 @@ class BuildVm:
             argv.append(f"--cgroup={cgroup}")
         if socket_owner is not None:
             argv.append(f"--socket-owner={socket_owner[0]}:{socket_owner[1]}")
+        if self.kernel is not None:
+            argv.append(f"--kernel={self.kernel}")
+        if self.rosetta is not None:
+            argv.append(f"--rosetta={self.rosetta}")
+        if tso:
+            argv.append("--tso")
         argv += [
             f"--usage={top / VMM_USAGE_NAME}",
             f"--cwd={top}",

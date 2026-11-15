@@ -349,8 +349,8 @@ the other way in: it switches every socket of the guest kernel over, so a
 namespace in the guest would not keep a sandboxed build off the network, and
 a guest's listen binds on the host. A sandboxed build gets no NIC.
 
-A build for a system other than the store's own stays on the host: the
-guest kernel has no binfmt handler, and emulation in a VM is slow. A `recursive-nix` or `builder-rpc-v0` builder reaches the
+On Linux, a build for a system other than the store's own stays on the host:
+the guest kernel has no binfmt handler, and emulation in a VM is slow. A `recursive-nix` or `builder-rpc-v0` builder reaches the
 store's socket over vsock, with no TSI: the guest's init listens at the
 socket's place in the build directory and joins each connection to a host
 socket in the top directory. The helper's control socket comes the same way.
@@ -359,3 +359,34 @@ binds it, and such a build caches no negative lookup. A `sandbox-paths` source o
 is writable, as Nix binds it: a directory is a share of its own, and a file
 a share of its parent whose allowlist shows the file alone, because
 virtio-fs mounts only a directory.
+
+### The build VM on a Mac
+
+On a Mac, `build_vm` builds Linux's systems (nixidae/nixidae#1149): the same
+guest on Hypervisor.framework, one microVM per build. The guest is
+aarch64-linux, and Rosetta for Linux runs x86_64-linux builds. A store can
+have `darwin_build_vm` too; each build goes to the VM of its system.
+
+- The launcher is a macOS build, signed with the hypervisor entitlement. The
+  kernel, the init and the helper's venv are aarch64-linux builds, which a
+  Linux builder makes. `internal.krunDarwinEnv` names them; the package's
+  wrapper does not yet, because pynixd for a Mac would then need a Linux
+  builder to build.
+- libkrunfw is a Linux library, so the launcher boots its kernel as a file:
+  the arm64 Image that the aarch64-linux libkrunfw build installs.
+- The build directory's image is ext4 (`mke2fs -d`), with no journal:
+  mkfs.xfs builds on Linux only. The init mounts XFS or ext4.
+- Rosetta's directory is a share tagged `rosetta`. libkrun answers Rosetta's
+  ioctls on it, from the host's own rosetta binary, so no Apple text is in
+  any source. The init registers rosetta as the x86_64 ELF handler with the
+  `F` flag, so a chroot with no `/run/rosetta` still runs x86_64 binaries.
+  An x86_64 build runs its vCPUs in the TSO memory model.
+- The job is Linux's: the chroot, Linux's seccomp filter, and the sandbox
+  always. A Mac's `sandbox` setting is for darwin builds, and Nix's Linux
+  builder has its own nix.conf (NIX-DEVIATION, in `local.py`). The Mac's
+  `sandbox-paths` are darwin's, so a Linux build gets Linux's default
+  instead: `/bin/sh`, a static busybox.
+- No passt, which is Linux-only: pynixd does not take a fixed-output or
+  impure Linux build, and the store's daemon or a remote builder builds it.
+- Measured on an M-series Mac: the guest boots and runs a command in 0.13 s;
+  a trivial build takes 0.8 s, the Nix client included.

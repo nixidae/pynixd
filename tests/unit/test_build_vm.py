@@ -6,7 +6,11 @@ that escapes the helper can read. These tests pin it; a VM build itself needs `/
 
 from __future__ import annotations
 
+import dataclasses
+import shutil
 from pathlib import Path
+
+import pytest
 
 from nix_daemon_protocol.store_path import StorePath
 from pynixd_store.builder.vm import BuildVm, GuestEnd, allow, ending, status, unshareable
@@ -211,6 +215,48 @@ def test_a_network_build_gets_a_nic_on_passts_peer(tmp_path: Path) -> None:
     (tmp_path / "top").mkdir()
     argv = _argv(tmp_path, tmp_path / "root/nix/store", net_fd=7)
     assert [a for a in argv if a.startswith("--net")] == ["--net=7:10.90.35.2/24:10.90.35.1:65520"]
+
+
+def test_a_macs_guest_boots_its_kernel_and_shares_rosetta_with_tso_for_x86_64_alone(tmp_path: Path) -> None:
+    """nixidae/nixidae#1149: libkrunfw is a Linux library, so a Mac names the kernel; TSO is x86_64's."""
+    (tmp_path / "top").mkdir()
+    mac = dataclasses.replace(
+        _vm(), kernel=Path("/nix/store/kkkk-libkrunfw/share/libkrunfw/Image"), rosetta=Path("/Library/Rosetta")
+    )
+    flags = ("--kernel", "--rosetta", "--tso")
+    for tso in (False, True):
+        launch = mac.argv(
+            top=tmp_path / "top",
+            chroot_parent=tmp_path / "store/ffff-x.drv.chroot",
+            real_store_dir=tmp_path / "store",
+            visible=[],
+            sources=(),
+            spec_file=tmp_path / "top/spec.json",
+            build_dir=tmp_path / "top/build",
+            tso=tso,
+        )
+        assert [a for a in launch if a.startswith(flags)] == [
+            "--kernel=/nix/store/kkkk-libkrunfw/share/libkrunfw/Image",
+            "--rosetta=/Library/Rosetta",
+            *(["--tso"] if tso else []),
+        ]
+    assert not [a for a in _argv(tmp_path, tmp_path / "store") if a.startswith(flags)]
+
+
+async def test_a_macs_build_directory_is_an_ext4_image_holding_the_builders_files(tmp_path: Path) -> None:
+    """mkfs.xfs builds on Linux only; `mke2fs -d` fills an ext4 image the same way, unprivileged."""
+    mke2fs = shutil.which("mke2fs")
+    if mke2fs is None:
+        pytest.skip("no mke2fs on PATH")
+    build = tmp_path / "top/build"
+    build.mkdir(parents=True)
+    (build / "env-vars").write_text("x\n")
+    vm = dataclasses.replace(_vm(), mkfs=Path(mke2fs))
+    await vm.make_disk(tmp_path / "top", build)
+    with (tmp_path / "top/build.xfs").open("rb") as image:
+        superblock = image.read(2048)[1024:]
+    # ext4's magic is at offset 56 of the superblock, which starts at byte 1024.
+    assert superblock[56:58] == b"\x53\xef"
 
 
 def test_a_build_user_owns_the_socket_and_the_helper_stays_the_launchers(tmp_path: Path) -> None:

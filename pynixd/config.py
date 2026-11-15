@@ -444,16 +444,22 @@ class BuildVmSpec(BaseModel):
     store in its own memory. A build without the sandbox, a fixed-output or impure build, a build for another
     system, and a build as a build user stay on the host (`pynixd_store.builder.site.choose_site`), and so do a
     fixed-output and an impure build unless `network` is on.
+
+    On a Mac the guest builds aarch64-linux and, through Rosetta, x86_64-linux, and nothing for darwin
+    (nixidae/nixidae#1149). `network` is Linux's alone there: pynixd leaves a fixed-output or impure Linux build
+    to the store's daemon.
     """
 
     memory_mib: int = Field(default=2048, gt=0)
     """The guest's memory. Freed pages go back to the host (free page reporting)."""
     cpus: int = Field(default=2, gt=0, le=255)
     dax_window_mib: int = Field(default=4096, ge=0)
-    """The address space the guest maps the store through. It costs no host memory."""
+    """The address space the guest maps the store through. It costs no host memory. On a Mac it must be
+    above 0: libkrun fails to map an empty window and the guest does not boot (measured)."""
     disk_gib: int = Field(default=1024, gt=0)
-    """The build directory's size: a sparse XFS image on the host's disk, which costs what the build writes
-    and a 64 MiB log. A build that fills it fails with ENOSPC; the host's memory never holds it."""
+    """The build directory's size: a sparse image on the host's disk (XFS with a 64 MiB log; ext4 on a Mac),
+    which costs what the build writes. A build that fills it fails with ENOSPC; the host's memory never holds
+    it."""
     network: Annotated[
         bool,
         Experiment(

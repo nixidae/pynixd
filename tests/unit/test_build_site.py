@@ -16,6 +16,7 @@ from nix_daemon_protocol.basic_derivation import BasicDerivation
 from nix_daemon_protocol.derivation_output import DerivationOutput
 from nix_daemon_protocol.store_path import StorePath
 from pynixd_store.builder.darwin_vm import DarwinBuildVm
+from pynixd_store.builder.local import unsupported
 from pynixd_store.builder.outputs import BuildFailure
 from pynixd_store.builder.settings import BuildSettings
 from pynixd_store.builder.site import BuilderFailed, BuildPaths, DarwinVmSite, HostSite, VmSite, choose_site
@@ -157,6 +158,42 @@ def test_a_build_the_vm_cannot_run_stays_on_the_host_and_says_why(kwargs: dict[s
     assert isinstance(site, HostSite)
     assert site.chroot == kwargs.get("chroot", True)
     assert why == reason
+
+
+MAC_VM = dataclasses.replace(
+    VM,
+    kernel=Path("/nix/store/kkkk-libkrunfw/share/libkrunfw/Image"),
+    rosetta=Path("/Library/Apple/usr/libexec/oah/RosettaLinux"),
+    foreign_systems=frozenset({"aarch64-linux", "x86_64-linux"}),
+)
+
+
+@pytest.mark.parametrize(("platform", "tso"), [("aarch64-linux", False), ("x86_64-linux", True)])
+def test_a_macs_vm_builds_each_linux_system_and_keeps_x86s_memory_order_for_x86_64(platform: str, tso: bool) -> None:
+    """nixidae/nixidae#1149: the guest is aarch64-linux, and Rosetta runs x86_64 code, which needs TSO."""
+    site, why = _choose(vm=MAC_VM, platform=platform, config={"system": "aarch64-darwin"})
+    assert why is None
+    assert site == VmSite(MAC_VM, REAL, VISIBLE, (), tso=tso)
+
+
+def test_a_macs_vm_without_rosetta_leaves_x86_64_linux_to_the_host() -> None:
+    no_rosetta = dataclasses.replace(MAC_VM, rosetta=None, foreign_systems=frozenset({"aarch64-linux"}))
+    site, why = _choose(vm=no_rosetta, platform="x86_64-linux", config={"system": "aarch64-darwin"})
+    assert isinstance(site, HostSite)
+    assert why == "the build is for x86_64-linux, not aarch64-darwin"
+
+
+def test_a_linux_fetch_on_a_mac_is_not_pynixds_to_build() -> None:
+    """The VM on a Mac has no passt, and a darwin host runs no Linux build itself."""
+    settings = BuildSettings.from_nix_config({}, {"system": "aarch64-darwin"})
+    fixed = DerivationOutput(path=PLAIN.path, method="flat", hash_digest="sha256:00")
+    fetch = BasicDerivation(outputs={"out": fixed}, platform="aarch64-linux", builder="/bin/sh")
+    build = BasicDerivation(outputs={"out": PLAIN}, platform="aarch64-linux", builder="/bin/sh")
+    assert unsupported(build, settings, store_dir="/nix/store", relocated=False, vm=MAC_VM) is None
+    assert unsupported(fetch, settings, store_dir="/nix/store", relocated=False, vm=MAC_VM) == (
+        "a fixed-output or impure aarch64-linux build needs the build VM's network, which this host has not"
+    )
+    assert unsupported(build, settings, store_dir="/nix/store", relocated=False) == "the platform aarch64-linux"
 
 
 DARWIN_VM = DarwinBuildVm(
