@@ -142,11 +142,11 @@ let
   # builtin:fetchurl of s3:// deadlocked the test guests' builders (Lillecarl/nix#424).
   defaultNixRelease = pkgs.nixVersions.latest;
   # The version is the release's: a CI runner installs the release from releases.nixos.org.
+  # `overrideAttrs` drops `appendPatches`, so a Nix that patches further starts here.
+  defaultNixPatched = defaultNixRelease.appendPatches [ ./nix/nix-aws-credentials-in-a-child.patch ];
   # Without Nix's own suite: no cache holds a patched Nix, and its `main:build`
   # functional test failed on GitHub's aarch64 runner (run 43652156125).
-  defaultNix =
-    (defaultNixRelease.appendPatches [ ./nix/nix-aws-credentials-in-a-child.patch ]).overrideAttrs
-      { doCheck = false; };
+  defaultNix = defaultNixPatched.overrideAttrs { doCheck = false; };
   # Its name in `nixVersions` and in `nixFunctionalTests`, such as `nix_2_35`.
   defaultNixName =
     "nix_" + lib.replaceStrings [ "." ] [ "_" ] (lib.versions.majorMinor defaultNix.version);
@@ -154,7 +154,7 @@ let
   withDefaultNix = test: test.extend { modules = [ { defaults.nix.package = defaultNix; } ]; };
   # The functional suite's Nix: `build-remote.sh` speaks `ssh-ng://` to its first builder there,
   # which needs Lillecarl/nix#413 fixed to pass. Its guests run the same Nix as their system Nix.
-  nixftNix = defaultNix.appendPatches [ ./nix/functional-tests/nix-ssh-ng-keep-failed.patch ];
+  nixftNix = defaultNixPatched.appendPatches [ ./nix/functional-tests/nix-ssh-ng-keep-failed.patch ];
   withNixftNix = test: test.extend { modules = [ { defaults.nix.package = nixftNix; } ]; };
   # Determinate Nix v3.24.0 as it ships: huggorm's component build of the pinned fork, without huggorm's patches.
   determinateNix =
