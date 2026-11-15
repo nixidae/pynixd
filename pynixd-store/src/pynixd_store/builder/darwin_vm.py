@@ -146,7 +146,8 @@ class Qmp:
         while b"\n" not in self.buffer:
             self.buffer += await self.stream.receive()
         raw, self.buffer = self.buffer.split(b"\n", 1)
-        return json.loads(raw)
+        message: dict[str, Any] = json.loads(raw)
+        return message
 
     async def call(self, execute: str, **arguments: object) -> Any:
         message: dict[str, object] = {"execute": execute}
