@@ -446,8 +446,15 @@ class DaemonStore(ScheduledStore):
         try:
             with anyio.fail_after(bound) as whole_read:
                 async with pool(options) as conn:
+                    # A download reports progress per chunk; with no client, keep errors only
+                    # (`_nested_context`, #1349).
                     call = functools.partial(
-                        conn.call, request, client=client, suppress_last=suppress_last, raise_on_error=raise_on_error
+                        conn.call,
+                        request,
+                        client=client,
+                        suppress_last=suppress_last,
+                        raise_on_error=raise_on_error,
+                        keep_logs=False if _downloads(request) else None,
                     )
                     if not _downloads(request):
                         return await call()

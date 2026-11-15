@@ -11,8 +11,11 @@ and then up to 9.4 s, and the liveness probe killed the process. Issue #507.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import math
 import tracemalloc
-from typing import Any, cast
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
 
 import anyio
 import pytest
@@ -29,8 +32,12 @@ from nix_daemon_protocol.protocol import FieldType, ResultType
 from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest
 from pynixd.connection import ClientConn, Connection
 from pynixd.exceptions import BackendError
+from pynixd.store.daemon import DaemonStore
 from pynixd.wire import NixReader, NixWriter, UnixNixWriter
 from tests._conftest.socket_pair import socket_pair
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 _MESSAGES = 100_000
 
@@ -220,6 +227,36 @@ async def test_a_long_stream_lets_the_event_loop_run() -> None:
             done.set()
     assert daemon.sent == _MESSAGES
     assert max(gaps) <= _MAX_GAP_MESSAGES, f"the loop waited for {max(gaps)} messages of the stream"
+
+
+async def test_a_download_with_no_client_keeps_no_progress() -> None:
+    """The scheduler's own input check: `QueryValidPaths` with `substitute`, and no client.
+
+    No client receives the stream, so the response kept every message for as
+    long as the builder substituted. On sg1 that grew pynixd by 5 GiB in two
+    minutes, and the liveness probe killed it (nixidae/nixidae#1349).
+    """
+    daemon = _Daemon(_TRACED_MESSAGES, _answer())
+    conn = _connection(daemon)
+
+    @contextlib.asynccontextmanager
+    async def pool(options: object) -> AsyncIterator[Connection]:
+        del options
+        yield conn
+
+    store = SimpleNamespace(transfer_conn=pool, build_conn=pool, read_timeout=math.inf, store_id="builder")
+    resp = await DaemonStore.call(
+        cast("Any", store), QueryValidPathsRequest(paths=set(), substitute=1), client=None, skip_probe=True
+    )
+
+    assert daemon.sent == _TRACED_MESSAGES
+    assert resp.logs.messages == [], f"{len(resp.logs.messages)} progress messages kept with no one to read them"
+
+    conn = _connection(_Daemon(3, _error("substituter refused")))
+    with pytest.raises(BackendError, match="substituter refused"):
+        await DaemonStore.call(
+            cast("Any", store), QueryValidPathsRequest(paths=set(), substitute=1), client=None, skip_probe=True
+        )
 
 
 async def test_an_error_ends_the_stream_once() -> None:

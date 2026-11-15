@@ -69,8 +69,11 @@ def _nested_context(ctx: ReadContext) -> ReadContext:
     probe killed pynixd. Issue #507. A streamed message is not kept unless
     the caller asks, so `proxy.py` writing the response back sends it once.
 
-    `buffer_logs` crosses, except with nothing streaming: an unbuffered
-    stream with no sink is a lost one.
+    `buffer_logs` crosses as it is. False with no sink discards the stream
+    and keeps only an error, which `WireLogs.from_reader` always keeps.
+    `SetOptions` reads its stream that way, and so does a substituting
+    `QueryValidPaths` that no client receives: kept, its progress grew
+    pynixd by 5 GiB in two minutes on sg1 (nixidae/nixidae#1349).
 
     `raise_on_error` does not cross: it would turn a daemon error into a
     silent success. `DaemonStore.call` declares `raise_on_error=False` as
@@ -79,7 +82,7 @@ def _nested_context(ctx: ReadContext) -> ReadContext:
     `EnsurePath` as a hit, and `nix build` then waited 112 s for a
     substitution that never came. Issue #46.
     """
-    if ctx.raise_on_error and (ctx.buffer_logs or ctx.log_sink is not None):
+    if ctx.raise_on_error:
         # Already settled by an enclosing nested read. Every response nests
         # its `WireLogs` one level down, and everything below that reads under
         # the same settings, so this returns the context unchanged for all
@@ -91,7 +94,7 @@ def _nested_context(ctx: ReadContext) -> ReadContext:
         reader=ctx.reader,
         version=ctx.version,
         log_sink=ctx.log_sink,
-        buffer_logs=ctx.buffer_logs or ctx.log_sink is None,
+        buffer_logs=ctx.buffer_logs,
         raise_on_error=True,
         error_factory=ctx.error_factory,
         logger=ctx.logger,
