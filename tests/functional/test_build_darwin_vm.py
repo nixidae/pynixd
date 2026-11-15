@@ -17,7 +17,15 @@ import pytest
 
 from pynixd.config import DarwinBuildVmSpec
 from tests.conftest import NIX_BIN, run_subproc
-from tests.functional.test_build_darwin import ALONE, PROBE, RECURSIVE, _build, _drv, _serve
+from tests.functional.test_build_darwin import (
+    ALONE,
+    PROBE,
+    RECURSIVE,
+    _build,
+    _drv,
+    _keep_store_dirs as _keep_store_dirs,  # autouse: each server sets the process's store directories
+    _serve,
+)
 
 SNAPSHOT = os.environ.get("PYNIXD_DARWIN_VM_SNAPSHOT")
 
