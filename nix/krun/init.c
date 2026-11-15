@@ -13,11 +13,14 @@
  *            owns each listen socket
  *   cwd      the directory the command starts in
  *   disks    one directory per line: where /dev/vda, /dev/vdb, ... mount, as XFS
+ *            or ext4 (a macOS host has mke2fs and no mkfs.xfs)
  *   vsock    one port per line: "fd PORT N", a connection to the host's PORT
  *            as the command's descriptor N; or "listen PORT PATH", a Unix
  *            socket at PATH whose every connection joins a new one to PORT
  *   net      optional: "ADDRESS PREFIX GATEWAY MTU", the IPv4 configuration of
  *            eth0, the NIC passt serves; without it the guest has lo alone
+ *   rosetta  optional, empty: the share tagged "rosetta" mounts at /run/rosetta,
+ *            and its rosetta runs every x86_64 ELF binary
  *
  * A listen socket is the build's: its owner is SOCKET_UID, mode 0600. Its
  * relay runs outside the command's namespaces, as the command's uid: as root
@@ -199,11 +202,35 @@ static void mount_disks(void)
     char *text = slurp(CONFIG "disks", &len);
     char device[] = "/dev/vda";
     for (char *line = strtok(text, "\n"); line; line = strtok(NULL, "\n")) {
-        if (mount(device, line, "xfs", MS_NOSUID | MS_NODEV, NULL) != 0)
+        /* EINVAL: the image is the other filesystem. */
+        if (mount(device, line, "xfs", MS_NOSUID | MS_NODEV, NULL) != 0 &&
+            (errno != EINVAL || mount(device, line, "ext4", MS_NOSUID | MS_NODEV, NULL) != 0))
             fail(line);
         device[sizeof device - 2]++;
     }
     free(text);
+}
+
+/* The handler's F flag opens rosetta now, so a build in its own mount namespace, which has no /run/rosetta,
+ * still runs x86_64 binaries. The magic and mask are those of an x86_64 ELF executable or shared object, as
+ * NixOS's binfmt module has them for x86_64-linux. */
+static void register_rosetta(void)
+{
+    if (access(CONFIG "rosetta", F_OK) != 0)
+        return;
+    if (mount("rosetta", "/run/rosetta", "virtiofs", MS_RDONLY | MS_NOSUID | MS_NODEV, NULL) != 0)
+        fail("mount /run/rosetta");
+    if (mount("binfmt_misc", "/proc/sys/fs/binfmt_misc", "binfmt_misc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) != 0)
+        fail("mount /proc/sys/fs/binfmt_misc");
+    static const char rule[] =
+        ":rosetta:M::"
+        "\\x7fELF\\x02\\x01\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x02\\x00\\x3e\\x00:"
+        "\\xff\\xff\\xff\\xff\\xff\\xfe\\xfe\\x00\\xff\\xff\\xff\\xff\\xff\\xff\\xff\\xff\\xfe\\xff\\xff\\xff:"
+        "/run/rosetta/rosetta:F";
+    int fd = open("/proc/sys/fs/binfmt_misc/register", O_WRONLY | O_CLOEXEC);
+    if (fd < 0 || write(fd, rule, sizeof rule - 1) != (ssize_t)(sizeof rule - 1))
+        fail("register rosetta as the x86_64 handler");
+    close(fd);
 }
 
 static char **read_argv(void)
@@ -461,6 +488,7 @@ int main(void)
         fail("/dev/hvc0");
     }
     mount_disks();
+    register_rosetta();
     configure_network();
     char **argv = read_argv();
     char *status = read_path(CONFIG "status");

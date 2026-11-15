@@ -5,10 +5,12 @@
  *               [--ro DIR:ALLOWLIST]... [--rw DIR]... [--rw-allow DIR:ALLOWLIST]...
  *               [--disk IMAGE:DIR]... [--vsock-fd N:SOCKET]... [--vsock-listen PATH:SOCKET]...
  *               [--net FD:ADDRESS/PREFIX:GATEWAY:MTU] [--cgroup DIR] [--usage PATH]
+ *               [--kernel IMAGE] [--rosetta DIR] [--tso]
  *               --cwd DIR --status PATH --exit PATH [--uid N --gid N] [--socket-owner UID:GID]
  *               -- COMMAND [ARG]...
  *
- * The guest boots libkrunfw's kernel on a root that holds only --init (as
+ * The guest boots libkrunfw's kernel, or the raw arm64 Image --kernel names:
+ * on macOS libkrun finds no libkrunfw, a Linux library. The root holds only --init (as
  * /init), its configuration and the mount points. Each --ro and --rw share is
  * mounted at its host path, in the order given, so a path means the same on
  * both sides. A --ro share shows the guest only what its allowlist names, one
@@ -47,7 +49,13 @@
  * --usage, this process forks the VMM, reaps it with wait4 and writes its
  * rusage to PATH, in the shape of pynixd's usage.json, then exits as the VMM
  * did. The VMM joins the cgroup DIR first, when given, and dies with this
- * process.
+ * process: through PR_SET_PDEATHSIG on Linux, through a kqueue on the parent
+ * on macOS, which has no such signal.
+ *
+ * macOS only: --rosetta shares DIR, Apple's RosettaLinux directory, as the
+ * Rosetta share libkrun answers Rosetta's ioctls on, and the init registers
+ * its rosetta as the x86_64 ELF handler. --tso runs the vCPUs in the TSO
+ * memory model, which x86_64 code under Rosetta needs.
  */
 
 #include <errno.h>
@@ -59,7 +67,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#ifdef __linux__
 #include <sys/prctl.h>
+#else
+#include <pthread.h>
+#include <sys/event.h>
+#endif
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -72,6 +85,8 @@
 #define MAX_DIRS 512
 #define MAX_PORTS 8
 #define FIRST_PORT 1024
+/* Where the init mounts the Rosetta share; the binfmt handler it registers names this directory. */
+#define ROSETTA_DIR "run/rosetta"
 
 /*
  * Receive offloads only, as vivarium's launcher takes them
@@ -141,6 +156,7 @@ static void usage(void)
                     "                   [--ro DIR:ALLOWLIST]... [--rw DIR]... [--rw-allow DIR:ALLOWLIST]...\n"
                     "                   [--disk IMAGE:DIR]... [--vsock-fd N:SOCKET]... [--vsock-listen PATH:SOCKET]...\n"
                     "                   [--net FD:ADDRESS/PREFIX:GATEWAY:MTU] [--cgroup DIR] [--usage PATH]\n"
+                    "                   [--kernel IMAGE] [--rosetta DIR] [--tso]\n"
                     "                   --cwd DIR --status PATH --exit PATH [--uid N --gid N] [--socket-owner UID:GID]\n"
                     "                   -- COMMAND [ARG]...\n");
 }
@@ -166,7 +182,13 @@ static long long microseconds(struct timeval t)
     return (long long)t.tv_sec * 1000000 + t.tv_usec;
 }
 
-/* Linux counts ru_maxrss in KiB and ru_inblock and ru_oublock in 512-byte units. */
+#ifdef __linux__
+#define MAXRSS_UNIT 1024
+#else
+#define MAXRSS_UNIT 1
+#endif
+
+/* Linux counts ru_maxrss in KiB, macOS in bytes; both count ru_inblock and ru_oublock in 512-byte units. */
 static int supervise(pid_t vmm, const char *usage_path)
 {
     int status;
@@ -184,11 +206,36 @@ static int supervise(pid_t vmm, const char *usage_path)
         fprintf(f,
                 "{\"source\": \"rusage\", \"cpu_user_us\": %lld, \"cpu_system_us\": %lld, "
                 "\"peak_memory_bytes\": %lld, \"io_read_bytes\": %lld, \"io_write_bytes\": %lld}\n",
-                microseconds(ru.ru_utime), microseconds(ru.ru_stime), (long long)ru.ru_maxrss * 1024,
+                microseconds(ru.ru_utime), microseconds(ru.ru_stime), (long long)ru.ru_maxrss * MAXRSS_UNIT,
                 (long long)ru.ru_inblock * 512, (long long)ru.ru_oublock * 512);
         fclose(f);
     }
     return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+}
+
+#ifndef __linux__
+static void *watch_parent(void *arg)
+{
+    pid_t parent = (pid_t)(intptr_t)arg;
+    struct kevent change, event;
+    EV_SET(&change, parent, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, NULL);
+    /* It returns at the parent's exit, or at once on an error: ESRCH when the parent is gone already. */
+    int kq = kqueue();
+    if (kq >= 0)
+        kevent(kq, &change, 1, &event, 1, NULL);
+    _exit(1);
+}
+#endif
+
+/* The VMM, a child of this process, ends when this process does. */
+static int die_with(pid_t parent)
+{
+#ifdef __linux__
+    return prctl(PR_SET_PDEATHSIG, SIGKILL) != 0 || getppid() != parent;
+#else
+    pthread_t thread;
+    return pthread_create(&thread, NULL, watch_parent, (void *)(intptr_t)parent) != 0 || getppid() != parent;
+#endif
 }
 
 static char *slurp(const char *path, size_t *len)
@@ -247,7 +294,7 @@ static int add_file(KrunFsOverlay overlay, const char *path, const char *data, s
 int main(int argc, char *argv[])
 {
     enum { INIT = 256, CPUS, MEMORY, DAX, RO, RW, RW_ALLOW, DISK, NEGATIVE, STATUS, EXIT, UID, GID, CWD, VSOCK_FD, VSOCK_LISTEN,
-           CGROUP, USAGE, NET, SOCKET_OWNER };
+           CGROUP, USAGE, NET, SOCKET_OWNER, KERNEL, ROSETTA, TSO };
     static const struct option options[] = {
         {"init", required_argument, NULL, INIT},     {"cpus", required_argument, NULL, CPUS},
         {"memory", required_argument, NULL, MEMORY}, {"dax-window", required_argument, NULL, DAX},
@@ -259,9 +306,13 @@ int main(int argc, char *argv[])
         {"vsock-fd", required_argument, NULL, VSOCK_FD}, {"vsock-listen", required_argument, NULL, VSOCK_LISTEN},
         {"cgroup", required_argument, NULL, CGROUP}, {"usage", required_argument, NULL, USAGE},
         {"net", required_argument, NULL, NET},       {"socket-owner", required_argument, NULL, SOCKET_OWNER},
+        {"kernel", required_argument, NULL, KERNEL}, {"rosetta", required_argument, NULL, ROSETTA},
+        {"tso", no_argument, NULL, TSO},
         {NULL, 0, NULL, 0},
     };
     const char *init = NULL, *status = NULL, *exit_path = NULL, *cwd = NULL, *cgroup = NULL, *usage_path = NULL;
+    const char *kernel = NULL, *rosetta = NULL;
+    bool tso = false;
     long cpus = 0, memory = 0, dax_window = 0, negative_timeout = 0, uid = (long)getuid(), gid = (long)getgid();
     long socket_uid = -1, socket_gid = -1;
     struct share shares[MAX_SHARES];
@@ -281,6 +332,9 @@ int main(int argc, char *argv[])
         case EXIT: exit_path = optarg; break;
         case CGROUP: cgroup = optarg; break;
         case USAGE: usage_path = optarg; break;
+        case KERNEL: kernel = optarg; break;
+        case ROSETTA: ok = optarg[0] == '/'; rosetta = optarg; break;
+        case TSO: tso = true; break;
         case NET: {
             char address[16], gateway[16], rest;
             unsigned prefix, mtu;
@@ -377,11 +431,17 @@ int main(int argc, char *argv[])
         if (vmm > 0)
             return supervise(vmm, usage_path);
         /* pynixd kills this process at a timeout: the VMM must not outlive it. */
-        if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0 || getppid() != parent)
+        if (die_with(parent))
             _exit(1);
     }
     if (cgroup != NULL && join_cgroup(cgroup))
         return 1;
+#ifdef __linux__
+    if (rosetta != NULL || tso) {
+        fprintf(stderr, "pynixd-krun: --rosetta and --tso are macOS options\n");
+        return 2;
+    }
+#endif
 
     /* libkrun holds a host descriptor for each inode the guest has looked up and each file a
      * DAX mapping reads: nix's closure is past a soft limit of 1024, and the guest sees EMFILE. */
@@ -451,6 +511,8 @@ int main(int argc, char *argv[])
         return 1;
     if (net_fd >= 0 && add_file(overlay, ".pynixd/net", net, strlen(net), 0444))
         return 1;
+    if (rosetta != NULL && (add_dirs(overlay, ROSETTA_DIR) || add_file(overlay, ".pynixd/rosetta", "", 0, 0444)))
+        return 1;
 
     KrunMmioDeviceManager devices = krun_mmio_device_manager_new();
 
@@ -498,6 +560,14 @@ int main(int argc, char *argv[])
         }
     }
 
+#ifndef __linux__
+    if (rosetta != NULL) {
+        CHECK(KrunFsDevice fs = krun_fs_device_new_read_only(KRUN_STR("rosetta"), KRUN_STR(rosetta), &err));
+        CHECK(krun_fs_device_set_rosetta(fs, true, &err));
+        krun_mmio_device_manager_add(devices, fs);
+    }
+#endif
+
     /* In order: the guest names them vda, vdb, ... */
     for (int i = 0; i < ndisks; i++) {
         char id[16];
@@ -529,7 +599,16 @@ int main(int argc, char *argv[])
     CHECK(KrunBalloonDevice balloon = krun_balloon_device_new(&err));
     krun_mmio_device_manager_add(devices, balloon);
 
-    CHECK(KrunPayload payload = krun_payload_load_krunfw(&err));
+    KrunPayload payload;
+    if (kernel != NULL) {
+        /* libkrun's default command line, which a payload with its own replaces. */
+        CHECK(payload = krun_payload_load_external(KRUN_STR(kernel), KRUN_KERNEL_FORMAT_RAW, (KrunStr){0},
+                                                   KRUN_STR("reboot=k panic=-1 panic_print=0 nomodule console=hvc0 "
+                                                            "rootfstype=virtiofs rw quiet no-kvmapf"),
+                                                   &err));
+    } else {
+        CHECK(payload = krun_payload_load_krunfw(&err));
+    }
     krun_payload_append_cmdline(payload, KRUN_STR("root=/dev/root init=/init"));
     const char *extra = getenv("PYNIXD_KRUN_CMDLINE");
     if (extra != NULL)
@@ -540,6 +619,11 @@ int main(int argc, char *argv[])
     CHECK(krun_vmm_builder_ram_mib(&builder, (uint32_t)memory, &err));
     krun_vmm_builder_payload(&builder, payload);
     krun_vmm_builder_devices(&builder, devices);
+#ifndef __linux__
+    if (tso) {
+        CHECK(krun_vmm_builder_tso(&builder, true, &err));
+    }
+#endif
 
     CHECK(KrunVmm vmm = krun_vmm_builder_build(&builder, &err));
     krun_vmm_run(vmm);
