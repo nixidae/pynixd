@@ -24,11 +24,7 @@ vivariumLib.mkTest {
   backend = "container";
 
   # Every path `settings` names is one the guests read.
-  defaults =
-    { settings, ... }:
-    {
-      vivarium.lateClosure = vivariumLib.pathsIn settings;
-    };
+  defaults = vivariumLib.settingsClosure;
   settings = {
     src = "${src}";
     # `tests/benchmark/system.nix` imports <nixpkgs>, and the phase names this

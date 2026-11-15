@@ -16,11 +16,7 @@ vivariumLib.mkTest {
   name = "pynixd-installer";
   backend = "qemu";
 
-  defaults =
-    { settings, ... }:
-    {
-      vivarium.lateClosure = vivariumLib.pathsIn settings;
-    };
+  defaults = vivariumLib.settingsClosure;
   settings = {
     tarball = "${tarball}/${tarball.fileName}";
     python = "${package.venv}/lib/venv/bin/python";

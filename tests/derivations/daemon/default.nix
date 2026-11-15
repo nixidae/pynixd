@@ -128,11 +128,7 @@ vivariumLib.mkTest (
     pythonPath = [ ../../daemon/helpers ];
 
     # Every path `settings` names is one the guests read.
-    defaults =
-      { settings, ... }:
-      {
-        vivarium.lateClosure = vivariumLib.pathsIn settings;
-      };
+    defaults = vivariumLib.settingsClosure;
     settings = {
       busybox = "${pkgs.busybox}";
       system = pkgs.stdenv.hostPlatform.system;

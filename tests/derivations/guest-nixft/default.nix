@@ -32,11 +32,7 @@ vivariumLib.mkTest (
     backend = "qemu";
 
     # Every path `settings` names is one the guests read.
-    defaults =
-      { settings, ... }:
-      {
-        vivarium.lateClosure = vivariumLib.pathsIn settings;
-      };
+    defaults = vivariumLib.settingsClosure;
     /*
       What the scripts need that only Nix knows.
 
