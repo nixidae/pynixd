@@ -19,6 +19,9 @@ let
 
   python = "${package.venv}/lib/venv/bin/python";
 
+  # `install.py`'s `LAUNCHD_LABEL`.
+  launchdLabel = "org.nixidae.pynixd";
+
   profile = pkgs.buildEnv {
     name = "pynixd-profile";
     paths = [
@@ -28,9 +31,50 @@ let
     ];
   };
 
+  # launchd's job on darwin. `wait4path`, as Nix's own plist does: at boot launchd
+  # starts the job before the /nix volume is mounted. No socket activation: pynixd
+  # reads systemd's descriptors only, so it binds the socket itself, and
+  # `install.py` waits for it.
+  launchdJob = pkgs.writeTextDir "${launchdLabel}.plist" ''
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
+    <dict>
+      <key>Label</key>
+      <string>${launchdLabel}</string>
+      <key>ProgramArguments</key>
+      <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>/bin/wait4path /nix/store &amp;&amp; exec ${lib.getExe package} daemon</string>
+      </array>
+      <key>EnvironmentVariables</key>
+      <dict>
+        <key>PYNIXD_CONFIG</key>
+        <string>/etc/pynixd/pynixd.json</string>
+        <key>PATH</key>
+        <string>${nix}/bin:${pkgs.coreutils}/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+      </dict>
+      <key>RunAtLoad</key>
+      <true/>
+      <key>KeepAlive</key>
+      <true/>
+      <key>StandardErrorPath</key>
+      <string>/var/log/pynixd.log</string>
+      <key>StandardOutPath</key>
+      <string>/var/log/pynixd.log</string>
+      <key>SoftResourceLimits</key>
+      <dict>
+        <key>NumberOfFiles</key>
+        <integer>1048576</integer>
+      </dict>
+    </dict>
+    </plist>
+  '';
+
   # The units, as files. Not the NixOS module's: that one is NixOS options, and
   # a machine without NixOS needs the unit text itself.
-  units = pkgs.runCommand "pynixd-units" { } ''
+  systemdUnits = pkgs.runCommand "pynixd-units" { } ''
     mkdir -p $out
     cat > $out/pynixd.socket <<'EOF'
     [Unit]
@@ -68,6 +112,8 @@ let
     WantedBy=multi-user.target
     EOF
   '';
+
+  units = if pkgs.stdenv.hostPlatform.isDarwin then launchdJob else systemdUnits;
 
   installer = pkgs.runCommand "pynixd-installer" { } ''
     mkdir -p $out/bin

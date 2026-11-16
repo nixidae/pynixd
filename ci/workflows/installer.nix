@@ -23,6 +23,11 @@ let
       runner = "ubuntu-24.04-arm";
       system = "aarch64-linux";
     }
+    # pynixd builds darwin derivations with no nix-daemon: nixidae/nixidae#1367.
+    {
+      runner = "macos-latest";
+      system = "aarch64-darwin";
+    }
   ];
   artifactName = "pynixd-tarball-\${{ matrix.system }}";
 
@@ -107,7 +112,8 @@ ghalib.evalWorkflow {
       steps = [
         {
           name = "pynixd is the only daemon";
-          run = "systemctl is-active pynixd.service && ! pidof nix-daemon && nix store info";
+          # `pgrep -x`, not `pidof`: macOS has no `pidof`.
+          run = ''if [ "$RUNNER_OS" = macOS ]; then sudo launchctl print system/org.nixidae.pynixd > /dev/null; else systemctl is-active pynixd.service; fi && ! pgrep -x nix-daemon && nix store info'';
         }
         {
           name = "Build the tarball through pynixd";
@@ -116,7 +122,8 @@ ghalib.evalWorkflow {
         {
           name = "pynixd's journal";
           "if" = "\${{ !cancelled() }}";
-          run = "sudo journalctl -u pynixd.service --no-pager";
+          # launchd's job writes to the file its plist names (`nix/installer/default.nix`).
+          run = ''if [ "$RUNNER_OS" = macOS ]; then sudo cat /var/log/pynixd.log; else sudo journalctl -u pynixd.service --no-pager; fi'';
         }
       ];
     };
@@ -145,7 +152,7 @@ ghalib.evalWorkflow {
 
     /*
       The release `nix.install.pynixdTarball` names, replaced from main once
-      both systems' `runner` passed. One tag, moved to the commit each time,
+      every system's `runner` passed. One tag, moved to the commit each time,
       so the release names the commit that built what it holds. `pynixd-`
       names the source: every source shares one tag namespace.
     */
