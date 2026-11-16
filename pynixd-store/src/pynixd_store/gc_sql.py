@@ -105,8 +105,8 @@ class SqlPlan:
         await self._load("gc_live", live)
         await self._load("gc_veto", vetoed)
         await self._session.execute(self._sql.load_dead)
-        await self._session.execute(self._sql.plan, (cutoff,))
-        row = await self._session.fetchone(self._sql.counts, (cutoff,))
+        await self._session.execute(self._sql.plan, {"cutoff": cutoff})
+        row = await self._session.fetchone(self._sql.counts, {"cutoff": cutoff})
         if row is None:
             raise RuntimeError("the plan counts returned no row")
         counts = PlanCounts(valid=row[0], live=row[1], stale=row[2], planned=row[3], spared=row[4])

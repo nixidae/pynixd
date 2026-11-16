@@ -53,7 +53,7 @@ WHERE v.id NOT IN (SELECT id FROM gc_live)
     plan="""
 INSERT INTO gc_planned
 WITH RECURSIVE closure(id) AS (
-    SELECT id FROM gc_dead WHERE ?1 IS NULL OR seen < ?1
+    SELECT id FROM gc_dead WHERE :cutoff IS NULL OR seen < :cutoff
     UNION
     SELECT r.referrer FROM closure c JOIN Refs r ON r.reference = c.id
 )
@@ -64,7 +64,7 @@ SELECT
     (SELECT count(*) FROM ValidPaths),
     (SELECT count(*) FROM gc_live),
     (SELECT count(*) FROM ValidPaths v LEFT JOIN {PATH_ACCESS_TABLE} a ON a.path = v.path
-        WHERE ?1 IS NOT NULL AND COALESCE(a.lastReferencedAt, v.registrationTime) < ?1),
+        WHERE :cutoff IS NOT NULL AND COALESCE(a.lastReferencedAt, v.registrationTime) < :cutoff),
     (SELECT count(*) FROM gc_planned),
     (SELECT count(*) FROM gc_planned WHERE id IN (SELECT id FROM gc_veto))
 """,
