@@ -163,6 +163,20 @@ class Store(ABC):
         return 0
 
     @property
+    def asked_last(self) -> bool:
+        """Whether a substitution asks this store only after every other one missed the path."""
+        return False
+
+    @property
+    def joins_every_client(self) -> bool:
+        """Whether this substituter joins the list of a client that names its own: no client can name it by URL."""
+        return False
+
+    def take_built_outputs(self, local: Store, paths: Iterable[StorePath]) -> None:
+        """*paths*, outputs a build just put in *local*; a store that keeps built outputs queues them."""
+        del local, paths
+
+    @property
     def daemon_client(self) -> ScheduledStore | None:
         """The worker-protocol client that builds and transfers for this store, or `None`.
 

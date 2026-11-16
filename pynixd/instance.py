@@ -27,6 +27,7 @@ from .config import (
 )
 from .context import PynixdContext
 from .exceptions import GCNotPermittedError
+from .execution import output_paths
 from .gc import Collector
 from .health import HealthReport, LoopLagMonitor, StallWatchdog
 from .liveness_watch import DirtyFlag, StableRootsWatch
@@ -47,7 +48,9 @@ if TYPE_CHECKING:
     from aiohttp import web
     from anyio.abc import TaskStatus
 
+    from .build_queue import QueuedBuild
     from .daemon_extensions.pynixd_collect_garbage import PynixdCollectGarbageResponse
+    from .serde import BuildDerivationResponse
 
 log = structlog.get_logger(__name__)
 
@@ -697,6 +700,12 @@ class Server:
                 await self.close()
             raise
 
+    def _hand_on_built_outputs(self, build: QueuedBuild, response: BuildDerivationResponse) -> None:
+        """Give the outputs of a build that succeeded to each store that keeps them: the GitHub Actions cache."""
+        paths = output_paths(build, response)
+        for store in self.ctx.stores.values():
+            store.take_built_outputs(self.ctx.local_store, paths)
+
     async def _start_inner(self) -> None:
         """Open stores, start tasks, and bind every listener."""
         local_store = self.ctx.local_store
@@ -726,6 +735,7 @@ class Server:
             added = _add_substituter_stores(self.ctx._stores, self.ctx.trust.substituters, self.ctx.settings)
             log.info("substituters_from_nix_conf", stores=[str(store.store_id) for store in added])
         if self.ctx.scheduler:
+            self.ctx.scheduler.queue.on_built.append(self._hand_on_built_outputs)
             queue = self.ctx.scheduler.substitution_queue
             queue.set_import_slots(self.ctx.trust.max_substitution_jobs)
             queue.note_daemon_substituters(self.ctx.trust.substituters)

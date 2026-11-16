@@ -23,7 +23,7 @@ from .serde.context import WriteContext
 from .state_models import QueueCounts
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
     from nix_daemon_protocol.logs import LogMessage
     from pynixd_store.build_stats import BuildObservation, StoreEstimate
@@ -532,6 +532,8 @@ class BuildQueue:
         self._requests: dict[RequestId, SchedulerBuildRequest] = {}
         self.next_id = 1
         self.next_request_id = 1
+        self.on_built: list[Callable[[QueuedBuild, BuildDerivationResponse], None]] = []
+        """Called with each build that ran here or on a builder and succeeded, after its outputs arrived."""
         # Each goal system that met a failed build and did not set
         # `keep-going`. `complete` and `fail` write it, under this lock and
         # before `Scheduler.trigger`, which is what lets `_assign_to_stores`
@@ -839,6 +841,12 @@ class BuildQueue:
                     # Every success: a builder that held the outputs answers
                     # `ALREADY_VALID`, and nixidae/nixidae#998 counted it a failure.
                     status = "success" if BuildResultStatus(response.result.status).is_success else "failure"
+                    if response.result.status == BuildResultStatus.BUILT:
+                        for listener in self.on_built:
+                            try:
+                                listener(b, response)
+                            except Exception:
+                                log.exception("build_listener_failed", build_id=build_id)
                     metrics.BUILDS_COMPLETED.labels(status=status).inc()
                     if b.build_time is not None:
                         metrics.BUILD_DURATION.observe(b.build_time)

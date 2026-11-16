@@ -43,7 +43,10 @@ class FakeSubstituter:
         delay: float = 0.0,
         nar_size: int = 10,
         priority: float = 1.0,
+        asked_last: bool = False,
     ) -> None:
+        self.asked_last = asked_last
+        self.joins_every_client = asked_last
         self.store_id = StoreId(store_id)
         self.valid = valid
         self.delay = delay
@@ -132,6 +135,33 @@ async def test_can_substitute_returns_first_positive_and_keeps_probing() -> None
         assert fast_hit.queries == 1
         await anyio.sleep(0.06)
         assert slow_missing.queries == 1
+
+
+@pytest.mark.anyio
+async def test_a_store_asked_last_is_asked_only_after_every_other_missed() -> None:
+    """The GitHub Actions cache: each question is an entry download of 1500 a minute (nixidae/nixidae#1398)."""
+    path = StorePath("/nix/store/00000000000000000000000000000000-example")
+    other = FakeSubstituter("other", valid=True)
+    last = FakeSubstituter("last", valid=True, asked_last=True)
+    ctx = cast(
+        "PynixdContext",
+        SimpleNamespace(
+            settings=PynixdSettings(),
+            stores={StoreId("local"): SimpleNamespace(no_schedule=False), other.store_id: other, last.store_id: last},
+        ),
+    )
+    queue = SubstitutionQueue(ctx)
+    async with queue.running():
+        assert (await queue.can_substitute(path)).available
+        candidate = await queue.get_substituter(path)
+        assert candidate is not None
+        assert candidate.store.store_id == other.store_id
+        assert last.queries == 0
+
+        other.valid = False
+        missing = StorePath("/nix/store/11111111111111111111111111111111-example")
+        assert (await queue.can_substitute(missing)).available
+        assert last.queries == 1
 
 
 @pytest.mark.anyio

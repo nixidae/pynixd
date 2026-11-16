@@ -508,6 +508,12 @@ SUBSTITUTER_WAITED_FOR = Gauge(
 
 # --- HTTP binary cache clients ---
 
+GHA_CACHE_UPLOADS = Counter(
+    "pynixd_gha_cache_uploads_total",
+    "Built outputs pynixd queued for the GitHub Actions cache, by how the upload ended",
+    ["store_id", "result"],  # uploaded, present, failed
+)
+
 BINARY_CACHE_NARINFO = Counter(
     "pynixd_binary_cache_narinfo_total",
     "`.narinfo` requests pynixd made to an upstream HTTP binary cache",

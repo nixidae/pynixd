@@ -18,6 +18,7 @@ import uvloop
 
 from .cli.base import load_settings, setup_logging
 from .cli.gc import register as register_gc
+from .cli.gha_cache import register as register_gha_cache
 from .cli.roots import register as register_roots
 from .cli.state import register as register_state
 from .instance import Server
@@ -77,6 +78,7 @@ def main() -> None:
     daemon_parser.set_defaults(func=daemon_main)
 
     register_gc(root_sub)
+    register_gha_cache(root_sub)
     register_roots(root_sub)
     register_state(root_sub)
 

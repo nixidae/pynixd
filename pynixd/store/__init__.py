@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from .binary_cache import BinaryCacheStore as BinaryCacheStore
     from .daemon import DaemonStore as DaemonStore
     from .external_unix import ExternalUnixStore as ExternalUnixStore
+    from .gha_cache import GhaCacheStore as GhaCacheStore
     from .http_binary_cache import HTTPBinaryCacheStore as HTTPBinaryCacheStore
     from .local import LocalSocketStore as LocalSocketStore
     from .local_binary_cache import LocalBinaryCacheStore as LocalBinaryCacheStore
@@ -53,6 +54,7 @@ ORIGIN: dict[str, str] = {
     "BinaryCacheStore": "binary_cache",
     "DaemonStore": "daemon",
     "ExternalUnixStore": "external_unix",
+    "GhaCacheStore": "gha_cache",
     "HTTPBinaryCacheStore": "http_binary_cache",
     "LocalBinaryCacheStore": "local_binary_cache",
     "LocalDBStore": "local_db",
@@ -75,6 +77,7 @@ __all__ = [
     "BinaryCacheStore",
     "DaemonStore",
     "ExternalUnixStore",
+    "GhaCacheStore",
     "HTTPBinaryCacheStore",
     "LocalBinaryCacheStore",
     "LocalDBStore",
@@ -90,6 +93,7 @@ __all__ = [
     "Store",
     "get_current_system",
     "is_binary_cache",
+    "is_gha_cache",
     "is_http_binary_cache",
     "resolve_aws_credentials",
 ]
@@ -114,6 +118,14 @@ def is_binary_cache(store: Store) -> TypeGuard[BinaryCacheStore]:
     if module is None:
         return False
     return isinstance(store, module.BinaryCacheStore)
+
+
+def is_gha_cache(store: Store) -> TypeGuard[GhaCacheStore]:
+    """Whether *store* is a `GhaCacheStore`, and never load one to ask, as `is_http_binary_cache` says."""
+    module = sys.modules.get(f"{__name__}.gha_cache")
+    if module is None:
+        return False
+    return isinstance(store, module.GhaCacheStore)
 
 
 def is_http_binary_cache(store: Store) -> TypeGuard[HTTPBinaryCacheStore]:

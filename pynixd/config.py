@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from .store import (
         DaemonStore,
         ExternalUnixStore,
+        GhaCacheStore,
         HTTPBinaryCacheStore,
         LocalBinaryCacheStore,
         LocalDBStore,
@@ -1164,6 +1165,37 @@ class S3BinaryCacheSpec(BinaryCacheSpecBase):
         return S3BinaryCacheStore(self.model_copy(update={"store_id": StoreId(store_id)}))
 
 
+class GhaCacheSpec(BinaryCacheSpecBase):
+    """The GitHub Actions cache of the job pynixd runs in: substitutes from it, uploads built outputs to it.
+
+    nixidae/nixidae#1377. The runner gives the credentials only to an action, so a step writes
+    them to *credentials_file* before pynixd starts; without the file the cache stays closed.
+    """
+
+    type: Literal["gha-cache"] = "gha-cache"
+    credentials_file: Path = Path("/etc/pynixd/gha-cache.json")
+    """A JSON object of `ACTIONS_RESULTS_URL`, `ACTIONS_RUNTIME_TOKEN`, `ACTIONS_CACHE_SERVICE_V2` and
+    `ACTIONS_CACHE_MODE`, as the runner names them. It holds a token: mode 0600, root's."""
+    trusted: bool = True
+    """Its narinfos carry no signature, as magic-nix-cache's do (`main.rs:438`, `?trusted=1`).
+    A job writes only to its own ref's scope, and any code that can write there can also change the job."""
+    uploads: bool = True
+    """Upload each output pynixd builds, when the job's cache mode allows writes."""
+    version_salt: str = ""
+    """Mixed into every entry's version: two salts are two caches in one repository."""
+    max_concurrent_uploads: int = 4
+
+    def reference_key(self) -> object | None:
+        """The credentials file and the salt: one cache per pair."""
+        return ("gha-cache", self.credentials_file, self.version_salt, self.store_dir)
+
+    def to_store(self, store_id: str) -> GhaCacheStore:
+        """Build a ``GhaCacheStore`` from this spec."""
+        from .store import GhaCacheStore
+
+        return GhaCacheStore(self.model_copy(update={"store_id": StoreId(store_id)}))
+
+
 StoreSpec = Annotated[
     LocalSocketStoreSpec
     | ExternalUnixStoreSpec
@@ -1172,7 +1204,8 @@ StoreSpec = Annotated[
     | ReverseStoreSpec
     | HTTPBinaryCacheSpec
     | LocalBinaryCacheSpec
-    | S3BinaryCacheSpec,
+    | S3BinaryCacheSpec
+    | GhaCacheSpec,
     Field(discriminator="type"),
 ]
 

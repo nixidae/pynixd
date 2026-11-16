@@ -47,6 +47,13 @@ log = structlog.get_logger(__name__)
 _NAR_CHUNK_SIZE = 1024 * 256
 
 
+def _split_asked_last(stores: Iterable[Store]) -> tuple[list[Store], list[Store]]:
+    """*stores* in two groups: the ones asked at once, then the ones asked when all of those missed."""
+    first = [store for store in stores if not store.asked_last]
+    last = [store for store in stores if store.asked_last]
+    return first, last
+
+
 def path_in_store(path: StorePath, store: Store, ca: ContentAddress | None) -> StorePath | None:
     """The name *path* has in *store*, or `None` when Nix does not look for it there.
 
@@ -257,7 +264,11 @@ class SubstitutionQueue:
         named = overrides.get("substituters", overrides.get("binary-caches"))
         if named is None:
             return None if self.uncovered else tuple(self.substituter_stores())
-        return await self.client_substituters.resolve(named.split(), self.ctx.stores.items())
+        resolved = await self.client_substituters.resolve(named.split(), self.ctx.stores.items())
+        joining = tuple(store for store in self.substituter_stores() if store.joins_every_client)
+        if resolved is None or not joining:
+            return resolved
+        return (*resolved, *(store for store in joining if store not in resolved))
 
     @contextlib.asynccontextmanager
     async def running(self) -> AsyncIterator[None]:
@@ -284,6 +295,15 @@ class SubstitutionQueue:
         """
         await self._opened()
         stores = self._reaching(path, self.substituter_stores() if stores is None else stores, ca)
+        first, last = _split_asked_last(stores)
+        found = await self._can_substitute_from(path, first, ca)
+        if found.available or not last:
+            return found
+        return await self._can_substitute_from(path, last, ca)
+
+    async def _can_substitute_from(
+        self, path: StorePath, stores: list[Store], ca: ContentAddress | None
+    ) -> SubstitutionAvailability:
         cached = self._cached_positive(path, stores)
         if cached is not None:
             return SubstitutionAvailability.from_query_result(cached)
@@ -332,14 +352,16 @@ class SubstitutionQueue:
         """
         await self._opened()
         stores = self._reaching(path, self.substituter_stores() if stores is None else stores, ca)
-        if not stores:
-            return None
-
-        stale_stores = [store for store in stores if not self._has_cached_result(path, store.store_id)]
-        if stale_stores:
-            await self._query_stores_for_selection(path, stale_stores, ca)
-
-        return self._best_candidate_from_cache(path, stores)
+        best = None
+        for group in _split_asked_last(stores):
+            if not group:
+                continue
+            stale_stores = [store for store in group if not self._has_cached_result(path, store.store_id)]
+            if stale_stores:
+                await self._query_stores_for_selection(path, stale_stores, ca)
+            if (best := self._best_candidate_from_cache(path, group)) is not None:
+                return best
+        return best
 
     async def get_substituters(
         self, path: StorePath, stores: Iterable[Store], *, ca: ContentAddress | None = None
@@ -347,10 +369,13 @@ class SubstitutionQueue:
         """Each of *stores* that holds *path*, by priority; the first listed wins a tie. *ca* as for `can_substitute`."""
         await self._opened()
         reaching = self._reaching(path, stores, ca)
-        stale_stores = [store for store in reaching if not self._has_cached_result(path, store.store_id)]
-        if stale_stores:
-            await self._query_stores_for_selection(path, stale_stores, ca)
-        return self._candidates_from_cache(path, reaching)
+        for group in _split_asked_last(reaching):
+            stale_stores = [store for store in group if not self._has_cached_result(path, store.store_id)]
+            if stale_stores:
+                await self._query_stores_for_selection(path, stale_stores, ca)
+            if candidates := self._candidates_from_cache(path, group):
+                return candidates
+        return []
 
     async def substitute(
         self,
@@ -440,7 +465,9 @@ class SubstitutionQueue:
         directory: the race serves its narinfo text, which names paths there.
         """
         return [
-            store for store in self.substituter_stores() if is_binary_cache(store) and store.store_dir == store_dir()
+            store
+            for store in self.substituter_stores()
+            if is_binary_cache(store) and store.store_dir == store_dir() and not store.asked_last
         ]
 
     async def race_http_narinfo(self, hash_part: str) -> UpstreamNarinfo | None:
