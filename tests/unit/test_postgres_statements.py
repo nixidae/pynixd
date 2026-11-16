@@ -15,7 +15,7 @@ import pytest
 
 from pynixd_store.postgres_db import PostgresBackend
 from pynixd_store.postgres_schema import migrate
-from pynixd_store.sql import SQLITE, nix, path_access
+from pynixd_store.sql import SQLITE, nix, observations, path_access
 from tests._conftest.engines import postgres_parameters, sqlite_parameters
 
 if TYPE_CHECKING:
@@ -26,6 +26,7 @@ _NO_REALISATIONS = "a PostgreSQL store keys realisations by path, so it has no `
 GROUPS: dict[str, tuple[object, object]] = {
     "nix": (nix.POSTGRES, nix.sqlite(provenance=True)),
     "path_access": (path_access.POSTGRES, path_access.SQLITE),
+    "observations": (observations.POSTGRES, observations.SQLITE),
 }
 """Each group's PostgreSQL twins and the SQLite statements they mirror."""
 

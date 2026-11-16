@@ -106,3 +106,84 @@ WHERE name = ? AND system = ? AND shape = ? AND storeId != ? AND pullBytes IS NO
 ORDER BY id DESC LIMIT ?
 """,
 )
+
+
+_POSTGRES_PRUNED_OBSERVATIONS = f"""
+    SELECT id FROM {BUILD_OBSERVATION_TABLE}
+    WHERE name = %(name)s AND system = %(system)s AND shape = %(shape)s AND storeId = %(store)s AND id NOT IN (
+        SELECT id FROM {BUILD_OBSERVATION_TABLE}
+        WHERE name = %(name)s AND system = %(system)s AND shape = %(shape)s AND storeId = %(store)s
+        ORDER BY id DESC LIMIT %(kept)s
+    ) AND id IS DISTINCT FROM (
+        SELECT max(id) FROM {BUILD_OBSERVATION_TABLE}
+        WHERE name = %(name)s AND system = %(system)s AND shape = %(shape)s AND storeId = %(store)s AND status = 0
+    )
+"""
+
+POSTGRES = ObservationSql(
+    insert_derivation_shape=f"""
+INSERT INTO {DERIVATION_SHAPE_TABLE} (shape, keys, features) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING
+""",
+    insert_build_observation=f"""
+INSERT INTO {BUILD_OBSERVATION_TABLE}
+(name, system, shape, storeId, status, queuedMs, inputsMs, inputsBytes, buildMs,
+ cpuUserUs, cpuSystemUs, pullMs, pullBytes, resourceSource, peakMemoryBytes, ioReadBytes, ioWriteBytes,
+ cpuStallUs, memoryStallUs, ioStallUs, hostResourceSource, hostCpuUserUs, hostCpuSystemUs, hostPeakMemoryBytes,
+ finishedAt)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+ extract(epoch FROM now())::bigint)
+RETURNING id
+""",
+    insert_build_observation_sample=f"""
+INSERT INTO {BUILD_OBSERVATION_SAMPLE_TABLE}
+(observationId, atMs, cpuUs, memoryBytes, ioReadBytes, ioWriteBytes) VALUES (%s, %s, %s, %s, %s, %s)
+""",
+    prune_build_observation_samples=f"""
+DELETE FROM {BUILD_OBSERVATION_SAMPLE_TABLE} WHERE observationId IN ({_POSTGRES_PRUNED_OBSERVATIONS})
+""",
+    prune_build_observations=f"""
+DELETE FROM {BUILD_OBSERVATION_TABLE} WHERE id IN ({_POSTGRES_PRUNED_OBSERVATIONS})
+""",
+    build_ms_of_shape=f"""
+SELECT buildMs FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = %s AND system = %s AND shape = %s AND status = 0 AND buildMs IS NOT NULL
+ORDER BY id DESC LIMIT %s
+""",
+    build_ms_of_shape_on_store=f"""
+SELECT buildMs FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = %s AND system = %s AND shape = %s AND storeId = %s AND status = 0 AND buildMs IS NOT NULL
+ORDER BY id DESC LIMIT %s
+""",
+    build_ms_of_name=f"""
+SELECT buildMs FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = %s AND system = %s AND status = 0 AND buildMs IS NOT NULL
+ORDER BY id DESC LIMIT %s
+""",
+    peak_memory_of_shape=f"""
+SELECT coalesce(hostPeakMemoryBytes, peakMemoryBytes) FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = %s AND system = %s AND shape = %s AND status = 0
+AND coalesce(hostPeakMemoryBytes, peakMemoryBytes) IS NOT NULL
+ORDER BY id DESC LIMIT %s
+""",
+    peak_memory_of_name=f"""
+SELECT coalesce(hostPeakMemoryBytes, peakMemoryBytes) FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = %s AND system = %s AND status = 0
+AND coalesce(hostPeakMemoryBytes, peakMemoryBytes) IS NOT NULL
+ORDER BY id DESC LIMIT %s
+""",
+    store_link=f"""
+SELECT status, inputsBytes, inputsMs, pullBytes, pullMs, buildMs FROM {BUILD_OBSERVATION_TABLE}
+WHERE storeId = %s
+ORDER BY id DESC LIMIT %s
+""",
+    inputs_bytes=f"""
+SELECT inputsBytes FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = %s AND system = %s AND shape = %s AND storeId = %s AND inputsBytes IS NOT NULL
+ORDER BY id DESC LIMIT %s
+""",
+    pull_bytes=f"""
+SELECT pullBytes FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = %s AND system = %s AND shape = %s AND storeId != %s AND pullBytes IS NOT NULL
+ORDER BY id DESC LIMIT %s
+""",
+)
