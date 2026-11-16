@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import enum
 import json
+import re
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+_CAMEL_HUMP: Final = re.compile(r"[A-Z]")
 _SERVICE: Final = "github.actions.results.api.v1.CacheService"
 _BLOB_VERSION: Final = "2023-11-03"
 """The Azure Storage REST version each blob request names: block blobs of up to 4000 MiB a block."""
@@ -201,9 +203,9 @@ class GhaCacheApi:
         reply = await self._twirp(
             "GetCacheEntryDownloadURL", {"key": key, "restoreKeys": [key], "version": self.version}
         )
-        if not reply.get("ok") or reply.get("matchedKey", key) != key:
+        if not reply.get("ok") or reply.get("matched_key", key) != key:
             return None
-        url = str(reply.get("signedDownloadUrl", ""))
+        url = str(reply.get("signed_download_url", ""))
         if not url:
             raise CacheFault(f"GetCacheEntryDownloadURL for '{key}' answered no URL")
         return signed_url(url, self.now)
@@ -216,7 +218,7 @@ class GhaCacheApi:
         """
         reply = await self._twirp("CreateCacheEntry", {"key": key, "version": self.version})
         if reply.get("ok"):
-            url = str(reply.get("signedUploadUrl", ""))
+            url = str(reply.get("signed_upload_url", ""))
             if not url:
                 raise CacheFault(f"CreateCacheEntry for '{key}' answered no URL")
             return url
@@ -288,8 +290,15 @@ class GhaCacheApi:
 
 
 def _json_object(text: str) -> dict[str, object]:
+    """The reply's top-level fields under their proto names.
+
+    GitHub's service answers `signed_upload_url` (`@actions/cache` `internal/shared/util.ts:65` masks that name); a proto3 JSON writer
+    may also send the lowerCamelCase name. A parser takes both, so this one does too.
+    """
     try:
         parsed: object = json.loads(text) if text else {}
     except ValueError:
         return {}
-    return parsed if isinstance(parsed, dict) else {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {_CAMEL_HUMP.sub(lambda m: f"_{m.group(0).lower()}", str(k)): v for k, v in parsed.items()}

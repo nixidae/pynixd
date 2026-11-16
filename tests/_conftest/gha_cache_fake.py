@@ -2,7 +2,8 @@
 
 It encodes pynixd's reading of the protocol (`@actions/cache`, `cacheTwirpClient.ts`, `cache.ts`),
 so a pass here proves pynixd and this reading agree. Only a run on a GitHub runner proves the
-reading. nixidae/nixidae#1377.
+reading. Replies carry the proto field names, as GitHub's service sends them (measured on a runner,
+2026-11-16). nixidae/nixidae#1377.
 """
 
 from __future__ import annotations
@@ -42,6 +43,8 @@ class FakeGhaCache:
     limited: int = 0
     """How many Twirp calls to come answer 429."""
     retry_after: int = 1
+    camel_case: bool = False
+    """Answer the lowerCamelCase JSON names, which a proto3 JSON writer may also send."""
 
     def credentials(self, path: Path, mode: str = "write") -> Path:
         """Write the job's credentials for this service to *path*, as the ghanix step does."""
@@ -56,6 +59,11 @@ class FakeGhaCache:
             )
         )
         return path
+
+    def _reply(self, fields: dict[str, object]) -> web.Response:
+        if self.camel_case:
+            fields = {re.sub(r"_(.)", lambda m: m.group(1).upper(), k): v for k, v in fields.items()}
+        return web.json_response(fields)
 
     def final_keys(self) -> set[str]:
         return {key for (key, _), entry in self.entries.items() if entry.final}
@@ -83,16 +91,16 @@ class FakeGhaCache:
             if entry is not None:
                 return web.json_response({"ok": False})
             self.entries[key, version] = _Entry()
-            return web.json_response({"ok": True, "signedUploadUrl": self._url(key)})
+            return self._reply({"ok": True, "signed_upload_url": self._url(key)})
         if method == "FinalizeCacheEntryUpload":
             if entry is None or entry.body is None or len(entry.body) != int(body["sizeBytes"]):
                 return web.json_response({"ok": False, "message": "size mismatch"})
             entry.final = True
-            return web.json_response({"ok": True, "entryId": "1"})
+            return self._reply({"ok": True, "entry_id": "1"})
         if method == "GetCacheEntryDownloadURL":
             if entry is None or not entry.final:
                 return web.json_response({})
-            return web.json_response({"ok": True, "signedDownloadUrl": self._url(key), "matchedKey": key})
+            return self._reply({"ok": True, "signed_download_url": self._url(key), "matched_key": key})
         return web.json_response({"code": "bad_route"}, status=404)
 
     def _entry_of(self, request: web.Request) -> _Entry:

@@ -31,11 +31,14 @@ async def _chunks(*parts: bytes) -> AsyncIterator[bytes]:
         yield part
 
 
+@pytest.mark.parametrize("camel_case", [False, True], ids=["proto-names", "json-names"])
 async def test_an_entry_goes_up_in_blocks_and_comes_back_by_range(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, camel_case: bool
 ) -> None:
+    """GitHub's service answers the proto field names (`signed_upload_url`); a parser takes both."""
     monkeypatch.setattr(gha_cache_api, "BLOCK_SIZE", 4)
     async with serve_fake_gha_cache() as fake, aiohttp.ClientSession() as session:
+        fake.camel_case = camel_case
         api = _api(fake, tmp_path, session)
         url = await api.create("abc")
         assert url is not None
