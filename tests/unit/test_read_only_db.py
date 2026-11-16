@@ -57,7 +57,7 @@ async def test_only_an_immutable_open_reads_a_closed_wal_database_it_cannot_writ
         try:
             assert db.active is immutable
             if immutable:
-                async with db.acquire_conn() as conn, conn.execute("SELECT path FROM ValidPaths") as cursor:
+                async with db.backend.acquire_conn() as conn, conn.execute("SELECT path FROM ValidPaths") as cursor:
                     assert [row[0] for row in await cursor.fetchall()] == [PATH]
         finally:
             await db.close()

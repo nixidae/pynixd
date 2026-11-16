@@ -41,6 +41,7 @@ from pynixd.serde import (
 from pynixd.store.local_db import _path_field_names, referenced_paths
 from pynixd_store.db_migrations import PATH_ACCESS_TABLE
 from pynixd_store.local_store_db import LocalStoreDB
+from pynixd_store.sqlite_db import SqliteBackend
 from pynixd_store.store_layout import StoreLayout
 
 if TYPE_CHECKING:
@@ -240,7 +241,7 @@ class TestFlushingTheReferences:
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             db.mark_path(HELLO)
             await db.flush_references()
-            async with db.acquire_conn() as conn:
+            async with db.backend.acquire_conn() as conn:
                 await conn.execute(f"UPDATE {PATH_ACCESS_TABLE} SET lastReferencedAt = 1")
                 await conn.commit()
 
@@ -322,7 +323,7 @@ class TestExpandingClosuresByKind:
             db.mark_paths([HELLO])
             await db.flush_references()
             runtime = set(await _access_times(db))
-            async with db.acquire_conn() as conn:
+            async with db.backend.acquire_conn() as conn:
                 await conn.execute(f"DELETE FROM {PATH_ACCESS_TABLE}")
                 await conn.commit()
             db.mark_paths([HELLO], kind="build")
@@ -355,7 +356,7 @@ class TestExpandingClosuresByKind:
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             db.mark_paths([HELLO])
             await db.flush_references()
-            async with db.acquire_conn() as conn:
+            async with db.backend.acquire_conn() as conn:
                 await conn.execute("DELETE FROM ValidPaths WHERE path = ?", (HELLO,))
                 await conn.execute("DELETE FROM ValidPaths WHERE path = ?", (LIBC,))
                 await conn.commit()
@@ -380,10 +381,10 @@ class TestFlushingUnderContention:
         _store_with_a_closure(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             calls = 0
-            real = LocalStoreDB.acquire_conn
+            real = SqliteBackend.acquire_conn
 
             @asynccontextmanager
-            async def flaky(self: LocalStoreDB) -> AsyncIterator[aiosqlite.Connection]:
+            async def flaky(self: SqliteBackend) -> AsyncIterator[aiosqlite.Connection]:
                 nonlocal calls
                 calls += 1
                 if calls <= 2:
@@ -391,7 +392,7 @@ class TestFlushingUnderContention:
                 async with real(self) as conn:
                     yield conn
 
-            monkeypatch.setattr(LocalStoreDB, "acquire_conn", flaky)
+            monkeypatch.setattr(SqliteBackend, "acquire_conn", flaky)
             db.flush_retry_seconds = 0.0
             db.mark_path(HELLO)
             await db.flush_references()
@@ -409,13 +410,13 @@ class TestFlushingUnderContention:
             calls = 0
 
             @asynccontextmanager
-            async def always_locked(self: LocalStoreDB) -> AsyncIterator[aiosqlite.Connection]:
+            async def always_locked(self: SqliteBackend) -> AsyncIterator[aiosqlite.Connection]:
                 nonlocal calls
                 calls += 1
                 raise sqlite3.OperationalError("database is locked")
                 yield
 
-            monkeypatch.setattr(LocalStoreDB, "acquire_conn", always_locked)
+            monkeypatch.setattr(SqliteBackend, "acquire_conn", always_locked)
             db.flush_retry_seconds = 0.0
             db.mark_path(HELLO)
             await db.flush_references()
@@ -436,7 +437,7 @@ class TestAskingTheTable:
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             db.mark_path(HELLO)
             await db.flush_references()
-            async with db.acquire_conn() as conn:
+            async with db.backend.acquire_conn() as conn:
                 await conn.execute(
                     f"UPDATE {PATH_ACCESS_TABLE} SET lastReferencedAt = ? WHERE path = ?",
                     (int(time.time()) - 90_000, LIBC),
@@ -452,7 +453,7 @@ class TestAskingTheTable:
         """The join that keeping the table inside Nix's database buys."""
         _store_with_a_closure(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
-            async with db.acquire_conn() as conn:
+            async with db.backend.acquire_conn() as conn:
                 await conn.execute(
                     f"INSERT INTO {PATH_ACCESS_TABLE} (path, lastReferencedAt) VALUES (?, 1)",
                     (GONE,),
@@ -496,7 +497,7 @@ class TestAskingTheTable:
         """
         _store_with_a_closure(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
-            async with db.acquire_conn() as conn:
+            async with db.backend.acquire_conn() as conn:
                 await conn.execute("UPDATE ValidPaths SET registrationTime = ?", (int(time.time()),))
                 await conn.commit()
 
@@ -510,7 +511,7 @@ class TestAskingTheTable:
         _store_with_a_closure(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             now = int(time.time())
-            async with db.acquire_conn() as conn:
+            async with db.backend.acquire_conn() as conn:
                 await conn.execute(
                     f"INSERT INTO {PATH_ACCESS_TABLE} (path, lastReferencedAt) VALUES (?, ?)",
                     (HELLO, now),
@@ -534,7 +535,7 @@ class TestAskingTheTable:
         _store_with_a_closure(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             now = int(time.time())
-            async with db.acquire_conn() as conn:
+            async with db.backend.acquire_conn() as conn:
                 await conn.execute(
                     f"INSERT INTO {PATH_ACCESS_TABLE} (path, lastReferencedAt) VALUES (?, ?)",
                     (HELLO, now),

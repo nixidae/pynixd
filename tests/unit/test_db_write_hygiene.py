@@ -46,14 +46,14 @@ async def test_failed_checkout_returns_clean(tmp_path: Path) -> None:
         reference_flush_interval=60.0,
     )
     try:
-        async with db.acquire_conn() as conn:
+        async with db.backend.acquire_conn() as conn:
             await conn.execute("CREATE TABLE t (x INTEGER)")
             await conn.commit()
             await conn.execute("INSERT INTO t VALUES (1)")
             # No commit: a failure between write and commit. (The CREATE
             # commits on its own — sqlite autocommits DDL outside a
             # transaction — so the assertion below reads rows, not tables.)
-        async with db.acquire_conn() as second:
+        async with db.backend.acquire_conn() as second:
             cursor = await second.execute("SELECT COUNT(*) FROM t")
             row = await cursor.fetchone()
             assert row is not None
@@ -75,10 +75,10 @@ def _pool(tmp_path: Path) -> LocalStoreDB:
 async def test_a_clean_checkout_with_an_open_transaction_is_closed(tmp_path: Path) -> None:
     db = _pool(tmp_path)
     try:
-        async with db.acquire_conn() as conn:
+        async with db.backend.acquire_conn() as conn:
             await conn.execute("INSERT INTO t VALUES (1)")
-        assert conn not in db._idle_conns
-        assert conn not in db._all_conns
+        assert conn not in db.backend._idle_conns
+        assert conn not in db.backend._all_conns
         # Closed, so the write lock is free: a plain connection writes at once.
         with closing(sqlite3.connect(tmp_path / "db.sqlite", timeout=0)) as other, other:
             other.execute("INSERT INTO t VALUES (2)")
@@ -92,11 +92,11 @@ async def test_a_failed_checkout_never_returns_to_the_pool(tmp_path: Path) -> No
     db = _pool(tmp_path)
     try:
         with pytest.raises(RuntimeError, match="boom"):
-            async with db.acquire_conn() as conn:
+            async with db.backend.acquire_conn() as conn:
                 await (await conn.execute("SELECT 1")).fetchall()
                 raise RuntimeError("boom")
-        assert conn not in db._idle_conns
-        assert conn not in db._all_conns
+        assert conn not in db.backend._idle_conns
+        assert conn not in db.backend._all_conns
     finally:
         await db.close_db_pool()
 
@@ -105,10 +105,10 @@ async def test_a_failed_checkout_never_returns_to_the_pool(tmp_path: Path) -> No
 async def test_a_clean_idle_checkout_is_reused(tmp_path: Path) -> None:
     db = _pool(tmp_path)
     try:
-        async with db.acquire_conn() as first:
+        async with db.backend.acquire_conn() as first:
             await first.execute("INSERT INTO t VALUES (1)")
             await first.commit()
-        async with db.acquire_conn() as second:
+        async with db.backend.acquire_conn() as second:
             assert second is first
     finally:
         await db.close_db_pool()
@@ -120,10 +120,10 @@ async def test_a_cancelled_checkout_never_returns_to_the_pool(tmp_path: Path) ->
     db = _pool(tmp_path)
     try:
         with anyio.move_on_after(0.1):
-            async with db.acquire_conn() as conn:
+            async with db.backend.acquire_conn() as conn:
                 await conn.execute("INSERT INTO t VALUES (1)")
                 await anyio.sleep_forever()
-        assert conn not in db._all_conns
+        assert conn not in db.backend._all_conns
         with closing(sqlite3.connect(tmp_path / "db.sqlite", timeout=0)) as other, other:
             other.execute("INSERT INTO t VALUES (2)")
             assert other.execute("SELECT x FROM t").fetchall() == [(2,)]

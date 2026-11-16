@@ -1,9 +1,8 @@
-"""Direct SQLite access to the local Nix store database.
+"""pynixd's queries of the local Nix store database.
 
-Provides a connection pool for direct SQL queries against the local store DB.
 A caller reads with `fetchone` and `fetchall`, writes in `transaction`, and
-holds a `Session` (`database.py`) for anything longer; `acquire_conn` and its
-`aiosqlite` connection stay inside this module.
+holds a `Session` (`database.py`) for anything longer. The backend
+(`sqlite_db.SqliteBackend`) holds the connections; no driver is imported here.
 
 Reference updates are batched writes into pynixd's own access table:
 heads only, never closures. Marking one path used to touch its whole
@@ -30,45 +29,41 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import statistics
 import time
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from itertools import batched
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Self
+from typing import TYPE_CHECKING, Literal, Self
 
-import aiosqlite
 import anyio
 import structlog
 
 from .build_stats import BuildEstimateSource, ExpectedBytes, StoreLink
 from .database import DatabaseError, Params, Row, Session
-from .db_migrations import SchemaState, apply_migrations
+from .db_migrations import SchemaState
 from .nix_tables import NixTables
 from .placement_tables import PlacementTables
-from .sql import SQLITE, nix as nix_sql
-from .sqlite_db import SqliteDatabase, SqliteSession, database_uri, translated
+from .sql import SQLITE
+from .sqlite_db import SqliteBackend, SyncReader as SyncReader
 from .store_layout import StoreLayout
 from .store_path import StorePath
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable
     from contextlib import AbstractAsyncContextManager, AbstractContextManager
+    from pathlib import Path
 
     from nix_daemon_protocol.aliases import StorePathSet
 
     from .background import Background
     from .build_stats import BuildObservation, DerivationIdentity
     from .database import SyncSession
-    from .sql import NixSql
+    from .sql import Statements
 
 log = structlog.get_logger(__name__)
 
 __all__ = ["DatabaseError", "LocalStoreDB", "RootAttribution", "Session", "SyncReader"]
-
-_CHECKPOINT_BUSY_MS = 1000
 
 
 MarkKind = Literal["runtime", "build"]
@@ -117,120 +112,11 @@ def _bytes_per_s(transfers: list[tuple[int, int]]) -> float | None:
     return sum(size for size, _ in transfers) * 1000 / total_ms if total_ms else None
 
 
-class SyncReader:
-    """One synchronous read-only `sqlite3` connection for one client session.
-
-    **The point is to keep a `SELECT` off a thread hop.** A read through the
-    pool goes to `aiosqlite`, which runs every statement on a worker thread
-    and wakes the event loop when it answers. Measured on this machine, that
-    hop is 59 us for one `SELECT 1 FROM ValidPaths WHERE path = ?`, while the
-    same query on a synchronous connection is 3.2 us (18x). A build sends one
-    `IsValidPath` for every derivation of its closure, so the hop is the cost
-    that the fast path was meant to remove.
-
-    **It belongs to a session, not to the store.** A build is a burst of
-    reads, and SQLite serialises statements on one connection, so a shared
-    connection would let one client's slow query wait behind another's. One
-    connection for each client keeps that wait out of the other sessions, and
-    it is what makes running the query on the event loop safe in the first
-    place: the only work it can block is the client that asked for it.
-
-    The connection is read-only, and it reads a store database that holds a
-    rollback journal or a WAL. In WAL a reader never blocks the writer; in a
-    rollback journal a running `SELECT` takes a shared lock that a writer
-    waits behind. A single statement over an indexed `path` is short, and the
-    write path of `pynixd` is on the same event loop, so the lock is held for
-    as long as a Python call and not for a thread hop.
-    """
-
-    def __init__(self, db_path: Path, sql: NixSql = nix_sql.SQLITE, *, immutable: bool = False) -> None:
-        self.db_path = db_path
-        self.sql = sql
-        self.immutable = immutable
-        self._conn: sqlite3.Connection | None = None
-        self._unavailable = False
-
-    def _connection(self) -> sqlite3.Connection | None:
-        if self._unavailable:
-            return None
-        if self._conn is None:
-            try:
-                conn = sqlite3.connect(database_uri(self.db_path, read_only=True, immutable=self.immutable), uri=True)
-                # A read must never be what stops a store from working. The
-                # write path of the store is Nix's, and pynixd waits behind it
-                # here rather than failing the query.
-                conn.execute("PRAGMA busy_timeout = 5000")
-            except sqlite3.Error as exc:
-                self._unavailable = True
-                log.warning(
-                    "sync_reader_unavailable",
-                    db_path=str(self.db_path),
-                    error=str(exc),
-                    detail="reads of this store go back to the pooled aiosqlite connection",
-                )
-                return None
-            self._conn = conn
-        return self._conn
-
-    def is_valid_path(self, path: str) -> bool | None:
-        """Whether `ValidPaths` holds `path`, or `None` when no read happened.
-
-        `None` says that this connection could not answer, and the caller
-        must use the pooled connection instead. It is the same answer over
-        every failure, because the fast path is an optimization and a store
-        that a client may still build from must never be reported invalid.
-        """
-        conn = self._connection()
-        if conn is None:
-            return None
-        try:
-            cursor = conn.execute(self.sql.is_valid_path, (path,))
-        except sqlite3.Error:
-            log.debug("sync_reader_query_failed", exc_info=True)
-            return None
-        try:
-            return cursor.fetchone() is not None
-        finally:
-            cursor.close()
-
-    def query_path_info(self, path: str) -> tuple[tuple[Any, ...] | None, list[str]] | None:
-        """The `ValidPaths` row and reference paths for `path`.
-
-        One statement carries both: the info columns repeat on every row
-        and the last column holds one reference, so a path with no
-        references reads back as a single row with a null reference. `None`
-        when no read happened, and the caller must use the pooled connection
-        instead -- the same contract as `is_valid_path`. A `(None, [])` pair
-        means the read happened and the path is not valid, so the caller
-        answers `valid=False`.
-        """
-        conn = self._connection()
-        if conn is None:
-            return None
-        try:
-            cursor = conn.execute(self.sql.path_info_with_refs, (path,))
-        except sqlite3.Error:
-            log.debug("sync_reader_query_failed", exc_info=True)
-            return None
-        try:
-            rows = cursor.fetchall()
-        finally:
-            cursor.close()
-        if not rows:
-            return (None, [])
-        return (tuple(rows[0][:9]), [r[9] for r in rows if r[9] is not None])
-
-    def close(self) -> None:
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
-
-
 class LocalStoreDB:
-    """Connection pool and dispatcher for Nix store SQLite.
+    """The store database: pynixd's queries over the connections of its backend.
 
     Operation types implement their own DB logic via ``execute_db(db)``.
-    This class only manages connections and dispatches.
+    `backend` holds the connections and everything that knows the engine.
 
     Use the async factory ``await LocalStoreDB.open(layout)`` to create. A
     caller that holds it for one block writes ``async with await
@@ -249,11 +135,14 @@ class LocalStoreDB:
         *,
         immutable: bool = False,
     ) -> None:
-        self.db_path = db_path
         self.store_path = store_path
         self.read_only: bool = read_only or immutable
-        #: The database of storage that cannot change (`StoreLayout.immutable`), read with no lock.
-        self.immutable = immutable
+        self._backend = (
+            None
+            if db_path is None
+            else SqliteBackend(db_path, read_only=self.read_only, immutable=immutable, max_conns=max_conns)
+        )
+        self._synchronous: str | None = None
         self.reference_flush_interval = reference_flush_interval
         self.flush_retry_seconds = 1.0
         """The first backoff of a flush the database refused; it doubles.
@@ -295,24 +184,11 @@ class LocalStoreDB:
         that Nix's own tables are readable, which is a different question.
         """
 
-        self.sql = SQLITE
-        """The statements of this database. `open` checks `ValidPaths` for `provenance` once, and picks Nix's set."""
-
         self.nix = NixTables(self)
         """The queries and writes of Nix's own tables."""
 
         self.placements = PlacementTables(self)
         """The scheduler's placement trace tables."""
-
-        self.synchronous: str | None = None
-        """`pragma synchronous` for a writing connection: `NORMAL`, or `OFF` without `fsync-metadata`
-        (`local-store.cc:536`). `None` until the engine reads its settings; SQLite's default stands until then."""
-        self._synchronous_of: dict[aiosqlite.Connection, str] = {}
-
-        self._all_conns: list[aiosqlite.Connection] = []
-        self._idle_conns: list[aiosqlite.Connection] = []
-        self._pool_lock = anyio.Lock()
-        self._sem = anyio.Semaphore(max_conns)
 
     async def __aenter__(self) -> Self:
         return self
@@ -341,8 +217,36 @@ class LocalStoreDB:
         )
 
     @property
+    def backend(self) -> SqliteBackend:
+        """The engine of this database; `DatabaseError` when the store has none."""
+        if self._backend is None:
+            raise DatabaseError("the store has no database")
+        return self._backend
+
+    @property
     def active(self) -> bool:
-        return self.db_path is not None
+        return self._backend is not None
+
+    @property
+    def db_path(self) -> Path | None:
+        return None if self._backend is None else self._backend.db_path
+
+    @property
+    def sql(self) -> Statements:
+        """The statements of this database, which the backend picks when it opens."""
+        return SQLITE if self._backend is None else self._backend.sql
+
+    @property
+    def synchronous(self) -> str | None:
+        """`pragma synchronous` for a writing connection: `NORMAL`, or `OFF` without `fsync-metadata`
+        (`local-store.cc:536`). `None` until the engine reads its settings; SQLite's default stands until then."""
+        return self._synchronous
+
+    @synchronous.setter
+    def synchronous(self, mode: str | None) -> None:
+        self._synchronous = mode
+        if self._backend is not None:
+            self._backend.synchronous = mode
 
     def sync_reader(self) -> SyncReader | None:
         """A read-only connection for one client session, or `None` when none.
@@ -354,92 +258,7 @@ class LocalStoreDB:
         will not give one, so a store that only `aiosqlite` can read still
         answers every query over the pool.
         """
-        if not self.active or self.db_path is None:
-            return None
-        return SyncReader(self.db_path, self.sql.nix, immutable=self.immutable)
-
-    @asynccontextmanager
-    async def acquire_conn(self) -> AsyncIterator[aiosqlite.Connection]:
-        """Acquire a connection from the pool.
-
-        A connection goes back to the pool only from a clean exit with no
-        transaction open. Every other connection is interrupted and closed:
-        this file is Nix's own database, and a pooled connection that kept a
-        transaction held its lock for four hours on 2026-10-06 (#697).
-        """
-        db_path = self.db_path
-        if db_path is None:
-            raise RuntimeError("Database not active")
-
-        await self._sem.acquire()
-        conn: aiosqlite.Connection | None = None
-        clean = False
-        try:
-            async with self._pool_lock:
-                if self._idle_conns:
-                    conn = self._idle_conns.pop()
-
-            if conn is None:
-                uri = database_uri(db_path, read_only=self.read_only, immutable=self.immutable)
-                # Thirty seconds of busy wait, not five: this file is the
-                # Nix daemon's own database, and under heavy builders a
-                # flush that gives up early used to take the whole pool
-                # down with it. Contention here is normal, not failure.
-                conn = await aiosqlite.connect(uri, uri=True, timeout=30)
-                async with self._pool_lock:
-                    self._all_conns.append(conn)
-            await self._apply_synchronous(conn)
-
-            yield conn
-            clean = True
-        finally:
-            # Shielded: a cancellation landing here must not strand the
-            # connection or the semaphore with it.
-            with anyio.CancelScope(shield=True):
-                if conn is not None:
-                    await self._checkin(conn, clean=clean)
-                self._sem.release()
-
-    async def _apply_synchronous(self, conn: aiosqlite.Connection) -> None:
-        """The pragma is the connection's own, so each writing connection takes it once."""
-        if self.read_only or self.synchronous is None or self._synchronous_of.get(conn) == self.synchronous:
-            return
-        await conn.execute(f"PRAGMA synchronous = {self.synchronous}")
-        self._synchronous_of[conn] = self.synchronous
-
-    async def _checkin(self, conn: aiosqlite.Connection, *, clean: bool) -> None:
-        """Pool *conn* when it is provably idle; otherwise close it.
-
-        A checkout that raised or was cancelled may still have a statement
-        running on the connection's thread, so it never returns to the
-        pool, whatever `in_transaction` says. A clean checkout that left a
-        transaction open is a caller bug: it is logged, and the connection
-        closes too, which rolls the transaction back.
-
-        The interrupt stops a running statement at once, so the close that
-        follows is quick. The close has no timeout on purpose: a connection
-        given up on before it closed is the leak this exists to prevent.
-        """
-        try:
-            idle = clean and not conn.in_transaction
-        except Exception:
-            idle = False
-        if idle:
-            async with self._pool_lock:
-                self._idle_conns.append(conn)
-            return
-        if clean:
-            log.warning("db_checkin_open_transaction")
-        async with self._pool_lock:
-            with suppress(ValueError):
-                self._all_conns.remove(conn)
-            self._synchronous_of.pop(conn, None)
-        with suppress(Exception):
-            await conn.interrupt()
-        try:
-            await conn.close()
-        except Exception:
-            log.warning("db_checkin_close_failed", exc_info=True)
+        return None if self._backend is None else self._backend.sync_reader()
 
     @asynccontextmanager
     async def connection(self) -> AsyncIterator[Session]:
@@ -447,10 +266,8 @@ class LocalStoreDB:
 
         A write in the block goes in `session.transaction()`, or `transaction` here for a block that only writes.
         """
-        # The session translates its own statements; this covers the connect and the pool's own pragma.
-        with translated():
-            async with self.acquire_conn() as conn:
-                yield SqliteSession(conn, self.sql)
+        async with self.backend.connection() as session:
+            yield session
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[Session]:
@@ -458,18 +275,13 @@ class LocalStoreDB:
         async with self.connection() as session, session.transaction():
             yield session
 
-    def _file(self) -> SqliteDatabase:
-        if self.db_path is None:
-            raise DatabaseError("the store has no database")
-        return SqliteDatabase(self.db_path, self.sql, immutable=self.immutable)
-
     def snapshot(self) -> AbstractAsyncContextManager[Session]:
         """One read transaction on a connection of its own (`Database.snapshot`)."""
-        return self._file().snapshot()
+        return self.backend.database().snapshot()
 
     def sync_session(self, *, write: bool = False) -> AbstractContextManager[SyncSession]:
         """A worker thread's own connection (`Database.sync_session`)."""
-        return self._file().sync_session(write=write)
+        return self.backend.database().sync_session(write=write)
 
     async def fetchone(self, sql: str, params: Params = ()) -> Row | None:
         async with self.connection() as session:
@@ -511,43 +323,8 @@ class LocalStoreDB:
             immutable=layout.immutable,
         )
         try:
-            async with instance.acquire_conn() as db:
-                if not read_only:
-                    # The journal mode is Nix's to choose, and this used to set
-                    # WAL unconditionally. Nix picks it from `use-sqlite-wal`
-                    # (`settings.useSQLiteWAL ? "wal" : "truncate"`) and rewrites
-                    # the mode on every `LocalStore` open when it differs, so
-                    # forcing it here made the two flip the file back and forth.
-                    # The setting defaults to true, so nothing changes on a
-                    # normal machine; where it is false -- WSL1, or a store a
-                    # person put on a network filesystem -- it is false for a
-                    # reason and pynixd must not overrule it.
-                    async with db.execute("PRAGMA main.journal_mode") as cursor:
-                        row = await cursor.fetchone()
-                    journal_mode = str(row[0]).lower() if row else "unknown"
-                    if journal_mode != "wal":
-                        log.info(
-                            "nix_db_journal_mode_not_wal",
-                            db_path=db_path,
-                            journal_mode=journal_mode,
-                            detail="readers and writers of this database serialise; Nix chose the mode",
-                        )
-                # `async with`, and the row is read. A cursor that stops on
-                # its first row holds a shared lock on the file until it is
-                # closed, and this connection then goes back to the pool and
-                # holds that lock for the life of the process. In a rollback
-                # journal that blocks every writer, so `apply_migrations`
-                # waited out its whole busy timeout and then reported the
-                # database as locked. WAL hid it: a reader there does not
-                # block a writer, and a Nix store is WAL unless
-                # `use-sqlite-wal` is off.
-                async with db.execute("SELECT 1 FROM ValidPaths LIMIT 1") as cursor:
-                    await cursor.fetchone()
-                async with db.execute("SELECT name FROM pragma_table_info('ValidPaths')") as cursor:
-                    columns = {str(row[0]) for row in await cursor.fetchall()}
-                instance.sql = replace(SQLITE, nix=nix_sql.sqlite(provenance="provenance" in columns))
-
-        except (aiosqlite.Error, OSError) as e:
+            await instance.backend.probe()
+        except DatabaseError as e:
             log.warning(
                 "nix_db_open_failed",
                 db_path=db_path,
@@ -562,7 +339,7 @@ class LocalStoreDB:
                 await instance.close_db_pool()
             return cls.inactive(layout, reference_flush_interval=reference_flush_interval)
 
-        instance.schema = await apply_migrations(db_path, read_only=read_only, immutable=layout.immutable)
+        instance.schema = await instance.backend.migrate()
         if not instance.schema.usable:
             log.warning(
                 "pynixd_tables_unavailable",
@@ -711,45 +488,10 @@ class LocalStoreDB:
             return None
 
     async def checkpoint_wal(self) -> bool:
-        """Checkpoint the whole WAL into the database and truncate it to zero.
-
-        `True` when a checkpoint ran, busy or not; `False` when this store
-        has no database to checkpoint.
-
-        SQLite reuses a WAL file from its start after a checkpoint but never
-        shrinks it, and Nix sets no `journal_size_limit`: on dynhetz the WAL
-        stood at 1.8 GB beside a 1.6 GB database. A TRUNCATE checkpoint
-        needs every reader on the newest snapshot and blocks new writers
-        while it waits, so the wait is one second: a busy store skips this
-        pass and the next one tries again. Its own connection, never a
-        pooled one, so nothing it leaves can reach another caller.
-        """
-        if not self.active or self.read_only or self.db_path is None:
+        """Checkpoint the WAL (`SqliteBackend.checkpoint_wal`). `False` when this store has no database to checkpoint."""
+        if self._backend is None or self.read_only:
             return False
-        wal = Path(f"{self.db_path}-wal")
-        before = await anyio.to_thread.run_sync(_size_or_none, wal)
-        try:
-            async with aiosqlite.connect(f"file:{self.db_path}?mode=rw", uri=True, isolation_level=None) as conn:
-                await conn.execute(f"PRAGMA busy_timeout = {_CHECKPOINT_BUSY_MS}")
-                if self.synchronous is not None:
-                    await conn.execute(f"PRAGMA synchronous = {self.synchronous}")
-                async with conn.execute("PRAGMA wal_checkpoint(TRUNCATE)") as cursor:
-                    row = await cursor.fetchone()
-        except aiosqlite.Error:
-            log.warning("db_wal_checkpoint_failed", exc_info=True)
-            return True
-        if row is None:
-            return True
-        busy, frames, checkpointed = row
-        log.info(
-            "db_wal_checkpoint",
-            busy=bool(busy),
-            frames=frames,
-            checkpointed=checkpointed,
-            wal_bytes_before=before,
-            wal_bytes_after=await anyio.to_thread.run_sync(_size_or_none, wal),
-        )
-        return True
+        return await self._backend.checkpoint_wal()
 
     async def prune_path_access(self) -> int:
         """Drop the rows for paths the store no longer holds. Returns the count.
@@ -1088,20 +830,9 @@ class LocalStoreDB:
         await self.close_db_pool()
 
     async def close_db_pool(self) -> None:
-        async with self._pool_lock:
-            for db in self._all_conns:
-                with suppress(Exception):
-                    await db.close()
-            self._all_conns.clear()
-            self._idle_conns.clear()
-            self.db_path = None
-
-
-def _size_or_none(path: Path) -> int | None:
-    try:
-        return path.stat().st_size
-    except OSError:
-        return None
+        if self._backend is not None:
+            await self._backend.close()
+            self._backend = None
 
 
 def resolve_db_path(layout: StoreLayout) -> Path | None:

@@ -1249,7 +1249,7 @@ async def test_fsync_metadata_sets_the_databases_synchronous_mode(
         async with _serve(root, OpRoute.pynixd, ops=("AddToStore",), settings=settings) as (url, _root):
             (root / "added").write_text("added\n")
             await run_subproc([NIX_BIN, "store", "add-file", "--store", url, str(root / "added")])
-            async with opened[-1].acquire_conn() as conn, conn.execute("PRAGMA synchronous") as cursor:
+            async with opened[-1].backend.acquire_conn() as conn, conn.execute("PRAGMA synchronous") as cursor:
                 row = await cursor.fetchone()
         modes[fsync_metadata] = row[0] if row else None
     assert modes == {True: 1, False: 0}, modes
