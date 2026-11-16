@@ -27,7 +27,6 @@ give the first and refuse the second, and then every fast path that reads
 
 from __future__ import annotations
 
-import json
 import os
 import statistics
 import time
@@ -599,7 +598,11 @@ class LocalStoreDB:
             async with self.transaction() as db:
                 await db.execute(
                     self.sql.observations.insert_derivation_shape,
-                    (identity.shape, json.dumps(identity.keys), json.dumps(identity.features)),
+                    (
+                        identity.shape,
+                        self.sql.codec.string_list(identity.keys),
+                        self.sql.codec.string_list(identity.features),
+                    ),
                 )
                 row_id = await db.insert(
                     self.sql.observations.insert_build_observation,

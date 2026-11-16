@@ -161,11 +161,21 @@ async def test_lists_and_flags_have_native_types(backend: PostgresBackend, postg
                 " WHERE table_schema = current_schema()"
             ).fetchall()
         )
-    assert {name: types[name] for name in ("validpaths.sigs", "validpaths.ultimate", "buildtracev3.signatures")} == {
+    expected = {
         "validpaths.sigs": "_text",
         "validpaths.ultimate": "bool",
         "buildtracev3.signatures": "_text",
+        "pynixdderivationshape.keys": "_text",
+        "pynixdderivationshape.features": "_text",
+        "pynixdplacementdecision.preferlocal": "bool",
+        "pynixdplacementdecision.localcanbuild": "bool",
+        "pynixdplacementdecision.localslotfull": "bool",
+        "pynixdplacementdecision.weights": "jsonb",
+        "pynixdplacementcandidate.chosen": "bool",
+        "pynixdplacementcandidate.roomy": "bool",
+        "pynixdplacementcandidate.passed": "bool",
     }
+    assert {name: types[name] for name in expected} == expected
 
 
 async def test_every_text_column_compares_bytewise(backend: PostgresBackend, postgres_conninfo: str) -> None:

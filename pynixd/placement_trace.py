@@ -105,10 +105,6 @@ def _ms(seconds: float | None) -> int | None:
     return round(seconds * 1000) if seconds is not None else None
 
 
-def _flag(value: bool | None) -> int | None:
-    return int(value) if value is not None else None
-
-
 def decision_row(decision: PlacementDecision) -> tuple[object, ...]:
     return (
         decision.decided_at_ms,
@@ -124,9 +120,9 @@ def decision_row(decision: PlacementDecision) -> tuple[object, ...]:
         decision.chosen_store_id,
         decision.queued_ms,
         decision.expected_build_ms,
-        int(decision.prefer_local),
-        int(decision.local_can_build),
-        _flag(decision.local_slot_full),
+        decision.prefer_local,
+        decision.local_can_build,
+        decision.local_slot_full,
         _ms(decision.local_wait_seconds),
         decision.weights,
     )
@@ -141,8 +137,8 @@ def candidate_row(candidate: CandidateTrace) -> tuple[object, ...]:
         candidate.store_id,
         candidate.rank,
         candidate.reason,
-        int(candidate.chosen),
-        _flag(candidate.roomy),
+        candidate.chosen,
+        candidate.roomy,
         candidate.failed_here,
         *(
             (
@@ -160,7 +156,7 @@ def candidate_row(candidate: CandidateTrace) -> tuple[object, ...]:
                 terms.score_penalty,
                 terms.load_score,
                 terms.threshold,
-                int(terms.passed),
+                terms.passed,
                 terms.transfer_seconds,
                 terms.transfer_points,
                 terms.priority,

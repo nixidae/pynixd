@@ -38,6 +38,10 @@ class Codec(Protocol):
         """A column of signatures, or of paths an aggregate collected, as a list."""
         ...
 
+    def string_list(self, values: Sequence[str]) -> object:
+        """A list of strings a column keeps in order: a derivation shape's keys and features."""
+        ...
+
 
 @dataclass(frozen=True, slots=True)
 class SqliteCodec:
@@ -58,6 +62,9 @@ class SqliteCodec:
     def strings(self, value: object) -> list[str]:
         return str(value).split() if value else []
 
+    def string_list(self, values: Sequence[str]) -> object:
+        return json.dumps(list(values))
+
 
 @dataclass(frozen=True, slots=True)
 class PostgresCodec:
@@ -75,6 +82,9 @@ class PostgresCodec:
 
     def strings(self, value: object) -> list[str]:
         return list(value) if isinstance(value, list) else []
+
+    def string_list(self, values: Sequence[str]) -> object:
+        return list(values)
 
 
 SQLITE: Codec = SqliteCodec()

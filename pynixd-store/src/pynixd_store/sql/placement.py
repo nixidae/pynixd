@@ -51,7 +51,7 @@ POSTGRES = PlacementSql(
 INSERT INTO {PLACEMENT_DECISION_TABLE}
 (decidedAtMs, passId, buildId, attempt, drvPath, name, system, shape, outcome, reason, chosenStoreId,
  queuedMs, expectedBuildMs, preferLocal, localCanBuild, localSlotFull, localWaitMs, weights)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
 RETURNING id
 """,
     # SQLite's `INSERT OR REPLACE`: the row of a second write takes every column of the new one.
