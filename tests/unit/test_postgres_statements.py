@@ -80,7 +80,8 @@ async def schema(postgres_conninfo: str) -> AsyncIterator[str]:
 
 def test_every_group_is_listed() -> None:
     """A group of `Statements` with no entry here would go unparsed."""
-    assert GROUPS.keys() == {f.name for f in dataclasses.fields(SQLITE)}
+    # `codec` binds values; it holds no statement.
+    assert GROUPS.keys() == {f.name for f in dataclasses.fields(SQLITE) if f.name != "codec"}
     assert REFUSED.keys() <= GROUPS.keys()
     assert SETUP.keys() <= GROUPS.keys()
 

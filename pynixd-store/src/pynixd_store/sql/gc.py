@@ -136,10 +136,7 @@ POSTGRES = GcSql(
         "CREATE TEMP TABLE gc_planned(id BIGINT PRIMARY KEY)",
         "CREATE TEMP TABLE gc_batch(id BIGINT PRIMARY KEY)",
     ),
-    load_ids=(
-        "INSERT INTO {table} SELECT id FROM ValidPaths WHERE path IN (SELECT json_array_elements_text(%s::json))"
-        " ON CONFLICT DO NOTHING"
-    ),
+    load_ids=("INSERT INTO {table} SELECT id FROM ValidPaths WHERE path = ANY(%s) ON CONFLICT DO NOTHING"),
     load_dead=f"""
 INSERT INTO gc_dead
 SELECT v.id, v.path, COALESCE(v.narSize, 0), COALESCE(a.lastReferencedAt, v.registrationTime)
@@ -212,7 +209,7 @@ SELECT v.path FROM tainted t JOIN gc_batch b ON b.id = t.id JOIN ValidPaths v ON
 """,
     weights_of="""
 SELECT path, size, CASE WHEN seen IS NULL THEN 0 ELSE greatest(0, %s::bigint - seen) END FROM gc_dead
-WHERE path IN (SELECT json_array_elements_text(%s::json))
+WHERE path = ANY(%s)
 """,
     batch_edges="""
 SELECT a.path, b.path FROM Refs r

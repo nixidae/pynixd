@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import errno
 import fcntl
-import json
 import os
 import re
 import stat
@@ -543,7 +542,10 @@ def query_live_set(db: Database, volatile: set[str]) -> set[str]:
     of thousands of paths, where per-root closures take minutes.
     """
     with db.sync_session() as session:
-        return {row[0] for row in session.fetchall(session.sql.liveness.live_set, (json.dumps(sorted(volatile)),))}
+        return {
+            row[0]
+            for row in session.fetchall(session.sql.liveness.live_set, (session.sql.codec.path_set(sorted(volatile)),))
+        }
 
 
 def db_fingerprint(db: Database) -> tuple[int, int]:
@@ -602,7 +604,7 @@ def write_snapshot(db: Database, live: set[str], epoch: int) -> None:
     with db.sync_session(write=True) as session:
         sql = session.sql.liveness
         session.execute(sql.create_live_now)
-        session.execute(sql.fill_live_now, (json.dumps(sorted(live)),))
+        session.execute(sql.fill_live_now, (session.sql.codec.path_set(sorted(live)),))
         with session.transaction():
             session.execute(sql.delete_left)
             session.execute(sql.insert_joined, (epoch,))

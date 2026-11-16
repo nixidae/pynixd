@@ -7,7 +7,6 @@ are `LocalStoreDB`'s.
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 
 from nix_daemon_protocol.content_address import ContentAddress
@@ -68,7 +67,7 @@ class NixTables:
         return await self._paths(self._db.sql.nix.all_valid_paths)
 
     async def valid_paths(self, paths: Iterable[str]) -> set[StorePath]:
-        return await self._paths(self._db.sql.nix.valid_paths, (json.dumps(list(paths)),))
+        return await self._paths(self._db.sql.nix.valid_paths, (self._db.sql.codec.path_set(paths),))
 
     async def referrers(self, path: str) -> set[StorePath]:
         return await self._paths(self._db.sql.nix.referrers, (path,))
@@ -77,7 +76,7 @@ class NixTables:
         return await self._paths(self._db.sql.nix.valid_derivers, (path,), column=1)
 
     async def closure(self, paths: Iterable[str]) -> set[StorePath]:
-        return await self._paths(self._db.sql.nix.closure, (json.dumps(list(paths)),))
+        return await self._paths(self._db.sql.nix.closure, (self._db.sql.codec.path_set(paths),))
 
     async def path_in_range(self, lower: str, upper: str) -> StorePath | None:
         """The first valid path *p* with `lower <= p < upper`: the lookup of a hash part."""
@@ -90,14 +89,14 @@ class NixTables:
         return None if row is None else StorePath(path=row[0])
 
     async def closure_with_info(self, paths: Iterable[str]) -> list[ValidPathInfo]:
-        rows = await self._db.fetchall(self._db.sql.nix.closure_with_info, (json.dumps(list(paths)),))
+        rows = await self._db.fetchall(self._db.sql.nix.closure_with_info, (self._db.sql.codec.path_set(paths),))
         return [path_info(row[:9], (row[9] or "").split()) for row in rows]
 
     async def path_infos(self, paths: Iterable[str]) -> list[ValidPathInfo]:
-        paths_json = json.dumps(list(paths))
-        rows = await self._db.fetchall(self._db.sql.nix.path_infos_batch, (paths_json,))
+        path_set = self._db.sql.codec.path_set(list(paths))
+        rows = await self._db.fetchall(self._db.sql.nix.path_infos_batch, (path_set,))
         references: dict[str, set[str]] = {}
-        for referrer, reference in await self._db.fetchall(self._db.sql.nix.references_batch, (paths_json,)):
+        for referrer, reference in await self._db.fetchall(self._db.sql.nix.references_batch, (path_set,)):
             references.setdefault(referrer, set()).add(reference)
         return [path_info(row, references.get(row[0], ())) for row in rows]
 
@@ -117,7 +116,9 @@ class NixTables:
         return {name: StorePath(path=path) for _drv, name, path in rows if name is not None}
 
     async def derivation_output_maps(self, drv_paths: Iterable[str]) -> dict[StorePath, dict[str, StorePath]]:
-        rows = await self._db.fetchall(self._db.sql.nix.derivation_output_map_batch, (json.dumps(list(drv_paths)),))
+        rows = await self._db.fetchall(
+            self._db.sql.nix.derivation_output_map_batch, (self._db.sql.codec.path_set(drv_paths),)
+        )
         maps: dict[StorePath, dict[str, StorePath]] = {}
         # `DerivationOutputs.path` is NOT NULL in Nix's schema.
         for drv_path, output_name, output_path in rows:

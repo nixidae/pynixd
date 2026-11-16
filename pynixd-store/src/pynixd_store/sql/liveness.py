@@ -128,7 +128,7 @@ _POSTGRES_STEP = """SELECT step.id FROM closure c
 
 _POSTGRES_ROOT_CLOSURE_OF_SEEDS = f"""
     WITH RECURSIVE closure(id) AS (
-        SELECT vp.id FROM ValidPaths vp WHERE vp.path IN (SELECT json_array_elements_text(%s::json))
+        SELECT vp.id FROM ValidPaths vp WHERE vp.path = ANY(%s)
         UNION
         {_POSTGRES_STEP}
     )
@@ -143,7 +143,7 @@ WITH RECURSIVE closure(id) AS (
     WHERE vp.path IN (
         SELECT target FROM {LIVENESS_ROOT_TABLE}
         UNION
-        SELECT json_array_elements_text(%s::json)
+        SELECT unnest(%s::text[])
     )
     UNION
     {_POSTGRES_STEP}
@@ -158,7 +158,7 @@ SELECT path FROM ValidPaths WHERE id IN (SELECT id FROM closure)
         "ON CONFLICT (link) DO UPDATE SET target = excluded.target, kind = excluded.kind"
     ),
     create_live_now='CREATE TEMP TABLE live_now(path TEXT COLLATE "C" PRIMARY KEY)',
-    fill_live_now="INSERT INTO live_now SELECT json_array_elements_text(%s::json)",
+    fill_live_now="INSERT INTO live_now SELECT unnest(%s::text[])",
     delete_left=f"DELETE FROM {LIVENESS_TABLE} WHERE path NOT IN (SELECT path FROM live_now)",
     insert_joined=(
         f"INSERT INTO {LIVENESS_TABLE} (path, epoch) SELECT path, %s::bigint FROM live_now ON CONFLICT DO NOTHING"

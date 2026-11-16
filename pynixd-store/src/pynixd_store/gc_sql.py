@@ -15,7 +15,6 @@ tables, so the collector closes it before it deletes anything.
 
 from __future__ import annotations
 
-import json
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from heapq import heappop, heappush
@@ -98,7 +97,9 @@ class SqlPlan:
             yield cls(session)
 
     async def _load(self, table: str, paths: Iterable[str]) -> None:
-        await self._session.execute(self._sql.load_ids.format(table=table), (json.dumps(sorted(paths)),))
+        await self._session.execute(
+            self._sql.load_ids.format(table=table), (self._session.sql.codec.path_set(sorted(paths)),)
+        )
 
     async def plan(self, *, live: set[str], vetoed: set[str], cutoff: int | None) -> PlanCounts:
         """Plan the dead paths unreferenced since `cutoff` (all dead when `None`), closed under referrers."""
@@ -164,7 +165,9 @@ class SqlPlan:
         """`(nar_size, age_seconds)` of planned paths the weighed rows did not carry."""
         if not paths:
             return {}
-        rows = await self._session.fetchall(self._sql.weights_of, (now, json.dumps(sorted(paths))))
+        rows = await self._session.fetchall(
+            self._sql.weights_of, (now, self._session.sql.codec.path_set(sorted(paths)))
+        )
         return {path: (size, age) for path, size, age in rows}
 
     async def order_batch(self, batch: list[str]) -> list[str]:

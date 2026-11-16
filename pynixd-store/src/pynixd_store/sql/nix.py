@@ -180,7 +180,7 @@ SQLITE = sqlite(provenance=False)
 
 _POSTGRES_CLOSURE = """
 WITH RECURSIVE closure(id) AS (
-    SELECT id FROM ValidPaths WHERE path IN (SELECT json_array_elements_text(%s::json))
+    SELECT id FROM ValidPaths WHERE path = ANY(%s)
     UNION
     SELECT r.reference
     FROM closure c
@@ -225,7 +225,7 @@ WHERE v.path = %s
     ),
     update_realisation_by_hash="update Realisations set signatures = %s where drvPath = %s and outputName = %s",
     valid_paths="""
-SELECT path FROM ValidPaths WHERE path IN (SELECT json_array_elements_text(%s::json))
+SELECT path FROM ValidPaths WHERE path = ANY(%s)
 """,
     path_from_hash_part="""
 SELECT path FROM ValidPaths WHERE path >= %s AND path < %s LIMIT 1
@@ -251,21 +251,21 @@ ORDER BY vp.id ASC
 SELECT vp.path, vp.deriver, vp.hash, registrationTime, narSize,
        vp.ultimate, vp.sigs, vp.ca, vp.provenance
 FROM ValidPaths vp
-WHERE vp.path IN (SELECT json_array_elements_text(%s::json))
+WHERE vp.path = ANY(%s)
 """,
     references_batch="""
 SELECT vp_referrer.path, vp_ref.path
 FROM Refs r
 JOIN ValidPaths vp_referrer ON r.referrer = vp_referrer.id
 JOIN ValidPaths vp_ref ON r.reference = vp_ref.id
-WHERE vp_referrer.path IN (SELECT json_array_elements_text(%s::json))
+WHERE vp_referrer.path = ANY(%s)
 """,
     # `dout`, not SQLite's `do`: PostgreSQL reserves `DO`.
     derivation_output_map_batch="""
 SELECT vp_drv.path, dout.id, dout.path
 FROM DerivationOutputs dout
 JOIN ValidPaths vp_drv ON dout.drv = vp_drv.id
-WHERE vp_drv.path IN (SELECT json_array_elements_text(%s::json))
+WHERE vp_drv.path = ANY(%s)
 """,
     register_valid_path=(
         "insert into ValidPaths (path, hash, registrationTime, deriver, narSize, ultimate, sigs, ca, provenance) "

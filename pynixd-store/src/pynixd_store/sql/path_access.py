@@ -96,7 +96,7 @@ WHERE path NOT IN (SELECT path FROM ValidPaths)
 
 _POSTGRES_REFERRERS_OF_SEEDS = """
     WITH RECURSIVE closure(id) AS (
-        SELECT id FROM ValidPaths WHERE path IN (SELECT json_array_elements_text(%s::json))
+        SELECT id FROM ValidPaths WHERE path = ANY(%s)
         UNION
         SELECT r.referrer
         FROM closure c JOIN Refs r ON c.id = r.reference
@@ -109,13 +109,13 @@ POSTGRES = PathAccessSql(
     touch=f"""
 INSERT INTO {PATH_ACCESS_TABLE} (path, lastReferencedAt)
 SELECT path, extract(epoch FROM now())::bigint FROM ValidPaths
-WHERE path IN (SELECT json_array_elements_text(%s::json))
+WHERE path = ANY(%s)
 ORDER BY path
 ON CONFLICT (path) DO UPDATE SET lastReferencedAt = excluded.lastReferencedAt
 """,
     runtime_closure="""
     WITH RECURSIVE closure(id) AS (
-        SELECT id FROM ValidPaths WHERE path IN (SELECT json_array_elements_text(%s::json))
+        SELECT id FROM ValidPaths WHERE path = ANY(%s)
         UNION
         SELECT r.reference FROM closure c
         JOIN Refs r ON c.id = r.referrer
@@ -126,7 +126,7 @@ ON CONFLICT (path) DO UPDATE SET lastReferencedAt = excluded.lastReferencedAt
 """,
     build_closure="""
     WITH RECURSIVE closure(id) AS (
-        SELECT id FROM ValidPaths WHERE path IN (SELECT json_array_elements_text(%s::json))
+        SELECT id FROM ValidPaths WHERE path = ANY(%s)
         UNION
         SELECT r.reference FROM closure c JOIN Refs r ON c.id = r.referrer
     )
@@ -138,7 +138,7 @@ SELECT path FROM ValidPaths WHERE id IN ({_POSTGRES_REFERRERS_OF_SEEDS})
     weights=f"""
 SELECT v.path, v.narSize, COALESCE(a.lastReferencedAt, v.registrationTime) FROM ValidPaths v
 LEFT JOIN {PATH_ACCESS_TABLE} a ON a.path = v.path
-WHERE v.path IN (SELECT json_array_elements_text(%s::json))
+WHERE v.path = ANY(%s)
 """,
     unreferenced_since=f"""
 SELECT v.path FROM ValidPaths v

@@ -459,15 +459,17 @@ class LocalStoreDB:
                     await db.execute(self.sql.liveness.fill_root_hits)
                     full: dict[tuple[str, ...], tuple[int, int]] = {}
                     for seeds in groups:
-                        params = (json.dumps(list(seeds)),)
+                        params = (self.sql.codec.path_set(seeds),)
                         counts = await db.fetchone(self.sql.liveness.root_full_counts, params)
                         full[seeds] = (int(counts[0]), int(counts[1])) if counts is not None else (0, 0)
                         await db.execute(
-                            self.sql.liveness.mark_root_hits, (len(groups[seeds]), json.dumps(list(seeds)))
+                            self.sql.liveness.mark_root_hits, (len(groups[seeds]), self.sql.codec.path_set(seeds))
                         )
                     report: list[RootAttribution] = []
                     for seeds, labels in groups.items():
-                        counts = await db.fetchone(self.sql.liveness.root_exclusive_counts, (json.dumps(list(seeds)),))
+                        counts = await db.fetchone(
+                            self.sql.liveness.root_exclusive_counts, (self.sql.codec.path_set(seeds),)
+                        )
                         exclusive = (int(counts[0]), int(counts[1])) if counts is not None else (0, 0)
                         for label in labels:
                             report.append(
@@ -499,8 +501,8 @@ class LocalStoreDB:
         if not self.active or not self.schema.usable:
             return None
         try:
-            paths_json = json.dumps(sorted(set(paths)))
-            rows = await self.fetchall(self.sql.path_access.referrer_closure, (paths_json,))
+            path_set = self.sql.codec.path_set(sorted(set(paths)))
+            rows = await self.fetchall(self.sql.path_access.referrer_closure, (path_set,))
             return {r[0] for r in rows}
         except DatabaseError:
             log.debug("query_referrer_closure_failed", exc_info=True)
@@ -523,8 +525,8 @@ class LocalStoreDB:
         if not self.active or not self.schema.usable:
             return None
         try:
-            paths_json = json.dumps(sorted(set(paths)))
-            rows = await self.fetchall(self.sql.path_access.weights, (paths_json,))
+            path_set = self.sql.codec.path_set(sorted(set(paths)))
+            rows = await self.fetchall(self.sql.path_access.weights, (path_set,))
             return {r[0]: (r[1] or 0, None if r[2] is None else int(r[2])) for r in rows}
         except (DatabaseError, ValueError):
             log.debug("query_weights_failed", exc_info=True)
@@ -804,7 +806,7 @@ class LocalStoreDB:
                         for chunk in batched(sorted(touched), 1000, strict=False):
                             try:
                                 async with db.transaction():
-                                    await db.execute(self.sql.path_access.touch, (json.dumps(chunk),))
+                                    await db.execute(self.sql.path_access.touch, (self.sql.codec.path_set(chunk),))
                             except DatabaseError:
                                 log.debug("db_flush_chunk_rolled_back", paths=len(chunk))
                                 raise
@@ -836,7 +838,7 @@ class LocalStoreDB:
 
     async def _expand_closure(self, db: Session, query: str, seeds: set[str]) -> set[str]:
         """The closure of `seeds` under `query`, as path strings."""
-        return {str(row[0]) for row in await db.fetchall(query, (json.dumps(sorted(seeds)),))}
+        return {str(row[0]) for row in await db.fetchall(query, (self.sql.codec.path_set(sorted(seeds)),))}
 
     def start(self, background: Background) -> None:
         """Flush the references in *background*, the loops of the store that owns this database."""
