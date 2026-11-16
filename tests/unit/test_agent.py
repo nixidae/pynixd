@@ -5,10 +5,12 @@ from __future__ import annotations
 import contextlib
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import anyio
+import pytest
 
 from pynixd.agent import AGENT_HELLO, AgentMonitor, agent_args, agent_for, local_monitor, read_agent_frame
 from pynixd.config import PressureSettings
@@ -126,6 +128,12 @@ async def test_a_command_that_is_not_the_agent_falls_back() -> None:
     assert fell_back == [True]
 
 
+NO_DARWIN_HEALTH = pytest.mark.xfail(
+    sys.platform == "darwin", reason="a darwin host samples no meminfo (nixidae/nixidae#1391)", strict=True
+)
+
+
+@NO_DARWIN_HEALTH
 async def test_the_real_agent_speaks_what_the_parser_reads() -> None:
     """The C agent and the Python parser agree, and EOF on stdin ends the agent.
 
@@ -157,6 +165,7 @@ async def test_the_real_agent_speaks_what_the_parser_reads() -> None:
     assert rc == 0
 
 
+@NO_DARWIN_HEALTH
 async def test_the_local_store_runs_the_agent_for_its_triggers() -> None:
     binary = shutil.which("pynixd-agent")
     assert binary is not None, "pynixd-agent is not on PATH"

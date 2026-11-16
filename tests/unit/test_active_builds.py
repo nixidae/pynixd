@@ -50,6 +50,9 @@ GONE_PID = 2**22 + 1
 """Above the largest `pid_max` of Linux, so no process has it."""
 
 
+@pytest.mark.xfail(
+    sys.platform == "darwin", reason="a darwin build lists no processes (nixidae/nixidae#1375)", strict=True
+)
 async def test_a_running_build_has_every_key_that_from_json_reads() -> None:
     registry = ActiveBuilds()
     argv = [sys.executable, "-c", "import time; print('up', flush=True); time.sleep(60)"]

@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from typing import TYPE_CHECKING
+
+import pytest
 
 from tests._conftest.census import census, descendants
 
@@ -27,6 +30,7 @@ def test_descendants_come_parents_first_and_skip_others(tmp_path: Path) -> None:
     assert descendants(20, tmp_path) == []
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="the census reads /proc")
 def test_a_waiting_child_is_named_with_what_it_waits_in() -> None:
     with subprocess.Popen(["sleep", "30"]) as child:
         try:

@@ -20,6 +20,8 @@ import pytest
 
 from pynixd_store.builder.spec import ChildSpec
 
+pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="the chroot helper is Linux's")
+
 SH = os.path.realpath("/bin/sh")
 COREUTILS = os.path.dirname(os.path.realpath(shutil.which("ls") or "/bin/ls"))
 

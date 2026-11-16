@@ -6,6 +6,7 @@ reaches the controller at once, with nothing but pynixd on the peer.
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -90,6 +91,9 @@ async def test_the_peer_forwards_each_sample_of_its_monitor(tmp_path: Path) -> N
 
 
 @pytest.mark.anyio
+@pytest.mark.xfail(
+    sys.platform == "darwin", reason="a darwin host samples no meminfo (nixidae/nixidae#1391)", strict=True
+)
 @pytest.mark.parametrize("monitor", ["off", "slower"])
 async def test_the_peer_samples_itself_when_its_monitor_cannot_serve(tmp_path: Path, monitor: str) -> None:
     own = None if monitor == "off" else SimpleNamespace(interval=60.0, health=SystemHealth())
