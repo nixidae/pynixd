@@ -111,7 +111,11 @@ PYNIXD_TABLES: tuple[str, ...] = (
     f"CREATE INDEX IF NOT EXISTS idx_pynixd_path_access_time ON {PATH_ACCESS_TABLE}(lastReferencedAt)",
     f"CREATE TABLE IF NOT EXISTS {LIVENESS_ROOT_TABLE} (link {_T} PRIMARY KEY, target {_T} NOT NULL, kind {_T} NOT NULL)",
     f"CREATE INDEX IF NOT EXISTS idx_pynixd_gcroot_kind ON {LIVENESS_ROOT_TABLE}(kind)",
-    f"CREATE TABLE IF NOT EXISTS {LIVENESS_TABLE} (path {_T} PRIMARY KEY, epoch BIGINT NOT NULL)",
+    # The live set holds only valid paths (`liveness.query_live_set`), so a row names its path by id.
+    f"""CREATE TABLE IF NOT EXISTS {LIVENESS_TABLE} (
+    pathId BIGINT PRIMARY KEY REFERENCES ValidPaths(id) ON DELETE CASCADE,
+    epoch BIGINT NOT NULL
+)""",
     f"CREATE INDEX IF NOT EXISTS idx_pynixd_live_epoch ON {LIVENESS_TABLE}(epoch)",
     f"""CREATE TABLE IF NOT EXISTS {LIVENESS_STREAK_TABLE} (
     id BIGINT PRIMARY KEY CHECK (id = 1),

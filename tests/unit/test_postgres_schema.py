@@ -35,6 +35,7 @@ _SQLITE_ONLY_TABLES = {
 
 _RENAMED_ON_POSTGRES = {
     ("pynixdpathaccess", "path"): "pathid",
+    ("pynixdlive", "path"): "pathid",
 }
 """A column PostgreSQL keys by `ValidPaths.id`, under the name it has there."""
 

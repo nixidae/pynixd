@@ -157,14 +157,14 @@ SELECT path FROM ValidPaths WHERE id IN (SELECT id FROM closure)
         f"INSERT INTO {LIVENESS_ROOT_TABLE} (link, target, kind) VALUES (%s, %s, %s) "
         "ON CONFLICT (link) DO UPDATE SET target = excluded.target, kind = excluded.kind"
     ),
-    create_live_now='CREATE TEMP TABLE live_now(path TEXT COLLATE "C" PRIMARY KEY)',
-    fill_live_now="INSERT INTO live_now SELECT unnest(%s::text[])",
-    delete_left=f"DELETE FROM {LIVENESS_TABLE} WHERE path NOT IN (SELECT path FROM live_now)",
+    create_live_now="CREATE TEMP TABLE live_now(id BIGINT PRIMARY KEY)",
+    fill_live_now="INSERT INTO live_now SELECT id FROM ValidPaths WHERE path = ANY(%s)",
+    delete_left=f"DELETE FROM {LIVENESS_TABLE} WHERE pathId NOT IN (SELECT id FROM live_now)",
     insert_joined=(
-        f"INSERT INTO {LIVENESS_TABLE} (path, epoch) SELECT path, %s::bigint FROM live_now ON CONFLICT DO NOTHING"
+        f"INSERT INTO {LIVENESS_TABLE} (pathId, epoch) SELECT id, %s::bigint FROM live_now ON CONFLICT DO NOTHING"
     ),
     newest_epoch=f"SELECT COALESCE(MAX(epoch), -1) FROM {LIVENESS_TABLE}",
-    live_paths=f"SELECT path FROM {LIVENESS_TABLE}",
+    live_paths=f"SELECT v.path FROM {LIVENESS_TABLE} l JOIN ValidPaths v ON v.id = l.pathId",
     record_streak=f"""
 INSERT INTO {LIVENESS_STREAK_TABLE} (id, agreements, divergences, checks, live, updatedAt)
 VALUES (1, %s, %s, 1, %s, extract(epoch FROM now())::bigint)

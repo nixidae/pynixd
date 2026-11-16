@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
+
 from pynixd_store import liveness, register
+from pynixd_store.postgres_db import PostgresBackend
 
 if TYPE_CHECKING:
     from pynixd_store.local_store_db import LocalStoreDB
@@ -75,6 +78,18 @@ async def test_the_snapshot_keeps_each_path_s_first_epoch(store_db: LocalStoreDB
     assert liveness.read_snapshot(database) == ({HELLO, DEAD}, 9)
     liveness.write_snapshot(database, {HELLO}, 11)
     assert liveness.read_snapshot(database) == ({HELLO}, 7)
+
+
+async def test_a_collected_path_leaves_the_snapshot(store_db: LocalStoreDB) -> None:
+    """On PostgreSQL a live row names its path by id, and the foreign key drops it with the path."""
+    if not isinstance(store_db.backend, PostgresBackend):
+        pytest.skip("SQLite keys the live set by path and keeps the row until the next snapshot")
+    await _store(store_db)
+    database = store_db.backend.database()
+    liveness.write_snapshot(database, {HELLO}, 7)
+    liveness.write_snapshot(database, {HELLO, DEAD}, 9)
+    await store_db.nix.invalidate_path(DEAD)
+    assert liveness.read_snapshot(database) == ({HELLO}, 7), "no epoch of a collected path stays behind"
 
 
 async def test_a_check_files_its_streak(store_db: LocalStoreDB) -> None:
