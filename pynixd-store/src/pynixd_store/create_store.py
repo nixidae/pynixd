@@ -255,10 +255,11 @@ def _upgrade(db: sqlite3.Connection, config: Mapping[str, Any], nix_version: str
     return [(name, statement) for name, statement in _migrations(config, nix_version) if name not in done]
 
 
-def open_local_store(layout: StoreLayout, config: Mapping[str, Any], nix_version: str) -> int:
+def open_local_store(layout: StoreLayout, config: Mapping[str, Any], nix_version: str, *, sqlite: bool = True) -> int:
     """Make what the store lacks, and return the big lock, held shared for as long as the store is open.
 
     *config* is `nix config show --json` of the store's Nix, and *nix_version* its version. It blocks: run it in a thread.
+    With *sqlite* false the database is elsewhere, and `db.sqlite` and `schema` stay as they are.
     """
     _create_dirs(layout, config)
     db_dir = layout.db_path.parent
@@ -266,6 +267,8 @@ def open_local_store(layout: StoreLayout, config: Mapping[str, Any], nix_version
     lock = os.open(db_dir / "big-lock", os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
     try:
         fcntl.flock(lock, fcntl.LOCK_SH)
+        if not sqlite:
+            return lock
         schema_path = db_dir / "schema"
         current = _schema(schema_path)
         if current > SCHEMA_VERSION:

@@ -7,7 +7,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -508,6 +508,20 @@ class OverlaySpec(BaseModel):
     """`remount-hook`: run with the store directory after a delete under the upper layer."""
 
 
+class PostgresSpec(BaseModel):
+    """The store database on a PostgreSQL server, in place of `db/db.sqlite`. nixidae/nixidae#1209."""
+
+    conninfo: SecretStr
+    """A libpq connection string or URI. pynixd logs and reports it as `**********`.
+
+    A password can stay out of it: libpq reads `passfile`, `PGPASSFILE` and `PGPASSWORD`.
+    """
+    max_conns: int = Field(default=8, ge=1)
+    """The connections pynixd holds open to the server."""
+    open_seconds: float = Field(default=30.0, gt=0)
+    """How long the start waits for the server. The store does not start without it."""
+
+
 class LocalSocketStoreSpec(StoreSpecBase):
     """A local Nix daemon accessed via Unix domain socket.
 
@@ -676,6 +690,19 @@ class LocalSocketStoreSpec(StoreSpecBase):
         ),
     ] = None
     """Run pynixd's sandboxed darwin builds in a macOS guest; `None` runs them on the host."""
+    postgres: Annotated[
+        PostgresSpec | None,
+        Experiment(
+            replaces="the store database is SQLite, `db/db.sqlite` in the state directory",
+            issue=1209,
+            tests=("tests/unit/test_postgres_spec.py", "tests/unit/test_postgres_db.py"),
+        ),
+    ] = None
+    """Keep the store database on a PostgreSQL server, so that more than one pynixd can serve the store.
+
+    Only a store with no daemon takes it: a Nix daemon reads SQLite alone. The store's files,
+    its big lock and its temporary roots stay in the state directory.
+    """
     usage_sample_seconds: float = Field(default=5.0, ge=0)
     """Seconds between two samples of a running build's cgroup (`builder/cgroup.py`); 0 takes none."""
 
@@ -694,6 +721,13 @@ class LocalSocketStoreSpec(StoreSpecBase):
                 raise ValueError("daemon = false needs a store pynixd manages, not the machine's own daemon")
             if routed := sorted(op for op, route in self.op_routes.items() if route is not OpRoute.pynixd):
                 raise ValueError(f"op_routes: with daemon = false, every route is pynixd, not for {', '.join(routed)}")
+        if self.postgres is not None:
+            if mode.has_daemon:
+                raise ValueError("postgres needs daemon = false: a Nix daemon reads its database from SQLite alone")
+            if self.overlay is not None:
+                raise ValueError("postgres takes no overlay: the lower store's database is SQLite")
+            if mode.read_only:
+                raise ValueError("postgres takes no read_only: pynixd opens no read-only store on a server")
         return self
 
     @model_validator(mode="after")

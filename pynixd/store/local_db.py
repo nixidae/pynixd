@@ -315,6 +315,7 @@ class LocalDBStore(Store):
         self.gc_max_age = spec.gc_max_age
         self.gc_target_usage = spec.gc_target_usage
         self.gc_allow_execute = spec.gc_allow_execute
+        self._postgres = spec.postgres
         #: pynixd's own local store (`docs/design/store-engine.md`).
         self.engine = (OverlayEngine if self.layout.overlay is not None else StoreEngine)(
             self.layout,
@@ -551,7 +552,7 @@ class LocalDBStore(Store):
             yield
 
     async def start(self, sync_paths: bool = True) -> None:
-        """Open the SQLite database. The daemon client is running."""
+        """Open the store database. The daemon client is running."""
         refusal = self._refuses_a_database()
         if refusal is not None:
             log.warning("local_store_db_refused", store_id=str(self.store_id), reason=refusal)
@@ -566,11 +567,17 @@ class LocalDBStore(Store):
                 layouts = [self.layout]
                 if isinstance(self.engine, OverlayEngine):
                     layouts.append(self.engine.lower.layout)
+                sqlite = self._postgres is None
                 for layout in layouts:
                     self._big_locks.append(
-                        await anyio.to_thread.run_sync(open_local_store, layout, config, self._daemon.nix_version)
+                        await anyio.to_thread.run_sync(
+                            functools.partial(open_local_store, layout, config, self._daemon.nix_version, sqlite=sqlite)
+                        )
                     )
-            self.engine.db = await LocalStoreDB.open(self.layout)
+            if self._postgres is not None:
+                self.engine.db = await store_package.open_postgres_db(self._postgres, self.layout)
+            else:
+                self.engine.db = await LocalStoreDB.open(self.layout)
             if isinstance(self.engine, OverlayEngine) and self.engine.db.active:
                 self.engine.lower.db = await LocalStoreDB.open(self.engine.lower.layout, read_only=True)
                 if not self.engine.lower.db.active:
