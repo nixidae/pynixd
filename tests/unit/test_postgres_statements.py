@@ -15,7 +15,7 @@ import pytest
 
 from pynixd_store.postgres_db import PostgresBackend
 from pynixd_store.postgres_schema import migrate
-from pynixd_store.sql import SQLITE, nix, observations, path_access, placement
+from pynixd_store.sql import SQLITE, gc, nix, observations, path_access, placement
 from tests._conftest.engines import postgres_parameters, sqlite_parameters
 
 if TYPE_CHECKING:
@@ -28,6 +28,7 @@ GROUPS: dict[str, tuple[object, object]] = {
     "path_access": (path_access.POSTGRES, path_access.SQLITE),
     "observations": (observations.POSTGRES, observations.SQLITE),
     "placement": (placement.POSTGRES, placement.SQLITE),
+    "gc": (gc.POSTGRES, gc.SQLITE),
 }
 """Each group's PostgreSQL twins and the SQLite statements they mirror."""
 
@@ -40,10 +41,20 @@ REFUSED: dict[str, dict[str, str]] = {
 }
 """The statements the server refuses on purpose, and why."""
 
+SETUP: dict[str, tuple[str, ...]] = {
+    "gc": gc.POSTGRES.schema,
+}
+"""What a group's statements need on their connection first: the TEMP tables of the session."""
+
 
 def _statements(group: object) -> dict[str, str]:
+    """The group's statements; `{table}` names the table a caller fills in, here one of the collector's."""
     assert dataclasses.is_dataclass(group)
-    return {f.name: getattr(group, f.name) for f in dataclasses.fields(group) if f.type == "str"}
+    return {
+        f.name: getattr(group, f.name).replace("{table}", "gc_live")
+        for f in dataclasses.fields(group)
+        if f.type == "str"
+    }
 
 
 @pytest.fixture
@@ -62,6 +73,7 @@ def test_every_group_is_listed() -> None:
     """A group of `Statements` with a twin, and no entry here, would go unparsed."""
     assert GROUPS.keys() <= {f.name for f in dataclasses.fields(SQLITE)}
     assert REFUSED.keys() <= GROUPS.keys()
+    assert SETUP.keys() <= GROUPS.keys()
 
 
 @pytest.mark.parametrize("group", GROUPS)
@@ -74,6 +86,8 @@ async def test_the_server_parses_every_statement(schema: str, group: str) -> Non
 
     refused: dict[str, str] = {}
     with psycopg.connect(schema, autocommit=True) as conn:
+        for statement in SETUP.get(group, ()):
+            conn.execute(statement)
         for name, statement in postgres.items():
             try:
                 parameters = postgres_parameters(conn, name, statement)
