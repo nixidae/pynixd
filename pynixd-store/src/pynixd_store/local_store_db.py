@@ -361,6 +361,46 @@ class LocalStoreDB:
         )
         return instance
 
+    @classmethod
+    async def open_backend(
+        cls,
+        backend: Backend,
+        layout: StoreLayout,
+        reference_flush_interval: float = _DEFAULT_REFERENCE_FLUSH_INTERVAL,
+    ) -> LocalStoreDB:
+        """Open the store database that *backend* holds, or raise `DatabaseError`.
+
+        Not `open`, which never raises: a store whose database is a server has no daemon to fall back to,
+        so a server that refuses stops the start. The backend is closed before the error goes out.
+        """
+        instance = cls(
+            db_path=None,
+            store_path=layout.real_store_dir,
+            read_only=False,
+            reference_flush_interval=reference_flush_interval,
+            backend=backend,
+        )
+        try:
+            await backend.probe()
+            instance.schema = await backend.migrate()
+        except BaseException:
+            await instance.close_db_pool()
+            raise
+        if not instance.schema.usable:
+            log.warning(
+                "pynixd_tables_unavailable",
+                engine=type(backend).__name__,
+                version=instance.schema.version,
+                reason=instance.schema.reason,
+            )
+        log.info(
+            "local_store_db_active",
+            engine=type(backend).__name__,
+            pynixd_schema_version=instance.schema.version,
+            pynixd_tables=instance.schema.usable,
+        )
+        return instance
+
     # ── Internal utility queries ──────────────────────────────────────
     # These are not operation dispatches but internal helpers used by
     # non-operation code (GC, build planner, http cache).

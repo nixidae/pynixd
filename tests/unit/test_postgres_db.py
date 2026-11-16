@@ -13,11 +13,14 @@ import psycopg
 import pytest
 
 from pynixd_store.database import Backend, DatabaseError
+from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.postgres_db import PostgresBackend, PostgresDatabase
 from pynixd_store.sql import POSTGRES
+from pynixd_store.store_layout import StoreLayout
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+    from pathlib import Path
 
 HELLO = "/nix/store/00000000000000000000000000000000-hello"
 LIBC = "/nix/store/11111111111111111111111111111111-libc"
@@ -129,6 +132,35 @@ async def test_the_engine_answers_as_a_backend(postgres_conninfo: str) -> None:
             assert await session.fetchone("SELECT count(*) FROM ValidPaths") == (0,)
     finally:
         await backend.close()
+
+
+async def test_a_store_opens_on_the_server(postgres_conninfo: str, tmp_path: Path) -> None:
+    db = await LocalStoreDB.open_backend(PostgresBackend(postgres_conninfo, POSTGRES), StoreLayout.chroot(tmp_path))
+    try:
+        assert (db.active, db.schema.usable, db.db_path) == (True, True, None)
+        assert db.sql is POSTGRES
+        assert db.sync_reader() is None
+        assert not await db.nix.is_valid_path(HELLO)
+    finally:
+        await db.close()
+
+
+async def test_a_store_on_an_unreachable_server_does_not_open(tmp_path: Path) -> None:
+    """A store on a server has no daemon to fall back to, so the open raises."""
+    with tempfile.TemporaryDirectory(prefix="pynixd-pg-") as nowhere:
+        backend = PostgresBackend(psycopg.conninfo.make_conninfo(host=nowhere, dbname="x"), POSTGRES, open_seconds=1.0)
+        with pytest.raises(DatabaseError):
+            await LocalStoreDB.open_backend(backend, StoreLayout.chroot(tmp_path))
+
+
+async def test_a_refused_migration_closes_the_pool(postgres_conninfo: str, tmp_path: Path) -> None:
+    """The pool is open when the migration fails, and the open closes it: its workers are asyncio tasks of their own."""
+    with psycopg.connect(postgres_conninfo, autocommit=True) as conn:
+        conn.execute("CREATE VIEW ValidPaths AS SELECT 1 AS id")
+    backend = PostgresBackend(postgres_conninfo, POSTGRES)
+    with pytest.raises(DatabaseError, match=r"(?i)validpaths"):
+        await LocalStoreDB.open_backend(backend, StoreLayout.chroot(tmp_path))
+    assert backend._pool.closed  # noqa: SLF001 -- the pool's own state; no public call reads it
 
 
 async def test_an_unreachable_server_fails_the_open() -> None:
