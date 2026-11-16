@@ -78,6 +78,8 @@ NIX_TABLES: tuple[str, ...] = (
     FOREIGN KEY (reference) REFERENCES ValidPaths(id) ON DELETE RESTRICT
 )""",
     "CREATE INDEX IF NOT EXISTS IndexReference ON Refs(reference)",
+    # Not in Nix's schema: pynixd's HTTP server looks a path up by its NAR hash, and without this scans the table.
+    "CREATE INDEX IF NOT EXISTS IndexValidPathsHash ON ValidPaths(hash)",
     # Nix's `DeleteSelfRefs`: the restriction on `reference` refuses to delete a path that names itself.
     """CREATE OR REPLACE FUNCTION DeleteSelfRefs() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN

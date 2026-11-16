@@ -46,6 +46,10 @@ _NOT_NULL_ON_POSTGRES = {
     ("buildtracev3", "signatures"): "an array, empty where Nix writes an empty string",
 }
 
+_POSTGRES_ONLY_INDEXES = {
+    "indexvalidpathshash": "the lookup by NAR hash; pynixd adds no index to Nix's SQLite tables",
+}
+
 
 @pytest.fixture
 async def backend(postgres_conninfo: str) -> AsyncIterator[PostgresBackend]:
@@ -149,7 +153,20 @@ async def test_both_engines_have_the_same_tables_and_columns(
     assert tightened == _NOT_NULL_ON_POSTGRES.keys()
     indexes = _sqlite_indexes(sqlite_db)
     assert {"indexreference", "idx_pynixd_live_epoch"} <= indexes, "the scan found the indexes"
-    assert indexes == _postgres_indexes(postgres_conninfo)
+    postgres_indexes = _postgres_indexes(postgres_conninfo)
+    assert postgres_indexes - indexes == _POSTGRES_ONLY_INDEXES.keys()
+    assert indexes - postgres_indexes == set()
+
+
+async def test_the_lookup_by_nar_hash_can_use_an_index(backend: PostgresBackend, postgres_conninfo: str) -> None:
+    async with backend.connection() as session:
+        await migrate(session)
+    with psycopg.connect(postgres_conninfo) as conn:
+        conn.execute("SET enable_seqscan = off")
+        plan = "\n".join(
+            str(row[0]) for row in conn.execute(f"EXPLAIN {POSTGRES.nix.path_from_nar_hash}", (bytes(32),))
+        )
+    assert "IndexValidPathsHash".lower() in plan.lower(), plan
 
 
 async def test_lists_and_flags_have_native_types(backend: PostgresBackend, postgres_conninfo: str) -> None:
