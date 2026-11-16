@@ -17,6 +17,7 @@ class NixSql:
 
     provenance: bool
     is_valid_path: str
+    any_valid_path: str
     path_info_with_refs: str
     all_valid_paths: str
     referrers: str
@@ -89,6 +90,7 @@ def sqlite(*, provenance: bool) -> NixSql:
     return NixSql(
         provenance=provenance,
         is_valid_path="SELECT 1 FROM ValidPaths WHERE path = ? LIMIT 1",
+        any_valid_path="SELECT 1 FROM ValidPaths LIMIT 1",
         path_info_with_refs=_SQLITE_PATH_INFO_WITH_REFS.format(provenance=column.format(table="v")),
         all_valid_paths="SELECT path FROM ValidPaths",
         # Nix's own statement, `local-store.cc:364`. A path the store does not hold
@@ -191,6 +193,7 @@ WITH RECURSIVE closure(id) AS (
 POSTGRES = NixSql(
     provenance=True,
     is_valid_path="SELECT 1 FROM ValidPaths WHERE path = %s LIMIT 1",
+    any_valid_path="SELECT 1 FROM ValidPaths LIMIT 1",
     path_info_with_refs="""
 SELECT v.path, v.deriver, v.hash, v.registrationTime, v.narSize, v.ultimate, v.sigs, v.ca, v.provenance, vp.path
 FROM ValidPaths v

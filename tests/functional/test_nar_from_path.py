@@ -26,7 +26,8 @@ if TYPE_CHECKING:
 
 @asynccontextmanager
 async def _pynixd(store_path: Path) -> AsyncIterator[Server]:
-    spec = make_test_spec(store_id="local", store_path=store_path, no_probe=True)
+    # On SQLite: Nix's CLI fills the store.
+    spec = make_test_spec(store_id="local", store_path=store_path, no_probe=True, postgres=None)
     stores: dict[StoreId, Store] = {StoreId("local"): LocalDBStore(spec)}
     async with Server(stores=stores, ssh_port=None, http_port=None) as server:
         yield server

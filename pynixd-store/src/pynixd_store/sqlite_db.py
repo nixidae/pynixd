@@ -8,7 +8,7 @@ thread's own connection.
 from __future__ import annotations
 
 import sqlite3
-from contextlib import asynccontextmanager, contextmanager, suppress
+from contextlib import asynccontextmanager, closing, contextmanager, suppress
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -63,6 +63,16 @@ def database_uri(db_path: Path, *, read_only: bool, immutable: bool = False) -> 
     if immutable:
         return f"file:{db_path}?mode=ro&immutable=1"
     return f"file:{db_path}?mode={'ro' if read_only else 'rw'}"
+
+
+def holds_valid_paths(db_path: Path) -> bool:
+    """Whether the `db.sqlite` at *db_path* exists and registers a path."""
+    if not db_path.exists():
+        return False
+    with closing(sqlite3.connect(database_uri(db_path, read_only=True), uri=True)) as file:
+        if file.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ValidPaths'").fetchone() is None:
+            return False
+        return file.execute(nix_sql.sqlite(provenance=False).any_valid_path).fetchone() is not None
 
 
 class SqliteSession:

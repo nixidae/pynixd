@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,7 @@ from pynixd import experiments
 from pynixd.config import LocalSocketStoreSpec, PostgresSpec
 from pynixd.store import open_postgres_db
 from pynixd_store.create_store import open_local_store
+from pynixd_store.database import DatabaseError
 from pynixd_store.sql import POSTGRES
 from pynixd_store.store_layout import StoreLayout
 
@@ -78,3 +81,25 @@ def test_a_store_on_a_server_gets_no_sqlite_database(tmp_path: Path, sqlite: boo
     assert layout.real_store_dir.is_dir()
     assert layout.db_path.exists() is sqlite
     assert (db_dir / "schema").exists() is sqlite
+
+
+@pytest.mark.parametrize("paths", [0, 1])
+async def test_a_store_whose_sqlite_holds_paths_does_not_open_on_an_empty_server(
+    postgres_conninfo: str, tmp_path: Path, paths: int
+) -> None:
+    """A collection on the empty server database would find each path that Nix registered dead."""
+    layout = StoreLayout.chroot(tmp_path)
+    os.close(open_local_store(layout, {}, "2.35.0"))
+    with contextlib.closing(sqlite3.connect(layout.db_path)) as file, file:
+        for n in range(paths):
+            file.execute(
+                "INSERT INTO ValidPaths (path, hash, registrationTime) VALUES (?, ?, 0)",
+                (f"/nix/store/{'a' * 32}-p{n}", "sha256:" + "0" * 64),
+            )
+    spec = PostgresSpec(conninfo=SecretStr(postgres_conninfo), max_conns=2)
+    if paths:
+        with pytest.raises(DatabaseError, match="holds valid paths and the PostgreSQL database holds none"):
+            await open_postgres_db(spec, layout)
+        return
+    db = await open_postgres_db(spec, layout)
+    await db.close()
