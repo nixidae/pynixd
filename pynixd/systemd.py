@@ -24,7 +24,8 @@ def notify(state: str) -> bool:
         return False
     # An abstract socket is written with a leading `@`.
     target = "\0" + address[1:] if address.startswith("@") else address
-    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_CLOEXEC) as sock:
+    # No SOCK_CLOEXEC: darwin has none, and Python's sockets are non-inheritable already (PEP 446).
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
         sock.connect(target)
         sock.sendall(state.encode())
     return True

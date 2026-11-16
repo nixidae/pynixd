@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import socket
+import sys
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,7 @@ def test_the_state_reaches_the_socket_systemd_names(monkeypatch: pytest.MonkeyPa
         assert manager.recv(64) == b"READY=1"
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="abstract sockets are Linux's")
 def test_an_abstract_socket(monkeypatch: pytest.MonkeyPatch) -> None:
     """systemd writes an abstract address with a leading `@`."""
     name = f"pynixd-notify-test-{id(monkeypatch)}"
