@@ -10,7 +10,7 @@ Nix, which is the slow path that stays correct.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager, closing
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +30,7 @@ from pynixd.exceptions import BackendError
 from pynixd.gc import Collector
 from pynixd_store.db_migrations import LIVENESS_ROOT_TABLE, apply_migrations
 from pynixd_store.gc import over_target
+from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.store_layout import StoreLayout
 
 HASH_A = "00000000000000000000000000000000"
@@ -57,6 +58,20 @@ class FakeDB:
                     closed.add(ref)
                     queue.append(ref)
         return closed
+
+
+class LabDB(LocalStoreDB):
+    """The lab's `db.sqlite`, which the mirror reads, with the access queries of a `FakeDB`."""
+
+    def __init__(self, db_path: Path, fake: FakeDB) -> None:
+        super().__init__(db_path=db_path, store_path=None, read_only=False, reference_flush_interval=60)
+        self.fake = fake
+
+    async def query_paths_not_referenced_since(self, max_age_seconds: int) -> set[str]:  # type: ignore[override]  # the fake answers strings
+        return await self.fake.query_paths_not_referenced_since(max_age_seconds)
+
+    async def query_referrer_closure(self, paths: Iterable[str]) -> set[str]:
+        return await self.fake.query_referrer_closure(set(paths))
 
 
 @dataclass
@@ -130,7 +145,7 @@ async def _database(state: Path, a: str, b: str) -> Path:
     return db
 
 
-def _collector(state: Path, store: Path, db: FakeDB) -> tuple[Collector, FakeLocal]:
+def _collector(state: Path, store: Path, db: LabDB) -> tuple[Collector, FakeLocal]:
     layout = StoreLayout.relocated_store(store_dir=store, state_dir=state)
     local = FakeLocal(layout=layout, db=db)
     return Collector(FakeContext(local=local)), local  # type: ignore[arg-type]  # fakes
@@ -144,8 +159,8 @@ async def test_plan_reads_the_mirror_and_never_asks_nix(tmp_path: Path) -> None:
     fails the test instead of answering slowly.
     """
     state, store, a, b = _lab(tmp_path)
-    await _database(state, a, b)
-    collector, local = _collector(state, store, FakeDB(stale={b}))
+    db = LabDB(await _database(state, a, b), FakeDB(stale={b}))
+    collector, local = _collector(state, store, db)
 
     assert {str(path) for path in await collector.plan()} == {b}
     assert local.calls == []
@@ -159,8 +174,8 @@ async def test_pressure_plans_a_fresh_dead_path(tmp_path: Path) -> None:
     age rule alone frees nothing on a full disk. #1098.
     """
     state, store, a, b = _lab(tmp_path)
-    await _database(state, a, b)
-    collector, _local = _collector(state, store, FakeDB(stale=set()))
+    db = LabDB(await _database(state, a, b), FakeDB(stale=set()))
+    collector, _local = _collector(state, store, db)
 
     assert await collector.plan() == set()
     assert {str(path) for path in await collector.plan(pressed=True)} == {b}
@@ -189,7 +204,7 @@ async def test_a_stale_roots_table_is_repaired_before_planning(tmp_path: Path) -
         conn.execute(
             f"INSERT INTO {LIVENESS_ROOT_TABLE} (link, target, kind) VALUES (?, ?, ?)", ("gone", "nowhere", "gcroot")
         )
-    collector, _local = _collector(state, store, FakeDB(stale={b}))
+    collector, _local = _collector(state, store, LabDB(db_path, FakeDB(stale={b})))
 
     assert {str(path) for path in await collector.plan()} == {b}
 

@@ -301,12 +301,12 @@ class Collector:
         """
         local = self.ctx.local_store
         max_age = local.gc_max_age
-        db_path = self.planner().sql_db_path()
-        if max_age is None or db_path is None:
+        db = self.planner().plan_database()
+        if max_age is None or db is None:
             yield _MemoryPlan(self, {str(path) for path in await self.plan(pressed=pressed)}, vetoed)
             return
         live = await self._live_paths(local)
-        async with SqlPlan.open(db_path) as plan:
+        async with SqlPlan.open(db) as plan:
             counts = await plan.plan(live=live, vetoed=vetoed, cutoff=None if pressed else int(time.time()) - max_age)
             log.info(
                 "gc_plan_lru",

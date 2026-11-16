@@ -33,7 +33,7 @@ import os
 import sqlite3
 import statistics
 import time
-from contextlib import asynccontextmanager, contextmanager, suppress
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, replace
 from itertools import batched
 from pathlib import Path
@@ -48,17 +48,20 @@ from .database import DatabaseError, Params, Row, Session
 from .db_migrations import SchemaState, apply_migrations
 from .nix_tables import NixTables
 from .placement_tables import PlacementTables
-from .sql import SQLITE, Statements, nix as nix_sql
+from .sql import SQLITE, nix as nix_sql
+from .sqlite_db import SqliteDatabase, SqliteSession, database_uri, translated
 from .store_layout import StoreLayout
 from .store_path import StorePath
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterable, Iterator
+    from collections.abc import AsyncIterator, Iterable
+    from contextlib import AbstractAsyncContextManager, AbstractContextManager
 
     from nix_daemon_protocol.aliases import StorePathSet
 
     from .background import Background
     from .build_stats import BuildObservation, DerivationIdentity
+    from .database import SyncSession
     from .sql import NixSql
 
 log = structlog.get_logger(__name__)
@@ -112,86 +115,6 @@ def _bytes_per_s(transfers: list[tuple[int, int]]) -> float | None:
     """Total bytes over total time, for `(bytes, ms)` pairs."""
     total_ms = sum(ms for _, ms in transfers)
     return sum(size for size, _ in transfers) * 1000 / total_ms if total_ms else None
-
-
-# aiosqlite's own errors for a connection that is closed (`core.py:73`, `:115` of 0.21): the pool
-# closed under the block, as the store does when it shuts down.
-_AIOSQLITE_CLOSED = frozenset({"no active connection", "Connection closed"})
-
-
-@contextmanager
-def _translated() -> Iterator[None]:
-    try:
-        yield
-    except sqlite3.Error as exc:
-        raise DatabaseError(str(exc)) from exc
-    except ValueError as exc:
-        if str(exc) not in _AIOSQLITE_CLOSED:
-            raise
-        raise DatabaseError(str(exc)) from exc
-
-
-class _SqliteSession:
-    """A `Session` over one pooled `aiosqlite` connection."""
-
-    def __init__(self, conn: aiosqlite.Connection, sql: Statements) -> None:
-        self._conn = conn
-        self.sql = sql
-
-    async def fetchone(self, sql: str, params: Params = ()) -> Row | None:
-        # The cursor closes before the connection goes back: an open statement holds a shared lock on the file.
-        with _translated():
-            async with self._conn.execute(sql, params) as cursor:
-                row = await cursor.fetchone()
-        return None if row is None else tuple(row)
-
-    async def fetchall(self, sql: str, params: Params = ()) -> list[Row]:
-        with _translated():
-            async with self._conn.execute(sql, params) as cursor:
-                return [tuple(row) for row in await cursor.fetchall()]
-
-    async def execute(self, sql: str, params: Params = ()) -> int:
-        with _translated():
-            async with self._conn.execute(sql, params) as cursor:
-                return cursor.rowcount
-
-    async def executemany(self, sql: str, rows: Iterable[Params]) -> None:
-        with _translated():
-            await self._conn.executemany(sql, rows)
-
-    async def insert(self, sql: str, params: Params = ()) -> int:
-        with _translated():
-            async with self._conn.execute(sql, params) as cursor:
-                row_id = cursor.lastrowid
-        if row_id is None:
-            raise DatabaseError(f"the statement added no row: {sql.strip()}")
-        return row_id
-
-    @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[None]:
-        """IMMEDIATE takes the write lock at once.
-
-        A deferred transaction that upgrades in WAL mode can fail with
-        SQLITE_BUSY_SNAPSHOT without waiting. Nix's connection enforces the
-        foreign keys of `Refs` (`openDB`), and a pooled one does not by
-        default: `invalidate_path` relies on their cascade.
-        """
-        await self.execute("PRAGMA foreign_keys = 1")
-        await self.execute("BEGIN IMMEDIATE")
-        try:
-            yield
-            with _translated():
-                await self._conn.commit()
-        except BaseException:
-            # A failed rollback must not replace the error that caused it. The connection does
-            # not go back to the pool, so the transaction dies with it.
-            with anyio.CancelScope(shield=True):
-                try:
-                    with _translated():
-                        await self._conn.rollback()
-                except DatabaseError:
-                    log.debug("db_rollback_failed", exc_info=True)
-            raise
 
 
 class SyncReader:
@@ -525,15 +448,28 @@ class LocalStoreDB:
         A write in the block goes in `session.transaction()`, or `transaction` here for a block that only writes.
         """
         # The session translates its own statements; this covers the connect and the pool's own pragma.
-        with _translated():
+        with translated():
             async with self.acquire_conn() as conn:
-                yield _SqliteSession(conn, self.sql)
+                yield SqliteSession(conn, self.sql)
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[Session]:
         """One write transaction on a pooled connection: committed when the block ends, rolled back when it raises."""
         async with self.connection() as session, session.transaction():
             yield session
+
+    def _file(self) -> SqliteDatabase:
+        if self.db_path is None:
+            raise DatabaseError("the store has no database")
+        return SqliteDatabase(self.db_path, self.sql, immutable=self.immutable)
+
+    def snapshot(self) -> AbstractAsyncContextManager[Session]:
+        """One read transaction on a connection of its own (`Database.snapshot`)."""
+        return self._file().snapshot()
+
+    def sync_session(self, *, write: bool = False) -> AbstractContextManager[SyncSession]:
+        """A worker thread's own connection (`Database.sync_session`)."""
+        return self._file().sync_session(write=write)
 
     async def fetchone(self, sql: str, params: Params = ()) -> Row | None:
         async with self.connection() as session:
@@ -1166,17 +1102,6 @@ def _size_or_none(path: Path) -> int | None:
         return path.stat().st_size
     except OSError:
         return None
-
-
-def database_uri(db_path: Path, *, read_only: bool, immutable: bool = False) -> str:
-    """The SQLite URI of *db_path*. *immutable* is storage that cannot change (`StoreLayout.immutable`).
-
-    `immutable=1` takes no lock and reads no `-wal` or `-shm`, so it needs no write permission, and a live
-    writer's frames are invisible to it.
-    """
-    if immutable:
-        return f"file:{db_path}?mode=ro&immutable=1"
-    return f"file:{db_path}?mode={'ro' if read_only else 'rw'}"
 
 
 def resolve_db_path(layout: StoreLayout) -> Path | None:

@@ -20,8 +20,7 @@ ALLOWED = {
     "pynixd-store/src/pynixd_store/local_store_db.py": "the pool, the session reader and pynixd's own tables",
     "pynixd-store/src/pynixd_store/db_migrations.py": "the schema of pynixd's own tables",
     "pynixd-store/src/pynixd_store/create_store.py": "a new store's database, with Nix's schema",
-    "pynixd-store/src/pynixd_store/liveness.py": "the collector's live set, read on a thread",
-    "pynixd-store/src/pynixd_store/gc_sql.py": "the collector's plan, in one read transaction",
+    "pynixd-store/src/pynixd_store/sqlite_db.py": "the sessions of the SQLite engine",
 }
 
 

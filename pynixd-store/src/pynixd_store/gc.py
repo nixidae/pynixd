@@ -19,7 +19,7 @@ import structlog
 from anyio.to_thread import run_sync
 
 from .liveness import RootsTracker, walk_volatile
-from .local_store_db import LocalStoreDB, resolve_db_path
+from .local_store_db import LocalStoreDB
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -159,12 +159,12 @@ class GarbagePlanner:
     def real_store_dir(self) -> Path | None:
         return None if self.layout is None else self.layout.real_store_dir
 
-    def sql_db_path(self) -> Path | None:
+    def plan_database(self) -> LocalStoreDB | None:
         """The database a `SqlPlan` opens, or `None` when the store lacks pynixd's tables."""
         db = self.db
         if not isinstance(db, LocalStoreDB) or not db.active or not db.schema.usable:
             return None
-        return db.db_path
+        return db
 
     def volatile_roots(self) -> set[str]:
         """The living roots, read synchronously for a worker thread.
@@ -184,12 +184,10 @@ class GarbagePlanner:
         Missing state or a failed refresh returns `None`; callers then ask Nix.
         """
         try:
-            if self.layout is None:
+            db = self.db
+            if self.layout is None or not isinstance(db, LocalStoreDB) or not db.active:
                 return None
-            db_path = resolve_db_path(self.layout)
-            if db_path is None:
-                return None
-            tracker = RootsTracker(self.layout.state_dir, str(self.layout.store_dir), db_path)
+            tracker = RootsTracker(self.layout.state_dir, str(self.layout.store_dir), db)
             return await run_sync(tracker.refresh)
         except Exception:
             log.warning("gc_mirror_refresh_failed", exc_info=True)
@@ -303,20 +301,17 @@ class LivenessWatch:
         self.tracker = tracker
 
     @classmethod
-    def from_layout(cls, layout: StoreLayout | None) -> LivenessWatch | None:
+    def of(cls, layout: StoreLayout | None, db: LocalStoreDB) -> LivenessWatch | None:
         """A watch over the store at *layout*, or `None` when it cannot host a mirror.
 
         The mirror lives in the store's own database beside Nix's tables,
-        and reads the store's own roots directories: without a layout there
-        is neither. `None` is not an error -- a store served without its
-        state simply gathers no evidence.
+        and reads the store's own roots directories: without a layout or a
+        database there is neither. `None` is not an error -- a store served
+        without its state simply gathers no evidence.
         """
-        if layout is None:
+        if layout is None or not db.active:
             return None
-        db_path = resolve_db_path(layout)
-        if db_path is None:
-            return None
-        return cls(RootsTracker(layout.state_dir, str(layout.store_dir), db_path))
+        return cls(RootsTracker(layout.state_dir, str(layout.store_dir), db))
 
     async def refresh(self) -> set[str]:
         """Refresh the mirror without asking Nix anything.

@@ -35,17 +35,19 @@ import fcntl
 import json
 import os
 import re
-import sqlite3
 import stat
 import time
-from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import structlog
 
-from .sql import SQLITE
+from .database import DatabaseError
 from .temp_roots import PYNIXD_TEMP_ROOTS_PREFIX
+
+if TYPE_CHECKING:
+    from .database import Database
 
 log = structlog.get_logger(__name__)
 
@@ -533,63 +535,58 @@ def walk_roots(
     return checked, walk.temporary
 
 
-_SQL = SQLITE.liveness
-
-
-def query_live_set(db_path: Path, volatile: set[str]) -> set[str]:
+def query_live_set(db: Database, volatile: set[str]) -> set[str]:
     """The live set: one closure over the table roots plus `volatile`.
 
     Read-only, and the only graph query in the design: stable roots come
     from the table, living roots join as a parameter. Seconds on hundreds
     of thousands of paths, where per-root closures take minutes.
     """
-    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
-        return {row[0] for row in conn.execute(_SQL.live_set, (json.dumps(sorted(volatile)),))}
+    with db.sync_session() as session:
+        return {row[0] for row in session.fetchall(session.sql.liveness.live_set, (json.dumps(sorted(volatile)),))}
 
 
-def db_fingerprint(db_path: Path) -> tuple[int, int]:
+def db_fingerprint(db: Database) -> tuple[int, int]:
     """`(row count, max id)`: any add moves the max, any delete the count.
 
     Ids never reuse, so the pair answers whether the adjacency changed
     without reading it. Cheap enough to ask on every poll.
     """
-    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
-        count, maximum = conn.execute(_SQL.fingerprint).fetchone()
-    return (int(count), int(maximum))
+    with db.sync_session() as session:
+        row = session.fetchone(session.sql.liveness.fingerprint)
+    if row is None:
+        raise DatabaseError("the fingerprint query returned no row")
+    return (int(row[0]), int(row[1]))
 
 
-def refresh_roots(db_path: Path, stable: dict[str, tuple[str, str]]) -> bool:
+def refresh_roots(db: Database, stable: dict[str, tuple[str, str]]) -> bool:
     """Reconcile the roots table with the walked links. Returns dirtiness.
 
     Links the walk no longer sees leave; new and retargeted links land.
     Unchanged links are untouched, so an unchanged deployment writes
     nothing. `True` means the roots moved and the live set must recompute.
     """
-    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
-        current = {row[0]: (row[1], row[2]) for row in conn.execute(_SQL.roots)}
+    with db.sync_session() as session:
+        current = {row[0]: (row[1], row[2]) for row in session.fetchall(session.sql.liveness.roots)}
     if current == stable:
         return False
-    with closing(sqlite3.connect(db_path)) as conn:
-        # Wait behind the daemon's writers instead of failing instantly:
-        # a reconcile that gives up at once leaves the roots stale for
-        # that interval. Same 5s the sync readers already allow.
-        conn.execute("PRAGMA busy_timeout = 5000")
-        with conn:
-            for link in current:
-                if link not in stable:
-                    conn.execute(_SQL.delete_root, (link,))
-            conn.executemany(
-                _SQL.upsert_root,
-                [
-                    (link, target, kind)
-                    for link, (target, kind) in sorted(stable.items())
-                    if current.get(link) != (target, kind)
-                ],
-            )
+    with db.sync_session(write=True) as session, session.transaction():
+        sql = session.sql.liveness
+        for link in current:
+            if link not in stable:
+                session.execute(sql.delete_root, (link,))
+        session.executemany(
+            sql.upsert_root,
+            [
+                (link, target, kind)
+                for link, (target, kind) in sorted(stable.items())
+                if current.get(link) != (target, kind)
+            ],
+        )
     return True
 
 
-def write_snapshot(db_path: Path, live: set[str], epoch: int) -> None:
+def write_snapshot(db: Database, live: set[str], epoch: int) -> None:
     """Make the table hold exactly `live`, writing only what changed.
 
     The new set goes into a TEMP table first, which takes no lock on Nix's
@@ -602,30 +599,25 @@ def write_snapshot(db_path: Path, live: set[str], epoch: int) -> None:
     that dies leaves the previous complete set, never a partial one. Dead
     needs no rows: it is the complement against `ValidPaths`.
     """
-    with closing(sqlite3.connect(db_path, isolation_level=None)) as conn:
-        # Same wait as the roots reconcile above: a snapshot that gives
-        # up at once leaves no liveness evidence for that interval.
-        conn.execute("PRAGMA busy_timeout = 5000")
-        conn.execute(_SQL.create_live_now)
-        conn.execute(_SQL.fill_live_now, (json.dumps(sorted(live)),))
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            conn.execute(_SQL.delete_left)
-            conn.execute(_SQL.insert_joined, (epoch,))
-            conn.execute("COMMIT")
-        except BaseException:
-            conn.execute("ROLLBACK")
-            raise
+    with db.sync_session(write=True) as session:
+        sql = session.sql.liveness
+        session.execute(sql.create_live_now)
+        session.execute(sql.fill_live_now, (json.dumps(sorted(live)),))
+        with session.transaction():
+            session.execute(sql.delete_left)
+            session.execute(sql.insert_joined, (epoch,))
 
 
-def read_snapshot(db_path: Path) -> tuple[set[str], int] | None:
+def read_snapshot(db: Database) -> tuple[set[str], int] | None:
     """The live set and the newest `epoch` a path joined it at, or `None` when empty."""
-    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
-        row = conn.execute(_SQL.newest_epoch).fetchone()
+    with db.sync_session() as session:
+        row = session.fetchone(session.sql.liveness.newest_epoch)
+        if row is None:
+            raise DatabaseError("the epoch query returned no row")
         epoch = int(row[0])
         if epoch < 0:
             return None
-        live = {r[0] for r in conn.execute(_SQL.live_paths)}
+        live = {r[0] for r in session.fetchall(session.sql.liveness.live_paths)}
     return (live, epoch)
 
 
@@ -641,10 +633,10 @@ class RootsTracker:
     before anything plans from this.
     """
 
-    def __init__(self, state_dir: Path, store_dir: str, db_path: Path, proc_dir: Path | None = None) -> None:
+    def __init__(self, state_dir: Path, store_dir: str, db: Database, proc_dir: Path | None = None) -> None:
         self.state_dir = state_dir
         self.store_dir = store_dir
-        self.db_path = db_path
+        self.db = db
         self.proc_dir = proc_dir
         self.fingerprint: tuple[int, int] | None = None
         self.last_volatile: set[str] = set()
@@ -653,14 +645,14 @@ class RootsTracker:
 
     def refresh(self) -> set[str]:
         """A liveness pass: sync roots, recompute on change, snapshot."""
-        dirty = refresh_roots(self.db_path, walk_stable(self.state_dir, self.store_dir))
+        dirty = refresh_roots(self.db, walk_stable(self.state_dir, self.store_dir))
         volatile = walk_volatile(self.state_dir, self.store_dir, self.proc_dir)
-        fingerprint = db_fingerprint(self.db_path)
+        fingerprint = db_fingerprint(self.db)
         if not dirty and volatile == self.last_volatile and fingerprint == self.fingerprint and self.live:
             return self.live
-        self.live = query_live_set(self.db_path, volatile)
+        self.live = query_live_set(self.db, volatile)
         self.epoch = int(time.time())
-        write_snapshot(self.db_path, self.live, self.epoch)
+        write_snapshot(self.db, self.live, self.epoch)
         self.last_volatile = volatile
         self.fingerprint = fingerprint
         return self.live
@@ -687,10 +679,10 @@ class Streak:
     updated_at: int
 
 
-def read_streak(db_path: Path) -> Streak | None:
+def read_streak(db: Database) -> Streak | None:
     """The filed streak, or `None` when no check ever filed one."""
-    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
-        row = conn.execute(_SQL.read_streak).fetchone()
+    with db.sync_session() as session:
+        row = session.fetchone(session.sql.liveness.read_streak)
     if row is None:
         return None
     return Streak(
@@ -702,20 +694,20 @@ def read_streak(db_path: Path) -> Streak | None:
     )
 
 
-def record_check(db_path: Path, agreed: bool, live: set[str]) -> Streak | None:
+def record_check(db: Database, agreed: bool, live: set[str]) -> Streak | None:
     """File one check's verdict, and read back the streak it leaves.
 
     Best-effort, and only ever touches the streak table: a streak the
     database refuses must not fail a check whose differential already
     answered. Returns `None` when nothing was filed.
     """
-    if not db_path.exists():
-        return None
     agreed_int = 1 if agreed else 0
     try:
-        with closing(sqlite3.connect(db_path)) as conn, conn:
-            conn.execute(_SQL.record_streak, (agreed_int, 1 - agreed_int, len(live), agreed_int, agreed_int))
-        return read_streak(db_path)
-    except (OSError, sqlite3.Error) as exc:
+        with db.sync_session(write=True) as session, session.transaction():
+            session.execute(
+                session.sql.liveness.record_streak, (agreed_int, 1 - agreed_int, len(live), agreed_int, agreed_int)
+            )
+        return read_streak(db)
+    except DatabaseError as exc:
         log.warning("gc_liveness_streak_unrecorded", error=str(exc))
         return None

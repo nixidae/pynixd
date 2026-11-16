@@ -31,6 +31,7 @@ from pynixd_store.liveness import (
     walk_volatile,
     write_snapshot,
 )
+from pynixd_store.sqlite_db import SqliteDatabase
 from tests.unit.temp_root_owner import live_temp_root
 
 if TYPE_CHECKING:
@@ -241,8 +242,8 @@ def test_closure_query_matches_the_oracle(tmp_path: Path) -> None:
     refs = {a: {b}, b: {c}, d: {b}}
     derivers: dict[str, str | None] = {a: d}
 
-    assert query_live_set(db, {a}) == _reference_bfs({a}, refs, derivers) == {a, b, c, d}
-    assert query_live_set(db, {d}) == _reference_bfs({d}, refs, derivers) == {b, c, d}
+    assert query_live_set(SqliteDatabase(db), {a}) == _reference_bfs({a}, refs, derivers) == {a, b, c, d}
+    assert query_live_set(SqliteDatabase(db), {d}) == _reference_bfs({d}, refs, derivers) == {b, c, d}
 
 
 def test_refresh_roots_reports_dirtiness(tmp_path: Path) -> None:
@@ -250,11 +251,11 @@ def test_refresh_roots_reports_dirtiness(tmp_path: Path) -> None:
     db = tmp_path / "db.sqlite"
     _tiny_db(db)
 
-    assert refresh_roots(db, walk_stable(state, str(tmp_path / "store"))) is True
-    assert refresh_roots(db, walk_stable(state, str(tmp_path / "store"))) is False
+    assert refresh_roots(SqliteDatabase(db), walk_stable(state, str(tmp_path / "store"))) is True
+    assert refresh_roots(SqliteDatabase(db), walk_stable(state, str(tmp_path / "store"))) is False
 
     (auto / "direct").unlink()
-    assert refresh_roots(db, walk_stable(state, str(tmp_path / "store"))) is True
+    assert refresh_roots(SqliteDatabase(db), walk_stable(state, str(tmp_path / "store"))) is True
     with closing(sqlite3.connect(db)) as conn:
         # Three, not four: the indirect link folds into its intermediate's
         # row, so `direct`, `nested` and the profile remain.
@@ -268,11 +269,11 @@ def test_snapshot_round_trips_and_replaces(tmp_path: Path) -> None:
     b = "/fake/store/00000000000000000000000000000002-b"
     c = "/fake/store/00000000000000000000000000000003-c"
 
-    assert read_snapshot(db) is None
-    write_snapshot(db, {a, b}, 7)
-    assert read_snapshot(db) == ({a, b}, 7)
-    write_snapshot(db, {b, c}, 9)
-    assert read_snapshot(db) == ({b, c}, 9)
+    assert read_snapshot(SqliteDatabase(db)) is None
+    write_snapshot(SqliteDatabase(db), {a, b}, 7)
+    assert read_snapshot(SqliteDatabase(db)) == ({a, b}, 7)
+    write_snapshot(SqliteDatabase(db), {b, c}, 9)
+    assert read_snapshot(SqliteDatabase(db)) == ({b, c}, 9)
     with closing(sqlite3.connect(db)) as conn:
         assert conn.execute(f"SELECT COUNT(*) FROM {LIVENESS_TABLE}").fetchone()[0] == 2
 
@@ -285,9 +286,9 @@ def test_snapshot_writes_only_what_changed(tmp_path: Path) -> None:
     b = "/fake/store/00000000000000000000000000000002-b"
     c = "/fake/store/00000000000000000000000000000003-c"
 
-    write_snapshot(db, {a, b}, 7)
-    write_snapshot(db, {b, c}, 9)
-    write_snapshot(db, {b, c}, 11)
+    write_snapshot(SqliteDatabase(db), {a, b}, 7)
+    write_snapshot(SqliteDatabase(db), {b, c}, 9)
+    write_snapshot(SqliteDatabase(db), {b, c}, 11)
 
     with closing(sqlite3.connect(db)) as conn:
         rows = dict(conn.execute(f"SELECT path, epoch FROM {LIVENESS_TABLE}").fetchall())

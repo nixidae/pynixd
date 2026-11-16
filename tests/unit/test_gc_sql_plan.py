@@ -21,6 +21,7 @@ from pynixd_store.database import DatabaseError
 from pynixd_store.db_migrations import PATH_ACCESS_TABLE, apply_migrations
 from pynixd_store.gc import by_weight, take_until_below_target
 from pynixd_store.gc_sql import Bound, SqlPlan, referrer_first
+from pynixd_store.sqlite_db import SqliteDatabase
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -131,7 +132,7 @@ async def test_the_plan_and_its_order_match_python(tmp_path: Path, seed: int, pr
     weights = {path: (store.size[path], max(0, NOW - store.seen[path])) for path in planned - store.vetoed}
     pressure = random.Random(seed).random()
 
-    async with SqlPlan.open(store.db) as plan:
+    async with SqlPlan.open(SqliteDatabase(store.db)) as plan:
         counts = await plan.plan(live=store.live, vetoed=store.vetoed, cutoff=cutoff)
         rows = await plan.weighed(pressure=pressure, now=NOW, bound=None, limit=None)
 
@@ -152,7 +153,7 @@ async def test_the_bound_takes_what_python_took(tmp_path: Path, seed: int) -> No
     freeable = sum(size for size, _ in weights.values())
     bound = Bound(used=int(total * 0.8), total=total, target=0.8 - freeable / total / 2)
 
-    async with SqlPlan.open(store.db) as plan:
+    async with SqlPlan.open(SqliteDatabase(store.db)) as plan:
         await plan.plan(live=store.live, vetoed=store.vetoed, cutoff=None)
         rows = await plan.weighed(pressure=0.8, now=NOW, bound=bound, limit=None)
         limited = await plan.weighed(pressure=0.8, now=NOW, bound=bound, limit=3)
@@ -172,7 +173,7 @@ async def test_a_cut_batch_recloses_and_orders_as_python_did(tmp_path: Path, see
     weights = {path: (store.size[path], max(0, NOW - store.seen[path])) for path in planned - store.vetoed}
     head = by_weight(weights, 0.5)[: max(1, len(weights) // 3)]
 
-    async with SqlPlan.open(store.db) as plan:
+    async with SqlPlan.open(SqliteDatabase(store.db)) as plan:
         await plan.plan(live=store.live, vetoed=store.vetoed, cutoff=None)
         closed = await plan.close_batch(head)
         ordered = await plan.order_batch(closed)
@@ -189,7 +190,7 @@ async def test_an_open_plan_does_not_block_a_writer(tmp_path: Path) -> None:
     with closing(sqlite3.connect(store.db)) as conn:
         conn.execute("PRAGMA journal_mode=WAL")
 
-    async with SqlPlan.open(store.db) as plan:
+    async with SqlPlan.open(SqliteDatabase(store.db)) as plan:
         await plan.plan(live=store.live, vetoed=store.vetoed, cutoff=None)
         with closing(sqlite3.connect(store.db, timeout=0, isolation_level=None)) as writer:
             writer.execute("BEGIN IMMEDIATE")
@@ -206,5 +207,5 @@ async def test_a_refused_plan_raises_database_error(tmp_path: Path) -> None:
     db = tmp_path / "empty.sqlite"
     sqlite3.connect(db).close()
     with pytest.raises(DatabaseError, match="no such table"):
-        async with SqlPlan.open(db) as plan:
+        async with SqlPlan.open(SqliteDatabase(db)) as plan:
             await plan.plan(live=set(), vetoed=set(), cutoff=None)

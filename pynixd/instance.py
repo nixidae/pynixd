@@ -794,7 +794,7 @@ class Server:
             self._spawn(self._gc_tick)
             liveness_interval = self.ctx.settings.gc_liveness_interval
             if liveness_interval is not None:
-                watch = LivenessWatch.from_layout(self.ctx.local_store.layout)
+                watch = LivenessWatch.of(self.ctx.local_store.layout, self.ctx.db)
                 if watch is None:
                     log.warning("gc_liveness_watch_unavailable")
                 else:

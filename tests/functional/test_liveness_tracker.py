@@ -65,7 +65,7 @@ async def test_tracker_matches_nix(tmp_path: Path) -> None:
         tracker = RootsTracker(
             state_dir=state_dir,
             store_dir="/nix/store",
-            db_path=state_dir / "db" / "db.sqlite",
+            db=local.db,
         )
         mine = tracker.refresh()
         resp = await local.call(

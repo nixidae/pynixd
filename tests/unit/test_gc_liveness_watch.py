@@ -11,6 +11,7 @@ import pytest
 from pynixd.instance import Server
 from pynixd.liveness_watch import DirtyFlag
 from pynixd_store.gc import LivenessWatch
+from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.store_layout import StoreLayout
 
 A = "/nix/store/00000000000000000000000000000000-a"
@@ -39,11 +40,15 @@ async def test_refresh_never_asks_nix() -> None:
     assert tracker.refreshed == 1
 
 
-def test_from_layout_needs_a_layout() -> None:
-    assert LivenessWatch.from_layout(None) is None
+def test_a_watch_needs_a_layout_and_a_database(tmp_path: Path) -> None:
+    active = LocalStoreDB(db_path=tmp_path / "db.sqlite", store_path=None, read_only=True, reference_flush_interval=60)
+    inactive = LocalStoreDB(db_path=None, store_path=None, read_only=True, reference_flush_interval=60)
+    layout = StoreLayout.chroot(tmp_path)
+    assert LivenessWatch.of(None, active) is None
+    assert LivenessWatch.of(layout, inactive) is None
 
 
-def test_from_layout_mirrors_the_served_store(tmp_path: Path) -> None:
+def test_a_watch_mirrors_the_served_store(tmp_path: Path) -> None:
     """The tracker reads the layout's state and names its path prefix."""
     layout = StoreLayout(
         store_dir=Path("/nix/store"),
@@ -53,12 +58,14 @@ def test_from_layout_mirrors_the_served_store(tmp_path: Path) -> None:
         relocated=False,
     )
 
-    watch = LivenessWatch.from_layout(layout)
+    db = LocalStoreDB(db_path=layout.db_path, store_path=None, read_only=True, reference_flush_interval=60)
+
+    watch = LivenessWatch.of(layout, db)
 
     assert watch is not None
     assert watch.tracker.state_dir == layout.state_dir
     assert watch.tracker.store_dir == "/nix/store"
-    assert watch.tracker.db_path == layout.state_dir / "db" / "db.sqlite"
+    assert watch.tracker.db is db
 
 
 @pytest.mark.parametrize("root_change", [False, True])

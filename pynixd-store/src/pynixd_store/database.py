@@ -11,11 +11,11 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
-    from contextlib import AbstractAsyncContextManager
+    from contextlib import AbstractAsyncContextManager, AbstractContextManager
 
     from .sql import Statements
 
-__all__ = ["DatabaseError", "Params", "Row", "Session"]
+__all__ = ["Database", "DatabaseError", "Params", "Row", "Session", "SyncSession"]
 
 
 class DatabaseError(Exception):
@@ -54,4 +54,40 @@ class Session(Protocol):
 
     async def insert(self, sql: str, params: Params = ()) -> int:
         """Run one `INSERT`; the id of the row it added."""
+        ...
+
+
+class SyncSession(Protocol):
+    """A `Session` for a worker thread: one connection of its own, no pool, no event loop."""
+
+    @property
+    def sql(self) -> Statements: ...
+
+    def transaction(self) -> AbstractContextManager[None]: ...
+
+    def fetchone(self, sql: str, params: Params = ()) -> Row | None: ...
+
+    def fetchall(self, sql: str, params: Params = ()) -> list[Row]: ...
+
+    def execute(self, sql: str, params: Params = ()) -> int: ...
+
+    def executemany(self, sql: str, rows: Iterable[Params]) -> None: ...
+
+
+class Database(Protocol):
+    """The sessions that do not come from the pool: a long read, and a thread's own connection."""
+
+    @property
+    def sql(self) -> Statements: ...
+
+    def snapshot(self) -> AbstractAsyncContextManager[Session]:
+        """One read transaction on a connection of its own, held for the block.
+
+        Every statement reads the same snapshot, and only TEMP tables take writes.
+        The collector's plan holds it for tens of seconds, which no pooled connection may.
+        """
+        ...
+
+    def sync_session(self, *, write: bool = False) -> AbstractContextManager[SyncSession]:
+        """A connection for a worker thread, closed when the block ends. A write needs *write*."""
         ...
