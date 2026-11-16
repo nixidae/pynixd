@@ -17,8 +17,8 @@ LIBC = "/nix/store/00000000000000000000000000000001-libc"
 HELLO = "/nix/store/00000000000000000000000000000002-hello"
 DRV = "/nix/store/00000000000000000000000000000003-hello.drv"
 ABSENT = "/nix/store/00000000000000000000000000000009-absent"
-HASH = "sha256:" + "1" * 64
-OTHER_HASH = "sha256:" + "2" * 64
+HASH = bytes([0x11]) * 32
+OTHER_HASH = bytes([0x22]) * 32
 SIG_A = Signature("cache-a:YWJj")
 SIG_B = Signature("cache-b:ZGVm")
 
@@ -105,7 +105,7 @@ async def test_the_writes_change_what_the_reads_answer(store_db: LocalStoreDB) -
     await store_db.nix.update_path_hashes(LIBC, nar_hash=OTHER_HASH, nar_size=7)
     libc = await store_db.nix.path_info(LIBC)
     assert libc is not None
-    assert (libc.info.nar_hash.hash, libc.info.nar_size) == (OTHER_HASH.removeprefix("sha256:"), 7)
+    assert (libc.info.nar_hash.hash, libc.info.nar_size) == (OTHER_HASH.hex(), 7)
 
     trace = DRV.removeprefix("/nix/store/")
     await store_db.nix.register_drv_output(trace, "out", HELLO, [SIG_B], by_path=True)

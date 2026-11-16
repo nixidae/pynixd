@@ -7,7 +7,9 @@ pynixd's tables start at the end state of `db_migrations.MIGRATIONS`, version `B
 migration after it gets a twin here under the same version.
 
 No program but pynixd reads these tables, so a list or a flag that Nix packs into text or an
-integer has a native type here (`text[]`, `boolean`), and `sql.codec` binds it. Each rule below
+integer has a native type here (`text[]`, `boolean`), and `sql.codec` binds it. `ValidPaths.hash`
+is the 32 bytes of the SHA-256 digest: every write of Nix's is SHA-256 (`local-store.cc:975`),
+so the `sha256:` and the base-16 text carry nothing. Each rule below
 keeps the behaviour of the other columns the same as in SQLite:
 
 - Every text column is `COLLATE "C"`. SQLite compares text bytewise (`BINARY`), and a range scan
@@ -59,7 +61,7 @@ NIX_TABLES: tuple[str, ...] = (
     f"""CREATE TABLE IF NOT EXISTS ValidPaths (
     id               {_ID},
     path             {_T} UNIQUE NOT NULL,
-    hash             {_T} NOT NULL,
+    hash             BYTEA NOT NULL CHECK (octet_length(hash) = 32),
     registrationTime BIGINT NOT NULL,
     deriver          {_T},
     narSize          BIGINT,

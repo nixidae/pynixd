@@ -25,7 +25,7 @@ def _registration(
 ) -> register.Registration:
     return register.Registration(
         path=path,
-        nar_hash="sha256:" + "1" * 64,
+        nar_hash=bytes([0x11]) * 32,
         registration_time=1_700_000_000,
         deriver=deriver,
         nar_size=SIZE,

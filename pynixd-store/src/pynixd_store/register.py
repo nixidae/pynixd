@@ -52,7 +52,8 @@ class Registration:
     """One row of `ValidPaths` as Nix binds it, with its references and derivation outputs."""
 
     path: str
-    nar_hash: str
+    #: The SHA-256 digest of the NAR.
+    nar_hash: bytes
     registration_time: int
     deriver: str | None
     nar_size: int | None
@@ -80,7 +81,7 @@ async def prepare(info: ValidPathInfo, layout: StoreLayout, features: Collection
     # `registerValidPaths` asserts SHA-256 (`local-store.cc:910`) and writes Base16. A daemon's
     # wire carries Base16 and a narinfo Nix32; `Hash::parseAny` reads both (`worker-protocol.cc:372`).
     try:
-        nar_hash = parse_any_sha256(str(unkeyed.nar_hash)).hex()
+        nar_hash = parse_any_sha256(str(unkeyed.nar_hash))
     except ValueError as error:
         raise RegistrationError(
             f"path '{magenta(path)}' has a NAR hash that is not SHA-256: {magenta(unkeyed.nar_hash)}"
@@ -103,7 +104,7 @@ async def prepare(info: ValidPathInfo, layout: StoreLayout, features: Collection
     deriver = str(unkeyed.deriver) if unkeyed.deriver else None
     return Registration(
         path=path,
-        nar_hash=f"sha256:{nar_hash}",
+        nar_hash=nar_hash,
         registration_time=unkeyed.registration_time.ts or int(time.time()),
         deriver=deriver or None,
         nar_size=unkeyed.nar_size or None,
@@ -299,14 +300,15 @@ async def register_valid_paths(session: Session, registrations: Iterable[Registr
     for path in order:
         row = rows[path]
         ultimate, sigs = codec.ultimate(row.ultimate), codec.path_signatures(row.sigs)
+        nar_hash = codec.nar_hash(row.nar_hash)
         if await _path_id(session, path) is not None:
             await session.execute(
-                session.sql.nix.update_path_info, (row.nar_size, row.nar_hash, ultimate, sigs, row.ca, path)
+                session.sql.nix.update_path_info, (row.nar_size, nar_hash, ultimate, sigs, row.ca, path)
             )
             continue
         values: tuple[object, ...] = (
             path,
-            row.nar_hash,
+            nar_hash,
             row.registration_time,
             row.deriver,
             row.nar_size,
@@ -363,7 +365,7 @@ async def invalidate_path(session: Session, path: str) -> None:
     await session.execute(session.sql.nix.invalidate_path, (path,))
 
 
-async def update_path_hashes(session: Session, path: str, *, nar_hash: str, nar_size: int) -> None:
+async def update_path_hashes(session: Session, path: str, *, nar_hash: bytes, nar_size: int) -> None:
     """`verifyStore`'s fix-up of a missing hash or size (`local-store.cc:1444`): write them, keep the rest.
 
     Nix calls `updatePathInfo` with the whole record after it fills a null
@@ -375,7 +377,9 @@ async def update_path_hashes(session: Session, path: str, *, nar_hash: str, nar_
     if row is None:
         return
     _nar_size, _hash, ultimate, sigs, ca = row
-    await session.execute(session.sql.nix.update_path_info, (nar_size, nar_hash, ultimate, sigs, ca, path))
+    await session.execute(
+        session.sql.nix.update_path_info, (nar_size, session.sql.codec.nar_hash(nar_hash), ultimate, sigs, ca, path)
+    )
 
 
 async def _require_valid_output(session: Session, realisation: str, out_path: str) -> None:

@@ -34,7 +34,7 @@ def path_info(row: Row, references: Iterable[str], codec: Codec) -> ValidPathInf
         path=StorePath(path=path),
         info=UnkeyedValidPathInfo(
             deriver=StorePath(path=deriver or ""),
-            nar_hash=NARHash(hash=nar_hash),
+            nar_hash=NARHash(hash=codec.nar_hash_hex(nar_hash)),
             references={StorePath(path=reference) for reference in references},
             registration_time=Time(ts=registration_time),
             nar_size=nar_size or 0,
@@ -84,9 +84,9 @@ class NixTables:
         row = await self._db.fetchone(self._db.sql.nix.path_from_hash_part, (lower, upper))
         return None if row is None else StorePath(path=row[0])
 
-    async def path_from_nar_hash(self, nar_hash: str) -> StorePath | None:
-        """A valid path whose `ValidPaths.hash` is *nar_hash*, as Nix writes it (`sha256:<base16>`)."""
-        row = await self._db.fetchone(self._db.sql.nix.path_from_nar_hash, (nar_hash,))
+    async def path_from_nar_hash(self, nar_hash: bytes) -> StorePath | None:
+        """A valid path whose NAR has the SHA-256 digest *nar_hash*."""
+        row = await self._db.fetchone(self._db.sql.nix.path_from_nar_hash, (self._db.sql.codec.nar_hash(nar_hash),))
         return None if row is None else StorePath(path=row[0])
 
     async def closure_with_info(self, paths: Iterable[str]) -> list[ValidPathInfo]:
@@ -148,6 +148,6 @@ class NixTables:
         async with self._db.transaction() as session:
             await register.invalidate_path(session, path)
 
-    async def update_path_hashes(self, path: str, *, nar_hash: str, nar_size: int) -> None:
+    async def update_path_hashes(self, path: str, *, nar_hash: bytes, nar_size: int) -> None:
         async with self._db.transaction() as session:
             await register.update_path_hashes(session, path, nar_hash=nar_hash, nar_size=nar_size)

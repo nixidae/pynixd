@@ -22,7 +22,7 @@ REGISTERED = 1_700_000_000
 def _registration(path: str, references: frozenset[str] = frozenset()) -> register.Registration:
     return register.Registration(
         path=path,
-        nar_hash="sha256:" + "1" * 64,
+        nar_hash=bytes([0x11]) * 32,
         registration_time=REGISTERED,
         deriver=DRV if path == HELLO else None,
         nar_size=1 << 33,

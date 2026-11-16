@@ -188,8 +188,12 @@ class StoreEngine:
         return await self.db.nix.path_in_range(prefix, prefix[:-1] + chr(ord(prefix[-1]) + 1))
 
     async def query_path_from_nar_hash(self, nar_hash: str) -> StorePath | None:
-        """A valid path whose NAR has this base-16 SHA-256 hash. Nix writes `ValidPaths.hash` as `sha256:<base16>`."""
-        return await self.db.nix.path_from_nar_hash(f"sha256:{nar_hash}")
+        """A valid path whose NAR has this base-16 SHA-256 hash, or `None` when *nar_hash* is not base-16."""
+        try:
+            digest = bytes.fromhex(nar_hash)
+        except ValueError:
+            return None
+        return await self.db.nix.path_from_nar_hash(digest)
 
     async def query_closure(self, paths: Iterable[str]) -> set[StorePath]:
         """`computeFSClosure` of *paths* over the references."""
@@ -674,9 +678,9 @@ class StoreEngine:
                 await report(Verbosity.INFO, f"updating size field on '{key}' to {current_size}")
                 final_size = current_size
             if (final_hash, final_size) != (stored, info.info.nar_size):
-                await self._fill_hashes(key, nar_hash=f"sha256:{final_hash}", nar_size=final_size)
+                await self._fill_hashes(key, nar_hash=bytes.fromhex(final_hash), nar_size=final_size)
         return errors
 
-    async def _fill_hashes(self, path: str, *, nar_hash: str, nar_size: int) -> None:
+    async def _fill_hashes(self, path: str, *, nar_hash: bytes, nar_size: int) -> None:
         await self.db.nix.update_path_hashes(path, nar_hash=nar_hash, nar_size=nar_size)
         self._on_change(StorePath(path=path))

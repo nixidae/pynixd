@@ -17,6 +17,7 @@ import psycopg
 import pytest
 
 from pynixd_store.create_store import CA_SCHEMA, PROVENANCE_COLUMN, SCHEMA
+from pynixd_store.database import DatabaseError
 from pynixd_store.db_migrations import TARGET_VERSION, apply_migrations
 from pynixd_store.postgres_db import PostgresBackend
 from pynixd_store.postgres_schema import BASE_VERSION, migrate
@@ -162,6 +163,7 @@ async def test_lists_and_flags_have_native_types(backend: PostgresBackend, postg
             ).fetchall()
         )
     expected = {
+        "validpaths.hash": "bytea",
         "validpaths.sigs": "_text",
         "validpaths.ultimate": "bool",
         "buildtracev3.signatures": "_text",
@@ -210,8 +212,21 @@ async def test_a_path_that_names_itself_deletes(backend: PostgresBackend) -> Non
         async with session.transaction():
             path_id = await session.insert(
                 "INSERT INTO ValidPaths (path, hash, registrationTime) VALUES (%s, %s, %s) RETURNING id",
-                ("/nix/store/00000000000000000000000000000000-self", "sha256:0", 0),
+                ("/nix/store/00000000000000000000000000000000-self", bytes(32), 0),
             )
             await session.execute("INSERT INTO Refs (referrer, reference) VALUES (%s, %s)", (path_id, path_id))
         assert await session.execute("DELETE FROM ValidPaths WHERE id = %s", (path_id,)) == 1
         assert await session.fetchone("SELECT count(*) FROM Refs") == (0,)
+
+
+@pytest.mark.parametrize("length", [0, 31, 33])
+async def test_a_nar_hash_is_32_bytes(backend: PostgresBackend, length: int) -> None:
+    """`ValidPaths.hash` holds the SHA-256 digest alone: any other length is a bug in a writer."""
+    async with backend.connection() as session:
+        await migrate(session)
+        with pytest.raises(DatabaseError, match="validpaths_hash_check"):
+            async with session.transaction():
+                await session.execute(
+                    "INSERT INTO ValidPaths (path, hash, registrationTime) VALUES (%s, %s, %s)",
+                    ("/nix/store/00000000000000000000000000000000-short", bytes(length), 0),
+                )

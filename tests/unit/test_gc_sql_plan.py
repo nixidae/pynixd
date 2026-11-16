@@ -99,7 +99,8 @@ async def _postgres(
         assert (await backend.migrate()).usable
         async with backend.connection() as session, session.transaction():
             await session.executemany(
-                "INSERT INTO ValidPaths (id, path, hash, registrationTime, narSize) VALUES (%s, %s, '', %s, %s)", paths
+                "INSERT INTO ValidPaths (id, path, hash, registrationTime, narSize) VALUES (%s, %s, decode(repeat('00', 32), 'hex'), %s, %s)",
+                paths,
             )
             await session.executemany("INSERT INTO Refs VALUES (%s, %s)", refs)
             await session.executemany(

@@ -228,6 +228,7 @@ _AS_NIX_WRITES: dict[str, Callable[[Any], object]] = {
     "ultimate": codec.SQLITE.ultimate,
     "sigs": codec.SQLITE.path_signatures,
     "signatures": codec.SQLITE.trace_signatures,
+    "hash": codec.SQLITE.nar_hash,
 }
 
 
