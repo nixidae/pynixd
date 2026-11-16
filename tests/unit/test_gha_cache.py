@@ -58,6 +58,18 @@ async def test_a_second_create_of_one_key_is_a_skip(tmp_path: Path) -> None:
         assert await api.create("abc") is None
 
 
+async def test_a_suffixed_entry_answers_its_prefix_and_no_other(tmp_path: Path) -> None:
+    """An entry is `<hash part>-<random>`; a lookup of the hash part finds it, and not one of a longer key."""
+    async with serve_fake_gha_cache() as fake, aiohttp.ClientSession() as session:
+        api = _api(fake, tmp_path, session)
+        for key in ("abc-1234", "abcd-5678"):
+            url = await api.create(key)
+            assert url is not None
+            await api.finalize(key, await api.put_blob(url, _chunks(b"x")))
+        assert await api.download_url("abc") is not None
+        assert await api.download_url("ab") is None
+
+
 async def test_an_unfinished_entry_is_a_miss(tmp_path: Path) -> None:
     async with serve_fake_gha_cache() as fake, aiohttp.ClientSession() as session:
         api = _api(fake, tmp_path, session)

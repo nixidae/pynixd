@@ -198,14 +198,15 @@ class GhaCacheApi:
             raise CacheFault(f"{method}: {e!r}") from e
 
     async def download_url(self, key: str) -> SignedUrl | None:
-        """The signed URL of the entry *key*, or `None` when the scopes of this job hold none.
+        """The signed URL of the entry *key* or of the newest `<key>-<suffix>`; `None` when the scopes of this job hold none.
 
-        The key is also the only restore key, and a prefix match of a longer key is not this entry.
+        The restore key ends in `-`, so a longer key that only starts with *key* is not this entry.
         """
         reply = await self._twirp(
-            "GetCacheEntryDownloadURL", {"key": key, "restoreKeys": [key], "version": self.version}
+            "GetCacheEntryDownloadURL", {"key": key, "restoreKeys": [f"{key}-"], "version": self.version}
         )
-        if not reply.get("ok") or reply.get("matched_key", key) != key:
+        matched = str(reply.get("matched_key", key))
+        if not reply.get("ok") or not (matched == key or matched.startswith(f"{key}-")):
             return None
         url = str(reply.get("signed_download_url", ""))
         if not url:
@@ -213,11 +214,11 @@ class GhaCacheApi:
         return signed_url(url, self.now)
 
     async def create(self, key: str) -> str | None:
-        """The signed upload URL of a new entry *key*; `None` when the service will not create it.
+        """The signed upload URL of a new entry *key*; `None` when the key is taken.
 
         GitHub's service answers a key that exists, finalized or not, with HTTP 409 `already_exists`
         (measured on a runner, 2026-11-16, `ci/gha_cache_probe.py`); `cache.ts:702-733` reads
-        `ok: false` as the same. Either way another copy serves or none can, so the caller skips.
+        `ok: false` as the same.
         """
         try:
             reply = await self._twirp("CreateCacheEntry", {"key": key, "version": self.version})

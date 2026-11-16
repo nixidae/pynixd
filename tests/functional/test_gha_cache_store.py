@@ -8,6 +8,7 @@ the same against GitHub's.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 from nix_daemon_protocol.ids import StoreId
@@ -31,7 +32,27 @@ TOP = (
 
 
 async def test_a_built_output_reaches_a_fresh_store_through_the_cache(tmp_path: Path) -> None:
+    """An unfinished entry a dead job left under each output's bare hash part keeps neither out.
+
+    GitHub keeps such a key taken for hours (`ci/gha_cache_probe.py`, 2026-11-16).
+    """
+    _rc, out, _err, _both = await run_subproc(
+        [
+            NIX_BIN,
+            "eval",
+            "--store",
+            "dummy://",
+            "--read-only",
+            "--impure",
+            "--json",
+            "--expr",
+            f"[ ({TOP}).outPath ({DEP}).outPath ]",
+        ]
+    )
+    orphans = {path.removeprefix("/nix/store/")[:32] for path in json.loads(out)}
+    assert len(orphans) == 2
     async with serve_fake_gha_cache() as fake:
+        fake.orphans = orphans
         credentials = fake.credentials(tmp_path / "gha-cache.json")
         built: list[str] = []
         for name in ("writer", "reader"):

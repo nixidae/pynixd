@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import secrets
 import tempfile
 from collections import deque
 from dataclasses import dataclass
@@ -314,12 +315,13 @@ class GhaCacheStore(BinaryCacheStore):
         local = self.local
         if local is None:
             raise RuntimeError(f"{self.store_id} uploads, and the server set no local store")
-        upload_url = await api.create(path.hash_part())
-        if upload_url is None:
+        hash_part = path.hash_part()
+        if await api.download_url(hash_part) is not None:
             self.counts.present += 1
             metrics.GHA_CACHE_UPLOADS.labels(store_id=self.store_id, result="present").inc()
             log.debug("gha_cache_entry_present", store_id=self.store_id, path=str(path))
             return
+        key, upload_url = await self._new_entry(api, hash_part)
         resp = await local.execute(QueryPathInfoRequest(path=path))
         if not resp.valid or resp.info is None:
             raise RuntimeError(f"built output {path} is not valid in {local.store_id}")
@@ -328,10 +330,30 @@ class GhaCacheStore(BinaryCacheStore):
             file_hash, file_size = await self._compress(local, info, spool)
             narinfo = entry_narinfo(info, file_hash, file_size)
             size = await api.put_blob(upload_url, _entry_chunks(entry_head(narinfo), spool))
-        await api.finalize(path.hash_part(), size)
+        await api.finalize(key, size)
         self.counts.uploaded += 1
         metrics.GHA_CACHE_UPLOADS.labels(store_id=self.store_id, result="uploaded").inc()
         log.info("gha_cache_uploaded", store_id=self.store_id, path=str(path), nar_size=info.info.nar_size, size=size)
+
+    @staticmethod
+    async def _new_entry(api: GhaCacheApi, hash_part: str) -> tuple[str, str]:
+        """A new entry `<hash part>-<random>`: its key and signed upload URL.
+
+        A key the service has seen stays taken, finalized or not: an entry a dead job left
+        unfinished still answered 409 and a miss 3 h later (`ci/gha_cache_probe.py`, 2026-11-16).
+        With the bare hash part as key, that path could never be cached again. `api.rs:352-372`
+        adds the same random suffix; lookups match it by prefix (`GhaCacheApi.download_url`).
+
+        MNC-DEVIATION (#1398): `gha.rs:162-196` creates an entry for every path with no lookup
+        first, so each job uploads again what an earlier job cached. pynixd looks up first: a
+        lookup costs one of the 1500 a minute, a creation one of the 200. Reverse it if lookups
+        become the limit.
+        """
+        for _ in range(5):
+            key = f"{hash_part}-{secrets.token_hex(4)}"
+            if (url := await api.create(key)) is not None:
+                return key, url
+        raise CacheFault(f"five random keys for '{hash_part}' were all taken")
 
     async def _compress(self, local: Store, info: ValidPathInfo, spool: io.BufferedRandom) -> tuple[str, int]:
         """The NAR of *info* from *local*, zstd-compressed into *spool*; the hash and size of what it wrote.

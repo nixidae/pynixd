@@ -45,6 +45,8 @@ class FakeGhaCache:
     retry_after: int = 1
     camel_case: bool = False
     """Answer the lowerCamelCase JSON names, which a proto3 JSON writer may also send."""
+    orphans: set[str] = field(default_factory=set)
+    """Keys a dead job created and never finalized, in every version: taken, and a miss."""
 
     def credentials(self, path: Path, mode: str = "write") -> Path:
         """Write the job's credentials for this service to *path*, as the ghanix step does."""
@@ -88,7 +90,7 @@ class FakeGhaCache:
         key, version = body["key"], body["version"]
         entry = self.entries.get((key, version))
         if method == "CreateCacheEntry":
-            if entry is not None:
+            if entry is not None or key in self.orphans:
                 # GitHub's answer, finalized or not (measured, 2026-11-16).
                 return web.json_response(
                     {
@@ -105,9 +107,17 @@ class FakeGhaCache:
             entry.final = True
             return self._reply({"ok": True, "entry_id": "1"})
         if method == "GetCacheEntryDownloadURL":
-            if entry is None or not entry.final:
+            # The key itself first, then the newest entry a restore key is a prefix of (`cache.ts`).
+            prefixes = body.get("restoreKeys", [])
+            found = [
+                k
+                for (k, v), e in self.entries.items()
+                if v == version and e.final and (k == key or any(k.startswith(p) for p in prefixes))
+            ]
+            if not found:
                 return self._reply({"ok": False, "signed_download_url": "", "matched_key": ""})
-            return self._reply({"ok": True, "signed_download_url": self._url(key), "matched_key": key})
+            matched = key if key in found else found[-1]
+            return self._reply({"ok": True, "signed_download_url": self._url(matched), "matched_key": matched})
         return web.json_response({"code": "bad_route"}, status=404)
 
     def _entry_of(self, request: web.Request) -> _Entry:
