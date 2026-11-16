@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
-from contextlib import closing
 from typing import TYPE_CHECKING
 
 import asyncssh
@@ -15,6 +13,7 @@ from pynixd.op_routes import OpRoute
 from pynixd.store import LocalDBStore, SSHSubprocessStore
 from pynixd_store.db_migrations import BUILD_OBSERVATION_TABLE
 from tests._conftest.nix_config import for_test_store
+from tests._conftest.postgres import store_rows
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
 if TYPE_CHECKING:
@@ -53,12 +52,11 @@ async def _build(tmp_path: Path, expr: str, name: str, sample_seconds: float = 5
             [NIX_BIN, "build", "--store", f"unix://{socket}?root={root}", "--no-link", "--impure", "--expr", expr]
         )
 
-    with closing(sqlite3.connect(root / "nix/var/nix/db/db.sqlite")) as conn:
-        rows = conn.execute(
-            "SELECT id, cpuUserUs, cpuSystemUs, resourceSource, peakMemoryBytes, ioReadBytes, ioWriteBytes "
-            f"FROM {BUILD_OBSERVATION_TABLE} WHERE name = ?",
-            (name,),
-        ).fetchall()
+    rows = store_rows(
+        root / "nix/var/nix/db/db.sqlite",
+        "SELECT id, cpuUserUs, cpuSystemUs, resourceSource, peakMemoryBytes, ioReadBytes, ioWriteBytes "
+        f"FROM {BUILD_OBSERVATION_TABLE} WHERE name = '{name}'",
+    )
     assert len(rows) == 1
     return tuple(rows[0])
 
@@ -132,11 +130,11 @@ async def test_a_pynixd_builder_sends_its_record(tmp_path: Path) -> None:
                 [NIX_BIN, "build", "--store", f"unix://{socket}?root={root}", "--no-link", "--impure", "--expr", SPIN]
             )
 
-    with closing(sqlite3.connect(root / "nix/var/nix/db/db.sqlite")) as conn:
-        rows = conn.execute(
-            f"SELECT resourceSource, peakMemoryBytes FROM {BUILD_OBSERVATION_TABLE} "
-            "WHERE name = 'usage-spin' AND storeId = 'builder-b'"
-        ).fetchall()
+    rows = store_rows(
+        root / "nix/var/nix/db/db.sqlite",
+        f"SELECT resourceSource, peakMemoryBytes FROM {BUILD_OBSERVATION_TABLE} "
+        "WHERE name = 'usage-spin' AND storeId = 'builder-b'",
+    )
     assert len(rows) == 1
     source, peak = rows[0]
     assert source == "cgroup", "the builder measured the build, and the record reached the scheduler that sent it"
@@ -148,11 +146,11 @@ async def test_a_running_build_is_sampled(tmp_path: Path) -> None:
     observation, _user, _system, _source, peak, _read, _written = await _build(
         tmp_path, PARALLEL, "usage-parallel", sample_seconds=0.1
     )
-    with closing(sqlite3.connect(tmp_path / "store/nix/var/nix/db/db.sqlite")) as conn:
-        samples = conn.execute(
-            "SELECT atMs, cpuUs, memoryBytes FROM PynixdBuildObservationSample WHERE observationId = ? ORDER BY atMs",
-            (observation,),
-        ).fetchall()
+    samples = store_rows(
+        tmp_path / "store/nix/var/nix/db/db.sqlite",
+        f"SELECT atMs, cpuUs, memoryBytes FROM PynixdBuildObservationSample WHERE observationId = {observation} "
+        "ORDER BY atMs",
+    )
 
     assert len(samples) >= 2, f"{samples}: the spinning subshells run for longer than 0.2 s"
     times = [at for at, _cpu, _memory in samples]

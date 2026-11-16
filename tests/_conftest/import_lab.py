@@ -11,9 +11,8 @@ import graphlib
 import hashlib
 import json
 import os
-import sqlite3
 import stat
-from contextlib import asynccontextmanager, closing
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -35,6 +34,7 @@ from pynixd.unix_socket import open_unix_connection
 from pynixd.wire import UnixNixReader, UnixNixWriter
 from pynixd_store.nar_fs import dump_path
 from tests._conftest.nix_config import for_test_store
+from tests._conftest.postgres import store_rows
 from tests.conftest import NIX_BIN, make_test_spec
 
 if TYPE_CHECKING:
@@ -67,9 +67,7 @@ async def run(*args: str, stdin: bytes | None = None) -> str:
 
 
 def rows(root: Path, query: str) -> list[tuple[Any, ...]]:
-    db = root / "nix" / "var" / "nix" / "db" / "db.sqlite"
-    with closing(sqlite3.connect(f"file:{db}?mode=ro", uri=True)) as conn:
-        return conn.execute(query).fetchall()
+    return store_rows(root / "nix" / "var" / "nix" / "db" / "db.sqlite", query)
 
 
 def real(root: Path, path: str) -> Path:

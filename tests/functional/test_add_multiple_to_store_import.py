@@ -16,7 +16,11 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from nix_daemon_protocol.add_multiple_to_store import AddMultipleToStoreRequest, AddMultipleToStoreResponse
+from nix_daemon_protocol.add_multiple_to_store import (
+    AddMultipleToStoreRequest,
+    AddMultipleToStoreResponse,
+    path_info_version,
+)
 from nix_daemon_protocol.content_address import ContentAddress
 from nix_daemon_protocol.nar_hash import NARHash
 from pynixd.exceptions import BackendError
@@ -138,10 +142,14 @@ async def _send(
     dont_check_sigs: int = 0,
     repair: int = 0,
 ) -> None:
-    """One AddMultipleToStore, in frames of *frame* bytes (0: one frame); raises `BackendError`."""
+    """One AddMultipleToStore, in frames of *frame* bytes (0: one frame); raises `BackendError`.
+
+    Each info in the session's shape: a store that keeps provenance reads a provenance field.
+    """
+    version = path_info_version(conn.version, conn.standard_features)
     payload = struct.pack("<Q", len(items))
     for info, nar in items:
-        payload += await info.bytes_wire() + nar
+        payload += await info.bytes_wire(*version) + nar
     await AddMultipleToStoreRequest(repair=repair, dont_check_sigs=dont_check_sigs).to_writer(
         WriteContext.from_conn(conn)
     )

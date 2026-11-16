@@ -57,6 +57,8 @@ async def test_build_seeds_freshen_the_closure_they_name(tmp_path: Path) -> None
         store_id="local",
         store_path=store_path,
         no_probe=True,
+        # Nix's own CLI made the store, so its paths are in `db.sqlite`; `_backdate` writes there too.
+        postgres=None,
         gc_max_age=MAX_AGE,
         gc_allow_execute=True,
     )

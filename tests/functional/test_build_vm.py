@@ -12,7 +12,6 @@ import hashlib
 import json
 import os
 import socket
-import sqlite3
 import struct
 import sys
 from pathlib import Path
@@ -33,6 +32,7 @@ from pynixd_store.db_migrations import BUILD_OBSERVATION_SAMPLE_TABLE, BUILD_OBS
 from tests._conftest.config import NIX_GIT_BIN
 from tests._conftest.constants import _NO_PROBE_FEATURE_MATRIX
 from tests._conftest.nix_config import for_test_store
+from tests._conftest.postgres import store_rows
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
 if TYPE_CHECKING:
@@ -238,14 +238,14 @@ async def test_a_build_in_the_vm_reports_its_guest_cgroup(tmp_path: Path) -> Non
     """The guest's init makes a cgroup for the build, and the helper reads it. nixidae/nixidae#1187."""
     async with _serve(tmp_path, "vm", BuildVmSpec(memory_mib=512, cpus=2), usage_sample_seconds=0.1) as url:
         await _build(url, PARALLEL)
-    with contextlib.closing(sqlite3.connect(tmp_path / "vm/store/nix/var/nix/db/db.sqlite")) as conn:
-        source, peak, cpu_stall, observation = conn.execute(
-            f"SELECT resourceSource, peakMemoryBytes, cpuStallUs, id FROM {BUILD_OBSERVATION_TABLE} WHERE name = ?",
-            ("vm-parallel",),
-        ).fetchone()
-        (samples,) = conn.execute(
-            f"SELECT count(*) FROM {BUILD_OBSERVATION_SAMPLE_TABLE} WHERE observationId = ?", (observation,)
-        ).fetchone()
+    db = tmp_path / "vm/store/nix/var/nix/db/db.sqlite"
+    [(source, peak, cpu_stall, observation)] = store_rows(
+        db,
+        f"SELECT resourceSource, peakMemoryBytes, cpuStallUs, id FROM {BUILD_OBSERVATION_TABLE} WHERE name = 'vm-parallel'",
+    )
+    [(samples,)] = store_rows(
+        db, f"SELECT count(*) FROM {BUILD_OBSERVATION_SAMPLE_TABLE} WHERE observationId = {int(observation)}"
+    )
 
     assert source == "cgroup"
     assert peak > 4 * STRING_BYTES, f"{peak} bytes: the subshells held their strings at once"
@@ -254,14 +254,12 @@ async def test_a_build_in_the_vm_reports_its_guest_cgroup(tmp_path: Path) -> Non
 
 
 def _host_cost(store: Path, name: str) -> tuple[Any, ...]:
-    with contextlib.closing(sqlite3.connect(store / "nix/var/nix/db/db.sqlite")) as conn:
-        row = conn.execute(
-            "SELECT hostResourceSource, hostCpuUserUs + hostCpuSystemUs, hostPeakMemoryBytes, peakMemoryBytes "
-            f"FROM {BUILD_OBSERVATION_TABLE} WHERE name = ?",
-            (name,),
-        ).fetchone()
-    assert row is not None
-    return tuple(row)
+    [row] = store_rows(
+        store / "nix/var/nix/db/db.sqlite",
+        "SELECT hostResourceSource, hostCpuUserUs + hostCpuSystemUs, hostPeakMemoryBytes, peakMemoryBytes "
+        f"FROM {BUILD_OBSERVATION_TABLE} WHERE name = '{name}'",
+    )
+    return row
 
 
 async def test_a_build_in_the_vm_reports_its_host_cgroup(tmp_path: Path) -> None:

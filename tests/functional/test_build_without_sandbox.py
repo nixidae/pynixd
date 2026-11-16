@@ -12,7 +12,6 @@ import json
 import os
 import re
 import socket as socket_module
-import sqlite3
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -28,6 +27,7 @@ from tests._conftest.constants import _NO_PROBE_FEATURE_MATRIX
 from tests._conftest.helpers import rmtree_robust
 from tests._conftest.metrics import fallthroughs
 from tests._conftest.nix_config import for_test_store
+from tests._conftest.postgres import store_rows
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
 if TYPE_CHECKING:
@@ -102,17 +102,15 @@ async def _serve(
 
 
 def _rows(state: Path) -> tuple[list[tuple[Any, ...]], list[tuple[str, str]]]:
-    db = sqlite3.connect(f"file:{state}/db/db.sqlite?mode=ro", uri=True)
-    try:
-        valid = db.execute(
-            "SELECT path, hash, narSize, deriver, ultimate, sigs, ca FROM ValidPaths ORDER BY path"
-        ).fetchall()
-        refs = db.execute(
-            "SELECT a.path, b.path FROM Refs JOIN ValidPaths a ON a.id = referrer "
-            "JOIN ValidPaths b ON b.id = reference ORDER BY a.path, b.path"
-        ).fetchall()
-    finally:
-        db.close()
+    valid = store_rows(
+        state / "db/db.sqlite",
+        "SELECT path, hash, narSize, deriver, ultimate, sigs, ca FROM ValidPaths ORDER BY path",
+    )
+    refs = store_rows(
+        state / "db/db.sqlite",
+        "SELECT a.path, b.path FROM Refs JOIN ValidPaths a ON a.id = referrer "
+        "JOIN ValidPaths b ON b.id = reference ORDER BY a.path, b.path",
+    )
     return valid, refs
 
 
@@ -496,13 +494,10 @@ async def _rpc(tmp_path: Path, route: OpRoute, nix_bin: Path) -> dict[str, Any]:
         )
         paths = out.split()
         contents = {path: (store / path.rsplit("/", 1)[-1]).read_text() for path in paths}
-    db = sqlite3.connect(f"file:{state}/db/db.sqlite?mode=ro", uri=True)
-    try:
-        trace = db.execute(
-            "SELECT drvPath, outputName, outputPath, signatures FROM BuildTraceV3 ORDER BY drvPath, outputName"
-        ).fetchall()
-    finally:
-        db.close()
+    trace = store_rows(
+        state / "db/db.sqlite",
+        "SELECT drvPath, outputName, outputPath, signatures FROM BuildTraceV3 ORDER BY drvPath, outputName",
+    )
     valid, refs = _rows(state)
     return {
         "paths": paths,
@@ -577,11 +572,10 @@ async def _rpc_checked(tmp_path: Path, route: OpRoute, nix_bin: Path, noise: str
                 nix_config=ALONE,
                 expected_retcode=None,
             )
-            db = sqlite3.connect(f"file:{state}/db/db.sqlite?mode=ro", uri=True)
-            try:
-                trace = db.execute("SELECT drvPath, outputName, outputPath FROM BuildTraceV3").fetchall()
-            finally:
-                db.close()
+            trace = store_rows(
+                state / "db/db.sqlite",
+                "SELECT drvPath, outputName, outputPath FROM BuildTraceV3 ORDER BY drvPath, outputName",
+            )
             answers.append((rc, err, trace))
     (built, _err, trace), (rc, err, checked) = answers
     assert built == 0, _err

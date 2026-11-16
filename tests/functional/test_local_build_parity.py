@@ -16,7 +16,6 @@ import io
 import json
 import os
 import re
-import sqlite3
 import tarfile
 import zipfile
 from pathlib import Path
@@ -38,6 +37,7 @@ from tests._conftest.config import NIX_FLOOR_BIN, NIX_GIT_BIN
 from tests._conftest.constants import _NO_PROBE_FEATURE_MATRIX
 from tests._conftest.metrics import fallthroughs
 from tests._conftest.nix_config import for_test_store
+from tests._conftest.postgres import store_rows
 from tests._conftest.sqlite import sqlite_backend
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
@@ -110,17 +110,15 @@ FOD_DEP = "parity-fod-dep", "recursive", "echo ${dep} > $out"
 
 
 def _rows(root: Path) -> tuple[list[tuple[Any, ...]], list[tuple[str, str]]]:
-    db = sqlite3.connect(f"file:{root}/nix/var/nix/db/db.sqlite?mode=ro", uri=True)
-    try:
-        valid = db.execute(
-            "SELECT path, hash, narSize, deriver, ultimate, sigs, ca FROM ValidPaths ORDER BY path"
-        ).fetchall()
-        refs = db.execute(
-            "SELECT a.path, b.path FROM Refs JOIN ValidPaths a ON a.id = referrer "
-            "JOIN ValidPaths b ON b.id = reference ORDER BY a.path, b.path"
-        ).fetchall()
-    finally:
-        db.close()
+    valid = store_rows(
+        root / "nix/var/nix/db/db.sqlite",
+        "SELECT path, hash, narSize, deriver, ultimate, sigs, ca FROM ValidPaths ORDER BY path",
+    )
+    refs = store_rows(
+        root / "nix/var/nix/db/db.sqlite",
+        "SELECT a.path, b.path FROM Refs JOIN ValidPaths a ON a.id = referrer "
+        "JOIN ValidPaths b ON b.id = reference ORDER BY a.path, b.path",
+    )
     return valid, refs
 
 
@@ -847,11 +845,7 @@ async def _floating(
         _rc, info, _err, _both = await run_subproc(
             [nix_bin, "path-info", "--store", url, "--json", "--recursive", *paths]
         )
-    db = sqlite3.connect(f"file:{root}/nix/var/nix/db/db.sqlite?mode=ro", uri=True)
-    try:
-        trace = db.execute(trace_query).fetchall()
-    finally:
-        db.close()
+    trace = store_rows(root / "nix/var/nix/db/db.sqlite", trace_query)
     valid, refs = _rows(root)
     return {
         "paths": paths,
@@ -1247,7 +1241,8 @@ async def test_fsync_metadata_sets_the_databases_synchronous_mode(
         opened.clear()
         settings = {"fsync_metadata": fsync_metadata}
         root = tmp_path / str(fsync_metadata)
-        async with _serve(root, OpRoute.pynixd, ops=("AddToStore",), settings=settings) as (url, _root):
+        # The pragma is SQLite's: PostgreSQL has none, and the server's `synchronous_commit` stands.
+        async with _serve(root, OpRoute.pynixd, ops=("AddToStore",), settings=settings, postgres=None) as (url, _root):
             (root / "added").write_text("added\n")
             await run_subproc([NIX_BIN, "store", "add-file", "--store", url, str(root / "added")])
             async with sqlite_backend(opened[-1]).acquire_conn() as conn, conn.execute("PRAGMA synchronous") as cursor:
@@ -1374,11 +1369,10 @@ async def _impure(tmp_path: Path, route: OpRoute) -> dict[str, Any]:
         paths = out.split()
         _rc, info, _err, _both = await run_subproc([NIX_BIN, "path-info", "--store", url, "--json", *paths])
         contents = {path: (root / path.lstrip("/")).read_text() for path in paths}
-    db = sqlite3.connect(f"file:{root}/nix/var/nix/db/db.sqlite?mode=ro", uri=True)
-    try:
-        trace = db.execute("SELECT drvPath, outputName, outputPath FROM BuildTraceV3").fetchall()
-    finally:
-        db.close()
+    trace = store_rows(
+        root / "nix/var/nix/db/db.sqlite",
+        "SELECT drvPath, outputName, outputPath FROM BuildTraceV3 ORDER BY drvPath, outputName",
+    )
     valid, refs = _rows(root)
     return {
         "paths": paths,
@@ -2502,13 +2496,10 @@ async def _rpc(tmp_path: Path, route: OpRoute, nix_bin: Path) -> dict[str, Any]:
             [nix_bin, "path-info", "--store", url, "--json", "--recursive", *paths]
         )
         contents = {path: (root / path.lstrip("/")).read_text() for path in paths}
-    db = sqlite3.connect(f"file:{root}/nix/var/nix/db/db.sqlite?mode=ro", uri=True)
-    try:
-        trace = db.execute(
-            "SELECT drvPath, outputName, outputPath, signatures FROM BuildTraceV3 ORDER BY drvPath, outputName"
-        ).fetchall()
-    finally:
-        db.close()
+    trace = store_rows(
+        root / "nix/var/nix/db/db.sqlite",
+        "SELECT drvPath, outputName, outputPath, signatures FROM BuildTraceV3 ORDER BY drvPath, outputName",
+    )
     valid, refs = _rows(root)
     return {
         "paths": paths,
@@ -2624,11 +2615,10 @@ async def _rpc_case(
             info = _without_times(json.loads(text))
     trace = None
     if rc == 0:
-        db = sqlite3.connect(f"file:{root}/nix/var/nix/db/db.sqlite?mode=ro", uri=True)
-        try:
-            trace = db.execute("SELECT outputName, outputPath FROM BuildTraceV3 ORDER BY outputName").fetchall()
-        finally:
-            db.close()
+        trace = store_rows(
+            root / "nix/var/nix/db/db.sqlite",
+            "SELECT outputName, outputPath FROM BuildTraceV3 ORDER BY outputName",
+        )
     return {"rc": rc, "errors": _errors(err) if rc else [], "paths": out.split(), "info": info, "trace": trace}
 
 

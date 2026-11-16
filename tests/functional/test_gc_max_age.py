@@ -120,6 +120,8 @@ async def _pynixd(lab: _Lab, op_routes: dict[str, OpRoute] | None = None) -> Asy
         store_id="local",
         store_path=lab.store_path,
         no_probe=True,
+        # Nix's own CLI made the store, so its paths are in `db.sqlite`; `_backdate` writes there too.
+        postgres=None,
         gc_max_age=MAX_AGE,
         # The tests below run EXECUTE: the permit is this lab run's opt-in.
         gc_allow_execute=True,

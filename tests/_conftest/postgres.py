@@ -17,13 +17,14 @@ import hashlib
 import os
 import shutil
 import signal
+import sqlite3
 import subprocess
 import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import psycopg
 import pytest
@@ -200,3 +201,19 @@ def drop_lane_databases_of_removed_stores() -> None:
         for name in gone:
             admin.execute(sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(name)))
             del _LANE.databases[name]
+
+
+def store_rows(db_file: Path, query: str) -> list[tuple[Any, ...]]:
+    """The rows of *query* in the database of the store whose SQLite file is *db_file*.
+
+    The lane's database when a lane store's root holds *db_file*, else the file itself, read-only. *query* binds no
+    parameter: it runs as it is on either engine.
+    """
+    cluster = _LANE.cluster
+    if cluster is not None:
+        for name, root in _LANE.databases.items():
+            if db_file.is_relative_to(root):
+                with psycopg.connect(cluster.conninfo(name), autocommit=True) as server:
+                    return [tuple(row) for row in server.execute(query.encode()).fetchall()]
+    with contextlib.closing(sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)) as file:
+        return file.execute(query).fetchall()
