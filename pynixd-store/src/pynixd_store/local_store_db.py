@@ -40,7 +40,7 @@ import anyio
 import structlog
 
 from .build_stats import BuildEstimateSource, ExpectedBytes, StoreLink
-from .database import DatabaseError, Params, Row, Session
+from .database import Backend, DatabaseError, Params, Row, Session
 from .db_migrations import SchemaState
 from .nix_tables import NixTables
 from .placement_tables import PlacementTables
@@ -134,12 +134,14 @@ class LocalStoreDB:
         max_conns: int = 8,
         *,
         immutable: bool = False,
+        backend: Backend | None = None,
     ) -> None:
+        """*backend* holds a database that is not a file; without it, *db_path* names the SQLite file."""
         self.store_path = store_path
         self.read_only: bool = read_only or immutable
-        self._backend = (
-            None
-            if db_path is None
+        self._backend: Backend | None = (
+            backend
+            if backend is not None or db_path is None
             else SqliteBackend(db_path, read_only=self.read_only, immutable=immutable, max_conns=max_conns)
         )
         self._synchronous: str | None = None
@@ -217,7 +219,7 @@ class LocalStoreDB:
         )
 
     @property
-    def backend(self) -> SqliteBackend:
+    def backend(self) -> Backend:
         """The engine of this database; `DatabaseError` when the store has none."""
         if self._backend is None:
             raise DatabaseError("the store has no database")
@@ -229,7 +231,8 @@ class LocalStoreDB:
 
     @property
     def db_path(self) -> Path | None:
-        return None if self._backend is None else self._backend.db_path
+        """The SQLite file, or `None` for a database that is not one."""
+        return self._backend.db_path if isinstance(self._backend, SqliteBackend) else None
 
     @property
     def sql(self) -> Statements:

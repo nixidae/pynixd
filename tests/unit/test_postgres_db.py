@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 import psycopg
 import pytest
 
-from pynixd_store.database import DatabaseError
+from pynixd_store.database import Backend, DatabaseError
 from pynixd_store.postgres_db import PostgresBackend, PostgresDatabase
 from pynixd_store.sql import SQLITE
 
@@ -116,6 +116,19 @@ async def test_a_closed_pool_is_a_database_error(backend: PostgresBackend) -> No
     with pytest.raises(DatabaseError):
         async with backend.connection() as session:
             await session.fetchone(IS_VALID, (HELLO,))
+
+
+async def test_the_engine_answers_as_a_backend(postgres_conninfo: str) -> None:
+    backend: Backend = PostgresBackend(postgres_conninfo, SQLITE)
+    try:
+        await backend.probe()
+        assert (await backend.migrate()).usable
+        assert backend.sync_reader() is None
+        assert await backend.checkpoint_wal() is False
+        async with backend.connection() as session:
+            assert await session.fetchone("SELECT count(*) FROM ValidPaths") == (0,)
+    finally:
+        await backend.close()
 
 
 async def test_an_unreachable_server_fails_the_open() -> None:

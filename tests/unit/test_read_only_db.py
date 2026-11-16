@@ -17,6 +17,7 @@ import pytest
 
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.store_layout import StoreLayout
+from tests._conftest.sqlite import sqlite_backend
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -57,7 +58,10 @@ async def test_only_an_immutable_open_reads_a_closed_wal_database_it_cannot_writ
         try:
             assert db.active is immutable
             if immutable:
-                async with db.backend.acquire_conn() as conn, conn.execute("SELECT path FROM ValidPaths") as cursor:
+                async with (
+                    sqlite_backend(db).acquire_conn() as conn,
+                    conn.execute("SELECT path FROM ValidPaths") as cursor,
+                ):
                     assert [row[0] for row in await cursor.fetchall()] == [PATH]
         finally:
             await db.close()

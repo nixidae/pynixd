@@ -19,12 +19,14 @@ import psycopg
 import structlog
 from psycopg_pool import AsyncConnectionPool
 
+from . import postgres_schema
 from .database import DatabaseError, Params, Row
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Iterator
 
     from .database import Session, SyncSession
+    from .db_migrations import SchemaState
     from .sql import Statements
 
 log = structlog.get_logger(__name__)
@@ -175,6 +177,8 @@ class PostgresBackend:
         self.conninfo = conninfo
         self.sql = sql
         self.open_seconds = open_seconds
+        self.synchronous: str | None = None
+        """Not read: PostgreSQL has no `pragma synchronous`, and the server's own `synchronous_commit` stands."""
         # The pool runs its workers as asyncio tasks of its own (`psycopg_pool/pool_async.py`):
         # no task group of pynixd owns them, and `close` ends them.
         self._pool = AsyncConnectionPool(
@@ -211,3 +215,18 @@ class PostgresBackend:
 
     def database(self) -> PostgresDatabase:
         return PostgresDatabase(self.conninfo, self.sql)
+
+    def sync_reader(self) -> None:
+        """None: a session's reads go through the pool. `SyncReader` exists to skip SQLite's thread hop."""
+        return
+
+    async def probe(self) -> None:
+        await self.open()
+
+    async def migrate(self) -> SchemaState:
+        async with self.connection() as session:
+            return await postgres_schema.migrate(session)
+
+    async def checkpoint_wal(self) -> bool:
+        """False: the server checkpoints its own WAL."""
+        return False

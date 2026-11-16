@@ -38,6 +38,7 @@ from tests._conftest.config import NIX_FLOOR_BIN, NIX_GIT_BIN
 from tests._conftest.constants import _NO_PROBE_FEATURE_MATRIX
 from tests._conftest.metrics import fallthroughs
 from tests._conftest.nix_config import for_test_store
+from tests._conftest.sqlite import sqlite_backend
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
 if TYPE_CHECKING:
@@ -1249,7 +1250,7 @@ async def test_fsync_metadata_sets_the_databases_synchronous_mode(
         async with _serve(root, OpRoute.pynixd, ops=("AddToStore",), settings=settings) as (url, _root):
             (root / "added").write_text("added\n")
             await run_subproc([NIX_BIN, "store", "add-file", "--store", url, str(root / "added")])
-            async with opened[-1].backend.acquire_conn() as conn, conn.execute("PRAGMA synchronous") as cursor:
+            async with sqlite_backend(opened[-1]).acquire_conn() as conn, conn.execute("PRAGMA synchronous") as cursor:
                 row = await cursor.fetchone()
         modes[fsync_metadata] = row[0] if row else None
     assert modes == {True: 1, False: 0}, modes

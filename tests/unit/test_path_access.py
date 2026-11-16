@@ -43,6 +43,7 @@ from pynixd_store.db_migrations import PATH_ACCESS_TABLE
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.sqlite_db import SqliteBackend
 from pynixd_store.store_layout import StoreLayout
+from tests._conftest.sqlite import sqlite_backend
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -241,7 +242,7 @@ class TestFlushingTheReferences:
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             db.mark_path(HELLO)
             await db.flush_references()
-            async with db.backend.acquire_conn() as conn:
+            async with sqlite_backend(db).acquire_conn() as conn:
                 await conn.execute(f"UPDATE {PATH_ACCESS_TABLE} SET lastReferencedAt = 1")
                 await conn.commit()
 
@@ -323,7 +324,7 @@ class TestExpandingClosuresByKind:
             db.mark_paths([HELLO])
             await db.flush_references()
             runtime = set(await _access_times(db))
-            async with db.backend.acquire_conn() as conn:
+            async with sqlite_backend(db).acquire_conn() as conn:
                 await conn.execute(f"DELETE FROM {PATH_ACCESS_TABLE}")
                 await conn.commit()
             db.mark_paths([HELLO], kind="build")
@@ -356,7 +357,7 @@ class TestExpandingClosuresByKind:
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             db.mark_paths([HELLO])
             await db.flush_references()
-            async with db.backend.acquire_conn() as conn:
+            async with sqlite_backend(db).acquire_conn() as conn:
                 await conn.execute("DELETE FROM ValidPaths WHERE path = ?", (HELLO,))
                 await conn.execute("DELETE FROM ValidPaths WHERE path = ?", (LIBC,))
                 await conn.commit()
@@ -437,7 +438,7 @@ class TestAskingTheTable:
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             db.mark_path(HELLO)
             await db.flush_references()
-            async with db.backend.acquire_conn() as conn:
+            async with sqlite_backend(db).acquire_conn() as conn:
                 await conn.execute(
                     f"UPDATE {PATH_ACCESS_TABLE} SET lastReferencedAt = ? WHERE path = ?",
                     (int(time.time()) - 90_000, LIBC),
@@ -453,7 +454,7 @@ class TestAskingTheTable:
         """The join that keeping the table inside Nix's database buys."""
         _store_with_a_closure(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
-            async with db.backend.acquire_conn() as conn:
+            async with sqlite_backend(db).acquire_conn() as conn:
                 await conn.execute(
                     f"INSERT INTO {PATH_ACCESS_TABLE} (path, lastReferencedAt) VALUES (?, 1)",
                     (GONE,),
@@ -497,7 +498,7 @@ class TestAskingTheTable:
         """
         _store_with_a_closure(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
-            async with db.backend.acquire_conn() as conn:
+            async with sqlite_backend(db).acquire_conn() as conn:
                 await conn.execute("UPDATE ValidPaths SET registrationTime = ?", (int(time.time()),))
                 await conn.commit()
 
@@ -511,7 +512,7 @@ class TestAskingTheTable:
         _store_with_a_closure(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             now = int(time.time())
-            async with db.backend.acquire_conn() as conn:
+            async with sqlite_backend(db).acquire_conn() as conn:
                 await conn.execute(
                     f"INSERT INTO {PATH_ACCESS_TABLE} (path, lastReferencedAt) VALUES (?, ?)",
                     (HELLO, now),
@@ -535,7 +536,7 @@ class TestAskingTheTable:
         _store_with_a_closure(tmp_path)
         async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
             now = int(time.time())
-            async with db.backend.acquire_conn() as conn:
+            async with sqlite_backend(db).acquire_conn() as conn:
                 await conn.execute(
                     f"INSERT INTO {PATH_ACCESS_TABLE} (path, lastReferencedAt) VALUES (?, ?)",
                     (HELLO, now),

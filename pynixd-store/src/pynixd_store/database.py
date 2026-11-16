@@ -13,9 +13,11 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
     from contextlib import AbstractAsyncContextManager, AbstractContextManager
 
+    from .db_migrations import SchemaState
     from .sql import Statements
+    from .sqlite_db import SyncReader
 
-__all__ = ["Database", "DatabaseError", "Params", "Row", "Session", "SyncSession"]
+__all__ = ["Backend", "Database", "DatabaseError", "Params", "Row", "Session", "SyncSession"]
 
 
 class DatabaseError(Exception):
@@ -91,3 +93,37 @@ class Database(Protocol):
     def sync_session(self, *, write: bool = False) -> AbstractContextManager[SyncSession]:
         """A connection for a worker thread, closed when the block ends. A write needs *write*."""
         ...
+
+
+class Backend(Protocol):
+    """The engine half of `LocalStoreDB`: the connections of one database, and what only the engine knows."""
+
+    synchronous: str | None
+    """`pragma synchronous` for a writing SQLite connection. An engine without the pragma ignores it."""
+
+    @property
+    def sql(self) -> Statements:
+        """The statements of this database. `probe` may replace them."""
+        ...
+
+    def connection(self) -> AbstractAsyncContextManager[Session]: ...
+
+    def database(self) -> Database: ...
+
+    def sync_reader(self) -> SyncReader | None:
+        """A synchronous reader for one client session, or `None` when the engine gives none."""
+        ...
+
+    async def probe(self) -> None:
+        """Reach the database once. A database that refuses raises `DatabaseError`."""
+        ...
+
+    async def migrate(self) -> SchemaState:
+        """Bring pynixd's tables to this pynixd's version, where the database allows it."""
+        ...
+
+    async def checkpoint_wal(self) -> bool:
+        """`True` when a checkpoint ran; `False` when the engine or the database has none to run."""
+        ...
+
+    async def close(self) -> None: ...
