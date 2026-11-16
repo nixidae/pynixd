@@ -12,7 +12,6 @@ only at that moment. `config.py` already imports each store class inside its
 `to_store`, so a spec that no configuration holds now costs nothing.
 
 The table is written twice, once for the interpreter and once for the type checker.
-`tests/unit/test_import_budget.py` compares the two.
 """
 
 from __future__ import annotations

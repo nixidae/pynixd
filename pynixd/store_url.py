@@ -217,7 +217,7 @@ def _host_public_key(encoded: str | None) -> str | None:
     """`base64-ssh-public-host-key` as an OpenSSH key line; `ValueError` when it has not that shape.
 
     The shape only: `asyncssh` parses the key at connect, so the daemon does
-    not load it (`tests/unit/test_import_budget.py`).
+    not load it.
     """
     if not encoded:
         return None
