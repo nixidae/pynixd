@@ -21,14 +21,18 @@ from psycopg import pq
 from pynixd_store.create_store import CA_SCHEMA, PROVENANCE_COLUMN, SCHEMA
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.postgres_db import PostgresBackend
-from pynixd_store.sql import SQLITE, nix, observations, path_access
+from pynixd_store.sql import SQLITE, nix, observations, path_access, placement
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
     from pathlib import Path
 
 POSTGRES_SO_FAR = dataclasses.replace(
-    SQLITE, nix=nix.POSTGRES, path_access=path_access.POSTGRES, observations=observations.POSTGRES
+    SQLITE,
+    nix=nix.POSTGRES,
+    path_access=path_access.POSTGRES,
+    observations=observations.POSTGRES,
+    placement=placement.POSTGRES,
 )
 """The PostgreSQL twins written so far, and SQLite's statements for the groups that have none yet."""
 

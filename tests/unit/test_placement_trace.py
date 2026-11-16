@@ -5,9 +5,7 @@ nixidae/nixidae#1070.
 
 from __future__ import annotations
 
-import sqlite3
 import time
-from contextlib import closing
 from typing import TYPE_CHECKING
 
 import pytest
@@ -21,13 +19,11 @@ from pynixd_store.build_stats import BuildEstimateSource, BuildObservation, Deri
 from pynixd_store.database import Row
 from pynixd_store.db_migrations import PLACEMENT_CANDIDATE_TABLE, PLACEMENT_DECISION_TABLE
 from pynixd_store.local_store_db import LocalStoreDB
-from pynixd_store.store_layout import StoreLayout
 from tests._conftest.placement import FakeBuild, FakeMonitor, FakeStore, cpu
 from tests.unit.test_store_choice import REMOTE
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-    from pathlib import Path
+    pass
 
 MB = 1_000_000
 HELLO = DerivationIdentity(name="hello", system="x86_64-linux", shape="0" * 16, keys=("name",), features=())
@@ -110,19 +106,10 @@ class TestTheEstimate:
         assert StoreEstimate(inputs_bytes=MB).ship_seconds is None
 
 
-def _nix_database(tmp_path: Path) -> None:
-    db_path = tmp_path / "nix" / "var" / "nix" / "db" / "db.sqlite"
-    db_path.parent.mkdir(parents=True)
-    with closing(sqlite3.connect(db_path)) as conn, conn:
-        conn.execute("CREATE TABLE ValidPaths (id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL)")
-
-
 @pytest.fixture
-async def db(tmp_path: Path) -> AsyncIterator[LocalStoreDB]:
-    _nix_database(tmp_path)
-    async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as opened:
-        assert opened.schema.usable, opened.schema.reason
-        yield opened
+def db(store_db: LocalStoreDB) -> LocalStoreDB:
+    """The tables on each engine."""
+    return store_db
 
 
 def _decision(
@@ -169,6 +156,18 @@ async def _rows(db: LocalStoreDB, query: str) -> list[Row]:
 
 @pytest.mark.anyio
 class TestTheTables:
+    async def test_a_store_named_twice_keeps_its_last_row(self, db: LocalStoreDB) -> None:
+        """The candidate write replaces a row of the same decision and store, as SQLite's `INSERT OR REPLACE`."""
+        decision = _decision()
+        decision.candidates.append(CandidateTrace(store_id=str(LOCAL_STORE_ID), reason="at its build limit"))
+        trace = PlacementTrace(db, PlacementTraceSettings(enabled=True))
+        trace.record(decision)
+
+        assert await trace.flush() == 1
+
+        stores = await _rows(db, f"SELECT storeId, reason FROM {PLACEMENT_CANDIDATE_TABLE}")
+        assert sorted(tuple(r) for r in stores) == [(str(LOCAL_STORE_ID), "at its build limit"), (str(REMOTE), None)]
+
     async def test_a_decision_holds_each_store_with_its_terms_and_estimate(self, db: LocalStoreDB) -> None:
         trace = PlacementTrace(db, PlacementTraceSettings(enabled=True))
         trace.record(_decision())
