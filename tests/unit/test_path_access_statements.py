@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from pynixd_store import register
 from pynixd_store.db_migrations import PATH_ACCESS_TABLE
+from tests._conftest.engines import access_times
 
 if TYPE_CHECKING:
     from pynixd_store.local_store_db import LocalStoreDB
@@ -45,7 +46,7 @@ async def _store(db: LocalStoreDB) -> None:
 
 
 async def _touched(db: LocalStoreDB) -> set[str]:
-    return {row[0] for row in await db.fetchall(f"SELECT path FROM {PATH_ACCESS_TABLE}")}
+    return set(await access_times(db))
 
 
 async def test_a_runtime_seed_stops_at_a_derivation(store_db: LocalStoreDB) -> None:
@@ -77,10 +78,7 @@ async def test_a_second_flush_moves_the_time_forward(store_db: LocalStoreDB) -> 
         await session.execute(f"UPDATE {PATH_ACCESS_TABLE} SET lastReferencedAt = 1")
     store_db.mark_path(HELLO)
     await store_db.flush_references()
-    times = {
-        row[0]: int(row[1])
-        for row in await store_db.fetchall(f"SELECT path, lastReferencedAt FROM {PATH_ACCESS_TABLE}")
-    }
+    times = await access_times(store_db)
     assert all(stamp >= int(time.time()) - 60 for stamp in times.values()), times
 
 
@@ -107,11 +105,12 @@ async def test_the_referrers_close_over_the_seeds(store_db: LocalStoreDB) -> Non
     assert await store_db.query_referrer_closure([HELLO, ABSENT]) == {HELLO}
 
 
-async def test_a_path_the_store_lost_is_pruned(store_db: LocalStoreDB) -> None:
+async def test_a_path_the_store_lost_loses_its_row(store_db: LocalStoreDB) -> None:
+    """SQLite prunes the row; on PostgreSQL the foreign key drops it with the path, and nothing is left to prune."""
     await _store(store_db)
     store_db.mark_paths([HELLO, DRV])
     await store_db.flush_references()
     await store_db.nix.invalidate_path(DRV)
-    assert await store_db.prune_path_access() == 1
+    assert await store_db.prune_path_access() == (0 if store_db.sql.path_access.prune is None else 1)
     assert await store_db.prune_path_access() == 0
     assert await _touched(store_db) == {LIBC, HELLO}

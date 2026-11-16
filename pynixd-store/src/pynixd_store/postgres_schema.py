@@ -103,7 +103,11 @@ $$""",
 )
 
 PYNIXD_TABLES: tuple[str, ...] = (
-    f"CREATE TABLE IF NOT EXISTS {PATH_ACCESS_TABLE} (path {_T} PRIMARY KEY, lastReferencedAt BIGINT NOT NULL)",
+    # A row names its path by id: a collected path takes its row along, so the table needs no prune.
+    f"""CREATE TABLE IF NOT EXISTS {PATH_ACCESS_TABLE} (
+    pathId BIGINT PRIMARY KEY REFERENCES ValidPaths(id) ON DELETE CASCADE,
+    lastReferencedAt BIGINT NOT NULL
+)""",
     f"CREATE INDEX IF NOT EXISTS idx_pynixd_path_access_time ON {PATH_ACCESS_TABLE}(lastReferencedAt)",
     f"CREATE TABLE IF NOT EXISTS {LIVENESS_ROOT_TABLE} (link {_T} PRIMARY KEY, target {_T} NOT NULL, kind {_T} NOT NULL)",
     f"CREATE INDEX IF NOT EXISTS idx_pynixd_gcroot_kind ON {LIVENESS_ROOT_TABLE}(kind)",

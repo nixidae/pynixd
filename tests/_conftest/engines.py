@@ -18,6 +18,7 @@ import pytest
 from psycopg import pq
 
 from pynixd_store.create_store import CA_SCHEMA, PROVENANCE_COLUMN, SCHEMA
+from pynixd_store.db_migrations import PATH_ACCESS_TABLE
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.postgres_db import PostgresBackend
 from pynixd_store.sql import POSTGRES
@@ -55,6 +56,19 @@ async def store_db(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncItera
         yield db
     finally:
         await db.close_db_pool()
+
+
+async def access_times(db: LocalStoreDB) -> dict[str, int]:
+    """Each `PynixdPathAccess` row as path and time: SQLite keys the table by path, PostgreSQL by `ValidPaths.id`."""
+    if isinstance(db.backend, PostgresBackend):
+        # `LEFT JOIN`: a row whose path is gone shows as an orphan, not as nothing.
+        query = (
+            f"SELECT COALESCE(v.path, 'orphan:' || a.pathId), a.lastReferencedAt FROM {PATH_ACCESS_TABLE} a"
+            " LEFT JOIN ValidPaths v ON v.id = a.pathId"
+        )
+    else:
+        query = f"SELECT path, lastReferencedAt FROM {PATH_ACCESS_TABLE}"
+    return {str(path): int(stamp) for path, stamp in await db.fetchall(query)}
 
 
 @dataclass(frozen=True, slots=True)

@@ -103,7 +103,9 @@ async def _postgres(
             )
             await session.executemany("INSERT INTO Refs VALUES (%s, %s)", refs)
             await session.executemany(
-                f"INSERT INTO {PATH_ACCESS_TABLE} (path, lastReferencedAt) VALUES (%s, %s)", accessed
+                f"INSERT INTO {PATH_ACCESS_TABLE} (pathId, lastReferencedAt) "
+                "SELECT id, %s FROM ValidPaths WHERE path = %s",
+                [(stamp, path) for path, stamp in accessed],
             )
     finally:
         await backend.close()

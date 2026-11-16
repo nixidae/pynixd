@@ -35,8 +35,9 @@ class PathAccessSql:
     this."""
     weights: str
     unreferenced_since: str
-    prune: str
-    """The join the tables of pynixd get by living in Nix's own database."""
+    prune: str | None
+    """The join the tables of pynixd get by living in Nix's own database. `None` where a foreign key drops the row
+    with its path."""
 
 
 _SQLITE_REFERRERS_OF_SEEDS = """
@@ -107,11 +108,11 @@ _POSTGRES_REFERRERS_OF_SEEDS = """
 POSTGRES = PathAccessSql(
     # `ORDER BY`: the upsert locks its rows in this order, so two instances that touch one chunk do not deadlock.
     touch=f"""
-INSERT INTO {PATH_ACCESS_TABLE} (path, lastReferencedAt)
-SELECT path, extract(epoch FROM now())::bigint FROM ValidPaths
+INSERT INTO {PATH_ACCESS_TABLE} (pathId, lastReferencedAt)
+SELECT id, extract(epoch FROM now())::bigint FROM ValidPaths
 WHERE path = ANY(%s)
-ORDER BY path
-ON CONFLICT (path) DO UPDATE SET lastReferencedAt = excluded.lastReferencedAt
+ORDER BY id
+ON CONFLICT (pathId) DO UPDATE SET lastReferencedAt = excluded.lastReferencedAt
 """,
     runtime_closure="""
     WITH RECURSIVE closure(id) AS (
@@ -137,16 +138,13 @@ SELECT path FROM ValidPaths WHERE id IN ({_POSTGRES_REFERRERS_OF_SEEDS})
 """,
     weights=f"""
 SELECT v.path, v.narSize, COALESCE(a.lastReferencedAt, v.registrationTime) FROM ValidPaths v
-LEFT JOIN {PATH_ACCESS_TABLE} a ON a.path = v.path
+LEFT JOIN {PATH_ACCESS_TABLE} a ON a.pathId = v.id
 WHERE v.path = ANY(%s)
 """,
     unreferenced_since=f"""
 SELECT v.path FROM ValidPaths v
-LEFT JOIN {PATH_ACCESS_TABLE} a ON a.path = v.path
+LEFT JOIN {PATH_ACCESS_TABLE} a ON a.pathId = v.id
 WHERE COALESCE(a.lastReferencedAt, v.registrationTime) < %s
 """,
-    prune=f"""
-DELETE FROM {PATH_ACCESS_TABLE}
-WHERE path NOT IN (SELECT path FROM ValidPaths)
-""",
+    prune=None,
 )

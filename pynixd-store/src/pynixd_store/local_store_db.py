@@ -546,11 +546,12 @@ class LocalStoreDB:
         Without it the table grows for ever, because a path that the garbage
         collector deletes leaves its access time behind.
         """
-        if not self.active or self.read_only or not self.schema.usable:
+        prune = self.sql.path_access.prune
+        if prune is None or not self.active or self.read_only or not self.schema.usable:
             return 0
         try:
             async with self.transaction() as db:
-                removed = await db.execute(self.sql.path_access.prune)
+                removed = await db.execute(prune)
         except DatabaseError:
             log.warning("prune_path_access_failed", exc_info=True)
             return 0

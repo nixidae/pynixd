@@ -33,6 +33,11 @@ _SQLITE_ONLY_TABLES = {
     "sqlite_sequence": "SQLite's own counter of `AUTOINCREMENT`",
 }
 
+_RENAMED_ON_POSTGRES = {
+    ("pynixdpathaccess", "path"): "pathid",
+}
+"""A column PostgreSQL keys by `ValidPaths.id`, under the name it has there."""
+
 _NOT_NULL_ON_POSTGRES = {
     ("validpaths", "ultimate"): "a boolean, where Nix writes 1 or NULL",
     ("validpaths", "sigs"): "an array, empty where Nix writes NULL",
@@ -134,8 +139,9 @@ async def test_both_engines_have_the_same_tables_and_columns(
     assert postgres.keys() - sqlite.keys() == set(), "a table SQLite lacks"
     tightened: set[tuple[str, str]] = set()
     for table, columns in sqlite.items():
-        assert columns.keys() == postgres[table].keys(), table
-        for column, nullable in columns.items():
+        renamed = {_RENAMED_ON_POSTGRES.get((table, column), column): nullable for column, nullable in columns.items()}
+        assert renamed.keys() == postgres[table].keys(), table
+        for column, nullable in renamed.items():
             if nullable != postgres[table][column]:
                 tightened.add((table, column))
     assert tightened == _NOT_NULL_ON_POSTGRES.keys()

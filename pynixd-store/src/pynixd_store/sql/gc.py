@@ -140,7 +140,7 @@ POSTGRES = GcSql(
     load_dead=f"""
 INSERT INTO gc_dead
 SELECT v.id, v.path, COALESCE(v.narSize, 0), COALESCE(a.lastReferencedAt, v.registrationTime)
-FROM ValidPaths v LEFT JOIN {PATH_ACCESS_TABLE} a ON a.path = v.path
+FROM ValidPaths v LEFT JOIN {PATH_ACCESS_TABLE} a ON a.pathId = v.id
 WHERE v.id NOT IN (SELECT id FROM gc_live)
 """,
     plan="""
@@ -156,7 +156,7 @@ SELECT id FROM closure WHERE id IN (SELECT id FROM gc_dead)
 SELECT
     (SELECT count(*) FROM ValidPaths),
     (SELECT count(*) FROM gc_live),
-    (SELECT count(*) FROM ValidPaths v LEFT JOIN {PATH_ACCESS_TABLE} a ON a.path = v.path
+    (SELECT count(*) FROM ValidPaths v LEFT JOIN {PATH_ACCESS_TABLE} a ON a.pathId = v.id
         WHERE %(cutoff)s::bigint IS NOT NULL AND COALESCE(a.lastReferencedAt, v.registrationTime) < %(cutoff)s::bigint),
     (SELECT count(*) FROM gc_planned),
     (SELECT count(*) FROM gc_planned WHERE id IN (SELECT id FROM gc_veto))
