@@ -25,6 +25,32 @@ let
     }
   ];
   artifactName = "pynixd-tarball-\${{ matrix.system }}";
+
+  # A path no cache holds before this run: its build is this run's alone.
+  probe = ''nix build --impure --print-out-paths --no-link --expr '(import ./. { }).internal.pkgs.runCommand "pynixd-gha-cache-probe" { run = builtins.getEnv "RUN"; } "echo $run > $out"' '';
+  cacheJob = needs: steps: {
+    inherit needs;
+    runs-on = "ubuntu-latest";
+    timeout-minutes = 30;
+    env.RUN = "\${{ github.run_id }}-\${{ github.run_attempt }}";
+    ghanix = {
+      checkout.enable = true;
+      nix.install = {
+        enable = true;
+        daemon = "pynixd";
+        pynixdArtifact = "pynixd-tarball-x86_64-linux";
+        pynixdGhaCache = true;
+        inherit settings;
+      };
+    };
+    steps = steps ++ [
+      {
+        name = "pynixd's journal";
+        "if" = "\${{ !cancelled() }}";
+        run = "sudo journalctl -u pynixd.service --no-pager";
+      }
+    ];
+  };
 in
 ghalib.evalWorkflow {
   name = "installer";
@@ -94,6 +120,28 @@ ghalib.evalWorkflow {
         }
       ];
     };
+
+    /*
+      The GitHub Actions cache store (nixidae/nixidae#1377): `cache-write`
+      builds a path of this run and uploads it, and `cache-read`, on a fresh
+      runner, substitutes it and builds nothing. The fake service of the
+      unit tests holds pynixd's reading of the protocol; this is the proof.
+    */
+    cache-write = cacheJob "tarball" [
+      {
+        name = "Build a path of this run";
+        run = "${probe}> probe";
+      }
+    ];
+    cache-read =
+      cacheJob
+        [ "tarball" "cache-write" ]
+        [
+          {
+            name = "Substitute the path of this run";
+            run = "${probe}--max-jobs 0";
+          }
+        ];
 
     /*
       The release `nix.install.pynixdTarball` names, replaced from main once
