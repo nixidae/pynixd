@@ -1,5 +1,7 @@
 """The PostgreSQL store schema has SQLite's tables, columns and indexes (`pynixd_store/postgres_schema.py`).
 
+Its types are its own (nixidae/nixidae#1209): a column PostgreSQL holds in a native type may refuse `NULL`.
+
 The SQLite side is a Nix 2.35 store with `ca-derivations` and `provenance`, plus pynixd's tables
 migrated to the newest version. Names compare without case: PostgreSQL folds an unquoted name to
 lower case.
@@ -29,6 +31,12 @@ type Columns = dict[str, dict[str, bool]]
 
 _SQLITE_ONLY_TABLES = {
     "sqlite_sequence": "SQLite's own counter of `AUTOINCREMENT`",
+}
+
+_NOT_NULL_ON_POSTGRES = {
+    ("validpaths", "ultimate"): "a boolean, where Nix writes 1 or NULL",
+    ("validpaths", "sigs"): "an array, empty where Nix writes NULL",
+    ("buildtracev3", "signatures"): "an array, empty where Nix writes an empty string",
 }
 
 
@@ -124,11 +132,33 @@ async def test_both_engines_have_the_same_tables_and_columns(
     sqlite, postgres = _sqlite_columns(sqlite_db), _postgres_columns(postgres_conninfo)
     assert sqlite.keys() - postgres.keys() == set(), "a table PostgreSQL lacks"
     assert postgres.keys() - sqlite.keys() == set(), "a table SQLite lacks"
+    tightened: set[tuple[str, str]] = set()
     for table, columns in sqlite.items():
-        assert columns == postgres[table], table
+        assert columns.keys() == postgres[table].keys(), table
+        for column, nullable in columns.items():
+            if nullable != postgres[table][column]:
+                tightened.add((table, column))
+    assert tightened == _NOT_NULL_ON_POSTGRES.keys()
     indexes = _sqlite_indexes(sqlite_db)
     assert {"indexreference", "idx_pynixd_live_epoch"} <= indexes, "the scan found the indexes"
     assert indexes == _postgres_indexes(postgres_conninfo)
+
+
+async def test_lists_and_flags_have_native_types(backend: PostgresBackend, postgres_conninfo: str) -> None:
+    async with backend.connection() as session:
+        await migrate(session)
+    with psycopg.connect(postgres_conninfo) as conn:
+        types: dict[str, str] = dict(
+            conn.execute(
+                "SELECT table_name || '.' || column_name, udt_name FROM information_schema.columns"
+                " WHERE table_schema = current_schema()"
+            ).fetchall()
+        )
+    assert {name: types[name] for name in ("validpaths.sigs", "validpaths.ultimate", "buildtracev3.signatures")} == {
+        "validpaths.sigs": "_text",
+        "validpaths.ultimate": "bool",
+        "buildtracev3.signatures": "_text",
+    }
 
 
 async def test_every_text_column_compares_bytewise(backend: PostgresBackend, postgres_conninfo: str) -> None:

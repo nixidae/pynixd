@@ -235,11 +235,11 @@ SELECT path FROM ValidPaths WHERE path >= %s AND path < %s LIMIT 1
     + """SELECT vp.path FROM closure c
 JOIN ValidPaths vp ON c.id = vp.id
 """,
-    # `string_agg` in no order, as SQLite's `group_concat`: the reader splits the references into a set.
+    # `array_agg` in no order, as SQLite's `group_concat`: the reader takes the references as a set.
     closure_with_info=_POSTGRES_CLOSURE
     + """SELECT vp.path, vp.deriver, vp.hash, vp.registrationTime, vp.narSize,
        vp.ultimate, vp.sigs, vp.ca, vp.provenance,
-       (SELECT string_agg(ref_vp.path, ' ')
+       (SELECT array_agg(ref_vp.path)
         FROM Refs r
         JOIN ValidPaths ref_vp ON r.reference = ref_vp.id
         WHERE r.referrer = vp.id)

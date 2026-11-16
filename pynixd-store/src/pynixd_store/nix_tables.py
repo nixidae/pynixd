@@ -24,9 +24,10 @@ if TYPE_CHECKING:
 
     from .database import Params, Row
     from .local_store_db import LocalStoreDB
+    from .sql import Codec
 
 
-def path_info(row: Row, references: Iterable[str]) -> ValidPathInfo:
+def path_info(row: Row, references: Iterable[str], codec: Codec) -> ValidPathInfo:
     """A `ValidPaths` row and its references, as `LocalStore::queryPathInfoInternal` reads them (`local-store.cc:667`)."""
     path, deriver, nar_hash, registration_time, nar_size, ultimate, sigs, ca, provenance = row
     return ValidPathInfo(
@@ -38,7 +39,7 @@ def path_info(row: Row, references: Iterable[str]) -> ValidPathInfo:
             registration_time=Time(ts=registration_time),
             nar_size=nar_size or 0,
             ultimate=bool(ultimate),
-            sigs={Signature(**Signature.from_str(sig)) for sig in (sigs or "").split()},
+            sigs={Signature(**Signature.from_str(sig)) for sig in codec.strings(sigs)},
             ca=ContentAddress(value=ca or ""),
             provenance=provenance or "",
         ),
@@ -58,7 +59,7 @@ class NixTables:
         rows = await self._db.fetchall(self._db.sql.nix.path_info_with_refs, (path,))
         if not rows:
             return None
-        return path_info(rows[0][:9], {r[9] for r in rows if r[9] is not None})
+        return path_info(rows[0][:9], {r[9] for r in rows if r[9] is not None}, self._db.sql.codec)
 
     async def _paths(self, query: str, params: Params = (), column: int = 0) -> set[StorePath]:
         return {StorePath(path=row[column]) for row in await self._db.fetchall(query, params)}
@@ -90,7 +91,8 @@ class NixTables:
 
     async def closure_with_info(self, paths: Iterable[str]) -> list[ValidPathInfo]:
         rows = await self._db.fetchall(self._db.sql.nix.closure_with_info, (self._db.sql.codec.path_set(paths),))
-        return [path_info(row[:9], (row[9] or "").split()) for row in rows]
+        codec = self._db.sql.codec
+        return [path_info(row[:9], codec.strings(row[9]), codec) for row in rows]
 
     async def path_infos(self, paths: Iterable[str]) -> list[ValidPathInfo]:
         path_set = self._db.sql.codec.path_set(list(paths))
@@ -98,7 +100,7 @@ class NixTables:
         references: dict[str, set[str]] = {}
         for referrer, reference in await self._db.fetchall(self._db.sql.nix.references_batch, (path_set,)):
             references.setdefault(referrer, set()).add(reference)
-        return [path_info(row, references.get(row[0], ())) for row in rows]
+        return [path_info(row, references.get(row[0], ()), self._db.sql.codec) for row in rows]
 
     async def realisation(self, drv: str, output_name: str, *, by_path: bool) -> tuple[StorePath, list[str]] | None:
         """One realisation's output path and its signatures as Nix stored them; *drv* keys the table *by_path* picks."""
@@ -106,7 +108,7 @@ class NixTables:
         row = await self._db.fetchone(query, (drv, output_name))
         if row is None:
             return None
-        return StorePath(path=row[0]), (row[1] or "").split()
+        return StorePath(path=row[0]), self._db.sql.codec.strings(row[1])
 
     async def derivation_outputs(self, drv_path: str) -> dict[str, StorePath] | None:
         """The static outputs of a derivation, or `None` when the derivation is not valid."""

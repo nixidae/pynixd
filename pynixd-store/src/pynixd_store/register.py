@@ -56,8 +56,8 @@ class Registration:
     registration_time: int
     deriver: str | None
     nar_size: int | None
-    ultimate: int | None
-    sigs: str | None
+    ultimate: bool
+    sigs: tuple[str, ...]
     ca: str | None
     references: frozenset[str]
     derivation_outputs: Mapping[str, str]
@@ -66,10 +66,10 @@ class Registration:
     warnings: tuple[str, ...] = ()
 
 
-def _signatures(sigs: Iterable[Signature]) -> str | None:
+def _signatures(sigs: Iterable[Signature]) -> tuple[str, ...]:
     """`Signature::toStrings` of a `std::set<Signature>`: ordered by key name, then by the decoded bytes."""
     ordered = sorted(sigs, key=lambda sig: (sig.name, base64.b64decode(sig.signature)))
-    return " ".join(sig.to_str() for sig in ordered) or None
+    return tuple(sig.to_str() for sig in ordered)
 
 
 async def prepare(info: ValidPathInfo, layout: StoreLayout, features: Collection[str]) -> Registration:
@@ -107,7 +107,7 @@ async def prepare(info: ValidPathInfo, layout: StoreLayout, features: Collection
         registration_time=unkeyed.registration_time.ts or int(time.time()),
         deriver=deriver or None,
         nar_size=unkeyed.nar_size or None,
-        ultimate=1 if unkeyed.ultimate else None,
+        ultimate=bool(unkeyed.ultimate),
         sigs=_signatures(unkeyed.sigs),
         ca=ca,
         references=references,
@@ -295,11 +295,13 @@ async def register_valid_paths(session: Session, registrations: Iterable[Registr
     """
     rows = {row.path: row for row in registrations}
     order = sorted(rows, key=_base_name)
+    codec = session.sql.codec
     for path in order:
         row = rows[path]
+        ultimate, sigs = codec.ultimate(row.ultimate), codec.path_signatures(row.sigs)
         if await _path_id(session, path) is not None:
             await session.execute(
-                session.sql.nix.update_path_info, (row.nar_size, row.nar_hash, row.ultimate, row.sigs, row.ca, path)
+                session.sql.nix.update_path_info, (row.nar_size, row.nar_hash, ultimate, sigs, row.ca, path)
             )
             continue
         values: tuple[object, ...] = (
@@ -308,8 +310,8 @@ async def register_valid_paths(session: Session, registrations: Iterable[Registr
             row.registration_time,
             row.deriver,
             row.nar_size,
-            row.ultimate,
-            row.sigs,
+            ultimate,
+            sigs,
             row.ca,
         )
         # A table without the column drops the provenance, as Determinate Nix does without the experimental feature.
@@ -342,9 +344,11 @@ async def add_signatures(session: Session, path: str, sigs: Iterable[Signature])
     if row is None:
         return False
     nar_size, nar_hash, ultimate, existing, ca = row
-    merged = {Signature(sig) for sig in (existing or "").split()} | set(sigs)
+    codec = session.sql.codec
+    merged = {Signature(sig) for sig in codec.strings(existing)} | set(sigs)
     await session.execute(
-        session.sql.nix.update_path_info, (nar_size, nar_hash, ultimate, _signatures(merged), ca, path)
+        session.sql.nix.update_path_info,
+        (nar_size, nar_hash, ultimate, codec.path_signatures(_signatures(merged)), ca, path),
     )
     return True
 
@@ -397,7 +401,7 @@ async def register_drv_output(
     (`sha256:<hex>`) in `Realisations`. An id already present with the same
     output path merges the signatures in Nix's set order; one with another
     output path raises Nix's own message. `_signatures` orders the set the way
-    `Signature::toStrings` does; the empty set writes `""`, not NULL.
+    `Signature::toStrings` does.
 
     NIX-DEFECT (#23): `LocalStore::registerDrvOutput` (`local-store.cc:653`, Nix 2.34) inserts the output
     path through `(select id from ValidPaths where path = ?)` without checking it, so an output path that
@@ -408,11 +412,12 @@ async def register_drv_output(
     select = session.sql.nix.realisation_by_path if by_path else session.sql.nix.realisation_by_hash
     update = session.sql.nix.update_build_trace_by_path if by_path else session.sql.nix.update_realisation_by_hash
     insert = session.sql.nix.register_build_trace_by_path if by_path else session.sql.nix.register_realisation_by_hash
+    codec = session.sql.codec
     row = await session.fetchone(select, (drv_key, output_name))
     if row is None:
         if not by_path:
             await _require_valid_output(session, f"{drv_key}!{output_name}", out_path)
-        await session.execute(insert, (drv_key, output_name, out_path, _signatures(sigs) or ""))
+        await session.execute(insert, (drv_key, output_name, out_path, codec.trace_signatures(_signatures(sigs))))
     elif row[0] != out_path:
         separator = "^" if by_path else "!"
         raise RegistrationError(
@@ -422,5 +427,5 @@ async def register_drv_output(
             f"Remote: {magenta(out_path)}"
         )
     else:
-        merged = {Signature(sig) for sig in (row[1] or "").split()} | set(sigs)
-        await session.execute(update, (_signatures(merged) or "", drv_key, output_name))
+        merged = {Signature(sig) for sig in codec.strings(row[1])} | set(sigs)
+        await session.execute(update, (codec.trace_signatures(_signatures(merged)), drv_key, output_name))

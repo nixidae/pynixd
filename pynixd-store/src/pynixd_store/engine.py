@@ -139,7 +139,7 @@ class StoreEngine:
         found = reader.query_path_info(path) if reader is not None else None
         if found is not None:
             row, references = found
-            return None if row is None else path_info(row, references)
+            return None if row is None else path_info(row, references, self.db.sql.codec)
         return await self.db.nix.path_info(path)
 
     async def read_derivation(self, drv_path: str) -> Derivation | None:

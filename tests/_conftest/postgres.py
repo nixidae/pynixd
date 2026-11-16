@@ -32,10 +32,11 @@ from psycopg import sql
 from pydantic import SecretStr
 
 from pynixd.config import PostgresSpec
+from pynixd_store.sql import codec
 from tests._conftest.census import descendants
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
 _START_SECONDS = 30.0
 _STOP_SECONDS = 30.0
@@ -223,17 +224,33 @@ def drop_lane_databases_of_removed_stores() -> None:
             del _LANE.databases[name]
 
 
+_AS_NIX_WRITES: dict[str, Callable[[Any], object]] = {
+    "ultimate": codec.SQLITE.ultimate,
+    "sigs": codec.SQLITE.path_signatures,
+    "signatures": codec.SQLITE.trace_signatures,
+}
+
+
+def _as_nix_writes(names: list[str], row: tuple[Any, ...]) -> tuple[Any, ...]:
+    return tuple(
+        _AS_NIX_WRITES[name](value) if name in _AS_NIX_WRITES else value for name, value in zip(names, row, strict=True)
+    )
+
+
 def store_rows(db_file: Path, query: str) -> list[tuple[Any, ...]]:
     """The rows of *query* in the database of the store whose SQLite file is *db_file*.
 
     The file itself, read-only, when it exists: a store on PostgreSQL has none. Else the lane's database of the store
-    whose root holds *db_file*. *query* binds no parameter: it runs as it is on either engine.
+    whose root holds *db_file*. *query* binds no parameter: it runs as it is on either engine. A column PostgreSQL
+    holds in a native type comes back as Nix writes it, so a row compares with one of a store Nix wrote.
     """
     cluster = _LANE.cluster
     if cluster is not None and not db_file.exists():
         for name, root in _LANE.databases.items():
             if db_file.is_relative_to(root):
                 with psycopg.connect(cluster.conninfo(name), autocommit=True) as server:
-                    return [tuple(row) for row in server.execute(query.encode()).fetchall()]
+                    cursor = server.execute(query.encode())
+                    names = [column.name for column in cursor.description or ()]
+                    return [_as_nix_writes(names, row) for row in cursor.fetchall()]
     with contextlib.closing(sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)) as file:
         return file.execute(query).fetchall()

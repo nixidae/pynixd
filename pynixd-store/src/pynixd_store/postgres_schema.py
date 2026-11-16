@@ -6,7 +6,9 @@ take the shape of a Nix 2.35 store with `ca-derivations` and Determinate Nix's `
 pynixd's tables start at the end state of `db_migrations.MIGRATIONS`, version `BASE_VERSION`. A
 migration after it gets a twin here under the same version.
 
-Each rule below keeps a column's behaviour the same as in SQLite:
+No program but pynixd reads these tables, so a list or a flag that Nix packs into text or an
+integer has a native type here (`text[]`, `boolean`), and `sql.codec` binds it. Each rule below
+keeps the behaviour of the other columns the same as in SQLite:
 
 - Every text column is `COLLATE "C"`. SQLite compares text bytewise (`BINARY`), and a range scan
   over store paths relies on that order.
@@ -61,8 +63,8 @@ NIX_TABLES: tuple[str, ...] = (
     registrationTime BIGINT NOT NULL,
     deriver          {_T},
     narSize          BIGINT,
-    ultimate         BIGINT,
-    sigs             {_T},
+    ultimate         BOOLEAN NOT NULL DEFAULT false,
+    sigs             TEXT[] NOT NULL DEFAULT '{{}}',
     ca               {_T},
     provenance       {_T}
 )""",
@@ -95,7 +97,7 @@ $$""",
     drvPath    {_T} NOT NULL,
     outputName {_T} NOT NULL,
     outputPath {_T} NOT NULL,
-    signatures {_T}
+    signatures TEXT[] NOT NULL DEFAULT '{{}}'
 )""",
     "CREATE INDEX IF NOT EXISTS IndexBuildTraceV3 ON BuildTraceV3(drvPath, outputName)",
 )
