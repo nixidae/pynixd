@@ -40,6 +40,8 @@ async def _wakes(state: Path, action: Callable[[], None]) -> bool:
     async with anyio.create_task_group() as tg:
         tg.start_soon(watch.run, dirty)
         await anyio.sleep(0.2)
+        # FSEvents replays the lab's own events after the watch starts.
+        dirty.clear()
         action()
         with anyio.move_on_after(10):
             await dirty.wait()
@@ -54,6 +56,7 @@ async def _stays_quiet(state: Path, action: Callable[[], None]) -> bool:
     async with anyio.create_task_group() as tg:
         tg.start_soon(watch.run, dirty)
         await anyio.sleep(0.2)
+        dirty.clear()
         action()
         with anyio.move_on_after(0.5):
             await dirty.wait()

@@ -37,14 +37,15 @@ no signal either: roots move by replacement, never by rewrite.
 
 from __future__ import annotations
 
-import os
 import queue
+import stat
+import threading
 from pathlib import Path
 
 import anyio
 import structlog
 from anyio.to_thread import run_sync
-from watchdog.events import FileSystemEvent, FileSystemEventHandler, FileSystemMovedEvent
+from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 from watchdog.observers.api import ObservedWatch
 
@@ -53,10 +54,7 @@ from pynixd_store.liveness import STABLE_TREES
 log = structlog.get_logger(__name__)
 
 
-def _as_str(path: str | bytes) -> str:
-    """Watchdog reports bytes paths when asked to watch bytes; we never ask."""
-    return os.fsdecode(path) if isinstance(path, bytes) else path
-
+type _Identity = tuple[int, int]
 
 _WAKE_POLL_SECONDS = 0.5
 """Upper bound on shutdown latency, and nothing else.
@@ -107,14 +105,14 @@ class _TreeHandler(FileSystemEventHandler):
         self.wake.put(True)
 
 
-_TREE_MOVES = frozenset({"created", "deleted", "moved"})
-
-
 class _StateDirHandler(FileSystemEventHandler):
     """Follow the trees appearing and leaving in the state dir.
 
     Anything else there -- `temproots/`, `db/`, `daemon-socket/` -- is
-    churn the check must sleep through.
+    churn the check must sleep through. The event does not say which tree
+    moved: FSEvents reports only `modified` on the state dir itself, with
+    no `created` for the child. So every event compares each tree with
+    the one its watch follows.
     """
 
     def __init__(self, watch: StableRootsWatch, wake: queue.Queue[bool]) -> None:
@@ -123,17 +121,8 @@ class _StateDirHandler(FileSystemEventHandler):
         self.wake = wake
 
     def on_any_event(self, event: FileSystemEvent) -> None:
-        if event.event_type not in _TREE_MOVES:
-            return
-        names = {Path(_as_str(event.src_path)).name}
-        if isinstance(event, FileSystemMovedEvent):
-            names.add(Path(_as_str(event.dest_path)).name)
-        trees = names & STABLE_TREES.keys()
-        if not trees:
-            return
-        for tree in trees:
-            self.watch.rewatch(tree)
-        self.wake.put(True)
+        if self.watch.sync():
+            self.wake.put(True)
 
 
 class StableRootsWatch:
@@ -143,26 +132,48 @@ class StableRootsWatch:
         self.state_dir = state_dir
         self._observer = Observer()
         self._handler: _TreeHandler | None = None
-        self._trees: dict[str, ObservedWatch] = {}
+        self._trees: dict[str, tuple[ObservedWatch, _Identity]] = {}
+        self._lock = threading.Lock()
 
-    def rewatch(self, tree: str) -> None:
-        """Drop *tree*'s watch and schedule a new one if the tree is a directory.
+    def _identity(self, tree: str) -> _Identity | None:
+        """The tree's directory as (device, inode), or `None` when it is no directory to watch.
+
+        Never a symlink: Nix does not descend one (`gc.cc:313`).
+        """
+        try:
+            st = (self.state_dir / tree).lstat()
+        except OSError:
+            return None
+        return (st.st_dev, st.st_ino) if stat.S_ISDIR(st.st_mode) else None
+
+    def sync(self) -> bool:
+        """Watch each tree that is there now, and drop the watch of each one that left; whether any moved.
 
         A watch whose directory was deleted is dead, and watchdog keys
         watches by path, so a tree that comes back needs the old one gone
-        first. Never a symlink: Nix does not descend one (`gc.cc:313`).
+        first. A new inode tells a tree that came back from one that stayed.
         """
-        old = self._trees.pop(tree, None)
-        if old is not None:
-            self._observer.unschedule(old)
-        path = self.state_dir / tree
-        if self._handler is None or path.is_symlink() or not path.is_dir():
-            return
-        try:
-            self._trees[tree] = self._observer.schedule(self._handler, str(path), recursive=True)
-        except OSError as exc:
-            # Gone again before the watch landed; its delete event follows.
-            log.debug("stable_roots_tree_vanished", tree=tree, error=str(exc))
+        moved = False
+        with self._lock:
+            for tree in STABLE_TREES:
+                now = self._identity(tree)
+                old = self._trees.get(tree)
+                if (old[1] if old else None) == now:
+                    continue
+                moved = True
+                if old is not None:
+                    del self._trees[tree]
+                    self._observer.unschedule(old[0])
+                if now is None or self._handler is None:
+                    continue
+                try:
+                    watch = self._observer.schedule(self._handler, str(self.state_dir / tree), recursive=True)
+                except OSError as exc:
+                    # Gone again before the watch landed; its delete event follows.
+                    log.debug("stable_roots_tree_vanished", tree=tree, error=str(exc))
+                    continue
+                self._trees[tree] = (watch, now)
+        return moved
 
     async def run(self, dirty: DirtyFlag) -> None:
         """Watch until cancelled, setting *dirty* on every relevant change."""
@@ -170,8 +181,7 @@ class StableRootsWatch:
         observer = self._observer
         self._handler = _TreeHandler(wake)
         observer.schedule(_StateDirHandler(self, wake), str(self.state_dir), recursive=False)
-        for tree in STABLE_TREES:
-            self.rewatch(tree)
+        self.sync()
         try:
             observer.start()
         except OSError as exc:
