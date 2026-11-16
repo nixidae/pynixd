@@ -32,13 +32,11 @@ from anyio.abc import SocketAttribute, SocketStream
 if TYPE_CHECKING:
     from pathlib import Path
 
-_SUN_PATH_MAX = 107
+_SUN_PATH_MAX = 103 if sys.platform == "darwin" else 107
 """Bytes of a Unix socket path, without the terminating NUL.
 
-`sockaddr_un.sun_path` is 108 bytes on Linux and 104 on darwin, and the
-shorter of the two is the safe bound for a store that a darwin client may
-reach. This is 107 because Linux is where the managed daemon runs, and the
-error below names the number it measured. Issue #44.
+`sockaddr_un.sun_path` is 108 bytes on Linux and 104 on darwin.
+`TestTheLimitIsReal` measures both. Issue #44.
 """
 
 

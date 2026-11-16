@@ -125,6 +125,7 @@ def _serve_one_ping(listener: socket.socket) -> bytes:
 
 
 class TestTheReroute:
+    @pytest.mark.skipif(sys.platform != "linux", reason="the reroute is Linux-only")
     async def test_reaches_a_socket_bound_the_way_nix_binds(self, tmp_path: Path) -> None:
         """The capability of issue #44: the socket file exists at a path no
         absolute `connect` can name, and the reroute carries the bytes."""
