@@ -15,7 +15,7 @@ import pytest
 
 from pynixd_store.postgres_db import PostgresBackend
 from pynixd_store.postgres_schema import migrate
-from pynixd_store.sql import SQLITE, gc, liveness, nix, observations, path_access, placement
+from pynixd_store.sql import POSTGRES, SQLITE, gc, liveness, nix, observations, path_access, placement
 from tests._conftest.engines import postgres_parameters, sqlite_parameters
 
 if TYPE_CHECKING:
@@ -59,9 +59,16 @@ def _statements(group: object) -> dict[str, str]:
     }
 
 
+def test_the_postgres_set_holds_every_twin() -> None:
+    """`sql.POSTGRES` holds each group's twins, and no statement of SQLite's."""
+    for group, (postgres, _sqlite) in GROUPS.items():
+        assert getattr(POSTGRES, group) is postgres, group
+        assert getattr(POSTGRES, group) is not getattr(SQLITE, group), group
+
+
 @pytest.fixture
 async def schema(postgres_conninfo: str) -> AsyncIterator[str]:
-    backend = PostgresBackend(postgres_conninfo, SQLITE)
+    backend = PostgresBackend(postgres_conninfo, POSTGRES)
     await backend.open()
     try:
         async with backend.connection() as session:
@@ -72,8 +79,8 @@ async def schema(postgres_conninfo: str) -> AsyncIterator[str]:
 
 
 def test_every_group_is_listed() -> None:
-    """A group of `Statements` with a twin, and no entry here, would go unparsed."""
-    assert GROUPS.keys() <= {f.name for f in dataclasses.fields(SQLITE)}
+    """A group of `Statements` with no entry here would go unparsed."""
+    assert GROUPS.keys() == {f.name for f in dataclasses.fields(SQLITE)}
     assert REFUSED.keys() <= GROUPS.keys()
     assert SETUP.keys() <= GROUPS.keys()
 

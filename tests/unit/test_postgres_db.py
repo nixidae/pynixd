@@ -1,7 +1,7 @@
 """The session API of the store database, on PostgreSQL (`pynixd_store/postgres_db.py`).
 
-The statements here are this file's own: the PostgreSQL twins of `pynixd_store/sql` come with the
-schema, and the backend carries SQLite's set until then.
+The statements here are this file's own, over one table of its own; `test_postgres_statements.py`
+and the tests of each statement group run `sql.POSTGRES`.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import pytest
 
 from pynixd_store.database import Backend, DatabaseError
 from pynixd_store.postgres_db import PostgresBackend, PostgresDatabase
-from pynixd_store.sql import SQLITE
+from pynixd_store.sql import POSTGRES
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -36,7 +36,7 @@ def valid_paths(postgres_conninfo: str) -> str:
 
 @pytest.fixture
 async def backend(valid_paths: str) -> AsyncIterator[PostgresBackend]:
-    backend = PostgresBackend(valid_paths, SQLITE)
+    backend = PostgresBackend(valid_paths, POSTGRES)
     await backend.open()
     try:
         yield backend
@@ -102,7 +102,7 @@ async def test_a_snapshot_reads_one_state_and_holds_temporary_tables(
 
 
 def test_a_thread_session_writes_only_when_asked(valid_paths: str) -> None:
-    database = PostgresDatabase(valid_paths, SQLITE)
+    database = PostgresDatabase(valid_paths, POSTGRES)
     with pytest.raises(DatabaseError, match="read-only transaction"), database.sync_session() as session:
         session.execute(INSERT, (HELLO, 1))
     with database.sync_session(write=True) as session, session.transaction():
@@ -119,7 +119,7 @@ async def test_a_closed_pool_is_a_database_error(backend: PostgresBackend) -> No
 
 
 async def test_the_engine_answers_as_a_backend(postgres_conninfo: str) -> None:
-    backend: Backend = PostgresBackend(postgres_conninfo, SQLITE)
+    backend: Backend = PostgresBackend(postgres_conninfo, POSTGRES)
     try:
         await backend.probe()
         assert (await backend.migrate()).usable
@@ -133,7 +133,7 @@ async def test_the_engine_answers_as_a_backend(postgres_conninfo: str) -> None:
 
 async def test_an_unreachable_server_fails_the_open() -> None:
     with tempfile.TemporaryDirectory(prefix="pynixd-pg-") as nowhere:
-        backend = PostgresBackend(psycopg.conninfo.make_conninfo(host=nowhere, dbname="x"), SQLITE, open_seconds=1.0)
+        backend = PostgresBackend(psycopg.conninfo.make_conninfo(host=nowhere, dbname="x"), POSTGRES, open_seconds=1.0)
         with pytest.raises(DatabaseError):
             await backend.open()
         await backend.close()

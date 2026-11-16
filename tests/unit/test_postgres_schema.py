@@ -18,7 +18,7 @@ from pynixd_store.create_store import CA_SCHEMA, PROVENANCE_COLUMN, SCHEMA
 from pynixd_store.db_migrations import TARGET_VERSION, apply_migrations
 from pynixd_store.postgres_db import PostgresBackend
 from pynixd_store.postgres_schema import BASE_VERSION, migrate
-from pynixd_store.sql import SQLITE
+from pynixd_store.sql import POSTGRES
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -34,7 +34,7 @@ _SQLITE_ONLY_TABLES = {
 
 @pytest.fixture
 async def backend(postgres_conninfo: str) -> AsyncIterator[PostgresBackend]:
-    backend = PostgresBackend(postgres_conninfo, SQLITE)
+    backend = PostgresBackend(postgres_conninfo, POSTGRES)
     await backend.open()
     try:
         yield backend

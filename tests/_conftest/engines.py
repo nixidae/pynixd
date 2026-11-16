@@ -7,7 +7,6 @@ pynixd's tables at the newest version.
 
 from __future__ import annotations
 
-import dataclasses
 import re
 import sqlite3
 from contextlib import closing
@@ -21,22 +20,11 @@ from psycopg import pq
 from pynixd_store.create_store import CA_SCHEMA, PROVENANCE_COLUMN, SCHEMA
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.postgres_db import PostgresBackend
-from pynixd_store.sql import SQLITE, gc, liveness, nix, observations, path_access, placement
+from pynixd_store.sql import POSTGRES
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
     from pathlib import Path
-
-POSTGRES_SO_FAR = dataclasses.replace(
-    SQLITE,
-    nix=nix.POSTGRES,
-    path_access=path_access.POSTGRES,
-    observations=observations.POSTGRES,
-    placement=placement.POSTGRES,
-    gc=gc.POSTGRES,
-    liveness=liveness.POSTGRES,
-)
-"""The PostgreSQL twins written so far, and SQLite's statements for the groups that have none yet."""
 
 
 def sqlite_store(tmp_path: Path) -> LocalStoreDB:
@@ -49,7 +37,7 @@ def sqlite_store(tmp_path: Path) -> LocalStoreDB:
 
 
 def postgres_store(conninfo: str) -> LocalStoreDB:
-    backend = PostgresBackend(conninfo, POSTGRES_SO_FAR)
+    backend = PostgresBackend(conninfo, POSTGRES)
     return LocalStoreDB(None, None, read_only=False, reference_flush_interval=60.0, backend=backend)
 
 

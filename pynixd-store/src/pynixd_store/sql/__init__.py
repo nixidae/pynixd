@@ -40,3 +40,12 @@ SQLITE = Statements(
     gc=gc.SQLITE,
     liveness=liveness.SQLITE,
 )
+
+POSTGRES = Statements(
+    nix=nix.POSTGRES,
+    path_access=path_access.POSTGRES,
+    observations=observations.POSTGRES,
+    placement=placement.POSTGRES,
+    gc=gc.POSTGRES,
+    liveness=liveness.POSTGRES,
+)

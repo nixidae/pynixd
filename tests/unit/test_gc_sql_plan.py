@@ -23,9 +23,8 @@ from pynixd_store.db_migrations import PATH_ACCESS_TABLE, apply_migrations
 from pynixd_store.gc import by_weight, take_until_below_target
 from pynixd_store.gc_sql import Bound, SqlPlan, referrer_first
 from pynixd_store.postgres_db import PostgresBackend, PostgresDatabase
-from pynixd_store.sql import SQLITE
+from pynixd_store.sql import POSTGRES
 from pynixd_store.sqlite_db import SqliteDatabase
-from tests._conftest.engines import POSTGRES_SO_FAR
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -94,7 +93,7 @@ async def _sqlite(
 async def _postgres(
     conninfo: str, paths: list[tuple[int, str, int, int]], refs: list[tuple[int, int]], accessed: list[tuple[str, int]]
 ) -> Database:
-    backend = PostgresBackend(conninfo, SQLITE)
+    backend = PostgresBackend(conninfo, POSTGRES)
     try:
         await backend.probe()
         assert (await backend.migrate()).usable
@@ -108,7 +107,7 @@ async def _postgres(
             )
     finally:
         await backend.close()
-    return PostgresDatabase(conninfo, POSTGRES_SO_FAR)
+    return PostgresDatabase(conninfo, POSTGRES)
 
 
 async def _store(tmp_path: Path, seed: int, conninfo: str | None, count: int = 120) -> Store:
@@ -258,7 +257,7 @@ async def test_a_refused_plan_raises_database_error(tmp_path: Path, conninfo: st
         database: Database = SqliteDatabase(db)
         refusal = "no such table"
     else:
-        database = PostgresDatabase(conninfo, POSTGRES_SO_FAR)
+        database = PostgresDatabase(conninfo, POSTGRES)
         refusal = "does not exist"
     with pytest.raises(DatabaseError, match=refusal):
         async with SqlPlan.open(database) as plan:
