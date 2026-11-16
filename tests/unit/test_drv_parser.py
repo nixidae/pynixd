@@ -239,7 +239,7 @@ class TestLiveProbes:
         parsed = parse_drv(drv_content)
         result = parsed.to_json(_canonical_drv_key(canonical))
         assert result[_canonical_drv_key(canonical)]["env"] == _canonical_entry(canonical)["env"]
-        assert parsed.platform == "x86_64-linux"
+        assert parsed.platform == _canonical_entry(canonical)["system"]
 
     def test_to_json_matches_canonical(self, probes: Probes) -> None:
         """For every probe, verify to_json() produces the same env as nix derivation show."""
@@ -587,11 +587,11 @@ class TestToBasicDerivation:
 
     async def test_simple_conversion(self, probes: Probes) -> None:
 
-        _, drv_content, _ = probes["simple"]
+        _, drv_content, canonical = probes["simple"]
         parsed = parse_drv(drv_content)
         result = await to_basic_derivation(parsed, StoreLayout.chroot(Path("/tmp/fake-store")))
         assert len(result.outputs) == 1
-        assert result.platform == "x86_64-linux"
+        assert result.platform == _canonical_entry(canonical)["system"]
 
     async def test_with_output_cache(self, probes: Probes) -> None:
 

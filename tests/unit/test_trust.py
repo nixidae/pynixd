@@ -6,6 +6,7 @@ import grp
 import os
 import pwd
 import socket
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -183,11 +184,16 @@ def test_policy_from_nix_config_show() -> None:
 
 
 def test_peer_of_reads_this_process() -> None:
-    """The kernel's record of the connecting process, over a real socket pair."""
+    """The kernel's record of the connecting process, over a real socket pair.
+
+    No pid on darwin: `LOCAL_PEERCRED` carries none, and Nix reads no other
+    option (`unix-socket-server.cc:40`).
+    """
     left, right = socket.socketpair(socket.AF_UNIX)
     with left, right:
         peer = peer_of(left)
-    assert peer == Peer(pid=os.getpid(), uid=os.getuid(), gid=os.getgid())
+    pid = None if sys.platform == "darwin" else os.getpid()
+    assert peer == Peer(pid=pid, uid=os.getuid(), gid=os.getgid())
 
 
 def test_dropped_settings_warn_in_name_order() -> None:

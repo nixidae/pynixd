@@ -23,6 +23,8 @@ async def test_sparse_file_counts_blocks_not_holes(tmp_path: Path) -> None:
         handle.write(b"\0")
     logical = sparse.stat().st_size
     assert logical == 8 * 1024 * 1024 + 1
+    if sparse.stat().st_blocks * 512 >= logical:
+        pytest.skip("this filesystem allocated the hole (APFS: 8392704 bytes)")
 
     total = physical_batch_total([str(sparse)], tmp_path)
 

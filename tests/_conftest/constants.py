@@ -61,12 +61,12 @@ tests needed a network and built whatever the channel said that day. A
 guest has no network, and the channel's `hello` sent it to build 572
 derivations from the bootstrap seed. Issue #57.
 """
-TMP_PREFIX = f"/tmp/pynixd-test{_OWN}/"
+TMP_PREFIX = f"{_TMP}/pynixd-test{_OWN}/"
 """Where each test's `tmp_path` goes: a directory of its own, so the sweep
 after each test lists the suite's leftovers and not the host's `/tmp`.
 Measured with 14,013 entries in `/tmp`: a glob of `/tmp/pynixd-test-*` after
-each test cost 5.5 of 27 seconds. Still 17 characters, so `NAME_BUDGET`
-does not move."""
+each test cost 5.5 of 27 seconds. Under `_TMP`: libarchive's secure
+extraction also refuses a path through a symlink."""
 # Anchored on this file, and not on the working directory. The suite ran
 # from `pynixd/` alone until issue nixidae/nixidae#166, and `nix build --file tests/nix`
 # then resolved against the checkout root and reported that the path does
