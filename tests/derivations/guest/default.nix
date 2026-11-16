@@ -207,6 +207,9 @@ vivariumLib.mkTest (
         NIX_BIN = if suite ? lane then lib.getExe (laneOf suite).nix else "$(command -v nix)";
         NIX_GIT_BIN = "${nixGit}/bin/nix";
         NIX_FLOOR_BIN = "${nixFloor}/bin/nix";
+        # The server of the PostgreSQL store tests (`tests/_conftest/postgres.py`). Not on the
+        # system PATH: `initdb` finds `share/postgresql` beside its own binary, and the profile links no `share/postgresql`.
+        POSTGRES_BIN = "${pkgs.postgresql}/bin";
         # Without it a failure names `/tmp/pynixd-logs/...`, which dies
         # with the guest.
         PYNIXD_TEST_LOG_DIR = "/artifacts/${name}-logs";

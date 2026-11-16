@@ -19,6 +19,9 @@ dependencies = [
     "blake3",
     "libarchive-c",
     "nix-daemon-protocol>=0.1.0",
+    # A store database on PostgreSQL (nixidae/nixidae#1209). Imported by `postgres_db.py` alone.
+    "psycopg",
+    "psycopg-pool",
     "pycurl",
     "pynacl",
     "seccomp; sys_platform == 'linux'",

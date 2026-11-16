@@ -4,6 +4,8 @@
   zuban,
   ruff,
   sqlite,
+  # The server of the PostgreSQL store tests (`tests/_conftest/postgres.py`).
+  postgresql,
   nix,
   # Nix's master branch, as `NIX_GIT_BIN`, for `builder-rpc-v0`.
   nixGit,
@@ -45,6 +47,7 @@ mkShell {
     unset PYTHONPATH
     export NIX_BIN=${lib.getExe nix}
     export NIX_GIT_BIN=${lib.getExe nixGit}
+    export POSTGRES_BIN=${postgresql}/bin
 
     # **The nixpkgs of this repository, and not the one the host happens to
     # have.** `tests/nix/drv-probes.nix` imports `<nixpkgs>` at eight places,

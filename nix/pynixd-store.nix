@@ -7,6 +7,8 @@
   anyio,
   blake3,
   libarchive-c,
+  psycopg,
+  psycopg-pool,
   pycurl,
   pynacl,
   seccomp,
@@ -34,6 +36,8 @@ pythonBuilder (finalAttrs: {
     anyio
     blake3
     libarchive-c
+    psycopg
+    psycopg-pool
     pycurl
     pynacl
     structlog
