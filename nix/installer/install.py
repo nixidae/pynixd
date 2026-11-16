@@ -223,10 +223,12 @@ def install(bundle: Bundle, trusted_users: list[str], extra: str, gha_cache: Pat
         fd = os.open(GHA_CACHE_CREDENTIALS, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as out:
             out.write(gha_cache.read_text())
-    _run([str(bundle.nix / "bin" / "nix-store"), "--load-db"], stdin=ROOT / "reginfo")
-    _run([str(bundle.nix / "bin" / "nix-env"), "--profile", str(PROFILE), "--set", str(bundle.profile)])
+    # First: Nix run as root defaults `build-users-group` to `nixbld`, and warns
+    # in each command below when the group does not exist.
     if DARWIN:
         darwin_build_users()
+    _run([str(bundle.nix / "bin" / "nix-store"), "--load-db"], stdin=ROOT / "reginfo")
+    _run([str(bundle.nix / "bin" / "nix-env"), "--profile", str(PROFILE), "--set", str(bundle.profile)])
     _write(NIX_CONF, nix_conf(bundle, trusted_users, extra, darwin=DARWIN))
     _write(PYNIXD_CONF, json.dumps(pynixd_conf(gha_cache is not None), indent=2) + "\n")
     DAEMON_SOCKET.parent.mkdir(parents=True, exist_ok=True)
