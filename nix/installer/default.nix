@@ -1,8 +1,11 @@
 # pynixd as a tarball that unpacks into /nix: nixidae/nixidae#1365.
 #
-# `tar --zstd -x -C /` puts the closure at /nix/store and the installer at
+# `tar -x -C /` puts the closure at /nix/store and the installer at
 # /nix/.pynixd/install. The installer registers the closure, makes the default
 # profile and starts pynixd with no nix-daemon under it.
+#
+# zstd on Linux, xz on darwin: macOS's own tar (bsdtar 3.5.3, libarchive
+# 3.7.4, macOS 15 to 27) reads xz and not zstd, and a stock Mac has no zstd.
 #
 # Store paths are written in place, not under a directory to copy from as in
 # Nix's own tarball (`packaging/binary-tarball.nix`): a CI runner unpacks once,
@@ -134,10 +137,25 @@ let
     ];
   };
 
+  compression =
+    if pkgs.stdenv.hostPlatform.isDarwin then
+      {
+        extension = "xz";
+        tool = pkgs.xz;
+        command = "xz -T0 -6";
+      }
+    else
+      {
+        extension = "zst";
+        tool = pkgs.zstd;
+        command = "zstd -T0 -19";
+      };
+  fileName = "pynixd-${system}.tar.${compression.extension}";
+
   tarball =
     pkgs.runCommand "pynixd-tarball-${package.name}-${system}"
       {
-        nativeBuildInputs = [ pkgs.zstd ];
+        nativeBuildInputs = [ compression.tool ];
         passAsFile = [ "manifest" ];
         inherit manifest;
         passthru = {
@@ -147,7 +165,7 @@ let
             units
             closure
             ;
-          fileName = "pynixd-${system}.tar.zst";
+          inherit fileName;
         };
       }
       ''
@@ -163,7 +181,7 @@ let
           --hard-dereference \
           -C top nix/.pynixd \
           -C / $(sed 's,^/,,' ${closure}/store-paths) \
-          | zstd -T0 -19 > $out/pynixd-${system}.tar.zst
+          | ${compression.command} > $out/${fileName}
       '';
 in
 tarball

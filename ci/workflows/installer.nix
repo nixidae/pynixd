@@ -94,7 +94,8 @@ ghalib.evalWorkflow {
         }
         {
           name = "Collect the tarball";
-          run = "mkdir -p upload && cp -L tarball/*.tar.zst out-path upload/";
+          # `.tar.zst` on Linux, `.tar.xz` on darwin (`nix/installer/default.nix`).
+          run = "mkdir -p upload && cp -L tarball/pynixd-*.tar.* out-path upload/";
         }
         (steps.uploadArtifact {
           inherit artifactName;
@@ -217,7 +218,7 @@ ghalib.evalWorkflow {
             ''cd "$RUNNER_TEMP/release"''
             ''(gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --target "$GITHUB_SHA" --prerelease --title "pynixd installer" --notes "pynixd as the only Nix daemon of a machine: nixidae/nixidae#1365")''
             ''gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true > /dev/null''
-            ''gh release upload "$TAG" pynixd-*.tar.zst --clobber''
+            ''gh release upload "$TAG" pynixd-*.tar.* --clobber''
             ''gh release edit "$TAG" --notes "pynixd as the only Nix daemon of a machine: nixidae/nixidae#1365. Built from $GITHUB_SHA."''
           ];
         }
