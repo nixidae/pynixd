@@ -111,3 +111,81 @@ ON CONFLICT (id) DO UPDATE SET
     ),
     drop_root_hits="DROP TABLE _pynixd_root_hits",
 )
+
+
+# PostgreSQL takes one recursive term, where SQLite's walk has three: the references, the deriver, and the
+# deriver's references. One `LATERAL` union holds the three.
+_POSTGRES_STEP = """SELECT step.id FROM closure c
+    JOIN ValidPaths current_vp ON current_vp.id = c.id
+    CROSS JOIN LATERAL (
+        SELECT r.reference AS id FROM Refs r WHERE r.referrer = c.id
+        UNION ALL
+        SELECT deriver_vp.id FROM ValidPaths deriver_vp WHERE deriver_vp.path = current_vp.deriver
+        UNION ALL
+        SELECT r.reference FROM ValidPaths deriver_vp JOIN Refs r ON deriver_vp.id = r.referrer
+        WHERE deriver_vp.path = current_vp.deriver
+    ) AS step"""
+
+_POSTGRES_ROOT_CLOSURE_OF_SEEDS = f"""
+    WITH RECURSIVE closure(id) AS (
+        SELECT vp.id FROM ValidPaths vp WHERE vp.path IN (SELECT json_array_elements_text(%s::json))
+        UNION
+        {_POSTGRES_STEP}
+    )
+    SELECT id FROM closure
+"""
+
+# `SUM` of a BIGINT is `numeric`; the casts keep each count an integer, as SQLite answers it.
+POSTGRES = LivenessSql(
+    live_set=f"""
+WITH RECURSIVE closure(id) AS (
+    SELECT vp.id FROM ValidPaths vp
+    WHERE vp.path IN (
+        SELECT target FROM {LIVENESS_ROOT_TABLE}
+        UNION
+        SELECT json_array_elements_text(%s::json)
+    )
+    UNION
+    {_POSTGRES_STEP}
+)
+SELECT path FROM ValidPaths WHERE id IN (SELECT id FROM closure)
+""",
+    fingerprint="SELECT COUNT(*), COALESCE(MAX(id), 0) FROM ValidPaths",
+    roots=f"SELECT link, target, kind FROM {LIVENESS_ROOT_TABLE}",
+    delete_root=f"DELETE FROM {LIVENESS_ROOT_TABLE} WHERE link = %s",
+    upsert_root=(
+        f"INSERT INTO {LIVENESS_ROOT_TABLE} (link, target, kind) VALUES (%s, %s, %s) "
+        "ON CONFLICT (link) DO UPDATE SET target = excluded.target, kind = excluded.kind"
+    ),
+    create_live_now='CREATE TEMP TABLE live_now(path TEXT COLLATE "C" PRIMARY KEY)',
+    fill_live_now="INSERT INTO live_now SELECT json_array_elements_text(%s::json)",
+    delete_left=f"DELETE FROM {LIVENESS_TABLE} WHERE path NOT IN (SELECT path FROM live_now)",
+    insert_joined=(
+        f"INSERT INTO {LIVENESS_TABLE} (path, epoch) SELECT path, %s::bigint FROM live_now ON CONFLICT DO NOTHING"
+    ),
+    newest_epoch=f"SELECT COALESCE(MAX(epoch), -1) FROM {LIVENESS_TABLE}",
+    live_paths=f"SELECT path FROM {LIVENESS_TABLE}",
+    record_streak=f"""
+INSERT INTO {LIVENESS_STREAK_TABLE} (id, agreements, divergences, checks, live, updatedAt)
+VALUES (1, %s, %s, 1, %s, extract(epoch FROM now())::bigint)
+ON CONFLICT (id) DO UPDATE SET
+    agreements = CASE WHEN %s::bigint <> 0 THEN {LIVENESS_STREAK_TABLE}.agreements + 1 ELSE 0 END,
+    divergences = {LIVENESS_STREAK_TABLE}.divergences + CASE WHEN %s::bigint <> 0 THEN 0 ELSE 1 END,
+    checks = {LIVENESS_STREAK_TABLE}.checks + 1,
+    live = excluded.live,
+    updatedAt = extract(epoch FROM now())::bigint
+""",
+    read_streak=f"SELECT agreements, divergences, checks, live, updatedAt FROM {LIVENESS_STREAK_TABLE} WHERE id = 1",
+    create_root_hits="CREATE TEMP TABLE _pynixd_root_hits(id BIGINT PRIMARY KEY, n BIGINT NOT NULL DEFAULT 0)",
+    fill_root_hits="INSERT INTO _pynixd_root_hits(id) SELECT id FROM ValidPaths",
+    root_full_counts=(
+        f"SELECT COUNT(*), COALESCE(SUM(narSize), 0)::bigint FROM ValidPaths WHERE id IN ({_POSTGRES_ROOT_CLOSURE_OF_SEEDS})"
+    ),
+    mark_root_hits=f"UPDATE _pynixd_root_hits SET n = n + %s WHERE id IN ({_POSTGRES_ROOT_CLOSURE_OF_SEEDS})",
+    root_exclusive_counts=(
+        f"SELECT COUNT(*), COALESCE(SUM(v.narSize), 0)::bigint FROM ValidPaths v "
+        f"JOIN _pynixd_root_hits h ON h.id = v.id "
+        f"WHERE h.n = 1 AND v.id IN ({_POSTGRES_ROOT_CLOSURE_OF_SEEDS})"
+    ),
+    drop_root_hits="DROP TABLE _pynixd_root_hits",
+)

@@ -15,7 +15,7 @@ import pytest
 
 from pynixd_store.postgres_db import PostgresBackend
 from pynixd_store.postgres_schema import migrate
-from pynixd_store.sql import SQLITE, gc, nix, observations, path_access, placement
+from pynixd_store.sql import SQLITE, gc, liveness, nix, observations, path_access, placement
 from tests._conftest.engines import postgres_parameters, sqlite_parameters
 
 if TYPE_CHECKING:
@@ -29,6 +29,7 @@ GROUPS: dict[str, tuple[object, object]] = {
     "observations": (observations.POSTGRES, observations.SQLITE),
     "placement": (placement.POSTGRES, placement.SQLITE),
     "gc": (gc.POSTGRES, gc.SQLITE),
+    "liveness": (liveness.POSTGRES, liveness.SQLITE),
 }
 """Each group's PostgreSQL twins and the SQLite statements they mirror."""
 
@@ -43,6 +44,7 @@ REFUSED: dict[str, dict[str, str]] = {
 
 SETUP: dict[str, tuple[str, ...]] = {
     "gc": gc.POSTGRES.schema,
+    "liveness": (liveness.POSTGRES.create_live_now, liveness.POSTGRES.create_root_hits),
 }
 """What a group's statements need on their connection first: the TEMP tables of the session."""
 
