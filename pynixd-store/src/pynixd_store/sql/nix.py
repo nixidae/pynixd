@@ -174,3 +174,108 @@ WHERE vp_drv.path IN (SELECT value FROM json_each(?))
 
 
 SQLITE = sqlite(provenance=False)
+
+
+_POSTGRES_CLOSURE = """
+WITH RECURSIVE closure(id) AS (
+    SELECT id FROM ValidPaths WHERE path IN (SELECT json_array_elements_text(%s::json))
+    UNION
+    SELECT r.reference
+    FROM closure c
+    JOIN Refs r ON c.id = r.referrer
+)
+"""
+
+# `postgres_schema` has `provenance` and `BuildTraceV3`, and no `Realisations`: a PostgreSQL store keys its
+# realisations by path. The `*_by_hash` statements name the table that is not there, and fail if a caller asks.
+POSTGRES = NixSql(
+    provenance=True,
+    is_valid_path="SELECT 1 FROM ValidPaths WHERE path = %s LIMIT 1",
+    path_info_with_refs="""
+SELECT v.path, v.deriver, v.hash, v.registrationTime, v.narSize, v.ultimate, v.sigs, v.ca, v.provenance, vp.path
+FROM ValidPaths v
+LEFT JOIN Refs r ON r.referrer = v.id
+LEFT JOIN ValidPaths vp ON vp.id = r.reference
+WHERE v.path = %s
+""",
+    all_valid_paths="SELECT path FROM ValidPaths",
+    referrers=(
+        "select path from Refs join ValidPaths on referrer = id where reference = (select id from ValidPaths where path = %s)"
+    ),
+    valid_derivers="select v.id, v.path from DerivationOutputs d join ValidPaths v on d.drv = v.id where d.path = %s",
+    derivation_outputs=(
+        "select v.id, d.id, d.path from ValidPaths v left join DerivationOutputs d on d.drv = v.id where v.path = %s"
+    ),
+    realisation_by_hash=(
+        "select Output.path, Realisations.signatures from Realisations "
+        "inner join ValidPaths as Output on Output.id = Realisations.outputPath "
+        "where drvPath = %s and outputName = %s"
+    ),
+    realisation_by_path="select outputPath, signatures from BuildTraceV3 where drvPath = %s and outputName = %s",
+    register_build_trace_by_path=(
+        "insert into BuildTraceV3 (drvPath, outputName, outputPath, signatures) values (%s, %s, %s, %s)"
+    ),
+    update_build_trace_by_path="update BuildTraceV3 set signatures = %s where drvPath = %s and outputName = %s",
+    register_realisation_by_hash=(
+        "insert into Realisations (drvPath, outputName, outputPath, signatures) "
+        "values (%s, %s, (select id from ValidPaths where path = %s), %s)"
+    ),
+    update_realisation_by_hash="update Realisations set signatures = %s where drvPath = %s and outputName = %s",
+    valid_paths="""
+SELECT path FROM ValidPaths WHERE path IN (SELECT json_array_elements_text(%s::json))
+""",
+    path_from_hash_part="""
+SELECT path FROM ValidPaths WHERE path >= %s AND path < %s LIMIT 1
+""",
+    path_from_nar_hash="SELECT path FROM ValidPaths WHERE hash = %s LIMIT 1",
+    closure=_POSTGRES_CLOSURE
+    + """SELECT vp.path FROM closure c
+JOIN ValidPaths vp ON c.id = vp.id
+""",
+    # `string_agg` in no order, as SQLite's `group_concat`: the reader splits the references into a set.
+    closure_with_info=_POSTGRES_CLOSURE
+    + """SELECT vp.path, vp.deriver, vp.hash, vp.registrationTime, vp.narSize,
+       vp.ultimate, vp.sigs, vp.ca, vp.provenance,
+       (SELECT string_agg(ref_vp.path, ' ')
+        FROM Refs r
+        JOIN ValidPaths ref_vp ON r.reference = ref_vp.id
+        WHERE r.referrer = vp.id)
+FROM closure c
+JOIN ValidPaths vp ON c.id = vp.id
+ORDER BY vp.id ASC
+""",
+    path_infos_batch="""
+SELECT vp.path, vp.deriver, vp.hash, registrationTime, narSize,
+       vp.ultimate, vp.sigs, vp.ca, vp.provenance
+FROM ValidPaths vp
+WHERE vp.path IN (SELECT json_array_elements_text(%s::json))
+""",
+    references_batch="""
+SELECT vp_referrer.path, vp_ref.path
+FROM Refs r
+JOIN ValidPaths vp_referrer ON r.referrer = vp_referrer.id
+JOIN ValidPaths vp_ref ON r.reference = vp_ref.id
+WHERE vp_referrer.path IN (SELECT json_array_elements_text(%s::json))
+""",
+    # `dout`, not SQLite's `do`: PostgreSQL reserves `DO`.
+    derivation_output_map_batch="""
+SELECT vp_drv.path, dout.id, dout.path
+FROM DerivationOutputs dout
+JOIN ValidPaths vp_drv ON dout.drv = vp_drv.id
+WHERE vp_drv.path IN (SELECT json_array_elements_text(%s::json))
+""",
+    register_valid_path=(
+        "insert into ValidPaths (path, hash, registrationTime, deriver, narSize, ultimate, sigs, ca, provenance) "
+        "values (%s, %s, %s, %s, %s, %s, %s, %s, %s) returning id"
+    ),
+    update_path_info="update ValidPaths set narSize = %s, hash = %s, ultimate = %s, sigs = %s, ca = %s where path = %s",
+    path_info_for_update="select narSize, hash, ultimate, sigs, ca from ValidPaths where path = %s",
+    invalidate_path="delete from ValidPaths where path = %s",
+    # SQLite's `insert or replace`: a `Refs` row holds only its key, and a `DerivationOutputs` row takes the new path.
+    add_reference="insert into Refs (referrer, reference) values (%s, %s) on conflict do nothing",
+    add_derivation_output=(
+        "insert into DerivationOutputs (drv, id, path) values (%s, %s, %s) "
+        "on conflict (drv, id) do update set path = excluded.path"
+    ),
+    valid_path_id="select id from ValidPaths where path = %s",
+)
