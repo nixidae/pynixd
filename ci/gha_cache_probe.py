@@ -19,9 +19,11 @@ import base64
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -83,6 +85,8 @@ def _send(request: urllib.request.Request) -> Reply:
             status, raw, headers = response.status, response.read(), dict(response.headers)
     except urllib.error.HTTPError as e:
         status, raw, headers = e.code, e.read(), dict(e.headers)
+    except (urllib.error.URLError, OSError) as e:
+        return Reply(0, {"error": repr(e)}, {})
     try:
         parsed: object = json.loads(raw) if raw else {}
     except ValueError:
@@ -90,26 +94,28 @@ def _send(request: urllib.request.Request) -> Reply:
     return Reply(status, parsed if isinstance(parsed, dict) else {}, headers)
 
 
-def _blob(url: str, method: str, query: str = "", data: bytes | None = None, span: str = "") -> int:
-    headers = {"x-ms-version": _BLOB_VERSION}
-    if method == "PUT":
-        headers["x-ms-blob-type"] = "BlockBlob"
+def _blob(url: str, method: str, query: str = "", data: bytes | None = None, span: str = "") -> str:
+    """The status, and Azure's error code when it refused."""
+    headers = {"x-ms-version": _BLOB_VERSION, "Content-Type": "application/octet-stream"}
     if span:
         headers["x-ms-range"] = span
     request = urllib.request.Request(f"{url}&{query}" if query else url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             response.read()
-            return response.status
+            return str(response.status)
     except urllib.error.HTTPError as e:
-        return e.code
+        code = re.search(rb"<Code>([^<]+)</Code>", e.read())
+        return f"{e.code} {code.group(1).decode() if code else ''}".strip()
+    except (urllib.error.URLError, OSError) as e:
+        return f"0 {e!r}"
 
 
-def _write_blob(url: str, data: bytes) -> list[int]:
+def _write_blob(url: str, data: bytes) -> list[str]:
     block_id = base64.b64encode(b"00000000").decode()
     listing = f'<?xml version="1.0" encoding="utf-8"?><BlockList><Latest>{block_id}</Latest></BlockList>'
     return [
-        _blob(url, "PUT", f"comp=block&blockid={block_id}", data),
+        _blob(url, "PUT", f"comp=block&blockid={urllib.parse.quote(block_id, safe='')}", data),
         _blob(url, "PUT", "comp=blocklist", listing.encode()),
     ]
 
@@ -153,7 +159,7 @@ def reads(service: Service, tag: str, count: int, lookups: int, concurrency: int
     _emit("lookup", reply=found.public())
     url = _signed(found, "signed_download_url")
 
-    def ranged(i: int) -> int:
+    def ranged(i: int) -> str:
         start = (i * 4096) % (_ENTRY_SIZE - 4096)
         return _blob(url, "GET", span=f"bytes={start}-{start + 4095}")
 
@@ -179,18 +185,32 @@ def reads(service: Service, tag: str, count: int, lookups: int, concurrency: int
             seen[f"{reply.status} ok={found}"] += 1
             if not found and not first:
                 refused.set()
-                first.append({"after": sum(seen.values()), "seconds": round(time.monotonic() - began, 2), "reply": reply.public()})
+                first.append(
+                    {
+                        "after": sum(seen.values()),
+                        "seconds": round(time.monotonic() - began, 2),
+                        "reply": reply.public(),
+                    }
+                )
 
     with ThreadPoolExecutor(concurrency) as pool:
         list(pool.map(lookup, range(lookups)))
-    _emit("lookups", asked=sum(seen.values()), seconds=round(time.monotonic() - began, 2), statuses=dict(seen), first_refused=first[:1])
+    _emit(
+        "lookups",
+        asked=sum(seen.values()),
+        seconds=round(time.monotonic() - began, 2),
+        statuses=dict(seen),
+        first_refused=first[:1],
+    )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("what", choices=["orphan", "orphan-check", "reads"])
     parser.add_argument("tag")
-    parser.add_argument("--credentials", type=Path, default=Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "pynixd-gha-cache.json")
+    parser.add_argument(
+        "--credentials", type=Path, default=Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "pynixd-gha-cache.json"
+    )
     parser.add_argument("--count", type=int, default=2000)
     parser.add_argument("--lookups", type=int, default=1700)
     parser.add_argument("--concurrency", type=int, default=32)
