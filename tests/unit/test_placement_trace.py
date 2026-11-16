@@ -10,7 +10,6 @@ import time
 from contextlib import closing
 from typing import TYPE_CHECKING
 
-import aiosqlite
 import pytest
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
@@ -19,6 +18,7 @@ from pynixd.config import PlacementTraceSettings, PynixdSettings, StoreRankingSe
 from pynixd.placement_trace import CandidateTrace, Outcome, PlacementDecision, PlacementTrace
 from pynixd.psi import PsiMetric, PsiSnapshot, SystemHealth
 from pynixd_store.build_stats import BuildEstimateSource, BuildObservation, DerivationIdentity, StoreEstimate, StoreLink
+from pynixd_store.database import Row
 from pynixd_store.db_migrations import PLACEMENT_CANDIDATE_TABLE, PLACEMENT_DECISION_TABLE
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.store_layout import StoreLayout
@@ -163,9 +163,8 @@ def _decision(
     return decision
 
 
-async def _rows(db: LocalStoreDB, query: str) -> list[aiosqlite.Row]:
-    async with db.execute(query) as cursor:
-        return list(await cursor.fetchall())
+async def _rows(db: LocalStoreDB, query: str) -> list[Row]:
+    return await db.fetchall(query)
 
 
 @pytest.mark.anyio

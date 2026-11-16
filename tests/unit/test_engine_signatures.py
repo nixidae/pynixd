@@ -8,17 +8,16 @@ in Nix's order.
 
 from __future__ import annotations
 
-import contextlib
+import sqlite3
+from contextlib import closing
 from typing import TYPE_CHECKING, Any
 
-import aiosqlite
 import pytest
 
 from nix_daemon_protocol.signature import Signature
 from pynixd_store import register
 from pynixd_store.engine import StoreEngine
-from pynixd_store.nix_tables import NixTables
-from pynixd_store.queries import WITHOUT_PROVENANCE
+from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.store_layout import StoreLayout
 
 if TYPE_CHECKING:
@@ -44,7 +43,7 @@ create table ValidPaths (
 """
 
 
-_OPENED: list[aiosqlite.Connection] = []
+_OPENED: list[LocalStoreDB] = []
 
 
 @pytest.fixture(autouse=True)
@@ -52,66 +51,50 @@ async def _close_opened() -> AsyncIterator[None]:
     """Close what `_db` opened: an open aiosqlite connection keeps a thread that stops the interpreter from exiting."""
     yield
     while _OPENED:
-        await _OPENED.pop().close()
+        await _OPENED.pop().close_db_pool()
 
 
-async def _db(tmp_path: Path, *, sigs: str | None = None) -> aiosqlite.Connection:
+def _db(tmp_path: Path, *, sigs: str | None = None) -> LocalStoreDB:
     """A store database with one valid path, which carries *sigs*."""
-    conn = await aiosqlite.connect(tmp_path / "db.sqlite")
-    _OPENED.append(conn)
-    await conn.executescript(_SCHEMA)
-    await conn.execute(
-        "insert into ValidPaths (path, hash, registrationTime, narSize, sigs) values (?, 'sha256:abc', 1, 10, ?)",
-        (PATH, sigs),
-    )
-    await conn.commit()
-    return conn
+    with closing(sqlite3.connect(tmp_path / "db.sqlite")) as conn, conn:
+        conn.executescript(_SCHEMA)
+        conn.execute(
+            "insert into ValidPaths (path, hash, registrationTime, narSize, sigs) values (?, 'sha256:abc', 1, 10, ?)",
+            (PATH, sigs),
+        )
+    db = LocalStoreDB(db_path=tmp_path / "db.sqlite", store_path=None, read_only=False, reference_flush_interval=5.0)
+    _OPENED.append(db)
+    return db
 
 
-async def _sigs(conn: aiosqlite.Connection) -> str | None:
-    async with conn.execute("select sigs from ValidPaths where path = ?", (PATH,)) as cursor:
-        row = await cursor.fetchone()
+async def _sigs(db: LocalStoreDB) -> str | None:
+    row = await db.fetchone("select sigs from ValidPaths where path = ?", (PATH,))
     return None if row is None else row[0]
 
 
 async def test_a_signature_is_written_to_a_path_that_has_none(tmp_path: Path) -> None:
-    conn = await _db(tmp_path)
-    assert await register.add_signatures(conn, PATH, [SIG_A]) is True
-    assert await _sigs(conn) == "cache-a:YWJj"
+    db = _db(tmp_path)
+    assert await db.nix.add_signatures(PATH, [SIG_A]) is True
+    assert await _sigs(db) == "cache-a:YWJj"
 
 
 async def test_the_signatures_merge_in_nix_s_order(tmp_path: Path) -> None:
-    conn = await _db(tmp_path, sigs="cache-b:ZGVm")
-    assert await register.add_signatures(conn, PATH, [SIG_A]) is True
-    assert await _sigs(conn) == "cache-a:YWJj cache-b:ZGVm"
+    db = _db(tmp_path, sigs="cache-b:ZGVm")
+    assert await db.nix.add_signatures(PATH, [SIG_A]) is True
+    assert await _sigs(db) == "cache-a:YWJj cache-b:ZGVm"
 
 
 async def test_a_repeated_signature_changes_nothing(tmp_path: Path) -> None:
-    conn = await _db(tmp_path, sigs="cache-a:YWJj")
-    assert await register.add_signatures(conn, PATH, [SIG_A]) is True
-    assert await _sigs(conn) == "cache-a:YWJj"
+    db = _db(tmp_path, sigs="cache-a:YWJj")
+    assert await db.nix.add_signatures(PATH, [SIG_A]) is True
+    assert await _sigs(db) == "cache-a:YWJj"
 
 
 async def test_an_invalid_path_writes_nothing_and_says_so(tmp_path: Path) -> None:
-    conn = await _db(tmp_path)
+    db = _db(tmp_path)
     missing = "/nix/store/00000000000000000000000000000002-gone"
-    assert await register.add_signatures(conn, missing, [SIG_A]) is False
-    assert await _sigs(conn) is None
-
-
-class _EngineDB:
-    """A stand-in store database that yields *conn*, writable and active."""
-
-    def __init__(self, conn: aiosqlite.Connection, *, active: bool = True, read_only: bool = False) -> None:
-        self._conn = conn
-        self.active = active
-        self.read_only = read_only
-        self.statements = WITHOUT_PROVENANCE
-        self.nix = NixTables(self)  # type: ignore[arg-type]  # the stand-in has the pool NixTables reads
-
-    @contextlib.asynccontextmanager
-    async def acquire_conn(self) -> AsyncIterator[aiosqlite.Connection]:
-        yield self._conn
+    assert await db.nix.add_signatures(missing, [SIG_A]) is False
+    assert await _sigs(db) is None
 
 
 async def _no_config() -> dict[str, Any]:
@@ -129,20 +112,19 @@ def _engine(tmp_path: Path, changed: list[str]) -> StoreEngine:
 
 
 async def test_the_engine_signs_a_path_and_forgets_its_cached_info(tmp_path: Path) -> None:
-    conn = await _db(tmp_path)
+    db = _db(tmp_path)
     changed: list[str] = []
     engine = _engine(tmp_path, changed)
-    engine.db = _EngineDB(conn)  # type: ignore[assignment]  # a stand-in database
+    engine.db = db
     await engine.add_signatures(PATH, [SIG_A, SIG_B])
-    assert await _sigs(conn) == "cache-a:YWJj cache-b:ZGVm"
+    assert await _sigs(db) == "cache-a:YWJj cache-b:ZGVm"
     assert changed == [PATH]
 
 
 async def test_the_engine_refuses_an_invalid_path(tmp_path: Path) -> None:
-    conn = await _db(tmp_path)
     changed: list[str] = []
     engine = _engine(tmp_path, changed)
-    engine.db = _EngineDB(conn)  # type: ignore[assignment]  # a stand-in database
+    engine.db = _db(tmp_path)
     missing = "/nix/store/00000000000000000000000000000002-gone"
     with pytest.raises(register.RegistrationError) as refused:
         await engine.add_signatures(missing, [SIG_A])

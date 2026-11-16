@@ -233,10 +233,9 @@ async def test_build_stats_recording(tmp_path: Path) -> None:
         row = None
         with anyio.fail_after(10):
             while row is None:
-                async with pynixd_local.db.execute(
+                row = await pynixd_local.db.fetchone(
                     "SELECT name, buildMs FROM PynixdBuildObservation WHERE name = 'fast-pkg'",
-                ) as cursor:
-                    row = await cursor.fetchone()
+                )
                 if row is None:
                     await anyio.sleep(0.05)
 

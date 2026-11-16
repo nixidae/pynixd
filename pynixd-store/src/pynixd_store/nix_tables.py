@@ -37,12 +37,12 @@ from .queries import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
-    from typing import Any
 
+    from .database import Params, Row
     from .local_store_db import LocalStoreDB
 
 
-def path_info(row: tuple[Any, ...], references: Iterable[str]) -> ValidPathInfo:
+def path_info(row: Row, references: Iterable[str]) -> ValidPathInfo:
     """A `ValidPaths` row and its references, as `LocalStore::queryPathInfoInternal` reads them (`local-store.cc:667`)."""
     path, deriver, nar_hash, registration_time, nar_size, ultimate, sigs, ca, provenance = row
     return ValidPathInfo(
@@ -68,20 +68,16 @@ class NixTables:
         self._db = db
 
     async def is_valid_path(self, path: str) -> bool:
-        async with self._db.execute(IS_VALID_PATH, (path,)) as cursor:
-            return await cursor.fetchone() is not None
+        return await self._db.fetchone(IS_VALID_PATH, (path,)) is not None
 
     async def path_info(self, path: str) -> ValidPathInfo | None:
-        async with self._db.execute(self._db.statements.path_info_with_refs, (path,)) as cursor:
-            rows = [tuple(r) for r in await cursor.fetchall()]
+        rows = await self._db.fetchall(self._db.statements.path_info_with_refs, (path,))
         if not rows:
             return None
         return path_info(rows[0][:9], {r[9] for r in rows if r[9] is not None})
 
-    async def _paths(self, query: str, params: tuple[Any, ...] = (), column: int = 0) -> set[StorePath]:
-        async with self._db.execute(query, params) as cursor:
-            rows = await cursor.fetchall()
-        return {StorePath(path=row[column]) for row in rows}
+    async def _paths(self, query: str, params: Params = (), column: int = 0) -> set[StorePath]:
+        return {StorePath(path=row[column]) for row in await self._db.fetchall(query, params)}
 
     async def all_valid_paths(self) -> set[StorePath]:
         return await self._paths(QUERY_ALL_VALID_PATHS)
@@ -100,52 +96,43 @@ class NixTables:
 
     async def path_in_range(self, lower: str, upper: str) -> StorePath | None:
         """The first valid path *p* with `lower <= p < upper`: the lookup of a hash part."""
-        async with self._db.execute(QUERY_PATH_FROM_HASH_PART, (lower, upper)) as cursor:
-            row = await cursor.fetchone()
+        row = await self._db.fetchone(QUERY_PATH_FROM_HASH_PART, (lower, upper))
         return None if row is None else StorePath(path=row[0])
 
     async def path_from_nar_hash(self, nar_hash: str) -> StorePath | None:
         """A valid path whose `ValidPaths.hash` is *nar_hash*, as Nix writes it (`sha256:<base16>`)."""
-        async with self._db.execute(QUERY_PATH_FROM_NAR_HASH, (nar_hash,)) as cursor:
-            row = await cursor.fetchone()
+        row = await self._db.fetchone(QUERY_PATH_FROM_NAR_HASH, (nar_hash,))
         return None if row is None else StorePath(path=row[0])
 
     async def closure_with_info(self, paths: Iterable[str]) -> list[ValidPathInfo]:
-        async with self._db.execute(self._db.statements.closure_with_info, (json.dumps(list(paths)),)) as cursor:
-            rows = await cursor.fetchall()
+        rows = await self._db.fetchall(self._db.statements.closure_with_info, (json.dumps(list(paths)),))
         return [path_info(row[:9], (row[9] or "").split()) for row in rows]
 
     async def path_infos(self, paths: Iterable[str]) -> list[ValidPathInfo]:
         paths_json = json.dumps(list(paths))
-        async with self._db.execute(self._db.statements.path_infos_batch, (paths_json,)) as cursor:
-            rows = await cursor.fetchall()
-        async with self._db.execute(QUERY_REFERENCES_BATCH, (paths_json,)) as cursor:
-            reference_rows = await cursor.fetchall()
+        rows = await self._db.fetchall(self._db.statements.path_infos_batch, (paths_json,))
         references: dict[str, set[str]] = {}
-        for referrer, reference in reference_rows:
+        for referrer, reference in await self._db.fetchall(QUERY_REFERENCES_BATCH, (paths_json,)):
             references.setdefault(referrer, set()).add(reference)
-        return [path_info(tuple(row), references.get(row[0], ())) for row in rows]
+        return [path_info(row, references.get(row[0], ())) for row in rows]
 
     async def realisation(self, drv: str, output_name: str, *, by_path: bool) -> tuple[StorePath, list[str]] | None:
         """One realisation's output path and its signatures as Nix stored them; *drv* keys the table *by_path* picks."""
         query = QUERY_REALISATION_BY_PATH if by_path else QUERY_REALISATION_BY_HASH
-        async with self._db.execute(query, (drv, output_name)) as cursor:
-            row = await cursor.fetchone()
+        row = await self._db.fetchone(query, (drv, output_name))
         if row is None:
             return None
         return StorePath(path=row[0]), (row[1] or "").split()
 
     async def derivation_outputs(self, drv_path: str) -> dict[str, StorePath] | None:
         """The static outputs of a derivation, or `None` when the derivation is not valid."""
-        async with self._db.execute(QUERY_DERIVATION_OUTPUTS, (drv_path,)) as cursor:
-            rows = await cursor.fetchall()
+        rows = await self._db.fetchall(QUERY_DERIVATION_OUTPUTS, (drv_path,))
         if not rows:
             return None
         return {name: StorePath(path=path) for _drv, name, path in rows if name is not None}
 
     async def derivation_output_maps(self, drv_paths: Iterable[str]) -> dict[StorePath, dict[str, StorePath]]:
-        async with self._db.execute(QUERY_DERIVATION_OUTPUT_MAP_BATCH, (json.dumps(list(drv_paths)),)) as cursor:
-            rows = await cursor.fetchall()
+        rows = await self._db.fetchall(QUERY_DERIVATION_OUTPUT_MAP_BATCH, (json.dumps(list(drv_paths)),))
         maps: dict[StorePath, dict[str, StorePath]] = {}
         # `DerivationOutputs.path` is NOT NULL in Nix's schema.
         for drv_path, output_name, output_path in rows:
@@ -155,24 +142,24 @@ class NixTables:
     # Each write is one transaction of its own, in `register.py`. A caller never holds a connection.
 
     async def register_valid_paths(self, registrations: list[register.Registration]) -> None:
-        async with self._db.acquire_conn() as conn:
-            await register.register_valid_paths(conn, registrations, self._db.statements)
+        async with self._db.transaction() as session:
+            await register.register_valid_paths(session, registrations, self._db.statements)
 
     async def add_signatures(self, path: str, sigs: Iterable[Signature]) -> bool:
         """Merge *sigs* into the path's signatures; `False` when the path is not valid."""
-        async with self._db.acquire_conn() as conn:
-            return await register.add_signatures(conn, path, sigs)
+        async with self._db.transaction() as session:
+            return await register.add_signatures(session, path, sigs)
 
     async def register_drv_output(
         self, drv: str, output_name: str, out_path: str, sigs: Iterable[Signature], *, by_path: bool
     ) -> None:
-        async with self._db.acquire_conn() as conn:
-            await register.register_drv_output(conn, drv, output_name, out_path, sigs, by_path=by_path)
+        async with self._db.transaction() as session:
+            await register.register_drv_output(session, drv, output_name, out_path, sigs, by_path=by_path)
 
     async def invalidate_path(self, path: str) -> None:
-        async with self._db.acquire_conn() as conn:
-            await register.invalidate_path(conn, path)
+        async with self._db.transaction() as session:
+            await register.invalidate_path(session, path)
 
     async def update_path_hashes(self, path: str, *, nar_hash: str, nar_size: int) -> None:
-        async with self._db.acquire_conn() as conn:
-            await register.update_path_hashes(conn, path, nar_hash=nar_hash, nar_size=nar_size)
+        async with self._db.transaction() as session:
+            await register.update_path_hashes(session, path, nar_hash=nar_hash, nar_size=nar_size)

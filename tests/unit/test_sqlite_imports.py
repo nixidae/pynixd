@@ -1,7 +1,8 @@
 """Only the store database's own modules import `sqlite3` or `aiosqlite`.
 
 The rest of pynixd reads the database through `LocalStoreDB` and `LocalStoreDB.nix`
-(`pynixd_store/nix_tables.py`), and catches `DatabaseError`. A second database
+(`pynixd_store/nix_tables.py`), holds a `Session` (`pynixd_store/database.py`), and
+catches `DatabaseError`. A second database
 behind the same methods (PostgreSQL, nixidae/nixidae#1209) then changes these
 modules alone. nixidae/nixidae#1318.
 """
@@ -17,7 +18,6 @@ SQLITE = {"sqlite3", "aiosqlite"}
 
 ALLOWED = {
     "pynixd-store/src/pynixd_store/local_store_db.py": "the pool, the session reader and pynixd's own tables",
-    "pynixd-store/src/pynixd_store/register.py": "the transactions that write Nix's tables",
     "pynixd-store/src/pynixd_store/db_migrations.py": "the schema of pynixd's own tables",
     "pynixd-store/src/pynixd_store/create_store.py": "a new store's database, with Nix's schema",
     "pynixd-store/src/pynixd_store/liveness.py": "the collector's live set, read on a thread",

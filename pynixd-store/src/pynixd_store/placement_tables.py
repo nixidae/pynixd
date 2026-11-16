@@ -81,31 +81,26 @@ class PlacementTables:
         the caller clears the ids it set.
         """
         written = 0
-        async with self._db.acquire_conn() as conn:
+        async with self._db.transaction() as session:
             candidates: list[tuple[object, ...]] = []
             for item in writes:
                 if isinstance(item, ObservationWrite):
                     if item.decision.row_id is not None:
-                        await conn.execute(SET_OBSERVATION, (item.observation_id, item.decision.row_id))
+                        await session.execute(SET_OBSERVATION, (item.observation_id, item.decision.row_id))
                     continue
-                cursor = await conn.execute(INSERT_DECISION, item.row)
-                row_id = item.decision.row_id = cursor.lastrowid
-                if row_id is not None:
-                    candidates += [(row_id, *candidate) for candidate in item.candidates]
+                row_id = item.decision.row_id = await session.insert(INSERT_DECISION, item.row)
+                candidates += [(row_id, *candidate) for candidate in item.candidates]
                 written += 1
-            await conn.executemany(INSERT_CANDIDATE, candidates)
-            await conn.commit()
+            await session.executemany(INSERT_CANDIDATE, candidates)
         return written
 
     async def sweep_chunk(self, cutoff_ms: int, chunk: int) -> int:
         """Delete the oldest decisions before *cutoff_ms*, at most *chunk*, with their candidates; answer how many."""
-        async with self._db.acquire_conn() as conn:
-            async with conn.execute(SWEEP_CHUNK_END, (cutoff_ms, chunk)) as cursor:
-                row = await cursor.fetchone()
+        async with self._db.transaction() as session:
+            row = await session.fetchone(SWEEP_CHUNK_END, (cutoff_ms, chunk))
             if row is None or row[0] is None:
                 return 0
             end, count = int(row[0]), int(row[1])
-            await conn.execute(SWEEP_CANDIDATES, (end,))
-            await conn.execute(SWEEP_DECISIONS, (end,))
-            await conn.commit()
+            await session.execute(SWEEP_CANDIDATES, (end,))
+            await session.execute(SWEEP_DECISIONS, (end,))
         return count

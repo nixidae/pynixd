@@ -59,9 +59,7 @@ async def _registered(tmp_path: Path, features: list[str]) -> tuple[bool, ValidP
     config = {"experimental-features": {"value": features}}
     os.close(await anyio.to_thread.run_sync(open_local_store, layout, config, "2.35.0"))
     async with await LocalStoreDB.open(layout) as db:
-        row = await register.prepare(_info(), layout, ())
-        async with db.acquire_conn() as conn:
-            await register.register_valid_paths(conn, [row], db.statements)
+        await db.nix.register_valid_paths([await register.prepare(_info(), layout, ())])
         engine = StoreEngine(layout, writes=True, read_config=_no_config, on_change=lambda _: None, name="test")
         engine.db = db
         pooled = await engine.query_path_info(PATH)
@@ -96,8 +94,7 @@ async def test_the_closure_and_batch_reads_carry_the_provenance(tmp_path: Path) 
     config = {"experimental-features": {"value": ["provenance"]}}
     os.close(await anyio.to_thread.run_sync(open_local_store, layout, config, "2.35.0"))
     async with await LocalStoreDB.open(layout) as db:
-        async with db.acquire_conn() as conn:
-            await register.register_valid_paths(conn, [await register.prepare(_info(), layout, ())], db.statements)
+        await db.nix.register_valid_paths([await register.prepare(_info(), layout, ())])
         engine = StoreEngine(layout, writes=True, read_config=_no_config, on_change=lambda _: None, name="test")
         engine.db = db
         assert [info.info.provenance for info in await engine.query_closure_with_info([PATH])] == [PROVENANCE]

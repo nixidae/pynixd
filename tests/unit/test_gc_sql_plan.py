@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from pynixd_store.database import DatabaseError
 from pynixd_store.db_migrations import PATH_ACCESS_TABLE, apply_migrations
 from pynixd_store.gc import by_weight, take_until_below_target
 from pynixd_store.gc_sql import Bound, SqlPlan, referrer_first
@@ -197,3 +198,13 @@ async def test_an_open_plan_does_not_block_a_writer(tmp_path: Path) -> None:
         batch = sorted(_python_plan(store, None) - store.vetoed)
         # The snapshot still holds the references the plan was built on.
         assert await plan.order_batch(batch) == referrer_first(batch, store.refs)
+
+
+@pytest.mark.anyio
+async def test_a_refused_plan_raises_database_error(tmp_path: Path) -> None:
+    """The collector fails closed on `DatabaseError` (`pynixd/gc.py`), so the plan raises that and not the driver's."""
+    db = tmp_path / "empty.sqlite"
+    sqlite3.connect(db).close()
+    with pytest.raises(DatabaseError, match="no such table"):
+        async with SqlPlan.open(db) as plan:
+            await plan.plan(live=set(), vetoed=set(), cutoff=None)

@@ -70,8 +70,8 @@ def _store_with_a_closure(tmp_path: Path) -> Path:
 
 
 async def _access_times(db: LocalStoreDB) -> dict[str, int]:
-    async with db.execute(f"SELECT path, lastReferencedAt FROM {PATH_ACCESS_TABLE}") as cursor:
-        return {str(row[0]): int(row[1]) for row in await cursor.fetchall()}
+    rows = await db.fetchall(f"SELECT path, lastReferencedAt FROM {PATH_ACCESS_TABLE}")
+    return {str(row[0]): int(row[1]) for row in rows}
 
 
 def _store_with_a_drv(tmp_path: Path) -> None:
@@ -93,8 +93,7 @@ def _store_with_a_drv(tmp_path: Path) -> None:
 
 
 async def _registration_times(db: LocalStoreDB) -> dict[str, int]:
-    async with db.execute("SELECT path, registrationTime FROM ValidPaths") as cursor:
-        return {str(row[0]): int(row[1]) for row in await cursor.fetchall()}
+    return {str(row[0]): int(row[1]) for row in await db.fetchall("SELECT path, registrationTime FROM ValidPaths")}
 
 
 class TestReadingThePathsOfARequest:

@@ -26,6 +26,7 @@ import aiosqlite
 import anyio
 import structlog
 
+from .database import DatabaseError
 from .db_migrations import PATH_ACCESS_TABLE
 
 if TYPE_CHECKING:
@@ -202,15 +203,21 @@ class SqlPlan:
 
         Not a pooled connection: the pass holds its read transaction for
         tens of seconds, and the pool returns a connection only with no
-        transaction open.
+        transaction open. A refusal of the database in the block raises
+        `DatabaseError`, on which the collector fails closed.
         """
-        conn = await aiosqlite.connect(f"file:{db_path}?mode=ro", uri=True, isolation_level=None)
+        try:
+            conn = await aiosqlite.connect(f"file:{db_path}?mode=ro", uri=True, isolation_level=None)
+        except aiosqlite.Error as exc:
+            raise DatabaseError(str(exc)) from exc
         try:
             await conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
             await conn.execute("BEGIN")
             for statement in _SCHEMA:
                 await conn.execute(statement)
             yield cls(conn)
+        except aiosqlite.Error as exc:
+            raise DatabaseError(str(exc)) from exc
         finally:
             with anyio.CancelScope(shield=True):
                 await conn.interrupt()

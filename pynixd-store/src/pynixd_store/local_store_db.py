@@ -1,8 +1,9 @@
 """Direct SQLite access to the local Nix store database.
 
 Provides a connection pool for direct SQL queries against the local store DB.
-Operations that support fast-path SQL queries use ``store.db.acquire_conn()``
-directly rather than going through a dispatcher.
+A caller reads with `fetchone` and `fetchall`, writes in `transaction`, and
+holds a `Session` (`database.py`) for anything longer; `acquire_conn` and its
+`aiosqlite` connection stay inside this module.
 
 Reference updates are batched writes into pynixd's own access table:
 heads only, never closures. Marking one path used to touch its whole
@@ -32,7 +33,7 @@ import os
 import sqlite3
 import statistics
 import time
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass
 from itertools import batched
 from pathlib import Path
@@ -43,6 +44,7 @@ import anyio
 import structlog
 
 from .build_stats import BuildEstimateSource, ExpectedBytes, StoreLink
+from .database import DatabaseError, Params, Row, Session
 from .db_migrations import (
     BUILD_OBSERVATION_SAMPLE_TABLE,
     BUILD_OBSERVATION_TABLE,
@@ -58,7 +60,7 @@ from .store_layout import StoreLayout
 from .store_path import StorePath
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterable
+    from collections.abc import AsyncIterator, Iterable, Iterator
 
     from nix_daemon_protocol.aliases import StorePathSet
 
@@ -67,8 +69,7 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-DatabaseError = sqlite3.Error
-"""What a query of the store database raises when the database refuses it; `aiosqlite.Error` is the same class."""
+__all__ = ["DatabaseError", "LocalStoreDB", "RootAttribution", "Session", "SyncReader"]
 
 _CHECKPOINT_BUSY_MS = 1000
 
@@ -327,6 +328,85 @@ def _bytes_per_s(transfers: list[tuple[int, int]]) -> float | None:
     """Total bytes over total time, for `(bytes, ms)` pairs."""
     total_ms = sum(ms for _, ms in transfers)
     return sum(size for size, _ in transfers) * 1000 / total_ms if total_ms else None
+
+
+# aiosqlite's own errors for a connection that is closed (`core.py:73`, `:115` of 0.21): the pool
+# closed under the block, as the store does when it shuts down.
+_AIOSQLITE_CLOSED = frozenset({"no active connection", "Connection closed"})
+
+
+@contextmanager
+def _translated() -> Iterator[None]:
+    try:
+        yield
+    except sqlite3.Error as exc:
+        raise DatabaseError(str(exc)) from exc
+    except ValueError as exc:
+        if str(exc) not in _AIOSQLITE_CLOSED:
+            raise
+        raise DatabaseError(str(exc)) from exc
+
+
+class _SqliteSession:
+    """A `Session` over one pooled `aiosqlite` connection."""
+
+    def __init__(self, conn: aiosqlite.Connection) -> None:
+        self._conn = conn
+
+    async def fetchone(self, sql: str, params: Params = ()) -> Row | None:
+        # The cursor closes before the connection goes back: an open statement holds a shared lock on the file.
+        with _translated():
+            async with self._conn.execute(sql, params) as cursor:
+                row = await cursor.fetchone()
+        return None if row is None else tuple(row)
+
+    async def fetchall(self, sql: str, params: Params = ()) -> list[Row]:
+        with _translated():
+            async with self._conn.execute(sql, params) as cursor:
+                return [tuple(row) for row in await cursor.fetchall()]
+
+    async def execute(self, sql: str, params: Params = ()) -> int:
+        with _translated():
+            async with self._conn.execute(sql, params) as cursor:
+                return cursor.rowcount
+
+    async def executemany(self, sql: str, rows: Iterable[Params]) -> None:
+        with _translated():
+            await self._conn.executemany(sql, rows)
+
+    async def insert(self, sql: str, params: Params = ()) -> int:
+        with _translated():
+            async with self._conn.execute(sql, params) as cursor:
+                row_id = cursor.lastrowid
+        if row_id is None:
+            raise DatabaseError(f"the statement added no row: {sql.strip()}")
+        return row_id
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[None]:
+        """IMMEDIATE takes the write lock at once.
+
+        A deferred transaction that upgrades in WAL mode can fail with
+        SQLITE_BUSY_SNAPSHOT without waiting. Nix's connection enforces the
+        foreign keys of `Refs` (`openDB`), and a pooled one does not by
+        default: `invalidate_path` relies on their cascade.
+        """
+        await self.execute("PRAGMA foreign_keys = 1")
+        await self.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+            with _translated():
+                await self._conn.commit()
+        except BaseException:
+            # A failed rollback must not replace the error that caused it. The connection does
+            # not go back to the pool, so the transaction dies with it.
+            with anyio.CancelScope(shield=True):
+                try:
+                    with _translated():
+                        await self._conn.rollback()
+                except DatabaseError:
+                    log.debug("db_rollback_failed", exc_info=True)
+            raise
 
 
 class SyncReader:
@@ -656,37 +736,29 @@ class LocalStoreDB:
             log.warning("db_checkin_close_failed", exc_info=True)
 
     @asynccontextmanager
-    async def execute(
-        self,
-        query: str,
-        params: tuple[Any, ...] = (),
-    ) -> AsyncIterator[aiosqlite.Cursor]:
-        """Execute a query and return the cursor.
+    async def connection(self) -> AsyncIterator[Session]:
+        """A pooled connection for one block; a refusal of the database raises `DatabaseError`.
 
-        Convenience method that acquires a connection, runs the query,
-        and returns the cursor. Usage::
-
-            async with db.execute("SELECT * FROM Foo WHERE id = ?", (id,)) as cursor:
-                row = await cursor.fetchone()
-
-        For multiple queries or complex flows, use acquire_conn() directly.
-
-        The cursor is closed when the block ends, and it has to be. A caller
-        that reads one row of a query that could return more leaves the
-        statement open, and an open statement holds a shared lock on the
-        database file. The connection then goes back to the pool with that
-        lock, and in a rollback journal every writer waits behind it. Almost
-        every caller here calls `fetchone`, so almost every call left one.
+        A write in the block goes in `session.transaction()`, or `transaction` here for a block that only writes.
         """
-        async with self.acquire_conn() as conn:
-            cursor = await conn.execute(query, params)
-            try:
-                yield cursor
-            finally:
-                with suppress(ValueError, aiosqlite.Error):
-                    # ValueError: aiosqlite raises it for a connection
-                    # that went away underneath the read.
-                    await cursor.close()
+        # The session translates its own statements; this covers the connect and the pool's own pragma.
+        with _translated():
+            async with self.acquire_conn() as conn:
+                yield _SqliteSession(conn)
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[Session]:
+        """One write transaction on a pooled connection: committed when the block ends, rolled back when it raises."""
+        async with self.connection() as session, session.transaction():
+            yield session
+
+    async def fetchone(self, sql: str, params: Params = ()) -> Row | None:
+        async with self.connection() as session:
+            return await session.fetchone(sql, params)
+
+    async def fetchall(self, sql: str, params: Params = ()) -> list[Row]:
+        async with self.connection() as session:
+            return await session.fetchall(sql, params)
 
     @classmethod
     async def open(
@@ -815,10 +887,9 @@ class LocalStoreDB:
             return None
         try:
             cutoff = int(time.time()) - max_age_seconds
-            async with self.execute(QUERY_UNREFERENCED_SINCE, (cutoff,)) as cursor:
-                rows = await cursor.fetchall()
+            rows = await self.fetchall(QUERY_UNREFERENCED_SINCE, (cutoff,))
             return {StorePath(r[0]) for r in rows}
-        except aiosqlite.Error:
+        except DatabaseError:
             log.debug("query_paths_not_referenced_since_failed", exc_info=True)
             return None
 
@@ -843,7 +914,7 @@ class LocalStoreDB:
         if not groups:
             return []
         try:
-            async with self.acquire_conn() as db:
+            async with self.connection() as db:
                 try:
                     await db.execute(
                         "CREATE TEMP TABLE _pynixd_root_hits(id INTEGER PRIMARY KEY, n INTEGER NOT NULL DEFAULT 0)"
@@ -852,27 +923,25 @@ class LocalStoreDB:
                     full: dict[tuple[str, ...], tuple[int, int]] = {}
                     for seeds in groups:
                         params = (json.dumps(list(seeds)),)
-                        async with db.execute(
+                        counts = await db.fetchone(
                             f"SELECT COUNT(*), COALESCE(SUM(narSize), 0) FROM ValidPaths "
                             f"WHERE id IN ({_ROOT_CLOSURE_OF_SEEDS})",
                             params,
-                        ) as cursor:
-                            counts = await cursor.fetchone()
-                        full[seeds] = (int(counts[0]), int(counts[1])) if counts else (0, 0)
+                        )
+                        full[seeds] = (int(counts[0]), int(counts[1])) if counts is not None else (0, 0)
                         await db.execute(
                             f"UPDATE _pynixd_root_hits SET n = n + ? WHERE id IN ({_ROOT_CLOSURE_OF_SEEDS})",
                             (len(groups[seeds]), json.dumps(list(seeds))),
                         )
                     report: list[RootAttribution] = []
                     for seeds, labels in groups.items():
-                        async with db.execute(
+                        counts = await db.fetchone(
                             f"SELECT COUNT(*), COALESCE(SUM(v.narSize), 0) FROM ValidPaths v "
                             f"JOIN _pynixd_root_hits h ON h.id = v.id "
                             f"WHERE h.n = 1 AND v.id IN ({_ROOT_CLOSURE_OF_SEEDS})",
                             (json.dumps(list(seeds)),),
-                        ) as cursor:
-                            counts = await cursor.fetchone()
-                        exclusive = (int(counts[0]), int(counts[1])) if counts else (0, 0)
+                        )
+                        exclusive = (int(counts[0]), int(counts[1])) if counts is not None else (0, 0)
                         for label in labels:
                             report.append(
                                 RootAttribution(
@@ -887,7 +956,7 @@ class LocalStoreDB:
                 finally:
                     with suppress(Exception):
                         await db.execute("DROP TABLE _pynixd_root_hits")
-        except aiosqlite.Error:
+        except DatabaseError:
             log.debug("query_roots_report_failed", exc_info=True)
             return None
 
@@ -904,10 +973,9 @@ class LocalStoreDB:
             return None
         try:
             paths_json = json.dumps(sorted(set(paths)))
-            async with self.execute(QUERY_REFERRER_CLOSURE, (paths_json,)) as cursor:
-                rows = await cursor.fetchall()
+            rows = await self.fetchall(QUERY_REFERRER_CLOSURE, (paths_json,))
             return {r[0] for r in rows}
-        except aiosqlite.Error:
+        except DatabaseError:
             log.debug("query_referrer_closure_failed", exc_info=True)
             return None
 
@@ -929,10 +997,9 @@ class LocalStoreDB:
             return None
         try:
             paths_json = json.dumps(sorted(set(paths)))
-            async with self.execute(QUERY_WEIGHTS, (paths_json,)) as cursor:
-                rows = await cursor.fetchall()
+            rows = await self.fetchall(QUERY_WEIGHTS, (paths_json,))
             return {r[0]: (r[1] or 0, None if r[2] is None else int(r[2])) for r in rows}
-        except (aiosqlite.Error, ValueError):
+        except (DatabaseError, ValueError):
             log.debug("query_weights_failed", exc_info=True)
             return None
 
@@ -988,11 +1055,9 @@ class LocalStoreDB:
         if not self.active or self.read_only or not self.schema.usable:
             return 0
         try:
-            async with self.acquire_conn() as db:
-                cursor = await db.execute(PRUNE_PATH_ACCESS)
-                removed = cursor.rowcount
-                await db.commit()
-        except aiosqlite.Error:
+            async with self.transaction() as db:
+                removed = await db.execute(PRUNE_PATH_ACCESS)
+        except DatabaseError:
             log.warning("prune_path_access_failed", exc_info=True)
             return 0
         if removed > 0:
@@ -1036,12 +1101,12 @@ class LocalStoreDB:
             return None
         key = (identity.name, identity.system, identity.shape, observation.store_id)
         try:
-            async with self.acquire_conn() as db:
+            async with self.transaction() as db:
                 await db.execute(
                     INSERT_DERIVATION_SHAPE,
                     (identity.shape, json.dumps(identity.keys), json.dumps(identity.features)),
                 )
-                cursor = await db.execute(
+                row_id = await db.insert(
                     INSERT_BUILD_OBSERVATION,
                     (
                         *key,
@@ -1067,7 +1132,6 @@ class LocalStoreDB:
                         observation.host_peak_memory_bytes,
                     ),
                 )
-                row_id = cursor.lastrowid
                 await db.executemany(
                     INSERT_BUILD_OBSERVATION_SAMPLE,
                     [
@@ -1079,8 +1143,7 @@ class LocalStoreDB:
                 pruned = dict(zip(("name", "system", "shape", "store"), key, strict=True), kept=OBSERVATIONS_KEPT)
                 await db.execute(PRUNE_BUILD_OBSERVATION_SAMPLES, pruned)
                 await db.execute(PRUNE_BUILD_OBSERVATIONS, pruned)
-                await db.commit()
-        except aiosqlite.Error:
+        except DatabaseError:
             log.warning("record_build_observation_failed", name=identity.name, exc_info=True)
             return None
         return row_id
@@ -1098,11 +1161,10 @@ class LocalStoreDB:
                 (QUERY_BUILD_MS_OF_SHAPE, (identity.name, identity.system, identity.shape, OBSERVATIONS_KEPT)),
                 (QUERY_BUILD_MS_OF_NAME, (identity.name, identity.system, OBSERVATIONS_KEPT)),
             ):
-                async with self.execute(query, params) as cursor:
-                    rows = await cursor.fetchall()
+                rows = await self.fetchall(query, params)
                 if rows:
                     return int(statistics.median(int(row[0]) for row in rows))
-        except aiosqlite.Error:
+        except DatabaseError:
             log.debug("expected_build_ms_failed", name=identity.name, exc_info=True)
         return None
 
@@ -1118,11 +1180,10 @@ class LocalStoreDB:
                 (QUERY_PEAK_MEMORY_OF_SHAPE, (identity.name, identity.system, identity.shape, OBSERVATIONS_KEPT)),
                 (QUERY_PEAK_MEMORY_OF_NAME, (identity.name, identity.system, OBSERVATIONS_KEPT)),
             ):
-                async with self.execute(query, params) as cursor:
-                    rows = await cursor.fetchall()
+                rows = await self.fetchall(query, params)
                 if rows:
                     return int(statistics.median(int(row[0]) for row in rows))
-        except aiosqlite.Error:
+        except DatabaseError:
             log.debug("expected_peak_memory_failed", name=identity.name, exc_info=True)
         return None
 
@@ -1142,11 +1203,10 @@ class LocalStoreDB:
                 (BuildEstimateSource.SHAPE, QUERY_BUILD_MS_OF_SHAPE, shape),
                 (BuildEstimateSource.NAME, QUERY_BUILD_MS_OF_NAME, (identity.name, identity.system)),
             ):
-                async with self.execute(query, (*params, OBSERVATIONS_KEPT)) as cursor:
-                    rows = await cursor.fetchall()
+                rows = await self.fetchall(query, (*params, OBSERVATIONS_KEPT))
                 if rows:
                     return int(statistics.median(int(row[0]) for row in rows)), source
-        except aiosqlite.Error:
+        except DatabaseError:
             log.debug("expected_build_ms_on_failed", name=identity.name, exc_info=True)
         return None, None
 
@@ -1160,9 +1220,8 @@ class LocalStoreDB:
         if not self.active or not self.schema.usable:
             return StoreLink()
         try:
-            async with self.execute(QUERY_STORE_LINK, (store_id, LINK_ROWS)) as cursor:
-                rows = await cursor.fetchall()
-        except aiosqlite.Error:
+            rows = await self.fetchall(QUERY_STORE_LINK, (store_id, LINK_ROWS))
+        except DatabaseError:
             log.debug("store_link_failed", store_id=store_id, exc_info=True)
             return StoreLink()
         sent = [(int(r[1]), int(r[2])) for r in rows if r[1] and r[2]]
@@ -1180,11 +1239,9 @@ class LocalStoreDB:
             return ExpectedBytes()
         shape = (identity.name, identity.system, identity.shape)
         try:
-            async with self.execute(QUERY_INPUTS_BYTES, (*shape, store_id, OBSERVATIONS_KEPT)) as cursor:
-                inputs = [int(r[0]) for r in await cursor.fetchall()]
-            async with self.execute(QUERY_PULL_BYTES, (*shape, local_id, OBSERVATIONS_KEPT)) as cursor:
-                pulls = [int(r[0]) for r in await cursor.fetchall()]
-        except aiosqlite.Error:
+            inputs = [int(r[0]) for r in await self.fetchall(QUERY_INPUTS_BYTES, (*shape, store_id, OBSERVATIONS_KEPT))]
+            pulls = [int(r[0]) for r in await self.fetchall(QUERY_PULL_BYTES, (*shape, local_id, OBSERVATIONS_KEPT))]
+        except DatabaseError:
             log.debug("expected_bytes_failed", name=identity.name, exc_info=True)
             return ExpectedBytes()
         return ExpectedBytes(
@@ -1220,7 +1277,7 @@ class LocalStoreDB:
         for attempt in range(3):
             try:
                 t0 = time.monotonic()
-                async with self.acquire_conn() as db:
+                async with self.connection() as db:
                     touched: set[str] = set()
                     # The walks read; only the chunks below write, one
                     # transaction each: a failed chunk rolls back to the
@@ -1234,11 +1291,9 @@ class LocalStoreDB:
                             touched.update(await self._expand_closure(db, _BUILD_CLOSURE_OF_SEEDS, build_seeds))
                         for chunk in batched(sorted(touched), 1000, strict=False):
                             try:
-                                await db.execute(TOUCH_PATH_ACCESS, (json.dumps(chunk),))
-                                await db.commit()
-                            except aiosqlite.Error:
-                                with suppress(Exception):
-                                    await db.rollback()
+                                async with db.transaction():
+                                    await db.execute(TOUCH_PATH_ACCESS, (json.dumps(chunk),))
+                            except DatabaseError:
                                 log.debug("db_flush_chunk_rolled_back", paths=len(chunk))
                                 raise
                 # Only flushed work leaves the queues. Rework on retry is
@@ -1255,7 +1310,7 @@ class LocalStoreDB:
                     elapsed_ms=elapsed * 1000,
                 )
                 break
-            except aiosqlite.Error:
+            except DatabaseError:
                 # Lock contention with the daemon or another writer: retry
                 # with backoff. A failed flush used to close the whole
                 # pool, which left every fast path erroring until a
@@ -1267,10 +1322,9 @@ class LocalStoreDB:
                     break
                 await anyio.sleep(self.flush_retry_seconds * (1 << attempt))
 
-    async def _expand_closure(self, db: aiosqlite.Connection, query: str, seeds: set[str]) -> set[str]:
+    async def _expand_closure(self, db: Session, query: str, seeds: set[str]) -> set[str]:
         """The closure of `seeds` under `query`, as path strings."""
-        async with db.execute(query, (json.dumps(sorted(seeds)),)) as cursor:
-            return {str(row[0]) for row in await cursor.fetchall()}
+        return {str(row[0]) for row in await db.fetchall(query, (json.dumps(sorted(seeds)),))}
 
     def start(self, background: Background) -> None:
         """Flush the references in *background*, the loops of the store that owns this database."""
@@ -1287,7 +1341,7 @@ class LocalStoreDB:
                 await anyio.sleep(self.reference_flush_interval)
                 try:
                     await self.flush_references()
-                except aiosqlite.Error:
+                except DatabaseError:
                     log.exception("db_flush_loop_iteration_failed")
         finally:
             ended.set()

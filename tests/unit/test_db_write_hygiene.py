@@ -25,6 +25,7 @@ import anyio
 import pytest
 
 from pynixd_store.background import Background
+from pynixd_store.database import DatabaseError
 from pynixd_store.db_migrations import PATH_ACCESS_TABLE, apply_migrations
 from pynixd_store.local_store_db import LocalStoreDB
 
@@ -131,6 +132,25 @@ async def test_a_cancelled_checkout_never_returns_to_the_pool(tmp_path: Path) ->
 
 
 @pytest.mark.anyio
+async def test_a_pool_closed_under_a_transaction_raises_database_error(tmp_path: Path) -> None:
+    """The store closed while the placement trace wrote; the rollback's `ValueError` crashed the trace's task group."""
+    db = _pool(tmp_path)
+    with pytest.raises(DatabaseError, match=r"no active connection|closed database"):
+        async with db.transaction() as session:
+            await db.close_db_pool()
+            await session.execute("INSERT INTO t VALUES (1)")
+
+
+@pytest.mark.anyio
+async def test_a_failed_rollback_keeps_the_error_of_the_block(tmp_path: Path) -> None:
+    db = _pool(tmp_path)
+    with pytest.raises(RuntimeError, match="boom"):
+        async with db.transaction():
+            await db.close_db_pool()
+            raise RuntimeError("boom")
+
+
+@pytest.mark.anyio
 async def test_the_wal_checkpoint_truncates_the_file(tmp_path: Path) -> None:
     """Nix leaves its WAL at its largest size; the checkpoint takes it back to zero."""
     db = _pool(tmp_path)
@@ -186,8 +206,7 @@ async def _flushing_db(tmp_path: Path) -> LocalStoreDB:
 
 
 async def _touched(db: LocalStoreDB) -> set[str]:
-    async with db.execute(f"SELECT path FROM {PATH_ACCESS_TABLE}") as cursor:
-        return {str(row[0]) for row in await cursor.fetchall()}
+    return {str(row[0]) for row in await db.fetchall(f"SELECT path FROM {PATH_ACCESS_TABLE}")}
 
 
 @pytest.mark.anyio

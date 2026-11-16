@@ -3,6 +3,9 @@
 `prepare` checks one path the way `addValidPath` (`local-store.cc:671` of Nix
 2.34) does before it writes, and reads no table. `register_valid_paths` then
 writes every prepared path in one transaction (`local-store.cc:896`).
+
+Each write takes the session of one `LocalStoreDB.transaction`, which commits
+or rolls back the whole function.
 """
 
 from __future__ import annotations
@@ -11,8 +14,6 @@ import base64
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-
-import anyio
 
 from nix_daemon_protocol.derivation_output import DerivationOutput, OutputKind
 from nix_daemon_protocol.signature import Signature
@@ -47,10 +48,9 @@ from .queries import (
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterable, Mapping
 
-    import aiosqlite
-
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
+    from .database import Session
     from .drv_parser import Derivation
     from .queries import PathInfoStatements
     from .store_layout import StoreLayout
@@ -266,9 +266,8 @@ def _check_output_types(parsed: Derivation) -> None:
         raise RegistrationError("all floating outputs must use the same hash algorithm")
 
 
-async def _path_id(conn: aiosqlite.Connection, path: str) -> int | None:
-    async with conn.execute(QUERY_VALID_PATH_ID, (path,)) as cursor:
-        row = await cursor.fetchone()
+async def _path_id(session: Session, path: str) -> int | None:
+    row = await session.fetchone(QUERY_VALID_PATH_ID, (path,))
     return None if row is None else int(row[0])
 
 
@@ -305,64 +304,48 @@ def _base_name(path: str) -> str:
 
 
 async def register_valid_paths(
-    conn: aiosqlite.Connection, registrations: Iterable[Registration], statements: PathInfoStatements
+    session: Session, registrations: Iterable[Registration], statements: PathInfoStatements
 ) -> None:
-    """Write *registrations* in one transaction, as `registerValidPaths` does.
+    """Write *registrations* in the transaction of *session*, as `registerValidPaths` does.
 
-    The caller holds the connection and the right to write; a refusal rolls
-    every row back.
+    A refusal raises, and the caller's transaction rolls every row back.
     """
     rows = {row.path: row for row in registrations}
     order = sorted(rows, key=_base_name)
-    # Nix's connection enforces the foreign keys of `Refs` (`openDB`); a pooled one does not by default.
-    await conn.execute("PRAGMA foreign_keys = 1")
-    # IMMEDIATE takes the write lock at once. A deferred transaction that
-    # upgrades in WAL mode can fail with SQLITE_BUSY_SNAPSHOT without waiting.
-    await conn.execute("BEGIN IMMEDIATE")
-    try:
-        for path in order:
-            row = rows[path]
-            if await _path_id(conn, path) is not None:
-                await conn.execute(UPDATE_PATH_INFO, (row.nar_size, row.nar_hash, row.ultimate, row.sigs, row.ca, path))
-                continue
-            values: tuple[object, ...] = (
-                path,
-                row.nar_hash,
-                row.registration_time,
-                row.deriver,
-                row.nar_size,
-                row.ultimate,
-                row.sigs,
-                row.ca,
-            )
-            # A table without the column drops the provenance, as Determinate Nix does without the experimental feature.
-            if statements.provenance:
-                values += (row.provenance,)
-            cursor = await conn.execute(statements.register_valid_path, values)
-            drv_id = cursor.lastrowid
-            await cursor.close()
-            for name, output in sorted(row.derivation_outputs.items()):
-                await conn.execute(ADD_DERIVATION_OUTPUT, (drv_id, name, output))
-        for path in order:
-            referrer = await _path_id(conn, path)
-            for reference in sorted(rows[path].references, key=_base_name):
-                target = await _path_id(conn, reference)
-                if target is None:
-                    raise RegistrationError(f"path '{magenta(reference)}' is not valid")
-                await conn.execute(ADD_REFERENCE, (referrer, target))
-        cycle = _cycle(rows)
-        if cycle is not None:
-            raise RegistrationError(
-                f"cycle detected in the references of '{magenta(cycle[0])}' from '{magenta(cycle[1])}'"
-            )
-        await conn.commit()
-    except BaseException:
-        with anyio.CancelScope(shield=True):
-            await conn.rollback()
-        raise
+    for path in order:
+        row = rows[path]
+        if await _path_id(session, path) is not None:
+            await session.execute(UPDATE_PATH_INFO, (row.nar_size, row.nar_hash, row.ultimate, row.sigs, row.ca, path))
+            continue
+        values: tuple[object, ...] = (
+            path,
+            row.nar_hash,
+            row.registration_time,
+            row.deriver,
+            row.nar_size,
+            row.ultimate,
+            row.sigs,
+            row.ca,
+        )
+        # A table without the column drops the provenance, as Determinate Nix does without the experimental feature.
+        if statements.provenance:
+            values += (row.provenance,)
+        drv_id = await session.insert(statements.register_valid_path, values)
+        for name, output in sorted(row.derivation_outputs.items()):
+            await session.execute(ADD_DERIVATION_OUTPUT, (drv_id, name, output))
+    for path in order:
+        referrer = await _path_id(session, path)
+        for reference in sorted(rows[path].references, key=_base_name):
+            target = await _path_id(session, reference)
+            if target is None:
+                raise RegistrationError(f"path '{magenta(reference)}' is not valid")
+            await session.execute(ADD_REFERENCE, (referrer, target))
+    cycle = _cycle(rows)
+    if cycle is not None:
+        raise RegistrationError(f"cycle detected in the references of '{magenta(cycle[0])}' from '{magenta(cycle[1])}'")
 
 
-async def add_signatures(conn: aiosqlite.Connection, path: str, sigs: Iterable[Signature]) -> bool:
+async def add_signatures(session: Session, path: str, sigs: Iterable[Signature]) -> bool:
     """Merge *sigs* into the signature set of *path*, as `LocalStore::addSignatures` (`local-store.cc:1583`) does.
 
     Return `False` for a path that is not valid, where Nix dereferences a null
@@ -370,44 +353,26 @@ async def add_signatures(conn: aiosqlite.Connection, path: str, sigs: Iterable[S
     union the way `Signature::toStrings` of Nix's `std::set` does, so the
     stored string is the byte Nix would write.
     """
-    await conn.execute("BEGIN IMMEDIATE")
-    try:
-        async with conn.execute(QUERY_PATH_INFO_FOR_UPDATE, (path,)) as cursor:
-            row = await cursor.fetchone()
-        if row is None:
-            await conn.rollback()
-            return False
-        nar_size, nar_hash, ultimate, existing, ca = row
-        merged = {Signature(sig) for sig in (existing or "").split()} | set(sigs)
-        await conn.execute(UPDATE_PATH_INFO, (nar_size, nar_hash, ultimate, _signatures(merged), ca, path))
-        await conn.commit()
-    except BaseException:
-        with anyio.CancelScope(shield=True):
-            await conn.rollback()
-        raise
+    row = await session.fetchone(QUERY_PATH_INFO_FOR_UPDATE, (path,))
+    if row is None:
+        return False
+    nar_size, nar_hash, ultimate, existing, ca = row
+    merged = {Signature(sig) for sig in (existing or "").split()} | set(sigs)
+    await session.execute(UPDATE_PATH_INFO, (nar_size, nar_hash, ultimate, _signatures(merged), ca, path))
     return True
 
 
-async def invalidate_path(conn: aiosqlite.Connection, path: str) -> None:
+async def invalidate_path(session: Session, path: str) -> None:
     """`LocalStore::invalidatePath` (`local-store.cc:1016`): remove *path* from the valid-paths table.
 
     `verifyStore` calls it for a path the store directory no longer holds and
     whose referrers it can invalidate too. The `Refs` foreign keys cascade the
-    path's referrer entries away, so the connection enforces them, as Nix's
-    `openDB` does and a pooled connection does not.
+    path's referrer entries away.
     """
-    await conn.execute("PRAGMA foreign_keys = 1")
-    await conn.execute("BEGIN IMMEDIATE")
-    try:
-        await conn.execute(INVALIDATE_PATH, (path,))
-        await conn.commit()
-    except BaseException:
-        with anyio.CancelScope(shield=True):
-            await conn.rollback()
-        raise
+    await session.execute(INVALIDATE_PATH, (path,))
 
 
-async def update_path_hashes(conn: aiosqlite.Connection, path: str, *, nar_hash: str, nar_size: int) -> None:
+async def update_path_hashes(session: Session, path: str, *, nar_hash: str, nar_size: int) -> None:
     """`verifyStore`'s fix-up of a missing hash or size (`local-store.cc:1444`): write them, keep the rest.
 
     Nix calls `updatePathInfo` with the whole record after it fills a null
@@ -415,32 +380,22 @@ async def update_path_hashes(conn: aiosqlite.Connection, path: str, *, nar_hash:
     `addSignatures` does, so the signatures, the content address and the
     ultimate flag stay the bytes Nix wrote.
     """
-    await conn.execute("BEGIN IMMEDIATE")
-    try:
-        async with conn.execute(QUERY_PATH_INFO_FOR_UPDATE, (path,)) as cursor:
-            row = await cursor.fetchone()
-        if row is None:
-            await conn.rollback()
-            return
-        _nar_size, _hash, ultimate, sigs, ca = row
-        await conn.execute(UPDATE_PATH_INFO, (nar_size, nar_hash, ultimate, sigs, ca, path))
-        await conn.commit()
-    except BaseException:
-        with anyio.CancelScope(shield=True):
-            await conn.rollback()
-        raise
+    row = await session.fetchone(QUERY_PATH_INFO_FOR_UPDATE, (path,))
+    if row is None:
+        return
+    _nar_size, _hash, ultimate, sigs, ca = row
+    await session.execute(UPDATE_PATH_INFO, (nar_size, nar_hash, ultimate, sigs, ca, path))
 
 
-async def _require_valid_output(conn: aiosqlite.Connection, realisation: str, out_path: str) -> None:
-    async with conn.execute(QUERY_VALID_PATH_ID, (out_path,)) as cursor:
-        if await cursor.fetchone() is None:
-            raise RegistrationError(
-                f"cannot register realisation '{magenta(realisation)}': path '{magenta(out_path)}' is not valid"
-            )
+async def _require_valid_output(session: Session, realisation: str, out_path: str) -> None:
+    if await session.fetchone(QUERY_VALID_PATH_ID, (out_path,)) is None:
+        raise RegistrationError(
+            f"cannot register realisation '{magenta(realisation)}': path '{magenta(out_path)}' is not valid"
+        )
 
 
 async def register_drv_output(
-    conn: aiosqlite.Connection,
+    session: Session,
     drv_key: str,
     output_name: str,
     out_path: str,
@@ -466,27 +421,19 @@ async def register_drv_output(
     select = QUERY_REALISATION_BY_PATH if by_path else QUERY_REALISATION_BY_HASH
     update = UPDATE_BUILD_TRACE_BY_PATH if by_path else UPDATE_REALISATION_BY_HASH
     insert = REGISTER_BUILD_TRACE_BY_PATH if by_path else REGISTER_REALISATION_BY_HASH
-    await conn.execute("BEGIN IMMEDIATE")
-    try:
-        async with conn.execute(select, (drv_key, output_name)) as cursor:
-            row = await cursor.fetchone()
-        if row is None:
-            if not by_path:
-                await _require_valid_output(conn, f"{drv_key}!{output_name}", out_path)
-            await conn.execute(insert, (drv_key, output_name, out_path, _signatures(sigs) or ""))
-        elif row[0] != out_path:
-            separator = "^" if by_path else "!"
-            raise RegistrationError(
-                f"Trying to register a realisation of '{magenta(f'{drv_key}{separator}{output_name}')}', "
-                "but we already have another one locally.\n"
-                f"Local:  {magenta(row[0])}\n"
-                f"Remote: {magenta(out_path)}"
-            )
-        else:
-            merged = {Signature(sig) for sig in (row[1] or "").split()} | set(sigs)
-            await conn.execute(update, (_signatures(merged) or "", drv_key, output_name))
-        await conn.commit()
-    except BaseException:
-        with anyio.CancelScope(shield=True):
-            await conn.rollback()
-        raise
+    row = await session.fetchone(select, (drv_key, output_name))
+    if row is None:
+        if not by_path:
+            await _require_valid_output(session, f"{drv_key}!{output_name}", out_path)
+        await session.execute(insert, (drv_key, output_name, out_path, _signatures(sigs) or ""))
+    elif row[0] != out_path:
+        separator = "^" if by_path else "!"
+        raise RegistrationError(
+            f"Trying to register a realisation of '{magenta(f'{drv_key}{separator}{output_name}')}', "
+            "but we already have another one locally.\n"
+            f"Local:  {magenta(row[0])}\n"
+            f"Remote: {magenta(out_path)}"
+        )
+    else:
+        merged = {Signature(sig) for sig in (row[1] or "").split()} | set(sigs)
+        await session.execute(update, (_signatures(merged) or "", drv_key, output_name))
