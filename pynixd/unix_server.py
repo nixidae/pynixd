@@ -23,7 +23,7 @@ from .config import ScheduleMode
 from .hangup import wait_for_socket_hangup
 from .proxy import DaemonProxy
 from .trust import PeerRefusedError, authorise, peer_of
-from .unix_socket import as_link
+from .unix_socket import PeerGoneError, as_link
 from .wire import UnixNixReader, UnixNixWriter
 
 if TYPE_CHECKING:
@@ -151,6 +151,10 @@ def serve_unix_clients(
         # every other session with it.
         try:
             link = await as_link(accepted)
+        except PeerGoneError:
+            # A probe that connects and closes, as `pynixd-install` waits on darwin.
+            log.debug("unix_client_left_before_accept")
+            return
         except Exception:
             log.exception("unix_client_accept_failed")
             await accepted.aclose()

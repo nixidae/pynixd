@@ -20,6 +20,7 @@ with cannot bind that. Issue #44.
 
 from __future__ import annotations
 
+import errno
 import os
 import socket
 import sys
@@ -49,6 +50,10 @@ def _refusal(socket_path: Path, measured: int) -> RuntimeError:
     )
 
 
+class PeerGoneError(ConnectionError):
+    """The client closed its end before pynixd took the connection."""
+
+
 @dataclass(frozen=True, slots=True)
 class UnixLink:
     """One Unix connection: the stream that reads it, and the socket the writer and the pool's checks use.
@@ -72,7 +77,19 @@ async def as_link(stream: SocketStream) -> UnixLink:
     """
     sock = stream.extra(SocketAttribute.raw_socket).dup()
     await stream.aclose()
-    return await link_socket(sock)
+    try:
+        # darwin forgets the peer of an accepted socket once the peer closes:
+        # `getpeername` fails with EINVAL, and anyio's check with it. Linux keeps it.
+        try:
+            sock.getpeername()
+        except OSError as ex:
+            if ex.errno in (errno.EINVAL, errno.ENOTCONN):
+                raise PeerGoneError from ex
+            raise
+        return await link_socket(sock)
+    except BaseException:
+        sock.close()
+        raise
 
 
 async def link_socket(sock: socket.socket) -> UnixLink:
