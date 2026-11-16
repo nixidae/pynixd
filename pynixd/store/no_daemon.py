@@ -34,7 +34,8 @@ _NO_DAEMON_FEATURES = frozenset({FEATURE_REALISATION_WITH_PATH, FEATURE_DELETE_D
 
 `open_local_store` gives a store of Nix 2.35 its schema, so its realisations are
 in `BuildTraceV3`, keyed by derivation path. A store of Nix 2.34 offers none: its
-schema has the `Realisations` table, keyed by the derivation's hash.
+schema has the `Realisations` table, keyed by the derivation's hash. A store on
+PostgreSQL has the schema of 2.35 with any Nix, as no Nix reads it.
 """
 
 
@@ -42,11 +43,12 @@ class NoDaemonStore(LocalHost):
     def __init__(self, spec: LocalSocketStoreSpec) -> None:
         super().__init__(spec)
         self._features = set(_NO_DAEMON_FEATURES)
+        self._on_sqlite = spec.postgres is None
 
     async def _prepare(self) -> None:
         self.nix_version = await read_nix_version(self.nix_bin, nix_environment(self.layout, self.extra_env))
         # `WorkerProto::latest` of Nix 2.34 has no features (`worker-protocol.cc:17` of 2.34).
-        if not nix_at_least(self.nix_version, 2, 35):
+        if self._on_sqlite and not nix_at_least(self.nix_version, 2, 35):
             self._features = set()
 
     async def ensure_daemon(self) -> None:

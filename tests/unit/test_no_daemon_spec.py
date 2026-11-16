@@ -19,6 +19,8 @@ from pynixd.store.local_daemon import LocalStore
 from pynixd.store.local_db import LocalDBStore
 from pynixd.store.no_daemon import NoDaemonStore
 
+_NIX_2_35 = {FEATURE_REALISATION_WITH_PATH, FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS}
+
 
 def _spec(**update: Any) -> LocalSocketStoreSpec:
     return LocalSocketStoreSpec(
@@ -69,7 +71,19 @@ async def test_the_daemon_client_refuses_by_name_and_starts_nothing() -> None:
 
 def test_the_store_offers_what_nix_2_35_offers() -> None:
     """pynixd reads realisations from `BuildTraceV3`, the table of the schema `open_local_store` creates."""
-    assert LocalDBStore(_spec()).features == {
-        FEATURE_REALISATION_WITH_PATH,
-        FEATURE_DELETE_DEAD_SPECIFIC_REFERRERS,
-    }
+    assert LocalDBStore(_spec()).features == _NIX_2_35
+
+
+@pytest.mark.parametrize(("postgres", "offered"), [(None, set()), ({"conninfo": "dbname=nix"}, _NIX_2_35)])
+async def test_a_nix_2_34_keeps_the_schema_of_2_35_on_postgres_alone(
+    monkeypatch: pytest.MonkeyPatch, postgres: dict[str, str] | None, offered: set[str]
+) -> None:
+    """A store of Nix 2.34 on SQLite has its `Realisations` table; one on PostgreSQL has `BuildTraceV3` alone."""
+
+    async def nix_2_34(*_args: object) -> str:
+        return "2.34.0"
+
+    monkeypatch.setattr("pynixd.store.no_daemon.read_nix_version", nix_2_34)
+    store = NoDaemonStore(_spec(postgres=postgres))
+    await store._prepare()
+    assert store.features == offered
