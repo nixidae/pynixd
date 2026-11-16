@@ -5,10 +5,15 @@ fixture, not of `pg_ctl`, so it ends with the session. It listens on a unix sock
 
 The cluster collates with ICU's root locale, not with `C`. Under `C` a path column that lacks
 `COLLATE "C"` sorts the same as one that has it, and no test could see the difference.
+
+`PYNIXD_STORE_DATABASE=postgres` is a lane: with `PYNIXD_NO_DAEMON=1`, each test store with no
+daemon keeps its database on the cluster, one database per store path (`lane_postgres`).
 """
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import os
 import shutil
 import signal
@@ -16,13 +21,16 @@ import subprocess
 import tempfile
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import psycopg
 import pytest
 from psycopg import sql
+from pydantic import SecretStr
+
+from pynixd.config import PostgresSpec
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -63,8 +71,8 @@ def _wait_ready(cluster: PostgresCluster, server: subprocess.Popen[bytes]) -> No
             return
 
 
-@pytest.fixture(scope="session")
-def postgres_cluster() -> Iterator[PostgresCluster]:
+@contextlib.contextmanager
+def running_cluster() -> Iterator[PostgresCluster]:
     # `mkdtemp`, not `tmp_path`: a unix socket path holds at most 107 bytes.
     root = Path(tempfile.mkdtemp(prefix="pynixd-pg-"))
     data = root / "data"
@@ -117,6 +125,12 @@ def postgres_cluster() -> Iterator[PostgresCluster]:
         shutil.rmtree(root, ignore_errors=True)
 
 
+@pytest.fixture(scope="session")
+def postgres_cluster() -> Iterator[PostgresCluster]:
+    with running_cluster() as cluster:
+        yield cluster
+
+
 @pytest.fixture
 def postgres_conninfo(postgres_cluster: PostgresCluster) -> Iterator[str]:
     """The conninfo of a new, empty database, dropped after the test."""
@@ -128,3 +142,61 @@ def postgres_conninfo(postgres_cluster: PostgresCluster) -> Iterator[str]:
     finally:
         with psycopg.connect(postgres_cluster.conninfo(), autocommit=True) as admin:
             admin.execute(sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(name)))
+
+
+@dataclass
+class _Lane:
+    cluster: PostgresCluster | None = None
+    databases: dict[str, Path] = field(default_factory=dict)
+    """Each lane database, and the store path it serves."""
+
+
+_LANE = _Lane()
+
+
+def lane_wanted() -> bool:
+    return os.environ.get("PYNIXD_STORE_DATABASE") == "postgres"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def postgres_lane() -> Iterator[None]:
+    """The lane's cluster, for the whole session; nothing without `PYNIXD_STORE_DATABASE=postgres`."""
+    if not lane_wanted():
+        yield
+        return
+    with running_cluster() as cluster:
+        _LANE.cluster = cluster
+        try:
+            yield
+        finally:
+            _LANE.cluster = None
+            _LANE.databases.clear()
+
+
+def lane_postgres(store_path: Path) -> PostgresSpec | None:
+    """The lane's database for the store at *store_path*, made on first use; `None` outside the lane."""
+    if not lane_wanted():
+        return None
+    cluster = _LANE.cluster
+    if cluster is None:
+        raise RuntimeError("PYNIXD_STORE_DATABASE=postgres, and the postgres_lane fixture has not started its cluster")
+    name = "store_" + hashlib.sha256(str(store_path).encode()).hexdigest()[:32]
+    if name not in _LANE.databases:
+        with psycopg.connect(cluster.conninfo(), autocommit=True) as admin:
+            admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+        _LANE.databases[name] = store_path
+    return PostgresSpec(conninfo=SecretStr(cluster.conninfo(name)))
+
+
+def drop_lane_databases_of_removed_stores() -> None:
+    """A store whose files are gone loses its database too, so the next store at that path starts empty."""
+    cluster = _LANE.cluster
+    if cluster is None:
+        return
+    gone = [name for name, path in _LANE.databases.items() if not path.exists()]
+    if not gone:
+        return
+    with psycopg.connect(cluster.conninfo(), autocommit=True) as admin:
+        for name in gone:
+            admin.execute(sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(name)))
+            del _LANE.databases[name]

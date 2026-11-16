@@ -107,6 +107,11 @@ vivariumLib.mkTest (
       default = "";
       description = "1 runs every test store with no Nix daemon under it";
     };
+    knobs.storeDatabase = {
+      env = "PYNIXD_STORE_DATABASE";
+      default = "";
+      description = "postgres keeps the database of every test store with no daemon on a PostgreSQL server";
+    };
     backend = config.resolved.backend.value;
 
     # Every path `settings` names is one the guests read.
@@ -221,6 +226,10 @@ vivariumLib.mkTest (
         # Every test store with no Nix daemon under it
         # (`LocalSocketStoreSpec.daemon`), to measure the gap.
         PYNIXD_NO_DAEMON = "1";
+      }
+      // lib.optionalAttrs (config.resolved.storeDatabase.value != "") {
+        # `tests/_conftest/postgres.py`: the lane of every store with no daemon on PostgreSQL.
+        PYNIXD_STORE_DATABASE = config.resolved.storeDatabase.value;
       };
       after = [ "prepare-${name}" ];
       /*

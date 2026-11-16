@@ -25,6 +25,7 @@ from tests._conftest.constants import (
     _default_store_ids,
 )
 from tests._conftest.helpers import rmtree_robust, rmtree_robust_glob
+from tests._conftest.postgres import drop_lane_databases_of_removed_stores
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Generator
@@ -126,6 +127,7 @@ def cleanup_stores() -> Generator[None]:
     yield
     rmtree_robust_glob(f"{STORE_PREFIX}/*")
     rmtree_robust_glob(f"{TMP_PREFIX}*")
+    drop_lane_databases_of_removed_stores()
 
 
 # ── Non-autouse fixtures ──────────────────────────────────────────

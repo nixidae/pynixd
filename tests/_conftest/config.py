@@ -24,6 +24,7 @@ from tests._conftest.constants import (
 )
 from tests._conftest.helpers import rmtree_robust
 from tests._conftest.nix_config import for_test_store
+from tests._conftest.postgres import lane_postgres
 from tests._conftest.ssh_keys import SESSION_SSH_KEYS, install_session_keys
 
 if TYPE_CHECKING:
@@ -210,6 +211,9 @@ def make_test_spec(
         if kwargs.get("daemon") is False:
             # The caller's own routes stay, so one the store cannot take still refuses.
             trial = dict.fromkeys(trial, OpRoute.pynixd)
+            if not (asks_the_daemon or "postgres" in kwargs or kwargs.get("overlay") or kwargs.get("read_only")):
+                # `PYNIXD_STORE_DATABASE=postgres`: every store with no daemon keeps its database on the lane's server.
+                kwargs["postgres"] = lane_postgres(store_path)
         kwargs["op_routes"] = {**trial, **kwargs.get("op_routes", {})}
 
     return LocalSocketStoreSpec(
@@ -241,6 +245,8 @@ async def pynixd_server(
     # daemons and runs the capability probe, and with the wrong order none of
     # that reaches a log file at all. Issue #47.
     session_logging: Path,  # noqa: ARG001
+    # The same, for the lane's server: the session stores take their databases from it.
+    postgres_lane: None,  # noqa: ARG001
     request: pytest.FixtureRequest,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> AsyncGenerator[Server]:

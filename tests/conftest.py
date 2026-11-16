@@ -64,7 +64,7 @@ from tests._conftest.logging import (
     test_logging,
 )
 from tests._conftest.loop_lag import LoopLag as LoopLag
-from tests._conftest.postgres import postgres_cluster, postgres_conninfo
+from tests._conftest.postgres import postgres_cluster, postgres_conninfo, postgres_lane
 
 __all__ = [
     "CLIENT_BIN",
@@ -88,6 +88,7 @@ __all__ = [
     "nix_env",
     "postgres_cluster",
     "postgres_conninfo",
+    "postgres_lane",
     "profiler",
     "pynixd_server",
     "pytest_addoption",
