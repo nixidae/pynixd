@@ -34,7 +34,7 @@ import sqlite3
 import statistics
 import time
 from contextlib import asynccontextmanager, contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import batched
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self
@@ -45,17 +45,10 @@ import structlog
 
 from .build_stats import BuildEstimateSource, ExpectedBytes, StoreLink
 from .database import DatabaseError, Params, Row, Session
-from .db_migrations import (
-    BUILD_OBSERVATION_SAMPLE_TABLE,
-    BUILD_OBSERVATION_TABLE,
-    DERIVATION_SHAPE_TABLE,
-    PATH_ACCESS_TABLE,
-    SchemaState,
-    apply_migrations,
-)
+from .db_migrations import SchemaState, apply_migrations
 from .nix_tables import NixTables
 from .placement_tables import PlacementTables
-from .queries import IS_VALID_PATH, WITHOUT_PROVENANCE, PathInfoStatements, path_info_statements
+from .sql import SQLITE, Statements, nix as nix_sql
 from .store_layout import StoreLayout
 from .store_path import StorePath
 
@@ -66,6 +59,7 @@ if TYPE_CHECKING:
 
     from .background import Background
     from .build_stats import BuildObservation, DerivationIdentity
+    from .sql import NixSql
 
 log = structlog.get_logger(__name__)
 
@@ -73,87 +67,6 @@ __all__ = ["DatabaseError", "LocalStoreDB", "RootAttribution", "Session", "SyncR
 
 _CHECKPOINT_BUSY_MS = 1000
 
-
-# ── SQL constants ─────────────────────────────────────────────────────
-
-# The touched paths, and only them: the flush expands each queued seed
-# over its closure first, so this writes the union. Unmarked paths
-# resolve their age from `registrationTime`, so nothing needs the
-# closure's testimony twice.
-TOUCH_PATH_ACCESS = f"""
-INSERT INTO {PATH_ACCESS_TABLE} (path, lastReferencedAt)
-SELECT path, unixepoch() FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
-ON CONFLICT (path) DO UPDATE SET lastReferencedAt = excluded.lastReferencedAt
-"""
-
-# The runtime closure of a seed set: the seeds and everything reachable
-# through references, never crossing a derivation boundary. A `.drv`
-# file's references are its build inputs, so walking through one would
-# refresh a build closure from a mere observation -- the pushed
-# derivations stay heads. Store derivation paths always end in `.drv`,
-# so the suffix is the boundary. The parameter is a JSON array of store
-# paths. Issue #65.
-_RUNTIME_CLOSURE_OF_SEEDS = """
-    WITH RECURSIVE closure(id) AS (
-        SELECT id FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
-        UNION
-        SELECT r.reference FROM closure c
-        JOIN Refs r ON c.id = r.referrer
-        JOIN ValidPaths cvp ON cvp.id = c.id
-        WHERE cvp.path NOT LIKE '%.drv'
-    )
-    SELECT path FROM ValidPaths WHERE id IN (SELECT id FROM closure)
-"""
-
-# The build closure of a seed set: the seeds and everything reachable
-# through references, derivations included. The scheduler seeds this
-# with the derivation it decided to build plus the inputs the request
-# names, so the walk covers the whole build closure whether or not the
-# store has registered every layer. Same array parameter. Issue #65.
-_BUILD_CLOSURE_OF_SEEDS = """
-    WITH RECURSIVE closure(id) AS (
-        SELECT id FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
-        UNION
-        SELECT r.reference FROM closure c JOIN Refs r ON c.id = r.referrer
-    )
-    SELECT path FROM ValidPaths WHERE id IN (SELECT id FROM closure)
-"""
-
-# The referrers of each seed, transitively, seeds included: the mirror of
-# `_CLOSURE_OF_SEEDS` walking `Refs` the other way. A delete set travels
-# with its referrers (`gc.cc:653`), so the planner closes its set under
-# this. The parameter is a JSON array of store paths, like above.
-_REFERRERS_OF_SEEDS = """
-    WITH RECURSIVE closure(id) AS (
-        SELECT id FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
-        UNION
-        SELECT r.referrer
-        FROM closure c JOIN Refs r ON c.id = r.reference
-    )
-    SELECT id FROM closure
-"""
-
-QUERY_REFERRER_CLOSURE = f"""
-SELECT path FROM ValidPaths WHERE id IN ({_REFERRERS_OF_SEEDS})
-"""
-
-QUERY_WEIGHTS = f"""
-SELECT v.path, v.narSize, COALESCE(a.lastReferencedAt, v.registrationTime) FROM ValidPaths v
-LEFT JOIN {PATH_ACCESS_TABLE} a ON a.path = v.path
-WHERE v.path IN (SELECT value FROM json_each(?))
-"""
-
-QUERY_UNREFERENCED_SINCE = f"""
-SELECT v.path FROM ValidPaths v
-LEFT JOIN {PATH_ACCESS_TABLE} a ON a.path = v.path
-WHERE COALESCE(a.lastReferencedAt, v.registrationTime) < ?
-"""
-
-# The join the tables of pynixd get by living in Nix's own database.
-PRUNE_PATH_ACCESS = f"""
-DELETE FROM {PATH_ACCESS_TABLE}
-WHERE path NOT IN (SELECT path FROM ValidPaths)
-"""
 
 MarkKind = Literal["runtime", "build"]
 """Which seed set a mark joins, and so which closure the flush expands.
@@ -164,43 +77,6 @@ path lists at flush and upsert the same freshness column -- kind lives
 only at gather time, in which CTE runs, never in what is stored. The
 runtime walk stops at derivation boundaries, so pushing a derivation
 around refreshes its head and never its build closure. Issue #65.
-"""
-
-# One root's closure over the same edges the liveness query walks:
-# references, derivers, and deriver references. The parameter is a JSON
-# array of seed paths, and the report runs it once per distinct seed set.
-_ROOT_CLOSURE_OF_SEEDS = """
-    WITH RECURSIVE closure(id) AS (
-        SELECT vp.id FROM ValidPaths vp WHERE vp.path IN (SELECT value FROM json_each(?))
-        UNION
-        SELECT r.reference FROM closure c JOIN Refs r ON c.id = r.referrer
-        UNION
-        SELECT deriver_vp.id FROM closure c
-        JOIN ValidPaths current_vp ON c.id = current_vp.id
-        JOIN ValidPaths deriver_vp ON current_vp.deriver = deriver_vp.path
-        WHERE current_vp.deriver IS NOT NULL
-        UNION
-        SELECT r.reference FROM closure c
-        JOIN ValidPaths current_vp ON c.id = current_vp.id
-        JOIN ValidPaths deriver_vp ON current_vp.deriver = deriver_vp.path
-        JOIN Refs r ON deriver_vp.id = r.referrer
-        WHERE current_vp.deriver IS NOT NULL
-    )
-    SELECT id FROM closure
-"""
-
-# The build closure of a seed set: the seeds and everything reachable
-# through references, derivations included. The scheduler seeds this
-# with the derivation it decided to build plus the inputs the request
-# names, so the walk covers the whole build closure whether or not the
-# store has registered every layer. Same array parameter. Issue #65.
-_BUILD_CLOSURE_OF_SEEDS = """
-    WITH RECURSIVE closure(id) AS (
-        SELECT id FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
-        UNION
-        SELECT r.reference FROM closure c JOIN Refs r ON c.id = r.referrer
-    )
-    SELECT path FROM ValidPaths WHERE id IN (SELECT id FROM closure)
 """
 
 
@@ -225,101 +101,9 @@ OBSERVATIONS_KEPT = 20
 """Rows kept per identity and store. Enough for a median that one outlier
 cannot move, and few enough that a store's history stays a few MB."""
 
-INSERT_DERIVATION_SHAPE = f"""
-INSERT OR IGNORE INTO {DERIVATION_SHAPE_TABLE} (shape, keys, features) VALUES (?, ?, ?)
-"""
-
-INSERT_BUILD_OBSERVATION = f"""
-INSERT INTO {BUILD_OBSERVATION_TABLE}
-(name, system, shape, storeId, status, queuedMs, inputsMs, inputsBytes, buildMs,
- cpuUserUs, cpuSystemUs, pullMs, pullBytes, resourceSource, peakMemoryBytes, ioReadBytes, ioWriteBytes,
- cpuStallUs, memoryStallUs, ioStallUs, hostResourceSource, hostCpuUserUs, hostCpuSystemUs, hostPeakMemoryBytes,
- finishedAt)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
-"""
-
-INSERT_BUILD_OBSERVATION_SAMPLE = f"""
-INSERT INTO {BUILD_OBSERVATION_SAMPLE_TABLE}
-(observationId, atMs, cpuUs, memoryBytes, ioReadBytes, ioWriteBytes) VALUES (?, ?, ?, ?, ?, ?)
-"""
-
-_PRUNED_OBSERVATIONS = f"""
-    SELECT id FROM {BUILD_OBSERVATION_TABLE}
-    WHERE name = :name AND system = :system AND shape = :shape AND storeId = :store AND id NOT IN (
-        SELECT id FROM {BUILD_OBSERVATION_TABLE}
-        WHERE name = :name AND system = :system AND shape = :shape AND storeId = :store
-        ORDER BY id DESC LIMIT :kept
-    ) AND id IS NOT (
-        SELECT max(id) FROM {BUILD_OBSERVATION_TABLE}
-        WHERE name = :name AND system = :system AND shape = :shape AND storeId = :store AND status = 0
-    )
-"""
-"""The rows of one identity and store past the newest `kept`, except its newest `BUILT` row: an
-estimate reads only those, so a run of failures must not take the last one."""
-
-PRUNE_BUILD_OBSERVATION_SAMPLES = f"""
-DELETE FROM {BUILD_OBSERVATION_SAMPLE_TABLE} WHERE observationId IN ({_PRUNED_OBSERVATIONS})
-"""
-
-PRUNE_BUILD_OBSERVATIONS = f"""
-DELETE FROM {BUILD_OBSERVATION_TABLE} WHERE id IN ({_PRUNED_OBSERVATIONS})
-"""
-
-QUERY_BUILD_MS_OF_SHAPE = f"""
-SELECT buildMs FROM {BUILD_OBSERVATION_TABLE}
-WHERE name = ? AND system = ? AND shape = ? AND status = 0 AND buildMs IS NOT NULL
-ORDER BY id DESC LIMIT ?
-"""
-
-QUERY_BUILD_MS_OF_SHAPE_ON_STORE = f"""
-SELECT buildMs FROM {BUILD_OBSERVATION_TABLE}
-WHERE name = ? AND system = ? AND shape = ? AND storeId = ? AND status = 0 AND buildMs IS NOT NULL
-ORDER BY id DESC LIMIT ?
-"""
-
-QUERY_BUILD_MS_OF_NAME = f"""
-SELECT buildMs FROM {BUILD_OBSERVATION_TABLE}
-WHERE name = ? AND system = ? AND status = 0 AND buildMs IS NOT NULL
-ORDER BY id DESC LIMIT ?
-"""
-
-QUERY_PEAK_MEMORY_OF_SHAPE = f"""
-SELECT coalesce(hostPeakMemoryBytes, peakMemoryBytes) FROM {BUILD_OBSERVATION_TABLE}
-WHERE name = ? AND system = ? AND shape = ? AND status = 0
-AND coalesce(hostPeakMemoryBytes, peakMemoryBytes) IS NOT NULL
-ORDER BY id DESC LIMIT ?
-"""
-
-QUERY_PEAK_MEMORY_OF_NAME = f"""
-SELECT coalesce(hostPeakMemoryBytes, peakMemoryBytes) FROM {BUILD_OBSERVATION_TABLE}
-WHERE name = ? AND system = ? AND status = 0
-AND coalesce(hostPeakMemoryBytes, peakMemoryBytes) IS NOT NULL
-ORDER BY id DESC LIMIT ?
-"""
-
 LINK_ROWS = 50
 """A store's newest rows that its link rates read: recent enough to follow a
 change of network, many enough that one stalled transfer does not decide."""
-
-QUERY_STORE_LINK = f"""
-SELECT status, inputsBytes, inputsMs, pullBytes, pullMs, buildMs FROM {BUILD_OBSERVATION_TABLE}
-WHERE storeId = ?
-ORDER BY id DESC LIMIT ?
-"""
-
-QUERY_INPUTS_BYTES = f"""
-SELECT inputsBytes FROM {BUILD_OBSERVATION_TABLE}
-WHERE name = ? AND system = ? AND shape = ? AND storeId = ? AND inputsBytes IS NOT NULL
-ORDER BY id DESC LIMIT ?
-"""
-
-# Not the local store's rows: a local build pulls from itself and records 0 bytes. 40 local builds of a
-# `qemu-root-image` made the median 0, and one remote pull of 8.6 GB took 322 s. nixidae/nixidae#1259.
-QUERY_PULL_BYTES = f"""
-SELECT pullBytes FROM {BUILD_OBSERVATION_TABLE}
-WHERE name = ? AND system = ? AND shape = ? AND storeId != ? AND pullBytes IS NOT NULL
-ORDER BY id DESC LIMIT ?
-"""
 
 _DEFAULT_REFERENCE_FLUSH_INTERVAL = 5.0
 
@@ -350,8 +134,9 @@ def _translated() -> Iterator[None]:
 class _SqliteSession:
     """A `Session` over one pooled `aiosqlite` connection."""
 
-    def __init__(self, conn: aiosqlite.Connection) -> None:
+    def __init__(self, conn: aiosqlite.Connection, sql: Statements) -> None:
         self._conn = conn
+        self.sql = sql
 
     async def fetchone(self, sql: str, params: Params = ()) -> Row | None:
         # The cursor closes before the connection goes back: an open statement holds a shared lock on the file.
@@ -435,11 +220,9 @@ class SyncReader:
     as long as a Python call and not for a thread hop.
     """
 
-    def __init__(
-        self, db_path: Path, statements: PathInfoStatements = WITHOUT_PROVENANCE, *, immutable: bool = False
-    ) -> None:
+    def __init__(self, db_path: Path, sql: NixSql = nix_sql.SQLITE, *, immutable: bool = False) -> None:
         self.db_path = db_path
-        self.statements = statements
+        self.sql = sql
         self.immutable = immutable
         self._conn: sqlite3.Connection | None = None
         self._unavailable = False
@@ -478,7 +261,7 @@ class SyncReader:
         if conn is None:
             return None
         try:
-            cursor = conn.execute(IS_VALID_PATH, (path,))
+            cursor = conn.execute(self.sql.is_valid_path, (path,))
         except sqlite3.Error:
             log.debug("sync_reader_query_failed", exc_info=True)
             return None
@@ -502,7 +285,7 @@ class SyncReader:
         if conn is None:
             return None
         try:
-            cursor = conn.execute(self.statements.path_info_with_refs, (path,))
+            cursor = conn.execute(self.sql.path_info_with_refs, (path,))
         except sqlite3.Error:
             log.debug("sync_reader_query_failed", exc_info=True)
             return None
@@ -589,8 +372,8 @@ class LocalStoreDB:
         that Nix's own tables are readable, which is a different question.
         """
 
-        self.statements = WITHOUT_PROVENANCE
-        """The `ValidPaths` statements for the columns this database has. `open` checks for `provenance` once."""
+        self.sql = SQLITE
+        """The statements of this database. `open` checks `ValidPaths` for `provenance` once, and picks Nix's set."""
 
         self.nix = NixTables(self)
         """The queries and writes of Nix's own tables."""
@@ -650,7 +433,7 @@ class LocalStoreDB:
         """
         if not self.active or self.db_path is None:
             return None
-        return SyncReader(self.db_path, self.statements, immutable=self.immutable)
+        return SyncReader(self.db_path, self.sql.nix, immutable=self.immutable)
 
     @asynccontextmanager
     async def acquire_conn(self) -> AsyncIterator[aiosqlite.Connection]:
@@ -744,7 +527,7 @@ class LocalStoreDB:
         # The session translates its own statements; this covers the connect and the pool's own pragma.
         with _translated():
             async with self.acquire_conn() as conn:
-                yield _SqliteSession(conn)
+                yield _SqliteSession(conn, self.sql)
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[Session]:
@@ -826,7 +609,7 @@ class LocalStoreDB:
                     await cursor.fetchone()
                 async with db.execute("SELECT name FROM pragma_table_info('ValidPaths')") as cursor:
                     columns = {str(row[0]) for row in await cursor.fetchall()}
-                instance.statements = path_info_statements(provenance="provenance" in columns)
+                instance.sql = replace(SQLITE, nix=nix_sql.sqlite(provenance="provenance" in columns))
 
         except (aiosqlite.Error, OSError) as e:
             log.warning(
@@ -858,7 +641,7 @@ class LocalStoreDB:
             mode="read-write" if not read_only else "read-only",
             pynixd_schema_version=instance.schema.version,
             pynixd_tables=instance.schema.usable,
-            provenance=instance.statements.provenance,
+            provenance=instance.sql.nix.provenance,
         )
         return instance
 
@@ -887,7 +670,7 @@ class LocalStoreDB:
             return None
         try:
             cutoff = int(time.time()) - max_age_seconds
-            rows = await self.fetchall(QUERY_UNREFERENCED_SINCE, (cutoff,))
+            rows = await self.fetchall(self.sql.path_access.unreferenced_since, (cutoff,))
             return {StorePath(r[0]) for r in rows}
         except DatabaseError:
             log.debug("query_paths_not_referenced_since_failed", exc_info=True)
@@ -916,31 +699,19 @@ class LocalStoreDB:
         try:
             async with self.connection() as db:
                 try:
-                    await db.execute(
-                        "CREATE TEMP TABLE _pynixd_root_hits(id INTEGER PRIMARY KEY, n INTEGER NOT NULL DEFAULT 0)"
-                    )
-                    await db.execute("INSERT INTO _pynixd_root_hits(id) SELECT id FROM ValidPaths")
+                    await db.execute(self.sql.liveness.create_root_hits)
+                    await db.execute(self.sql.liveness.fill_root_hits)
                     full: dict[tuple[str, ...], tuple[int, int]] = {}
                     for seeds in groups:
                         params = (json.dumps(list(seeds)),)
-                        counts = await db.fetchone(
-                            f"SELECT COUNT(*), COALESCE(SUM(narSize), 0) FROM ValidPaths "
-                            f"WHERE id IN ({_ROOT_CLOSURE_OF_SEEDS})",
-                            params,
-                        )
+                        counts = await db.fetchone(self.sql.liveness.root_full_counts, params)
                         full[seeds] = (int(counts[0]), int(counts[1])) if counts is not None else (0, 0)
                         await db.execute(
-                            f"UPDATE _pynixd_root_hits SET n = n + ? WHERE id IN ({_ROOT_CLOSURE_OF_SEEDS})",
-                            (len(groups[seeds]), json.dumps(list(seeds))),
+                            self.sql.liveness.mark_root_hits, (len(groups[seeds]), json.dumps(list(seeds)))
                         )
                     report: list[RootAttribution] = []
                     for seeds, labels in groups.items():
-                        counts = await db.fetchone(
-                            f"SELECT COUNT(*), COALESCE(SUM(v.narSize), 0) FROM ValidPaths v "
-                            f"JOIN _pynixd_root_hits h ON h.id = v.id "
-                            f"WHERE h.n = 1 AND v.id IN ({_ROOT_CLOSURE_OF_SEEDS})",
-                            (json.dumps(list(seeds)),),
-                        )
+                        counts = await db.fetchone(self.sql.liveness.root_exclusive_counts, (json.dumps(list(seeds)),))
                         exclusive = (int(counts[0]), int(counts[1])) if counts is not None else (0, 0)
                         for label in labels:
                             report.append(
@@ -955,7 +726,7 @@ class LocalStoreDB:
                     return report
                 finally:
                     with suppress(Exception):
-                        await db.execute("DROP TABLE _pynixd_root_hits")
+                        await db.execute(self.sql.liveness.drop_root_hits)
         except DatabaseError:
             log.debug("query_roots_report_failed", exc_info=True)
             return None
@@ -973,7 +744,7 @@ class LocalStoreDB:
             return None
         try:
             paths_json = json.dumps(sorted(set(paths)))
-            rows = await self.fetchall(QUERY_REFERRER_CLOSURE, (paths_json,))
+            rows = await self.fetchall(self.sql.path_access.referrer_closure, (paths_json,))
             return {r[0] for r in rows}
         except DatabaseError:
             log.debug("query_referrer_closure_failed", exc_info=True)
@@ -997,7 +768,7 @@ class LocalStoreDB:
             return None
         try:
             paths_json = json.dumps(sorted(set(paths)))
-            rows = await self.fetchall(QUERY_WEIGHTS, (paths_json,))
+            rows = await self.fetchall(self.sql.path_access.weights, (paths_json,))
             return {r[0]: (r[1] or 0, None if r[2] is None else int(r[2])) for r in rows}
         except (DatabaseError, ValueError):
             log.debug("query_weights_failed", exc_info=True)
@@ -1056,7 +827,7 @@ class LocalStoreDB:
             return 0
         try:
             async with self.transaction() as db:
-                removed = await db.execute(PRUNE_PATH_ACCESS)
+                removed = await db.execute(self.sql.path_access.prune)
         except DatabaseError:
             log.warning("prune_path_access_failed", exc_info=True)
             return 0
@@ -1103,11 +874,11 @@ class LocalStoreDB:
         try:
             async with self.transaction() as db:
                 await db.execute(
-                    INSERT_DERIVATION_SHAPE,
+                    self.sql.observations.insert_derivation_shape,
                     (identity.shape, json.dumps(identity.keys), json.dumps(identity.features)),
                 )
                 row_id = await db.insert(
-                    INSERT_BUILD_OBSERVATION,
+                    self.sql.observations.insert_build_observation,
                     (
                         *key,
                         observation.status,
@@ -1133,7 +904,7 @@ class LocalStoreDB:
                     ),
                 )
                 await db.executemany(
-                    INSERT_BUILD_OBSERVATION_SAMPLE,
+                    self.sql.observations.insert_build_observation_sample,
                     [
                         (row_id, s.at_ms, s.cpu_us, s.memory_bytes, s.io_read_bytes, s.io_write_bytes)
                         for s in observation.samples
@@ -1141,8 +912,8 @@ class LocalStoreDB:
                 )
                 # The samples first: the subquery finds the rows the next statement removes.
                 pruned = dict(zip(("name", "system", "shape", "store"), key, strict=True), kept=OBSERVATIONS_KEPT)
-                await db.execute(PRUNE_BUILD_OBSERVATION_SAMPLES, pruned)
-                await db.execute(PRUNE_BUILD_OBSERVATIONS, pruned)
+                await db.execute(self.sql.observations.prune_build_observation_samples, pruned)
+                await db.execute(self.sql.observations.prune_build_observations, pruned)
         except DatabaseError:
             log.warning("record_build_observation_failed", name=identity.name, exc_info=True)
             return None
@@ -1158,8 +929,11 @@ class LocalStoreDB:
             return None
         try:
             for query, params in (
-                (QUERY_BUILD_MS_OF_SHAPE, (identity.name, identity.system, identity.shape, OBSERVATIONS_KEPT)),
-                (QUERY_BUILD_MS_OF_NAME, (identity.name, identity.system, OBSERVATIONS_KEPT)),
+                (
+                    self.sql.observations.build_ms_of_shape,
+                    (identity.name, identity.system, identity.shape, OBSERVATIONS_KEPT),
+                ),
+                (self.sql.observations.build_ms_of_name, (identity.name, identity.system, OBSERVATIONS_KEPT)),
             ):
                 rows = await self.fetchall(query, params)
                 if rows:
@@ -1177,8 +951,11 @@ class LocalStoreDB:
             return None
         try:
             for query, params in (
-                (QUERY_PEAK_MEMORY_OF_SHAPE, (identity.name, identity.system, identity.shape, OBSERVATIONS_KEPT)),
-                (QUERY_PEAK_MEMORY_OF_NAME, (identity.name, identity.system, OBSERVATIONS_KEPT)),
+                (
+                    self.sql.observations.peak_memory_of_shape,
+                    (identity.name, identity.system, identity.shape, OBSERVATIONS_KEPT),
+                ),
+                (self.sql.observations.peak_memory_of_name, (identity.name, identity.system, OBSERVATIONS_KEPT)),
             ):
                 rows = await self.fetchall(query, params)
                 if rows:
@@ -1199,9 +976,13 @@ class LocalStoreDB:
         shape = (identity.name, identity.system, identity.shape)
         try:
             for source, query, params in (
-                (BuildEstimateSource.SHAPE_ON_STORE, QUERY_BUILD_MS_OF_SHAPE_ON_STORE, (*shape, store_id)),
-                (BuildEstimateSource.SHAPE, QUERY_BUILD_MS_OF_SHAPE, shape),
-                (BuildEstimateSource.NAME, QUERY_BUILD_MS_OF_NAME, (identity.name, identity.system)),
+                (
+                    BuildEstimateSource.SHAPE_ON_STORE,
+                    self.sql.observations.build_ms_of_shape_on_store,
+                    (*shape, store_id),
+                ),
+                (BuildEstimateSource.SHAPE, self.sql.observations.build_ms_of_shape, shape),
+                (BuildEstimateSource.NAME, self.sql.observations.build_ms_of_name, (identity.name, identity.system)),
             ):
                 rows = await self.fetchall(query, (*params, OBSERVATIONS_KEPT))
                 if rows:
@@ -1220,7 +1001,7 @@ class LocalStoreDB:
         if not self.active or not self.schema.usable:
             return StoreLink()
         try:
-            rows = await self.fetchall(QUERY_STORE_LINK, (store_id, LINK_ROWS))
+            rows = await self.fetchall(self.sql.observations.store_link, (store_id, LINK_ROWS))
         except DatabaseError:
             log.debug("store_link_failed", store_id=store_id, exc_info=True)
             return StoreLink()
@@ -1239,8 +1020,14 @@ class LocalStoreDB:
             return ExpectedBytes()
         shape = (identity.name, identity.system, identity.shape)
         try:
-            inputs = [int(r[0]) for r in await self.fetchall(QUERY_INPUTS_BYTES, (*shape, store_id, OBSERVATIONS_KEPT))]
-            pulls = [int(r[0]) for r in await self.fetchall(QUERY_PULL_BYTES, (*shape, local_id, OBSERVATIONS_KEPT))]
+            inputs = [
+                int(r[0])
+                for r in await self.fetchall(self.sql.observations.inputs_bytes, (*shape, store_id, OBSERVATIONS_KEPT))
+            ]
+            pulls = [
+                int(r[0])
+                for r in await self.fetchall(self.sql.observations.pull_bytes, (*shape, local_id, OBSERVATIONS_KEPT))
+            ]
         except DatabaseError:
             log.debug("expected_bytes_failed", name=identity.name, exc_info=True)
             return ExpectedBytes()
@@ -1286,13 +1073,17 @@ class LocalStoreDB:
                     # daemon's own writers get in between chunks.
                     if self.schema.usable:
                         if runtime_seeds:
-                            touched.update(await self._expand_closure(db, _RUNTIME_CLOSURE_OF_SEEDS, runtime_seeds))
+                            touched.update(
+                                await self._expand_closure(db, self.sql.path_access.runtime_closure, runtime_seeds)
+                            )
                         if build_seeds:
-                            touched.update(await self._expand_closure(db, _BUILD_CLOSURE_OF_SEEDS, build_seeds))
+                            touched.update(
+                                await self._expand_closure(db, self.sql.path_access.build_closure, build_seeds)
+                            )
                         for chunk in batched(sorted(touched), 1000, strict=False):
                             try:
                                 async with db.transaction():
-                                    await db.execute(TOUCH_PATH_ACCESS, (json.dumps(chunk),))
+                                    await db.execute(self.sql.path_access.touch, (json.dumps(chunk),))
                             except DatabaseError:
                                 log.debug("db_flush_chunk_rolled_back", paths=len(chunk))
                                 raise

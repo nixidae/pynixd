@@ -1,7 +1,8 @@
 """pynixd's placement trace tables in the store database: `PynixdPlacementDecision` and `PynixdPlacementCandidate`.
 
 The scheduler's trace (`pynixd/placement_trace.py`) builds the rows; this
-module holds the SQL and the transactions. A caller never holds a connection.
+module holds the transactions, and `sql/placement.py` the statements. A caller
+never holds a connection.
 """
 
 from __future__ import annotations
@@ -9,41 +10,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
-from .db_migrations import PLACEMENT_CANDIDATE_TABLE, PLACEMENT_DECISION_TABLE
-
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from .local_store_db import LocalStoreDB
-
-INSERT_DECISION = f"""
-INSERT INTO {PLACEMENT_DECISION_TABLE}
-(decidedAtMs, passId, buildId, attempt, drvPath, name, system, shape, outcome, reason, chosenStoreId,
- queuedMs, expectedBuildMs, preferLocal, localCanBuild, localSlotFull, localWaitMs, weights)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-"""
-
-INSERT_CANDIDATE = f"""
-INSERT OR REPLACE INTO {PLACEMENT_CANDIDATE_TABLE}
-(decisionId, storeId, rank, reason, chosen, roomy, failedHere,
- cpuUtilization, cpuIdlePoints, cpuPsi, cpuPsiPoints, ioPsi, ioPsiPoints, unmonitoredPoints,
- inFlight, concurrencyPoints, assignedThisPass, herdPoints, scorePenalty, loadScore, threshold, passed,
- transferSeconds, transferPoints, priority, finalScore,
- inputsBytes, pullBytes, sendBytesPerS, receiveBytesPerS, dispatchMs, buildMs, buildSource,
- shipMs, pullMs, slotWaitMs, totalMs)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-"""
-
-SET_OBSERVATION = f"UPDATE {PLACEMENT_DECISION_TABLE} SET observationId = ? WHERE id = ?"
-
-# The oldest rows first: ids grow with time, so the scan stops at the chunk.
-SWEEP_CHUNK_END = f"""
-SELECT max(id), count(*) FROM (
-    SELECT id FROM {PLACEMENT_DECISION_TABLE} WHERE decidedAtMs < ? ORDER BY id LIMIT ?
-)
-"""
-SWEEP_CANDIDATES = f"DELETE FROM {PLACEMENT_CANDIDATE_TABLE} WHERE decisionId <= ?"
-SWEEP_DECISIONS = f"DELETE FROM {PLACEMENT_DECISION_TABLE} WHERE id <= ?"
 
 
 class Decision(Protocol):
@@ -86,21 +56,23 @@ class PlacementTables:
             for item in writes:
                 if isinstance(item, ObservationWrite):
                     if item.decision.row_id is not None:
-                        await session.execute(SET_OBSERVATION, (item.observation_id, item.decision.row_id))
+                        await session.execute(
+                            session.sql.placement.set_observation, (item.observation_id, item.decision.row_id)
+                        )
                     continue
-                row_id = item.decision.row_id = await session.insert(INSERT_DECISION, item.row)
+                row_id = item.decision.row_id = await session.insert(session.sql.placement.insert_decision, item.row)
                 candidates += [(row_id, *candidate) for candidate in item.candidates]
                 written += 1
-            await session.executemany(INSERT_CANDIDATE, candidates)
+            await session.executemany(session.sql.placement.insert_candidate, candidates)
         return written
 
     async def sweep_chunk(self, cutoff_ms: int, chunk: int) -> int:
         """Delete the oldest decisions before *cutoff_ms*, at most *chunk*, with their candidates; answer how many."""
         async with self._db.transaction() as session:
-            row = await session.fetchone(SWEEP_CHUNK_END, (cutoff_ms, chunk))
+            row = await session.fetchone(session.sql.placement.sweep_chunk_end, (cutoff_ms, chunk))
             if row is None or row[0] is None:
                 return 0
             end, count = int(row[0]), int(row[1])
-            await session.execute(SWEEP_CANDIDATES, (end,))
-            await session.execute(SWEEP_DECISIONS, (end,))
+            await session.execute(session.sql.placement.sweep_candidates, (end,))
+            await session.execute(session.sql.placement.sweep_decisions, (end,))
         return count

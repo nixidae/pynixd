@@ -13,6 +13,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
     from contextlib import AbstractAsyncContextManager
 
+    from .sql import Statements
+
 __all__ = ["DatabaseError", "Params", "Row", "Session"]
 
 
@@ -30,6 +32,11 @@ class Session(Protocol):
     A write belongs in `transaction`. A write outside one is not kept: the
     session is for reads, and for TEMP tables that die with it.
     """
+
+    @property
+    def sql(self) -> Statements:
+        """The statements of this session's engine and database."""
+        ...
 
     def transaction(self) -> AbstractAsyncContextManager[None]:
         """One write transaction on this connection: committed when the block ends, rolled back when it raises."""

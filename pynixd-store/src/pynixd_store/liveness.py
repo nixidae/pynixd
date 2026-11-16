@@ -44,7 +44,7 @@ from pathlib import Path
 
 import structlog
 
-from .db_migrations import LIVENESS_ROOT_TABLE, LIVENESS_STREAK_TABLE, LIVENESS_TABLE
+from .sql import SQLITE
 from .temp_roots import PYNIXD_TEMP_ROOTS_PREFIX
 
 log = structlog.get_logger(__name__)
@@ -533,30 +533,7 @@ def walk_roots(
     return checked, walk.temporary
 
 
-QUERY_LIVE_SET = f"""
-WITH RECURSIVE closure(id) AS (
-    SELECT vp.id FROM ValidPaths vp
-    WHERE vp.path IN (
-        SELECT target FROM {LIVENESS_ROOT_TABLE}
-        UNION
-        SELECT value FROM json_each(?)
-    )
-    UNION
-    SELECT r.reference FROM closure c JOIN Refs r ON c.id = r.referrer
-    UNION
-    SELECT deriver_vp.id FROM closure c
-    JOIN ValidPaths current_vp ON c.id = current_vp.id
-    JOIN ValidPaths deriver_vp ON current_vp.deriver = deriver_vp.path
-    WHERE current_vp.deriver IS NOT NULL
-    UNION
-    SELECT r.reference FROM closure c
-    JOIN ValidPaths current_vp ON c.id = current_vp.id
-    JOIN ValidPaths deriver_vp ON current_vp.deriver = deriver_vp.path
-    JOIN Refs r ON deriver_vp.id = r.referrer
-    WHERE current_vp.deriver IS NOT NULL
-)
-SELECT path FROM ValidPaths WHERE id IN (SELECT id FROM closure)
-"""
+_SQL = SQLITE.liveness
 
 
 def query_live_set(db_path: Path, volatile: set[str]) -> set[str]:
@@ -567,7 +544,7 @@ def query_live_set(db_path: Path, volatile: set[str]) -> set[str]:
     of thousands of paths, where per-root closures take minutes.
     """
     with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
-        return {row[0] for row in conn.execute(QUERY_LIVE_SET, (json.dumps(sorted(volatile)),))}
+        return {row[0] for row in conn.execute(_SQL.live_set, (json.dumps(sorted(volatile)),))}
 
 
 def db_fingerprint(db_path: Path) -> tuple[int, int]:
@@ -577,7 +554,7 @@ def db_fingerprint(db_path: Path) -> tuple[int, int]:
     without reading it. Cheap enough to ask on every poll.
     """
     with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
-        count, maximum = conn.execute("SELECT COUNT(*), COALESCE(MAX(id), 0) FROM ValidPaths").fetchone()
+        count, maximum = conn.execute(_SQL.fingerprint).fetchone()
     return (int(count), int(maximum))
 
 
@@ -589,9 +566,7 @@ def refresh_roots(db_path: Path, stable: dict[str, tuple[str, str]]) -> bool:
     nothing. `True` means the roots moved and the live set must recompute.
     """
     with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
-        current = {
-            row[0]: (row[1], row[2]) for row in conn.execute(f"SELECT link, target, kind FROM {LIVENESS_ROOT_TABLE}")
-        }
+        current = {row[0]: (row[1], row[2]) for row in conn.execute(_SQL.roots)}
     if current == stable:
         return False
     with closing(sqlite3.connect(db_path)) as conn:
@@ -602,9 +577,9 @@ def refresh_roots(db_path: Path, stable: dict[str, tuple[str, str]]) -> bool:
         with conn:
             for link in current:
                 if link not in stable:
-                    conn.execute(f"DELETE FROM {LIVENESS_ROOT_TABLE} WHERE link = ?", (link,))
+                    conn.execute(_SQL.delete_root, (link,))
             conn.executemany(
-                f"INSERT OR REPLACE INTO {LIVENESS_ROOT_TABLE} (link, target, kind) VALUES (?, ?, ?)",
+                _SQL.upsert_root,
                 [
                     (link, target, kind)
                     for link, (target, kind) in sorted(stable.items())
@@ -631,15 +606,12 @@ def write_snapshot(db_path: Path, live: set[str], epoch: int) -> None:
         # Same wait as the roots reconcile above: a snapshot that gives
         # up at once leaves no liveness evidence for that interval.
         conn.execute("PRAGMA busy_timeout = 5000")
-        conn.execute("CREATE TEMP TABLE live_now(path TEXT PRIMARY KEY)")
-        conn.execute(
-            "INSERT INTO live_now SELECT value FROM json_each(?)",
-            (json.dumps(sorted(live)),),
-        )
+        conn.execute(_SQL.create_live_now)
+        conn.execute(_SQL.fill_live_now, (json.dumps(sorted(live)),))
         conn.execute("BEGIN IMMEDIATE")
         try:
-            conn.execute(f"DELETE FROM {LIVENESS_TABLE} WHERE path NOT IN (SELECT path FROM live_now)")
-            conn.execute(f"INSERT OR IGNORE INTO {LIVENESS_TABLE} (path, epoch) SELECT path, ? FROM live_now", (epoch,))
+            conn.execute(_SQL.delete_left)
+            conn.execute(_SQL.insert_joined, (epoch,))
             conn.execute("COMMIT")
         except BaseException:
             conn.execute("ROLLBACK")
@@ -649,11 +621,11 @@ def write_snapshot(db_path: Path, live: set[str], epoch: int) -> None:
 def read_snapshot(db_path: Path) -> tuple[set[str], int] | None:
     """The live set and the newest `epoch` a path joined it at, or `None` when empty."""
     with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
-        row = conn.execute(f"SELECT COALESCE(MAX(epoch), -1) FROM {LIVENESS_TABLE}").fetchone()
+        row = conn.execute(_SQL.newest_epoch).fetchone()
         epoch = int(row[0])
         if epoch < 0:
             return None
-        live = {r[0] for r in conn.execute(f"SELECT path FROM {LIVENESS_TABLE}")}
+        live = {r[0] for r in conn.execute(_SQL.live_paths)}
     return (live, epoch)
 
 
@@ -715,24 +687,10 @@ class Streak:
     updated_at: int
 
 
-_RECORD_STREAK = f"""
-INSERT INTO {LIVENESS_STREAK_TABLE} (id, agreements, divergences, checks, live, updatedAt)
-VALUES (1, ?, ?, 1, ?, unixepoch())
-ON CONFLICT (id) DO UPDATE SET
-    agreements = CASE WHEN ? THEN {LIVENESS_STREAK_TABLE}.agreements + 1 ELSE 0 END,
-    divergences = {LIVENESS_STREAK_TABLE}.divergences + CASE WHEN ? THEN 0 ELSE 1 END,
-    checks = {LIVENESS_STREAK_TABLE}.checks + 1,
-    live = excluded.live,
-    updatedAt = unixepoch()
-"""
-
-
 def read_streak(db_path: Path) -> Streak | None:
     """The filed streak, or `None` when no check ever filed one."""
     with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
-        row = conn.execute(
-            f"SELECT agreements, divergences, checks, live, updatedAt FROM {LIVENESS_STREAK_TABLE} WHERE id = 1"
-        ).fetchone()
+        row = conn.execute(_SQL.read_streak).fetchone()
     if row is None:
         return None
     return Streak(
@@ -756,7 +714,7 @@ def record_check(db_path: Path, agreed: bool, live: set[str]) -> Streak | None:
     agreed_int = 1 if agreed else 0
     try:
         with closing(sqlite3.connect(db_path)) as conn, conn:
-            conn.execute(_RECORD_STREAK, (agreed_int, 1 - agreed_int, len(live), agreed_int, agreed_int))
+            conn.execute(_SQL.record_streak, (agreed_int, 1 - agreed_int, len(live), agreed_int, agreed_int))
         return read_streak(db_path)
     except (OSError, sqlite3.Error) as exc:
         log.warning("gc_liveness_streak_unrecorded", error=str(exc))

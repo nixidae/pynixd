@@ -69,7 +69,7 @@ async def _registered(tmp_path: Path, features: list[str]) -> tuple[bool, ValidP
         finally:
             if reader is not None:
                 reader.close()
-        return db.statements.provenance, pooled, from_reader
+        return db.sql.nix.provenance, pooled, from_reader
 
 
 @pytest.mark.anyio

@@ -27,7 +27,7 @@ import anyio
 import structlog
 
 from .database import DatabaseError
-from .db_migrations import PATH_ACCESS_TABLE
+from .sql import SQLITE
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
@@ -37,111 +37,7 @@ log = structlog.get_logger(__name__)
 
 _BUSY_TIMEOUT_MS = 30_000
 
-_SCHEMA = (
-    "CREATE TEMP TABLE gc_live(id INTEGER PRIMARY KEY)",
-    "CREATE TEMP TABLE gc_veto(id INTEGER PRIMARY KEY)",
-    "CREATE TEMP TABLE gc_dead(id INTEGER PRIMARY KEY, path TEXT NOT NULL, size INTEGER NOT NULL, seen INTEGER)",
-    "CREATE TEMP TABLE gc_planned(id INTEGER PRIMARY KEY)",
-    "CREATE TEMP TABLE gc_batch(id INTEGER PRIMARY KEY)",
-)
-
-_LOAD_IDS = "INSERT OR IGNORE INTO {table} SELECT id FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))"
-
-_LOAD_DEAD = f"""
-INSERT INTO gc_dead
-SELECT v.id, v.path, COALESCE(v.narSize, 0), COALESCE(a.lastReferencedAt, v.registrationTime)
-FROM ValidPaths v LEFT JOIN {PATH_ACCESS_TABLE} a ON a.path = v.path
-WHERE v.id NOT IN (SELECT id FROM gc_live)
-"""
-
-# The stale dead seeds and everything that refers to them, kept to the dead.
-# `?1` NULL takes every dead path (a pressed disk). A referrer of a dead path
-# is dead unless the mirror is wrong, so the filter only guards that case.
-_PLAN = """
-INSERT INTO gc_planned
-WITH RECURSIVE closure(id) AS (
-    SELECT id FROM gc_dead WHERE ?1 IS NULL OR seen < ?1
-    UNION
-    SELECT r.referrer FROM closure c JOIN Refs r ON r.reference = c.id
-)
-SELECT id FROM closure WHERE id IN (SELECT id FROM gc_dead)
-"""
-
-_COUNTS = f"""
-SELECT
-    (SELECT count(*) FROM ValidPaths),
-    (SELECT count(*) FROM gc_live),
-    (SELECT count(*) FROM ValidPaths v LEFT JOIN {PATH_ACCESS_TABLE} a ON a.path = v.path
-        WHERE ?1 IS NOT NULL AND COALESCE(a.lastReferencedAt, v.registrationTime) < ?1),
-    (SELECT count(*) FROM gc_planned),
-    (SELECT count(*) FROM gc_planned WHERE id IN (SELECT id FROM gc_veto))
-"""
-
-# The weight `by_weight` computes, in the same operations and the same
-# order, so the two agree to the bit: size and age each normalised against
-# the candidates, blended by pressure, path string breaking ties. `before`
-# is what the rows ahead of this one free, which is what
-# `take_until_below_target` tests before it takes a row.
-_WEIGHED = """
-WITH w AS (
-    SELECT d.path, d.size, CASE WHEN d.seen IS NULL THEN 0 ELSE max(0, :now - d.seen) END AS age
-    FROM gc_planned p JOIN gc_dead d USING (id)
-    WHERE p.id NOT IN (SELECT id FROM gc_veto)
-), n AS (
-    SELECT max(size) AS big, max(age) AS old FROM w
-), scored AS (
-    SELECT w.path, w.size, w.age,
-        :pressure * (CASE WHEN n.big THEN 1.0 * w.size / n.big ELSE 0.0 END)
-        + (1.0 - :pressure) * (CASE WHEN n.old THEN 1.0 * w.age / n.old ELSE 0.0 END) AS score
-    FROM w, n
-), ordered AS (
-    SELECT path, size, age, score,
-        COALESCE(sum(size) OVER (ORDER BY score DESC, path ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0)
-            AS before
-    FROM scored
-)
-SELECT path, size, age FROM ordered
-WHERE :total IS NULL OR 1.0 * (:used - before) / :total > :target
-ORDER BY score DESC, path
-LIMIT :limit
-"""
-
-# A seed escapes the plan when anything outside the plan refers to it,
-# transitively. Walking down from the batch's outside referrers marks every
-# seed one of them reaches.
-_BATCH_REFERRERS = """
-WITH RECURSIVE closure(id) AS (
-    SELECT id FROM gc_batch
-    UNION
-    SELECT r.referrer FROM closure c JOIN Refs r ON r.reference = c.id
-)
-SELECT v.path, c.id IN (SELECT id FROM gc_planned) FROM closure c JOIN ValidPaths v ON v.id = c.id
-"""
-
-_ESCAPED_SEEDS = """
-WITH RECURSIVE closure(id) AS (
-    SELECT id FROM gc_batch
-    UNION
-    SELECT r.referrer FROM closure c JOIN Refs r ON r.reference = c.id
-), tainted(id) AS (
-    SELECT id FROM closure WHERE id NOT IN (SELECT id FROM gc_planned)
-    UNION
-    SELECT r.reference FROM tainted t JOIN Refs r ON r.referrer = t.id WHERE r.reference IN (SELECT id FROM closure)
-)
-SELECT v.path FROM tainted t JOIN gc_batch b ON b.id = t.id JOIN ValidPaths v ON v.id = t.id
-"""
-
-_WEIGHTS_OF = """
-SELECT path, size, CASE WHEN seen IS NULL THEN 0 ELSE max(0, ?1 - seen) END FROM gc_dead
-WHERE path IN (SELECT value FROM json_each(?2))
-"""
-
-_BATCH_EDGES = """
-SELECT a.path, b.path FROM Refs r
-JOIN gc_batch ra ON ra.id = r.referrer JOIN gc_batch rb ON rb.id = r.reference
-JOIN ValidPaths a ON a.id = r.referrer JOIN ValidPaths b ON b.id = r.reference
-WHERE r.referrer != r.reference
-"""
+_SQL = SQLITE.gc
 
 
 def referrer_first(ordered: Sequence[str], references: Mapping[str, set[str]]) -> list[str]:
@@ -213,7 +109,7 @@ class SqlPlan:
         try:
             await conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
             await conn.execute("BEGIN")
-            for statement in _SCHEMA:
+            for statement in _SQL.schema:
                 await conn.execute(statement)
             yield cls(conn)
         except aiosqlite.Error as exc:
@@ -224,15 +120,15 @@ class SqlPlan:
                 await conn.close()
 
     async def _load(self, table: str, paths: Iterable[str]) -> None:
-        await self._conn.execute(_LOAD_IDS.format(table=table), (json.dumps(sorted(paths)),))
+        await self._conn.execute(_SQL.load_ids.format(table=table), (json.dumps(sorted(paths)),))
 
     async def plan(self, *, live: set[str], vetoed: set[str], cutoff: int | None) -> PlanCounts:
         """Plan the dead paths unreferenced since `cutoff` (all dead when `None`), closed under referrers."""
         await self._load("gc_live", live)
         await self._load("gc_veto", vetoed)
-        await self._conn.execute(_LOAD_DEAD)
-        await self._conn.execute(_PLAN, (cutoff,))
-        async with self._conn.execute(_COUNTS, (cutoff,)) as cursor:
+        await self._conn.execute(_SQL.load_dead)
+        await self._conn.execute(_SQL.plan, (cutoff,))
+        async with self._conn.execute(_SQL.counts, (cutoff,)) as cursor:
             row = await cursor.fetchone()
         if row is None:
             raise RuntimeError("the plan counts returned no row")
@@ -263,11 +159,11 @@ class SqlPlan:
             "target": bound.target if bound else None,
             "limit": -1 if limit is None else limit,
         }
-        async with self._conn.execute(_WEIGHED, params) as cursor:
+        async with self._conn.execute(_SQL.weighed, params) as cursor:
             return [(path, size, age) for path, size, age in await cursor.fetchall()]
 
     async def _set_batch(self, batch: Iterable[str]) -> None:
-        await self._conn.execute("DELETE FROM gc_batch")
+        await self._conn.execute(_SQL.clear_batch)
         await self._load("gc_batch", batch)
 
     async def close_batch(self, batch: list[str]) -> list[str]:
@@ -279,13 +175,13 @@ class SqlPlan:
         up. Seeds first in batch order, joined referrers after, by path.
         """
         await self._set_batch(batch)
-        async with self._conn.execute(_ESCAPED_SEEDS) as cursor:
+        async with self._conn.execute(_SQL.escaped_seeds) as cursor:
             escaped = {row[0] for row in await cursor.fetchall()}
         for seed in sorted(escaped):
             log.info("gc_batch_seed_dropped", seed=seed)
         survivors = [path for path in batch if path not in escaped]
         await self._set_batch(survivors)
-        async with self._conn.execute(_BATCH_REFERRERS) as cursor:
+        async with self._conn.execute(_SQL.batch_referrers) as cursor:
             closed = {path for path, planned in await cursor.fetchall() if planned}
         order = {path: index for index, path in enumerate(survivors)}
         return sorted(closed, key=lambda path: (0, order[path]) if path in order else (1, path))
@@ -294,7 +190,7 @@ class SqlPlan:
         """`(nar_size, age_seconds)` of planned paths the weighed rows did not carry."""
         if not paths:
             return {}
-        async with self._conn.execute(_WEIGHTS_OF, (now, json.dumps(sorted(paths)))) as cursor:
+        async with self._conn.execute(_SQL.weights_of, (now, json.dumps(sorted(paths)))) as cursor:
             return {path: (size, age) for path, size, age in await cursor.fetchall()}
 
     async def order_batch(self, batch: list[str]) -> list[str]:
@@ -304,13 +200,13 @@ class SqlPlan:
         that leaves the batch stays in the store whatever the order.
         """
         await self._set_batch(batch)
-        async with self._conn.execute("SELECT count(*) FROM gc_batch") as cursor:
+        async with self._conn.execute(_SQL.batch_count) as cursor:
             row = await cursor.fetchone()
         if row is None or row[0] != len(set(batch)):
             log.warning("gc_delete_order_incomplete", asked=len(set(batch)), answered=0 if row is None else row[0])
             return []
         edges: dict[str, set[str]] = {}
-        async with self._conn.execute(_BATCH_EDGES) as cursor:
+        async with self._conn.execute(_SQL.batch_edges) as cursor:
             for referrer, reference in await cursor.fetchall():
                 edges.setdefault(referrer, set()).add(reference)
         return referrer_first(batch, edges)

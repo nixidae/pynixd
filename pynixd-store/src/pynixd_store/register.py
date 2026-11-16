@@ -30,20 +30,6 @@ from .drv_hash import make_output_path, output_hashes, output_path_name
 from .drv_parser import BUILDER_RPC, read_drv_file
 from .errors import PynixdError
 from .hintfmt import WARNING_PREFIX, magenta, missing_feature
-from .queries import (
-    ADD_DERIVATION_OUTPUT,
-    ADD_REFERENCE,
-    INVALIDATE_PATH,
-    QUERY_PATH_INFO_FOR_UPDATE,
-    QUERY_REALISATION_BY_HASH,
-    QUERY_REALISATION_BY_PATH,
-    QUERY_VALID_PATH_ID,
-    REGISTER_BUILD_TRACE_BY_PATH,
-    REGISTER_REALISATION_BY_HASH,
-    UPDATE_BUILD_TRACE_BY_PATH,
-    UPDATE_PATH_INFO,
-    UPDATE_REALISATION_BY_HASH,
-)
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterable, Mapping
@@ -52,7 +38,6 @@ if TYPE_CHECKING:
 
     from .database import Session
     from .drv_parser import Derivation
-    from .queries import PathInfoStatements
     from .store_layout import StoreLayout
 
 _DRV_EXTENSION = ".drv"
@@ -267,7 +252,7 @@ def _check_output_types(parsed: Derivation) -> None:
 
 
 async def _path_id(session: Session, path: str) -> int | None:
-    row = await session.fetchone(QUERY_VALID_PATH_ID, (path,))
+    row = await session.fetchone(session.sql.nix.valid_path_id, (path,))
     return None if row is None else int(row[0])
 
 
@@ -303,9 +288,7 @@ def _base_name(path: str) -> str:
     return path.rsplit("/", 1)[-1]
 
 
-async def register_valid_paths(
-    session: Session, registrations: Iterable[Registration], statements: PathInfoStatements
-) -> None:
+async def register_valid_paths(session: Session, registrations: Iterable[Registration]) -> None:
     """Write *registrations* in the transaction of *session*, as `registerValidPaths` does.
 
     A refusal raises, and the caller's transaction rolls every row back.
@@ -315,7 +298,9 @@ async def register_valid_paths(
     for path in order:
         row = rows[path]
         if await _path_id(session, path) is not None:
-            await session.execute(UPDATE_PATH_INFO, (row.nar_size, row.nar_hash, row.ultimate, row.sigs, row.ca, path))
+            await session.execute(
+                session.sql.nix.update_path_info, (row.nar_size, row.nar_hash, row.ultimate, row.sigs, row.ca, path)
+            )
             continue
         values: tuple[object, ...] = (
             path,
@@ -328,18 +313,18 @@ async def register_valid_paths(
             row.ca,
         )
         # A table without the column drops the provenance, as Determinate Nix does without the experimental feature.
-        if statements.provenance:
+        if session.sql.nix.provenance:
             values += (row.provenance,)
-        drv_id = await session.insert(statements.register_valid_path, values)
+        drv_id = await session.insert(session.sql.nix.register_valid_path, values)
         for name, output in sorted(row.derivation_outputs.items()):
-            await session.execute(ADD_DERIVATION_OUTPUT, (drv_id, name, output))
+            await session.execute(session.sql.nix.add_derivation_output, (drv_id, name, output))
     for path in order:
         referrer = await _path_id(session, path)
         for reference in sorted(rows[path].references, key=_base_name):
             target = await _path_id(session, reference)
             if target is None:
                 raise RegistrationError(f"path '{magenta(reference)}' is not valid")
-            await session.execute(ADD_REFERENCE, (referrer, target))
+            await session.execute(session.sql.nix.add_reference, (referrer, target))
     cycle = _cycle(rows)
     if cycle is not None:
         raise RegistrationError(f"cycle detected in the references of '{magenta(cycle[0])}' from '{magenta(cycle[1])}'")
@@ -353,12 +338,14 @@ async def add_signatures(session: Session, path: str, sigs: Iterable[Signature])
     union the way `Signature::toStrings` of Nix's `std::set` does, so the
     stored string is the byte Nix would write.
     """
-    row = await session.fetchone(QUERY_PATH_INFO_FOR_UPDATE, (path,))
+    row = await session.fetchone(session.sql.nix.path_info_for_update, (path,))
     if row is None:
         return False
     nar_size, nar_hash, ultimate, existing, ca = row
     merged = {Signature(sig) for sig in (existing or "").split()} | set(sigs)
-    await session.execute(UPDATE_PATH_INFO, (nar_size, nar_hash, ultimate, _signatures(merged), ca, path))
+    await session.execute(
+        session.sql.nix.update_path_info, (nar_size, nar_hash, ultimate, _signatures(merged), ca, path)
+    )
     return True
 
 
@@ -369,7 +356,7 @@ async def invalidate_path(session: Session, path: str) -> None:
     whose referrers it can invalidate too. The `Refs` foreign keys cascade the
     path's referrer entries away.
     """
-    await session.execute(INVALIDATE_PATH, (path,))
+    await session.execute(session.sql.nix.invalidate_path, (path,))
 
 
 async def update_path_hashes(session: Session, path: str, *, nar_hash: str, nar_size: int) -> None:
@@ -380,15 +367,15 @@ async def update_path_hashes(session: Session, path: str, *, nar_hash: str, nar_
     `addSignatures` does, so the signatures, the content address and the
     ultimate flag stay the bytes Nix wrote.
     """
-    row = await session.fetchone(QUERY_PATH_INFO_FOR_UPDATE, (path,))
+    row = await session.fetchone(session.sql.nix.path_info_for_update, (path,))
     if row is None:
         return
     _nar_size, _hash, ultimate, sigs, ca = row
-    await session.execute(UPDATE_PATH_INFO, (nar_size, nar_hash, ultimate, sigs, ca, path))
+    await session.execute(session.sql.nix.update_path_info, (nar_size, nar_hash, ultimate, sigs, ca, path))
 
 
 async def _require_valid_output(session: Session, realisation: str, out_path: str) -> None:
-    if await session.fetchone(QUERY_VALID_PATH_ID, (out_path,)) is None:
+    if await session.fetchone(session.sql.nix.valid_path_id, (out_path,)) is None:
         raise RegistrationError(
             f"cannot register realisation '{magenta(realisation)}': path '{magenta(out_path)}' is not valid"
         )
@@ -418,9 +405,9 @@ async def register_drv_output(
     database's file name. pynixd refuses that realisation first and names the path. Reported as
     Lillecarl/nix#423.
     """
-    select = QUERY_REALISATION_BY_PATH if by_path else QUERY_REALISATION_BY_HASH
-    update = UPDATE_BUILD_TRACE_BY_PATH if by_path else UPDATE_REALISATION_BY_HASH
-    insert = REGISTER_BUILD_TRACE_BY_PATH if by_path else REGISTER_REALISATION_BY_HASH
+    select = session.sql.nix.realisation_by_path if by_path else session.sql.nix.realisation_by_hash
+    update = session.sql.nix.update_build_trace_by_path if by_path else session.sql.nix.update_realisation_by_hash
+    insert = session.sql.nix.register_build_trace_by_path if by_path else session.sql.nix.register_realisation_by_hash
     row = await session.fetchone(select, (drv_key, output_name))
     if row is None:
         if not by_path:

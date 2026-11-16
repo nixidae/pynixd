@@ -1553,7 +1553,7 @@ class LocalDBStore(Store):
     def keeps_provenance(self) -> bool:
         """Both writers and the fast reads keep it: the database, when pynixd reads one, and the daemon, when one runs."""
         db = self.engine.db
-        if db.active and not db.statements.provenance:
+        if db.active and not db.sql.nix.provenance:
             return False
         return self._daemon.keeps_provenance if self.mode.has_daemon else db.active
 

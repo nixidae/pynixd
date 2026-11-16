@@ -1,0 +1,108 @@
+"""The statements over pynixd's build history: `PynixdDerivationShape`, `PynixdBuildObservation` and its samples."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from ..db_migrations import BUILD_OBSERVATION_SAMPLE_TABLE, BUILD_OBSERVATION_TABLE, DERIVATION_SHAPE_TABLE
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationSql:
+    insert_derivation_shape: str
+    insert_build_observation: str
+    insert_build_observation_sample: str
+    prune_build_observation_samples: str
+    """The samples of the rows `prune_build_observations` removes; it runs first, while the rows are there."""
+    prune_build_observations: str
+    """The rows of one identity and store past the newest `kept`, except its newest `BUILT` row: an
+    estimate reads only those, so a run of failures must not take the last one."""
+    build_ms_of_shape: str
+    build_ms_of_shape_on_store: str
+    build_ms_of_name: str
+    peak_memory_of_shape: str
+    peak_memory_of_name: str
+    store_link: str
+    inputs_bytes: str
+    pull_bytes: str
+    """Not the local store's rows: a local build pulls from itself and records 0 bytes. 40 local builds of a
+    `qemu-root-image` made the median 0, and one remote pull of 8.6 GB took 322 s. nixidae/nixidae#1259."""
+
+
+_SQLITE_PRUNED_OBSERVATIONS = f"""
+    SELECT id FROM {BUILD_OBSERVATION_TABLE}
+    WHERE name = :name AND system = :system AND shape = :shape AND storeId = :store AND id NOT IN (
+        SELECT id FROM {BUILD_OBSERVATION_TABLE}
+        WHERE name = :name AND system = :system AND shape = :shape AND storeId = :store
+        ORDER BY id DESC LIMIT :kept
+    ) AND id IS NOT (
+        SELECT max(id) FROM {BUILD_OBSERVATION_TABLE}
+        WHERE name = :name AND system = :system AND shape = :shape AND storeId = :store AND status = 0
+    )
+"""
+
+SQLITE = ObservationSql(
+    insert_derivation_shape=f"""
+INSERT OR IGNORE INTO {DERIVATION_SHAPE_TABLE} (shape, keys, features) VALUES (?, ?, ?)
+""",
+    insert_build_observation=f"""
+INSERT INTO {BUILD_OBSERVATION_TABLE}
+(name, system, shape, storeId, status, queuedMs, inputsMs, inputsBytes, buildMs,
+ cpuUserUs, cpuSystemUs, pullMs, pullBytes, resourceSource, peakMemoryBytes, ioReadBytes, ioWriteBytes,
+ cpuStallUs, memoryStallUs, ioStallUs, hostResourceSource, hostCpuUserUs, hostCpuSystemUs, hostPeakMemoryBytes,
+ finishedAt)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+""",
+    insert_build_observation_sample=f"""
+INSERT INTO {BUILD_OBSERVATION_SAMPLE_TABLE}
+(observationId, atMs, cpuUs, memoryBytes, ioReadBytes, ioWriteBytes) VALUES (?, ?, ?, ?, ?, ?)
+""",
+    prune_build_observation_samples=f"""
+DELETE FROM {BUILD_OBSERVATION_SAMPLE_TABLE} WHERE observationId IN ({_SQLITE_PRUNED_OBSERVATIONS})
+""",
+    prune_build_observations=f"""
+DELETE FROM {BUILD_OBSERVATION_TABLE} WHERE id IN ({_SQLITE_PRUNED_OBSERVATIONS})
+""",
+    build_ms_of_shape=f"""
+SELECT buildMs FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = ? AND system = ? AND shape = ? AND status = 0 AND buildMs IS NOT NULL
+ORDER BY id DESC LIMIT ?
+""",
+    build_ms_of_shape_on_store=f"""
+SELECT buildMs FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = ? AND system = ? AND shape = ? AND storeId = ? AND status = 0 AND buildMs IS NOT NULL
+ORDER BY id DESC LIMIT ?
+""",
+    build_ms_of_name=f"""
+SELECT buildMs FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = ? AND system = ? AND status = 0 AND buildMs IS NOT NULL
+ORDER BY id DESC LIMIT ?
+""",
+    peak_memory_of_shape=f"""
+SELECT coalesce(hostPeakMemoryBytes, peakMemoryBytes) FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = ? AND system = ? AND shape = ? AND status = 0
+AND coalesce(hostPeakMemoryBytes, peakMemoryBytes) IS NOT NULL
+ORDER BY id DESC LIMIT ?
+""",
+    peak_memory_of_name=f"""
+SELECT coalesce(hostPeakMemoryBytes, peakMemoryBytes) FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = ? AND system = ? AND status = 0
+AND coalesce(hostPeakMemoryBytes, peakMemoryBytes) IS NOT NULL
+ORDER BY id DESC LIMIT ?
+""",
+    store_link=f"""
+SELECT status, inputsBytes, inputsMs, pullBytes, pullMs, buildMs FROM {BUILD_OBSERVATION_TABLE}
+WHERE storeId = ?
+ORDER BY id DESC LIMIT ?
+""",
+    inputs_bytes=f"""
+SELECT inputsBytes FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = ? AND system = ? AND shape = ? AND storeId = ? AND inputsBytes IS NOT NULL
+ORDER BY id DESC LIMIT ?
+""",
+    pull_bytes=f"""
+SELECT pullBytes FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = ? AND system = ? AND shape = ? AND storeId != ? AND pullBytes IS NOT NULL
+ORDER BY id DESC LIMIT ?
+""",
+)
