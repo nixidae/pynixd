@@ -28,6 +28,7 @@ from tests._conftest.constants import (
     STORE_PREFIX,
     TEST_NIX,
 )
+from tests._conftest.engines import store_db
 from tests._conftest.fixtures import (
     _fixed_test_ts,
     anyio_backend,
@@ -108,6 +109,7 @@ __all__ = [
     "set_log_levels",
     "ssh_admin_uri",
     "ssh_user_uri",
+    "store_db",
     "suppress_messages_containing",
     "suppress_messages_matching",
     "test_log_dir",

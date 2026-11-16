@@ -92,3 +92,61 @@ DELETE FROM {PATH_ACCESS_TABLE}
 WHERE path NOT IN (SELECT path FROM ValidPaths)
 """,
 )
+
+
+_POSTGRES_REFERRERS_OF_SEEDS = """
+    WITH RECURSIVE closure(id) AS (
+        SELECT id FROM ValidPaths WHERE path IN (SELECT json_array_elements_text(%s::json))
+        UNION
+        SELECT r.referrer
+        FROM closure c JOIN Refs r ON c.id = r.reference
+    )
+    SELECT id FROM closure
+"""
+
+POSTGRES = PathAccessSql(
+    # `ORDER BY`: the upsert locks its rows in this order, so two instances that touch one chunk do not deadlock.
+    touch=f"""
+INSERT INTO {PATH_ACCESS_TABLE} (path, lastReferencedAt)
+SELECT path, extract(epoch FROM now())::bigint FROM ValidPaths
+WHERE path IN (SELECT json_array_elements_text(%s::json))
+ORDER BY path
+ON CONFLICT (path) DO UPDATE SET lastReferencedAt = excluded.lastReferencedAt
+""",
+    runtime_closure="""
+    WITH RECURSIVE closure(id) AS (
+        SELECT id FROM ValidPaths WHERE path IN (SELECT json_array_elements_text(%s::json))
+        UNION
+        SELECT r.reference FROM closure c
+        JOIN Refs r ON c.id = r.referrer
+        JOIN ValidPaths cvp ON cvp.id = c.id
+        WHERE cvp.path NOT LIKE '%%.drv'
+    )
+    SELECT path FROM ValidPaths WHERE id IN (SELECT id FROM closure)
+""",
+    build_closure="""
+    WITH RECURSIVE closure(id) AS (
+        SELECT id FROM ValidPaths WHERE path IN (SELECT json_array_elements_text(%s::json))
+        UNION
+        SELECT r.reference FROM closure c JOIN Refs r ON c.id = r.referrer
+    )
+    SELECT path FROM ValidPaths WHERE id IN (SELECT id FROM closure)
+""",
+    referrer_closure=f"""
+SELECT path FROM ValidPaths WHERE id IN ({_POSTGRES_REFERRERS_OF_SEEDS})
+""",
+    weights=f"""
+SELECT v.path, v.narSize, COALESCE(a.lastReferencedAt, v.registrationTime) FROM ValidPaths v
+LEFT JOIN {PATH_ACCESS_TABLE} a ON a.path = v.path
+WHERE v.path IN (SELECT json_array_elements_text(%s::json))
+""",
+    unreferenced_since=f"""
+SELECT v.path FROM ValidPaths v
+LEFT JOIN {PATH_ACCESS_TABLE} a ON a.path = v.path
+WHERE COALESCE(a.lastReferencedAt, v.registrationTime) < %s
+""",
+    prune=f"""
+DELETE FROM {PATH_ACCESS_TABLE}
+WHERE path NOT IN (SELECT path FROM ValidPaths)
+""",
+)
