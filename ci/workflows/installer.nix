@@ -30,6 +30,19 @@ let
     }
   ];
   artifactName = "pynixd-tarball-\${{ matrix.system }}";
+  # One tarball per system, installed on each volume a Mac can give /nix: macOS's
+  # case-insensitive default, and the case-sensitive one a Linux builder's names need.
+  runnerMatrix.include =
+    map (
+      row: row // lib.optionalAttrs (row.system == "aarch64-darwin") { volume = "case-insensitive"; }
+    ) matrix.include
+    ++ [
+      {
+        runner = "macos-latest";
+        system = "aarch64-darwin";
+        volume = "case-sensitive";
+      }
+    ];
 
   # A path no cache holds before this run: its build is this run's alone.
   probe = ''nix build --impure --print-out-paths --no-link --expr '(import ./. { }).internal.pkgs.runCommand "pynixd-gha-cache-probe" { run = builtins.getEnv "RUN"; } "echo $run > $out"' '';
@@ -97,7 +110,7 @@ ghalib.evalWorkflow {
       runs-on = "\${{ matrix.runner }}";
       strategy = {
         fail-fast = false;
-        inherit matrix;
+        matrix = runnerMatrix;
       };
       timeout-minutes = 60;
       ghanix = {
@@ -106,6 +119,8 @@ ghalib.evalWorkflow {
           enable = true;
           daemon = "pynixd";
           pynixdArtifact = artifactName;
+          # A Linux row has no `volume`; the step reads it on macOS alone.
+          macosVolume = "\${{ matrix.volume }}";
           inherit settings;
         };
       };
@@ -114,6 +129,12 @@ ghalib.evalWorkflow {
           name = "pynixd is the only daemon";
           # `pgrep -x`, not `pidof`: macOS has no `pidof`.
           run = ''if [ "$RUNNER_OS" = macOS ]; then sudo launchctl print system/org.nixidae.pynixd > /dev/null; else systemctl is-active pynixd.service; fi && ! pgrep -x nix-daemon && nix store info'';
+        }
+        {
+          name = "/nix is the volume asked for, and use-case-hack follows it";
+          "if" = "runner.os == 'macOS'";
+          env.VOLUME = "\${{ matrix.volume }}";
+          run = ''if [ "$VOLUME" = case-sensitive ]; then fs="Case-sensitive APFS" hack=false; else fs=APFS hack=true; fi && test "$(diskutil info -plist /nix | plutil -extract FilesystemName raw -)" = "$fs" && test "$(nix config show use-case-hack)" = "$hack"'';
         }
         {
           name = "Build the tarball through pynixd";

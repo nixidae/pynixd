@@ -81,12 +81,17 @@ def _run(argv: list[str], *, stdin: Path | None = None) -> None:
         subprocess.run(argv, check=True, stdin=handle)
 
 
-def nix_conf(bundle: Bundle, trusted_users: list[str], extra: str, *, darwin: bool) -> str:
+def nix_conf(bundle: Bundle, trusted_users: list[str], extra: str, *, darwin: bool, case_sensitive: bool) -> str:
     """The machine's `nix.conf`.
 
     On Linux, builds run as auto-allocated users, so the installer adds no
     account. On darwin `auto-allocate-uids` alone gives no build user
     (`user-lock.cc:242`), so builds run as the `nixbld` group's users.
+
+    `use-case-hack` follows the store's file system. Nix turns it on for all
+    of darwin (`archive.cc:23`); on a case-sensitive /nix it renames nothing
+    that needs it, and with it off the store holds the names a Linux store
+    holds.
 
     `extra` goes between the defaults and what pynixd's builds need. A later
     line replaces an earlier one, so `extra` may replace a default but not the
@@ -99,7 +104,7 @@ def nix_conf(bundle: Bundle, trusted_users: list[str], extra: str, *, darwin: bo
         f"ssl-cert-file = {bundle.cacert}/etc/ssl/certs/ca-bundle.crt",
     ]
     users = (
-        [f"build-users-group = {BUILD_GROUP}"]
+        [f"build-users-group = {BUILD_GROUP}", f"use-case-hack = {'false' if case_sensitive else 'true'}"]
         if darwin
         else [
             "build-users-group =",
@@ -142,6 +147,16 @@ def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
     print(f"pynixd-install: wrote {path}", file=sys.stderr)
+
+
+def case_sensitive(directory: Path) -> bool:
+    """Whether the file system of *directory* tells `probe` from `PROBE`."""
+    probe = directory / ".case-probe"
+    probe.touch()
+    try:
+        return not (directory / ".CASE-PROBE").exists()
+    finally:
+        probe.unlink()
 
 
 def _dscl(*args: str) -> None:
@@ -229,7 +244,7 @@ def install(bundle: Bundle, trusted_users: list[str], extra: str, gha_cache: Pat
         darwin_build_users()
     _run([str(bundle.nix / "bin" / "nix-store"), "--load-db"], stdin=ROOT / "reginfo")
     _run([str(bundle.nix / "bin" / "nix-env"), "--profile", str(PROFILE), "--set", str(bundle.profile)])
-    _write(NIX_CONF, nix_conf(bundle, trusted_users, extra, darwin=DARWIN))
+    _write(NIX_CONF, nix_conf(bundle, trusted_users, extra, darwin=DARWIN, case_sensitive=case_sensitive(ROOT)))
     _write(PYNIXD_CONF, json.dumps(pynixd_conf(gha_cache is not None), indent=2) + "\n")
     DAEMON_SOCKET.parent.mkdir(parents=True, exist_ok=True)
     if DARWIN:
