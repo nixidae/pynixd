@@ -7,7 +7,6 @@ import pytest
 from nix_daemon_protocol.basic_derivation import BasicDerivation
 from nix_daemon_protocol.derivation_output import DerivationOutput
 from nix_daemon_protocol.store_path import StorePath
-from pynixd_store.builder import local
 from pynixd_store.builder.local import _builder_refusal, _chroot_refusal, _user_refusal, unsupported, uses_sandbox
 from pynixd_store.builder.settings import BuildSettings
 from pynixd_store.builder.users import BuildUser
@@ -61,7 +60,7 @@ def test_no_chroot_with_sandbox_true_is_refused_in_nix_words() -> None:
     assert _reason(PLAIN, "true", relocated=True, no_chroot=True) is None
     drv_path = StorePath("/nix/store/00000000000000000000000000000000-x.drv")
     refused = _builder_refusal(
-        drv_path, _drv(PLAIN, no_chroot=True), _settings("true"), use_sandbox=True, relocated=False
+        drv_path, _drv(PLAIN, no_chroot=True), _settings("true"), use_sandbox=True, relocated=False, darwin_host=False
     )
     assert refused is not None
     assert "has '__noChroot' set, but that's not allowed when 'sandbox' is 'true'" in refused
@@ -77,15 +76,16 @@ def test_no_chroot_with_sandbox_true_is_refused_in_nix_words() -> None:
     ],
 )
 def test_darwin_refuses_what_its_builder_refuses(
-    monkeypatch: pytest.MonkeyPatch, sandbox: str, profile: str, relocated: bool, message: str | None
+    sandbox: str, profile: str, relocated: bool, message: str | None
 ) -> None:
     """`makeDerivationBuilder` (`derivation-builder.cc:1765`, `:1785`) on darwin, before the build starts."""
-    monkeypatch.setattr(local, "DARWIN", True)
     drv = BasicDerivation(
         outputs={"out": PLAIN}, platform="aarch64-darwin", builder="/bin/sh", env={"__sandboxProfile": profile}
     )
     drv_path = StorePath("/nix/store/00000000000000000000000000000000-x.drv")
-    refused = _builder_refusal(drv_path, drv, _settings(sandbox), use_sandbox=True, relocated=relocated)
+    refused = _builder_refusal(
+        drv_path, drv, _settings(sandbox), use_sandbox=True, relocated=relocated, darwin_host=True
+    )
     if message is None:
         assert refused is None
     else:

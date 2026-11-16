@@ -185,7 +185,7 @@ def _builder_refusal(
     *,
     use_sandbox: bool,
     relocated: bool,
-    darwin_host: bool = DARWIN,
+    darwin_host: bool,
 ) -> str | None:
     """What `makeDerivationBuilder` (`derivation-builder.cc:1751`) throws before the build starts, or `None`.
 
