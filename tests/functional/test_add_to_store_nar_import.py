@@ -38,6 +38,7 @@ from tests._conftest.import_lab import (
     server,
     valid,
 )
+from tests._conftest.nix_cli_store import nix_cli_store
 from tests.conftest import NIX_BIN
 
 if TYPE_CHECKING:
@@ -84,7 +85,8 @@ async def test_pynixd_imports_as_the_daemon_does(tmp_path: Path, monkeypatch: py
         assert files(b, path) == files(c, path), path
         assert not (real(b, path).parent / f"{real(b, path).name}.lock").exists()
     assert not list((b / "nix" / "store").glob("tmp-*"))
-    await run(str(NIX_BIN), "store", "verify", "--store", str(b), "--no-trust", *order)
+    async with nix_cli_store(b) as store:
+        await run(str(NIX_BIN), "store", "verify", "--store", store, "--no-trust", *order)
 
 
 class _Lines:

@@ -10,6 +10,7 @@ from pynixd.store.transfer import stream_paths_store_to_store
 from pynixd_store.store_path import StorePath
 from tests._conftest.config import TEST_OP_ROUTES
 from tests._conftest.import_lab import REFS, rows
+from tests._conftest.nix_cli_store import nix_cli_store
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
 if TYPE_CHECKING:
@@ -26,7 +27,8 @@ async def _nix(*args: str) -> str:
 async def test_the_destination_imports_the_closure_and_nix_verifies_it(tmp_path: Path) -> None:
     src_root, dst_root = tmp_path / "src", tmp_path / "dst"
     reference, text = json.loads(await _nix("eval", "--store", str(src_root), "--json", "--expr", EXPR))
-    src = LocalDBStore(make_test_spec(store_id="copy-src", store_path=src_root, no_probe=True))
+    # On SQLite: Nix's CLI fills the source store.
+    src = LocalDBStore(make_test_spec(store_id="copy-src", store_path=src_root, no_probe=True, postgres=None))
     dst = LocalDBStore(
         make_test_spec(
             store_id="copy-dst",
@@ -41,4 +43,5 @@ async def test_the_destination_imports_the_closure_and_nix_verifies_it(tmp_path:
 
     assert [ref for referrer, ref in rows(dst_root, REFS) if referrer == text] == [reference]
     # `nix store verify` hashes each NAR against the database; it fails on a path pynixd wrote wrong.
-    await _nix("store", "verify", "--store", str(dst_root), "--no-trust", text, reference)
+    async with nix_cli_store(dst_root) as store:
+        await _nix("store", "verify", "--store", store, "--no-trust", text, reference)

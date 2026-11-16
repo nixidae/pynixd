@@ -37,6 +37,7 @@ from pynixd.store_url import spec_for
 from pynixd.unix_socket import open_unix_connection
 from pynixd.wire import UnixNixReader, UnixNixWriter
 from tests._conftest.client_options import set_options
+from tests._conftest.nix_cli_store import nix_cli_store
 from tests._conftest.nix_config import for_test_store
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
@@ -76,9 +77,10 @@ class _Lab:
 
 
 async def _valid(store_path: Path) -> set[str]:
-    _rc, stdout, _stderr, _both = await run_subproc(
-        [str(NIX_BIN), "path-info", "--store", str(store_path), "--all"], verbose=False
-    )
+    async with nix_cli_store(store_path) as store:
+        _rc, stdout, _stderr, _both = await run_subproc(
+            [str(NIX_BIN), "path-info", "--store", store, "--all"], verbose=False
+        )
     return {line.strip() for line in stdout.splitlines() if line.strip()}
 
 

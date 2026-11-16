@@ -13,6 +13,7 @@ import pytest
 
 from pynixd_store.engine import StoreEngine
 from tests._conftest.import_lab import REFS, VALID_PATHS, files, lab, rows, run, serve_directory, server
+from tests._conftest.nix_cli_store import nix_cli_store
 from tests.conftest import NIX_BIN
 
 if TYPE_CHECKING:
@@ -59,4 +60,5 @@ async def test_a_substitution_imports_as_the_daemon_does(tmp_path: Path, importe
     for path, *_ in rows(b, VALID_PATHS):
         assert files(b, path) == files(c, path), path
     assert not list((b / "nix" / "store").glob("tmp-*"))
-    await run(nix, "store", "verify", "--store", str(b), "--no-trust", *wanted)
+    async with nix_cli_store(b) as store:
+        await run(nix, "store", "verify", "--store", store, "--no-trust", *wanted)

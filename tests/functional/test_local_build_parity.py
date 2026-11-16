@@ -37,7 +37,7 @@ from tests._conftest.config import NIX_FLOOR_BIN, NIX_GIT_BIN
 from tests._conftest.constants import _NO_PROBE_FEATURE_MATRIX
 from tests._conftest.metrics import fallthroughs
 from tests._conftest.nix_config import for_test_store
-from tests._conftest.postgres import store_rows
+from tests._conftest.postgres import lane_processes, store_rows
 from tests._conftest.sqlite import sqlite_backend
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
@@ -820,7 +820,12 @@ async def _floating(
     trace_query: str = TRACE,
     client_args: tuple[str, ...] = (),
 ) -> dict[str, Any]:
-    async with _serve(tmp_path, route, experimental_features=("ca-derivations",), nix_bin=nix_bin) as (url, root):
+    # A store of Nix 2.34 keys its realisations by hash on SQLite alone.
+    on_sqlite: dict[str, Any] = {"postgres": None} if trace_query == HASH_KEYED_TRACE else {}
+    async with _serve(tmp_path, route, experimental_features=("ca-derivations",), nix_bin=nix_bin, **on_sqlite) as (
+        url,
+        root,
+    ):
         _rc, out, err, _both = await run_subproc(
             [
                 nix_bin,
@@ -1703,7 +1708,8 @@ async def test_the_daemon_forks_an_s3_fetch_from_a_worker_with_no_aws_threads(
             tg.start_soon(build)
             with anyio.fail_after(60):
                 await seen["arrived"].wait()
-            waiting = {pid: threads for pid in descendants(os.getpid()) if (threads := _epoll_waits(pid))}
+            ours = set(descendants(os.getpid())) - lane_processes()
+            waiting = {pid: threads for pid in sorted(ours) if (threads := _epoll_waits(pid))}
             seen["release"].set()
     assert waiting == {}, waiting
     assert rc == [0], rc

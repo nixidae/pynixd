@@ -13,7 +13,7 @@ correctly (measured). Its closure query does need the database (nixidae/nixidae#
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import anyio
 import pytest
@@ -35,8 +35,10 @@ if TYPE_CHECKING:
 BUILDER = StoreId("builder")
 
 
-def _spec(store_id: str, root: Path) -> LocalSocketStoreSpec:
-    return make_test_spec(store_id=store_id, store_path=root, no_probe=True, nix_config=for_test_store(substituters=()))
+def _spec(store_id: str, root: Path, **update: Any) -> LocalSocketStoreSpec:
+    return make_test_spec(
+        store_id=store_id, store_path=root, no_probe=True, nix_config=for_test_store(substituters=()), **update
+    )
 
 
 async def _path_info(conn: Connection, path: str) -> bytes:
@@ -61,7 +63,8 @@ async def test_a_read_of_a_path_a_backend_holds_answers_from_that_backend(tmp_pa
     socket = tmp_path / "pynixd.sock"
     stores: dict[StoreId, Store] = {
         StoreId("local"): LocalDBStore(_spec("local", tmp_path / "b")),
-        BUILDER: LocalDBStore(_spec("builder", a)),
+        # On SQLite: Nix's CLI fills the backend's store.
+        BUILDER: LocalDBStore(_spec("builder", a, postgres=None)),
     }
     async with Server(stores=stores, unix_path=socket, ssh_port=None, http_port=None) as server:
         server.ctx.output_locations[tree] = BUILDER

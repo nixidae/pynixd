@@ -43,6 +43,7 @@ from tests._conftest.import_lab import (
     server,
     valid,
 )
+from tests._conftest.nix_cli_store import nix_cli_store
 from tests.conftest import NIX_BIN, run_subproc
 
 if TYPE_CHECKING:
@@ -89,7 +90,8 @@ async def test_nix_copy_imports_as_the_daemon_does(tmp_path: Path, imported: lis
         assert files(b, path) == files(c, path), path
         assert not (real(b, path).parent / f"{real(b, path).name}.lock").exists()
     assert not list((b / "nix" / "store").glob("tmp-*"))
-    await run(nix, "store", "verify", "--store", str(b), "--no-trust", *order)
+    async with nix_cli_store(b) as store:
+        await run(nix, "store", "verify", "--store", store, "--no-trust", *order)
 
 
 def _corrupt(root: Path, flat: str, tree: str) -> None:
@@ -131,7 +133,8 @@ async def test_a_repair_restores_a_corrupted_path_as_the_daemon_does(tmp_path: P
     for path in (flat, tree):
         assert files(b, path) == files(c, path) == files(a, path), path
     assert not list((b / "nix" / "store").glob("tmp-*"))
-    await run_subproc([nix, "store", "verify", "--store", str(b), "--no-trust", flat, tree])
+    async with nix_cli_store(b) as store:
+        await run_subproc([nix, "store", "verify", "--store", store, "--no-trust", flat, tree])
 
 
 async def _send(
@@ -174,7 +177,8 @@ async def test_paths_that_share_frames_are_each_imported(tmp_path: Path, importe
         for path in order:
             assert await valid(conn, path), path
     assert imported == order
-    await run(str(NIX_BIN), "store", "verify", "--store", str(b), "--no-trust", *order)
+    async with nix_cli_store(b) as store:
+        await run(str(NIX_BIN), "store", "verify", "--store", store, "--no-trust", *order)
 
 
 async def test_a_valid_path_is_skipped_unread(tmp_path: Path, imported: list[str]) -> None:

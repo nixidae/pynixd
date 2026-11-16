@@ -26,6 +26,7 @@ from pynixd.substituters import ClientSubstituters
 from pynixd.unix_socket import open_unix_connection
 from pynixd.wire import UnixNixReader, UnixNixWriter
 from tests._conftest.client_options import set_options
+from tests._conftest.nix_cli_store import nix_cli_store
 from tests._conftest.ssh_keys import SESSION_SSH_KEYS
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
@@ -40,9 +41,10 @@ _PARENT = (
 
 
 async def _valid(store_path: Path) -> set[str]:
-    _rc, stdout, _stderr, _both = await run_subproc(
-        [str(NIX_BIN), "path-info", "--store", str(store_path), "--all"], verbose=False
-    )
+    async with nix_cli_store(store_path) as store:
+        _rc, stdout, _stderr, _both = await run_subproc(
+            [str(NIX_BIN), "path-info", "--store", store, "--all"], verbose=False
+        )
     return {line.strip() for line in stdout.splitlines() if line.strip()}
 
 
@@ -71,9 +73,9 @@ async def _source(tmp_path: Path) -> AsyncIterator[tuple[Server, asyncssh.SSHKey
     host_key = asyncssh.generate_private_key("ssh-ed25519")
     host_key_path = tmp_path / "host_key"
     host_key.write_private_key(str(host_key_path))
-    stores: dict[StoreId, Store] = {
-        StoreId("local"): LocalDBStore(make_test_spec(store_id="local", store_path=store_dir, no_probe=True)),
-    }
+    # On SQLite: Nix's CLI fills the source store.
+    spec = make_test_spec(store_id="local", store_path=store_dir, no_probe=True, postgres=None)
+    stores: dict[StoreId, Store] = {StoreId("local"): LocalDBStore(spec)}
     async with Server(
         stores=stores, unix_path=tmp_path / "source.sock", ssh_port=0, ssh_host_key=host_key_path, http_port=None
     ) as server:

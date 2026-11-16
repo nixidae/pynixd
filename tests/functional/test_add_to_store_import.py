@@ -41,6 +41,7 @@ from tests._conftest.import_lab import (
     server,
     valid,
 )
+from tests._conftest.nix_cli_store import nix_cli_store
 from tests.conftest import NIX_BIN
 
 if TYPE_CHECKING:
@@ -123,7 +124,8 @@ async def test_nix_store_add_and_eval_add_as_the_daemon_does(tmp_path: Path, add
         assert files(b, path) == files(c, path), path
         assert not (b / "nix" / "store" / f"{path.rsplit('/', 1)[-1]}.lock").exists()
     assert not list((b / "nix" / "store").glob("tmp-*"))
-    await run(str(NIX_BIN), "store", "verify", "--store", str(b), "--no-trust", *paths)
+    async with nix_cli_store(b) as store:
+        await run(str(NIX_BIN), "store", "verify", "--store", store, "--no-trust", *paths)
 
 
 async def _send(
@@ -431,9 +433,18 @@ async def test_a_git_dump_adds_as_the_daemon_does(tmp_path: Path, added: list[st
     assert len(paths) == len(sends) + 2
     for path in paths:
         assert files(b, path) == files(c, path), path
-    await run(
-        nix, "store", "verify", "--store", str(b), "--extra-experimental-features", "git-hashing", "--no-trust", *paths
-    )
+    async with nix_cli_store(b, experimental_features=_GIT) as store:
+        await run(
+            nix,
+            "store",
+            "verify",
+            "--store",
+            store,
+            "--extra-experimental-features",
+            "git-hashing",
+            "--no-trust",
+            *paths,
+        )
 
 
 @_ROUTES

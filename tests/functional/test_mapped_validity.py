@@ -8,7 +8,7 @@ a mapping the backend no longer holds is dropped.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import anyio
 
@@ -30,8 +30,10 @@ BUILDER = StoreId("builder")
 GONE = "/nix/store/2222222222222222222222222222222b-gone"
 
 
-def _spec(store_id: str, root: Path) -> LocalSocketStoreSpec:
-    return make_test_spec(store_id=store_id, store_path=root, no_probe=True, nix_config=for_test_store(substituters=()))
+def _spec(store_id: str, root: Path, **update: Any) -> LocalSocketStoreSpec:
+    return make_test_spec(
+        store_id=store_id, store_path=root, no_probe=True, nix_config=for_test_store(substituters=()), **update
+    )
 
 
 async def test_a_mapped_path_is_valid_only_while_its_backend_holds_it(tmp_path: Path) -> None:
@@ -40,7 +42,8 @@ async def test_a_mapped_path_is_valid_only_while_its_backend_holds_it(tmp_path: 
     socket = tmp_path / "pynixd.sock"
     stores: dict[StoreId, Store] = {
         StoreId("local"): LocalDBStore(_spec("local", tmp_path / "b")),
-        BUILDER: LocalDBStore(_spec("builder", a)),
+        # On SQLite: Nix's CLI fills the backend's store.
+        BUILDER: LocalDBStore(_spec("builder", a, postgres=None)),
     }
     async with Server(stores=stores, unix_path=socket, ssh_port=None, http_port=None) as server:
         locations = server.ctx.output_locations

@@ -32,6 +32,7 @@ from psycopg import sql
 from pydantic import SecretStr
 
 from pynixd.config import PostgresSpec
+from tests._conftest.census import descendants
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -43,6 +44,7 @@ _STOP_SECONDS = 30.0
 @dataclass(frozen=True, slots=True)
 class PostgresCluster:
     socket_dir: Path
+    server_pid: int
 
     def conninfo(self, dbname: str = "postgres") -> str:
         return psycopg.conninfo.make_conninfo(host=str(self.socket_dir), dbname=dbname)
@@ -77,7 +79,6 @@ def running_cluster() -> Iterator[PostgresCluster]:
     # `mkdtemp`, not `tmp_path`: a unix socket path holds at most 107 bytes.
     root = Path(tempfile.mkdtemp(prefix="pynixd-pg-"))
     data = root / "data"
-    cluster = PostgresCluster(socket_dir=root)
     made = subprocess.run(
         [
             _program("initdb"),
@@ -112,6 +113,7 @@ def running_cluster() -> Iterator[PostgresCluster]:
             stdout=subprocess.DEVNULL,
             stderr=server_log,
         )
+    cluster = PostgresCluster(socket_dir=root, server_pid=server.pid)
     try:
         _wait_ready(cluster, server)
         yield cluster
@@ -175,18 +177,36 @@ def postgres_lane() -> Iterator[None]:
 
 
 def lane_postgres(store_path: Path) -> PostgresSpec | None:
-    """The lane's database for the store at *store_path*, made on first use; `None` outside the lane."""
+    """The lane's database for the store at *store_path*; `None` outside the lane.
+
+    The database is new and empty while *store_path* does not exist: a test that removes a store and makes another
+    at its path starts empty.
+    """
     if not lane_wanted():
         return None
     cluster = _LANE.cluster
     if cluster is None:
         raise RuntimeError("PYNIXD_STORE_DATABASE=postgres, and the postgres_lane fixture has not started its cluster")
     name = "store_" + hashlib.sha256(str(store_path).encode()).hexdigest()[:32]
-    if name not in _LANE.databases:
+    if name not in _LANE.databases or not store_path.exists():
         with psycopg.connect(cluster.conninfo(), autocommit=True) as admin:
+            admin.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(name)))
             admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
         _LANE.databases[name] = store_path
     return PostgresSpec(conninfo=SecretStr(cluster.conninfo(name)))
+
+
+def lane_processes() -> set[int]:
+    """The lane's server and its children: a scan of the test process's descendants finds them too."""
+    cluster = _LANE.cluster
+    if cluster is None:
+        return set()
+    return {cluster.server_pid, *descendants(cluster.server_pid)}
+
+
+def is_lane_store(store_path: Path) -> bool:
+    """Whether the store at *store_path* keeps its database on the lane's server."""
+    return _LANE.cluster is not None and store_path in _LANE.databases.values()
 
 
 def drop_lane_databases_of_removed_stores() -> None:
@@ -206,11 +226,11 @@ def drop_lane_databases_of_removed_stores() -> None:
 def store_rows(db_file: Path, query: str) -> list[tuple[Any, ...]]:
     """The rows of *query* in the database of the store whose SQLite file is *db_file*.
 
-    The lane's database when a lane store's root holds *db_file*, else the file itself, read-only. *query* binds no
-    parameter: it runs as it is on either engine.
+    The file itself, read-only, when it exists: a store on PostgreSQL has none. Else the lane's database of the store
+    whose root holds *db_file*. *query* binds no parameter: it runs as it is on either engine.
     """
     cluster = _LANE.cluster
-    if cluster is not None:
+    if cluster is not None and not db_file.exists():
         for name, root in _LANE.databases.items():
             if db_file.is_relative_to(root):
                 with psycopg.connect(cluster.conninfo(name), autocommit=True) as server:

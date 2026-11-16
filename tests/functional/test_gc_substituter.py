@@ -109,6 +109,8 @@ async def _pynixd(
         # The tests below run EXECUTE: the permit is this lab run's opt-in.
         gc_allow_execute=True,
         op_routes=op_routes or {},
+        # On SQLite: Nix's CLI fills the lab store.
+        postgres=None,
     )
     stores: dict[StoreId, Store] = {StoreId("local"): LocalDBStore(spec)}
     if url is not None:

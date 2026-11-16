@@ -46,7 +46,10 @@ async def test_a_copy_reads_the_source_on_the_route_of_op_38(tmp_path: Path, rou
     store_id = f"nar-reader-{route}"
 
     src = LocalDBStore(
-        make_test_spec(store_id=store_id, store_path=src_root, no_probe=True, op_routes={"NarFromPath": route})
+        # On SQLite: Nix's CLI fills the source store.
+        make_test_spec(
+            store_id=store_id, store_path=src_root, no_probe=True, op_routes={"NarFromPath": route}, postgres=None
+        )
     )
     dst = LocalSocketStore(make_test_spec(daemon=True, store_id=f"{store_id}-dst", store_path=dst_root, no_probe=True))
     async with src, dst:
