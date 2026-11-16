@@ -20,7 +20,7 @@ from nix_daemon_protocol.signature import Signature
 from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 
-from . import add, build_log, collect, optimise, register, roots, verify
+from . import add, build_log, collect, nar_fs, optimise, register, roots, verify
 from .active_builds import ActiveBuilds
 from .collector import Collection
 from .content_address import parse_any_sha256
@@ -99,6 +99,8 @@ class StoreEngine:
         if self._config is None:
             self._config = await self._read_config()
             self._apply_db_settings(self._config)
+            if "use-case-hack" in self._config:
+                nar_fs.archive_settings.use_case_hack = bool(self._config["use-case-hack"]["value"])
         return self._config
 
     def _apply_db_settings(self, config: Mapping[str, Any]) -> None:

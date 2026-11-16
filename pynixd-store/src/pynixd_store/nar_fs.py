@@ -9,6 +9,12 @@ all three execute bits. Neither holds a whole NAR or a whole file in memory.
 
 Both are synchronous: the work is file system calls. An async caller runs
 them on a worker thread. `nar.py` holds the in-memory tree, for test NARs.
+
+`use-case-hack` (`archive.cc:23`) is one setting of the process, as in Nix,
+because the Nix in this process applies it through its own global: the two
+must agree on each name. On a case-insensitive file system, a restore gives
+a name that equals an earlier one under `strcasecmp` the suffix
+`~nix~case~hack~N`, and a dump removes it again.
 """
 
 from __future__ import annotations
@@ -17,6 +23,8 @@ import hashlib
 import os
 import stat
 import struct
+import sys
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -31,6 +39,20 @@ _MAX_NAME = 255
 _MAX_TARGET = 4095
 _CHUNK = 64 * 1024
 """Bytes per read of a file and per piece of the stream."""
+
+
+CASE_HACK_SUFFIX = b"~nix~case~hack~"
+"""`caseHackSuffix`, `archive.hh:83`."""
+
+
+@dataclass(slots=True)
+class ArchiveSettings:
+    """`ArchiveSettings` (`archive.cc:17`). The engine sets it from the store's Nix settings."""
+
+    use_case_hack: bool = sys.platform == "darwin"
+
+
+archive_settings = ArchiveSettings()
 
 
 class BadArchive(ValueError):
@@ -66,9 +88,9 @@ def dump_path(path: Path) -> Generator[bytes]:
             yield from contents(at)
         elif stat.S_ISDIR(st.st_mode):
             out.extend(_string(b"directory"))
-            for name in sorted(os.listdir(at)):
+            for name, on_disk in sorted(_unhacked(at).items()):
                 out.extend(_string(b"entry") + _string(b"(") + _string(b"name") + _string(name) + _string(b"node"))
-                yield from node(os.path.join(at, name), depth + 1)
+                yield from node(os.path.join(at, on_disk), depth + 1)
                 out.extend(_string(b")"))
         elif stat.S_ISLNK(st.st_mode):
             out.extend(_string(b"symlink") + _string(b"target") + _string(os.readlink(at)))
@@ -94,6 +116,23 @@ def dump_path(path: Path) -> Generator[bytes]:
 
     yield from node(os.fsencode(path), 0)
     yield from flush()
+
+
+def _unhacked(at: bytes) -> dict[bytes, bytes]:
+    """Each entry of the directory *at* by its NAR name, to its name on disk (`archive.cc:86-101`)."""
+    names = os.listdir(at)
+    if not archive_settings.use_case_hack:
+        return {name: name for name in names}
+    unhacked: dict[bytes, bytes] = {}
+    for on_disk in names:
+        name = on_disk.split(CASE_HACK_SUFFIX, 1)[0]
+        if name in unhacked:
+            raise ValueError(
+                f"file name collision between '{os.fsdecode(os.path.join(at, unhacked[name]))}' "
+                f"and '{os.fsdecode(os.path.join(at, on_disk))}'"
+            )
+        unhacked[name] = on_disk
+    return unhacked
 
 
 def nar_sha256(path: Path) -> hashlib._Hash:
@@ -171,6 +210,9 @@ def _restore(source: _Source, at: bytes, depth: int) -> None:
     elif kind == b"directory":
         os.mkdir(at, 0o777)
         previous = b""
+        # `CaseInsensitiveCompare` (`archive.cc:170`): `strcasecmp`, which folds ASCII alone, as `bytes.lower`.
+        # The key is the folded name, the value the first spelling and its collision count.
+        seen: dict[bytes, tuple[bytes, int]] = {}
         while True:
             tag = source.string(_MAX_TAG)
             if tag == b")":
@@ -185,6 +227,8 @@ def _restore(source: _Source, at: bytes, depth: int) -> None:
             if name <= previous:
                 raise BadArchive("NAR directory is not sorted")
             previous = name
+            if archive_settings.use_case_hack:
+                name = _case_hacked(name, seen)
             source.tag(b"node")
             _restore(source, os.path.join(at, name), depth + 1)
             source.tag(b")")
@@ -197,6 +241,24 @@ def _restore(source: _Source, at: bytes, depth: int) -> None:
         source.tag(b")")
     else:
         raise BadArchive(f"unknown file type '{kind.decode(errors='replace')}'")
+
+
+def _case_hacked(name: bytes, seen: dict[bytes, tuple[bytes, int]]) -> bytes:
+    """*name* as `parse` writes it with `use-case-hack` (`archive.cc:256-270`)."""
+    key = name.lower()
+    if key not in seen:
+        seen[key] = (name, 0)
+        return name
+    first, count = seen[key]
+    seen[key] = (first, count + 1)
+    hacked = name + CASE_HACK_SUFFIX + str(count + 1).encode()
+    clash = seen.get(hacked.lower())
+    if clash is not None:
+        raise BadArchive(
+            f"NAR contains file name '{name.decode(errors='replace')}' that collides with "
+            f"case-hacked file name '{clash[0].decode(errors='replace')}'"
+        )
+    return hacked
 
 
 def _restore_file(source: _Source, at: bytes) -> None:
