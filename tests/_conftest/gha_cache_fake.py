@@ -89,7 +89,14 @@ class FakeGhaCache:
         entry = self.entries.get((key, version))
         if method == "CreateCacheEntry":
             if entry is not None:
-                return web.json_response({"ok": False})
+                # GitHub's answer, finalized or not (measured, 2026-11-16).
+                return web.json_response(
+                    {
+                        "code": "already_exists",
+                        "msg": "cache entry with the same key, version, and scope already exists",
+                    },
+                    status=409,
+                )
             self.entries[key, version] = _Entry()
             return self._reply({"ok": True, "signed_upload_url": self._url(key)})
         if method == "FinalizeCacheEntryUpload":
@@ -99,7 +106,7 @@ class FakeGhaCache:
             return self._reply({"ok": True, "entry_id": "1"})
         if method == "GetCacheEntryDownloadURL":
             if entry is None or not entry.final:
-                return web.json_response({})
+                return self._reply({"ok": False, "signed_download_url": "", "matched_key": ""})
             return self._reply({"ok": True, "signed_download_url": self._url(key), "matched_key": key})
         return web.json_response({"code": "bad_route"}, status=404)
 

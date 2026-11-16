@@ -190,6 +190,8 @@ class GhaCacheApi:
                     # bare 502 (`api.rs:831-840`).
                     if code == "resource_exhausted" or response.status == 502:
                         self._note_rate_limit(response.status, response.headers, method)
+                    if response.status == 409 and code == "already_exists":
+                        raise _AlreadyExists(method)
                     raise CacheFault(f"{method}: HTTP {response.status} {code}: {reply.get('msg', text[:200])}")
                 return _json_object(text)
         except (TimeoutError, aiohttp.ClientError, OSError) as e:
@@ -213,10 +215,14 @@ class GhaCacheApi:
     async def create(self, key: str) -> str | None:
         """The signed upload URL of a new entry *key*; `None` when the service will not create it.
 
-        `ok: false` with no message is the service's answer for a key that exists, or that another
-        job is writing (`cache.ts:702-733`). Both mean another copy will serve, so the caller skips.
+        GitHub's service answers a key that exists, finalized or not, with HTTP 409 `already_exists`
+        (measured on a runner, 2026-11-16, `ci/gha_cache_probe.py`); `cache.ts:702-733` reads
+        `ok: false` as the same. Either way another copy serves or none can, so the caller skips.
         """
-        reply = await self._twirp("CreateCacheEntry", {"key": key, "version": self.version})
+        try:
+            reply = await self._twirp("CreateCacheEntry", {"key": key, "version": self.version})
+        except _AlreadyExists:
+            return None
         if reply.get("ok"):
             url = str(reply.get("signed_upload_url", ""))
             if not url:
@@ -287,6 +293,10 @@ class GhaCacheApi:
                 yield response.content
         except (TimeoutError, aiohttp.ClientError, OSError) as e:
             raise CacheFault(f"blob read: {e!r}") from e
+
+
+class _AlreadyExists(CacheFault):
+    """HTTP 409 `already_exists`: the key and version hold an entry, finalized or not."""
 
 
 def _json_object(text: str) -> dict[str, object]:
