@@ -8,17 +8,24 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+import structlog
+
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 
+from ._lazy import ssh_errors
+from .exceptions import BackendError, InfrastructureError, NoDaemonError
+from .serde import QueryValidPathsRequest
 from .sessions import ClientSessions
 from .trust import TrustPolicy
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from nix_daemon_protocol.store_path import StorePath
     from pynixd_store.local_store_db import LocalStoreDB
 
     from .config import PynixdSettings
+    from .connection import ClientConn
     from .scheduler import Scheduler
     from .session_builders import SessionBuilders
     from .store.base import Store
@@ -26,6 +33,8 @@ if TYPE_CHECKING:
     from .store.local_daemon import LocalStore
     from .store.local_db import LocalDBStore
 
+
+log = structlog.get_logger(__name__)
 
 OUTPUT_LOCATIONS_KEPT = 100_000
 """How many backend locations pynixd remembers: about 20 MB at 200 bytes an entry."""
@@ -97,6 +106,48 @@ class PynixdContext:
             return None
         store = self._stores.get(store_id)
         return None if store is None else store.output_source
+
+    async def backend_holds(self, paths: set[StorePath], client: ClientConn | None = None) -> set[StorePath]:
+        """Those of *paths* the backend `output_locations` names for each still holds.
+
+        A mapping the backend denies is dropped. Nothing answers "valid" from the map alone: a backend that lost
+        the path made `IsValidPath` say "valid" while `QueryPathInfo` said "not valid" (nixidae/nixidae#1381),
+        and a goal read success and failed on the first read (nixidae/nixidae#1382).
+        """
+        by_store: dict[int, tuple[DaemonStore | LocalDBStore, set[StorePath]]] = {}
+        for path in paths:
+            store = self.store_for_output_path(str(path))
+            if store is not None:
+                by_store.setdefault(id(store), (store, set()))[1].add(path)
+        held: set[StorePath] = set()
+        for store, asked in by_store.values():
+            try:
+                resp = await store.execute(QueryValidPathsRequest(paths=asked, substitute=0), client=client)
+            except (
+                TimeoutError,
+                BackendError,
+                InfrastructureError,
+                NoDaemonError,
+                OSError,
+                EOFError,
+                *ssh_errors(),
+            ) as error:
+                # Unreachable is not "lost": the mapping stays for a later read.
+                log.warning("output_location_unreachable", store_id=store.store_id, error=str(error))
+                continue
+            found = set(getattr(resp, "paths", set()))
+            held |= found
+            for path in asked - found:
+                self.forget_output(str(path), store)
+        return held
+
+    def forget_output(self, path: str, store: DaemonStore | LocalDBStore) -> None:
+        # Only this store's mapping: a build elsewhere may have remapped the
+        # path while the read waited.
+        if self.output_locations.get(path) != store.store_id:
+            return
+        log.info("output_location_stale", path=path, store_id=store.store_id)
+        del self.output_locations[path]
 
     @property
     def local_store(self) -> LocalStore | LocalDBStore:

@@ -144,10 +144,10 @@ class FakeContext:
     def __init__(self) -> None:
         self.local_store = FakeLocalStore()
 
-    def store_for_output_path(self, path: str) -> None:
+    async def backend_holds(self, paths: set[StorePath]) -> set[StorePath]:
         """No backend holds the path, so the goal has to fail."""
-        del path
-        return None
+        del paths
+        return set()
 
 
 class FakeEngine(FakeGoalEngine):

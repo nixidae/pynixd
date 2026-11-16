@@ -115,11 +115,16 @@ class InvalidStore:
         return IsValidPathResponse(valid=False)
 
 
+async def _none_held(paths: set[StorePath]) -> set[StorePath]:
+    del paths
+    return set()
+
+
 @pytest.mark.anyio
 async def test_an_opaque_path_no_substituter_has_is_no_substituters() -> None:
     """`substitution-goal.cc:159`: NoSubstituters, with Nix's words."""
     path = "/nix/store/00000000000000000000000000000003-gone"
-    engine = SimpleNamespace(ctx=SimpleNamespace(local_store=InvalidStore(), store_for_output_path=lambda _p: None))
+    engine = SimpleNamespace(ctx=SimpleNamespace(local_store=InvalidStore(), backend_holds=_none_held))
     goal = EnsureDerivedPathGoal(
         engine=cast("GoalEngine", engine),
         derived_path=DerivedPath(path),

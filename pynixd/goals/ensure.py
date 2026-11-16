@@ -347,13 +347,12 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         # path is not valid locally". `nix copy` asks this way: it realises its
         # installables against the source store first, and a store path
         # installable becomes an opaque derived path.
-        backend = self.engine.ctx.store_for_output_path(str(store_path))
-        if backend is not None:
-            log.debug(
-                "opaque_path_resident_on_backend",
-                path=str(store_path),
-                store_id=backend.store_id,
-            )
+        #
+        # The backend is asked, not the map alone: a backend that lost the path
+        # made this succeed and the first read fail (nixidae/nixidae#1382). A
+        # denied mapping is dropped, and the path is substituted as if unmapped.
+        if store_path in await self.engine.ctx.backend_holds({store_path}):
+            log.debug("opaque_path_resident_on_backend", path=str(store_path))
             return self._opaque_success(store_path)
 
         substitute = await self._try_substitute_path(store_path)

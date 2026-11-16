@@ -25,12 +25,14 @@ from pynixd.config import StoreSpecBase
 from pynixd.context import PynixdContext
 from pynixd.derived_path import DerivedPath
 from pynixd.goals.ensure import EnsureDerivedPathGoal
-from pynixd.serde import BuildMode, IsValidPathResponse
+from pynixd.serde import BuildMode, IsValidPathResponse, QueryValidPathsRequest, QueryValidPathsResponse
 from pynixd.store.daemon import DaemonStore
 from pynixd_store.store_path import StorePath
 from tests.goal_group import result_of
 
 if TYPE_CHECKING:
+    from nix_daemon_protocol.wire_ops import WireRequest
+    from pynixd.connection import ClientConn
     from pynixd.goals.engine import GoalEngine
     from pynixd.store.base import Store
 
@@ -76,20 +78,36 @@ class FakeEngine:
 
 
 class OfflineBackend(DaemonStore):
-    """A real `DaemonStore` that never connects.
+    """A real `DaemonStore` that never connects, and answers `QueryValidPaths` from *holds*.
 
     A real one and not a fake, because `store_for_output_path` type-checks
     what it returns: only a store that speaks the wire can serve a mapped
     read. `create_conn` is the one abstract method, and nothing here calls it.
     """
 
+    def __init__(self, spec: StoreSpecBase, holds: set[str]) -> None:
+        super().__init__(spec)
+        self.holds = holds
+
     async def create_conn(self, *args: Any, **kwargs: Any) -> Any:
         del args, kwargs
         raise AssertionError("this test opens no connection")
 
+    async def execute(
+        self,
+        request: WireRequest,
+        client: ClientConn | None = None,
+        suppress_last: bool = False,
+        skip_probe: bool = False,
+        mark: bool = True,
+    ) -> Any:
+        del client, suppress_last, skip_probe, mark
+        assert isinstance(request, QueryValidPathsRequest)
+        return QueryValidPathsResponse(paths={p for p in request.paths if str(p) in self.holds})
 
-def _backend(store_id: str) -> DaemonStore:
-    return OfflineBackend(StoreSpecBase(store_id=StoreId(store_id)))
+
+def _backend(store_id: str, holds: set[str] | None = None) -> DaemonStore:
+    return OfflineBackend(StoreSpecBase(store_id=StoreId(store_id)), {_OUTPUT} if holds is None else holds)
 
 
 def _context(stores: dict[StoreId, Store], locations: dict[str, StoreId]) -> PynixdContext:
@@ -127,6 +145,22 @@ async def test_an_opaque_path_a_backend_holds_is_ensured() -> None:
     assert result.produced_paths == {StorePath(_OUTPUT)}
     assert engine.substitutions_attempted == 0
     assert local.queried == [_OUTPUT], "the local store is still asked first"
+
+
+@pytest.mark.anyio
+async def test_a_path_its_backend_lost_is_substituted_and_unmapped() -> None:
+    """The map alone made this succeed, and the first read of the path failed: nixidae/nixidae#1382."""
+    local = FakeLocalStore()
+    ctx = _context(
+        {StoreId("local"): cast("Store", local), StoreId("builder"): _backend("builder", holds=set())},
+        {_OUTPUT: StoreId("builder")},
+    )
+    engine = FakeEngine(ctx)
+
+    with pytest.raises(AssertionError, match="before it asks a substituter"):
+        await result_of(_goal(engine))
+    assert engine.substitutions_attempted == 1
+    assert _OUTPUT not in ctx.output_locations
 
 
 @pytest.mark.anyio

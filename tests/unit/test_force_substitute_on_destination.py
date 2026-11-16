@@ -25,7 +25,7 @@ from typing import Any, cast
 from nix_daemon_protocol.ids import StoreId
 from pynixd.config import LocalSocketStoreSpec, PynixdSettings
 from pynixd.proxy import DaemonProxy
-from pynixd.serde import QueryValidPathsRequest, QueryValidPathsResponse
+from pynixd.serde import QueryValidPathsRequest, QueryValidPathsResponse, StorePath
 from pynixd.store.local_db import LocalDBStore
 
 
@@ -38,6 +38,11 @@ class _RecordingStore:
     async def execute(self, request: Any, client: Any = None) -> QueryValidPathsResponse:
         self.seen.append(request)
         return QueryValidPathsResponse(paths=set())
+
+
+async def _none_held(paths: set[StorePath], client: object = None) -> set[StorePath]:
+    del paths, client
+    return set()
 
 
 def _proxy(force: bool) -> tuple[Any, _RecordingStore]:
@@ -54,6 +59,7 @@ def _proxy(force: bool) -> tuple[Any, _RecordingStore]:
         local_store=store,
         scheduler=None,
         store_for_output_path=lambda _path: None,
+        backend_holds=_none_held,
     )
     proxy.client = None
     return proxy, store

@@ -447,7 +447,7 @@ async def test_a_client_fetches_a_backend_built_output_through_pynixd(
     An earlier version of this test read the local store directly and called a
     missing path a defect. It is not one. `DaemonProxy.store_for_output_path`
     looks a path up in `ctx.output_locations`, and `QueryValidPaths` reports a
-    backend-resident output as valid on the strength of that. The local store
+    backend-resident output as valid once that backend confirms it. The local store
     holding nothing is the design: pynixd records where an output is and serves
     it from there, and `Scheduler._direct_import_localdb_outputs` is an
     optimisation for the one case where both stores are a `LocalDBStore`.

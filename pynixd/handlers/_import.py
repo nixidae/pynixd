@@ -44,8 +44,8 @@ def write_client(ctx: RequestContext) -> WriteClient:
 async def pull_backend_references(ctx: RequestContext, references: Iterable[StorePath], sent: Container[str]) -> None:
     """Bring into the local store each reference that only a backend holds, before the add that needs it.
 
-    pynixd answers "valid" for a path in `ctx.output_locations` even after the
-    local store lost it, so a client skips that path and sends only its
+    pynixd answers "valid" for a path its backend holds (`PynixdContext.backend_holds`)
+    even after the local store lost it, so a client skips that path and sends only its
     referrers. The local store refuses a referrer while the reference is
     missing there. nixidae/nixidae#1351. *sent*: paths that need no pull, as
     the client sends them itself.
