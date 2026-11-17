@@ -50,7 +50,7 @@ class FaultProxy:
         self.drip_delay = 0.1
 
     async def start(self) -> None:
-        self._server = await asyncio.start_unix_server(self._accept, path=str(self.listen))
+        self._server = await asyncio.start_unix_server(self._accept, path=str(self.listen))  # noqa: TID251 -- nixidae/nixidae#1494
 
     async def stop_listening(self) -> None:
         """Refuse new links: the socket goes away, as when the daemon dies."""
@@ -87,7 +87,7 @@ class FaultProxy:
         return len(self._links)
 
     async def _accept(self, client_r: asyncio.StreamReader, client_w: asyncio.StreamWriter) -> None:
-        upstream_r, upstream_w = await asyncio.open_unix_connection(str(self.upstream))
+        upstream_r, upstream_w = await asyncio.open_unix_connection(str(self.upstream))  # noqa: TID251 -- nixidae/nixidae#1494
         link = (client_w, upstream_w)
         self._links.add(link)
         self._pumps.spawn(functools.partial(self._pump, upstream_r, client_w, link, from_daemon=True))

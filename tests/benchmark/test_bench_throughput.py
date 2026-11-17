@@ -102,7 +102,7 @@ async def test_throughput_daemon() -> None:
 
         for _ in range(50):
             try:
-                _r, w = await asyncio.open_unix_connection(str(socket_path))
+                _r, w = await asyncio.open_unix_connection(str(socket_path))  # noqa: TID251 -- nixidae/nixidae#1494
                 w.close()
                 await w.wait_closed()
                 break
