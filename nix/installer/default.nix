@@ -183,6 +183,7 @@ let
         cp ${closure}/registration top/nix/.pynixd/reginfo
         cp "$manifestPath" top/nix/.pynixd/manifest.json
         ln -s ${installer}/bin/pynixd-install top/nix/.pynixd/install
+        ln -s ${idleGuard}/bin/pynixd-idle-guard top/nix/.pynixd/idle-guard
         mkdir -p $out
         tar -c \
           --sort=name \

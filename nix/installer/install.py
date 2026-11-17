@@ -28,6 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from pynixd.provisioning.ticket import JoinTicket, SealError, ticket_key, unseal
+
 ROOT: Final = Path("/nix/.pynixd")
 DAEMON_SOCKET: Final = Path("/nix/var/nix/daemon-socket/socket")
 PROFILE: Final = Path("/nix/var/nix/profiles/default")
@@ -36,6 +38,11 @@ PYNIXD_CONF: Final = Path("/etc/pynixd/pynixd.json")
 GHA_CACHE_CREDENTIALS: Final = Path("/etc/pynixd/gha-cache.json")
 """Not under `/run/pynixd`: the unit's `RuntimeDirectory`, which systemd empties when pynixd stops."""
 UNIT_DIR: Final = Path("/etc/systemd/system")
+JOIN_TICKET: Final = Path("/etc/pynixd/join-ticket.json")
+# `--sealed-join-ticket` reads these: a CI job passes a secret through its environment, not its command line.
+TICKET_ENV: Final = "PYNIXD_TICKET"
+TICKET_KEY_ENV: Final = "PYNIXD_TICKET_KEY"
+TICKET_CONTEXT_ENV: Final = "PYNIXD_TICKET_CONTEXT"
 UNITS: Final = ("pynixd.socket", "pynixd.service")
 IDLE_UNIT: Final = "pynixd-idle"
 DARWIN: Final = sys.platform == "darwin"
@@ -166,6 +173,34 @@ def idle_units(guard: Path, seconds: float) -> dict[str, str]:
             "[Install]\nWantedBy=timers.target\n"
         ),
     }
+
+
+def builder_settings(ticket: JoinTicket) -> tuple[dict[str, object], str]:  # object: JSON, as `pynixd_conf` takes
+    """The reverse initiator settings and the `nix.conf` lines of a builder set up from *ticket*."""
+    initiator: dict[str, object] = {"join_ticket": str(JOIN_TICKET), "system_features": ticket.system_features}
+    if ticket.max_jobs is not None:
+        initiator["max_jobs"] = ticket.max_jobs
+    extra = f"extra-system-features = {' '.join(ticket.system_features)}\n" if ticket.system_features else ""
+    return initiator, extra
+
+
+def open_sealed_ticket(environ: dict[str, str]) -> JoinTicket:
+    """The join ticket that `TICKET_ENV` holds sealed, opened with `TICKET_KEY_ENV` and `TICKET_CONTEXT_ENV`."""
+    missing = [name for name in (TICKET_ENV, TICKET_KEY_ENV, TICKET_CONTEXT_ENV) if not environ.get(name)]
+    if missing:
+        raise SystemExit(f"pynixd-install: --sealed-join-ticket needs {', '.join(missing)} in the environment")
+    try:
+        plain = unseal(environ[TICKET_ENV], ticket_key(environ[TICKET_KEY_ENV]), environ[TICKET_CONTEXT_ENV])
+    except SealError as error:
+        raise SystemExit(f"pynixd-install: {error}") from None
+    return JoinTicket.model_validate_json(plain)
+
+
+def write_ticket(ticket: JoinTicket) -> None:
+    JOIN_TICKET.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(JOIN_TICKET, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as out:
+        out.write(ticket.model_dump_json())
 
 
 def _write(path: Path, text: str) -> None:
@@ -314,6 +349,12 @@ def main() -> None:
         metavar="SECONDS",
         help="power the machine off after this many seconds with no build",
     )
+    parser.add_argument(
+        "--sealed-join-ticket",
+        action="store_true",
+        help=f"make this machine a builder from the sealed join ticket in ${TICKET_ENV}, "
+        f"opened with ${TICKET_KEY_ENV} and ${TICKET_CONTEXT_ENV}",
+    )
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise SystemExit("pynixd-install: run as root")
@@ -321,6 +362,13 @@ def main() -> None:
     reverse_initiator = None if args.reverse_initiator is None else json.loads(args.reverse_initiator.read_text())
     if reverse_initiator is not None and not isinstance(reverse_initiator, dict):
         raise SystemExit(f"pynixd-install: {args.reverse_initiator} holds no JSON object")
+    if args.sealed_join_ticket:
+        if reverse_initiator is not None:
+            raise SystemExit("pynixd-install: --sealed-join-ticket and --reverse-initiator exclude each other")
+        ticket = open_sealed_ticket(dict(os.environ))
+        write_ticket(ticket)
+        reverse_initiator, features = builder_settings(ticket)
+        extra = features + extra
     install(Bundle.read(ROOT), args.trusted_user, extra, args.gha_cache, reverse_initiator, args.idle_poweroff)
 
 

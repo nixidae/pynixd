@@ -4,6 +4,10 @@ The controller ends an idle builder itself. This guard ends one that a dead,
 unreachable or wrong controller never ends. A systemd timer runs it each
 minute. Quiet means no build process runs and the store database has not
 changed. A cloud machine launched to terminate on shutdown then costs nothing.
+
+`--wait` holds a CI job instead (nixidae/nixidae#1473): a runner has no
+poweroff that ends its job cleanly, so the guard returns once quiet, and the
+job's last step ends with it.
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ SEEN: Final = Path("/run/pynixd-idle/build-seen")
 # `start-id` and `id-count`'s defaults (`globals.hh`): the installer sets neither.
 FIRST_BUILD_UID: Final = 0x34000000
 BUILD_UIDS: Final = 128 << 16
+WAIT_INTERVAL: Final = 15.0
 
 
 def building(uids: Iterable[int]) -> bool:
@@ -57,20 +62,32 @@ def _mtimes(paths: Iterable[Path]) -> list[float]:
     return times
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(prog="pynixd-idle-guard", description=__doc__.splitlines()[0])
-    parser.add_argument("seconds", type=float, help="power off after this many quiet seconds")
-    args = parser.parse_args()
+def quiet() -> float:
+    """Seconds this machine has been quiet; 0 while a build runs."""
     now = time.time()
     if building(process_uids()):
         SEEN.parent.mkdir(parents=True, exist_ok=True)
         SEEN.touch()
-        return
+        return 0.0
     booted = now - float(Path("/proc/uptime").read_text().split()[0])
-    quiet = quiet_for(now, booted, _mtimes([*DB_FILES, SEEN]))
-    if quiet < args.seconds:
+    return quiet_for(now, booted, _mtimes([*DB_FILES, SEEN]))
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="pynixd-idle-guard", description=__doc__.splitlines()[0])
+    parser.add_argument("seconds", type=float, help="power off after this many quiet seconds")
+    parser.add_argument("--wait", action="store_true", help="return once quiet, instead of powering off")
+    args = parser.parse_args()
+    if args.wait:
+        # Neither a build's start nor its end notifies anyone, so the guard looks again, as its timer does.
+        while (spell := quiet()) < args.seconds:
+            time.sleep(WAIT_INTERVAL)
+        print(f"pynixd-idle-guard: quiet for {spell:.0f} s, ending", file=sys.stderr)
         return
-    print(f"pynixd-idle-guard: quiet for {quiet:.0f} s, powering off", file=sys.stderr)
+    spell = quiet()
+    if spell < args.seconds:
+        return
+    print(f"pynixd-idle-guard: quiet for {spell:.0f} s, powering off", file=sys.stderr)
     systemctl = shutil.which("systemctl") or "/usr/bin/systemctl"
     subprocess.run([systemctl, "poweroff"], check=True)
 

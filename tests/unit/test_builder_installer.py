@@ -11,7 +11,10 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import pytest
+
 from pynixd.config import PynixdSettings
+from pynixd.provisioning.ticket import JoinTicket, seal
 
 if TYPE_CHECKING:
     from types import ModuleType
@@ -74,3 +77,44 @@ def test_process_uids_reads_proc(tmp_path: Path) -> None:
     (tmp_path / "1").mkdir()
     (tmp_path / "self").mkdir()
     assert guard.process_uids(tmp_path) == [(tmp_path / "1").stat().st_uid]
+
+
+KEY_TEXT = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+"""32 bytes, base64: `ticket_key`'s form."""
+
+
+def _sealed_env(ticket: JoinTicket, context: str = '{"pool":"gha"}') -> dict[str, str]:
+    key = bytes(range(32))
+    return {
+        install.TICKET_ENV: seal(ticket.model_dump_json(), key, context),
+        install.TICKET_KEY_ENV: KEY_TEXT,
+        install.TICKET_CONTEXT_ENV: context,
+    }
+
+
+def test_a_sealed_ticket_opens_with_its_key_and_context() -> None:
+    ticket = JoinTicket(token="t0ken", system_features=["gha"], max_jobs=2)
+    assert install.open_sealed_ticket(_sealed_env(ticket)) == ticket
+
+
+def test_a_sealed_ticket_with_another_context_stops_the_install() -> None:
+    env = _sealed_env(JoinTicket(token="t0ken"))
+    env[install.TICKET_CONTEXT_ENV] = '{"pool":"other"}'
+    with pytest.raises(SystemExit, match="does not open"):
+        install.open_sealed_ticket(env)
+
+
+def test_a_missing_variable_is_named() -> None:
+    env = _sealed_env(JoinTicket(token="t0ken"))
+    del env[install.TICKET_KEY_ENV]
+    with pytest.raises(SystemExit, match=install.TICKET_KEY_ENV):
+        install.open_sealed_ticket(env)
+
+
+def test_a_ticket_gives_the_builder_its_features_and_slots() -> None:
+    initiator, extra = install.builder_settings(JoinTicket(token="t", system_features=["gha", "kvm"], max_jobs=3))
+    conf = install.pynixd_conf(False, initiator)
+    settings = PynixdSettings.model_validate_json(json.dumps(conf)).reverse_initiator
+    assert (settings.join_ticket, settings.max_jobs) == (install.JOIN_TICKET, 3)
+    assert extra == "extra-system-features = gha kvm\n"
+    assert install.builder_settings(JoinTicket(token="t"))[1] == ""
