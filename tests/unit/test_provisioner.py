@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import os
 from typing import TYPE_CHECKING
 
@@ -99,7 +100,7 @@ class _World:
     async def _remove(self, store_id: StoreId) -> None:
         self.removed.append(store_id)
 
-    async def wait_for(self, name: str, features: str = "") -> None:
+    async def wait_for(self, name: str, features: str = "", request_id: int = 7) -> None:
         request = BuildDerivationRequest(
             drv_path=StorePath(path=f"/nix/store/0000000000000000000000000000000{name}-{name}.drv"),
             derivation=BasicDerivation(
@@ -108,7 +109,7 @@ class _World:
             build_mode=BuildMode.NORMAL,
         )
         await self.scheduler.queue.enqueue(
-            request, from_goal_path=True, goal_request_id=RequestId(7), options=_options(4)
+            request, from_goal_path=True, goal_request_id=RequestId(request_id), options=_options(4)
         )
         await self.scheduler.schedule()
 
@@ -216,6 +217,9 @@ async def test_a_builder_that_leaves_ends_and_is_replaced(world: _World) -> None
 
     assert world.provider.terminated == [first.provider_id]
     assert world.removed == [], "the acceptor removed the store already"
+    assert world.provider.launches == 1, "a lost builder is replaced after a wait (nixidae/nixidae#1445)"
+    world.now += 30
+    await world.provisioner.step()
     assert world.provider.launches == 2
 
 
@@ -228,6 +232,9 @@ async def test_a_builder_stuck_booting_is_replaced(world: _World) -> None:
     await world.provisioner.step()
 
     assert world.provider.terminated == [first.provider_id]
+    assert world.provider.launches == 1, "a stuck boot is replaced after a wait (nixidae/nixidae#1445)"
+    world.now += 30
+    await world.provisioner.step()
     assert world.provider.launches == 2
 
 
@@ -280,7 +287,54 @@ async def test_a_machine_the_provider_ended_ends_its_row(world: _World) -> None:
     await world.provisioner.step()
 
     assert [row.id for row in await world.db.provisioned.live()] != [first.tags[INSTANCE_TAG]]
-    assert world.provider.launches == 2, "the build still waits, so a new machine starts"
+    assert world.provider.launches == 1, "no replacement at once: the provider just ended one"
+    world.now += 30
+    await world.provisioner.step()
+    assert world.provider.launches == 2, "the build still waits, so a new machine starts after the heartbeat"
+
+
+async def test_machines_the_provider_keeps_ending_space_out_their_replacements(world: _World) -> None:
+    """Each early end doubles the wait: 30, 60, 120 s after the heartbeat of 30 (nixidae/nixidae#1445)."""
+    await world.wait_for("1")
+    await world.provisioner.step()
+    launched_at = [world.now]
+    while len(launched_at) < 4:
+        for machine in list(world.provider.machines_.values()):
+            if machine.state is not MachineState.ENDED:
+                world.provider.machines_[machine.provider_id] = Machine(
+                    machine.provider_id, MachineState.ENDED, machine.tags
+                )
+        before = world.provider.launches
+        await world.provisioner.step()
+        while world.provider.launches == before:
+            world.now += 1
+            await world.provisioner.step()
+        launched_at.append(world.now)
+    gaps = [later - earlier for earlier, later in itertools.pairwise(launched_at)]
+    assert gaps == [30, 60, 120], gaps
+
+
+async def test_a_machine_that_ends_idle_resets_the_wait(world: _World) -> None:
+    await world.wait_for("1")
+    await world.provisioner.step()
+    [first] = world.provider.machines_.values()
+    world.provider.machines_[first.provider_id] = Machine(first.provider_id, MachineState.ENDED, first.tags)
+    await world.provisioner.step()
+    world.now += 30
+    await world.provisioner.step()
+    [second] = [m for m in world.provider.machines_.values() if m.state is not MachineState.ENDED]
+    joined = await world.provisioner.join(world.ticket(second.provider_id).token)
+    assert joined is not None
+    await world.finish_all()
+    await world.provisioner.step()
+    world.now += 61
+    await world.provisioner.step()
+    assert second.provider_id in world.provider.terminated, "it ended idle"
+
+    # A new request: failing build 1 ended request 7, and a build only it wanted is cancelled.
+    await world.wait_for("2", request_id=8)
+    await world.provisioner.step()
+    assert world.provider.launches == 3, "an idle end left no wait"
 
 
 @pytest.fixture

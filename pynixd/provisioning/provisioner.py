@@ -59,6 +59,9 @@ log = structlog.get_logger(__name__)
 OWNER_TAG = "pynixd-owner"
 INSTANCE_TAG = "pynixd-instance"
 POOL_TAG = "pynixd-pool"
+EARLY_ENDS = frozenset({EndReason.GONE, EndReason.DISCONNECTED, EndReason.LAUNCH_TIMEOUT})
+"""Ends that say the machine did not do its job: each one doubles the pool's wait before its next launch."""
+BACKOFF_CEILING = 600.0
 STORE_PREFIX = "provisioned-"
 SHUTDOWN_SECONDS = 30.0
 """How long ending every machine at shutdown may take; the next start ends what is left."""
@@ -116,7 +119,9 @@ class Provisioner:
         self._idle_since: dict[str, float] = {}
         self._ending: set[str] = set()
         self._cooldown: dict[str, float] = {}
-        """Pools the provider refused, and when to ask again."""
+        """Pools that may not launch yet, and when they may: the provider refused, or machines ended early."""
+        self._early_ends: dict[str, int] = {}
+        """Early ends by pool since its last machine ended idle (`EARLY_ENDS`)."""
         self._draining: set[str] = set()
         self._group: TaskGroup | None = None
         self._seen: list[tuple[InstanceRow, Held]] = []
@@ -204,7 +209,7 @@ class Provisioner:
                 continue
             for _ in range(count):
                 if not await self._launch(pool_name, now):
-                    self._cooldown[pool_name] = now + self._settings.heartbeat
+                    self._cooldown[pool_name] = max(self._cooldown.get(pool_name, 0.0), now + self._settings.heartbeat)
                     break
         return self._until_next(held, now)
 
@@ -319,11 +324,23 @@ class Provisioner:
             for provider_id in provider_ids:
                 await self._terminate(provider_id)
             await self._tables.ended(row.id, reason, at_ms=self._ms())
+            self._back_off(row.pool, reason)
             self._idle_since.pop(row.id, None)
             self._draining.discard(row.id)
         finally:
             self._ending.discard(row.id)
         self.wake()
+
+    def _back_off(self, pool: str, reason: EndReason) -> None:
+        """A machine ended by its provider, or lost, launches no replacement at once: on dynhetz a builder
+        terminated by hand was replaced 22 s later, eleven times in five minutes (nixidae/nixidae#1445)."""
+        if reason is EndReason.IDLE:
+            self._early_ends.pop(pool, None)
+        if reason not in EARLY_ENDS:
+            return
+        count = self._early_ends[pool] = self._early_ends.get(pool, 0) + 1
+        delay = min(self._settings.heartbeat * 2 ** (count - 1), BACKOFF_CEILING)
+        self._cooldown[pool] = max(self._cooldown.get(pool, 0.0), self._clock() + delay)
 
     async def _tagged(self, instance_id: str) -> list[str]:
         """The machine of a row whose launch never answered, found by its tag."""
