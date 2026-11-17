@@ -216,9 +216,14 @@ ghalib.evalWorkflow {
           };
           run = lib.concatStringsSep " && " [
             ''cd "$RUNNER_TEMP/release"''
+            # Each call names itself: a 403 says only "not accessible", not which call.
+            ''echo "publish: release" >&2''
             ''(gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --target "$GITHUB_SHA" --prerelease --title "pynixd installer" --notes "pynixd as the only Nix daemon of a machine: nixidae/nixidae#1365")''
+            ''echo "publish: move the tag" >&2''
             ''gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true > /dev/null''
+            ''echo "publish: upload" >&2''
             ''gh release upload "$TAG" pynixd-*.tar.* --clobber''
+            ''echo "publish: notes" >&2''
             ''gh release edit "$TAG" --notes "pynixd as the only Nix daemon of a machine: nixidae/nixidae#1365. Built from $GITHUB_SHA."''
           ];
         }
