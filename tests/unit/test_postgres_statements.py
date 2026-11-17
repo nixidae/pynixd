@@ -15,7 +15,17 @@ import pytest
 
 from pynixd_store.postgres_db import PostgresBackend
 from pynixd_store.postgres_schema import migrate
-from pynixd_store.sql import POSTGRES, SQLITE, gc, liveness, nix, observations, path_access, placement
+from pynixd_store.sql import (
+    POSTGRES,
+    SQLITE,
+    gc,
+    liveness,
+    nix,
+    observations,
+    path_access,
+    placement,
+    provisioning,
+)
 from tests._conftest.engines import postgres_parameters, sqlite_parameters
 
 if TYPE_CHECKING:
@@ -28,6 +38,7 @@ GROUPS: dict[str, tuple[object, object]] = {
     "path_access": (path_access.POSTGRES, path_access.SQLITE),
     "observations": (observations.POSTGRES, observations.SQLITE),
     "placement": (placement.POSTGRES, placement.SQLITE),
+    "provisioning": (provisioning.POSTGRES, provisioning.SQLITE),
     "gc": (gc.POSTGRES, gc.SQLITE),
     "liveness": (liveness.POSTGRES, liveness.SQLITE),
 }
