@@ -48,7 +48,10 @@ vivariumLib.mkTest {
   name = "pynixd-provisioning";
   backend = "uml";
 
-  pythonPath = [ ../../daemon/helpers ];
+  pythonPath = [
+    ../../daemon/helpers
+    ../../provisioning
+  ];
 
   defaults = vivariumLib.settingsClosure;
   settings = {
@@ -123,5 +126,9 @@ vivariumLib.mkTest {
   phases.provision = {
     script = ../../provisioning/phase.py;
     after = [ "boot" ];
+  };
+  phases.interrupt = {
+    script = ../../provisioning/interrupt.py;
+    after = [ "provision" ];
   };
 }

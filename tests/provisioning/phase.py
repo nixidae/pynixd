@@ -10,61 +10,11 @@ pool's idle time.
 from __future__ import annotations
 
 import json
-import shlex
 import time
-from collections.abc import Mapping
-from typing import Any
 
-import anyio
-from daemon_helpers import as_tester, store_path
-from vivarium_runner import Machine, Machines
-
-POOL_TAG = "pynixd-pool"
-DB = "/nix/var/nix/db/db.sqlite"
-TABLE = "PynixdProvisionedInstance"
-API = "curl --silent --show-error --unix-socket /run/vivarium/cloud.sock --write-out '\\n%{http_code}'"
-
-
-async def call(vm: Machine, method: str, path: str, body: dict[str, Any] | None = None) -> tuple[int, Any]:
-    data = "" if body is None else f" --header 'Content-Type: application/json' --data {shlex.quote(json.dumps(body))}"
-    out = await vm.succeed(f"{API} --request {method}{data} http://cloud{path}")
-    text, _, status = out.rpartition("\n")
-    return int(status), json.loads(text)
-
-
-async def pool_instances(vm: Machine) -> list[dict[str, Any]]:
-    _, listed = await call(vm, "GET", f"/v1/instances?tag:{POOL_TAG}=big")
-    return list(listed["instances"])
-
-
-def nix_string(text: str) -> str:
-    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
-async def feature_drv(vm: Machine, settings: Mapping[str, str]) -> tuple[str, str]:
-    """A derivation only a store with the pool's feature builds: its `.drv` and its output."""
-    expression = (
-        f'let bb = builtins.storePath "{settings["busybox"]}"; in derivation {{'
-        ' name = "provisioned";'
-        f' system = "{settings["system"]}";'
-        ' builder = "${bb}/bin/sh";'
-        f' args = [ "-c" {nix_string("echo provisioned > $out")} ];'
-        f' requiredSystemFeatures = [ "{settings["feature"]}" ];'
-        " }"
-    )
-    drv = store_path(await as_tester(vm, f"nix-instantiate --expr {shlex.quote(expression)}"))
-    out = (await vm.succeed(f"nix-store -q --outputs {drv}")).strip()
-    return drv, out
-
-
-async def logged(vm: Machine, event: str, timeout: float) -> str:
-    """The first pynixd journal line that names *event*. The journal has no wait API; this reads it each second."""
-    with anyio.fail_after(timeout):
-        while True:
-            rc, out = await vm.execute(f"journalctl -u pynixd -o cat | grep -m1 -F {shlex.quote(event)}")
-            if rc == 0:
-                return out.strip()
-            await anyio.sleep(1)
+from cloud_helpers import call, feature_drv, logged, pool_instances, rows
+from daemon_helpers import as_tester
+from vivarium_runner import Machines
 
 
 async def test(vms: Machines) -> None:
@@ -84,7 +34,7 @@ async def test(vms: Machines) -> None:
     await cloud.terminate(rogue["id"])
     assert await pool_instances(controller) == [], "nothing waits, so nothing launches"
 
-    drv, out = await feature_drv(controller, settings)
+    drv, out = await feature_drv(controller, settings, "provisioned", "echo provisioned > $out")
     started = time.monotonic()
     await as_tester(controller, f"nix-store --realise {drv}", timeout=600)
     built = (await controller.succeed(f"cat {out}")).strip()
@@ -99,8 +49,7 @@ async def test(vms: Machines) -> None:
 
     idle_from = time.monotonic()
     await cloud.wait_ended(launched["id"], timeout=180)
-    rows = await controller.succeed(f"sqlite3 -json {DB} 'SELECT id, state, storeId, endReason FROM {TABLE}'")
-    [row] = json.loads(rows)
+    [row] = await rows(controller)
     assert (row["state"], row["endReason"], row["storeId"]) == ("ended", "idle", f"provisioned-{row['id']}"), row
     print(f"[test] {launched['id']} ended {time.monotonic() - idle_from:.0f} s after the build: {row}")
     assert [(one["id"], one["state"]) for one in await pool_instances(controller)] == [(launched["id"], "terminated")]
