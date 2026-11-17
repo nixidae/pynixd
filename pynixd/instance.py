@@ -848,7 +848,7 @@ class Server:
         # reaching it at all imports `asyncssh`. Issue #30.
         if s.reverse_acceptor.enabled:
             host_key = _optional.reverse_server.client_key(s.reverse_acceptor)
-            self.provisioner = self._provisioner(host_key.export_public_key().decode())
+            self.provisioner = self.ctx.provisioner = self._provisioner(host_key.export_public_key().decode())
             self.reverse_acceptor = await _optional.reverse_server.start_reverse_acceptor(
                 server=self,
                 settings=s.reverse_acceptor,

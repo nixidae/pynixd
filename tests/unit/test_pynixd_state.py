@@ -71,7 +71,7 @@ def _ctx(
     queue = SimpleNamespace(queue=list(builds or []), _queue=list(builds or []))
     queue.counts = lambda: BuildQueue.counts(cast("Any", queue))
     scheduler = SimpleNamespace(queue=queue)
-    return SimpleNamespace(scheduler=scheduler, stores=stores or {}, sessions=ClientSessions())
+    return SimpleNamespace(scheduler=scheduler, stores=stores or {}, sessions=ClientSessions(), provisioner=None)
 
 
 def test_benchmark_names_the_largest_allocation_sites() -> None:

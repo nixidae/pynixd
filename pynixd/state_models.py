@@ -166,6 +166,22 @@ class Benchmark(_Model):
     """The largest live allocation sites, by traceback. Empty when not tracing."""
 
 
+class ProvisionedRow(_Model):
+    """One machine the provisioner holds, as its last step saw it. nixidae/nixidae#1198."""
+
+    id: str
+    pool: str
+    state: str
+    store: str | None
+    provider_id: str | None
+    age_s: float
+    builds: int
+    idle_s: float | None
+    """How long it has run no build; None while it builds or boots."""
+    notice_s: float | None
+    """Seconds left of an interruption notice."""
+
+
 class FederatedError(_Model):
     error: str
 
@@ -181,6 +197,7 @@ class StateReport(_Model):
     transfers: Transfers | None = None
     totals: Totals | None = None
     benchmark: Benchmark | None = None
+    provisioning: list[ProvisionedRow] | None = None
     federated: dict[str, FederatedError | StateReport] | None = None
     """Each other store's answer. `FederatedError` first: with unknown keys
     ignored, `{"error": ...}` would also parse as an empty report."""

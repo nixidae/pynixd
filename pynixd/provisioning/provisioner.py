@@ -36,6 +36,7 @@ import structlog
 from nix_daemon_protocol.ids import StoreId
 from pynixd_store.provisioning_tables import PENDING
 
+from ..state_models import ProvisionedRow
 from .decide import EndReason, Held, InstanceState, Pool, decide
 from .demand import wants
 from .provider import MachineState, NoCapacity, ProviderError
@@ -115,6 +116,8 @@ class Provisioner:
         """Pools the provider refused, and when to ask again."""
         self._draining: set[str] = set()
         self._group: TaskGroup | None = None
+        self._seen: list[tuple[InstanceRow, Held]] = []
+        """What the last step read, for `report`."""
 
     def wake(self) -> None:
         self._wake.set()
@@ -177,6 +180,7 @@ class Provisioner:
                 await self._end(row, EndReason.GONE)
                 rows.remove(row)
         held = [self._held(row, now, machines.get(row.id)) for row in rows]
+        self._seen = list(zip(rows, held, strict=True))
         for row, one in zip(rows, held, strict=True):
             if one.notice is not None and one.state is InstanceState.RUNNING:
                 self._drain(row, one.notice)
@@ -195,6 +199,24 @@ class Provisioner:
                     self._cooldown[pool_name] = now + self._settings.heartbeat
                     break
         return self._until_next(held, now)
+
+    def report(self) -> list[ProvisionedRow]:
+        """The machines the last step saw, for `pynixd state`."""
+        now = self._clock()
+        return [
+            ProvisionedRow(
+                id=row.id,
+                pool=row.pool,
+                state=str(one.state),
+                store=row.store_id,
+                provider_id=row.provider_id,
+                age_s=round(now - one.launched_at, 1),
+                builds=one.builds,
+                idle_s=None if one.idle_since is None else round(now - one.idle_since, 1),
+                notice_s=None if one.notice is None else round(one.notice - now, 1),
+            )
+            for row, one in self._seen
+        ]
 
     async def _machines(self) -> dict[str, Machine]:
         """This owner's machines by instance id; none when the provider does not answer."""

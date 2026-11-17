@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
     from .config import PynixdSettings
     from .connection import ClientConn
+    from .provisioning.provisioner import Provisioner
     from .scheduler import Scheduler
     from .session_builders import SessionBuilders
     from .store.base import Store
@@ -69,6 +70,8 @@ class PynixdContext:
     scheduler: Scheduler | None = None
     session_builders: SessionBuilders | None = None
     """The stores of trusted clients' `builders`; `Server` sets it."""
+    provisioner: Provisioner | None = None
+    """The builders it launches, for `pynixd state`; set when `provisioning.pools` is."""
     trust: TrustPolicy = field(default_factory=TrustPolicy)
     """Who may connect over the Unix listener, and who is trusted.
 

@@ -249,6 +249,8 @@ async def test_a_notice_drains_the_builder_and_launches_a_replacement(world: _Wo
         await world.provisioner.step()
 
     assert drained == [(store_id, 110.0)], "one drain, ending before the notice does"
+    [shown] = [row for row in world.provisioner.report() if row.store == store_id]
+    assert (shown.state, shown.builds, shown.notice_s) == ("running", 0, 120.0)
     assert world.provider.launches == 2, "the replacement starts before the notice ends"
     assert world.provider.terminated == []
 

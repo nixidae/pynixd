@@ -26,6 +26,7 @@ from .state_models import (
     ExperimentRow,
     LimitRow,
     PoolRow,
+    ProvisionedRow,
     QueueCounts,
     StateReport,
     StoreRow,
@@ -57,6 +58,7 @@ KNOWN_SECTIONS: tuple[str, ...] = (
     "transfers",
     "totals",
     "benchmark",
+    "provisioning",
 )
 """Section names `collect` answers. New sections extend this tuple."""
 
@@ -75,7 +77,12 @@ def collect(ctx: PynixdContext, wants: list[str] | None = None) -> StateReport:
         transfers=_transfers_section(ctx) if "transfers" in wanted else None,
         totals=_totals_section() if "totals" in wanted else None,
         benchmark=_benchmark_section() if "benchmark" in wanted else None,
+        provisioning=_provisioning_section(ctx) if "provisioning" in wanted else None,
     )
+
+
+def _provisioning_section(ctx: PynixdContext) -> list[ProvisionedRow]:
+    return [] if ctx.provisioner is None else ctx.provisioner.report()
 
 
 def _queue_section(ctx: PynixdContext) -> QueueCounts:
