@@ -132,3 +132,48 @@ async def test_a_start_id_or_id_count_nix_asserts_on_fails_the_build_with_no_dae
         )
     assert rc == 1, err
     assert f"error: {words}" in err, err
+
+
+def _owned(files: str, extra: str, *, structured: bool = False) -> str:
+    """A build that checks it owns each of *files* in its directory, and writes to it.
+
+    The sandbox's `/bin/sh` has no `chmod` or `stat`: `[ -O ]` asks what `chmod` needs, ownership.
+    """
+    out = '${builtins.placeholder "out"}'
+    script = f'ok=1; for f in {files}; do [ -O \\"$f\\" ] && echo >> \\"$f\\" || ok=0; done; echo $ok > {out}'
+    return (
+        'derivation { name = "auto-owned"; system = builtins.currentSystem; builder = "/bin/sh";'
+        f' args = [ "-c" "{script}" ]; {"__structuredAttrs = true;" if structured else ""} {extra} }}'
+    )
+
+
+@pytest.mark.parametrize(
+    ("files", "extra", "structured"),
+    [
+        pytest.param("$notePath", 'note = "n"; passAsFile = [ "note" ];', False, id="passAsFile"),
+        pytest.param("$NIX_ATTRS_JSON_FILE $NIX_ATTRS_SH_FILE", "", True, id="structuredAttrs"),
+        pytest.param(
+            "graph",
+            'exportReferencesGraph = [ "graph" (derivation { name = "auto-dep"; system = builtins.currentSystem;'
+            ' builder = "/bin/sh"; args = [ "-c" "echo > $out" ]; }) ];',
+            False,
+            id="exportReferencesGraph",
+        ),
+    ],
+)
+async def test_the_build_user_owns_the_files_pynixd_writes_for_the_build(
+    tmp_path: Path, files: str, extra: str, structured: bool
+) -> None:
+    """`writeBuilderFile` gives each file to the build user (`derivation-builder.cc:918`), and stdenv chmods
+    `.attr-*`. pynixd wrote them as root, and a build failed on the EC2 builders (nixidae/nixidae#1416)."""
+    expr = _owned(files, extra, structured=structured)
+    results = []
+    for route in (OpRoute.pynixd, OpRoute.daemon):
+        async with _serve(tmp_path, route) as url:
+            rc, out, err, _both = await run_subproc(
+                [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--print-out-paths", "--expr", expr],
+                expected_retcode=None,
+            )
+        assert rc == 0, err
+        results.append((HERE / route.name / "store" / out.strip().lstrip("/")).read_text().strip())
+    assert results == ["1", "1"], f"pynixd, daemon: {results}"
