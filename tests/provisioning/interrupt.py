@@ -10,16 +10,11 @@ from __future__ import annotations
 import json
 import time
 
-from cloud_helpers import feature_drv, pool_instances, rows, until
-from vivarium_runner import Machine, Machines
+from cloud_helpers import exists, feature_drv, pool_instances, rows, until
+from vivarium_runner import Machines
 
 BUILD_SECONDS = 60
 NOTICE_SECONDS = 40.0
-
-
-async def _exists(vm: Machine, path: str) -> bool:
-    rc, _ = await vm.execute(f"test -e {path}")
-    return rc == 0
 
 
 async def test(vms: Machines) -> None:
@@ -50,7 +45,7 @@ async def test(vms: Machines) -> None:
     await cloud.interrupt(first["id"], NOTICE_SECONDS)
     print(f"[test] {first['id']} builds; it has a {NOTICE_SECONDS:g} s notice")
 
-    await until(lambda: _exists(controller, "/tmp/long.rc"), 600)
+    await until(lambda: exists(controller, "/tmp/long.rc"), 600)
     rc = (await controller.succeed("cat /tmp/long.rc")).strip()
     assert rc == "0", await controller.succeed("tail -n 20 /tmp/long.out")
     assert (await controller.succeed(f"cat {out}")).strip() == "long"

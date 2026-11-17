@@ -40,6 +40,11 @@ async def rows(vm: Machine) -> list[dict[str, Any]]:
     return list(json.loads(out or "[]"))
 
 
+async def exists(vm: Machine, path: str) -> bool:
+    rc, _ = await vm.execute(f"test -e {path}")
+    return rc == 0
+
+
 def nix_string(text: str) -> str:
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 

@@ -131,4 +131,8 @@ vivariumLib.mkTest {
     script = ../../provisioning/interrupt.py;
     after = [ "provision" ];
   };
+  phases.crash = {
+    script = ../../provisioning/crash.py;
+    after = [ "interrupt" ];
+  };
 }
