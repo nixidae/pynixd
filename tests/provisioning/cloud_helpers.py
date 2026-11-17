@@ -49,15 +49,18 @@ def nix_string(text: str) -> str:
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-async def feature_drv(vm: Machine, settings: Mapping[str, str], name: str, script: str) -> tuple[str, str]:
-    """A derivation only a store with the pool's feature builds: its `.drv` and its output. `${bb}` is busybox."""
+async def feature_drv(
+    vm: Machine, settings: Mapping[str, str], name: str, script: str, feature: str | None = None
+) -> tuple[str, str]:
+    """A derivation only a store with *feature* builds, the pool's by default: its `.drv` and its output.
+    `${bb}` is busybox."""
     expression = (
         f'let bb = builtins.storePath "{settings["busybox"]}"; in derivation {{'
         f" name = {nix_string(name)};"
         f' system = "{settings["system"]}";'
         ' builder = "${bb}/bin/sh";'
         f' args = [ "-c" {nix_string(script)} ];'
-        f' requiredSystemFeatures = [ "{settings["feature"]}" ];'
+        f' requiredSystemFeatures = [ "{feature or settings["feature"]}" ];'
         " }"
     )
     drv = store_path(await as_tester(vm, f"nix-instantiate --expr {shlex.quote(expression)}"))

@@ -59,7 +59,9 @@ class _Provider:
 
 
 class _World:
-    def __init__(self, db: LocalStoreDB, scheduler: Scheduler, provider: _Provider) -> None:
+    def __init__(
+        self, db: LocalStoreDB, scheduler: Scheduler, provider: _Provider, mandatory_features: list[str] | None = None
+    ) -> None:
         self.db = db
         self.scheduler = scheduler
         self.provider = provider
@@ -75,6 +77,9 @@ class _World:
                     name="arm",
                     template="worker",
                     systems=["aarch64-linux"],
+                    features=mandatory_features or [],
+                    mandatory_features=mandatory_features or [],
+                    pressure_wait=60.0,
                     max_instances=2,
                     idle_seconds=60.0,
                     launch_timeout=120.0,
@@ -94,10 +99,12 @@ class _World:
     async def _remove(self, store_id: StoreId) -> None:
         self.removed.append(store_id)
 
-    async def wait_for(self, name: str) -> None:
+    async def wait_for(self, name: str, features: str = "") -> None:
         request = BuildDerivationRequest(
             drv_path=StorePath(path=f"/nix/store/0000000000000000000000000000000{name}-{name}.drv"),
-            derivation=BasicDerivation(platform="aarch64-linux", builder=""),
+            derivation=BasicDerivation(
+                platform="aarch64-linux", builder="", env={"requiredSystemFeatures": features} if features else {}
+            ),
             build_mode=BuildMode.NORMAL,
         )
         await self.scheduler.queue.enqueue(
@@ -150,7 +157,10 @@ async def test_a_waiting_build_launches_a_builder_whose_ticket_joins_once(world:
     await world.provisioner.step()
     assert world.provider.launches == 1, "a booting builder's slot counts"
 
-    assert await world.provisioner.join(ticket.token) == store_id_of(row.id)
+    joined = await world.provisioner.join(ticket.token)
+    assert joined is not None
+    assert joined.store_id == store_id_of(row.id)
+    assert joined.mandatory_features == frozenset(), "a pool with no mandatory features sets none"
     assert await world.provisioner.join(ticket.token) is None, "a token joined twice"
     assert await world.provisioner.join("not-a-token") is None
 
@@ -161,7 +171,9 @@ async def test_an_idle_builder_ends_after_its_idle_time(world: _World) -> None:
     await world.wait_for("1")
     await world.provisioner.step()
     [launched] = world.provider.machines_.values()
-    store_id = await world.provisioner.join(world.ticket(launched.provider_id).token)
+    joined = await world.provisioner.join(world.ticket(launched.provider_id).token)
+    assert joined is not None
+    store_id = joined.store_id
     await world.finish_all()
 
     await world.provisioner.step()
@@ -194,7 +206,9 @@ async def test_a_builder_that_leaves_ends_and_is_replaced(world: _World) -> None
     await world.wait_for("1")
     await world.provisioner.step()
     [first] = world.provider.machines_.values()
-    store_id = await world.provisioner.join(world.ticket(first.provider_id).token)
+    joined = await world.provisioner.join(world.ticket(first.provider_id).token)
+    assert joined is not None
+    store_id = joined.store_id
     assert store_id is not None
 
     await world.provisioner.left(store_id)
@@ -239,7 +253,9 @@ async def test_a_notice_drains_the_builder_and_launches_a_replacement(world: _Wo
     await world.wait_for("1")
     await world.provisioner.step()
     [first] = world.provider.machines_.values()
-    store_id = await world.provisioner.join(world.ticket(first.provider_id).token)
+    joined = await world.provisioner.join(world.ticket(first.provider_id).token)
+    assert joined is not None
+    store_id = joined.store_id
     world.provider.machines_[first.provider_id] = Machine(
         first.provider_id, MachineState.RUNNING, first.tags, notice=world.now + 120
     )
@@ -265,3 +281,38 @@ async def test_a_machine_the_provider_ended_ends_its_row(world: _World) -> None:
 
     assert [row.id for row in await world.db.provisioned.live()] != [first.tags[INSTANCE_TAG]]
     assert world.provider.launches == 2, "the build still waits, so a new machine starts"
+
+
+@pytest.fixture
+async def gated(tmp_path: Path) -> AsyncIterator[_World]:
+    """The world with a pool whose machines take only builds that need `aws`."""
+    layout = StoreLayout.chroot(tmp_path)
+    os.close(open_local_store(layout, {}, "2.35.0"))
+    db = await LocalStoreDB.open(layout)
+    store = MockStore("local", feature_matrix={"x86_64-linux": set()})
+    ctx = PynixdContext(settings=PynixdSettings(), _stores={LOCAL_STORE_ID: store})
+    ctx.scheduler = scheduler = Scheduler(ctx)
+    async with db:
+        world = _World(db, scheduler, _Provider(), mandatory_features=["aws"])
+        # `Provisioner.run` registers its pools so; the tests drive `step` alone.
+        scheduler.add_dynamic_feature("aarch64-linux", "aws")
+        yield world
+
+
+async def test_a_build_that_needs_no_mandatory_feature_launches_nothing(gated: _World) -> None:
+    """An ordinary build fit every pool, so other agents' builds launched EC2 builders (nixidae/nixidae#1425)."""
+    await gated.wait_for("1")
+    await gated.provisioner.step()
+    assert gated.provider.launches == 0
+
+
+async def test_a_build_that_needs_the_mandatory_feature_launches_a_builder_that_takes_only_such(
+    gated: _World,
+) -> None:
+    await gated.wait_for("1", features="aws")
+    await gated.provisioner.step()
+    assert gated.provider.launches == 1
+    [launched] = gated.provider.machines_.values()
+    joined = await gated.provisioner.join(gated.ticket(launched.provider_id).token)
+    assert joined is not None
+    assert joined.mandatory_features == frozenset({"aws"})

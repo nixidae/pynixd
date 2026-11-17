@@ -36,6 +36,7 @@ import structlog
 from nix_daemon_protocol.ids import StoreId
 from pynixd_store.provisioning_tables import PENDING
 
+from ..reverse_server import Admitted
 from ..state_models import ProvisionedRow
 from .decide import EndReason, Held, InstanceState, Pool, decide
 from .demand import wants
@@ -79,6 +80,8 @@ def pool_of(settings: ProvisioningPoolSettings) -> Pool:
         name=settings.name,
         systems=frozenset(settings.systems),
         features=frozenset(settings.features),
+        mandatory_features=frozenset(settings.mandatory_features),
+        pressure_wait=settings.pressure_wait,
         max_instances=settings.max_instances,
         min_instances=settings.min_instances,
         slots=settings.slots,
@@ -185,8 +188,13 @@ class Provisioner:
             if one.notice is not None and one.state is InstanceState.RUNNING:
                 self._drain(row, one.notice)
         queue = self._scheduler.queue
-        waiting_ids = self._scheduler.no_candidate | self._scheduler.held_by_pressure
-        waiting = wants(build for build in queue.queue if build.build_id in waiting_ids)
+        no_candidate = self._scheduler.no_candidate
+        busy = self._scheduler.held_by_pressure - no_candidate
+        waiting = wants(
+            (build for build in queue.queue if build.build_id in no_candidate or build.build_id in busy),
+            busy,
+            time.monotonic(),
+        )
         decision = decide(self.pools, waiting, held, now)
         by_id = {row.id: row for row in rows}
         for instance_id, reason in decision.terminate.items():
@@ -336,7 +344,7 @@ class Provisioner:
     def _ms(self) -> int:
         return int(self._clock() * 1000)
 
-    async def join(self, token: str) -> StoreId | None:
+    async def join(self, token: str) -> Admitted | None:
         row = await self._tables.by_token(token_sha256(token))
         if row is None:
             return None
@@ -345,7 +353,9 @@ class Provisioner:
             return None
         log.info("provisioning_joined", instance=row.id, store_id=store_id)
         self.wake()
-        return store_id
+        pool = next((pool for pool in self.pools if pool.name == row.pool), None)
+        # A row of a pool the settings no longer name keeps no rule: it builds nothing new for long.
+        return Admitted(store_id, frozenset() if pool is None else pool.mandatory_features)
 
     async def left(self, store_id: StoreId) -> None:
         for row in await self._tables.live():

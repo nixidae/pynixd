@@ -76,3 +76,22 @@ def test_an_instance_stuck_pending_is_ended_and_replaced() -> None:
     assert decide([ARM], [ARM_BUILD], [stuck], now=101) == Decision(
         launch={"arm": 1}, terminate={"i-1": EndReason.LAUNCH_TIMEOUT}
     )
+
+
+GATED = Pool(
+    name="gated",
+    systems=frozenset({"x86_64-linux"}),
+    features=frozenset({"aws"}),
+    mandatory_features=frozenset({"aws"}),
+)
+
+
+def test_a_pool_with_mandatory_features_counts_only_builds_that_need_them() -> None:
+    assert attribute([GATED], [Want("x86_64-linux"), Want("x86_64-linux", frozenset({"aws"}))]) == {"gated": 1}
+
+
+def test_a_build_a_busy_store_holds_counts_only_after_the_pools_wait() -> None:
+    patient = Pool(name="patient", systems=frozenset({"x86_64-linux"}), pressure_wait=60.0)
+    assert attribute([patient], [Want("x86_64-linux", held_for=59.0)]) == {}
+    assert attribute([patient], [Want("x86_64-linux", held_for=60.0)]) == {"patient": 1}
+    assert attribute([patient], [Want("x86_64-linux")]) == {"patient": 1}, "a build no store can take counts at once"

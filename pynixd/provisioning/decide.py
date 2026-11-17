@@ -52,6 +52,9 @@ class Pool:
     name: str
     systems: frozenset[str]
     features: frozenset[str] = frozenset()
+    mandatory_features: frozenset[str] = frozenset()
+    pressure_wait: float = 0.0
+    """Seconds a build held by a busy store waits before it counts."""
     max_instances: int = 1
     min_instances: int = 0
     slots: int = 1
@@ -61,7 +64,12 @@ class Pool:
     """Seconds an instance may stay pending before it is given up."""
 
     def builds(self, want: Want) -> bool:
-        return want.system in self.systems and want.features <= self.features
+        return (
+            want.system in self.systems
+            and want.features <= self.features
+            and self.mandatory_features <= want.features
+            and (want.held_for is None or want.held_for >= self.pressure_wait)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +78,8 @@ class Want:
 
     system: str
     features: frozenset[str] = frozenset()
+    held_for: float | None = None
+    """For a build a busy store holds, seconds since it was queued; None when no store can take it."""
 
 
 @dataclass(frozen=True, slots=True)

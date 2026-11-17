@@ -11,6 +11,7 @@ dispatching.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, cast
 
 import anyio
@@ -51,11 +52,20 @@ def build_slots(declared: object, store_id: str) -> int:
     return UNDECLARED_MAX_JOBS
 
 
+@dataclass(frozen=True, slots=True)
+class Admitted:
+    """A builder the acceptor lets register, and what it may build."""
+
+    store_id: StoreId
+    mandatory_features: frozenset[str] = frozenset()
+    """Features a build must need to go here (`Machine::mandatoryMet`); a pool sets them on its builders."""
+
+
 class Joiner(Protocol):
     """What admits a builder by the join token a provisioner gave it. nixidae/nixidae#1198."""
 
-    async def join(self, token: str) -> StoreId | None:
-        """The store id of the instance *token* belongs to, once; None for an unknown, used or ended token."""
+    async def join(self, token: str) -> Admitted | None:
+        """The instance *token* belongs to, once; None for an unknown, used or ended token."""
         ...
 
     async def left(self, store_id: StoreId) -> None:
@@ -69,8 +79,8 @@ async def admit(
     pins: list[asyncssh.SSHKey],
     joiner: Joiner | None,
     fallback_id: str,
-) -> StoreId | None:
-    """The store id a registering builder gets, or None to refuse it.
+) -> Admitted | None:
+    """What a registering builder is admitted as, or None to refuse it.
 
     A builder that sends a join token is admitted by the token alone, under
     the id of its instance: a token holder cannot take another store's id.
@@ -82,17 +92,19 @@ async def admit(
         if joiner is None or not isinstance(token, str):
             log.warning("reverse_join_refused", reason="this acceptor provisions no builders")
             return None
-        store_id = await joiner.join(token)
-        if store_id is None:
+        admitted = await joiner.join(token)
+        if admitted is None:
             log.warning("reverse_join_refused", reason="unknown, used or ended join token")
-        return store_id
+        return admitted
     if pins and (presented is None or presented not in pins):
         log.warning("reverse_builder_key_not_pinned", store_id=reg.get("store_id"))
         return None
-    return StoreId(str(reg.get("store_id") or fallback_id))
+    return Admitted(StoreId(str(reg.get("store_id") or fallback_id)))
 
 
-def reverse_spec(reg: dict[str, object], store_id: str) -> ReverseStoreSpec:
+def reverse_spec(
+    reg: dict[str, object], store_id: str, mandatory_features: frozenset[str] = frozenset()
+) -> ReverseStoreSpec:
     """The store a builder's registration describes."""
     systems = set(cast("list[str]", reg.get("systems") or []))
     system_features = set(cast("list[str]", reg.get("system_features") or []))
@@ -110,6 +122,7 @@ def reverse_spec(reg: dict[str, object], store_id: str) -> ReverseStoreSpec:
         nix_bin=str(reg.get("nix_bin", "nix")),
         max_connections=slots + REVERSE_TRANSFER_CONNECTIONS,
         transfer_connections=REVERSE_TRANSFER_CONNECTIONS,
+        mandatory_features=set(mandatory_features),
     )
 
 
@@ -210,16 +223,17 @@ async def start_reverse_acceptor(
             if admitted is None:
                 conn.abort()
                 return
-            store_id_val = admitted
+            store_id_val = admitted.store_id
             try:
                 await _serve(admitted, reg)
             finally:
                 if joiner is not None and "join_token" in reg:
                     with anyio.CancelScope(shield=True):
-                        await joiner.left(admitted)
+                        await joiner.left(admitted.store_id)
 
-        async def _serve(store_id: StoreId, reg: dict[str, object]) -> None:
-            spec = reverse_spec(reg, store_id)
+        async def _serve(admitted: Admitted, reg: dict[str, object]) -> None:
+            store_id = admitted.store_id
+            spec = reverse_spec(reg, store_id, admitted.mandatory_features)
             systems = spec.systems or set()
             store = ReverseStore(spec, conn)
 

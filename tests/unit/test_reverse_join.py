@@ -6,7 +6,7 @@ import asyncssh
 
 from nix_daemon_protocol.ids import StoreId
 from pynixd.reverse_client import _ReverseSSHServer
-from pynixd.reverse_server import admit
+from pynixd.reverse_server import Admitted, admit, reverse_spec
 
 
 def _key() -> asyncssh.SSHKey:
@@ -18,10 +18,10 @@ class _Joiner:
         self.tokens = tokens
         self.asked: list[str] = []
 
-    async def join(self, token: str) -> StoreId | None:
+    async def join(self, token: str) -> Admitted | None:
         self.asked.append(token)
         store_id = self.tokens.pop(token, None)
-        return None if store_id is None else StoreId(store_id)
+        return None if store_id is None else Admitted(StoreId(store_id), frozenset({"aws"}))
 
     async def left(self, store_id: StoreId) -> None:
         del store_id
@@ -31,7 +31,9 @@ async def test_a_live_token_admits_the_builder_under_its_instance_id() -> None:
     joiner = _Joiner({"good": "provisioned-p1"})
     reg: dict[str, object] = {"store_id": "the-local-store", "join_token": "good"}
 
-    assert await admit(reg, _key(), [_key()], joiner, "fallback") == StoreId("provisioned-p1")
+    assert await admit(reg, _key(), [_key()], joiner, "fallback") == Admitted(
+        StoreId("provisioned-p1"), frozenset({"aws"})
+    )
     assert await admit(reg, _key(), [], joiner, "fallback") is None, "a token admitted twice"
 
 
@@ -52,8 +54,8 @@ async def test_without_a_token_the_key_must_be_pinned() -> None:
     joiner = _Joiner({})
 
     assert await admit({"store_id": "b"}, _key(), [pinned], joiner, "fallback") is None
-    assert await admit({"store_id": "b"}, pinned, [pinned], joiner, "fallback") == StoreId("b")
-    assert await admit({}, _key(), [], None, "fallback") == StoreId("fallback")
+    assert await admit({"store_id": "b"}, pinned, [pinned], joiner, "fallback") == Admitted(StoreId("b"))
+    assert await admit({}, _key(), [], None, "fallback") == Admitted(StoreId("fallback"))
 
 
 def test_a_ticketed_builder_serves_only_the_controller_it_names() -> None:
@@ -63,3 +65,9 @@ def test_a_ticketed_builder_serves_only_the_controller_it_names() -> None:
     assert named.validate_public_key("controller", controller)
     assert not named.validate_public_key("controller", _key())
     assert _ReverseSSHServer().validate_public_key("controller", _key())
+
+
+def test_a_provisioned_store_carries_its_pools_mandatory_features() -> None:
+    spec = reverse_spec({"systems": ["x86_64-linux"], "system_features": ["aws"]}, "provisioned-p1", frozenset({"aws"}))
+    assert spec.mandatory_features == {"aws"}
+    assert reverse_spec({}, "b").mandatory_features == set()

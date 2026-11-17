@@ -16,14 +16,21 @@ from ..system_features import effective_required_features
 from .decide import Want
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Set
+
+    from nix_daemon_protocol.ids import BuildId
 
     from ..build_queue import QueuedBuild
 
 
-def wants(builds: Iterable[QueuedBuild]) -> list[Want]:
+def wants(builds: Iterable[QueuedBuild], held: Set[BuildId] = frozenset(), now: float = 0.0) -> list[Want]:
+    """Each build as demand. One in *held* waits for a busy store; *now* is `time.monotonic()`."""
     return [
-        Want(build.request.derivation.platform, frozenset(effective_required_features(build.request.derivation)))
+        Want(
+            build.request.derivation.platform,
+            frozenset(effective_required_features(build.request.derivation)),
+            held_for=now - build.enqueued_at if build.build_id in held else None,
+        )
         for build in builds
         if build.is_pending
         and build.builders is None

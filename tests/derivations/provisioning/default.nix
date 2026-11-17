@@ -12,6 +12,9 @@
 
 let
   feature = "provisioned";
+  # A feature the builder offers and the controller does not, outside the pool's mandatory ones: a build
+  # that needs only it may neither launch a builder nor run on one (nixidae/nixidae#1425).
+  spare = "spare";
   acceptorPort = 2235;
 
   # Both guests: pynixd in front of the guest's nix-daemon, with no network
@@ -57,7 +60,7 @@ vivariumLib.mkTest {
   settings = {
     busybox = "${pkgs.busybox}";
     system = pkgs.stdenv.hostPlatform.system;
-    inherit feature;
+    inherit feature spare;
   };
 
   segments.fleet.instanceAddresses = [ "10.9.0.100/24" ];
@@ -80,7 +83,11 @@ vivariumLib.mkTest {
               name = "big";
               template = "builder";
               systems = [ pkgs.stdenv.hostPlatform.system ];
-              features = [ feature ];
+              features = [
+                feature
+                spare
+              ];
+              mandatory_features = [ feature ];
               max_instances = 1;
               idle_seconds = 15.0;
               launch_timeout = 300.0;
@@ -112,7 +119,10 @@ vivariumLib.mkTest {
           enabled = true;
           join_ticket = "/run/vivarium/user-data";
           systems = [ pkgs.stdenv.hostPlatform.system ];
-          system_features = [ feature ];
+          system_features = [
+            feature
+            spare
+          ];
           max_jobs = 1;
           reconnect_min_delay = 1.0;
           reconnect_max_delay = 5.0;
@@ -120,7 +130,10 @@ vivariumLib.mkTest {
       })
     ];
     vivarium.interfaces.eth1.segment = "fleet";
-    nix.settings.system-features = [ feature ];
+    nix.settings.system-features = [
+      feature
+      spare
+    ];
   };
 
   phases.provision = {

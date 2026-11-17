@@ -940,6 +940,12 @@ class ProvisioningPoolSettings(BaseModel):
     """The provider's name for the kind of machine: a vivarium template, an EC2 launch template."""
     systems: list[str] = Field(min_length=1)
     features: list[str] = Field(default_factory=list)
+    mandatory_features: list[str] = Field(default_factory=list)
+    """Features a build must need to launch a machine of this pool or to run on one (`Machine::mandatoryMet`).
+    Empty: any build its systems and features cover."""
+    pressure_wait: float = Field(default=60.0, ge=0)
+    """Seconds a build that a busy store holds must wait before it counts as demand. A build that no
+    store can take counts at once."""
     max_instances: int = Field(default=1, ge=0)
     min_instances: int = Field(default=0, ge=0)
     slots: int = Field(default=1, ge=1)
@@ -947,6 +953,12 @@ class ProvisioningPoolSettings(BaseModel):
     idle_seconds: float = Field(default=300.0, ge=0)
     launch_timeout: float = Field(default=600.0, gt=0)
     """Seconds a machine may take from launch to registration before it is ended."""
+
+    @model_validator(mode="after")
+    def _mandatory_are_features(self) -> ProvisioningPoolSettings:
+        if extra := set(self.mandatory_features) - set(self.features):
+            raise ValueError(f"pool {self.name}: mandatory features not in its features: {sorted(extra)}")
+        return self
 
 
 class Ec2TemplateSettings(BaseModel):
