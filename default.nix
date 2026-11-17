@@ -34,7 +34,8 @@ let
   */
   venv = nixvenv {
     python = pkgs.python3;
-    packages = _: [ library ];
+    # The trimmed botocore here only: the test environments' moto needs every model.
+    packages = _: [ (library.override { inherit botocore; }) ];
     executables = [ "pynixd" ];
   };
 
@@ -142,6 +143,25 @@ let
     inherit pkgs package;
     nix = defaultNix;
   };
+  /*
+    botocore with the service models pynixd loads and no others: EC2 for the provisioner, S3, and
+    what botocore's credential chain calls (STS for an assumed role, SSO and SSO-OIDC, sign-in for
+    a login session). IAM is the functional suite's, for its S3 server's keys. The other 400
+    services are 98 MB of the installer (nixidae/nixidae#1472). A service pynixd starts to call
+    goes in this list, or botocore raises UnknownServiceError. The product's `venv` takes it.
+  */
+  botocore = pkgs.python3Packages.botocore.overridePythonAttrs (old: {
+    postInstall = (old.postInstall or "") + ''
+      for service in $out/${pkgs.python3.sitePackages}/botocore/data/*/; do
+        case $(basename "$service") in
+          ec2 | s3 | sts | sso | sso-oidc | signin | iam) ;;
+          *) rm -r "$service" ;;
+        esac
+      done
+    '';
+    # Its own suite loads every service's model.
+    doCheck = false;
+  });
   library = pkgs.python3Packages.callPackage ./nix/pynixd.nix {
     pythonBuilder = pkgs.python3Packages.buildPythonPackage;
     nix-daemon-protocol = daemon-protocol;
