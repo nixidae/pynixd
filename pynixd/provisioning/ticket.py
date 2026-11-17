@@ -17,3 +17,8 @@ class JoinTicket(BaseModel):
     controller_key: str | None = None
     """The acceptor's public key, OpenSSH format. The builder serves only it,
     so the token goes to no other party that answers the dial."""
+    system_features: list[str] = []
+    """The pool's features. A machine set up from the ticket, such as a cloud
+    image, declares them; the builder's pynixd does not read them."""
+    max_jobs: int | None = None
+    """The pool's slots, for the same machine set-up."""

@@ -275,11 +275,14 @@ class Provisioner:
         await self._tables.record_launch(
             instance_id, pool_name, self._provider.name, token_sha256(token), at_ms=int(now * 1000)
         )
+        pool = next(pool for pool in self.pools if pool.name == pool_name)
         ticket = JoinTicket(
             token=token,
             acceptor_host=self._settings.acceptor_host,
             acceptor_port=self._settings.acceptor_port,
             controller_key=self._controller_key,
+            system_features=sorted(pool.features),
+            max_jobs=pool.slots,
         )
         tags = {OWNER_TAG: self.owner, INSTANCE_TAG: instance_id, POOL_TAG: pool_name}
         try:
