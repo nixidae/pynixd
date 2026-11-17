@@ -43,6 +43,7 @@ from .database import Backend, DatabaseError, Params, Row, Session
 from .db_migrations import SchemaState
 from .nix_tables import NixTables
 from .placement_tables import PlacementTables
+from .provisioning_tables import ProvisioningTables
 from .sql import SQLITE
 from .sqlite_db import SqliteBackend, SyncReader as SyncReader
 from .store_layout import StoreLayout
@@ -190,6 +191,9 @@ class LocalStoreDB:
 
         self.placements = PlacementTables(self)
         """The scheduler's placement trace tables."""
+
+        self.provisioned = ProvisioningTables(self)
+        """The builder machines the provisioner started."""
 
     async def __aenter__(self) -> Self:
         return self

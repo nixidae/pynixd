@@ -20,7 +20,7 @@ from pynixd_store.create_store import CA_SCHEMA, PROVENANCE_COLUMN, SCHEMA
 from pynixd_store.database import DatabaseError
 from pynixd_store.db_migrations import TARGET_VERSION, apply_migrations
 from pynixd_store.postgres_db import PostgresBackend
-from pynixd_store.postgres_schema import BASE_VERSION, migrate
+from pynixd_store.postgres_schema import BASE_VERSION, STEPS, TARGET_VERSION as POSTGRES_TARGET, migrate
 from pynixd_store.sql import POSTGRES
 
 if TYPE_CHECKING:
@@ -128,9 +128,10 @@ def _text_columns_not_bytewise(conninfo: str) -> set[str]:
         }
 
 
-def test_the_postgres_tables_start_at_the_newest_sqlite_version() -> None:
-    """A new SQLite migration needs its PostgreSQL twin in `postgres_schema.py`."""
-    assert BASE_VERSION == TARGET_VERSION
+def test_the_postgres_steps_reach_the_newest_sqlite_version() -> None:
+    """A new SQLite migration needs its PostgreSQL twin in `postgres_schema.STEPS`, one per version."""
+    assert POSTGRES_TARGET == TARGET_VERSION
+    assert [step for step, _ in STEPS] == list(range(BASE_VERSION + 1, TARGET_VERSION + 1))
 
 
 async def test_both_engines_have_the_same_tables_and_columns(
@@ -207,19 +208,35 @@ async def test_a_second_migration_finds_the_tables(backend: PostgresBackend) -> 
     async with backend.connection() as session:
         first = await migrate(session)
         second = await migrate(session)
-    assert (first.usable, first.applied) == (True, ("base",))
-    assert (second.usable, second.applied, second.version) == (True, (), BASE_VERSION)
+    assert (first.usable, first.applied) == (True, ("base", *(str(step) for step, _ in STEPS)))
+    assert (second.usable, second.applied, second.version) == (True, (), TARGET_VERSION)
+
+
+async def test_a_database_at_the_base_takes_each_step(backend: PostgresBackend, postgres_conninfo: str) -> None:
+    """A store created before a step reaches the newest version, and gains its tables."""
+    async with backend.connection() as session:
+        await migrate(session)
+        for _, statements in STEPS:
+            for statement in statements:
+                table = statement.split("EXISTS ")[1].split()[0] if "CREATE TABLE" in statement else None
+                if table is not None:
+                    await session.execute(f"DROP TABLE {table}")
+        await session.execute("UPDATE PynixdSchema SET version = %s", (BASE_VERSION,))
+        state = await migrate(session)
+        assert await session.fetchone("SELECT version FROM PynixdSchema") == (TARGET_VERSION,)
+    assert (state.usable, state.applied) == (True, tuple(str(step) for step, _ in STEPS))
+    assert "pynixdprovisionedinstance" in _postgres_columns(postgres_conninfo)
 
 
 async def test_another_version_is_unusable_and_untouched(backend: PostgresBackend) -> None:
     async with backend.connection() as session:
         await migrate(session)
-        await session.execute("UPDATE PynixdSchema SET version = %s", (BASE_VERSION + 1,))
+        await session.execute("UPDATE PynixdSchema SET version = %s", (TARGET_VERSION + 1,))
         state = await migrate(session)
-        assert await session.fetchone("SELECT version FROM PynixdSchema") == (BASE_VERSION + 1,)
+        assert await session.fetchone("SELECT version FROM PynixdSchema") == (TARGET_VERSION + 1,)
     assert not state.usable
     assert state.reason is not None
-    assert str(BASE_VERSION + 1) in state.reason
+    assert str(TARGET_VERSION + 1) in state.reason
 
 
 async def test_a_path_that_names_itself_deletes(backend: PostgresBackend) -> None:

@@ -37,6 +37,7 @@ from .db_migrations import (
     PATH_ACCESS_TABLE,
     PLACEMENT_CANDIDATE_TABLE,
     PLACEMENT_DECISION_TABLE,
+    PROVISIONED_INSTANCE_TABLE,
     SCHEMA_TABLE,
     SchemaState,
 )
@@ -46,7 +47,7 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-__all__ = ["BASE_VERSION", "migrate"]
+__all__ = ["BASE_VERSION", "STEPS", "TARGET_VERSION", "migrate"]
 
 BASE_VERSION = 12
 """The pynixd schema version the PostgreSQL tables start at."""
@@ -235,6 +236,31 @@ PYNIXD_TABLES: tuple[str, ...] = (
 )""",
 )
 
+STEPS: tuple[tuple[int, tuple[str, ...]], ...] = (
+    (
+        13,
+        (
+            f"""CREATE TABLE IF NOT EXISTS {PROVISIONED_INSTANCE_TABLE} (
+    id {_T} PRIMARY KEY,
+    pool {_T} NOT NULL,
+    provider {_T} NOT NULL,
+    providerId {_T},
+    state {_T} NOT NULL,
+    tokenSha256 {_T} NOT NULL,
+    launchedAtMs BIGINT NOT NULL,
+    registeredAtMs BIGINT,
+    storeId {_T},
+    endedAtMs BIGINT,
+    endReason {_T}
+)""",
+            f"CREATE INDEX IF NOT EXISTS idx_pynixd_provisioned_instance_live ON {PROVISIONED_INSTANCE_TABLE}(endedAtMs)",
+        ),
+    ),
+)
+"""The twin of each SQLite migration after `BASE_VERSION`, by version, applied in order."""
+
+TARGET_VERSION = STEPS[-1][0] if STEPS else BASE_VERSION
+
 _CREATE_SCHEMA_TABLE = (
     f"CREATE TABLE IF NOT EXISTS {SCHEMA_TABLE} (id BIGINT PRIMARY KEY CHECK (id = 1), version BIGINT NOT NULL, "
     "updatedAt BIGINT NOT NULL)"
@@ -242,12 +268,12 @@ _CREATE_SCHEMA_TABLE = (
 
 
 async def migrate(session: Session) -> SchemaState:
-    """Create the tables of a new store database, or check those of one at `BASE_VERSION`.
+    """Create the tables of a new store database, or bring one from `BASE_VERSION` or a later step to `TARGET_VERSION`.
 
     One transaction, under an advisory lock: a second pynixd waits, then reads the version the first wrote. A
-    database at another version is unusable, and nothing is written to it. A refusal of the server raises
-    `DatabaseError`: such a store has no other database, so it does not start. `test_postgres_schema.py` holds
-    `BASE_VERSION` to `db_migrations.TARGET_VERSION`.
+    database at a version outside that range is unusable, and nothing is written to it. A refusal of the server
+    raises `DatabaseError`: such a store has no other database, so it does not start. `test_postgres_schema.py`
+    holds `TARGET_VERSION` to `db_migrations.TARGET_VERSION`.
     """
     async with session.transaction():
         await session.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK_KEY,))
@@ -255,13 +281,17 @@ async def migrate(session: Session) -> SchemaState:
         row = await session.fetchone(f"SELECT version FROM {SCHEMA_TABLE} WHERE id = 1")
         if row is not None:
             version = int(row[0])
-            if version != BASE_VERSION:
+            if not BASE_VERSION <= version <= TARGET_VERSION:
                 return SchemaState(
                     version=version,
                     usable=False,
-                    reason=f"the store database holds pynixd schema version {version}, and this pynixd knows {BASE_VERSION}",
+                    reason=f"the store database holds pynixd schema version {version}, and this pynixd knows"
+                    f" {BASE_VERSION} to {TARGET_VERSION}",
                 )
-            return SchemaState(version=version, usable=True)
+            applied = await _steps(session, version)
+            if applied:
+                log.info("pynixd_schema_migrated", engine="postgresql", version=TARGET_VERSION, applied=list(applied))
+            return SchemaState(version=TARGET_VERSION, usable=True, applied=applied)
         for statement in (*NIX_TABLES, *PYNIXD_TABLES):
             await session.execute(statement)
         await session.execute(
@@ -269,5 +299,23 @@ async def migrate(session: Session) -> SchemaState:
             "VALUES (1, %s, CAST(EXTRACT(EPOCH FROM now()) AS BIGINT))",
             (BASE_VERSION,),
         )
-    log.info("pynixd_schema_created", engine="postgresql", version=BASE_VERSION)
-    return SchemaState(version=BASE_VERSION, usable=True, applied=("base",))
+        applied = ("base", *await _steps(session, BASE_VERSION))
+    log.info("pynixd_schema_created", engine="postgresql", version=TARGET_VERSION)
+    return SchemaState(version=TARGET_VERSION, usable=True, applied=applied)
+
+
+async def _steps(session: Session, version: int) -> tuple[str, ...]:
+    """Run each step after *version* in the open transaction, and record the last; the versions it ran."""
+    applied: list[str] = []
+    for step, statements in STEPS:
+        if step <= version:
+            continue
+        for statement in statements:
+            await session.execute(statement)
+        applied.append(str(step))
+    if applied:
+        await session.execute(
+            f"UPDATE {SCHEMA_TABLE} SET version = %s, updatedAt = CAST(EXTRACT(EPOCH FROM now()) AS BIGINT) WHERE id = 1",
+            (TARGET_VERSION,),
+        )
+    return tuple(applied)

@@ -97,6 +97,11 @@ nixidae/nixidae#1211.
 PLACEMENT_DECISION_TABLE = f"{TABLE_PREFIX}PlacementDecision"
 """One row per placement decision of the scheduler. nixidae/nixidae#1070."""
 PLACEMENT_CANDIDATE_TABLE = f"{TABLE_PREFIX}PlacementCandidate"
+PROVISIONED_INSTANCE_TABLE = f"{TABLE_PREFIX}ProvisionedInstance"
+"""Every builder machine the provisioner started, live or ended, nixidae/nixidae#1198.
+
+A row is written before the provider is asked, so a crash between the two
+leaves a row that names the machine, and the next start ends it."""
 """One row per store a decision weighed or left out, keyed by the decision."""
 
 PATH_ACCESS_TABLE = f"{TABLE_PREFIX}PathAccess"
@@ -391,6 +396,27 @@ MIGRATIONS: tuple[Migration, ...] = (
                 "hostPeakMemoryBytes INTEGER",
             )
         ),
+    ),
+    Migration(
+        version=13,
+        name="provisioned-instances",
+        statements=(
+            f"CREATE TABLE IF NOT EXISTS {PROVISIONED_INSTANCE_TABLE} ("
+            "id TEXT PRIMARY KEY, "
+            "pool TEXT NOT NULL, "
+            "provider TEXT NOT NULL, "
+            "providerId TEXT, "
+            "state TEXT NOT NULL, "
+            "tokenSha256 TEXT NOT NULL, "
+            "launchedAtMs INTEGER NOT NULL, "
+            "registeredAtMs INTEGER, "
+            "storeId TEXT, "
+            "endedAtMs INTEGER, "
+            "endReason TEXT"
+            ")",
+            f"CREATE INDEX IF NOT EXISTS idx_pynixd_provisioned_instance_live ON {PROVISIONED_INSTANCE_TABLE}(endedAtMs)",
+        ),
+        creates=(PROVISIONED_INSTANCE_TABLE,),
     ),
 )
 

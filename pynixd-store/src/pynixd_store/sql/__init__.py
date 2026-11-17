@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from . import codec, gc, liveness, nix, observations, path_access, placement
+from . import codec, gc, liveness, nix, observations, path_access, placement, provisioning
 from .codec import Codec as Codec
 from .gc import GcSql as GcSql
 from .liveness import LivenessSql as LivenessSql
@@ -19,6 +19,7 @@ from .nix import NixSql as NixSql
 from .observations import ObservationSql as ObservationSql
 from .path_access import PathAccessSql as PathAccessSql
 from .placement import PlacementSql as PlacementSql
+from .provisioning import ProvisioningSql as ProvisioningSql
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +30,7 @@ class Statements:
     path_access: PathAccessSql
     observations: ObservationSql
     placement: PlacementSql
+    provisioning: ProvisioningSql
     gc: GcSql
     liveness: LivenessSql
     codec: Codec
@@ -39,6 +41,7 @@ SQLITE = Statements(
     path_access=path_access.SQLITE,
     observations=observations.SQLITE,
     placement=placement.SQLITE,
+    provisioning=provisioning.SQLITE,
     gc=gc.SQLITE,
     liveness=liveness.SQLITE,
     codec=codec.SQLITE,
@@ -49,6 +52,7 @@ POSTGRES = Statements(
     path_access=path_access.POSTGRES,
     observations=observations.POSTGRES,
     placement=placement.POSTGRES,
+    provisioning=provisioning.POSTGRES,
     gc=gc.POSTGRES,
     liveness=liveness.POSTGRES,
     codec=codec.POSTGRES,
