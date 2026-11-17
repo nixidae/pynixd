@@ -53,6 +53,9 @@ How a local store runs, named on two axes. Who answers: `proxy` (the daemon answ
 ### Scheduled Store
 What the scheduler reads of a store it places builds on: what it builds, its host's pressure, its build limit and its health (`ScheduledStore`, `pynixd/store/scheduled.py`). `DaemonStore` adds the wire to a Nix daemon: pools, probes and reconnect. `LocalHost` (`pynixd/store/local_host.py`) adds what a store on this machine knows: nix.conf, the machine's samples and the derivation files. `LocalStore` is both, and `NoDaemonStore` is a `LocalHost` alone.
 
+### Provisioner, Pool, Instance
+The provisioner starts builders at a cloud provider while builds wait for a store, and ends them when they are idle (`pynixd/provisioning/`, nixidae/nixidae#1198). A pool is one kind of machine it starts: its systems, its features, how many at most, and how many builds each takes. An instance is one machine of a pool. It is pending until its builder registers over reverse SSH, then running. `pynixd/provisioning/decide.py` holds the rules for what to launch and what to end.
+
 ### Trampolining
 A Nix-native concept for "unknown output" building (common in CA derivations). It is the process where a build is intercepted because it has "deferred" dependencies that must be resolved first. Once resolved (possibly by triggering sub-builds), the original derivation is updated and re-injected into the build process. In `pynixd`:
 - **`DerivationResolver`** handles pre-build resolution (deferred output, dynamic DrvWithVersion)
