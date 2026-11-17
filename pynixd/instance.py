@@ -31,6 +31,7 @@ from .execution import output_paths
 from .gc import Collector
 from .health import HealthReport, LoopLagMonitor, StallWatchdog
 from .liveness_watch import DirtyFlag, StableRootsWatch
+from .provisioning.ec2 import Ec2Provider
 from .provisioning.provisioner import Provisioner
 from .provisioning.vivarium import VivariumProvider
 from .recursive import restricted_server
@@ -52,6 +53,7 @@ if TYPE_CHECKING:
 
     from .build_queue import QueuedBuild
     from .daemon_extensions.pynixd_collect_garbage import PynixdCollectGarbageResponse
+    from .provisioning.provider import Provider
     from .serde import BuildDerivationResponse
 
 log = structlog.get_logger(__name__)
@@ -424,9 +426,14 @@ class Server:
             return None
         if self.ctx.db is None or self.ctx.scheduler is None:
             raise RuntimeError("provisioning pools need the store database and the scheduler: the rows outlive pynixd")
+        provider: Provider = (
+            VivariumProvider(str(settings.vivarium_socket))
+            if settings.ec2 is None or settings.provider == "vivarium"
+            else Ec2Provider(settings.ec2)
+        )
         return Provisioner(
             settings,
-            VivariumProvider(str(settings.vivarium_socket)),
+            provider,
             self.ctx.db.provisioned,
             self.ctx.scheduler,
             self.remove_store,

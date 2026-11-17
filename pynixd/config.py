@@ -949,13 +949,55 @@ class ProvisioningPoolSettings(BaseModel):
     """Seconds a machine may take from launch to registration before it is ended."""
 
 
+class Ec2TemplateSettings(BaseModel):
+    """One kind of EC2 spot builder: a stock image that installs pynixd at boot. nixidae/nixidae#1198."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    instance_types: list[str] = Field(min_length=1)
+    """Tried in order: a type with no spot capacity now gives way to the next."""
+    image: str = "resolve:ssm:/aws/service/canonical/ubuntu/server/26.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
+    """An AMI id, or `resolve:ssm:<parameter>`, which EC2 resolves at each launch."""
+    root_device: str = "/dev/sda1"
+    """The image's root device name: Ubuntu's."""
+    root_gib: int = Field(default=64, ge=8)
+    subnet_id: str | None = None
+    """`None` takes the default VPC's subnet in a zone EC2 picks."""
+    security_group_ids: list[str] = Field(default_factory=list)
+    """A builder only dials out; the default VPC's default group allows that."""
+    installer_url: str = (
+        "https://github.com/nixidae/nixidae/releases/download/pynixd-installer/pynixd-x86_64-linux.tar.zst"
+    )
+    idle_poweroff: float = Field(default=900.0, gt=0)
+    """The builder's own guard: it powers off, and so terminates, after this long with no build."""
+    bootstrap_deadline: float = Field(default=1200.0, gt=0)
+    """The builder powers off if setting itself up takes longer."""
+
+
+class Ec2Settings(BaseModel):
+    """Where and as whom the EC2 provider launches. nixidae/nixidae#1198."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    region: str
+    profile: str | None = None
+    """An AWS profile; `None` takes botocore's default chain (environment, instance role)."""
+    templates: dict[str, Ec2TemplateSettings]
+    resource_tags: dict[str, str] = Field(default_factory=lambda: {"pynixd-cloud-builder": "true"})
+    """Added to every resource a launch makes, so one tag finds all of them."""
+    endpoint: str | None = None
+    """`None` takes the region's public endpoint."""
+
+
 class ProvisioningSettings(BaseModel):
     """Builders started on demand, which register through the reverse acceptor. nixidae/nixidae#1198."""
 
     model_config = ConfigDict(extra="forbid")
 
-    provider: Literal["vivarium"] = "vivarium"
+    provider: Literal["vivarium", "ec2"] = "vivarium"
     vivarium_socket: Path = Path("/run/vivarium/cloud.sock")
+    ec2: Ec2Settings | None = None
+    """Required with `provider = "ec2"`."""
     owner: str | None = None
     """The tag that marks this pynixd's machines, so a restart finds them. `None` takes the host name."""
     acceptor_host: str | None = None
@@ -972,6 +1014,12 @@ class ProvisioningSettings(BaseModel):
     """The machines to start, in order: a waiting build counts against the first pool that builds it."""
     heartbeat: float = Field(default=30.0, gt=0)
     """The longest the loop sleeps without a scheduling pass, a join or a leave to wake it."""
+
+    @model_validator(mode="after")
+    def _provider_settings(self) -> ProvisioningSettings:
+        if self.provider == "ec2" and self.ec2 is None:
+            raise ValueError('provider "ec2" needs the ec2 settings')
+        return self
 
 
 class SSHSubprocessStoreSpec(StoreSpecBase):
