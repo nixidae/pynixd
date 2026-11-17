@@ -585,6 +585,7 @@ let
     extended = ciWorkflowValue ./ci/workflows/extended.nix;
     installer = ciWorkflowValue ./ci/workflows/installer.nix;
     gha-cache-probe = ciWorkflowValue ./ci/workflows/gha-cache-probe.nix;
+    builder = ciWorkflowValue ./ci/workflows/builder.nix;
   };
 
   # Those values as the files GitHub reads.
