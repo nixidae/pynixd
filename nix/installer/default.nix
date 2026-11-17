@@ -124,14 +124,23 @@ let
     chmod +x $out/bin/pynixd-install
   '';
 
+  # `install.py --idle-poweroff`: a builder's own guard against a controller that never ends it.
+  idleGuard = pkgs.runCommand "pynixd-idle-guard" { } ''
+    mkdir -p $out/bin
+    { echo "#!${python} -I"; cat ${./idle_guard.py}; } > $out/bin/pynixd-idle-guard
+    chmod +x $out/bin/pynixd-idle-guard
+  '';
+
   manifest = builtins.toJSON {
     inherit nix profile units;
+    idle_guard = "${idleGuard}/bin/pynixd-idle-guard";
     inherit (pkgs) cacert;
   };
 
   closure = pkgs.closureInfo {
     rootPaths = [
       installer
+      idleGuard
       profile
       units
     ];
@@ -161,6 +170,7 @@ let
         passthru = {
           inherit
             installer
+            idleGuard
             profile
             units
             closure

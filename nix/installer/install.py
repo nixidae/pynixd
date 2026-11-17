@@ -37,6 +37,7 @@ GHA_CACHE_CREDENTIALS: Final = Path("/etc/pynixd/gha-cache.json")
 """Not under `/run/pynixd`: the unit's `RuntimeDirectory`, which systemd empties when pynixd stops."""
 UNIT_DIR: Final = Path("/etc/systemd/system")
 UNITS: Final = ("pynixd.socket", "pynixd.service")
+IDLE_UNIT: Final = "pynixd-idle"
 DARWIN: Final = sys.platform == "darwin"
 # `launchdLabel` in `default.nix`.
 LAUNCHD_LABEL: Final = "org.nixidae.pynixd"
@@ -60,6 +61,7 @@ class Bundle:
     profile: Path
     cacert: Path
     units: Path
+    idle_guard: Path
 
     @classmethod
     def read(cls, root: Path) -> Bundle:
@@ -69,6 +71,7 @@ class Bundle:
             profile=Path(data["profile"]),
             cacert=Path(data["cacert"]),
             units=Path(data["units"]),
+            idle_guard=Path(data["idle_guard"]),
         )
 
 
@@ -118,10 +121,14 @@ def nix_conf(bundle: Bundle, trusted_users: list[str], extra: str, *, darwin: bo
     return "\n".join(defaults) + "\n" + body + "\n".join(required) + "\n"
 
 
-def pynixd_conf(gha_cache: bool) -> dict[str, object]:  # object: JSON, which `PynixdSettings` parses
+def pynixd_conf(
+    gha_cache: bool,
+    reverse_initiator: dict[str, object] | None = None,  # object: JSON, which `ReverseInitiatorSettings` parses
+) -> dict[str, object]:  # object: JSON, which `PynixdSettings` parses
     """pynixd on the daemon socket, serving the machine's store `/` with no daemon under it.
 
-    With *gha_cache*, also the job's GitHub Actions cache, from `GHA_CACHE_CREDENTIALS`.
+    With *gha_cache*, also the job's GitHub Actions cache, from `GHA_CACHE_CREDENTIALS`. With
+    *reverse_initiator*, the machine is a builder: pynixd dials a controller and registers this store.
     """
     stores: dict[str, object] = {
         "local": {
@@ -135,11 +142,29 @@ def pynixd_conf(gha_cache: bool) -> dict[str, object]:  # object: JSON, which `P
     }
     if gha_cache:
         stores["gha-cache"] = {"type": "gha-cache", "credentials_file": str(GHA_CACHE_CREDENTIALS)}
-    return {
+    conf: dict[str, object] = {
         "unix_path": str(DAEMON_SOCKET),
         "ssh_port": None,
         "http_port": None,
         "stores": stores,
+    }
+    if reverse_initiator is not None:
+        conf["reverse_initiator"] = {**reverse_initiator, "enabled": True}
+    return conf
+
+
+def idle_units(guard: Path, seconds: float) -> dict[str, str]:
+    """A timer that runs *guard* each minute: it powers the machine off after *seconds* with no build."""
+    return {
+        f"{IDLE_UNIT}.service": (
+            "[Unit]\nDescription=Power off after a quiet spell\n\n"
+            f"[Service]\nType=oneshot\nExecStart={guard} {seconds:g}\n"
+        ),
+        f"{IDLE_UNIT}.timer": (
+            "[Unit]\nDescription=Power off after a quiet spell\n\n"
+            "[Timer]\nOnBootSec=1min\nOnUnitActiveSec=1min\nAccuracySec=10s\n\n"
+            "[Install]\nWantedBy=timers.target\n"
+        ),
     }
 
 
@@ -216,20 +241,34 @@ def start_launchd(bundle: Bundle) -> None:
     _wait_for_socket(DAEMON_SOCKET, SOCKET_WAIT)
 
 
-def start_systemd(bundle: Bundle) -> None:
+def start_systemd(bundle: Bundle, idle_poweroff: float | None) -> None:
     for unit in UNITS:
         target = UNIT_DIR / unit
         target.unlink(missing_ok=True)
         target.symlink_to(bundle.units / unit)
+    timers: list[str] = []
+    if idle_poweroff is not None:
+        for name, text in idle_units(bundle.idle_guard, idle_poweroff).items():
+            _write(UNIT_DIR / name, text)
+        timers.append(f"{IDLE_UNIT}.timer")
     systemctl = shutil.which("systemctl")
     if systemctl is None:
         raise SystemExit("pynixd-install: no systemctl; only systemd machines are supported")
     _run([systemctl, "daemon-reload"])
     # The service is `Type=notify`: `start` returns once pynixd says its listener is bound.
-    _run([systemctl, "start", *UNITS])
+    _run([systemctl, "start", *UNITS, *timers])
 
 
-def install(bundle: Bundle, trusted_users: list[str], extra: str, gha_cache: Path | None = None) -> None:
+def install(
+    bundle: Bundle,
+    trusted_users: list[str],
+    extra: str,
+    gha_cache: Path | None = None,
+    reverse_initiator: dict[str, object] | None = None,  # object: JSON, which `ReverseInitiatorSettings` parses
+    idle_poweroff: float | None = None,
+) -> None:
+    if idle_poweroff is not None and DARWIN:
+        raise SystemExit("pynixd-install: --idle-poweroff needs systemd")
     for name in trusted_users:
         pwd.getpwnam(name)  # KeyError names a user the machine lacks, before anything is written.
     if gha_cache is not None:
@@ -245,12 +284,12 @@ def install(bundle: Bundle, trusted_users: list[str], extra: str, gha_cache: Pat
     _run([str(bundle.nix / "bin" / "nix-store"), "--load-db"], stdin=ROOT / "reginfo")
     _run([str(bundle.nix / "bin" / "nix-env"), "--profile", str(PROFILE), "--set", str(bundle.profile)])
     _write(NIX_CONF, nix_conf(bundle, trusted_users, extra, darwin=DARWIN, case_sensitive=case_sensitive(ROOT)))
-    _write(PYNIXD_CONF, json.dumps(pynixd_conf(gha_cache is not None), indent=2) + "\n")
+    _write(PYNIXD_CONF, json.dumps(pynixd_conf(gha_cache is not None, reverse_initiator), indent=2) + "\n")
     DAEMON_SOCKET.parent.mkdir(parents=True, exist_ok=True)
     if DARWIN:
         start_launchd(bundle)
     else:
-        start_systemd(bundle)
+        start_systemd(bundle, idle_poweroff)
 
 
 def main() -> None:
@@ -263,11 +302,26 @@ def main() -> None:
         metavar="CREDENTIALS",
         help="use the job's GitHub Actions cache: a JSON file of the runner's ACTIONS_* variables",
     )
+    parser.add_argument(
+        "--reverse-initiator",
+        type=Path,
+        metavar="SETTINGS",
+        help="make this machine a builder: a JSON file of pynixd's reverse_initiator settings",
+    )
+    parser.add_argument(
+        "--idle-poweroff",
+        type=float,
+        metavar="SECONDS",
+        help="power the machine off after this many seconds with no build",
+    )
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise SystemExit("pynixd-install: run as root")
     extra = args.extra_conf.read_text() if args.extra_conf is not None else ""
-    install(Bundle.read(ROOT), args.trusted_user, extra, args.gha_cache)
+    reverse_initiator = None if args.reverse_initiator is None else json.loads(args.reverse_initiator.read_text())
+    if reverse_initiator is not None and not isinstance(reverse_initiator, dict):
+        raise SystemExit(f"pynixd-install: {args.reverse_initiator} holds no JSON object")
+    install(Bundle.read(ROOT), args.trusted_user, extra, args.gha_cache, reverse_initiator, args.idle_poweroff)
 
 
 if __name__ == "__main__":
