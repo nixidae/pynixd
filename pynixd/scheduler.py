@@ -149,6 +149,11 @@ class Scheduler:
         return self.placer.held_by_pressure
 
     @property
+    def no_candidate(self) -> set[BuildId]:
+        """Builds the last pass left pending because no store could take them."""
+        return self.placer.no_candidate
+
+    @property
     def stores(self) -> dict[StoreId, ScheduledStore]:
         return {
             store_id: client

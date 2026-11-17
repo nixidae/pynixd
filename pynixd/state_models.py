@@ -11,13 +11,14 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, JsonValue
 
-WaitReason = Literal["unwanted", "local_slot", "pressure", "scheduling"]
+WaitReason = Literal["unwanted", "local_slot", "pressure", "no_store", "scheduling"]
 """What a pending build waits for. `WAITS_FOR` words each one."""
 
 WAITS_FOR: dict[str, str] = {
     "unwanted": "nothing: every request that wanted it gave up, the next pass cancels it",
     "local_slot": "a local slot: each request that wants it runs its max-jobs of local builds",
     "pressure": "a build limit: each store it can build on runs as many builds as its host takes now (#98)",
+    "no_store": "a store: none can take it now, and a builder for its system may still register",
     "scheduling": "a scheduling pass or a free compatible store",
 }
 

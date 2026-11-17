@@ -441,6 +441,9 @@ class Placer[S: PlacedStore]:
         self.held_by_pressure: set[BuildId] = set()
         """Builds the last pass left pending because each candidate store
         was at its build limit."""
+        self.no_candidate: set[BuildId] = set()
+        """Builds the last pass left pending because no store could take
+        them at all: what a provisioner launches a builder for."""
         self.pass_id = 0
         self._weights = settings.model_dump_json()
 
@@ -461,6 +464,7 @@ class Placer[S: PlacedStore]:
         assigned_this_pass: dict[StoreId, int] = {}
         reserved = reserved_memory(self.queue.by_id.values())
         self.held_by_pressure = set()
+        self.no_candidate = set()
 
         for build in schedulable:
             # One build that raises fails alone. The pass ran on, and the next
@@ -691,6 +695,7 @@ class Placer[S: PlacedStore]:
                 return False
             if disk is not None:
                 await build.tell_wait(disk.text)
+            self.no_candidate.add(build.build_id)
             notes.end(Outcome.WAITING, disk.text if disk is not None else "no store is a candidate now")
             return True
         return False

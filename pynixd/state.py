@@ -129,6 +129,8 @@ def pending_reason(scheduler: Scheduler, build: QueuedBuild, wanters: set[Reques
         return "local_slot"
     if build.build_id in scheduler.held_by_pressure:
         return "pressure"
+    if build.build_id in scheduler.no_candidate:
+        return "no_store"
     return "scheduling"
 
 
