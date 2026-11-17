@@ -87,3 +87,23 @@ async def logged(vm: Machine, event: str, timeout: float) -> str:
 
     await until(present, timeout)
     return found
+
+
+async def stdenv_drv(vm: Machine, settings: Mapping[str, str], note: str) -> tuple[str, str]:
+    """stdenv's own builder, `genericBuild`, with `passAsFile`: its setup chmods the `.attr-*` file
+    (nixidae/nixidae#1416). Only a store with the pool's feature builds it. Its `.drv` and its output."""
+    expression = (
+        "derivation {"
+        ' name = "pynixd-cloud-check";'
+        f' system = "{settings["system"]}";'
+        f' stdenv = builtins.storePath "{settings["stdenv"]}";'
+        f' builder = "${{builtins.storePath "{settings["bash"]}"}}/bin/bash";'
+        ' args = [ "-e" "-c" "source $stdenv/setup; genericBuild" ];'
+        f" note = {nix_string(note)};"
+        ' passAsFile = [ "note" ];'
+        ' buildCommand = "cat $notePath > $out";'
+        f' requiredSystemFeatures = [ "{settings["feature"]}" ];'
+        " }"
+    )
+    drv = store_path(await as_tester(vm, f"nix-instantiate --expr {shlex.quote(expression)}"))
+    return drv, (await vm.succeed(f"nix-store -q --outputs {drv}")).strip()

@@ -10,41 +10,14 @@ there through stdenv, and the builder ends once idle.
 from __future__ import annotations
 
 import json
-import shlex
 import time
-from typing import TYPE_CHECKING
 
-from cloud_helpers import nix_string, pool_instances, rows, until
-from daemon_helpers import as_tester, store_path
+from cloud_helpers import pool_instances, rows, stdenv_drv, until
+from daemon_helpers import as_tester
 from vivarium_runner import Machines
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
-
-    from vivarium_runner import Machine
 
 INSTALLED_NIX = "/nix/var/nix/profiles/default/bin"
 NOTE = "stdenv on an EC2 builder"
-
-
-async def stdenv_drv(vm: Machine, settings: Mapping[str, str]) -> tuple[str, str]:
-    """stdenv's own builder, `genericBuild`, with `passAsFile`: its setup chmods the `.attr-*` file
-    (nixidae/nixidae#1416). Only an `ec2-spot` store builds it. Its `.drv` and its output."""
-    expression = (
-        "derivation {"
-        ' name = "pynixd-ec2-check";'
-        f' system = "{settings["system"]}";'
-        f' stdenv = builtins.storePath "{settings["stdenv"]}";'
-        f' builder = "${{builtins.storePath "{settings["bash"]}"}}/bin/bash";'
-        ' args = [ "-e" "-c" "source $stdenv/setup; genericBuild" ];'
-        f" note = {nix_string(NOTE)};"
-        ' passAsFile = [ "note" ];'
-        ' buildCommand = "cat $notePath > $out";'
-        f' requiredSystemFeatures = [ "{settings["feature"]}" ];'
-        " }"
-    )
-    drv = store_path(await as_tester(vm, f"nix-instantiate --expr {shlex.quote(expression)}"))
-    return drv, (await vm.succeed(f"nix-store -q --outputs {drv}")).strip()
 
 
 async def test(vms: Machines) -> None:
@@ -54,7 +27,7 @@ async def test(vms: Machines) -> None:
     await controller.wait_for_unit("fake-ec2.service")
     await controller.wait_for_unit("pynixd.service")
 
-    drv, out = await stdenv_drv(controller, settings)
+    drv, out = await stdenv_drv(controller, settings, NOTE)
     started = time.monotonic()
     await as_tester(controller, f"nix-store --realise {drv}", timeout=600)
     built = (await controller.succeed(f"cat {out}")).strip()
