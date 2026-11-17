@@ -166,7 +166,8 @@ let
           ''echo "publish: release" >&2''
           ''(gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --target "$GITHUB_SHA" --prerelease --title "pynixd installer" --notes "pynixd as the only Nix daemon of a machine: nixidae/nixidae#1365")''
           ''echo "publish: move the tag" >&2''
-          ''gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true > /dev/null''
+          # A refusal prints GitHub's answer: `X-Accepted-GitHub-Permissions` names what the token lacks.
+          ''(gh api -i -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true > "$RUNNER_TEMP/tag-move" || { grep -iE "^(HTTP/|x-accepted-github-permissions|x-github-request-id)|message" "$RUNNER_TEMP/tag-move" >&2; false; })''
           ''echo "publish: upload" >&2''
           ''gh release upload "$TAG" pynixd-*.tar.* --clobber''
           ''echo "publish: notes" >&2''
