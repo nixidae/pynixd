@@ -32,6 +32,7 @@ from .gc import Collector
 from .health import HealthReport, LoopLagMonitor, StallWatchdog
 from .liveness_watch import DirtyFlag, StableRootsWatch
 from .provisioning.ec2 import Ec2Provider
+from .provisioning.gha import GhaProvider
 from .provisioning.provisioner import Provisioner
 from .provisioning.vivarium import VivariumProvider
 from .recursive import restricted_server
@@ -426,11 +427,16 @@ class Server:
             return None
         if self.ctx.db is None or self.ctx.scheduler is None:
             raise RuntimeError("provisioning pools need the store database and the scheduler: the rows outlive pynixd")
-        provider: Provider = (
-            VivariumProvider(str(settings.vivarium_socket))
-            if settings.ec2 is None or settings.provider == "vivarium"
-            else Ec2Provider(settings.ec2)
-        )
+        provider: Provider
+        match settings.provider:
+            case "vivarium":
+                provider = VivariumProvider(str(settings.vivarium_socket))
+            case "ec2" if settings.ec2 is not None:
+                provider = Ec2Provider(settings.ec2)
+            case "gha" if settings.gha is not None:
+                provider = GhaProvider(settings.gha)
+            case other:
+                raise RuntimeError(f"provider {other!r} has no settings")
         return Provisioner(
             settings,
             provider,

@@ -1018,15 +1018,66 @@ class Ec2Settings(BaseModel):
     """`None` takes the region's public endpoint."""
 
 
+class GhaTemplateSettings(BaseModel):
+    """One kind of GitHub Actions job builder: a runner that installs pynixd from the tarball. nixidae/nixidae#1473.
+
+    Linux runners only: the job holds itself open with the idle guard, which needs systemd.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    runs_on: list[str] = Field(default_factory=lambda: ["ubuntu-latest"], min_length=1)
+    """The job's `runs-on` labels: GitHub's runners, or another service's that runs GitHub Actions jobs."""
+    arch: Literal["x86_64", "aarch64"] = "x86_64"
+    """The runners' CPU: it picks the default installer."""
+    installer_url: str | None = None
+    """`None`: the `pynixd-installer` release's tarball for `arch`."""
+    idle_seconds: float = Field(default=600.0, gt=0)
+    """The job's own guard ends it after this long with no build. A fallback for a controller that never
+    cancels the run, so longer than the pool's `idle_seconds`."""
+    bootstrap_minutes: int = Field(default=10, ge=1)
+    """The install step's `timeout-minutes`. A runner's queue time comes before it; the pool's
+    `launch_timeout` must cover both."""
+
+    @property
+    def installer(self) -> str:
+        return self.installer_url or (
+            f"https://github.com/nixidae/nixidae/releases/download/pynixd-installer/pynixd-{self.arch}-linux.tar.zst"
+        )
+
+
+class GhaSettings(BaseModel):
+    """Which workflow the GitHub Actions provider dispatches, and as whom. nixidae/nixidae#1473."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repository: str = Field(pattern=r"^[\w.-]+/[\w.-]+$")
+    """`owner/name`: the repository that holds the workflow and the `PYNIXD_TICKET_KEY` secret."""
+    workflow: str = "pynixd-builder.yml"
+    """The workflow's file name, under `.github/workflows`."""
+    ref: str = "main"
+    token_file: Path
+    """A GitHub token that may dispatch and cancel the repository's workflow runs (`actions: write`)."""
+    ticket_key_file: Path
+    """The key that seals each join ticket: the repository secret `PYNIXD_TICKET_KEY`, base64 of 32 bytes."""
+    api_url: str = "https://api.github.com"
+    templates: dict[str, GhaTemplateSettings]
+    history_seconds: float = Field(default=86400.0, gt=0)
+    """How far back the provider lists runs. A run older than this counts as gone; GitHub ends a hosted
+    runner's job after 6 h."""
+
+
 class ProvisioningSettings(BaseModel):
     """Builders started on demand, which register through the reverse acceptor. nixidae/nixidae#1198."""
 
     model_config = ConfigDict(extra="forbid")
 
-    provider: Literal["vivarium", "ec2"] = "vivarium"
+    provider: Literal["vivarium", "ec2", "gha"] = "vivarium"
     vivarium_socket: Path = Path("/run/vivarium/cloud.sock")
     ec2: Ec2Settings | None = None
     """Required with `provider = "ec2"`."""
+    gha: GhaSettings | None = None
+    """Required with `provider = "gha"`."""
     owner: str | None = None
     """The tag that marks this pynixd's machines, so a restart finds them. `None` takes the host name."""
     acceptor_host: str | None = None
@@ -1048,6 +1099,8 @@ class ProvisioningSettings(BaseModel):
     def _provider_settings(self) -> ProvisioningSettings:
         if self.provider == "ec2" and self.ec2 is None:
             raise ValueError('provider "ec2" needs the ec2 settings')
+        if self.provider == "gha" and self.gha is None:
+            raise ValueError('provider "gha" needs the gha settings')
         return self
 
 
