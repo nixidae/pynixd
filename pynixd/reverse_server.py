@@ -11,8 +11,9 @@ dispatching.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
+import anyio
 import asyncssh
 import structlog
 
@@ -48,6 +49,47 @@ def build_slots(declared: object, store_id: str) -> int:
     if declared is not None:
         log.warning("reverse_builder_max_jobs_invalid", store_id=store_id, max_jobs=declared)
     return UNDECLARED_MAX_JOBS
+
+
+class Joiner(Protocol):
+    """What admits a builder by the join token a provisioner gave it. nixidae/nixidae#1198."""
+
+    async def join(self, token: str) -> StoreId | None:
+        """The store id of the instance *token* belongs to, once; None for an unknown, used or ended token."""
+        ...
+
+    async def left(self, store_id: StoreId) -> None:
+        """The builder *store_id* names disconnected."""
+        ...
+
+
+async def admit(
+    reg: dict[str, object],
+    presented: asyncssh.SSHKey | None,
+    pins: list[asyncssh.SSHKey],
+    joiner: Joiner | None,
+    fallback_id: str,
+) -> StoreId | None:
+    """The store id a registering builder gets, or None to refuse it.
+
+    A builder that sends a join token is admitted by the token alone, under
+    the id of its instance: a token holder cannot take another store's id.
+    A wrong token is refused even from a pinned key. Without a token, the
+    key must be pinned, or nothing is pinned.
+    """
+    token = reg.get("join_token")
+    if token is not None:
+        if joiner is None or not isinstance(token, str):
+            log.warning("reverse_join_refused", reason="this acceptor provisions no builders")
+            return None
+        store_id = await joiner.join(token)
+        if store_id is None:
+            log.warning("reverse_join_refused", reason="unknown, used or ended join token")
+        return store_id
+    if pins and (presented is None or presented not in pins):
+        log.warning("reverse_builder_key_not_pinned", store_id=reg.get("store_id"))
+        return None
+    return StoreId(str(reg.get("store_id") or fallback_id))
 
 
 def reverse_spec(reg: dict[str, object], store_id: str) -> ReverseStoreSpec:
@@ -92,6 +134,7 @@ async def start_reverse_acceptor(
     server: Server,
     settings: ReverseAcceptorSettings,
     spawn: Callable[[Callable[[], Awaitable[None]]], object],
+    joiner: Joiner | None = None,
 ) -> asyncssh.SSHAcceptor | None:
     """Start the reverse store SSH listener on the controller.
 
@@ -101,6 +144,10 @@ async def start_reverse_acceptor(
     Each builder's lifecycle runs in *spawn*, the server's background.
 
     Returns the SSH acceptor, or ``None`` if the reverse server is not enabled.
+
+    With a *joiner*, a builder the provisioner launched has a host key
+    nobody pinned, so the handshake accepts every key and `admit` checks
+    the pins or the join token before the builder gets a build.
     """
     if not settings.enabled:
         return None
@@ -153,14 +200,26 @@ async def start_reverse_acceptor(
                 conn.abort()
                 return
 
-            store_id_val = reg.get("store_id", f"builder-{id(conn):x}")
-            spec = reverse_spec(reg, store_id_val)
+            admitted = await admit(reg, conn.get_server_host_key(), pins, joiner, f"builder-{id(conn):x}")
+            if admitted is None:
+                conn.abort()
+                return
+            store_id_val = admitted
+            try:
+                await _serve(admitted, reg)
+            finally:
+                if joiner is not None and "join_token" in reg:
+                    with anyio.CancelScope(shield=True):
+                        await joiner.left(admitted)
+
+        async def _serve(store_id: StoreId, reg: dict[str, object]) -> None:
+            spec = reverse_spec(reg, store_id)
             systems = spec.systems or set()
             store = ReverseStore(spec, conn)
 
             log.info(
                 "reverse_builder_registration",
-                store_id=store_id_val,
+                store_id=store_id,
                 systems=sorted(systems),
                 nix_version=reg.get("nix_version", ""),
                 build_slots=store.build_pool.max_connections,
@@ -170,13 +229,13 @@ async def start_reverse_acceptor(
                 if not systems:
                     log.info(
                         "reverse_builder_probe_skipped",
-                        store_id=store_id_val,
+                        store_id=store_id,
                         detail="no systems reported, nothing to prove",
                     )
                     return True
                 reason = await store.prove_serves(sorted(systems)[0], settings.registration_probe_timeout)
                 if reason is not None:
-                    log.warning("reverse_builder_probe_failed", store_id=store_id_val, reason=reason)
+                    log.warning("reverse_builder_probe_failed", store_id=store_id, reason=reason)
                     return False
                 return True
 
@@ -184,21 +243,21 @@ async def start_reverse_acceptor(
                 conn.abort()
                 return
 
-            log.info("reverse_store_added", store_id=store_id_val)
+            log.info("reverse_store_added", store_id=store_id)
 
             try:
                 await conn.wait_closed()
             except asyncssh.Error:
-                log.debug("reverse_builder_connection_lost", store_id=store_id_val)
+                log.debug("reverse_builder_connection_lost", store_id=store_id)
 
-            log.info("reverse_builder_disconnected", store_id=store_id_val)
+            log.info("reverse_builder_disconnected", store_id=store_id)
 
             try:
-                await server.remove_store(StoreId(store_id_val))
+                await server.remove_store(store_id)
             except Exception:
                 log.warning(
                     "reverse_remove_store_failed",
-                    store_id=store_id_val,
+                    store_id=store_id,
                     exc_info=True,
                 )
 
@@ -217,7 +276,7 @@ async def start_reverse_acceptor(
         port=settings.port,
         acceptor=handle_builder,
         client_keys=[host_key],
-        known_hosts=_known_hosts_matcher(pins) if pins else None,
+        known_hosts=_known_hosts_matcher(pins) if pins and joiner is None else None,
         encoding=None,
         encryption_algs=SSH_ENCRYPTION_ALGS,
         keepalive_interval=SSH_KEEPALIVE_INTERVAL,

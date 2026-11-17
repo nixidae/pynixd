@@ -21,6 +21,7 @@ from . import wire
 from .config import ReverseInitiatorSettings
 from .constants import SSH_KEEPALIVE_COUNT_MAX, SSH_KEEPALIVE_INTERVAL
 from .hangup import ssh_hangup
+from .provisioning.ticket import JoinTicket
 from .proxy import DaemonProxy
 from .serde.auth import Role
 from .wire import SSHNixReader, SSHNixWriter
@@ -34,7 +35,7 @@ _REGISTRATION_COMMAND = "pynixd-register"
 
 
 class _ReverseSSHServer(asyncssh.SSHServer):
-    """SSH server that performs no client authentication.
+    """SSH server that authenticates the controller only when a join ticket names its key.
 
     Trust runs one way on the reverse path: the acceptor verifies the
     builder's host key before registration, and the builder serves
@@ -42,7 +43,13 @@ class _ReverseSSHServer(asyncssh.SSHServer):
     tunnel (WireGuard), and the builder's own host key is ephemeral by
     default, so a controller pin on this side would be friction with no
     threat model behind it. Issue #75.
+
+    A provisioned builder holds a join token, a secret the registration
+    gives away: it serves only the controller key its ticket names.
     """
+
+    def __init__(self, controller: asyncssh.SSHKey | None = None) -> None:
+        self._controller = controller
 
     def begin_auth(self, username: str) -> bool:
         return True
@@ -51,7 +58,7 @@ class _ReverseSSHServer(asyncssh.SSHServer):
         return True
 
     def validate_public_key(self, username: str, key: asyncssh.SSHKey) -> bool:
-        return True
+        return self._controller is None or key == self._controller
 
 
 class ReverseInitiator:
@@ -82,6 +89,8 @@ class ReverseInitiator:
             "nix_bin": settings.nix_bin,
             "max_jobs": settings.max_jobs or os.process_cpu_count() or 1,
         }
+        self._registration = json.dumps(self._registration_info).encode()
+        """What `pynixd-register` answers: the info, with the ticket's token once a dial read one."""
 
     async def run(self) -> None:
         """Connect to the controller and serve daemon sessions forever.
@@ -113,18 +122,25 @@ class ReverseInitiator:
 
     async def _connect_and_serve(self) -> None:
         host_keys = self._load_host_keys()
+        host, port = self._settings.acceptor_host, self._settings.acceptor_port
+        controller: asyncssh.SSHKey | None = None
+        registration = self._registration_info
+        if self._settings.join_ticket is not None:
+            ticket = JoinTicket.model_validate_json(await anyio.Path(self._settings.join_ticket).read_text())
+            host = ticket.acceptor_host or host
+            port = ticket.acceptor_port or port
+            if ticket.controller_key is not None:
+                controller = asyncssh.import_public_key(ticket.controller_key)
+            registration = {**registration, "join_token": ticket.token}
+        self._registration = json.dumps(registration).encode()
 
-        log.info(
-            "reverse_initiator_connecting",
-            host=self._settings.acceptor_host,
-            port=self._settings.acceptor_port,
-        )
+        log.info("reverse_initiator_connecting", host=host, port=port, ticket=self._settings.join_ticket is not None)
 
         conn = await asyncssh.connect_reverse(
-            self._settings.acceptor_host,
-            self._settings.acceptor_port,
+            host,
+            port,
             server_host_keys=host_keys,
-            server_factory=_ReverseSSHServer,
+            server_factory=lambda: _ReverseSSHServer(controller),
             authorized_client_keys=None,
             process_factory=self._handle_request,
             encoding=None,
@@ -153,8 +169,7 @@ class ReverseInitiator:
         cmd = process.command or ""
 
         if cmd == _REGISTRATION_COMMAND:
-            reg_json = json.dumps(self._registration_info)
-            process.stdout.write(reg_json.encode())
+            process.stdout.write(self._registration)
             process.exit(0)
             await process.wait_closed()
             return

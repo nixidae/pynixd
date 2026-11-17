@@ -23,7 +23,7 @@ class ProvisioningSql:
 SQLITE = ProvisioningSql(
     insert=f"INSERT INTO {T} (id, pool, provider, state, tokenSha256, launchedAtMs) VALUES (?, ?, ?, ?, ?, ?)",
     set_provider_id=f"UPDATE {T} SET providerId = ? WHERE id = ?",
-    set_registered=f"UPDATE {T} SET state = ?, registeredAtMs = ?, storeId = ? WHERE id = ? AND endedAtMs IS NULL",
+    set_registered=f"UPDATE {T} SET state = ?, registeredAtMs = ?, storeId = ? WHERE id = ? AND endedAtMs IS NULL AND registeredAtMs IS NULL",
     set_ended=f"UPDATE {T} SET state = ?, endedAtMs = ?, endReason = ? WHERE id = ? AND endedAtMs IS NULL",
     live=f"SELECT {_LIVE_COLUMNS} FROM {T} WHERE endedAtMs IS NULL ORDER BY launchedAtMs, id",
     live_by_token=f"SELECT {_LIVE_COLUMNS} FROM {T} WHERE tokenSha256 = ? AND endedAtMs IS NULL",
@@ -32,7 +32,7 @@ SQLITE = ProvisioningSql(
 POSTGRES = ProvisioningSql(
     insert=f"INSERT INTO {T} (id, pool, provider, state, tokenSha256, launchedAtMs) VALUES (%s, %s, %s, %s, %s, %s)",
     set_provider_id=f"UPDATE {T} SET providerId = %s WHERE id = %s",
-    set_registered=f"UPDATE {T} SET state = %s, registeredAtMs = %s, storeId = %s WHERE id = %s AND endedAtMs IS NULL",
+    set_registered=f"UPDATE {T} SET state = %s, registeredAtMs = %s, storeId = %s WHERE id = %s AND endedAtMs IS NULL AND registeredAtMs IS NULL",
     set_ended=f"UPDATE {T} SET state = %s, endedAtMs = %s, endReason = %s WHERE id = %s AND endedAtMs IS NULL",
     live=f"SELECT {_LIVE_COLUMNS} FROM {T} WHERE endedAtMs IS NULL ORDER BY launchedAtMs, id",
     live_by_token=f"SELECT {_LIVE_COLUMNS} FROM {T} WHERE tokenSha256 = %s AND endedAtMs IS NULL",

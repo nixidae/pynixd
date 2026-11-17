@@ -909,6 +909,11 @@ class ReverseInitiatorSettings(BaseModel):
     """How many builds this builder takes at once; the controller sizes its
     build pool to it. `None` takes the CPUs this process may use."""
     server_host_key_paths: list[Path] = Field(default_factory=list)
+    join_ticket: Path | None = None
+    """A `JoinTicket` (JSON) a provisioner gave this machine, read at each dial.
+
+    Its token goes in the registration, and its host, port and controller key
+    replace the settings here. nixidae/nixidae#1198."""
     reconnect_min_delay: float = 1.0
     reconnect_max_delay: float = 60.0
     shutdown_on_connect_failure_seconds: float | None = None

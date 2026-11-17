@@ -64,7 +64,11 @@ class ProvisioningTables:
             await session.execute(session.sql.provisioning.set_provider_id, (provider_id, id_))
 
     async def registered(self, id_: str, store_id: str, at_ms: int) -> bool:
-        """Mark *id_* running under *store_id*; False when it is ended or unknown."""
+        """Mark *id_* running under *store_id*; False when it is ended, unknown or registered already.
+
+        A join token admits one registration: a builder that reconnects is
+        refused, and the provisioner ends its instance.
+        """
         async with self._db.transaction() as session:
             changed = await session.execute(session.sql.provisioning.set_registered, (RUNNING, at_ms, store_id, id_))
         return changed > 0

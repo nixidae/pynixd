@@ -43,6 +43,7 @@ async def test_a_launch_is_live_until_it_ends(tables: ProvisioningTables) -> Non
     ]
 
     assert await tables.registered("p-1", "builder-p-1", at_ms=30)
+    assert not await tables.registered("p-1", "builder-p-1", at_ms=35), "a token admitted twice"
     found = await tables.by_token("aa" * 32)
     assert found is not None
     assert (found.id, found.state, found.store_id, found.registered_at_ms) == ("p-1", RUNNING, "builder-p-1", 30)
