@@ -951,8 +951,9 @@ class ProvisioningPoolSettings(BaseModel):
     slots: int = Field(default=1, ge=1)
     """Builds one machine takes at once; its builder declares the same `max_jobs`."""
     idle_seconds: float = Field(default=300.0, ge=0)
-    launch_timeout: float = Field(default=600.0, gt=0)
-    """Seconds a machine may take from launch to registration before it is ended."""
+    launch_timeout: float = Field(default=180.0, gt=0)
+    """Seconds a machine may take from launch to registration before it is ended. An EC2 builder took
+    21-29 s on 2026-11-17."""
 
     @model_validator(mode="after")
     def _mandatory_are_features(self) -> ProvisioningPoolSettings:
@@ -981,9 +982,10 @@ class Ec2TemplateSettings(BaseModel):
     """A builder only dials out; the default VPC's default group allows that."""
     installer_url: str | None = None
     """`None`: the `pynixd-installer` release's tarball for `arch`."""
-    idle_poweroff: float = Field(default=900.0, gt=0)
-    """The builder's own guard: it powers off, and so terminates, after this long with no build."""
-    bootstrap_deadline: float = Field(default=1200.0, gt=0)
+    idle_poweroff: float = Field(default=600.0, gt=0)
+    """The builder's own guard: it powers off, and so terminates, after this long with no build. A fallback
+    for a controller that never ends it, so longer than the pool's `idle_seconds`."""
+    bootstrap_deadline: float = Field(default=180.0, gt=0)
     """The builder powers off if setting itself up takes longer."""
 
     @property
