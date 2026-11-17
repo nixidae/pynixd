@@ -227,3 +227,39 @@ async def test_a_start_ends_what_the_last_run_left(world: _World) -> None:
 
     assert sorted(world.provider.terminated) == ["worker-1", "worker-2"]
     assert await world.db.provisioned.live() == []
+
+
+async def test_a_notice_drains_the_builder_and_launches_a_replacement(world: _World) -> None:
+    drained: list[tuple[StoreId, float]] = []
+
+    async def drain(store_id: StoreId, drain_timeout: float = 300.0) -> None:
+        drained.append((store_id, drain_timeout))
+
+    world.scheduler.drain_store = drain  # type: ignore[method-assign]  # the test records the drain
+    await world.wait_for("1")
+    await world.provisioner.step()
+    [first] = world.provider.machines_.values()
+    store_id = await world.provisioner.join(world.ticket(first.provider_id).token)
+    world.provider.machines_[first.provider_id] = Machine(
+        first.provider_id, MachineState.RUNNING, first.tags, notice=world.now + 120
+    )
+
+    async with world.provisioner.tasks():
+        await world.provisioner.step()
+        await world.provisioner.step()
+
+    assert drained == [(store_id, 110.0)], "one drain, ending before the notice does"
+    assert world.provider.launches == 2, "the replacement starts before the notice ends"
+    assert world.provider.terminated == []
+
+
+async def test_a_machine_the_provider_ended_ends_its_row(world: _World) -> None:
+    await world.wait_for("1")
+    await world.provisioner.step()
+    [first] = world.provider.machines_.values()
+    world.provider.machines_[first.provider_id] = Machine(first.provider_id, MachineState.ENDED, first.tags)
+
+    await world.provisioner.step()
+
+    assert [row.id for row in await world.db.provisioned.live()] != [first.tags[INSTANCE_TAG]]
+    assert world.provider.launches == 2, "the build still waits, so a new machine starts"

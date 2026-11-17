@@ -10,6 +10,12 @@ the reverse acceptor and registers by the ticket's token, once: the
 acceptor calls `join`, and `left` when the builder goes. A builder that
 left cannot come back, so its machine ends.
 
+Each step also lists this owner's machines. A machine under an
+interruption notice gives no slot, so `decide` launches its replacement,
+and its builder drains until `NOTICE_MARGIN` before the notice ends: the
+builds that do not finish go back to the queue. A machine the provider
+ended ends its row.
+
 At start, every row still live and every machine tagged with this
 pynixd's owner is an orphan: its builder's token was for the pynixd that
 died. At shutdown the provisioner ends every machine it holds.
@@ -17,6 +23,7 @@ died. At shutdown the provisioner ends every machine it holds.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import secrets
 import socket
@@ -35,13 +42,15 @@ from .provider import MachineState, NoCapacity, ProviderError
 from .ticket import JoinTicket
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
+
+    from anyio.abc import TaskGroup
 
     from pynixd_store.provisioning_tables import InstanceRow, ProvisioningTables
 
     from ..config import ProvisioningPoolSettings, ProvisioningSettings
     from ..scheduler import Scheduler
-    from .provider import Provider
+    from .provider import Machine, Provider
 
 log = structlog.get_logger(__name__)
 
@@ -51,6 +60,9 @@ POOL_TAG = "pynixd-pool"
 STORE_PREFIX = "provisioned-"
 SHUTDOWN_SECONDS = 30.0
 """How long ending every machine at shutdown may take; the next start ends what is left."""
+NOTICE_MARGIN = 10.0
+"""Seconds before a notice ends that the drain stops waiting: the builds still running
+go back to the queue while the builder can still answer."""
 
 
 def token_sha256(token: str) -> str:
@@ -101,6 +113,8 @@ class Provisioner:
         self._ending: set[str] = set()
         self._cooldown: dict[str, float] = {}
         """Pools the provider refused, and when to ask again."""
+        self._draining: set[str] = set()
+        self._group: TaskGroup | None = None
 
     def wake(self) -> None:
         self._wake.set()
@@ -114,10 +128,11 @@ class Provisioner:
         self._scheduler.pass_listeners.append(self.wake)
         await self.reconcile()
         try:
-            while True:
-                with anyio.move_on_after(await self.step()):
-                    await self._wake.wait()
-                self._wake = anyio.Event()
+            async with self.tasks():
+                while True:
+                    with anyio.move_on_after(await self.step()):
+                        await self._wake.wait()
+                    self._wake = anyio.Event()
         finally:
             self._scheduler.pass_listeners.remove(self.wake)
             with anyio.CancelScope(shield=True):
@@ -125,6 +140,17 @@ class Provisioner:
                     for row in await self._tables.live():
                         await self._end(row, EndReason.SHUTDOWN)
                 await self._provider.close()
+
+    @contextlib.asynccontextmanager
+    async def tasks(self) -> AsyncIterator[None]:
+        """The group the drains run in; `step` starts none outside it."""
+        async with anyio.create_task_group() as group:
+            self._group = group
+            try:
+                yield
+            finally:
+                self._group = None
+                group.cancel_scope.cancel()
 
     async def reconcile(self) -> None:
         """End every machine a previous run of this pynixd left."""
@@ -144,7 +170,16 @@ class Provisioner:
         """Launch and end what `decide` says; answer how long until a timer could change the answer."""
         now = self._clock()
         rows = await self._tables.live()
-        held = [self._held(row, now) for row in rows]
+        machines = await self._machines()
+        for row in list(rows):
+            machine = machines.get(row.id)
+            if row.provider_id is not None and machine is not None and machine.state is MachineState.ENDED:
+                await self._end(row, EndReason.GONE)
+                rows.remove(row)
+        held = [self._held(row, now, machines.get(row.id)) for row in rows]
+        for row, one in zip(rows, held, strict=True):
+            if one.notice is not None and one.state is InstanceState.RUNNING:
+                self._drain(row, one.notice)
         queue = self._scheduler.queue
         waiting_ids = self._scheduler.no_candidate | self._scheduler.held_by_pressure
         waiting = wants(build for build in queue.queue if build.build_id in waiting_ids)
@@ -161,7 +196,24 @@ class Provisioner:
                     break
         return self._until_next(held, now)
 
-    def _held(self, row: InstanceRow, now: float) -> Held:
+    async def _machines(self) -> dict[str, Machine]:
+        """This owner's machines by instance id; none when the provider does not answer."""
+        try:
+            listed = await self._provider.machines({OWNER_TAG: self.owner})
+        except ProviderError:
+            log.warning("provisioning_list_failed", exc_info=True)
+            return {}
+        return {machine.tags[INSTANCE_TAG]: machine for machine in listed if INSTANCE_TAG in machine.tags}
+
+    def _drain(self, row: InstanceRow, notice: float) -> None:
+        if row.id in self._draining or row.store_id is None or self._group is None:
+            return
+        self._draining.add(row.id)
+        seconds = max(notice - self._clock() - NOTICE_MARGIN, 0.0)
+        log.info("provisioning_draining", instance=row.id, seconds=round(seconds, 1))
+        self._group.start_soon(self._scheduler.drain_store, StoreId(row.store_id), seconds)
+
+    def _held(self, row: InstanceRow, now: float, machine: Machine | None) -> Held:
         store_id = store_id_of(row.id)
         builds = sum(
             1 for build in self._scheduler.queue.queue if build.is_building and build.assigned_store_id == store_id
@@ -179,6 +231,7 @@ class Provisioner:
             launched_at=row.launched_at_ms / 1000,
             builds=builds,
             idle_since=idle_since,
+            notice=None if machine is None else machine.notice,
         )
 
     def _until_next(self, held: list[Held], now: float) -> float:
@@ -234,6 +287,7 @@ class Provisioner:
                 await self._terminate(provider_id)
             await self._tables.ended(row.id, reason, at_ms=self._ms())
             self._idle_since.pop(row.id, None)
+            self._draining.discard(row.id)
         finally:
             self._ending.discard(row.id)
         self.wake()

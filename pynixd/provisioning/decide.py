@@ -41,6 +41,8 @@ class EndReason(StrEnum):
     ORPHAN = "orphan"
     """Live when this pynixd started: its builder lost the pynixd that admitted it."""
     SHUTDOWN = "shutdown"
+    GONE = "gone"
+    """The provider ended it: the end of a notice, or a boot that failed."""
 
 
 @dataclass(frozen=True, slots=True)
