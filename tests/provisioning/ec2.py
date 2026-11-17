@@ -49,6 +49,14 @@ async def test(vms: Machines) -> None:
     assert rc != 0, "the join token reached the builder's journal, which the console carries"
     print("[test] the join ticket is 0600 and its token is in no log")
 
+    lease = json.loads(await builder.succeed("cat /run/pynixd-idle/lease.json"))
+    [registered] = await rows(controller)
+    boot = (registered["registeredAtMs"] - registered["launchedAtMs"]) / 1000
+    assert abs(lease["boot_seconds"] - boot) < 0.01, (lease, registered)
+    # The `big` pool's `idle_seconds` and `idle_max_seconds`.
+    assert lease["idle_seconds"] == min(max(boot, 15.0), 30.0), lease
+    print(f"[test] the builder booted in {boot:.1f} s, and its guard holds a lease of {lease['idle_seconds']:.1f} s")
+
     idle_from = time.monotonic()
     await cloud.wait_ended(launched["id"], timeout=180)
 

@@ -46,6 +46,14 @@ async def completed(vm: Machine, settings: Mapping[str, str], run_id: int, timeo
     return found
 
 
+async def refuse_cancel(vm: Machine, settings: Mapping[str, str], refuse: bool) -> None:
+    body = shlex.quote(json.dumps({"refuse": refuse}))
+    await vm.succeed(
+        "curl --silent --fail --header 'Content-Type: application/json' "
+        f"--data {body} {fake(settings, '/_fake/refuse-cancel')}"
+    )
+
+
 async def set_ticket_key(vm: Machine, settings: Mapping[str, str], key: str) -> None:
     body = shlex.quote(json.dumps({"PYNIXD_TICKET_KEY": key}))
     await vm.succeed(

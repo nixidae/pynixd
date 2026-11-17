@@ -3,9 +3,10 @@
 A build that needs `gha-job` makes the controller's `GhaProvider` dispatch
 the builder workflow. The fake boots a runner guest with no Nix, which runs
 the workflow's steps: it installs pynixd from the tarball, opens the sealed
-ticket and registers. The build runs there; once the pool finds the builder
-idle, the controller cancels the run. The job's own guard waits an hour, so
-only that cancel ends it: the hold step holds.
+ticket and registers. At registration the controller tells the builder its
+idle limit, the boot time within the pool's 15 to 60 s. The build runs there;
+once the pool finds the builder idle that long, the controller cancels the
+run. The job's guard ends it a margin later, so the cancel comes first.
 """
 
 from __future__ import annotations
@@ -20,6 +21,9 @@ from vivarium_runner import Machines
 
 INSTALLED_NIX = "/nix/var/nix/profiles/default/bin"
 NOTE = "stdenv on a GitHub Actions job"
+LEASE = "/run/pynixd-idle/lease.json"
+IDLE_MIN, IDLE_MAX = 15.0, 60.0
+"""The `big` pool's `idle_seconds` and `idle_max_seconds`."""
 
 
 async def test(vms: Machines) -> None:
@@ -53,6 +57,13 @@ async def test(vms: Machines) -> None:
     rc, _ = await builder.execute(f"journalctl --no-pager | grep -F -q {token}")
     assert rc != 0, "the join token reached the runner's journal, which the job's log carries"
     print("[test] the ticket travelled sealed, opened 0600, and its token is in no input and no log")
+
+    lease = json.loads(await builder.succeed(f"cat {LEASE}"))
+    [registered] = await rows(controller)
+    boot = (registered["registeredAtMs"] - registered["launchedAtMs"]) / 1000
+    assert abs(lease["boot_seconds"] - boot) < 0.01, (lease, registered)
+    assert lease["idle_seconds"] == min(max(boot, IDLE_MIN), IDLE_MAX), lease
+    print(f"[test] the job booted in {boot:.1f} s, and the controller gave it {lease['idle_seconds']:.1f} s to idle")
 
     idle_from = time.monotonic()
     ended = await completed(controller, settings, run["id"], timeout=180)

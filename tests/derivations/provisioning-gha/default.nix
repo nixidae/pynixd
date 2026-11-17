@@ -35,13 +35,14 @@ let
     idle_seconds = idle;
     bootstrap_minutes = 10;
   };
-  pool = name: features: idle: {
+  pool = name: features: idle: idleMax: {
     inherit name features;
     template = name;
     systems = [ pkgs.stdenv.hostPlatform.system ];
     mandatory_features = features;
     max_instances = 1;
     idle_seconds = idle;
+    idle_max_seconds = idleMax;
     launch_timeout = 300.0;
   };
 in
@@ -100,17 +101,16 @@ vivariumLib.mkTest {
             token_file = "${tokenFile}";
             ticket_key_file = "${keyFile}";
             api_url = "http://127.0.0.1:${toString ghaPort}";
-            # Only the controller's cancel ends a `big` job: its guard waits an hour.
+            # Until the lease comes, a job's guard waits an hour: only the lease or a cancel ends it.
             templates.big = template 3600;
-            templates.selfend = template 20;
+            templates.selfend = template 3600;
           };
           acceptor_host = "10.9.0.1";
           acceptor_port = acceptorPort;
           heartbeat = 5.0;
           pools = [
-            (pool "big" [ feature ] 15.0)
-            # Longer than the phase: only the job's own guard may end it.
-            (pool "selfend" [ selfend ] 600.0)
+            (pool "big" [ feature ] 15.0 60.0)
+            (pool "selfend" [ selfend ] 15.0 20.0)
           ];
         };
       };

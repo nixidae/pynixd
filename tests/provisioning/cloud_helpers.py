@@ -35,7 +35,7 @@ async def pool_instances(vm: Machine) -> list[dict[str, Any]]:
 async def rows(vm: Machine) -> list[dict[str, Any]]:
     """The provisioner's rows, oldest first."""
     out = await vm.succeed(
-        f"sqlite3 -json {DB} 'SELECT id, state, storeId, endReason FROM {TABLE} ORDER BY launchedAtMs, id'"
+        f"sqlite3 -json {DB} 'SELECT id, state, storeId, endReason, launchedAtMs, registeredAtMs FROM {TABLE} ORDER BY launchedAtMs, id'"
     )
     return list(json.loads(out or "[]"))
 

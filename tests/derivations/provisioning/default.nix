@@ -89,7 +89,9 @@ vivariumLib.mkTest {
               ];
               mandatory_features = [ feature ];
               max_instances = 1;
+              # 15 s whatever the boot took: the phases time the idle end.
               idle_seconds = 15.0;
+              idle_max_seconds = 15.0;
               launch_timeout = 300.0;
             }
           ];

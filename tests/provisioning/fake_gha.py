@@ -128,6 +128,8 @@ class FakeGitHub:
         self.report = report
         self.workflow = workflow
         self.secrets = secrets
+        self.refuse_cancel = False
+        """GitHub down for the controller: a cancel answers 500."""
         self.token = token
         self.runner = runner
         self.runs: dict[int, Run] = {}
@@ -211,6 +213,8 @@ class FakeGitHub:
         run = self.runs.get(int(request.match_info["id"]))
         if run is None:
             return web.json_response({"message": "Not Found"}, status=404)
+        if self.refuse_cancel:
+            return web.json_response({"message": "Server Error"}, status=500)
         await self._refresh(run)
         if run.status == "completed":
             return web.json_response({"message": "Cannot cancel a workflow run that is completed."}, status=409)
@@ -233,6 +237,10 @@ class FakeGitHub:
         return web.json_response(
             [{**run.view(), "inputs": run.inputs, "instance": run.instance} for run in self.runs.values()]
         )
+
+    async def set_refuse_cancel(self, request: web.Request) -> web.Response:
+        self.refuse_cancel = bool((await request.json())["refuse"])
+        return web.json_response({})
 
     async def set_secrets(self, request: web.Request) -> web.Response:
         self.secrets = {str(key): str(value) for key, value in (await request.json()).items()}
@@ -260,6 +268,7 @@ async def app() -> web.Application:
     application.router.add_post("/_runner/{id}/conclusion", fake.conclude)
     application.router.add_get("/_fake/runs", fake.dispatches)
     application.router.add_post("/_fake/secrets", fake.set_secrets)
+    application.router.add_post("/_fake/refuse-cancel", fake.set_refuse_cancel)
 
     async def close(_: web.Application) -> None:
         await cloud.close()
