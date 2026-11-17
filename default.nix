@@ -824,6 +824,14 @@ let
       }
     );
 
+    # The EC2 builder's boot path: the real provider, a fake endpoint, a guest with no Nix. nixidae/nixidae#1420.
+    provisioning-ec2 = withDefaultNix (
+      pkgs.callPackage ./tests/derivations/provisioning-ec2 {
+        inherit package vivariumLib;
+        tarball = installerTarball;
+      }
+    );
+
     # The tarball installed on a guest with no Nix.
     installer = pkgs.callPackage ./tests/derivations/installer {
       inherit package vivariumLib;

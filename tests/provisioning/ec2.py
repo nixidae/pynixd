@@ -1,0 +1,88 @@
+"""The EC2 builder's boot path: the real provider's user data on a guest with no Nix. nixidae/nixidae#1420.
+
+A build that needs `ec2-spot` makes the controller's `Ec2Provider` call
+RunInstances; the fake endpoint boots the `ec2-builder` template with the
+rendered bootstrap as its user data. The bootstrap unpacks the installer
+tarball, installs pynixd with no daemon and registers. Then the build runs
+there through stdenv, and the builder ends once idle.
+"""
+
+from __future__ import annotations
+
+import json
+import shlex
+import time
+from typing import TYPE_CHECKING
+
+from cloud_helpers import nix_string, pool_instances, rows, until
+from daemon_helpers import as_tester, store_path
+from vivarium_runner import Machines
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from vivarium_runner import Machine
+
+INSTALLED_NIX = "/nix/var/nix/profiles/default/bin"
+NOTE = "stdenv on an EC2 builder"
+
+
+async def stdenv_drv(vm: Machine, settings: Mapping[str, str]) -> tuple[str, str]:
+    """stdenv's own builder, `genericBuild`, with `passAsFile`: its setup chmods the `.attr-*` file
+    (nixidae/nixidae#1416). Only an `ec2-spot` store builds it. Its `.drv` and its output."""
+    expression = (
+        "derivation {"
+        ' name = "pynixd-ec2-check";'
+        f' system = "{settings["system"]}";'
+        f' stdenv = builtins.storePath "{settings["stdenv"]}";'
+        f' builder = "${{builtins.storePath "{settings["bash"]}"}}/bin/bash";'
+        ' args = [ "-e" "-c" "source $stdenv/setup; genericBuild" ];'
+        f" note = {nix_string(NOTE)};"
+        ' passAsFile = [ "note" ];'
+        ' buildCommand = "cat $notePath > $out";'
+        f' requiredSystemFeatures = [ "{settings["feature"]}" ];'
+        " }"
+    )
+    drv = store_path(await as_tester(vm, f"nix-instantiate --expr {shlex.quote(expression)}"))
+    return drv, (await vm.succeed(f"nix-store -q --outputs {drv}")).strip()
+
+
+async def test(vms: Machines) -> None:
+    cloud, controller = vms.cloud, vms.controller
+    assert cloud is not None
+    settings = vms.settings
+    await controller.wait_for_unit("fake-ec2.service")
+    await controller.wait_for_unit("pynixd.service")
+
+    drv, out = await stdenv_drv(controller, settings)
+    started = time.monotonic()
+    await as_tester(controller, f"nix-store --realise {drv}", timeout=600)
+    built = (await controller.succeed(f"cat {out}")).strip()
+    print(f"[test] {out} built in {time.monotonic() - started:.0f} s: {built}")
+    assert built == NOTE, built
+
+    [launched] = await pool_instances(controller)
+    assert launched["template"] == "ec2-builder", launched
+    assert launched["tags"].get("pynixd-cloud-builder") == "true", launched["tags"]
+    builder = await cloud.wait_running(launched["id"])
+    await builder.succeed("systemctl is-active pynixd.service")
+    await builder.succeed(f"{INSTALLED_NIX}/nix-store --check-validity {out}")
+    assert await builder.count_processes("nix-daemon") == 0, "a nix-daemon runs on the builder"
+    print(f"[test] {launched['id']} booted with no Nix, installed pynixd from the tarball and built it")
+
+    assert (await builder.succeed("stat -c %a /etc/pynixd/join-ticket.json")).strip() == "600"
+    token = json.loads(await builder.succeed("cat /etc/pynixd/join-ticket.json"))["token"]
+    rc, _ = await builder.execute(f"journalctl --no-pager | grep -F -q {token}")
+    assert rc != 0, "the join token reached the builder's journal, which the console carries"
+    print("[test] the join ticket is 0600 and its token is in no log")
+
+    idle_from = time.monotonic()
+    await cloud.wait_ended(launched["id"], timeout=180)
+
+    async def row_ended() -> bool:
+        return all(row["state"] == "ended" for row in await rows(controller))
+
+    await until(row_ended, 30)
+    [row] = await rows(controller)
+    assert (row["state"], row["endReason"]) == ("ended", "idle"), row
+    print(f"[test] {launched['id']} ended {time.monotonic() - idle_from:.0f} s after the build: {row}")

@@ -37,6 +37,10 @@ ghalib.evalWorkflow {
         name = "Provision, interrupt, crash and restart builders";
         run = "nix build --file . internal.tests.provisioning --no-link --print-build-logs";
       }
+      {
+        name = "Boot an EC2 builder with no Nix from its user data";
+        run = "nix build --file . internal.tests.provisioning-ec2 --no-link --print-build-logs";
+      }
     ];
   };
 
