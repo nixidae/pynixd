@@ -135,4 +135,8 @@ vivariumLib.mkTest {
     script = ../../provisioning/crash.py;
     after = [ "interrupt" ];
   };
+  phases.restart = {
+    script = ../../provisioning/restart.py;
+    after = [ "crash" ];
+  };
 }
