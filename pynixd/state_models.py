@@ -176,6 +176,7 @@ class ProvisionedRow(_Model):
     provider_id: str | None = None
     age_s: float
     builds: int = 0
+    """Builds it runs now."""
     idle_s: float | None = None
     """How long it has run no build; None while it builds or boots."""
     notice_s: float | None = None
