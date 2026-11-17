@@ -59,6 +59,9 @@ The provisioner starts builders at a cloud provider while builds wait for a stor
 ### Join ticket
 The user data a provisioner gives a machine it launches (`JoinTicket`, `pynixd/provisioning/ticket.py`): a one-time token, the acceptor's address and the acceptor's public key. The builder sends the token in its reverse registration, and the acceptor admits it under its instance's store id. The token admits one registration; a builder that leaves cannot come back, and its machine ends.
 
+### Boot time, idle limit, lease
+An instance's boot time is the time from its launch to its registration, as the provisioner measures it. Its idle limit is how long it may run no build before the provisioner ends it: its boot time, but at least the pool's `idle_seconds` and at most its `idle_max_seconds`, because a second launch costs that boot again. The lease (`Lease`, `pynixd/provisioning/ticket.py`) carries both to the builder at registration, as the `pynixd-lease` command over the reverse SSH connection. The builder writes it for its idle guard, which then ends the machine a margin after the provisioner would.
+
 ### Trampolining
 A Nix-native concept for "unknown output" building (common in CA derivations). It is the process where a build is intercepted because it has "deferred" dependencies that must be resolved first. Once resolved (possibly by triggering sub-builds), the original derivation is updated and re-injected into the build process. In `pynixd`:
 - **`DerivationResolver`** handles pre-build resolution (deferred output, dynamic DrvWithVersion)

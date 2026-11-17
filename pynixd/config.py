@@ -914,6 +914,8 @@ class ReverseInitiatorSettings(BaseModel):
 
     Its token goes in the registration, and its host, port and controller key
     replace the settings here. nixidae/nixidae#1198."""
+    idle_lease: Path | None = None
+    """Where the `Lease` a controller sends at registration goes, for the idle guard. `None`: nowhere."""
     reconnect_min_delay: float = 1.0
     reconnect_max_delay: float = 60.0
     shutdown_on_connect_failure_seconds: float | None = None
@@ -951,6 +953,10 @@ class ProvisioningPoolSettings(BaseModel):
     slots: int = Field(default=1, ge=1)
     """Builds one machine takes at once; its builder declares the same `max_jobs`."""
     idle_seconds: float = Field(default=300.0, ge=0)
+    """The shortest idle spell that ends a machine. A machine is idle for as long as it took to boot,
+    between this and `idle_max_seconds`: a second launch would cost that boot again."""
+    idle_max_seconds: float | None = Field(default=None, ge=0)
+    """The longest idle spell; `None`: no cap but `launch_timeout`, which bounds the boot."""
     launch_timeout: float = Field(default=180.0, gt=0)
     """Seconds a machine may take from launch to registration before it is ended. An EC2 builder took
     21-29 s on 2026-11-17."""
@@ -959,6 +965,12 @@ class ProvisioningPoolSettings(BaseModel):
     def _mandatory_are_features(self) -> ProvisioningPoolSettings:
         if extra := set(self.mandatory_features) - set(self.features):
             raise ValueError(f"pool {self.name}: mandatory features not in its features: {sorted(extra)}")
+        return self
+
+    @model_validator(mode="after")
+    def _idle_bounds(self) -> ProvisioningPoolSettings:
+        if self.idle_max_seconds is not None and self.idle_max_seconds < self.idle_seconds:
+            raise ValueError(f"pool {self.name}: idle_max_seconds is less than idle_seconds")
         return self
 
 
@@ -983,8 +995,8 @@ class Ec2TemplateSettings(BaseModel):
     installer_url: str | None = None
     """`None`: the `pynixd-installer` release's tarball for `arch`."""
     idle_poweroff: float = Field(default=600.0, gt=0)
-    """The builder's own guard: it powers off, and so terminates, after this long with no build. A fallback
-    for a controller that never ends it, so longer than the pool's `idle_seconds`."""
+    """The builder's own guard: it powers off, and so terminates, after this long with no build, until
+    the controller sends its idle limit at registration (`Lease`). Then the guard uses that limit."""
     bootstrap_deadline: float = Field(default=180.0, gt=0)
     """The builder powers off if setting itself up takes longer."""
 
@@ -1033,8 +1045,8 @@ class GhaTemplateSettings(BaseModel):
     installer_url: str | None = None
     """`None`: the `pynixd-installer` release's tarball for `arch`."""
     idle_seconds: float = Field(default=600.0, gt=0)
-    """The job's own guard ends it after this long with no build. A fallback for a controller that never
-    cancels the run, so longer than the pool's `idle_seconds`."""
+    """The job's own guard ends it after this long with no build, until the controller sends its idle
+    limit at registration (`Lease`). Then the guard uses that limit."""
     bootstrap_minutes: int = Field(default=10, ge=1)
     """The install step's `timeout-minutes`. A runner's queue time comes before it; the pool's
     `launch_timeout` must cover both."""

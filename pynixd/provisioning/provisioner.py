@@ -41,7 +41,7 @@ from ..state_models import ProvisionedRow
 from .decide import EndReason, Held, InstanceState, Pool, decide
 from .demand import wants
 from .provider import MachineState, NoCapacity, ProviderError
-from .ticket import JoinTicket
+from .ticket import JoinTicket, Lease
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -89,8 +89,16 @@ def pool_of(settings: ProvisioningPoolSettings) -> Pool:
         min_instances=settings.min_instances,
         slots=settings.slots,
         idle_seconds=settings.idle_seconds,
+        idle_max_seconds=settings.idle_max_seconds,
         launch_timeout=settings.launch_timeout,
     )
+
+
+def boot_seconds(row: InstanceRow) -> float | None:
+    """From launch to registration, or None before it registered."""
+    if row.registered_at_ms is None:
+        return None
+    return (row.registered_at_ms - row.launched_at_ms) / 1000
 
 
 class Provisioner:
@@ -216,6 +224,7 @@ class Provisioner:
     def report(self) -> list[ProvisionedRow]:
         """The machines the last step saw, for `pynixd state`."""
         now = self._clock()
+        pools = {pool.name: pool for pool in self.pools}
         return [
             ProvisionedRow(
                 id=row.id,
@@ -227,6 +236,10 @@ class Provisioner:
                 builds=one.builds,
                 idle_s=None if one.idle_since is None else round(now - one.idle_since, 1),
                 notice_s=None if one.notice is None else round(one.notice - now, 1),
+                boot_s=None if one.boot_seconds is None else round(one.boot_seconds, 1),
+                idle_limit_s=None
+                if one.boot_seconds is None or one.pool not in pools
+                else round(pools[one.pool].idle_limit(one.boot_seconds), 1),
             )
             for row, one in self._seen
         ]
@@ -267,6 +280,7 @@ class Provisioner:
             builds=builds,
             idle_since=idle_since,
             notice=None if machine is None else machine.notice,
+            boot_seconds=boot_seconds(row),
         )
 
     def _until_next(self, held: list[Held], now: float) -> float:
@@ -279,7 +293,7 @@ class Provisioner:
             if one.state is InstanceState.PENDING:
                 deadlines.append(one.launched_at + pool.launch_timeout - now)
             elif one.idle_since is not None:
-                deadlines.append(one.idle_since + pool.idle_seconds - now)
+                deadlines.append(one.idle_since + pool.idle_limit(one.boot_seconds) - now)
         return max(min(deadlines), 0.0) + 0.05
 
     async def _launch(self, pool_name: str, now: float) -> bool:
@@ -366,13 +380,20 @@ class Provisioner:
         if row is None:
             return None
         store_id = store_id_of(row.id)
-        if not await self._tables.registered(row.id, store_id, at_ms=self._ms()):
+        at_ms = self._ms()
+        if not await self._tables.registered(row.id, store_id, at_ms=at_ms):
             return None
-        log.info("provisioning_joined", instance=row.id, store_id=store_id)
-        self.wake()
+        boot = (at_ms - row.launched_at_ms) / 1000
         pool = next((pool for pool in self.pools if pool.name == row.pool), None)
         # A row of a pool the settings no longer name keeps no rule: it builds nothing new for long.
-        return Admitted(store_id, frozenset() if pool is None else pool.mandatory_features)
+        idle = (pool or Pool(name=row.pool, systems=frozenset())).idle_limit(boot)
+        log.info("provisioning_joined", instance=row.id, store_id=store_id, boot_s=round(boot, 1), idle_s=idle)
+        self.wake()
+        return Admitted(
+            store_id,
+            frozenset() if pool is None else pool.mandatory_features,
+            Lease(idle_seconds=idle, boot_seconds=boot),
+        )
 
     async def left(self, store_id: StoreId) -> None:
         for row in await self._tables.live():

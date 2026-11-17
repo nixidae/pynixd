@@ -22,6 +22,7 @@ from nix_daemon_protocol.ids import StoreId
 
 from .config import ReverseAcceptorSettings, ReverseStoreSpec
 from .constants import SSH_ENCRYPTION_ALGS, SSH_KEEPALIVE_COUNT_MAX, SSH_KEEPALIVE_INTERVAL
+from .provisioning.ticket import LEASE_COMMAND
 from .ssh_auth import load_pinned_keys
 from .store.reverse import ReverseStore
 
@@ -29,11 +30,13 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from .instance import Server
+    from .provisioning.ticket import Lease
     from .store import Store
 
 log = structlog.get_logger(__name__)
 
 _REGISTRATION_COMMAND = "pynixd-register"
+LEASE_TIMEOUT = 10.0
 
 UNDECLARED_MAX_JOBS = 8
 """The build slots of a builder that declares no `max_jobs`. The pool size
@@ -59,6 +62,24 @@ class Admitted:
     store_id: StoreId
     mandatory_features: frozenset[str] = frozenset()
     """Features a build must need to go here (`Machine::mandatoryMet`); a pool sets them on its builders."""
+    lease: Lease | None = None
+    """What the acceptor tells the builder at registration; a builder no pool launched gets none."""
+
+
+async def send_lease(conn: asyncssh.SSHClientConnection, store_id: str, lease: Lease) -> bool:
+    """Tell the builder its lease. An older builder refuses the command; it then keeps its own guard's limit."""
+    try:
+        with anyio.fail_after(LEASE_TIMEOUT):
+            result = await conn.run(LEASE_COMMAND, input=lease.model_dump_json().encode())
+    except (TimeoutError, OSError, asyncssh.Error) as exc:
+        log.warning("reverse_lease_failed", store_id=store_id, error=str(exc) or type(exc).__name__)
+        return False
+    if result.exit_status != 0:
+        stderr = result.stderr.decode(errors="replace") if isinstance(result.stderr, bytes) else result.stderr
+        log.warning("reverse_lease_refused", store_id=store_id, exit_status=result.exit_status, stderr=stderr)
+        return False
+    log.info("reverse_lease_sent", store_id=store_id, idle_seconds=lease.idle_seconds)
+    return True
 
 
 class Joiner(Protocol):
@@ -225,6 +246,8 @@ async def start_reverse_acceptor(
                 return
             store_id_val = admitted.store_id
             try:
+                if admitted.lease is not None:
+                    await send_lease(conn, admitted.store_id, admitted.lease)
                 await _serve(admitted, reg)
             finally:
                 if joiner is not None and "join_token" in reg:

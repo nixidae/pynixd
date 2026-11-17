@@ -12,8 +12,15 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId, StoreId
 from pynixd.config import ProvisioningPoolSettings, ProvisioningSettings, PynixdSettings
 from pynixd.context import PynixdContext
 from pynixd.provisioning.provider import Machine, MachineState, NoCapacity
-from pynixd.provisioning.provisioner import INSTANCE_TAG, OWNER_TAG, Provisioner, store_id_of, token_sha256
-from pynixd.provisioning.ticket import JoinTicket
+from pynixd.provisioning.provisioner import (
+    INSTANCE_TAG,
+    OWNER_TAG,
+    Provisioner,
+    pool_of,
+    store_id_of,
+    token_sha256,
+)
+from pynixd.provisioning.ticket import JoinTicket, Lease
 from pynixd.scheduler import Scheduler
 from pynixd.serde import BasicDerivation, BuildDerivationRequest, BuildMode, StorePath
 from pynixd_store.create_store import open_local_store
@@ -187,6 +194,37 @@ async def test_an_idle_builder_ends_after_its_idle_time(world: _World) -> None:
     assert world.provider.terminated == [launched.provider_id]
     assert world.removed == [store_id]
     assert await world.db.provisioned.live() == []
+
+
+async def test_a_builder_that_booted_long_is_told_and_given_its_boot_time_to_idle(world: _World) -> None:
+    await world.wait_for("1")
+    await world.provisioner.step()
+    [launched] = world.provider.machines_.values()
+    world.now += 90
+    joined = await world.provisioner.join(world.ticket(launched.provider_id).token)
+    assert joined is not None
+    assert joined.lease == Lease(idle_seconds=90.0, boot_seconds=90.0), "60 s is the pool's minimum"
+    await world.finish_all()
+
+    await world.provisioner.step()
+    [row] = world.provisioner.report()
+    assert (row.boot_s, row.idle_limit_s) == (90.0, 90.0)
+    world.now += 61
+    await world.provisioner.step()
+    assert world.provider.terminated == [], "ended at the pool's 60 s minimum, not at its 90 s boot"
+    world.now += 30
+    await world.provisioner.step()
+    assert world.provider.terminated == [launched.provider_id]
+
+
+async def test_a_builder_that_booted_fast_idles_the_pools_minimum(world: _World) -> None:
+    await world.wait_for("1")
+    await world.provisioner.step()
+    [launched] = world.provider.machines_.values()
+    world.now += 5
+    joined = await world.provisioner.join(world.ticket(launched.provider_id).token)
+    assert joined is not None
+    assert joined.lease == Lease(idle_seconds=60.0, boot_seconds=5.0)
 
 
 async def test_a_full_cloud_ends_the_row_and_waits_a_heartbeat(world: _World) -> None:
@@ -370,3 +408,10 @@ async def test_a_build_that_needs_the_mandatory_feature_launches_a_builder_that_
     joined = await gated.provisioner.join(gated.ticket(launched.provider_id).token)
     assert joined is not None
     assert joined.mandatory_features == frozenset({"aws"})
+
+
+def test_a_pool_whose_idle_maximum_is_under_its_minimum_is_refused() -> None:
+    with pytest.raises(ValueError, match="idle_max_seconds is less than idle_seconds"):
+        ProvisioningPoolSettings(name="p", template="t", systems=["x"], idle_seconds=60.0, idle_max_seconds=30.0)
+    pool = pool_of(ProvisioningPoolSettings(name="p", template="t", systems=["x"], idle_max_seconds=900.0))
+    assert (pool.idle_seconds, pool.idle_max_seconds) == (300.0, 900.0)

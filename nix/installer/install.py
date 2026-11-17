@@ -39,6 +39,8 @@ GHA_CACHE_CREDENTIALS: Final = Path("/etc/pynixd/gha-cache.json")
 """Not under `/run/pynixd`: the unit's `RuntimeDirectory`, which systemd empties when pynixd stops."""
 UNIT_DIR: Final = Path("/etc/systemd/system")
 JOIN_TICKET: Final = Path("/etc/pynixd/join-ticket.json")
+IDLE_LEASE: Final = Path("/run/pynixd-idle/lease.json")
+"""The idle guard's `LEASE`. Not under `/run/pynixd`, which systemd empties when pynixd stops."""
 # `--sealed-join-ticket` reads these: a CI job passes a secret through its environment, not its command line.
 TICKET_ENV: Final = "PYNIXD_TICKET"
 TICKET_KEY_ENV: Final = "PYNIXD_TICKET_KEY"
@@ -156,7 +158,7 @@ def pynixd_conf(
         "stores": stores,
     }
     if reverse_initiator is not None:
-        conf["reverse_initiator"] = {**reverse_initiator, "enabled": True}
+        conf["reverse_initiator"] = {"idle_lease": str(IDLE_LEASE), **reverse_initiator, "enabled": True}
     return conf
 
 

@@ -181,6 +181,10 @@ class ProvisionedRow(_Model):
     """How long it has run no build; None while it builds or boots."""
     notice_s: float | None = None
     """Seconds left of an interruption notice. The daemon leaves a None out of its answer."""
+    boot_s: float | None = None
+    """Seconds from launch to registration; None while it boots."""
+    idle_limit_s: float | None = None
+    """How long it may idle before it ends: its boot time, within the pool's bounds."""
 
 
 class FederatedError(_Model):

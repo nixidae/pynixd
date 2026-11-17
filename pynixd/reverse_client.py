@@ -16,12 +16,13 @@ from typing import TYPE_CHECKING
 import anyio
 import asyncssh
 import structlog
+from pydantic import ValidationError
 
 from . import wire
 from .config import ReverseInitiatorSettings
 from .constants import SSH_KEEPALIVE_COUNT_MAX, SSH_KEEPALIVE_INTERVAL
 from .hangup import ssh_hangup
-from .provisioning.ticket import JoinTicket
+from .provisioning.ticket import LEASE_COMMAND, JoinTicket, Lease
 from .proxy import DaemonProxy
 from .serde.auth import Role
 from .wire import SSHNixReader, SSHNixWriter
@@ -32,6 +33,14 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 _REGISTRATION_COMMAND = "pynixd-register"
+
+
+async def write_lease(path: anyio.Path, lease: Lease) -> None:
+    """Replace *path* with *lease* at once: the idle guard reads it from another process at any time."""
+    await path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(f".{path.name}.partial")
+    await partial.write_text(lease.model_dump_json())
+    await partial.replace(path)
 
 
 class _ReverseSSHServer(asyncssh.SSHServer):
@@ -165,12 +174,35 @@ class ReverseInitiator:
         log.info("reverse_initiator_ephemeral_key_generated")
         return [key]
 
+    async def _take_lease(self, process: asyncssh.SSHServerProcess[bytes]) -> int:
+        try:
+            lease = Lease.model_validate_json(await process.stdin.read())
+        except ValidationError as error:
+            process.stderr.write(f"pynixd: not a lease: {error}\n".encode())
+            return 1
+        log.info("reverse_initiator_lease", idle_seconds=lease.idle_seconds, boot_seconds=lease.boot_seconds)
+        if self._settings.idle_lease is not None:
+            try:
+                await write_lease(anyio.Path(self._settings.idle_lease), lease)
+            except OSError as error:
+                log.warning(
+                    "reverse_initiator_lease_write_failed", path=str(self._settings.idle_lease), error=str(error)
+                )
+                process.stderr.write(f"pynixd: lease not written: {error}\n".encode())
+                return 1
+        return 0
+
     async def _handle_request(self, process: asyncssh.SSHServerProcess[bytes]) -> None:
         cmd = process.command or ""
 
         if cmd == _REGISTRATION_COMMAND:
             process.stdout.write(self._registration)
             process.exit(0)
+            await process.wait_closed()
+            return
+
+        if cmd == LEASE_COMMAND:
+            process.exit(await self._take_lease(process))
             await process.wait_closed()
             return
 

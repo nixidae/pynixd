@@ -59,6 +59,18 @@ def test_an_idle_instance_ends_after_idle_seconds_only_when_nothing_waits() -> N
     assert decide([ARM], [ARM_BUILD], [idle], now=600).terminate == {}
 
 
+def test_the_idle_limit_is_the_boot_time_within_the_pools_bounds() -> None:
+    bounded = Pool(name="arm", systems=frozenset({"aarch64-linux"}), idle_seconds=60, idle_max_seconds=200)
+    assert [bounded.idle_limit(boot) for boot in (None, 10.0, 90.0, 500.0)] == [60, 60, 90.0, 200]
+    assert ARM.idle_limit(500.0) == 500.0, "no maximum: the boot time, which launch_timeout bounds"
+
+
+def test_an_instance_that_booted_long_idles_as_long() -> None:
+    slow = Held(id="i-1", pool="arm", state=InstanceState.RUNNING, launched_at=0, idle_since=0.0, boot_seconds=90.0)
+    assert decide([ARM], [], [slow], now=89) == Decision()
+    assert decide([ARM], [], [slow], now=90) == Decision(terminate={"i-1": EndReason.IDLE})
+
+
 def test_a_busy_instance_is_never_ended_as_idle() -> None:
     assert decide([ARM], [], [_running("i-1", builds=1, idle_since=None)], now=10_000) == Decision()
 

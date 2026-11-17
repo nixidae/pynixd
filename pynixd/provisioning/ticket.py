@@ -1,4 +1,4 @@
-"""What a provisioner hands a builder it launches, as the machine's user data. nixidae/nixidae#1198.
+"""What a provisioner hands a builder it launches, as the machine's user data, and at registration. nixidae/nixidae#1198.
 
 A provider whose user data is public seals the ticket: a GitHub Actions
 `workflow_dispatch` input shows on the run's page (nixidae/nixidae#1473).
@@ -22,6 +22,8 @@ from nacl.bindings import (
 from pydantic import BaseModel, ConfigDict
 
 SEALED_PREFIX: Final = "pynixd-ticket-v1:"
+LEASE_COMMAND: Final = "pynixd-lease"
+"""The command the acceptor runs on the builder with a `Lease` as its input."""
 KEY_BYTES: Final = crypto_aead_xchacha20poly1305_ietf_KEYBYTES
 _NONCE_BYTES: Final = crypto_aead_xchacha20poly1305_ietf_NPUBBYTES
 _TAG_BYTES: Final = crypto_aead_xchacha20poly1305_ietf_ABYTES
@@ -44,6 +46,22 @@ class JoinTicket(BaseModel):
     image, declares them; the builder's pynixd does not read them."""
     max_jobs: int | None = None
     """The pool's slots, for the same machine set-up."""
+
+
+class Lease(BaseModel):
+    """What the controller tells a builder it admitted by token: `pynixd-lease`, at registration.
+
+    The builder writes it to `ReverseInitiatorSettings.idle_lease`, and its idle
+    guard then ends the machine shortly after the controller would.
+    """
+
+    # A newer controller may send more; an older builder keeps what it knows.
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    idle_seconds: float
+    """How long the controller lets this builder idle before it ends it."""
+    boot_seconds: float
+    """What the controller measured from launch to registration."""
 
 
 class SealError(ValueError):

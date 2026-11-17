@@ -7,8 +7,9 @@ A waiting build counts against the first pool, in configuration order, that
 can build it. A pool launches enough instances to give each waiting build a
 slot, less the slots of instances still booting or idle, up to its maximum.
 An instance under an interruption notice gives no slot: a replacement starts
-before it ends. An idle instance is terminated once it has been idle for the
-pool's `idle_seconds` and no build waits for its pool; one stuck booting past
+before it ends. An idle instance is terminated once it has been idle for as
+long as it took to boot, within the pool's `idle_seconds` and
+`idle_max_seconds`, and no build waits for its pool; one stuck booting past
 `launch_timeout` is terminated too.
 """
 
@@ -60,8 +61,14 @@ class Pool:
     slots: int = 1
     """Builds one instance takes at once."""
     idle_seconds: float = 300.0
+    idle_max_seconds: float | None = None
     launch_timeout: float = 600.0
     """Seconds an instance may stay pending before it is given up."""
+
+    def idle_limit(self, boot_seconds: float | None) -> float:
+        """How long an instance that took *boot_seconds* to register may idle: its boot, within the pool's bounds."""
+        limit = max(boot_seconds or 0.0, self.idle_seconds)
+        return limit if self.idle_max_seconds is None else min(limit, self.idle_max_seconds)
 
     def builds(self, want: Want) -> bool:
         return (
@@ -96,6 +103,9 @@ class Held:
     """When its last build ended, or its builder registered; None while it builds."""
     notice: float | None = None
     """When an interruption ends it."""
+    boot_seconds: float | None = None
+    """From launch to registration; None while pending. It includes the provider's launch call and,
+    for a CI job, its queue time."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,7 +156,7 @@ def decide(pools: Sequence[Pool], waiting: Sequence[Want], held: Sequence[Held],
                 if one.state is InstanceState.RUNNING
                 and one.builds == 0
                 and one.idle_since is not None
-                and now - one.idle_since >= pool.idle_seconds
+                and now - one.idle_since >= pool.idle_limit(one.boot_seconds)
             ),
             key=lambda one: one.idle_since or 0.0,
         )

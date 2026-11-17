@@ -73,6 +73,39 @@ def test_quiet_counts_from_the_latest_of_boot_and_changes() -> None:
     assert guard.quiet_for(1000.0, 100.0, [50.0]) == 900.0
 
 
+def test_a_lease_sets_the_limit_with_the_margin() -> None:
+    assert guard.limit(600.0, None) == 600.0
+    assert guard.limit(600.0, '{"idle_seconds": 90.0, "boot_seconds": 90.0}') == 90.0 + guard.LEASE_MARGIN
+    assert guard.limit(20.0, '{"idle_seconds": 3600}') == 3600 + guard.LEASE_MARGIN, "a lease may lengthen it too"
+
+
+@pytest.mark.parametrize(
+    "text", ["", "{", "[]", '{"boot_seconds": 1}', '{"idle_seconds": "soon"}', '{"idle_seconds": -1}']
+)
+def test_a_lease_the_guard_cannot_read_keeps_its_own_limit(text: str) -> None:
+    assert guard.limit(600.0, text) == 600.0
+
+
+def test_quiet_counts_from_the_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(guard, "process_uids", list)
+    monkeypatch.setattr(guard, "DB_FILES", ())
+    monkeypatch.setattr(guard, "SEEN", tmp_path / "build-seen")
+    monkeypatch.setattr(guard, "LEASE", tmp_path / "lease.json")
+    since_boot = guard.quiet()
+    (tmp_path / "lease.json").write_text('{"idle_seconds": 60}')
+    assert guard.quiet() < 1.0 < since_boot, "the controller counts idle from registration, when the lease comes"
+
+
+def test_the_installer_puts_the_lease_where_the_guard_reads_it() -> None:
+    assert install.IDLE_LEASE == guard.LEASE
+    conf = install.pynixd_conf(False, {"join_ticket": "/etc/pynixd/join-ticket.json"})
+    assert PynixdSettings.model_validate_json(json.dumps(conf)).reverse_initiator.idle_lease == guard.LEASE
+    mine = install.pynixd_conf(False, {"idle_lease": "/run/elsewhere.json"})
+    assert PynixdSettings.model_validate_json(json.dumps(mine)).reverse_initiator.idle_lease == Path(
+        "/run/elsewhere.json"
+    )
+
+
 def test_process_uids_reads_proc(tmp_path: Path) -> None:
     (tmp_path / "1").mkdir()
     (tmp_path / "self").mkdir()
