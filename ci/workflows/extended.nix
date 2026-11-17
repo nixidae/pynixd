@@ -41,6 +41,10 @@ ghalib.evalWorkflow {
         name = "Boot an EC2 builder with no Nix from its user data";
         run = "nix build --file . internal.tests.provisioning-ec2 --no-link --print-build-logs";
       }
+      {
+        name = "Run a GitHub Actions job as a builder";
+        run = "nix build --file . internal.tests.provisioning-gha --no-link --print-build-logs";
+      }
     ];
   };
 

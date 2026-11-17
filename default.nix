@@ -832,6 +832,13 @@ let
         tarball = installerTarball;
       }
     );
+    provisioning-gha = withDefaultNix (
+      pkgs.callPackage ./tests/derivations/provisioning-gha {
+        inherit package vivariumLib;
+        tarball = installerTarball;
+        workflow = ciTestWorkflows.builder;
+      }
+    );
 
     # The tarball installed on a guest with no Nix.
     installer = pkgs.callPackage ./tests/derivations/installer {
