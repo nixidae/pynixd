@@ -113,7 +113,7 @@ def bootstrap(ticket: str, template: Ec2TemplateSettings) -> str:
 import json, os, shutil, subprocess, sys, urllib.request
 
 TICKET = {ticket!r}
-URL = {template.installer_url!r}
+URL = {template.installer!r}
 IDLE = {template.idle_poweroff!r}
 DEADLINE = {template.bootstrap_deadline!r}
 
@@ -171,7 +171,7 @@ def run_params(
     """RunInstances' parameters for one spot instance of *instance_type*."""
     tag_list = [{"Key": key, "Value": value} for key, value in sorted(tags.items())]
     params: Wire = {
-        "ImageId": template.image,
+        "ImageId": template.image_id,
         "InstanceType": instance_type,
         "MinCount": 1,
         "MaxCount": 1,

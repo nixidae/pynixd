@@ -967,9 +967,11 @@ class Ec2TemplateSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     instance_types: list[str] = Field(min_length=1)
-    """Tried in order: a type with no spot capacity now gives way to the next."""
-    image: str = "resolve:ssm:/aws/service/canonical/ubuntu/server/26.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
-    """An AMI id, or `resolve:ssm:<parameter>`, which EC2 resolves at each launch."""
+    """Tried in order: a type with no spot capacity now gives way to the next. All of one `arch`."""
+    arch: Literal["x86_64", "aarch64"] = "x86_64"
+    """The CPU of `instance_types`: it picks the default image and installer."""
+    image: str | None = None
+    """An AMI id, or `resolve:ssm:<parameter>`, which EC2 resolves at each launch. `None`: Ubuntu 26.04 for `arch`."""
     root_device: str = "/dev/sda1"
     """The image's root device name: Ubuntu's."""
     root_gib: int = Field(default=64, ge=8)
@@ -977,13 +979,26 @@ class Ec2TemplateSettings(BaseModel):
     """`None` takes the default VPC's subnet in a zone EC2 picks."""
     security_group_ids: list[str] = Field(default_factory=list)
     """A builder only dials out; the default VPC's default group allows that."""
-    installer_url: str = (
-        "https://github.com/nixidae/nixidae/releases/download/pynixd-installer/pynixd-x86_64-linux.tar.zst"
-    )
+    installer_url: str | None = None
+    """`None`: the `pynixd-installer` release's tarball for `arch`."""
     idle_poweroff: float = Field(default=900.0, gt=0)
     """The builder's own guard: it powers off, and so terminates, after this long with no build."""
     bootstrap_deadline: float = Field(default=1200.0, gt=0)
     """The builder powers off if setting itself up takes longer."""
+
+    @property
+    def image_id(self) -> str:
+        cpu = {"x86_64": "amd64", "aarch64": "arm64"}[self.arch]
+        return (
+            self.image
+            or f"resolve:ssm:/aws/service/canonical/ubuntu/server/26.04/stable/current/{cpu}/hvm/ebs-gp3/ami-id"
+        )
+
+    @property
+    def installer(self) -> str:
+        return self.installer_url or (
+            f"https://github.com/nixidae/nixidae/releases/download/pynixd-installer/pynixd-{self.arch}-linux.tar.zst"
+        )
 
 
 class Ec2Settings(BaseModel):

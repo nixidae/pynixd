@@ -202,3 +202,13 @@ def test_the_bootstrap_is_python_that_never_prints_the_ticket() -> None:
 def test_provider_ec2_needs_its_settings() -> None:
     with pytest.raises(ValueError, match="ec2 settings"):
         ProvisioningSettings(provider="ec2")
+
+
+def test_an_aarch64_template_takes_the_arm64_image_and_the_aarch64_installer() -> None:
+    arm = Ec2TemplateSettings(instance_types=["c7g.xlarge"], arch="aarch64")
+    assert arm.image_id.endswith("/arm64/hvm/ebs-gp3/ami-id")
+    assert arm.installer.endswith("/pynixd-aarch64-linux.tar.zst")
+    x86 = Ec2TemplateSettings(instance_types=["c7i.xlarge"])
+    assert x86.image_id.endswith("/amd64/hvm/ebs-gp3/ami-id")
+    assert x86.installer.endswith("/pynixd-x86_64-linux.tar.zst")
+    assert Ec2TemplateSettings(instance_types=["x"], image="ami-1").image_id == "ami-1"
