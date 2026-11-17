@@ -816,6 +816,14 @@ let
       }
     );
 
+    # A build no store takes launches a builder through vivarium's cloud API. nixidae/nixidae#1198.
+    provisioning = withDefaultNix (
+      pkgs.callPackage ./tests/derivations/provisioning {
+        inherit package;
+        inherit vivariumLib;
+      }
+    );
+
     # The tarball installed on a guest with no Nix.
     installer = pkgs.callPackage ./tests/derivations/installer {
       inherit package vivariumLib;
