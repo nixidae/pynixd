@@ -48,7 +48,7 @@ from .store.transfer import stream_paths_store_to_store
 from .substitution_queue import SubstitutionQueue
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import AsyncIterator, Callable, Sequence
 
     from anyio.abc import TaskGroup
 
@@ -94,6 +94,8 @@ class Scheduler:
         self._workers: TaskGroup | None = None
         self.builds_waiting = False
         """Whether the last pass left a build waiting for a store."""
+        self.pass_listeners: list[Callable[[], None]] = []
+        """Called after each pass: a provisioner reads what it left waiting."""
         self.trace = PlacementTrace(None, ctx.settings.placement_trace)
         """Writes nothing until `start` hands it the database, which the local store opens after this."""
         self.estimator = TransferEstimator(
@@ -385,7 +387,10 @@ class Scheduler:
         pending = await self.queue.get_pending()
         if not pending:
             self.builds_waiting = False
+            self.placer.no_candidate = set()
+            self.placer.held_by_pressure = set()
             self._update_store_metrics()
+            self._passed()
             return
 
         schedulable, running_builds = self._filter_schedulable(pending)
@@ -394,6 +399,7 @@ class Scheduler:
         self.builds_waiting = bool(waiting_slot)
 
         self._update_store_metrics()
+        self._passed()
 
         log.debug(
             "scheduling_pass_done",
@@ -404,6 +410,10 @@ class Scheduler:
                 s.store_id: f"{s.cpu_util.utilization:.1f}%" if s.cpu_util else None for s in self.stores.values()
             },
         )
+
+    def _passed(self) -> None:
+        for listener in self.pass_listeners:
+            listener()
 
     def _filter_schedulable(
         self,

@@ -130,11 +130,26 @@ def _known_hosts_matcher(
     return _match
 
 
+def client_key(settings: ReverseAcceptorSettings) -> asyncssh.SSHKey:
+    """The key the acceptor presents to each builder: read, generated and written, or ephemeral."""
+    if settings.host_key_path and settings.host_key_path.exists():
+        log.info("reverse_client_key_loaded", host_key_path=settings.host_key_path)
+        return asyncssh.read_private_key(str(settings.host_key_path))
+    key = asyncssh.generate_private_key("ssh-rsa", key_size=4096)
+    if settings.host_key_path:
+        key.write_private_key(str(settings.host_key_path))
+        log.info("reverse_client_key_generated", host_key_path=settings.host_key_path)
+    else:
+        log.info("reverse_client_key_ephemeral_generated")
+    return key
+
+
 async def start_reverse_acceptor(
     server: Server,
     settings: ReverseAcceptorSettings,
     spawn: Callable[[Callable[[], Awaitable[None]]], object],
     joiner: Joiner | None = None,
+    host_key: asyncssh.SSHKey | None = None,
 ) -> asyncssh.SSHAcceptor | None:
     """Start the reverse store SSH listener on the controller.
 
@@ -152,17 +167,8 @@ async def start_reverse_acceptor(
     if not settings.enabled:
         return None
 
-    host_key: asyncssh.SSHKey
-    if settings.host_key_path and settings.host_key_path.exists():
-        host_key = asyncssh.read_private_key(str(settings.host_key_path))
-        log.info("reverse_client_key_loaded", host_key_path=settings.host_key_path)
-    else:
-        host_key = asyncssh.generate_private_key("ssh-rsa", key_size=4096)
-        if settings.host_key_path:
-            host_key.write_private_key(str(settings.host_key_path))
-            log.info("reverse_client_key_generated", host_key_path=settings.host_key_path)
-        else:
-            log.info("reverse_client_key_ephemeral_generated")
+    if host_key is None:
+        host_key = client_key(settings)
 
     # Pinned builder host keys, or empty for an explicit no-pins setup.
     # A missing file raises here, failing the acceptor at startup rather

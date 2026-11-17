@@ -31,6 +31,8 @@ from .execution import output_paths
 from .gc import Collector
 from .health import HealthReport, LoopLagMonitor, StallWatchdog
 from .liveness_watch import DirtyFlag, StableRootsWatch
+from .provisioning.provisioner import Provisioner
+from .provisioning.vivarium import VivariumProvider
 from .recursive import restricted_server
 from .scheduler import Scheduler
 from .serde.protocol import PynixdGCAction
@@ -218,6 +220,7 @@ class Server:
         self.ssh_server: asyncssh.SSHAcceptor | None = None
         self.unix_server: UnixServer | None = None
         self.reverse_acceptor: asyncssh.SSHAcceptor | None = None
+        self.provisioner: Provisioner | None = None
         self.http_server: web.AppRunner | None = None
         self.stall_watchdog = (
             StallWatchdog(
@@ -413,6 +416,22 @@ class Server:
     async def _pending_builders(self) -> list[frozenset[StoreId] | None]:
         scheduler = self.ctx.scheduler
         return [] if scheduler is None else [build.builders for build in await scheduler.queue.get_pending()]
+
+    def _provisioner(self, controller_key: str) -> Provisioner | None:
+        """The provisioner `provisioning.pools` asks for, or None for no pools."""
+        settings = self.ctx.settings.provisioning
+        if not settings.pools:
+            return None
+        if self.ctx.db is None or self.ctx.scheduler is None:
+            raise RuntimeError("provisioning pools need the store database and the scheduler: the rows outlive pynixd")
+        return Provisioner(
+            settings,
+            VivariumProvider(str(settings.vivarium_socket)),
+            self.ctx.db.provisioned,
+            self.ctx.scheduler,
+            self.remove_store,
+            controller_key,
+        )
 
     def _spawn(self, fn: Callable[..., Awaitable[object]], *args: object) -> None:
         """Run *fn* for the daemon's lifetime, in the server's background task group.
@@ -828,11 +847,19 @@ class Server:
         # `start_reverse_acceptor` answers `None` for a set that is off, and
         # reaching it at all imports `asyncssh`. Issue #30.
         if s.reverse_acceptor.enabled:
+            host_key = _optional.reverse_server.client_key(s.reverse_acceptor)
+            self.provisioner = self._provisioner(host_key.export_public_key().decode())
             self.reverse_acceptor = await _optional.reverse_server.start_reverse_acceptor(
                 server=self,
                 settings=s.reverse_acceptor,
                 spawn=self._spawn,
+                joiner=self.provisioner,
+                host_key=host_key,
             )
+            if self.provisioner is not None:
+                self._spawn(self.provisioner.run)
+        elif s.provisioning.pools:
+            raise RuntimeError("provisioning pools need the reverse acceptor: launched builders register through it")
 
         if s.reverse_initiator.enabled:
             initiator = _optional.reverse_client.ReverseInitiator(self.ctx, s.reverse_initiator)

@@ -34,6 +34,13 @@ class InstanceState(StrEnum):
 class EndReason(StrEnum):
     IDLE = "idle"
     LAUNCH_TIMEOUT = "launch-timeout"
+    DISCONNECTED = "disconnected"
+    """Its builder left; its token admits no second registration."""
+    NO_CAPACITY = "no-capacity"
+    LAUNCH_FAILED = "launch-failed"
+    ORPHAN = "orphan"
+    """Live when this pynixd started: its builder lost the pynixd that admitted it."""
+    SHUTDOWN = "shutdown"
 
 
 @dataclass(frozen=True, slots=True)

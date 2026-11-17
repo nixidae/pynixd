@@ -56,6 +56,9 @@ What the scheduler reads of a store it places builds on: what it builds, its hos
 ### Provisioner, Pool, Instance
 The provisioner starts builders at a cloud provider while builds wait for a store, and ends them when they are idle (`pynixd/provisioning/`, nixidae/nixidae#1198). A pool is one kind of machine it starts: its systems, its features, how many at most, and how many builds each takes. An instance is one machine of a pool. It is pending until its builder registers over reverse SSH, then running. `pynixd/provisioning/decide.py` holds the rules for what to launch and what to end.
 
+### Join ticket
+The user data a provisioner gives a machine it launches (`JoinTicket`, `pynixd/provisioning/ticket.py`): a one-time token, the acceptor's address and the acceptor's public key. The builder sends the token in its reverse registration, and the acceptor admits it under its instance's store id. The token admits one registration; a builder that leaves cannot come back, and its machine ends.
+
 ### Trampolining
 A Nix-native concept for "unknown output" building (common in CA derivations). It is the process where a build is intercepted because it has "deferred" dependencies that must be resolved first. Once resolved (possibly by triggering sub-builds), the original derivation is updated and re-injected into the build process. In `pynixd`:
 - **`DerivationResolver`** handles pre-build resolution (deferred output, dynamic DrvWithVersion)

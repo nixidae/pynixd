@@ -521,6 +521,9 @@ class WakingScheduler:
     def _update_store_metrics(self) -> None:
         return
 
+    def _passed(self) -> None:
+        return
+
     def trigger(self) -> None:
         self.triggered += 1
 

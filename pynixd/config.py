@@ -7,7 +7,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -930,6 +930,50 @@ class ReverseInitiatorSettings(BaseModel):
     """
 
 
+class ProvisioningPoolSettings(BaseModel):
+    """One kind of builder machine the provisioner starts. nixidae/nixidae#1198."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    template: str
+    """The provider's name for the kind of machine: a vivarium template, an EC2 launch template."""
+    systems: list[str] = Field(min_length=1)
+    features: list[str] = Field(default_factory=list)
+    max_instances: int = Field(default=1, ge=0)
+    min_instances: int = Field(default=0, ge=0)
+    slots: int = Field(default=1, ge=1)
+    """Builds one machine takes at once; its builder declares the same `max_jobs`."""
+    idle_seconds: float = Field(default=300.0, ge=0)
+    launch_timeout: float = Field(default=600.0, gt=0)
+    """Seconds a machine may take from launch to registration before it is ended."""
+
+
+class ProvisioningSettings(BaseModel):
+    """Builders started on demand, which register through the reverse acceptor. nixidae/nixidae#1198."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: Literal["vivarium"] = "vivarium"
+    vivarium_socket: Path = Path("/run/vivarium/cloud.sock")
+    owner: str | None = None
+    """The tag that marks this pynixd's machines, so a restart finds them. `None` takes the host name."""
+    acceptor_host: str | None = None
+    """The address a launched builder dials, in its join ticket. `None` leaves it to the builder's own settings."""
+    acceptor_port: int | None = None
+    pools: Annotated[
+        list[ProvisioningPoolSettings],
+        Experiment(
+            replaces="every builder is configured or registers by itself",
+            issue=1198,
+            tests=("tests/unit/test_provisioner.py",),
+        ),
+    ] = Field(default_factory=list)
+    """The machines to start, in order: a waiting build counts against the first pool that builds it."""
+    heartbeat: float = Field(default=30.0, gt=0)
+    """The longest the loop sleeps without a scheduling pass, a join or a leave to wake it."""
+
+
 class SSHSubprocessStoreSpec(StoreSpecBase):
     """A remote Nix daemon accessed via ``ssh <host> nix-daemon --stdio``.
 
@@ -1419,6 +1463,8 @@ class PynixdSettings(BaseSettings):
         default_factory=lambda: ReverseAcceptorSettings(authorized_builder_keys=None)
     )
     reverse_initiator: ReverseInitiatorSettings = Field(default_factory=ReverseInitiatorSettings)
+    provisioning: ProvisioningSettings = Field(default_factory=ProvisioningSettings)
+    """Off while `pools` is empty. A pool needs the reverse acceptor and the store database."""
 
     admin_users: set[str] = Field(default_factory=set)
     """Deprecated: list the key in `ssh_admin_keys` instead.
