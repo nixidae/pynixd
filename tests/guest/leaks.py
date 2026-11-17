@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from vivarium_runner import Machines
 
 if TYPE_CHECKING:
-    from vivarium_runner.agent import ProcessInfo
+    from vivarium_runner.channel import ProcessInfo
 
 ALLOWED_LEAKS = 0
 """The one leak this check has found belongs to `tests/parity`: a
