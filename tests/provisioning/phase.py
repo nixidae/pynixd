@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import time
 
-from cloud_helpers import call, feature_drv, logged, pool_instances, rows
+from cloud_helpers import call, feature_drv, logged, pool_instances, rows, until
 from daemon_helpers import as_tester
 from vivarium_runner import Machines
 
@@ -49,6 +49,12 @@ async def test(vms: Machines) -> None:
 
     idle_from = time.monotonic()
     await cloud.wait_ended(launched["id"], timeout=180)
+
+    # The provisioner writes the end after the provider answers the terminate.
+    async def row_ended() -> bool:
+        return all(row["state"] == "ended" for row in await rows(controller))
+
+    await until(row_ended, 30)
     [row] = await rows(controller)
     assert (row["state"], row["endReason"], row["storeId"]) == ("ended", "idle", f"provisioned-{row['id']}"), row
     print(f"[test] {launched['id']} ended {time.monotonic() - idle_from:.0f} s after the build: {row}")
