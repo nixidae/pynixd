@@ -20,6 +20,8 @@ let
   feature = "ec2-spot";
   # The pool of a template whose installer is missing: its bootstrap fails.
   broken = "ec2-broken";
+  # The pool whose builder ends by its own guard.
+  guard = "ec2-guard";
   acceptorPort = 2235;
   ec2Port = 8773;
   python = "${package.venv}/lib/venv/bin/python";
@@ -42,7 +44,7 @@ vivariumLib.mkTest {
     bash = "${pkgs.bash}";
     system = pkgs.stdenv.hostPlatform.system;
     busybox = "${pkgs.busybox}";
-    inherit feature broken;
+    inherit feature broken guard;
   };
 
   segments.fleet.instanceAddresses = [ "10.9.0.100/24" ];
@@ -120,6 +122,18 @@ vivariumLib.mkTest {
               idle_seconds = 15.0;
               # Longer than the phase: only the builder's own poweroff may end it.
               launch_timeout = 600.0;
+            }
+            {
+              name = "guard";
+              template = "builder";
+              systems = [ pkgs.stdenv.hostPlatform.system ];
+              features = [ guard ];
+              mandatory_features = [ guard ];
+              max_instances = 1;
+              # `ec2_guard.py`'s `IDLE`: the guard's limit is 80 s.
+              idle_seconds = 20.0;
+              idle_max_seconds = 20.0;
+              launch_timeout = 300.0;
             }
           ];
         };
@@ -205,5 +219,9 @@ vivariumLib.mkTest {
   phases.bootstrap-fails = {
     script = ../../provisioning/ec2_broken.py;
     after = [ "ec2" ];
+  };
+  phases.guard-ends = {
+    script = ../../provisioning/ec2_guard.py;
+    after = [ "bootstrap-fails" ];
   };
 }
