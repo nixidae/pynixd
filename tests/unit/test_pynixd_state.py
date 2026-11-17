@@ -25,7 +25,7 @@ from pynixd.scheduler import Scheduler
 from pynixd.serde.auth import Role
 from pynixd.serde.context import ReadContext, WriteContext
 from pynixd.sessions import ClientSessions
-from pynixd.state_models import FederatedError, QueueCounts, StateReport, StoreRow
+from pynixd.state_models import FederatedError, ProvisionedRow, QueueCounts, StateReport, StoreRow
 from pynixd.wire import BytesReader, BytesWriter
 from tests.functional.mock_store import MockStore
 from tests.unit.test_local_build_slots import (
@@ -309,3 +309,21 @@ async def test_clients_name_the_operation_each_session_runs() -> None:
 
     assert [(row.user, row.op) for row in rows] == [("alice", "BuildPaths"), ("bob", None)]
     assert (rows[0].op_s or 0) >= 30
+
+
+def test_a_provisioned_row_with_no_notice_survives_the_daemons_answer() -> None:
+    """The daemon drops each None (`exclude_none`); the client must parse what is left. Found live on dynhetz."""
+    row = ProvisionedRow(
+        id="aws-x86-1",
+        pool="aws-x86",
+        state="running",
+        store=None,
+        provider_id=None,
+        age_s=3.0,
+        builds=0,
+        idle_s=None,
+        notice_s=None,
+    )
+    sent = StateReport(provisioning=[row]).model_dump_json(exclude_none=True)
+    assert "notice_s" not in sent
+    assert StateReport.model_validate_json(sent).provisioning == [row]

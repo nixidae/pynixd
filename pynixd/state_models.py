@@ -172,14 +172,14 @@ class ProvisionedRow(_Model):
     id: str
     pool: str
     state: str
-    store: str | None
-    provider_id: str | None
+    store: str | None = None
+    provider_id: str | None = None
     age_s: float
-    builds: int
-    idle_s: float | None
+    builds: int = 0
+    idle_s: float | None = None
     """How long it has run no build; None while it builds or boots."""
-    notice_s: float | None
-    """Seconds left of an interruption notice."""
+    notice_s: float | None = None
+    """Seconds left of an interruption notice. The daemon leaves a None out of its answer."""
 
 
 class FederatedError(_Model):
