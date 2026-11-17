@@ -872,7 +872,9 @@ async def build(
             build_dir=build_dir,
         )
         for name, contents in env.files.items():
+            # `writeBuilderFile` (`derivation-builder.cc:918`): the build user owns it, so stdenv may chmod it.
             (paths.tmp / name).write_text(contents, encoding="utf-8")
+            build_users.chown_to(user, paths.tmp / name)
         # A builtin finds no `out` in `ctx.outputs` and fails in its own words (`derivation-builder.cc:999`).
         builtin_out = str(scratch["out"]) if "out" in scratch else None
         fetch = (

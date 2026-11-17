@@ -33,6 +33,23 @@ def expression(python: str, system: str) -> str:
     )
 
 
+def pass_as_file(python: str, system: str) -> str:
+    """A build that chmods its `passAsFile` file, as stdenv does with `.attr-*` (nixidae/nixidae#1198)."""
+    script = (
+        "import os; p = os.environ['notePath']; os.chmod(p, 0o644); open(os.environ['out'], 'w').write(open(p).read())"
+    )
+    return (
+        "derivation {"
+        ' name = "pynixd-installer-pass-as-file";'
+        f' system = "{system}";'
+        f' builder = "${{builtins.storePath "{python}"}}";'
+        ' note = "owned by the build user";'
+        ' passAsFile = [ "note" ];'
+        f' args = [ "-c" "{script}" ];'
+        " }"
+    )
+
+
 async def test(vms: Machines) -> None:
     vm = vms["runner"]
     try:
@@ -63,6 +80,13 @@ async def work(vms: Machines, vm: Machine) -> None:
     # Without build users a root daemon builds as root, and the build still succeeds: the lock is the proof.
     await vm.succeed("test -e /nix/var/nix/userpool2/slot-0")
     print(f"[test] built {out} as an auto-allocated build user")
+
+    # pynixd writes the file as root; the build user must own it, as under Nix's `writeBuilderFile`.
+    noted_expr = shlex.quote(pass_as_file(settings["python"], settings["system"]))
+    noted = await as_tester(vm, f"{NIX} build --no-link --print-out-paths --impure --expr {noted_expr}")
+    if (await vm.succeed(f"cat {noted}")).strip() != "owned by the build user":
+        raise AssertionError(f"{noted} holds the wrong text")
+    print("[test] a build chmodded its passAsFile file")
 
     # Signed: a client cannot turn off `require-sigs`, but a trusted one may name the key.
     await as_tester(vm, f"{NIX} key generate-secret --key-name check > /tmp/check.key")
