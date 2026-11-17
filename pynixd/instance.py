@@ -402,14 +402,16 @@ class Server:
             self.scheduler.allocator.discard_store(store_id)
         return store
 
-    async def remove_store(self, store_id: StoreId, drain_timeout: float = 300.0) -> None:
+    async def remove_store(self, store_id: StoreId, drain_timeout: float = 300.0, *, missing_ok: bool = False) -> None:
         """Remove a remote store, cleaning DB records and closing connections.
+
+        A store already gone is a warning, unless *missing_ok*: a caller that races another remover.
 
         NOTE: Used by external projects — do not remove.
         """
         if store_id == LOCAL_STORE_ID:
             raise RuntimeError("Cannot remove local store")
-        if await self._forget_store(store_id, drain_timeout) is None:
+        if await self._forget_store(store_id, drain_timeout) is None and not missing_ok:
             log.warning("remove_store_not_found", store_id=store_id)
         host = self._store_hosts.pop(store_id, None)
         if host is not None:

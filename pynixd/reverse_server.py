@@ -296,7 +296,8 @@ async def start_reverse_acceptor(
             log.info("reverse_builder_disconnected", store_id=store_id)
 
             try:
-                await server.remove_store(store_id)
+                # The provisioner removing the store is what closes this connection on an idle end.
+                await server.remove_store(store_id, missing_ok=True)
             except Exception:
                 log.warning(
                     "reverse_remove_store_failed",

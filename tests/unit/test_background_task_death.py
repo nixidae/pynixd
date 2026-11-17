@@ -106,6 +106,20 @@ async def test_remove_store_closes_it() -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(("missing_ok", "warnings"), [(False, 1), (True, 0)])
+async def test_a_second_removal_warns_unless_it_may_race(missing_ok: bool, warnings: int) -> None:
+    """The provisioner removes a builder's store, which closes its connection; the acceptor then
+    removes it again. On dynhetz every idle end logged `remove_store_not_found`."""
+    builder = MockStore("builder", feature_matrix={"x86_64-linux": set()})
+    with structlog.testing.capture_logs() as logs:
+        async with _server() as server:
+            assert await server.add_store(builder)
+            await server.remove_store(StoreId("builder"), drain_timeout=0)
+            await server.remove_store(StoreId("builder"), drain_timeout=0, missing_ok=missing_ok)
+    assert len([entry for entry in logs if entry["event"] == "remove_store_not_found"]) == warnings
+
+
+@pytest.mark.anyio
 async def test_a_reconnect_runs_in_the_store_and_stops_with_it() -> None:
     store = MockStore("flaky", feature_matrix={"x86_64-linux": set()})
     store.reconnect_min_delay = 0.0
