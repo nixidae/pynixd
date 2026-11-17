@@ -25,6 +25,21 @@ ghalib.evalWorkflow {
     workflow_dispatch = null;
   };
 
+  # Builders launched on demand through vivarium's cloud API, in the Nix
+  # sandbox: UML guests need user namespaces and no /dev/kvm. nixidae/nixidae#1198.
+  # About 9 minutes of guest time; the UML kernel comes from the cache or is built first.
+  jobs.provisioning = {
+    runs-on = "ubuntu-latest";
+    timeout-minutes = 90;
+    ghanix = divertedStores;
+    steps = [
+      {
+        name = "Provision, interrupt, crash and restart builders";
+        run = "nix build --file . internal.tests.provisioning --no-link --print-build-logs";
+      }
+    ];
+  };
+
   jobs.extended = {
     runs-on = "ubuntu-latest";
     timeout-minutes = 120;
