@@ -73,6 +73,10 @@ KEEP_LOGGERS = frozenset(
         "pynixd_store.local_store_db",
         "pynixd_store.gc",
         "pynixd_store.liveness",
+        # A launch, an end and its reason: the only record of what a cloud
+        # builder cost, and dynhetz dropped every line (nixidae/nixidae#1198).
+        "pynixd.provisioning.provisioner",
+        "pynixd.provisioning.ec2",
     },
 )
 

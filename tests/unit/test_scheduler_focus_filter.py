@@ -21,3 +21,13 @@ def test_the_wal_checkpoint_is_kept() -> None:
     logger = SimpleNamespace(name="pynixd_store.local_store_db")
     event = {"event": "db_wal_checkpoint", "level": "info"}
     assert scheduler_focus.filter(logger, "info", event) == event
+
+
+@pytest.mark.parametrize(
+    ("name", "event"),
+    [("pynixd.provisioning.provisioner", "provisioning_launched"), ("pynixd.provisioning.ec2", "ec2_no_capacity")],
+)
+def test_a_cloud_builder_launch_is_kept(name: str, event: str) -> None:
+    """dynhetz dropped every provisioning line, so a launch left no record (nixidae/nixidae#1198)."""
+    record = {"event": event, "level": "info"}
+    assert scheduler_focus.filter(SimpleNamespace(name=name), "info", record) == record
