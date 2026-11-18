@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import anyio
 import botocore.session
 import pytest
 
@@ -20,7 +21,7 @@ from nix_daemon_protocol.query_path_info import QueryPathInfoRequest
 from nix_daemon_protocol.store_path import StorePath
 from pynixd import Server
 from pynixd.cold_tier import ColdTier
-from pynixd.config import LocalBinaryCacheSpec, S3BinaryCacheSpec
+from pynixd.config import LocalBinaryCacheSpec, S3BinaryCacheSpec, S3Compression
 from pynixd.exceptions import CacheFault
 from pynixd.store import LocalDBStore, S3BinaryCacheStore, Store
 from pynixd.store.s3_upload import MIN_PART, Uploaded
@@ -38,6 +39,16 @@ _PARENT = (
     'with import <nixpkgs> {}; runCommand "pynixd-s3-upload-parent" {} '
     '"echo ${builtins.toFile "pynixd-s3-upload-child" "the child of the upload test"} > $out"'
 )
+
+
+@dataclass(frozen=True)
+class S3Shape:
+    """How the cold tier addresses and writes the bucket."""
+
+    compression: S3Compression = "zstd"
+    prefix: str = ""
+    region: str = "us-east-1"
+
 
 _DIFFERS = frozenset({"URL", "FileHash", "FileSize"})
 """What names the NAR object: pynixd names it by the NAR hash, Nix by the file hash."""
@@ -92,8 +103,11 @@ def _s3(lab: _Lab) -> BaseClient:
 
 
 @asynccontextmanager
-async def _stores(lab: _Lab, **extra: Store) -> AsyncIterator[tuple[LocalDBStore, S3BinaryCacheStore]]:
-    """The source store and a cold tier on bucket `cache`, started by a server with *extra*."""
+async def _stores(
+    lab: _Lab, shape: S3Shape | None = None, **extra: Store
+) -> AsyncIterator[tuple[LocalDBStore, S3BinaryCacheStore]]:
+    """The source store and a cold tier on bucket `cache` in *shape*, started by a server with *extra*."""
+    shape = shape or S3Shape()
     local = LocalDBStore(
         make_test_spec(
             store_id="local", store_path=lab.source, no_probe=True, nix_config=for_test_store(substituters=())
@@ -101,9 +115,12 @@ async def _stores(lab: _Lab, **extra: Store) -> AsyncIterator[tuple[LocalDBStore
     )
     spec = S3BinaryCacheSpec(
         bucket="cache",
+        key=shape.prefix,
         endpoint=lab.server.endpoint,
-        region="us-east-1",
+        region=shape.region,
+        addressing_style="path",
         secret_key=lab.key,
+        compression=shape.compression,
         multipart_chunk_size=MIN_PART,
         gc_cold=True,
     )
@@ -285,3 +302,103 @@ async def test_a_refusal_stops_before_the_referrer(lab: _Lab, monkeypatch: pytes
         with pytest.raises(CacheFault, match="403"):
             await tier.upload_closure({StorePath(lab.parent)})
         assert await tier.covered({lab.parent, lab.child}) == set()
+
+
+def _left_behind(lab: _Lab) -> tuple[set[str], list[object]]:
+    """The objects but `nix-cache-info`, and the multipart uploads still open."""
+    s3 = _s3(lab)
+    objects = {o["Key"] for o in s3.list_objects_v2(Bucket="cache").get("Contents", [])} - {"nix-cache-info"}
+    return objects, s3.list_multipart_uploads(Bucket="cache").get("Uploads", [])
+
+
+async def test_a_refused_part_aborts_the_upload(lab: _Lab, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Part 2 of 3 fails: the open upload is aborted, so the bucket keeps no parts, no NAR and no narinfo."""
+    async with _stores(lab) as (local, cold):
+        put_part = cold._put_part
+        sent: list[int] = []
+
+        async def refuse_second(name: str, multipart: str, number: int, part: bytes) -> str:
+            sent.append(number)
+            if number == 2:
+                raise CacheFault(f"part {number} of {name}: refused by the test")
+            return await put_part(name, multipart, number, part)
+
+        monkeypatch.setattr(cold, "_put_part", refuse_second)
+        with pytest.raises(CacheFault, match="refused by the test"):
+            await ColdTier(cold, [], local).upload_closure({StorePath(lab.big)})
+        assert sent == [1, 2]
+        assert await ColdTier(cold, [], local).covered({lab.big}) == set()
+    assert _left_behind(lab) == (set(), [])
+
+
+async def test_a_cancelled_upload_aborts_too(lab: _Lab, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A shutdown cancels the upload after part 1: the abort still runs, shielded."""
+    async with _stores(lab) as (local, cold):
+        put_part = cold._put_part
+        first = anyio.Event()
+
+        async def stall_second(name: str, multipart: str, number: int, part: bytes) -> str:
+            if number == 2:
+                first.set()
+                await anyio.sleep_forever()
+            return await put_part(name, multipart, number, part)
+
+        monkeypatch.setattr(cold, "_put_part", stall_second)
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(cold.upload, local, StorePath(lab.big))
+            await first.wait()
+            # The control: part 1 is in the bucket, in an open upload.
+            assert len(_left_behind(lab)[1]) == 1
+            tg.cancel_scope.cancel()
+    assert _left_behind(lab) == (set(), [])
+
+
+async def test_a_refused_narinfo_leaves_the_path_unseen_and_a_retry_completes_it(
+    lab: _Lab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The narinfo is the commit: with its PUT refused, no client sees the path and nothing is recorded.
+
+    The NAR object stays, named by its NAR hash, and the next upload writes it again and commits.
+    """
+    async with _stores(lab) as (local, cold):
+        expect = cold._expect
+
+        async def refuse_narinfo(method: str, name: str, body: bytes = b"", **kwargs: str) -> bytes:
+            if method == "PUT" and name.endswith(".narinfo"):
+                raise CacheFault(f"PUT {name}: refused by the test")
+            return await expect(method, name, body, **kwargs)
+
+        tier = ColdTier(cold, [], local)
+        with monkeypatch.context() as patch:
+            patch.setattr(cold, "_expect", refuse_narinfo)
+            with pytest.raises(CacheFault, match="refused by the test"):
+                await tier.upload_closure({StorePath(lab.child)})
+        assert _narinfos(lab) == set()
+        assert await tier.covered({lab.child}) == set()
+        report = await tier.upload_closure({StorePath(lab.child)})
+        assert report.uploaded == 1
+    assert _narinfos(lab) == {_narinfo(lab.child)}
+    target = lab.tmp / "target"
+    await _nix("copy", "--no-check-sigs", "--from", lab.url("cache"), "--to", str(target), lab.child)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [S3Shape(compression="xz"), S3Shape(compression="none"), S3Shape(prefix="cold/tier"), S3Shape(region="auto")],
+    ids=["xz", "none", "prefix", "region-auto"],
+)
+async def test_nix_reads_every_shape_back(lab: _Lab, shape: S3Shape) -> None:
+    """R2 takes region `auto` and path-style addresses; a prefix keeps the cache in part of a bucket."""
+    async with _stores(lab, shape) as (local, cold):
+        for path in (lab.child, lab.parent, lab.big):
+            assert await cold.upload(local, StorePath(path)) is Uploaded.UPLOADED
+    s3 = _s3(lab)
+    key = f"{shape.prefix}/" if shape.prefix else ""
+    info = _fields(s3.get_object(Bucket="cache", Key=f"{key}{_narinfo(lab.big)}")["Body"].read().decode())
+    assert info["Compression"] == [shape.compression]
+    query = f"endpoint={lab.server.endpoint}&region={shape.region}"
+    source = f"s3://cache/{shape.prefix}?{query}" if shape.prefix else f"s3://cache?{query}"
+    trusted = ["--option", "require-sigs", "true", "--option", "trusted-public-keys", lab.public]
+    target = lab.tmp / "target"
+    await _nix("copy", *trusted, "--from", source, "--to", str(target), lab.parent, lab.big)
+    assert set((await _nix("path-info", "--store", str(target), "--all")).split()) == {lab.parent, lab.child, lab.big}
