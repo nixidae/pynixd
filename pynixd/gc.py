@@ -48,6 +48,8 @@ from pynixd_store.gc import (
 from pynixd_store.gc_sql import Bound, SqlPlan, referrer_first
 from pynixd_store.local_store_db import DatabaseError
 
+from . import metrics
+from .cold_tier import ColdTier
 from .daemon_extensions import (
     PynixdCollectGarbageResponse,
     PynixdGCAction,
@@ -218,6 +220,40 @@ class Collector:
             if client is not None:
                 await client.send(line)
             return self._answered(PynixdCollectGarbageResponse(store_paths=set(), bytes=0), lines)
+        tier = ColdTier.of(self.ctx)
+        response = await self._pass(action, client, limit, target, usage, lines, tier)
+        if tier is None or action != PynixdGCAction.EXECUTE or target is None or local.gc_max_age is None:
+            return response
+        usage = self._disk_usage(local)
+        if not over_target(usage, target):
+            return response
+        # Over target with every covered path gone: the disk wins over the cold tier.
+        forced = await self._pass(action, client, limit, target, usage, lines, None)
+        uncovered = len(forced.store_paths) - len(await tier.covered({str(path) for path in forced.store_paths}))
+        metrics.GC_DELETED_UNCOVERED.inc(uncovered)
+        log.warning("gc_deleted_uncovered", paths=uncovered, deleted=len(forced.store_paths), target=target)
+        line = LogNext(text=f"over the target after the cold tier's paths: deleted {uncovered} paths it does not hold")
+        lines.append(line)
+        if client is not None:
+            await client.send(line)
+        return self._answered(
+            PynixdCollectGarbageResponse(
+                store_paths=response.store_paths | forced.store_paths, bytes=response.bytes + forced.bytes
+            ),
+            lines,
+        )
+
+    async def _pass(
+        self,
+        action: PynixdGCAction,
+        client: ClientConn | None,
+        limit: int | None,
+        target: float | None,
+        usage: tuple[int, int] | None,
+        lines: list[LogNext],
+        tier: ColdTier | None,
+    ) -> PynixdCollectGarbageResponse:
+        """One plan and its deletes. With *tier*, a planned path goes only when the tier covers its closure."""
         volatile = await run_sync(self.planner().volatile_roots)
         vetoed = await self._veto_closure(volatile)
         if usage is None:
@@ -242,7 +278,7 @@ class Collector:
         )
         empty = PynixdCollectGarbageResponse(store_paths=set(), bytes=0)
         try:
-            async with self._open_plan(pressed=over_target(usage, target), vetoed=vetoed) as plan:
+            async with self._open_plan(pressed=over_target(usage, target), vetoed=vetoed, tier=tier) as plan:
                 veto = LogNext(
                     text=f"volatile veto: rechecked {len(volatile)} living roots, spared {plan.spared} planned paths"
                 )
@@ -292,7 +328,9 @@ class Collector:
         return await self._delete(batch, weights, lines, client)
 
     @asynccontextmanager
-    async def _open_plan(self, *, pressed: bool, vetoed: set[str]) -> AsyncIterator[SqlPlan | _MemoryPlan]:
+    async def _open_plan(
+        self, *, pressed: bool, vetoed: set[str], tier: ColdTier | None = None
+    ) -> AsyncIterator[SqlPlan | _MemoryPlan]:
         """The pass's plan: in SQLite for the age rule on a store with pynixd's tables, else in memory.
 
         The substituter rule asks the caches about every path, which is not
@@ -303,7 +341,7 @@ class Collector:
         max_age = local.gc_max_age
         db = self.planner().plan_database()
         if max_age is None or db is None:
-            yield _MemoryPlan(self, {str(path) for path in await self.plan(pressed=pressed)}, vetoed)
+            yield _MemoryPlan(self, {str(path) for path in await self.plan(pressed=pressed, tier=tier)}, vetoed)
             return
         live = await self._live_paths(local)
         async with SqlPlan.open(db) as plan:
@@ -317,6 +355,9 @@ class Collector:
                 droppable=counts.planned,
                 planner="sqlite",
             )
+            if tier is not None:
+                kept = await plan.cover(tier.keys)
+                log.info("gc_plan_cold", store_id=tier.cold.store_id, kept_uncovered=kept, droppable=plan.size)
             yield plan
 
     async def _live_paths(self, local: Store) -> set[str]:
@@ -377,7 +418,7 @@ class Collector:
             top=[{"path": path, "bytes": weights[path][0], "age_s": weights[path][1]} for path in ordered[:count]],
         )
 
-    async def plan(self, *, pressed: bool = False) -> set[StorePath]:
+    async def plan(self, *, pressed: bool = False, tier: ColdTier | None = None) -> set[StorePath]:
         """The paths that may leave the store.
 
         Two rules, picked by `gc_max_age` on the local store. `None` keeps
@@ -394,14 +435,33 @@ class Collector:
         rule ignores it: there the cache is what makes a delete safe.
 
         Both rules refresh Python liveness, falling back to Nix only when unavailable.
+
+        *tier* adds to the substituter rule and narrows the age rule: a path its
+        record covers counts as held, and an aged path it does not cover stays.
         """
         local = self.ctx.local_store
         max_age = local.gc_max_age
         if max_age is None:
-            return await self._plan_deferred(local)
-        return await self._plan_lru(local, None if pressed else max_age)
+            return await self._plan_deferred(local, tier)
+        planned = await self._plan_lru(local, None if pressed else max_age)
+        if tier is None:
+            return planned
+        return await self._covered_part(local, planned, tier)
 
-    async def _plan_deferred(self, local: Store) -> set[StorePath]:
+    async def _covered_part(self, local: Store, planned: set[StorePath], tier: ColdTier) -> set[StorePath]:
+        """*planned* minus each uncovered path and its closure: what may go and keep the set closed under referrers."""
+        covered = await tier.covered({str(path) for path in planned})
+        uncovered = {path for path in planned if str(path) not in covered}
+        if not uncovered:
+            return planned
+        execute = getattr(local, "execute")  # noqa: B009 -- `mark` is LocalDBStore's, not Store's
+        keep: set[StorePath] = (await execute(QueryClosureRequest(paths=uncovered), mark=False)).paths
+        if not uncovered <= keep:
+            log.error("gc_closure_incomplete", asked=len(uncovered), answered=len(keep))
+            return set()
+        return planned - keep
+
+    async def _plan_deferred(self, local: Store, tier: ColdTier | None = None) -> set[StorePath]:
         """The paths that may leave the store.
 
         A path stays when no substituter confirms it, and so does everything
@@ -416,7 +476,7 @@ class Collector:
         Python resolves roots and their reference closure before selecting paths.
         """
         stores = [store for store in self.ctx.stores.values() if store.gc_defer]
-        if not stores:
+        if not stores and tier is None:
             return set()
 
         all_paths: set[StorePath] = (await local.execute(QueryAllValidPathsRequest())).paths
@@ -424,6 +484,8 @@ class Collector:
             return set()
 
         held: set[StorePath] = set()
+        if tier is not None:
+            held = {StorePath(path) for path in await tier.covered({str(path) for path in all_paths})}
         for store in stores:
             held |= await self._held_by(store, all_paths)
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..db_migrations import PATH_ACCESS_TABLE
+from ..db_migrations import HELD_BY_TABLE, PATH_ACCESS_TABLE
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +33,12 @@ class GcSql:
     seed one of them reaches."""
     weights_of: str
     batch_edges: str
+    load_covered: str
+    """The valid paths `PynixdHeldBy` records under any store of a path set."""
+    drop_uncovered: str
+    """Drops each uncovered planned path and everything it references: Nix refuses to delete a
+    reference while its referrer stays (`gc.cc:653`). What remains is still closed under referrers."""
+    planned_counts: str
 
 
 SQLITE = GcSql(
@@ -42,6 +48,7 @@ SQLITE = GcSql(
         "CREATE TEMP TABLE gc_dead(id INTEGER PRIMARY KEY, path TEXT NOT NULL, size INTEGER NOT NULL, seen INTEGER)",
         "CREATE TEMP TABLE gc_planned(id INTEGER PRIMARY KEY)",
         "CREATE TEMP TABLE gc_batch(id INTEGER PRIMARY KEY)",
+        "CREATE TEMP TABLE gc_covered(id INTEGER PRIMARY KEY)",
     ),
     load_ids="INSERT OR IGNORE INTO {table} SELECT id FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))",
     load_dead=f"""
@@ -123,6 +130,24 @@ JOIN gc_batch ra ON ra.id = r.referrer JOIN gc_batch rb ON rb.id = r.reference
 JOIN ValidPaths a ON a.id = r.referrer JOIN ValidPaths b ON b.id = r.reference
 WHERE r.referrer != r.reference
 """,
+    load_covered=f"""
+INSERT OR IGNORE INTO gc_covered
+SELECT v.id FROM ValidPaths v JOIN {HELD_BY_TABLE} h ON h.path = v.path
+WHERE h.store IN (SELECT value FROM json_each(?))
+""",
+    drop_uncovered="""
+DELETE FROM gc_planned WHERE id IN (
+    WITH RECURSIVE keep(id) AS (
+        SELECT id FROM gc_planned WHERE id NOT IN (SELECT id FROM gc_covered)
+        UNION
+        SELECT r.reference FROM keep k JOIN Refs r ON r.referrer = k.id
+    )
+    SELECT id FROM keep
+)
+""",
+    planned_counts="""
+SELECT (SELECT count(*) FROM gc_planned), (SELECT count(*) FROM gc_planned WHERE id IN (SELECT id FROM gc_veto))
+""",
 )
 
 
@@ -135,6 +160,7 @@ POSTGRES = GcSql(
         'CREATE TEMP TABLE gc_dead(id BIGINT PRIMARY KEY, path TEXT COLLATE "C" NOT NULL, size BIGINT NOT NULL, seen BIGINT)',
         "CREATE TEMP TABLE gc_planned(id BIGINT PRIMARY KEY)",
         "CREATE TEMP TABLE gc_batch(id BIGINT PRIMARY KEY)",
+        "CREATE TEMP TABLE gc_covered(id BIGINT PRIMARY KEY)",
     ),
     load_ids=("INSERT INTO {table} SELECT id FROM ValidPaths WHERE path = ANY(%s) ON CONFLICT DO NOTHING"),
     load_dead=f"""
@@ -216,5 +242,24 @@ SELECT a.path, b.path FROM Refs r
 JOIN gc_batch ra ON ra.id = r.referrer JOIN gc_batch rb ON rb.id = r.reference
 JOIN ValidPaths a ON a.id = r.referrer JOIN ValidPaths b ON b.id = r.reference
 WHERE r.referrer != r.reference
+""",
+    load_covered=f"""
+INSERT INTO gc_covered
+SELECT v.id FROM ValidPaths v JOIN {HELD_BY_TABLE} h ON h.path = v.path
+WHERE h.store = ANY(%s)
+ON CONFLICT DO NOTHING
+""",
+    drop_uncovered="""
+DELETE FROM gc_planned WHERE id IN (
+    WITH RECURSIVE keep(id) AS (
+        SELECT id FROM gc_planned WHERE id NOT IN (SELECT id FROM gc_covered)
+        UNION
+        SELECT r.reference FROM keep k JOIN Refs r ON r.referrer = k.id
+    )
+    SELECT id FROM keep
+)
+""",
+    planned_counts="""
+SELECT (SELECT count(*) FROM gc_planned), (SELECT count(*) FROM gc_planned WHERE id IN (SELECT id FROM gc_veto))
 """,
 )

@@ -115,6 +115,17 @@ class SqlPlan:
         self.spared = counts.spared
         return counts
 
+    async def cover(self, stores: Iterable[str]) -> int:
+        """Keep only what `PynixdHeldBy` shows *stores* hold, closed as the plan was; the count dropped."""
+        before = self.size
+        await self._session.execute(self._sql.load_covered, (self._session.sql.codec.path_set(sorted(stores)),))
+        await self._session.execute(self._sql.drop_uncovered)
+        row = await self._session.fetchone(self._sql.planned_counts)
+        if row is None:
+            raise RuntimeError("the plan counts returned no row")
+        self.size, self.spared = int(row[0]), int(row[1])
+        return before - self.size
+
     def whole(self, batch: list[str]) -> bool:
         """Whether *batch* is every planned path the veto left.
 

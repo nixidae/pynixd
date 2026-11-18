@@ -23,7 +23,7 @@ from pynixd_store.db_migrations import PATH_ACCESS_TABLE, apply_migrations
 from pynixd_store.gc import by_weight, take_until_below_target
 from pynixd_store.gc_sql import Bound, SqlPlan, referrer_first
 from pynixd_store.postgres_db import PostgresBackend, PostgresDatabase
-from pynixd_store.sql import POSTGRES
+from pynixd_store.sql import POSTGRES, SQLITE
 from pynixd_store.sqlite_db import SqliteDatabase
 
 if TYPE_CHECKING:
@@ -265,3 +265,49 @@ async def test_a_refused_plan_raises_database_error(tmp_path: Path, conninfo: st
     with pytest.raises(DatabaseError, match=refusal):
         async with SqlPlan.open(database) as plan:
             await plan.plan(live=set(), vetoed=set(), cutoff=None)
+
+
+COLD = "https://cold.example/bucket"
+
+
+async def _record(store: Store, conninfo: str | None, key: str, paths: set[str]) -> None:
+    """Rows of `PynixdHeldBy`, written by the statement pynixd writes them with."""
+    if conninfo is None:
+        assert isinstance(store.database, SqliteDatabase)
+        with closing(sqlite3.connect(store.database.db_path)) as conn, conn:
+            params = {"store": key, "paths": SQLITE.codec.path_set(sorted(paths)), "at": NOW}
+            conn.execute(SQLITE.held_by.record, params)
+        return
+    backend = PostgresBackend(conninfo, POSTGRES)
+    try:
+        await backend.probe()
+        async with backend.connection() as session, session.transaction():
+            params = {"store": key, "paths": POSTGRES.codec.path_set(sorted(paths)), "at": NOW}
+            await session.execute(POSTGRES.held_by.record, params)
+    finally:
+        await backend.close()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("seed", SEEDS)
+async def test_the_cover_keeps_each_uncovered_path_and_its_closure(
+    tmp_path: Path, conninfo: str | None, seed: int
+) -> None:
+    """nixidae/nixidae#1417: what a cold tier covers goes, and the rest stays whole. Rows of another store do not count."""
+    store = await _store(tmp_path, seed, conninfo)
+    rng = random.Random(seed)
+    planned = _python_plan(store, None)
+    covered = set(rng.sample(sorted(planned), k=len(planned) * 2 // 3))
+    await _record(store, conninfo, COLD, covered)
+    await _record(store, conninfo, "https://elsewhere.example", planned - covered)
+    expected = planned - _down(store.refs, planned - covered)
+
+    async with SqlPlan.open(store.database) as plan:
+        await plan.plan(live=store.live, vetoed=store.vetoed, cutoff=None)
+        dropped = await plan.cover({COLD})
+        rows = await plan.weighed(pressure=0.5, now=NOW, bound=None, limit=None)
+
+    assert {path for path, _, _ in rows} == expected - store.vetoed
+    assert dropped == len(planned - expected)
+    assert _up(store.refs, expected) == expected, "closed under referrers"
+    assert (plan.size, plan.spared) == (len(expected), len(expected & store.vetoed))
