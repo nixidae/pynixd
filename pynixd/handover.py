@@ -157,7 +157,9 @@ def raw_socket(listener: SocketListener) -> socket.socket:
 class Handing(Protocol):
     """What the old main answers on the control socket. `instance.Server` implements it."""
 
-    def handover_refusal(self, offer: Offer) -> str | None: ...
+    async def handover_refusal(self, offer: Offer) -> str | None: ...
+
+    def handover_abandoned(self) -> None: ...
 
     def listener_sockets(self) -> Mapping[ListenerName, Sequence[socket.socket]]: ...
 
@@ -232,7 +234,7 @@ class HandoverControl:
     async def _hand_over(self, stream: UNIXSocketStream, server: Handing) -> None:
         reader = BufferedByteReceiveStream(stream)
         offer = Offer.model_validate_json(await _read_line(reader))
-        refused = server.handover_refusal(offer)
+        refused = await server.handover_refusal(offer)
         if refused is not None:
             log.warning("handover_refused", reason=refused)
             await _send(stream, Answer(pid=os.getpid(), refused=refused))
@@ -241,10 +243,17 @@ class HandoverControl:
         listeners = {str(name): len(socks) for name, socks in sockets.items()}
         fds = [sock.fileno() for socks in sockets.values() for sock in socks]
         log.info("handover_offered", listeners=listeners)
-        await _send(stream, Answer(pid=os.getpid(), listeners=listeners, unix_owns_path=server.unix_owns_path()), fds)
-        command = Command.model_validate_json(await _read_line(reader))
+        try:
+            await _send(
+                stream, Answer(pid=os.getpid(), listeners=listeners, unix_owns_path=server.unix_owns_path()), fds
+            )
+            command = Command.model_validate_json(await _read_line(reader))
+        except BaseException:
+            server.handover_abandoned()
+            raise
         if not command.drain:
             log.warning("handover_abandoned")
+            server.handover_abandoned()
             return
         await server.drain()
         await _send(stream, Drained(pid=os.getpid()))

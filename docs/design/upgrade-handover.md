@@ -325,7 +325,7 @@ What assumes the previous instance is dead, and the rule for each:
 | --- | --- |
 | `UnixServer.aclose` unlinks a path it bound | a drain closes without unlinking |
 | managed local daemon: `removing_stale_socket`, `killpg` | refuse the handover (step 1) |
-| provisioner `reconcile` ends machines of a previous run; its shutdown ends every live machine | refuse while `provisioning.pools` is set; later the successor adopts the rows and a drain ends none |
+| provisioner `reconcile` ends machines of a previous run; its shutdown ends every live machine | refuse while a provisioned machine is live; with none, the old process launches none from the offer on, and the successor's provisioner takes over. Adopting live machines comes later |
 | reverse initiator: the builder would register twice with its controller | refuse (step 1) |
 | GC, cold-tier and liveness loops | stop between passes (above) |
 | `http_server.cleanup()` cuts NAR transfers | stop accepting, then wait for the transfers |
@@ -398,7 +398,7 @@ Each cell says how it is known: **measured** (a run, with its date), **read** (c
 | `Server(...)` in a program or a test | No control socket: `handover_path` defaults to none. | read, `config.py` |
 
 The running process refuses to overlap, and the unit restarts instead, when any of these holds: pynixd runs
-its own daemon (`managed`, so daemonless too), `provisioning.pools` is set, the reverse initiator is on, the
+its own daemon (`managed`, so daemonless too), a provisioned machine is live, the reverse initiator is on, the
 database schema changes, the daemon socket or the local store's settings change, or the new settings turn
 `handover_path` off. A pynixd from before the hand-over has no control socket, which also restarts.
 

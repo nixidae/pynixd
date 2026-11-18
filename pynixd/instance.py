@@ -509,7 +509,7 @@ class Server:
         for scope in self._singletons:
             scope.cancel()
 
-    def handover_refusal(self, offer: Offer) -> str | None:
+    async def handover_refusal(self, offer: Offer) -> str | None:
         """Why this process cannot overlap with a successor, or `None`. docs/design/upgrade-handover.md."""
         if self.draining:
             return "it is draining already"
@@ -523,14 +523,23 @@ class Server:
         if self.ctx.local_store.managed:
             # The successor would remove the socket and kill the daemon this process builds on.
             return "pynixd manages the local store's daemon"
-        if self.settings.provisioning.pools:
-            # The successor's `reconcile` would end the machines this process builds on.
-            return "provisioning pools have no adoption yet"
         if self.settings.reverse_initiator.enabled:
             return "a reverse initiator would register this builder twice"
         if offer.schema_version != TARGET_VERSION:
             return f"the database schema moves from version {TARGET_VERSION} to {offer.schema_version}"
+        if self.provisioner is not None:
+            # The successor's `reconcile` ends every live machine; none passes over yet. With none live, the
+            # old process launches none until the hand-over ends.
+            self.provisioner.launches_held = True
+            live = await self.provisioner.live_count()
+            if live:
+                self.provisioner.launches_held = False
+                return f"{live} provisioned builders are live, and none passes to a successor yet"
         return None
+
+    def handover_abandoned(self) -> None:
+        if self.provisioner is not None:
+            self.provisioner.launches_held = False
 
     def _tcp_sockets(self, name: ListenerName, host: str, port: int) -> list[socket.socket]:
         handed = self._inherited.take(name) if self._inherited is not None else []
@@ -597,13 +606,17 @@ class Server:
         return counts.pending + counts.building > 0
 
     async def _release_reverse_builders(self) -> None:
-        """Close each reverse builder no build here needs, so it registers with the successor.
+        """Close each reverse builder, so it registers with the successor, once no build here waits or runs.
 
-        Only once no build waits here: a queued build could lose the one builder of its system.
+        Not per builder by its open connections: between a build's end and the copy of its outputs a builder has
+        none, and a release there left the client waiting for ever (tests.upgrade `remote`). A queued build could
+        also lose the one builder of its system.
         """
         scheduler = self.ctx.scheduler
-        if scheduler is not None and scheduler.queue.counts().pending:
-            return
+        if scheduler is not None:
+            counts = scheduler.queue.counts()
+            if counts.pending or counts.building:
+                return
         for store_id, store in list(self.ctx.stores.items()):
             if store.reconnects_on_close and not store.in_flight:
                 log.info("drain_releases_reverse_builder", store_id=store_id)
@@ -1099,7 +1112,7 @@ class Server:
             self.reverse_acceptor, *more_reverse = reverse
             self._more_acceptors.extend(acceptor for acceptor in more_reverse if acceptor is not None)
             if self.provisioner is not None:
-                self._spawn(self.provisioner.run)
+                self._spawn_singleton(self.provisioner.run)
         elif s.provisioning.pools:
             raise RuntimeError("provisioning pools need the reverse acceptor: launched builders register through it")
 

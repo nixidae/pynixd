@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import socket
+from dataclasses import dataclass
 
 import anyio
 import anyio.lowlevel
@@ -14,38 +15,64 @@ from pynixd.tcp_listen import adopt_tcp, bind_tcp
 from pynixd_store.db_migrations import TARGET_VERSION
 
 
-def test_a_schema_change_refuses_the_overlap() -> None:
+async def test_a_schema_change_refuses_the_overlap() -> None:
     server = Server()
-    assert server.handover_refusal(Offer.of(server.settings)) is None
-    refusal = server.handover_refusal(Offer(schema_version=TARGET_VERSION + 1))
+    assert await server.handover_refusal(Offer.of(server.settings)) is None
+    refusal = await server.handover_refusal(Offer(schema_version=TARGET_VERSION + 1))
     assert refusal is not None
     assert "schema" in refusal
 
 
-def test_a_moved_daemon_socket_refuses_the_overlap() -> None:
+async def test_a_moved_daemon_socket_refuses_the_overlap() -> None:
     server = Server()
     offer = Offer.of(server.settings)
     offer.unix_path = "/run/elsewhere.sock"
-    refusal = server.handover_refusal(offer)
+    refusal = await server.handover_refusal(offer)
     assert refusal is not None
     assert "/run/elsewhere.sock" in refusal
 
 
-def test_a_changed_local_store_refuses_the_overlap() -> None:
+async def test_a_changed_local_store_refuses_the_overlap() -> None:
     server = Server()
     offer = Offer.of(server.settings)
     offer.local_store = '{"socket_path": "/nix/var/nix/daemon-socket/upstream"}'
-    assert server.handover_refusal(offer) == "the local store's settings change"
+    assert await server.handover_refusal(offer) == "the local store's settings change"
 
 
-def test_an_offer_from_an_older_handover_checks_the_schema_only() -> None:
-    assert Server().handover_refusal(Offer(schema_version=TARGET_VERSION)) is None
+async def test_an_offer_from_an_older_handover_checks_the_schema_only() -> None:
+    assert await Server().handover_refusal(Offer(schema_version=TARGET_VERSION)) is None
 
 
-def test_a_draining_process_refuses_a_second_hand_over() -> None:
+async def test_a_draining_process_refuses_a_second_hand_over() -> None:
     server = Server()
     server.draining = True
-    assert server.handover_refusal(Offer.of(server.settings)) == "it is draining already"
+    assert await server.handover_refusal(Offer.of(server.settings)) == "it is draining already"
+
+
+@dataclass
+class StubProvisioner:
+    live: int
+    launches_held: bool = False
+
+    async def live_count(self) -> int:
+        return self.live
+
+
+@pytest.mark.parametrize("live", [0, 1])
+async def test_live_provisioned_builders_refuse_and_none_hold_launches(live: int) -> None:
+    server = Server()
+    provisioner = StubProvisioner(live)
+    server.provisioner = provisioner  # type: ignore[assignment]  # the two members a refusal reads
+    refusal = await server.handover_refusal(Offer.of(server.settings))
+    if live:
+        assert refusal is not None
+        assert "provisioned builders are live" in refusal
+        assert not provisioner.launches_held
+    else:
+        assert refusal is None
+        assert provisioner.launches_held
+        server.handover_abandoned()
+        assert not provisioner.launches_held
 
 
 def test_the_fds_keep_their_listener_in_order() -> None:

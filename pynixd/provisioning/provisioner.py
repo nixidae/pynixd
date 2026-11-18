@@ -135,6 +135,8 @@ class Provisioner:
         self._group: TaskGroup | None = None
         self._seen: list[tuple[InstanceRow, Held]] = []
         """What the last step read, for `report`."""
+        self.launches_held = False
+        """Set while a hand-over runs: a machine launched now would be one the successor ends as an orphan."""
 
     def wake(self) -> None:
         self._wake.set()
@@ -213,6 +215,8 @@ class Provisioner:
         for instance_id, reason in decision.terminate.items():
             await self._end(by_id[instance_id], reason)
         for pool_name, count in decision.launch.items():
+            if self.launches_held:
+                break
             if self._cooldown.get(pool_name, 0.0) > now:
                 continue
             for _ in range(count):
@@ -220,6 +224,10 @@ class Provisioner:
                     self._cooldown[pool_name] = max(self._cooldown.get(pool_name, 0.0), now + self._settings.heartbeat)
                     break
         return self._until_next(held, now)
+
+    async def live_count(self) -> int:
+        """Machines whose row is live: launched and not yet ended."""
+        return len(await self._tables.live())
 
     def report(self) -> list[ProvisionedRow]:
         """The machines the last step saw, for `pynixd state`."""
