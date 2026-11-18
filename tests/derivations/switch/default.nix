@@ -22,6 +22,9 @@ let
     services.pynixd = {
       enable = true;
       inherit mode package;
+      # The guest's store is smaller than the 2 GiB default, which no build
+      # would pass.
+      settings.ranking.min_free_bytes = 0;
     };
   };
 
