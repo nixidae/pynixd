@@ -379,6 +379,40 @@ Rollout: the first switch from a pynixd without the control socket finds nobody 
 Every switch after that hands over. A `systemctl restart pynixd` by hand still ends a drain in progress
 (point 6 above).
 
+## What to expect where
+
+Each cell says how it is known: **measured** (a run, with its date), **read** (code or documentation), or
+**not run**.
+
+### The hand-over, by how pynixd runs
+
+| Where pynixd runs | What a change does | How known |
+| --- | --- | --- |
+| NixOS, `services.pynixd` (systemd) | Hands over: builds, sessions and reverse builders stay with the old process until they end. | measured, `tests.upgrade` and `tests.switch`, 2026-11-18 |
+| NixOS, a change that moves the daemon socket or the local store (`mode`) | Restarts, as before. | measured, `tests.switch` beside to replace, 2026-11-18 |
+| NixOS, `systemctl restart pynixd` or `systemctl stop` | Ends the old process and its drain. | measured, `tests.handover` `overlap-restart` (toy) |
+| NixOS, `systemctl reload pynixd` by hand | Hands over to the same binary and settings. | read: the same `ExecReload=`; not run |
+| Other systemd Linux, a unit written by hand | Hands over if the unit has `Type=notify`, `NotifyAccess=all`, `ExecReload=pynixd handover --unit %n -- pynixd daemon` and the settings name `handover_path`. | read; not run |
+| macOS, nix-darwin (launchd) | Restarts, as before: launchd has no reload, and the module names no `handover_path`. | read, `nix/darwin/default.nix`; not run on a Mac |
+| Kubernetes (nixkube) | Replaces the pod, as before: nothing names `handover_path`. A successor-and-drain there is a rolling update within `terminationGracePeriodSeconds` (nixidae/nixidae#1519). | read |
+| `Server(...)` in a program or a test | No control socket: `handover_path` defaults to none. | read, `config.py` |
+
+The running process refuses to overlap, and the unit restarts instead, when any of these holds: pynixd runs
+its own daemon (`managed`, so daemonless too), `provisioning.pools` is set, the reverse initiator is on, the
+database schema changes, the daemon socket or the local store's settings change, or the new settings turn
+`handover_path` off. A pynixd from before the hand-over has no control socket, which also restarts.
+
+### `tests.upgrade`, by how it runs
+
+| Run | Linux (x86_64) | macOS |
+| --- | --- | --- |
+| By hand: `nix run --file . internal.tests.upgrade.driver -- --out <dir>` | measured 2026-11-18: 9 of 9 phases pass on UML guests (dynhetz) | not run. vivarium runs krun guests on a Mac behind a router guest, with a Linux builder in `/etc/nix/machines` (`vivarium/docs/howto.md`); this test's `.krun` variant is untried |
+| In a build: `nix build --file . internal.tests.upgrade` | measured 2026-11-18: 9 of 9 pass, 174 s, sandbox `relaxed` with `uid-range`, no `/dev/net` in the sandbox paths | not run; vivarium documents no sandboxed run on darwin |
+| Other backends on Linux (`.qemu`, `.krun`, `.container`) | not run | — |
+
+`tests.switch` and `tests.handover` passed by hand on Linux on 2026-11-18, not in a build. The unit tests
+(`tests/unit/test_handover.py`) run in the `unit` guest suite, on Linux only, as every pynixd suite does.
+
 ## Found on the way
 
 - pynixd adds `https://cache.nixos.org/` as a store whatever `nix.conf`
