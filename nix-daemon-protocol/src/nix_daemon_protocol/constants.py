@@ -141,6 +141,12 @@ pynixd's own feature, not Nix's, so it is not in `STANDARD_FEATURES`. Two pynixd
 changes with the record's fields: a peer that reads another field set misreads every byte after it.
 """
 
+FEATURE_SET_OPTIONS_BY_NAME: Final[str] = "set-options-by-name"
+"""huggorm's Nix sends every overridden setting by name in `SetOptions`, the header ones included, and an ssh-ng
+client sends `SetOptions` at all (`nix-set-options-by-name.patch`). Only a client names it; pynixd names it back to
+a client and never to a backend, because its own `SetOptions` carries the header alone. nixidae/nixidae#1198.
+"""
+
 PYNIXD_FEATURES: Final[frozenset[str]] = frozenset({FEATURE_PYNIXD_BUILD_RESOURCES})
 """pynixd's own features that this package has a codec for. A pynixd names them in both directions, and Nix never does."""
 

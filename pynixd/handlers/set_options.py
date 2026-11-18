@@ -4,20 +4,25 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar
 
+import structlog
+
 from nix_daemon_protocol.logs import LogNext
 
+from ..constants import FEATURE_SET_OPTIONS_BY_NAME
 from ..serde import SetOptionsRequest, SetOptionsResponse
-from ..serde.auth import Role
 from ..serde.protocol import Verbosity
-from ..trust import restrict_overrides, warning_text
+from ..session_options import session_options
+from ..trust import warning_text
 from ._base import Handler
 
 if TYPE_CHECKING:
     from ..serde.context import RequestContext
 
+logger = structlog.get_logger(__name__)
+
 
 class SetOptionsHandler(Handler):
-    """Server handler for SetOptions. An untrusted client keeps what Nix lets it keep."""
+    """Server handler for SetOptions. `session_options` decides what a session keeps."""
 
     op: ClassVar[int] = 19
 
@@ -37,23 +42,33 @@ class SetOptionsHandler(Handler):
         req = await SetOptionsRequest.from_reader(
             ctx.proxy.read_context,
         )
+        client = ctx.proxy.client
+        pynixd = ctx.proxy.ctx
+        kept = session_options(
+            req,
+            role=ctx.role,
+            remote=not client.on_this_machine and FEATURE_SET_OPTIONS_BY_NAME in client.standard_features,
+            policy=pynixd.trust,
+            remote_settings=frozenset(pynixd.settings.remote_settings),
+            daemon=pynixd.daemon_header,
+        )
+        if kept.dropped:
+            logger.debug("remote_settings_dropped", names=kept.dropped)
 
         resp = SetOptionsResponse()
-        if ctx.role < Role.ADMIN:
-            # Every upstream connection is root's, so nix-daemon filters
-            # nothing on it. `daemon.cc:788` filters for an untrusted client.
-            overrides, warnings = restrict_overrides(req.overrides, ctx.proxy.ctx.trust)
-            req = req.model_copy(update={"overrides": overrides})
-            # `TunnelLogger::log` drops a message above the client's
-            # verbosity, and `apply` sets that verbosity first.
-            if req.verbosity >= Verbosity.WARN:
-                for warning in warnings:
-                    resp.logs.add(LogNext(text=warning_text(warning)))
+        # `TunnelLogger::log` drops a message above the client's verbosity, and `apply` sets that verbosity first.
+        if req.verbosity >= Verbosity.WARN:
+            for warning in kept.warnings:
+                resp.logs.add(LogNext(text=warning_text(warning)))
 
+        # A `SetOptions` value wins over one on the SSH command.
+        client.pynixd_options = {**client.pynixd_options, **kept.pynixd_options}
+        if kept.options is None:
+            return resp
         # `ClientSettings::apply` sets the names it is given and leaves every
         # other one as an earlier SetOptions set it (`daemon.cc:221-300`).
-        previous = ctx.proxy.client.options
-        if previous is not None:
-            req = req.model_copy(update={"overrides": {**previous.overrides, **req.overrides}})
-        ctx.proxy.client.options = req
+        options = kept.options
+        if client.options is not None:
+            options = options.model_copy(update={"overrides": {**client.options.overrides, **options.overrides}})
+        client.options = options
         return resp

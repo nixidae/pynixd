@@ -23,6 +23,7 @@ import pytest
 
 from nix_daemon_protocol.ids import BuildId, RequestId
 from pynixd.answer import Answer
+from pynixd.config import PynixdSettings
 from pynixd.connection import ClientConn, Connection
 from pynixd.goals.build_derivation import BuildDerivationGoal
 from pynixd.handlers.set_options import SetOptionsHandler
@@ -40,9 +41,10 @@ from pynixd.serde import (
 )
 from pynixd.serde.auth import Role
 from pynixd.serde.context import ReadContext, WriteContext
+from pynixd.session_options import DaemonHeader
 from pynixd.store.pool import ConnectionPool
 from pynixd.trust import TrustPolicy
-from pynixd.wire import PROTOCOL_VERSION, STDERR_LAST, BytesReader, BytesWriter
+from pynixd.wire import FEATURE_SET_OPTIONS_BY_NAME, PROTOCOL_VERSION, STDERR_LAST, BytesReader, BytesWriter
 from pynixd_store.background import Background
 from tests.goal_group import goals_running
 
@@ -180,7 +182,7 @@ class FakeProxy:
         self.standard_features: frozenset[str] = frozenset()
         self.local_store = FakeStore()
         self.client = ClientConn(BytesWriter("client"))
-        self.ctx = SimpleNamespace(trust=TrustPolicy())
+        self.ctx = SimpleNamespace(trust=TrustPolicy(), settings=PynixdSettings(), daemon_header=DaemonHeader())
 
     @property
     def read_context(self) -> ReadContext:
@@ -232,6 +234,23 @@ async def test_an_untrusted_user_keeps_the_set_without_its_restricted_settings()
     assert options is not None
     assert options.overrides == {}
     assert options.max_build_jobs == 1
+
+
+@pytest.mark.anyio
+async def test_a_remote_controller_keeps_its_header() -> None:
+    """A pynixd controller sends its builder the header alone, and names no `set-options-by-name`."""
+    proxy = FakeProxy(await _body(_options("/hook.sh")))
+    await SetOptionsHandler().handle(cast("Any", FakeContext(proxy, Role.ADMIN)))
+    assert proxy.client.options == _options("/hook.sh")
+
+
+@pytest.mark.anyio
+async def test_a_remote_client_by_name_keeps_only_the_listed_settings() -> None:
+    """nixidae/nixidae#1198: `post-build-hook` is not in `remote_settings`, and the header is read by name."""
+    proxy = FakeProxy(await _body(_options("/hook.sh")))
+    proxy.client.standard_features = frozenset({FEATURE_SET_OPTIONS_BY_NAME})
+    await SetOptionsHandler().handle(cast("Any", FakeContext(proxy, Role.ADMIN)))
+    assert proxy.client.options is None
 
 
 # ── The build carries the set of the client that asked for it ────────

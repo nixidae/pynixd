@@ -787,6 +787,7 @@ class Server:
         await self._background.start(self._host_store, local_store, False, None, True)
 
         self.ctx.trust = await local_store.trust_policy()
+        self.ctx.daemon_header = await local_store.daemon_header()
         log.info(
             "trust_policy",
             trusted_users=self.ctx.trust.trusted_users,

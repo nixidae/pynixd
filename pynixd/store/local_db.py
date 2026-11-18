@@ -87,6 +87,7 @@ if TYPE_CHECKING:
     from ..config import LocalSocketStoreSpec
     from ..connection import ClientConn, Connection
     from ..serde import SetOptionsRequest
+    from ..session_options import DaemonHeader
     from ..substitution_queue import SubstitutionQueue
     from ..trust import TrustPolicy
 
@@ -423,6 +424,9 @@ class LocalDBStore(Store):
 
     async def trust_policy(self) -> TrustPolicy:
         return await self._daemon.trust_policy()
+
+    async def daemon_header(self) -> DaemonHeader:
+        return await self._daemon.daemon_header()
 
     async def read_nix_config(self) -> dict[str, Any]:
         return await self._daemon.read_nix_config()

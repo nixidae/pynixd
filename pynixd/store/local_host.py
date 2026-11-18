@@ -20,6 +20,7 @@ from pynixd_store.store_path import StorePath
 from ..agent import local_monitor
 from ..config import LocalSocketStoreSpec, PynixdSettings
 from ..monitor import DummyResourceMonitor, local_disk
+from ..session_options import DaemonHeader
 from ..trust import TrustPolicy
 from .base import get_current_system
 from .scheduled import ScheduledStore
@@ -92,6 +93,7 @@ class LocalHost(ScheduledStore):
         self.nix_config = spec.nix_config
         self.extra_env = spec.extra_env or {}
         self._trust_policy: TrustPolicy | None = None
+        self._daemon_header: DaemonHeader | None = None
         self.extra_args = spec.extra_args or []
         self.settings = spec.settings or PynixdSettings()
         self._probe_requested = spec.probe
@@ -157,6 +159,12 @@ class LocalHost(ScheduledStore):
         if self._trust_policy is None:
             self._trust_policy = TrustPolicy.from_nix_config(await self.read_nix_config())
         return self._trust_policy
+
+    async def daemon_header(self) -> DaemonHeader:
+        """The header settings nix-daemon has for a client that sends no `SetOptions`, read once."""
+        if self._daemon_header is None:
+            self._daemon_header = DaemonHeader.from_nix_config(await self.read_nix_config())
+        return self._daemon_header
 
     async def read_nix_config(self) -> dict[str, Any]:
         """`nix config show --json` in the daemon's environment, so includes,

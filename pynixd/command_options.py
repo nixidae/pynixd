@@ -18,6 +18,9 @@ from enum import StrEnum
 
 from .serde.auth import Role
 
+PREFIX = "pynixd-"
+"""huggorm's Nix sends an unregistered setting with this prefix in `SetOptions` (`nix-set-options-by-name.patch`)."""
+
 
 class PynixdOption(StrEnum):
     POOL = "pynixd-pool"
@@ -52,20 +55,32 @@ def parse_command(command: str, role: Role) -> CommandOptions:
             break
         name, value = words[i + 1], words[i + 2]
         i += 3
-        try:
-            option = PynixdOption(name)
-        except ValueError:
-            if name.startswith("pynixd-"):
-                warnings.append(f"unknown setting '{name}'")
-            else:
-                warnings.append(f"ignoring the setting '{name}' on the SSH command: pynixd reads only its own there")
+        if not name.startswith(PREFIX):
+            warnings.append(f"ignoring the setting '{name}' on the SSH command: pynixd reads only its own there")
             continue
-        if option in TRUSTED_ONLY and role < Role.ADMIN:
-            # Nix's words for a restricted setting, `daemon.cc:292`.
-            warnings.append(
-                f"ignoring the client-specified setting '{name}', because it is a restricted setting and you are not"
-                " a trusted user"
-            )
+        option = accept(name, role)
+        if isinstance(option, Refusal):
+            warnings.append(option.warning)
             continue
         options[option] = value
     return CommandOptions(options, tuple(warnings))
+
+
+@dataclass(frozen=True, slots=True)
+class Refusal:
+    warning: str
+
+
+def accept(name: str, role: Role) -> PynixdOption | Refusal:
+    """The setting *name* names when a client of *role* may set it, or the warning that drops it."""
+    try:
+        option = PynixdOption(name)
+    except ValueError:
+        return Refusal(f"unknown setting '{name}'")
+    if option in TRUSTED_ONLY and role < Role.ADMIN:
+        # Nix's words for a restricted setting, `daemon.cc:292`.
+        return Refusal(
+            f"ignoring the client-specified setting '{name}', because it is a restricted setting and you are not"
+            " a trusted user"
+        )
+    return option

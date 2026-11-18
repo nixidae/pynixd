@@ -8,6 +8,8 @@
   lib ? pkgs.lib,
   package,
   vivariumLib,
+  # A client on huggorm's Nix, which sends `SetOptions` over ssh-ng (`set-options-by-name`).
+  pynix,
 }:
 
 let
@@ -61,6 +63,8 @@ vivariumLib.mkTest {
     busybox = "${pkgs.busybox}";
     system = pkgs.stdenv.hostPlatform.system;
     inherit feature spare;
+    # A daemon without `set-options-by-name`, for the client gate of `ssh-options`.
+    stockDaemon = "${pkgs.nix}/bin/nix-daemon";
   };
 
   segments.fleet.instanceAddresses = [ "10.9.0.100/24" ];
@@ -114,6 +118,7 @@ vivariumLib.mkTest {
       pkgs.curl
       pkgs.openssh
       pkgs.sqlite
+      pynix
     ];
     users.users.tester = {
       isNormalUser = true;

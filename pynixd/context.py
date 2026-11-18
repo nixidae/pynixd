@@ -15,6 +15,7 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from ._lazy import ssh_errors
 from .exceptions import BackendError, InfrastructureError, NoDaemonError
 from .serde import QueryValidPathsRequest
+from .session_options import DaemonHeader
 from .sessions import ClientSessions
 from .trust import TrustPolicy
 
@@ -77,6 +78,8 @@ class PynixdContext:
 
     `Server.start` replaces the default with what the local store's Nix reads.
     """
+    daemon_header: DaemonHeader = field(default_factory=DaemonHeader)
+    """The header settings the local store's Nix has, under a remote client's `SetOptions`; `Server.start` reads it."""
     sessions: ClientSessions = field(default_factory=ClientSessions)
     """Established client sessions, for the shutdown path.
 

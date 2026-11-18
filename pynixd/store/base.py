@@ -21,6 +21,7 @@ from nix_daemon_protocol.store_dir import store_dir
 from pynixd_store.background import Background
 
 from ..experiments import active
+from ..session_options import DaemonHeader
 from ..trust import TrustPolicy
 from .realisation_query import query_realisation_over_wire
 
@@ -200,6 +201,10 @@ class Store(ABC):
         """Who may use this store and who is trusted. Nix's defaults here;
         `LocalStore` reads what its Nix reads."""
         return TrustPolicy()
+
+    async def daemon_header(self) -> DaemonHeader:
+        """The header settings this store's Nix has with no `SetOptions`. Nix's defaults here."""
+        return DaemonHeader()
 
     # ── Lifecycle ───────────────────────────────────────────────────
 

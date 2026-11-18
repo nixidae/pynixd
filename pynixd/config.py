@@ -1541,6 +1541,16 @@ class PynixdSettings(BaseSettings):
     username a client sends.
     """
 
+    remote_settings: list[str] = Field(default_factory=lambda: ["timeout", "max-silent-time", "keep-going"])
+    """The Nix settings pynixd takes from a client on another machine, by name.
+
+    Such a client names `set-options-by-name` (huggorm's Nix) and sends every
+    setting it overrides, its user nix.conf and `NIX_CONFIG` included. A
+    delegating client's
+    `max-jobs = 0` would stop this daemon building, so a setting not listed
+    here is dropped. The trust rules apply first. nixidae/nixidae#1198.
+    """
+
     unix_path: Path | None = Path("/run/pynixd/pynixd.sock")
 
     # `""`, and not `"0.0.0.0"`. asyncio reads an empty host as "every

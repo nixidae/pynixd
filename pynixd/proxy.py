@@ -387,6 +387,8 @@ class DaemonProxy:
         our_features.add(wire.FEATURE_OPEN_TELEMETRY)
         # Op 44's stream is hop-local too: pynixd reads it, and writes each backend's in the shape that backend named.
         our_features.add(wire.FEATURE_VERSIONED_ADD_TO_STORE_MULTIPLE)
+        # `SetOptionsHandler` reads the client's set by name; nothing forwards it as sent.
+        our_features.add(wire.FEATURE_SET_OPTIONS_BY_NAME)
         # Op 48 has no fallback: a store whose builds pynixd cannot see would answer an empty list while they run.
         if self.local_store.answers_active_builds:
             our_features.add(wire.FEATURE_QUERY_ACTIVE_BUILDS)
@@ -441,7 +443,8 @@ class DaemonProxy:
             honourable = self.honourable_features()
             named = self.server_features(honourable)
             self.standard_features = wire.negotiate_features(
-                client_features, named & (wire.STANDARD_FEATURES | self.pynixd_features)
+                client_features,
+                named & (wire.STANDARD_FEATURES | self.pynixd_features | {wire.FEATURE_SET_OPTIONS_BY_NAME}),
             )
             # `ClientConn.send` writes a log message straight to the client,
             # so it needs the set of that client and not of a backend.

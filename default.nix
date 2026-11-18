@@ -849,6 +849,7 @@ let
       pkgs.callPackage ./tests/derivations/provisioning {
         inherit package;
         inherit vivariumLib;
+        inherit (nanopynix.packages) pynix;
       }
     );
 
