@@ -140,6 +140,9 @@ class QueuedBuild:
 
         The first client to ask decides, as for `options`.
         """
+        self.pools: frozenset[str] = frozenset()
+        """The provisioning pools the client's `builders` names: their builders take this build, and lack of one
+        launches one, whatever the pool's `mandatory_features`. The first client to ask decides."""
         self.told_wait: str | None = None
         """What the clients last read of why this build waits; `tell_wait` repeats nothing."""
         self.last_traced: tuple[tuple[object, ...], float] | None = None
@@ -629,6 +632,7 @@ class BuildQueue:
         delegated: bool = False,
         askers: Sequence[ClientConn] = (),
         builders: frozenset[StoreId] | None = None,
+        pools: frozenset[str] = frozenset(),
     ) -> tuple[BuildId, Answer[BuildDerivationResponse]]:
         """Add a build to the queue (deduplicates if already present).
 
@@ -703,6 +707,7 @@ class BuildQueue:
             )
             build.from_goal_path = from_goal_path
             build.builders = builders
+            build.pools = pools
             build.askers.update(askers)
             if from_goal_path and goal_request_id is not None:
                 self._hold_locked(build, goal_request_id)

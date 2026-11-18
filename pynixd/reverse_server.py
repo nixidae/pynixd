@@ -64,6 +64,8 @@ class Admitted:
     """Features a build must need to go here (`Machine::mandatoryMet`); a pool sets them on its builders."""
     lease: Lease | None = None
     """What the acceptor tells the builder at registration; a builder no pool launched gets none."""
+    pool: str | None = None
+    """The pool that launched the builder."""
 
 
 async def send_lease(conn: asyncssh.SSHClientConnection, store_id: str, lease: Lease) -> bool:
@@ -124,7 +126,10 @@ async def admit(
 
 
 def reverse_spec(
-    reg: dict[str, object], store_id: str, mandatory_features: frozenset[str] = frozenset()
+    reg: dict[str, object],
+    store_id: str,
+    mandatory_features: frozenset[str] = frozenset(),
+    pool: str | None = None,
 ) -> ReverseStoreSpec:
     """The store a builder's registration describes."""
     systems = set(cast("list[str]", reg.get("systems") or []))
@@ -144,6 +149,7 @@ def reverse_spec(
         max_connections=slots + REVERSE_TRANSFER_CONNECTIONS,
         transfer_connections=REVERSE_TRANSFER_CONNECTIONS,
         mandatory_features=set(mandatory_features),
+        pool=pool,
     )
 
 
@@ -256,7 +262,7 @@ async def start_reverse_acceptor(
 
         async def _serve(admitted: Admitted, reg: dict[str, object]) -> None:
             store_id = admitted.store_id
-            spec = reverse_spec(reg, store_id, admitted.mandatory_features)
+            spec = reverse_spec(reg, store_id, admitted.mandatory_features, admitted.pool)
             systems = spec.systems or set()
             store = ReverseStore(spec, conn)
 
@@ -282,7 +288,9 @@ async def start_reverse_acceptor(
                     return False
                 return True
 
-            if not await server.add_store(store, dynamic=True, admit=_proves):
+            # A pool's builder is not dynamic: `demand.launchable` speaks for its pool, and the union of its
+            # features would hold a build that needs only a feature the pool's mandatory ones guard.
+            if not await server.add_store(store, dynamic=admitted.pool is None, admit=_proves):
                 conn.abort()
                 return
 

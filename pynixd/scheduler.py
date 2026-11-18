@@ -96,6 +96,8 @@ class Scheduler:
         """Whether the last pass left a build waiting for a store."""
         self.pass_listeners: list[Callable[[], None]] = []
         """Called after each pass: a provisioner reads what it left waiting."""
+        self.launchable: Callable[[QueuedBuild], bool] = lambda _build: False
+        """Whether a provisioning pool may launch a machine for a build; a provisioner sets it."""
         self.trace = PlacementTrace(None, ctx.settings.placement_trace)
         """Writes nothing until `start` hands it the database, which the local store opens after this."""
         self.estimator = TransferEstimator(
@@ -111,6 +113,7 @@ class Scheduler:
             estimator=self.estimator,
             rng=random.Random(),  # noqa: S311 -- placement, not cryptography
             dynamic=self._dynamic_feature_matrix,
+            launchable=lambda build: self.launchable(build),
             spawn=self._spawn_worker,
         )
         local = self.local_store
@@ -262,9 +265,12 @@ class Scheduler:
         t_hint = time.monotonic()
 
         builders = None
+        pools: frozenset[str] = frozenset()
         value = options.overrides.get("builders") if options is not None else None
         if value and self.ctx.session_builders is not None:
-            builders = await self.ctx.session_builders.stores_for(value)
+            target = await self.ctx.session_builders.stores_for(value)
+            if target is not None:
+                builders, pools = target.stores, target.pools
 
         res = await self.queue.enqueue(
             request,
@@ -277,6 +283,7 @@ class Scheduler:
             delegated=delegated,
             askers=askers,
             builders=builders,
+            pools=pools,
         )
         queued = self.queue.by_id.get(res[0])
         if queued is not None and queued.expected_peak_bytes is None:

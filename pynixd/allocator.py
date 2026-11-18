@@ -50,6 +50,10 @@ class SessionMember(Protocol):
     def store_id(self) -> StoreId: ...
     @property
     def session_only(self) -> bool: ...
+    @property
+    def pool(self) -> str | None: ...
+    @property
+    def mandatory_features(self) -> frozenset[str]: ...
 
 
 class Candidate(SessionMember, Protocol):
@@ -88,6 +92,8 @@ class Placeable(Protocol):
     def request(self) -> Derived: ...
     @property
     def builders(self) -> frozenset[StoreId] | None: ...
+    @property
+    def pools(self) -> frozenset[str]: ...
     @property
     def external_systems(self) -> frozenset[str]: ...
     def is_blacklisted(self, store_id: StoreId, /) -> bool: ...
@@ -502,9 +508,18 @@ def _mib(count: int | None) -> int:
 
 def outside_the_session(store: SessionMember, build: Placeable) -> str | None:
     """Why remote *store* is not one of the stores *build* may use, or `None` (`pynixd/session_builders.py`)."""
-    if build.builders is not None:
-        return None if store.store_id in build.builders else "not one of the client's builders"
+    if build.builders is not None or build.pools:
+        if store.store_id in (build.builders or ()) or (store.pool is not None and store.pool in build.pools):
+            return None
+        return "not one of the client's builders"
     return "another client's builder" if store.session_only else None
+
+
+def steered_features(store: SessionMember, build: Placeable, features: set[str]) -> set[str]:
+    """*features*, plus the mandatory ones of a builder of a pool the client named: naming the pool asks for it."""
+    if store.pool is not None and store.pool in build.pools:
+        return features | store.mandatory_features
+    return features
 
 
 def builds_externally(build: Placeable) -> bool:
@@ -522,7 +537,7 @@ def incapable_reason(store: Candidate, build: Placeable, features: set[str], *, 
     if store.no_schedule:
         return "no_schedule"
     if not (local and builds_externally(build)) and not store.supports_derivation(
-        build.request.derivation.platform, features
+        build.request.derivation.platform, steered_features(store, build, features)
     ):
         return "lacks the system or a required feature"
     if build.is_blacklisted(store.store_id):

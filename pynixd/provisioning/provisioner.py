@@ -24,6 +24,7 @@ died. At shutdown the provisioner ends every machine it holds.
 from __future__ import annotations
 
 import contextlib
+import functools
 import hashlib
 import secrets
 import socket
@@ -39,7 +40,7 @@ from pynixd_store.provisioning_tables import PENDING
 from ..reverse_server import Admitted
 from ..state_models import ProvisionedRow
 from .decide import EndReason, Held, InstanceState, Pool, decide
-from .demand import wants
+from .demand import launchable, wants
 from .provider import MachineState, NoCapacity, ProviderError
 from .ticket import JoinTicket, Lease
 
@@ -139,11 +140,10 @@ class Provisioner:
         self._wake.set()
 
     async def run(self) -> None:
-        matrix: dict[str, set[str]] = {}
-        for pool in self.pools:
-            for system in pool.systems:
-                matrix.setdefault(system, set()).update(pool.features)
-        self._scheduler.add_dynamic_features(matrix)
+        # Not the feature union in `add_dynamic_features`: that ignores `mandatory_features` and named pools, so a
+        # build no pool takes would wait forever and a steered one would fail at once.
+        self._scheduler.launchable = functools.partial(launchable, tuple(self.pools))
+        self._scheduler.trigger()
         self._scheduler.pass_listeners.append(self.wake)
         await self.reconcile()
         try:
@@ -393,6 +393,7 @@ class Provisioner:
             store_id,
             frozenset() if pool is None else pool.mandatory_features,
             Lease(idle_seconds=idle, boot_seconds=boot),
+            pool=row.pool,
         )
 
     async def left(self, store_id: StoreId) -> None:

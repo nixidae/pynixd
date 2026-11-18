@@ -90,8 +90,12 @@ class FakeStore:
         session_only: bool = False,
         last_resort: bool = False,
         monitor: FakeMonitor | None = None,
+        pool: str | None = None,
+        mandatory_features: frozenset[str] = frozenset(),
     ) -> None:
         self.store_id = store_id
+        self.pool = pool
+        self.mandatory_features = mandatory_features
         self.systems = systems
         self.cpu_util: CpuUtil | None = None
         self.monitor = monitor
@@ -125,8 +129,7 @@ class FakeStore:
             await self.handshake()
 
     def supports_derivation(self, system: str, features: set[str]) -> bool:
-        del features
-        return self.systems is None or system in self.systems
+        return self.mandatory_features <= features and (self.systems is None or system in self.systems)
 
     async def execute(self, request: WireRequest, client: ClientConn | None = None) -> Any:
         del client
@@ -165,10 +168,13 @@ class FakeBuild:
     builders: frozenset[StoreId] | None = None
     failed_on: frozenset[StoreId] = frozenset()
     external_systems: frozenset[str] = frozenset()
+    pools: frozenset[str] = frozenset()
 
     @classmethod
-    def on(cls, platform: str, *, builders: frozenset[StoreId] | None = None) -> FakeBuild:
-        return cls(FakeRequest(BasicDerivation(platform=platform, builder="/bin/sh")), builders)
+    def on(
+        cls, platform: str, *, builders: frozenset[StoreId] | None = None, pools: frozenset[str] = frozenset()
+    ) -> FakeBuild:
+        return cls(FakeRequest(BasicDerivation(platform=platform, builder="/bin/sh")), builders, pools=pools)
 
     def is_blacklisted(self, store_id: StoreId) -> bool:
         return store_id in self.failed_on

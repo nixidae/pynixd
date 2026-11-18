@@ -6,6 +6,11 @@ build hook sends that client's builds to those machines (`daemon.cc:234`,
 client's builds on those stores and the local store only. A build of any
 other client never goes to such a store.
 
+A line `pynixd-pool://NAME` names a provisioning pool, not a machine: the
+client's builds may go to that pool's builders, and a waiting one launches
+a builder there, though it lacks the pool's `mandatory_features`. The
+other columns of such a line are not read. nixidae/nixidae#1198.
+
 NIX-DEVIATION (#27): `ClientSettings::apply` (`daemon.cc:234`) sets an empty
 `builders` too, so a client that sends one gets local builds only. pynixd
 places such a build on its own stores, as it does when the value names no
@@ -20,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlencode
@@ -43,6 +49,17 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 _LOCAL_SCHEMES = frozenset({"local"})
+
+POOL_SCHEME = "pynixd-pool"
+"""The scheme of a `builders` line that names a provisioning pool."""
+
+
+@dataclass(frozen=True, slots=True)
+class SessionTarget:
+    """Where a client's `builders` lets its builds go, besides the local store."""
+
+    stores: frozenset[StoreId]
+    pools: frozenset[str] = frozenset()
 
 
 class SessionBuilderError(MachinesError):
@@ -165,20 +182,20 @@ class SessionBuilders:
         self._remove_store = remove_store
         self._live_values = live_values
         self._pending_builders = pending_builders
-        self._by_value: dict[str, frozenset[StoreId]] = {}
+        self._by_value: dict[str, SessionTarget] = {}
         self._open: dict[StoreId, Store] = {}
         self._last_needed: dict[StoreId, float] = {}
         # Held across a close too: a store id is a digest of its machine, so a
         # reopen during the close registers a store that the close then forgets.
         self._lock = anyio.Lock()
 
-    async def stores_for(self, builders: str) -> frozenset[StoreId] | None:
-        """The stores of *builders*, or `None` when it names no machine; raises `MachinesError`."""
+    async def stores_for(self, builders: str) -> SessionTarget | None:
+        """The stores and pools of *builders*, or `None` when it names neither; raises `MachinesError`."""
         async with self._lock:
             known = self._by_value.get(builders)
             if known is not None:
                 now = time.monotonic()
-                for store_id in known:
+                for store_id in known.stores:
                     self._last_needed[store_id] = now
                 return known
             # `Machine::parseConfig({settings.thisSystem}, ...)`, `worker.cc:352`.
@@ -186,7 +203,14 @@ class SessionBuilders:
             if not machines:
                 return None
             ids: set[StoreId] = set()
+            pools: set[str] = set()
             for machine in machines:
+                if machine.reference.scheme == POOL_SCHEME:
+                    name = machine.reference.authority
+                    if name not in {pool.name for pool in self.settings.provisioning.pools}:
+                        raise SessionBuilderError(f"pynixd has no provisioning pool '{name}'")
+                    pools.add(name)
+                    continue
                 spec = builder_spec(machine, self.settings, self.nix_bin)
                 if spec.store_id is None:
                     raise SessionBuilderError(f"no store id for '{machine.store_uri}'")
@@ -199,7 +223,7 @@ class SessionBuilders:
                     self._open[spec.store_id] = store
                 self._last_needed[spec.store_id] = time.monotonic()
                 ids.add(spec.store_id)
-            result = frozenset(ids)
+            result = SessionTarget(frozenset(ids), frozenset(pools))
             self._by_value[builders] = result
             return result
 
@@ -215,7 +239,8 @@ class SessionBuilders:
         async with self._lock:
             needed: set[StoreId] = set()
             for value in self._live_values():
-                needed |= self._by_value.get(value, frozenset())
+                target = self._by_value.get(value)
+                needed |= target.stores if target is not None else frozenset()
             for builders in await self._pending_builders():
                 needed |= builders or frozenset()
             closed: list[StoreId] = []
@@ -227,7 +252,7 @@ class SessionBuilders:
             for store_id in closed:
                 del self._open[store_id]
                 self._last_needed.pop(store_id, None)
-                self._by_value = {v: ids for v, ids in self._by_value.items() if store_id not in ids}
+                self._by_value = {v: t for v, t in self._by_value.items() if store_id not in t.stores}
                 await self._remove_store(store_id)
                 log.info("session_builder_closed", store_id=store_id)
             return closed

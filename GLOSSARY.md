@@ -56,6 +56,9 @@ What the scheduler reads of a store it places builds on: what it builds, its hos
 ### Provisioner, Pool, Instance
 The provisioner starts builders at a cloud provider while builds wait for a store, and ends them when they are idle (`pynixd/provisioning/`, nixidae/nixidae#1198). A pool is one kind of machine it starts: its systems, its features, how many at most, and how many builds each takes. An instance is one machine of a pool. It is pending until its builder registers over reverse SSH, then running. `pynixd/provisioning/decide.py` holds the rules for what to launch and what to end.
 
+### Steering (`pynixd-pool://`)
+A trusted client names a pool with a `pynixd-pool://NAME` line in its `builders` (`pynixd/session_builders.py`). Its builds then run only on that pool's machines and on the local store, and the pool's `mandatory_features` no longer keep them off: naming the pool asks for it. A build that waits for such a pool counts as demand for it. `Pool.builds` is the one rule for both launch and placement (`demand.launchable`). An unknown name fails the build, and an untrusted client's `builders` is dropped, as Nix drops it.
+
 ### Join ticket
 The user data a provisioner gives a machine it launches (`JoinTicket`, `pynixd/provisioning/ticket.py`): a one-time token, the acceptor's address and the acceptor's public key. The builder sends the token in its reverse registration, and the acceptor admits it under its instance's store id. The token admits one registration; a builder that leaves cannot come back, and its machine ends.
 

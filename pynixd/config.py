@@ -340,6 +340,8 @@ class StoreSpecBase(BaseModel):
     score_penalty: int = 0
     mandatory_features: set[str] = Field(default_factory=set)
     """Features a derivation must require to build here: column 7 of a machines line (`Machine::mandatoryMet`)."""
+    pool: str | None = None
+    """The provisioning pool that launched this builder (a reverse store); a client's `builders` may name it."""
     last_resort: bool = False
     """Build here only what no other store can: capability, never offload.
 

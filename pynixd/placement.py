@@ -40,6 +40,7 @@ from .allocator import (
     outside_the_session,
     pick_store,
     reserved_memory,
+    steered_features,
 )
 from .config import NoLocalJobs
 from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
@@ -254,7 +255,7 @@ class TransferEstimator:
             if store_id != local_id
             and store_id not in build.transfer_seconds
             and store.is_healthy
-            and store.supports_derivation(platform, features)
+            and store.supports_derivation(platform, steered_features(store, build, features))
         ]
         estimate_local = self._wants_estimates and local_id not in build.estimates
         if not todo and not estimate_local:
@@ -422,6 +423,7 @@ class Placer[S: PlacedStore]:
         rng: random.Random,
         dynamic: Mapping[str, set[str]],
         spawn: Callable[[QueuedBuild, S], None],
+        launchable: Callable[[QueuedBuild], bool] = lambda _build: False,
     ) -> None:
         self.queue = queue
         self.local = local
@@ -436,6 +438,8 @@ class Placer[S: PlacedStore]:
         """Draws for `explore_share`; a test passes a seeded one."""
         self.dynamic = dynamic
         """The platforms a builder may still register for: the scheduler's mapping, which `add_dynamic_feature` writes."""
+        self.launchable = launchable
+        """Whether a provisioning pool may launch a machine for a build (`demand.launchable`)."""
         self.spawn = spawn
         """Starts a placed build on its store."""
         self.held_by_pressure: set[BuildId] = set()
@@ -797,15 +801,20 @@ class Placer[S: PlacedStore]:
         return features.issubset(sys_features)
 
     def _dynamic_supports_build(self, build: QueuedBuild, build_features: set[str]) -> bool:
-        """`_dynamic_supports`, for a build that may use pynixd's own stores; a client's builders register none."""
-        return build.builders is None and self._dynamic_supports(build.request.derivation.platform, build_features)
+        """Whether a builder may still come for *build*: a pool may launch one, or a dynamic platform's may register.
+        A client's builders and pools register none of the second kind."""
+        return self.launchable(build) or (
+            build.builders is None
+            and not build.pools
+            and self._dynamic_supports(build.request.derivation.platform, build_features)
+        )
 
     def _compatible_and_used_up(self, build: QueuedBuild, build_features: set[str]) -> list[S] | None:
         """The stores that support *build*, when the build failed on each of them too often; else `None`."""
         compatible = [
             s
             for s in self._stores_of(build)
-            if s.supports_derivation(build.request.derivation.platform, build_features)
+            if s.supports_derivation(build.request.derivation.platform, steered_features(s, build, build_features))
         ]
         if compatible and all(build.is_blacklisted(s.store_id) for s in compatible):
             return compatible
@@ -819,7 +828,7 @@ class Placer[S: PlacedStore]:
         """Check if any live or dynamic store could ever support this build."""
         return any(
             s.store_id != self.local.store_id
-            and s.supports_derivation(build.request.derivation.platform, build_features)
+            and s.supports_derivation(build.request.derivation.platform, steered_features(s, build, build_features))
             for s in self._stores_of(build)
         ) or self._dynamic_supports_build(build, build_features)
 

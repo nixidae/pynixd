@@ -107,3 +107,28 @@ def test_a_build_a_busy_store_holds_counts_only_after_the_pools_wait() -> None:
     assert attribute([patient], [Want("x86_64-linux", held_for=59.0)]) == {}
     assert attribute([patient], [Want("x86_64-linux", held_for=60.0)]) == {"patient": 1}
     assert attribute([patient], [Want("x86_64-linux")]) == {"patient": 1}, "a build no store can take counts at once"
+
+
+SPOT = Pool(
+    name="spot",
+    systems=frozenset({"aarch64-linux"}),
+    features=frozenset({"aws-spot"}),
+    mandatory_features=frozenset({"aws-spot"}),
+)
+
+
+def test_a_build_that_names_the_pool_needs_not_its_mandatory_features() -> None:
+    """A client's `builders` named the pool: that asks for it. Unnamed, the build must require `aws-spot` (#1425)."""
+    assert not SPOT.builds(Want("aarch64-linux"))
+    assert SPOT.builds(Want("aarch64-linux", frozenset({"aws-spot"})))
+    assert SPOT.builds(Want("aarch64-linux", pools=frozenset({"spot"})))
+
+
+def test_a_build_that_names_another_pool_never_comes_here() -> None:
+    assert not SPOT.builds(Want("aarch64-linux", frozenset({"aws-spot"}), pools=frozenset({"other"})))
+    assert not ARM.builds(Want("aarch64-linux", pools=frozenset({"spot"})))
+
+
+def test_naming_a_pool_waives_no_system_and_no_feature() -> None:
+    assert not SPOT.builds(Want("x86_64-linux", pools=frozenset({"spot"})))
+    assert not SPOT.builds(Want("aarch64-linux", frozenset({"kvm"}), pools=frozenset({"spot"})))

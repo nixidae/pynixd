@@ -85,6 +85,8 @@ class Store(ABC):
         self.nix_bin = spec.nix_bin
         self.session_only = False
         """A store of a client's `builders`: only that client's builds go here (`pynixd/session_builders.py`)."""
+        self.pool: str | None = spec.pool
+        """The provisioning pool that launched this builder; `None` for a configured store."""
         self.reference_key: object | None = spec.reference_key()
         """The key of the substituter URL this store stands for: `StoreSpecBase.reference_key`."""
         self.experiments: list[ExperimentRow] = active(spec, str(spec.store_id))

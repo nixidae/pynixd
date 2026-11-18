@@ -71,10 +71,13 @@ class Pool:
         return limit if self.idle_max_seconds is None else min(limit, self.idle_max_seconds)
 
     def builds(self, want: Want) -> bool:
+        """Whether a builder of this pool takes *want*. A build whose client named the pool needs not its
+        `mandatory_features`; a build that names other pools never comes here."""
+        named = self.name in want.pools
         return (
             want.system in self.systems
             and want.features <= self.features
-            and self.mandatory_features <= want.features
+            and (named or (not want.pools and self.mandatory_features <= want.features))
             and (want.held_for is None or want.held_for >= self.pressure_wait)
         )
 
@@ -87,6 +90,8 @@ class Want:
     features: frozenset[str] = frozenset()
     held_for: float | None = None
     """For a build a busy store holds, seconds since it was queued; None when no store can take it."""
+    pools: frozenset[str] = frozenset()
+    """The pools the build's client named in `builders`; empty is any pool whose features it meets."""
 
 
 @dataclass(frozen=True, slots=True)

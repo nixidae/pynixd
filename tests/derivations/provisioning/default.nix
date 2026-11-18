@@ -142,9 +142,13 @@ vivariumLib.mkTest {
     script = ../../provisioning/phase.py;
     after = [ "boot" ];
   };
+  phases.steer = {
+    script = ../../provisioning/steer.py;
+    after = [ "provision" ];
+  };
   phases.interrupt = {
     script = ../../provisioning/interrupt.py;
-    after = [ "provision" ];
+    after = [ "steer" ];
   };
   phases.crash = {
     script = ../../provisioning/crash.py;

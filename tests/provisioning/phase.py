@@ -49,11 +49,13 @@ async def test(vms: Machines) -> None:
     print(f"[test] {launched['id']} was launched for it, and holds the output")
 
     # The builder offers `spare` and is up, but the pool makes `provisioned` mandatory: a build that needs only
-    # `spare` launches nothing and does not run there. It waits, so the client gives up. Short: the builder
-    # idles all the while, and ends 15 s after its last build.
+    # `spare` launches nothing and does not run there. No store takes it, so it fails as Nix fails it
+    # (`derivation-building-goal.cc:289`). Short: the builder idles all the while, and ends 15 s after its
+    # last build.
     other, other_out = await feature_drv(controller, settings, "spare-only", "echo spare > $out", settings["spare"])
-    rc, _ = await controller.execute(f"su - tester -c {shlex.quote(f'timeout 8 nix-store --realise {other}')}")
-    assert rc == 124, f"a spare-only build ended with {rc}; it may run on no store here"
+    rc, out = await controller.execute(f"su - tester -c {shlex.quote(f'timeout 30 nix-store --realise {other}')}")
+    assert rc not in (0, 124), f"a spare-only build ended with {rc}; it may run on no store here"
+    assert "missing system features" in out, out
     rc, _ = await builder.execute(f"nix-store --check-validity {other_out}")
     assert rc != 0, "the builder built a build that needs none of its pool's mandatory features"
     assert [one["id"] for one in await pool_instances(controller)] == [launched["id"]], "it launched a builder"

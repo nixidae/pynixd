@@ -15,10 +15,17 @@ import pytest
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from pynixd.allocator import BuildAllocator, TelemetryStoreRanker, outside_the_session
-from pynixd.config import LocalSocketStoreSpec, PynixdSettings, SSHSubprocessStoreSpec, StoreRankingSettings
+from pynixd.config import (
+    LocalSocketStoreSpec,
+    ProvisioningPoolSettings,
+    ProvisioningSettings,
+    PynixdSettings,
+    SSHSubprocessStoreSpec,
+    StoreRankingSettings,
+)
 from pynixd.machines import parse_config
 from pynixd.psi import DiskSpace, SystemHealth
-from pynixd.session_builders import SessionBuilderError, SessionBuilders, builder_spec
+from pynixd.session_builders import SessionBuilderError, SessionBuilders, SessionTarget, builder_spec
 from pynixd.store.local_daemon import LocalStore
 from tests._conftest.placement import FakeBuild, FakeMonitor, FakeStore
 
@@ -129,13 +136,18 @@ def test_outside_the_session_names_why() -> None:
 class Server:
     """What `SessionBuilders` reads of the server: the stores it opened and closed, the sessions and the queue."""
 
-    def __init__(self, tmp_path: Path, *, linger: float = 60.0) -> None:
+    def __init__(self, tmp_path: Path, *, linger: float = 60.0, pools: tuple[str, ...] = ()) -> None:
         self.added: list[Any] = []
         self.removed: list[StoreId] = []
         self.values: list[str] = []
         self.pending: list[frozenset[StoreId] | None] = []
+        provisioning = ProvisioningSettings(
+            pools=[ProvisioningPoolSettings(name=name, template="t", systems=[SYSTEM]) for name in pools]
+        )
         self.builders = SessionBuilders(
-            PynixdSettings(unix_path=tmp_path / "pynixd.sock", session_builder_linger=linger),
+            PynixdSettings(
+                unix_path=tmp_path / "pynixd.sock", session_builder_linger=linger, provisioning=provisioning
+            ),
             "/bin/nix",
             self.add_store,
             self.remove_store,
@@ -162,7 +174,7 @@ async def test_one_store_per_machine_for_every_session(tmp_path: Path) -> None:
     again = await builders.stores_for(line)
     assert first == again
     assert first is not None
-    assert len(first) == 1
+    assert len(first.stores) == 1
     assert len(server.added) == 1
     assert server.added[0].session_only
     # Another value that names the same machine reuses its store.
@@ -180,9 +192,9 @@ async def test_a_value_with_no_machine_keeps_pynixds_placement(tmp_path: Path) -
 
 
 async def _opened(server: Server, line: str) -> StoreId:
-    ids = await server.builders.stores_for(line)
-    assert ids is not None
-    [store_id] = ids
+    target = await server.builders.stores_for(line)
+    assert target is not None
+    [store_id] = target.stores
     return store_id
 
 
@@ -222,3 +234,48 @@ async def test_an_unfinished_build_keeps_its_store(tmp_path: Path) -> None:
     server.pending = [None, frozenset({store_id})]
     assert await server.builders.reap(time.monotonic() + 100) == []
     assert server.removed == []
+
+
+SPOT = StoreId("provisioned-spot-1")
+OTHER = StoreId("provisioned-other-1")
+
+
+def _rank_pools(build: FakeBuild) -> set[StoreId]:
+    local = _store(LOCAL_STORE_ID)
+    disk = DiskSpace(free_bytes=100 * GIB, total_bytes=100 * GIB)
+    spot = frozenset({"aws-spot"})
+    stores = {
+        LOCAL_STORE_ID: local,
+        FLEET: _store(FLEET),
+        SPOT: FakeStore(SPOT, pool="spot", mandatory_features=spot, monitor=FakeMonitor(SystemHealth(disk=disk))),
+        OTHER: FakeStore(OTHER, pool="other", mandatory_features=spot, monitor=FakeMonitor(SystemHealth(disk=disk))),
+    }
+    allocator = BuildAllocator(stores, local, TelemetryStoreRanker(StoreRankingSettings()))
+    return {candidate.store_id for candidate in allocator.rank_stores(build, {})}
+
+
+def test_a_client_that_names_a_pool_builds_on_its_builders_and_locally() -> None:
+    """The pool's `mandatory_features` yield to the name; another pool's and the fleet do not take the build."""
+    assert _rank_pools(FakeBuild.on(SYSTEM, builders=frozenset(), pools=frozenset({"spot"}))) == {LOCAL_STORE_ID, SPOT}
+
+
+def test_a_build_that_names_no_pool_stays_off_its_builders() -> None:
+    """The control: a pool's builders take only what requires their mandatory features (#1425)."""
+    assert _rank_pools(FakeBuild.on(SYSTEM)) == {LOCAL_STORE_ID, FLEET}
+
+
+async def test_a_pool_line_opens_no_store(tmp_path: Path) -> None:
+    server = Server(tmp_path, pools=("spot",))
+    target = await server.builders.stores_for("pynixd-pool://spot")
+    assert target == SessionTarget(frozenset(), frozenset({"spot"}))
+    assert server.added == []
+    mixed = await server.builders.stores_for(f"pynixd-pool://spot ; {tmp_path}/m2 - - 1 1")
+    assert mixed is not None
+    assert (len(mixed.stores), mixed.pools) == (1, frozenset({"spot"}))
+
+
+async def test_an_unknown_pool_is_refused(tmp_path: Path) -> None:
+    """A misspelt pool fails the build at once; it would otherwise wait for a pool that never launches."""
+    server = Server(tmp_path, pools=("spot",))
+    with pytest.raises(SessionBuilderError, match="no provisioning pool 'spto'"):
+        await server.builders.stores_for("pynixd-pool://spto")
