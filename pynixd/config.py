@@ -1284,6 +1284,10 @@ class SSHSocketStoreSpec(StoreSpecBase):
         )
 
 
+S3Compression = Literal["zstd", "xz", "none"]
+"""How an S3 store compresses the NARs it uploads; Nix's `compression` names."""
+
+
 class BinaryCacheSpecBase(StoreSpecBase):
     """A read-only substitution source in Nix's binary cache layout, with health tracking."""
 
@@ -1355,6 +1359,17 @@ class S3BinaryCacheSpec(BinaryCacheSpecBase):
     profile: str | None = None
     """The AWS configuration profile the credentials come from; `None` is botocore's default chain."""
     max_concurrent: int | None = None
+    secret_key: Path | None = None
+    """Nix's `secret-key`: the key file that signs each path pynixd uploads. Set, the store writes.
+
+    Configuration only: a client's `s3://` substituter never makes pynixd write."""
+    compression: S3Compression = "zstd"
+    multipart_chunk_size: int = 5 * 1024 * 1024
+    """Nix's `multipart-chunk-size`: the smallest part; a large NAR takes larger parts."""
+
+    @property
+    def writable(self) -> bool:
+        return self.secret_key is not None
 
     def url(self) -> str:
         """The HTTP base URL of the cache; `ValueError` with Nix's text for an address Nix refuses."""
@@ -1381,6 +1396,8 @@ class S3BinaryCacheSpec(BinaryCacheSpecBase):
             self.store_dir,
             self.trusted,
             self.want_mass_query,
+            self.secret_key,
+            self.compression,
         )
 
     def to_store(self, store_id: str) -> S3BinaryCacheStore:
