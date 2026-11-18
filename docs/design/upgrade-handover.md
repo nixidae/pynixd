@@ -287,6 +287,53 @@ longest build: hours, on dynhetz. And every new client waits as long.
   restart pynixd at once (for example `mode`, which moves sockets)? Such a
   setting would go into `X-Restart-Triggers` alone, outside the reload path.
 
+## Implementation (B), from 2026-11-18
+
+User chose B on 2026-11-18 (nixidae/nixidae#1519). The work stays off `main`, on bookmark `pynixd-handover`, until the
+checks below pass in vivarium.
+
+Mechanics, as measured above:
+
+- `ExecReload=<new>/bin/pynixd handover` runs from the new unit, with its `PYNIXD_CONFIG` and `PATH`. It asks the old
+  main for its listeners over a control socket (`SCM_RIGHTS`), starts `pynixd daemon` with them (`pass_fds` and a
+  name-to-fd variable, not `LISTEN_PID`), and waits until the successor reports ready. The successor sends
+  `MAINPID=` and `READY=1` itself (`NotifyAccess=all`) and binds the control socket in turn. On failure the old
+  main keeps everything and the reload fails.
+- The old main then drains. It closes its listeners without unlinking a path, and stops its singleton loops: GC,
+  the cold tier, liveness and the provisioner. It keeps its sessions and its scheduler, and closes once neither
+  holds work.
+
+What assumes the previous instance is dead, and the rule for each:
+
+| Site | Rule |
+| --- | --- |
+| `UnixServer.aclose` unlinks a path it bound | a drain closes without unlinking |
+| managed local daemon: `removing_stale_socket`, `killpg` | refuse the handover (step 1) |
+| provisioner `reconcile` ends machines of a previous run; its shutdown ends every live machine | the successor adopts the old main's rows; a drain ends none (remote step) |
+| `http_server.cleanup()` cuts NAR transfers | stop accepting, then wait for the transfers |
+| a schema migration under a running old process | refuse the overlap |
+| per-build cgroups (`build-<pid>-<n>`, shared leaf) | safe as is |
+
+Owner's answers, 2026-11-18:
+
+- Drain limit: a setting, default 24 h. At the limit the old process closes as today, and what it still holds dies.
+- Build limit: accepted for now. **Shortcoming:** during a drain each process counts only its own builds against a
+  store's limit, so a builder can get up to twice its jobs. The old process starts no new build, so the excess only
+  shrinks. Shared counting in the database comes with HA (nixidae/nixidae#1407).
+- Every config change hands over; no setting forces a restart.
+
+Done when `tests.upgrade` shows each of these on a switch from configuration A to B:
+
+1. A local build in flight completes, and it is the same run: one builder start.
+2. A remote build on a reverse builder completes.
+3. A new client is served by the new main PID during the drain.
+4. An idle client connection works after the switch.
+5. The old process exits once its work ends.
+6. Control: without the handover, the build fails with `server is shutting down`.
+7. A successor that fails to start: the reload fails and the old main keeps serving.
+8. A second switch while the first drains.
+9. An upgrade with a schema migration refuses the overlap.
+
 ## Found on the way
 
 - pynixd adds `https://cache.nixos.org/` as a store whatever `nix.conf`
