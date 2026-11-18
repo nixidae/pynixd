@@ -164,3 +164,20 @@ async def test_a_dead_host_leaves_the_client_op_to_the_daemon() -> None:
     async with substituters.running():
         assert await substituters.resolve(["ssh-ng://127.0.0.1:1"], []) is None
         assert substituters.stores() == ()
+
+
+@pytest.mark.parametrize(
+    ("url", "stable"),
+    [
+        ("https://cache.nixos.org", True),
+        ("https://cache.nixos.org/", True),
+        ("https://nix-community.cachix.org", False),
+        ("https://cache.nixos.org.example.com", False),
+    ],
+)
+def test_only_cache_nixos_org_is_stable_unless_configured(url: str, stable: bool) -> None:
+    """A path cache.nixos.org holds needs no cold-tier copy: it removes nothing. nixidae/nixidae#1417."""
+    spec = spec_for(url)
+    assert spec is not None
+    assert spec.to_store("t").gc_stable is stable
+    assert spec.model_copy(update={"gc_stable": not stable}).to_store("t").gc_stable is not stable

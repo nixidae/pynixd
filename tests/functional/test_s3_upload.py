@@ -16,12 +16,15 @@ import botocore.session
 import pytest
 
 from nix_daemon_protocol.ids import StoreId
+from nix_daemon_protocol.query_path_info import QueryPathInfoRequest
 from nix_daemon_protocol.store_path import StorePath
 from pynixd import Server
-from pynixd.config import S3BinaryCacheSpec
+from pynixd.cold_tier import ColdTier
+from pynixd.config import LocalBinaryCacheSpec, S3BinaryCacheSpec
 from pynixd.exceptions import CacheFault
 from pynixd.store import LocalDBStore, S3BinaryCacheStore, Store
 from pynixd.store.s3_upload import MIN_PART, Uploaded
+from pynixd_store.db_migrations import PATH_ACCESS_TABLE
 from tests._conftest.nix_config import for_test_store
 from tests._conftest.s3_bucket import S3Server, s3_bucket
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
@@ -89,8 +92,8 @@ def _s3(lab: _Lab) -> BaseClient:
 
 
 @asynccontextmanager
-async def _stores(lab: _Lab) -> AsyncIterator[tuple[Store, S3BinaryCacheStore]]:
-    """The source store and a cold tier on bucket `cache`, started by a server."""
+async def _stores(lab: _Lab, **extra: Store) -> AsyncIterator[tuple[LocalDBStore, S3BinaryCacheStore]]:
+    """The source store and a cold tier on bucket `cache`, started by a server with *extra*."""
     local = LocalDBStore(
         make_test_spec(
             store_id="local", store_path=lab.source, no_probe=True, nix_config=for_test_store(substituters=())
@@ -102,9 +105,11 @@ async def _stores(lab: _Lab) -> AsyncIterator[tuple[Store, S3BinaryCacheStore]]:
         region="us-east-1",
         secret_key=lab.key,
         multipart_chunk_size=MIN_PART,
+        gc_cold=True,
     )
     cold = spec.to_store("cold")
     stores: dict[StoreId, Store] = {StoreId("local"): local, StoreId("cold"): cold}
+    stores.update({StoreId(name): store for name, store in extra.items()})
     async with Server(stores=stores, unix_path=lab.tmp / "pynixd.sock", ssh_port=None, http_port=None) as server:
         # The listeners do not wait for the stores; the upload does.
         scheduler = server.ctx.scheduler
@@ -217,3 +222,66 @@ async def test_a_refused_put_reports_no_upload(lab: _Lab, monkeypatch: pytest.Mo
             await cold.upload(local, StorePath(lab.big))
     assert [o["Key"] for o in s3.list_objects_v2(Bucket="cache")["Contents"]] == ["nix-cache-info"]
     assert s3.list_multipart_uploads(Bucket="cache").get("Uploads", []) == []
+
+
+def _narinfos(lab: _Lab) -> set[str]:
+    listed = _s3(lab).list_objects_v2(Bucket="cache").get("Contents", [])
+    return {o["Key"] for o in listed if o["Key"].endswith(".narinfo")}
+
+
+def _narinfo(path: str) -> str:
+    return f"{StorePath(path).hash_part()}.narinfo"
+
+
+async def test_a_closure_goes_up_whole_and_is_recorded(lab: _Lab) -> None:
+    async with _stores(lab) as (local, cold):
+        tier = ColdTier(cold, [], local)
+        first = await tier.upload_closure({StorePath(lab.parent)})
+        assert (first.closure, first.recorded, first.uploaded) == (2, 0, 2)
+        assert await tier.covered({lab.parent, lab.child, lab.big}) == {lab.parent, lab.child}
+        again = await tier.upload_closure({StorePath(lab.parent)})
+        assert (again.recorded, again.uploaded, again.present) == (2, 0, 0)
+    assert _narinfos(lab) == {_narinfo(lab.parent), _narinfo(lab.child)}
+
+
+async def test_a_stable_store_keeps_its_paths_out_of_the_bucket(lab: _Lab) -> None:
+    """The control is the test above: with no stable store, `child` goes up."""
+    stable_dir = lab.tmp / "stable"
+    await _nix("copy", "--no-check-sigs", "--from", str(lab.source), "--to", f"file://{stable_dir}", lab.child)
+    stable = LocalBinaryCacheSpec(path=stable_dir, gc_stable=True).to_store("stable")
+    async with _stores(lab, stable=stable) as (local, cold):
+        tier = ColdTier(cold, [stable], local)
+        report = await tier.upload_closure({StorePath(lab.parent)})
+        assert (report.stable, report.uploaded) == (1, 1)
+        assert await tier.covered({lab.parent, lab.child}) == {lab.parent, lab.child}
+    assert _narinfos(lab) == {_narinfo(lab.parent)}
+
+
+async def _access(local: LocalDBStore, path: str) -> object:
+    await local.db.flush_references()
+    row = await local.db.fetchone(f"SELECT lastReferencedAt FROM {PATH_ACCESS_TABLE} WHERE path = ?", (path,))
+    return None if row is None else row[0]
+
+
+async def test_an_upload_leaves_the_access_date_alone(lab: _Lab) -> None:
+    """The collector ages a path by its access date, so the upload of a candidate must not move it."""
+    async with _stores(lab) as (local, cold):
+        await ColdTier(cold, [], local).upload_closure({StorePath(lab.parent)})
+        assert await _access(local, lab.parent) is None
+        # The control: a client's read of the same path dates it.
+        await local.execute(QueryPathInfoRequest(path=StorePath(lab.parent)))
+        assert await _access(local, lab.parent) is not None
+
+
+async def test_a_refusal_stops_before_the_referrer(lab: _Lab, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the bucket read-only nothing is recorded, and the referrer is never tried."""
+    s3 = _s3(lab)
+    s3.put_object(Bucket="cache", Key="nix-cache-info", Body=b"StoreDir: /nix/store\n")
+    access, secret = lab.server.read_only
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", access)
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", secret)
+    async with _stores(lab) as (local, cold):
+        tier = ColdTier(cold, [], local)
+        with pytest.raises(CacheFault, match="403"):
+            await tier.upload_closure({StorePath(lab.parent)})
+        assert await tier.covered({lab.parent, lab.child}) == set()

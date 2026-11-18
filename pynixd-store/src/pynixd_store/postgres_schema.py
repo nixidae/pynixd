@@ -31,6 +31,7 @@ from .db_migrations import (
     BUILD_OBSERVATION_SAMPLE_TABLE,
     BUILD_OBSERVATION_TABLE,
     DERIVATION_SHAPE_TABLE,
+    HELD_BY_TABLE,
     LIVENESS_ROOT_TABLE,
     LIVENESS_STREAK_TABLE,
     LIVENESS_TABLE,
@@ -254,6 +255,17 @@ STEPS: tuple[tuple[int, tuple[str, ...]], ...] = (
     endReason {_T}
 )""",
             f"CREATE INDEX IF NOT EXISTS idx_pynixd_provisioned_instance_live ON {PROVISIONED_INSTANCE_TABLE}(endedAtMs)",
+        ),
+    ),
+    (
+        14,
+        (
+            f"""CREATE TABLE IF NOT EXISTS {HELD_BY_TABLE} (
+    store {_T} NOT NULL,
+    path {_T} NOT NULL,
+    recordedAt BIGINT NOT NULL,
+    PRIMARY KEY (store, path)
+)""",
         ),
     ),
 )

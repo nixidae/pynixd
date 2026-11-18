@@ -94,6 +94,7 @@ class S3BinaryCacheStore(HTTPBinaryCacheStore):
         self.secret_key_file = spec.secret_key
         self.compression = spec.compression
         self.chunk_size = spec.multipart_chunk_size
+        self.gc_cold = spec.gc_cold
         self._secret_key: SecretKey | None = None
         self._credentials: Credentials | None = None
         if "." in spec.bucket and spec.addressing_style == "auto" and spec.endpoint is None:
@@ -219,7 +220,9 @@ class S3BinaryCacheStore(HTTPBinaryCacheStore):
             return Uploaded.PRESENT
         if status != 404:
             raise CacheFault(f"HEAD {name} in '{self.store_id}': HTTP {status}")
-        resp = await local.execute(QueryPathInfoRequest(path=path))
+        request = QueryPathInfoRequest(path=path)
+        # An upload reads a GC candidate: marking it would make it fresh again.
+        resp = await (local.execute(request, mark=False) if isinstance(local, LocalDBStore) else local.execute(request))
         if not resp.valid or resp.info is None:
             raise CacheFault(f"{path} is not valid in {local.store_id}")
         info = ValidPathInfo(path=path, info=resp.info)

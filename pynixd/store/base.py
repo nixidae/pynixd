@@ -91,6 +91,9 @@ class Store(ABC):
         self.gc_defer = spec.gc_defer
         """Here and not in `DaemonStore`: an HTTP binary cache is the store
         this flag exists for, and it speaks no worker protocol."""
+        self.gc_stable = spec.stable_by_default() if spec.gc_stable is None else spec.gc_stable
+        self.held_key = f"store:{self.store_id}"
+        """This store's name in `PynixdHeldBy`; a binary cache names its URL, which outlives a renamed id."""
         self._feature_matrix: dict[str, set[str]] | None = spec._effective_feature_matrix()
         self._signing_keys: dict[str, SecretKey] = {}
         self.path_info_cache = cast(

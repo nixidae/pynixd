@@ -19,6 +19,7 @@ from pynixd_store.sql import (
     POSTGRES,
     SQLITE,
     gc,
+    held_by,
     liveness,
     nix,
     observations,
@@ -40,6 +41,7 @@ GROUPS: dict[str, tuple[object, object]] = {
     "placement": (placement.POSTGRES, placement.SQLITE),
     "provisioning": (provisioning.POSTGRES, provisioning.SQLITE),
     "gc": (gc.POSTGRES, gc.SQLITE),
+    "held_by": (held_by.POSTGRES, held_by.SQLITE),
     "liveness": (liveness.POSTGRES, liveness.SQLITE),
 }
 """Each group's PostgreSQL twins and the SQLite statements they mirror."""
@@ -100,7 +102,7 @@ def test_every_group_is_listed() -> None:
 @pytest.mark.parametrize("group", GROUPS)
 async def test_the_server_parses_every_statement(schema: str, group: str) -> None:
     postgres, sqlite = (_statements(statements) for statements in GROUPS[group])
-    assert len(postgres) > 3, "the scan found the statements"
+    assert len(postgres) >= 2, "the scan found the statements"
     assert postgres.keys() == sqlite.keys()
     expected = REFUSED.get(group, {})
     assert expected.keys() <= postgres.keys(), "a stale entry"

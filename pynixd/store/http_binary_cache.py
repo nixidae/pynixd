@@ -41,6 +41,7 @@ class HTTPBinaryCacheStore(BinaryCacheStore):
                 raise TypeError(f"{type(spec).__name__} names no URL of its own")
             url = spec.url
         self.url = _normalise_base_url(url)
+        self.held_key = self.url
         self.max_concurrent = spec.max_concurrent
         self.health_window = spec.health_window
         self.drop_unopened = spec.drop_unopened

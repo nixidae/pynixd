@@ -105,6 +105,11 @@ leaves a row that names the machine, and the next start ends it."""
 """One row per store a decision weighed or left out, keyed by the decision."""
 
 PATH_ACCESS_TABLE = f"{TABLE_PREFIX}PathAccess"
+HELD_BY_TABLE = f"{TABLE_PREFIX}HeldBy"
+"""The paths a cold tier or a stable substituter answered it holds, by the store's key. nixidae/nixidae#1417.
+
+The collector reads it in place of a network question per planned path. A row is never wrong for a
+store that removes nothing, and the key names the bucket, so a move to another bucket starts empty."""
 BUILD_ACCESS_TABLE = f"{TABLE_PREFIX}BuildAccess"
 """When each store path was last named as a build input.
 
@@ -417,6 +422,19 @@ MIGRATIONS: tuple[Migration, ...] = (
             f"CREATE INDEX IF NOT EXISTS idx_pynixd_provisioned_instance_live ON {PROVISIONED_INSTANCE_TABLE}(endedAtMs)",
         ),
         creates=(PROVISIONED_INSTANCE_TABLE,),
+    ),
+    Migration(
+        version=14,
+        name="held-by",
+        statements=(
+            f"CREATE TABLE IF NOT EXISTS {HELD_BY_TABLE} ("
+            "store TEXT NOT NULL, "
+            "path TEXT NOT NULL, "
+            "recordedAt INTEGER NOT NULL, "
+            "PRIMARY KEY (store, path)"
+            ")",
+        ),
+        creates=(HELD_BY_TABLE,),
     ),
 )
 

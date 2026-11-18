@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from pydantic_settings import (
@@ -23,6 +23,9 @@ from .experiments import Experiment
 from .nix_config import NixConfig
 from .op_routes import OPERATION_NAMES, OpRoute
 from .store_mode import StoreMode
+
+STABLE_CACHE = "https://cache.nixos.org"
+"""The cache `gc_stable` holds stable by default: it removes nothing."""
 
 
 class ScheduleMode(StrEnum):
@@ -386,6 +389,13 @@ class StoreSpecBase(BaseModel):
     `nix.conf` has no spec: naming one of those would need a second naming
     scheme over the generated store ids.
     """
+    gc_stable: bool | None = None
+    """Whether this store keeps every path it ever held, so a path it holds needs no cold-tier copy.
+
+    `None` is the store kind's default: true for `https://cache.nixos.org`, which removes nothing,
+    false for the rest. A cold tier (`gc_cold`) uploads a closure without the paths a stable store
+    holds. nixidae/nixidae#1417.
+    """
     no_schedule: bool = False
     probe: bool | None = None
     store_path: Path = Path("/")
@@ -425,6 +435,10 @@ class StoreSpecBase(BaseModel):
         if self.feature_matrix is not None:
             return self.feature_matrix
         return _feature_matrix_from_config(self.systems, self.system_features)
+
+    def stable_by_default(self) -> bool:
+        """What `gc_stable` is when unset."""
+        return False
 
     def reference_key(self) -> object | None:
         """What makes two substituter URLs one store, or `None` when no URL names this kind.
@@ -1313,6 +1327,9 @@ class HTTPBinaryCacheSpec(BinaryCacheSpecBase):
     url: str
     max_concurrent: int | None = None
 
+    def stable_by_default(self) -> bool:
+        return self.url.rstrip("/") == STABLE_CACHE
+
     def reference_key(self) -> object | None:
         """The URL with no trailing slash, the store directory, the trust and `want-mass-query`."""
         return ("http", self.url.rstrip("/"), self.store_dir, self.trusted, self.want_mass_query)
@@ -1366,6 +1383,17 @@ class S3BinaryCacheSpec(BinaryCacheSpecBase):
     compression: S3Compression = "zstd"
     multipart_chunk_size: int = 5 * 1024 * 1024
     """Nix's `multipart-chunk-size`: the smallest part; a large NAR takes larger parts."""
+    gc_cold: bool = False
+    """The collector's cold tier: a path leaves the local store once its closure is here or in a `gc_stable` store.
+
+    Needs `secret_key`. One store at most carries it. nixidae/nixidae#1417.
+    """
+
+    @model_validator(mode="after")
+    def _cold_writes(self) -> Self:
+        if self.gc_cold and self.secret_key is None:
+            raise ValueError("gc_cold needs secret_key: the cold tier uploads what it keeps")
+        return self
 
     @property
     def writable(self) -> bool:

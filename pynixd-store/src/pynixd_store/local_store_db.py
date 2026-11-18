@@ -41,6 +41,7 @@ import structlog
 from .build_stats import BuildEstimateSource, ExpectedBytes, StoreLink
 from .database import Backend, DatabaseError, Params, Row, Session
 from .db_migrations import SchemaState
+from .held_by_tables import HeldByTables
 from .nix_tables import NixTables
 from .placement_tables import PlacementTables
 from .provisioning_tables import ProvisioningTables
@@ -194,6 +195,9 @@ class LocalStoreDB:
 
         self.provisioned = ProvisioningTables(self)
         """The builder machines the provisioner started."""
+
+        self.held_by = HeldByTables(self)
+        """The paths a cold tier or a stable substituter holds."""
 
     async def __aenter__(self) -> Self:
         return self
