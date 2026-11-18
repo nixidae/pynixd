@@ -12,6 +12,7 @@ fields it does not know.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import socket
 import subprocess
@@ -82,9 +83,25 @@ class Offer(_Message):
 
 
 def local_store_key(settings: PynixdSettings) -> str:
-    """The local store's settings, as text two versions compare. A field one version adds reads as a change."""
+    """The local store's settings, as text two processes compare. A field one version adds reads as a change.
+
+    Canonical: a set dumps in hash order, and each process seeds its own, so `system_features` differed between the
+    old process and `pynixd handover`, and dynhetz refused its first hand-over (2026-11-18).
+    """
     spec = settings.stores.get(str(LOCAL_STORE_ID))
-    return "" if spec is None else spec.model_dump_json(exclude={"settings"})
+    if spec is None:
+        return ""
+    return json.dumps(_canonical(spec.model_dump(mode="python", exclude={"settings"})), sort_keys=True, default=str)
+
+
+def _canonical(value: object) -> object:
+    if isinstance(value, (set, frozenset)):
+        return sorted((_canonical(item) for item in value), key=repr)
+    if isinstance(value, dict):
+        return {str(key): _canonical(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_canonical(item) for item in value]
+    return value
 
 
 class Answer(_Message):

@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import os
 import socket
+import subprocess
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 import anyio
 import anyio.lowlevel
@@ -167,6 +172,28 @@ def test_a_family_the_kernel_lacks_is_skipped(monkeypatch: pytest.MonkeyPatch) -
     finally:
         for sock in sockets:
             sock.close()
+
+
+def test_the_local_store_key_is_the_same_in_every_process(tmp_path: Path) -> None:
+    """A set dumps in hash order, and each process seeds its own hash: dynhetz refused its first hand-over so."""
+    config = tmp_path / "pynixd.json"
+    features = ["nixos-test", "benchmark", "big-parallel", "kvm", "uid-range", "recursive-nix"]
+    config.write_text(json.dumps({"stores": {"local": {"type": "local-socket", "system_features": features}}}))
+    program = (
+        "from pynixd.cli.base import load_settings; from pynixd.handover import local_store_key; "
+        "print(local_store_key(load_settings()))"
+    )
+    keys = {
+        subprocess.run(
+            [sys.executable, "-c", program],
+            env={**os.environ, "PYNIXD_CONFIG": str(config), "PYTHONHASHSEED": str(seed)},
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        for seed in range(1, 9)
+    }
+    assert len(keys) == 1, keys
 
 
 def test_listener_names_are_the_wire_names() -> None:
