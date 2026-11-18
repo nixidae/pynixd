@@ -27,7 +27,8 @@ async def test(vms: Machines) -> None:
         controller, settings, "steer-untrusted", "echo u > $out", settings["spare"]
     )
     command = f"timeout 30 nix-store --realise {ignored} {STEER}"
-    rc, out = await controller.execute(f"su - tester -c {shlex.quote(command)}")
+    done = await controller.execute(f"su - tester -c {shlex.quote(command)} 2>&1")
+    rc, out = done.returncode, done.stdout
     assert rc not in (0, 124), f"an untrusted client's steered build ended with {rc}"
     assert "missing system features" in out, out
     assert {one["id"] for one in await pool_instances(controller)} == before, "an untrusted `builders` launched one"
@@ -35,9 +36,10 @@ async def test(vms: Machines) -> None:
 
     # A misspelt pool fails the build with pynixd's reason. The steered build below proves pynixd lived on.
     typo, _ = await feature_drv(controller, settings, "steer-typo", "echo t > $out", settings["spare"])
-    rc, out = await controller.execute(
-        f"timeout 30 nix-store --store daemon --realise {typo} --option builders pynixd-pool://bgi"
+    done = await controller.execute(
+        f"timeout 30 nix-store --store daemon --realise {typo} --option builders pynixd-pool://bgi 2>&1"
     )
+    rc, out = done.returncode, done.stdout
     assert rc not in (0, 124), f"a build that names no known pool ended with {rc}"
     assert "no provisioning pool 'bgi'" in out, out
     print("[test] a misspelt pool fails its build at once")
@@ -45,7 +47,7 @@ async def test(vms: Machines) -> None:
     steered, steered_out = await feature_drv(controller, settings, "steered", "echo steered > $out", settings["spare"])
     started = time.monotonic()
     await controller.succeed(f"nix-store --store daemon --realise {steered} {STEER}", timeout=600)
-    built = (await controller.succeed(f"cat {steered_out}")).strip()
+    built = (await controller.succeed(f"cat {steered_out}")).stdout.strip()
     assert built == "steered", built
     [launched] = [one for one in await pool_instances(controller) if one["id"] not in before]
     builder = await cloud.wait_running(launched["id"])
@@ -54,12 +56,13 @@ async def test(vms: Machines) -> None:
 
     # Within the pool's 15 s idle: the builder is up, and an unsteered build that needs only `spare` stays off it.
     other, other_out = await feature_drv(controller, settings, "unsteered", "echo o > $out", settings["spare"])
-    rc, out = await controller.execute(f"su - tester -c {shlex.quote(f'timeout 30 nix-store --realise {other}')}")
+    done = await controller.execute(f"su - tester -c {shlex.quote(f'timeout 30 nix-store --realise {other}')} 2>&1")
+    rc, out = done.returncode, done.stdout
     assert rc not in (0, 124), f"an unsteered build ended with {rc}"
     assert "missing system features" in out, out
-    rc, _ = await builder.execute(f"nix-store --check-validity {other_out}")
+    rc = (await builder.execute(f"nix-store --check-validity {other_out}")).returncode
     assert rc != 0, "an unsteered build ran on the builder a steered one launched"
-    rc, _ = await builder.execute(f"nix-store --check-validity {ignored_out}")
+    rc = (await builder.execute(f"nix-store --check-validity {ignored_out}")).returncode
     assert rc != 0, "the untrusted client's build ran on the builder"
     print("[test] another client's unsteered build stayed off the steered builder")
 

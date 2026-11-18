@@ -22,7 +22,7 @@ def fake(settings: Mapping[str, str], path: str) -> str:
 
 async def runs(vm: Machine, settings: Mapping[str, str]) -> list[dict[str, Any]]:
     """Every run the fake dispatched, oldest first, with its inputs and its guest."""
-    return list(json.loads(await vm.succeed(f"curl --silent --fail {fake(settings, '/_fake/runs')}")))
+    return list(json.loads((await vm.succeed(f"curl --silent --fail {fake(settings, '/_fake/runs')}")).stdout))
 
 
 def pool_of(run: Mapping[str, Any]) -> str:

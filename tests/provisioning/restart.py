@@ -30,7 +30,7 @@ async def test(vms: Machines) -> None:
     )
 
     async def building() -> bool:
-        state = json.loads(await controller.succeed("pynixd state"))
+        state = json.loads((await controller.succeed("pynixd state")).stdout)
         return any(
             row["state"] == "building" and (row["store"] or "").startswith("provisioned-") for row in state["builds"]
         )
@@ -49,11 +49,13 @@ async def test(vms: Machines) -> None:
 
     await until(orphan_ended, 60)
     await until(lambda: exists(controller, "/tmp/orphan.rc"), 120)
-    print(f"[test] the client asked before the kill exited {(await controller.succeed('cat /tmp/orphan.rc')).strip()}")
+    print(
+        f"[test] the client asked before the kill exited {(await controller.succeed('cat /tmp/orphan.rc')).stdout.strip()}"
+    )
 
     drv, out = await feature_drv(controller, vms.settings, "provisioned-after-restart", "echo after > $out")
     await as_tester(controller, f"nix-store --realise {drv}", timeout=600)
-    assert (await controller.succeed(f"cat {out}")).strip() == "after"
+    assert (await controller.succeed(f"cat {out}")).stdout.strip() == "after"
     newest = (await rows(controller))[-1]
     assert newest["storeId"] is not None, newest
     print(f"[test] a build after the restart launched {newest['id']} and built {out}")

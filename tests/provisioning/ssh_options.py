@@ -36,7 +36,8 @@ async def test(vms: Machines) -> None:
     untrusted, untrusted_out = await feature_drv(
         controller, settings, "ssh-untrusted", "echo u > $out", settings["spare"]
     )
-    rc, out = await controller.execute(f"{_ssh('user')} timeout 60 nix-store --store '{URL}' --realise {untrusted}")
+    done = await controller.execute(f"{_ssh('user')} timeout 60 nix-store --store '{URL}' --realise {untrusted} 2>&1")
+    rc, out = done.returncode, done.stdout
     assert rc not in (0, 124), f"an untrusted ssh-ng build ended with {rc}: {out}"
     assert "'pynixd-pool', because it is a restricted setting" in out, out
     assert "missing system features" in out, out
@@ -45,12 +46,14 @@ async def test(vms: Machines) -> None:
 
     steered, steered_out = await feature_drv(controller, settings, "ssh-steered", "echo s > $out", settings["spare"])
     started = time.monotonic()
-    out = await controller.succeed(f"{_ssh('admin')} nix-store --store '{URL}' --realise {steered} 2>&1", timeout=600)
+    out = (
+        await controller.succeed(f"{_ssh('admin')} nix-store --store '{URL}' --realise {steered} 2>&1", timeout=600)
+    ).stdout
     assert "ignoring the setting 'max-jobs' on the SSH command" in out, out
     [launched] = [one for one in await pool_instances(controller) if one["id"] not in before]
     builder = await cloud.wait_running(launched["id"])
     await builder.succeed(f"nix-store --check-validity {steered_out}")
-    rc, _ = await builder.execute(f"nix-store --check-validity {untrusted_out}")
+    rc = (await builder.execute(f"nix-store --check-validity {untrusted_out}")).returncode
     assert rc != 0, "the untrusted build ran on the builder"
     print(f"[test] the ssh-ng build launched {launched['id']} and built there in {time.monotonic() - started:.0f} s")
 
@@ -72,7 +75,7 @@ async def _set_options_by_name(vms: Machines, before: set[str]) -> None:
     await controller.succeed(
         f"echo {shlex.quote(feature_expression(settings, 'by-name-local', 'echo l > $out', ''))} > /root/local.nix"
     )
-    out = await controller.succeed(f"{pynix} --file /root/local.nix 2>&1", timeout=120)
+    out = (await controller.succeed(f"{pynix} --file /root/local.nix 2>&1", timeout=120)).stdout
     assert {one["id"] for one in await pool_instances(controller)} == before, f"a plain build launched one: {out}"
     print("[test] huggorm's max-jobs 0 over ssh-ng left the controller building")
 
@@ -88,11 +91,12 @@ async def _set_options_by_name(vms: Machines, before: set[str]) -> None:
     expression = feature_expression(settings, "by-name-steered", "echo n > $out", settings["spare"])
     await controller.succeed(f"echo {shlex.quote(expression)} > /root/steered.nix")
     started = time.monotonic()
-    out = await controller.succeed(
+    built = await controller.succeed(
         # The second value wins, as for a known setting; the first names no pool and would fail the build.
         f"{pynix} --option pynixd-pool nowhere --option pynixd-pool big --file /root/steered.nix 2>/root/steered.err",
         timeout=600,
     )
+    out = built.stdout
     path = json.loads(out)["outputs"]["out"]
     [launched] = [one for one in await pool_instances(controller) if one["id"] not in before]
     builder = await cloud.wait_running(launched["id"])

@@ -44,12 +44,12 @@ async def test(vms: Machines) -> None:
     run = f"{no_daemon}{log_level}JOBS={JOBS} NIXFT_WORK=$HOME/nixft {nixft} all {select}"
     # `su -` for the user's own HOME. The redirect stays root's: `/artifacts` is a host directory.
     command = f"su - tester -c {shlex.quote(run)} > /artifacts/nixft.log 2>&1"
-    rc, _ = await vm.execute(command, timeout=TIMEOUT, label="nixft all")
+    rc = (await vm.execute(command, timeout=TIMEOUT, label="nixft all")).returncode
     if level:
         await vm.succeed(
             "cd /home/tester/nixft/tmp && find . -name pynixd.log -exec install -D -m 0644 {} /artifacts/pynixd-logs/{} \\;"
         )
-    tail = (await vm.succeed("tail -n 30 /artifacts/nixft.log")).strip()
+    tail = (await vm.succeed("tail -n 30 /artifacts/nixft.log")).stdout.strip()
     print(f"[test] nixft all: exit {rc}\n[test]   {tail}")
     if rc != 0:
         raise AssertionError(f"nixft all exited {rc}: {tail.splitlines()[-1] if tail else ''}")

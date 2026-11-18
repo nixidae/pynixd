@@ -87,8 +87,8 @@ async def _decode(vms: Machines) -> None:
     await vm.succeed(f"rm -rf /work && cp -r {src} /work && chmod -R u+w /work")
 
     command = f"cd /work && python tests/benchmark/stream_decode.py {ACTIVITIES} {ROUNDS} > /artifacts/decode.log 2>&1"
-    rc, _ = await vm.execute(command, timeout=TIMEOUT, label="decode benchmark")
-    print(f"[benchmark] decode exit {rc}\n{(await vm.succeed('cat /artifacts/decode.log')).strip()}")
+    rc = (await vm.execute(command, timeout=TIMEOUT, label="decode benchmark")).returncode
+    print(f"[benchmark] decode exit {rc}\n{(await vm.succeed('cat /artifacts/decode.log')).stdout.strip()}")
     if rc != 0:
         raise AssertionError(f"decode benchmark exited {rc}")
 
@@ -112,8 +112,8 @@ async def _raw(vms: Machines) -> None:
         f"{vms.settings['upstream']} {vms.settings['socket']} "
         "> /artifacts/raw.log 2>&1"
     )
-    rc, _ = await vm.execute(command, timeout=TIMEOUT, label="raw ops")
-    print(f"[benchmark] raw exit {rc}\n{(await vm.succeed('cat /artifacts/raw.log')).strip()}")
+    rc = (await vm.execute(command, timeout=TIMEOUT, label="raw ops")).returncode
+    print(f"[benchmark] raw exit {rc}\n{(await vm.succeed('cat /artifacts/raw.log')).stdout.strip()}")
     if rc != 0:
         raise AssertionError(f"raw ops benchmark exited {rc}")
 
@@ -213,8 +213,8 @@ async def _profile(vms: Machines) -> None:
             f"{vms.settings['upstream']} {vms.settings['socket']} second "
             "> /artifacts/profile_pump.log 2>&1"
         )
-        rc, _ = await vm.execute(pump, timeout=TIMEOUT, label="profile pump")
-        print((await vm.succeed("cat /artifacts/profile_pump.log")).strip())
+        rc = (await vm.execute(pump, timeout=TIMEOUT, label="profile pump")).returncode
+        print((await vm.succeed("cat /artifacts/profile_pump.log")).stdout.strip())
         if rc != 0:
             raise AssertionError(f"profile pump exited {rc}")
 
@@ -224,7 +224,7 @@ async def _profile(vms: Machines) -> None:
             "systemctl stop profiled-pynixd; "
             "for _ in $(seq 1 50); do [ -f /artifacts/profile.txt ] && break; sleep 0.2; done"
         )
-        profile = await vm.succeed("cat /artifacts/profile.txt")
+        profile = (await vm.succeed("cat /artifacts/profile.txt")).stdout
         print("[benchmark] pynixd profile (top):\n" + "\n".join(profile.splitlines()[:60]))
         lines = profile.splitlines()
         for index, line in enumerate(lines):
@@ -257,7 +257,7 @@ async def _one_build(
         f"--file {expression} --no-link > /dev/null 2>&1"
     )
     start = time.monotonic()
-    rc, _ = await vm.execute(f"su - tester -c {shlex.quote(inner)}", timeout=BUILD_TIMEOUT, label=label)
+    rc = (await vm.execute(f"su - tester -c {shlex.quote(inner)}", timeout=BUILD_TIMEOUT, label=label)).returncode
     elapsed = time.monotonic() - start
     print(f"[benchmark] {label:10} {what} {elapsed:7.2f}s rc={rc}")
     if rc != 0:
@@ -273,10 +273,11 @@ async def _print_breakdown(vm: Machine) -> None:
     # pynixd logs one JSON record per session at close. `python -c` parses
     # each one, sorts by `total_ops`, and prints every session big enough to
     # be a build or a pump. Small sessions are evals, and there are many.
-    breakdown = await vm.succeed(
-        "journalctl -u pynixd --no-pager -o cat "
-        "| grep client_op_timing "
-        r"""| python3 -c 'import sys, json
+    breakdown = (
+        await vm.succeed(
+            "journalctl -u pynixd --no-pager -o cat "
+            "| grep client_op_timing "
+            r"""| python3 -c 'import sys, json
 rows = []
 for line in sys.stdin:
     line = line.strip()
@@ -302,8 +303,9 @@ for total_ops, total_time, total_encode, ops, encode in rows:
         for name, value in top:
             print(f"        {name:24} {value}")
 '"""
-        " || true"
-    )
+            " || true"
+        )
+    ).stdout
     print(f"[benchmark] pynixd op breakdown:\n{breakdown.strip()}")
 
 
@@ -464,8 +466,8 @@ async def _growth(vms: Machines) -> None:
             f"{vms.settings['src']}/tests/benchmark/growth.nix "
             "> /artifacts/growth.log 2>&1"
         )
-        rc, _ = await vm.execute(command, timeout=TIMEOUT, label="growth benchmark")
-        print(f"[benchmark] growth exit {rc}\n{(await vm.succeed('cat /artifacts/growth.log')).strip()}")
+        rc = (await vm.execute(command, timeout=TIMEOUT, label="growth benchmark")).returncode
+        print(f"[benchmark] growth exit {rc}\n{(await vm.succeed('cat /artifacts/growth.log')).stdout.strip()}")
         if rc != 0:
             raise AssertionError(f"growth benchmark exited {rc}")
     finally:
@@ -491,11 +493,11 @@ async def _goal_path(
         f"nix build --argstr hostName {host_name} --argstr stamp {stamp} "
         f"--file {expression} --no-link --print-out-paths 2>/dev/null"
     )
-    rc, out = await vm.execute(f"su - tester -c {shlex.quote(inner)}", timeout=BUILD_TIMEOUT, label=f"{label} goal")
-    if rc != 0:
+    done = await vm.execute(f"su - tester -c {shlex.quote(inner)}", timeout=BUILD_TIMEOUT, label=f"{label} goal")
+    if done.returncode != 0:
         failed.append(f"{label} goal")
         return ""
-    return out.strip().split()[-1]
+    return done.stdout.strip().split()[-1]
 
 
 async def _one_storm(
@@ -524,7 +526,7 @@ async def _one_storm(
         "grep -Hqv '^0$' /tmp/storm-*.rc && exit 1; exit 0"
     )
     start = time.monotonic()
-    rc, _ = await vm.execute(f"su - tester -c {shlex.quote(script)}", timeout=900, label=f"{label} storm")
+    rc = (await vm.execute(f"su - tester -c {shlex.quote(script)}", timeout=900, label=f"{label} storm")).returncode
     elapsed = time.monotonic() - start
     print(f"[benchmark] {label:10} storm {elapsed:7.2f}s rc={rc}")
     if rc != 0:

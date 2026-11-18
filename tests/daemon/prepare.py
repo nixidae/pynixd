@@ -16,7 +16,7 @@ SOCKET = "/nix/var/nix/daemon-socket/socket"
 
 
 async def holder(vms: Machines, name: str) -> str:
-    return (await vms[name].succeed(f"ss -xlpnH src {SOCKET}")).strip()
+    return (await vms[name].succeed(f"ss -xlpnH src {SOCKET}")).stdout.strip()
 
 
 async def test(vms: Machines) -> None:
@@ -36,7 +36,7 @@ async def test(vms: Machines) -> None:
     if "systemd" not in control:
         raise AssertionError(f"systemd does not hold {SOCKET} on control: {control!r}")
 
-    upstream = (await vms.daemon.succeed("ss -xlpnH src /nix/var/nix/daemon-socket/upstream")).strip()
+    upstream = (await vms.daemon.succeed("ss -xlpnH src /nix/var/nix/daemon-socket/upstream")).stdout.strip()
     if "systemd" not in upstream:
         raise AssertionError(f"nix-daemon's socket did not move behind pynixd: {upstream!r}")
     print(f"[test] nix-daemon behind it: {upstream}")

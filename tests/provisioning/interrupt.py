@@ -35,7 +35,7 @@ async def test(vms: Machines) -> None:
     [first] = [one for one in await pool_instances(controller) if one["state"] == "running"]
 
     async def building() -> bool:
-        state = json.loads(await controller.succeed("pynixd state"))
+        state = json.loads((await controller.succeed("pynixd state")).stdout)
         return any(
             row["state"] == "building" and (row["store"] or "").startswith("provisioned-") for row in state["builds"]
         )
@@ -46,9 +46,9 @@ async def test(vms: Machines) -> None:
     print(f"[test] {first['id']} builds; it has a {NOTICE_SECONDS:g} s notice")
 
     await until(lambda: exists(controller, "/tmp/long.rc"), 600)
-    rc = (await controller.succeed("cat /tmp/long.rc")).strip()
-    assert rc == "0", await controller.succeed("tail -n 20 /tmp/long.out")
-    assert (await controller.succeed(f"cat {out}")).strip() == "long"
+    rc = (await controller.succeed("cat /tmp/long.rc")).stdout.strip()
+    assert rc == "0", (await controller.succeed("tail -n 20 /tmp/long.out")).stdout
+    assert (await controller.succeed(f"cat {out}")).stdout.strip() == "long"
     print(f"[test] {out} built {time.monotonic() - noticed:.0f} s after the notice")
 
     states = {one["id"]: one["state"] for one in await pool_instances(controller)}

@@ -27,7 +27,7 @@ async def test(vms: Machines) -> None:
         vm = vms[name]
         drv = await instantiate(vm, vms.settings, "local")
         out = store_path(await as_tester(vm, f"nix-store --realise {drv}"))
-        content = (await vm.succeed(f"cat {out}")).strip()
+        content = (await vm.succeed(f"cat {out}")).stdout.strip()
         answers[name] = {"drv": drv, "out": out, "content": content, "info": await path_info(vm, out)}
         print(f"[test] {name}: built {out} ({content})")
 

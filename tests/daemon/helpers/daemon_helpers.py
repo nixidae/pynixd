@@ -27,23 +27,15 @@ type PathInfo = dict[str, object]
 
 
 async def as_tester(vm: Machine, command: str, *, timeout: float = 300) -> str:
-    """`command`'s stdout alone, run as tester.
-
-    The agent returns stdout and stderr as one text, and Nix writes its
-    progress and warnings to stderr -- "these derivations will be built"
-    with a `.drv` path in it, which a caller looking for the last store path
-    took for the answer. stderr still reaches a failure's message.
-    """
-    stdout = f"/tmp/as-tester-{abs(hash(command))}"
-    await vm.succeed(f"su - tester -c {shlex.quote(command)} > {stdout}", timeout=timeout)
-    return await vm.succeed(f"cat {stdout}; rm -f {stdout}")
+    """`command`'s stdout, run as tester. Nix's progress and warnings stay
+    on stderr, which reaches a failure's message."""
+    return (await vm.succeed(f"su - tester -c {shlex.quote(command)}", timeout=timeout)).stdout
 
 
 async def attempt(vm: Machine, command: str, *, user: str = "tester", timeout: float = 120) -> tuple[int, str]:
     """`command`'s exit status and its stderr, run as `user`, for a command that may fail."""
-    stderr = f"/tmp/attempt-{abs(hash(command))}"
-    rc, _ = await vm.execute(f"su - {user} -c {shlex.quote(command)} > /dev/null 2> {stderr}", timeout=timeout)
-    return rc, await vm.succeed(f"cat {stderr}; rm -f {stderr}")
+    done = await vm.execute(f"su - {user} -c {shlex.quote(command)}", timeout=timeout)
+    return done.returncode, done.stderr
 
 
 def errors(stderr: str) -> list[str]:

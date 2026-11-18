@@ -60,13 +60,13 @@ async def test(vms: Machines) -> None:
     await as_tester(controller, f"nix-store --realise {shlex.quote(drv)}", timeout=600)
     built = time.monotonic()
     await controller.succeed("systemctl kill --signal=SIGSTOP pynixd.service")
-    assert (await controller.succeed(f"cat {out}")).strip() == "held"
+    assert (await controller.succeed(f"cat {out}")).stdout.strip() == "held"
 
     _, listed = await call(controller, "GET", "/v1/instances?tag:pynixd-pool=guard")
     [instance] = listed["instances"]
     builder = await cloud.wait_running(instance["id"])
-    seen = float((await builder.succeed(f"stat -c %Y {SEEN}")).strip())
-    lease = float((await builder.succeed("stat -c %Y /run/pynixd-idle/lease.json")).strip())
+    seen = float((await builder.succeed(f"stat -c %Y {SEEN}")).stdout.strip())
+    lease = float((await builder.succeed("stat -c %Y /run/pynixd-idle/lease.json")).stdout.strip())
     assert seen - lease > limit, (
         f"the guard saw the build only {seen - lease:.0f} s after the lease, under {limit:.0f} s"
     )

@@ -25,9 +25,9 @@ async def test(vms: Machines) -> None:
 
     drv, out = await feature_drv(controller, settings, "ec2-broken", "echo never > $out", settings["broken"])
     # No store ever takes it, so the client gives up.
-    rc, _ = await controller.execute(
-        f"su - tester -c {shlex.quote(f'timeout {WAIT_SECONDS} nix-store --realise {drv}')}"
-    )
+    rc = (
+        await controller.execute(f"su - tester -c {shlex.quote(f'timeout {WAIT_SECONDS} nix-store --realise {drv}')}")
+    ).returncode
     assert rc == 124, f"a build no store can take ended with {rc}"
     await controller.fail(f"test -e {out}")
 
@@ -43,9 +43,11 @@ async def test(vms: Machines) -> None:
     print(f"[test] {first['id']} failed its bootstrap and powered itself off: {said[0].strip()}")
 
     rows = json.loads(
-        await controller.succeed(
-            f"sqlite3 -json {DB} \"SELECT providerId, state, storeId, endReason FROM {TABLE} WHERE pool = 'broken'\""
-        )
+        (
+            await controller.succeed(
+                f"sqlite3 -json {DB} \"SELECT providerId, state, storeId, endReason FROM {TABLE} WHERE pool = 'broken'\""
+            )
+        ).stdout
     )
     [row] = [one for one in rows if one["providerId"] == first["id"]]
     assert (row["state"], row["storeId"], row["endReason"]) == ("ended", None, "gone"), row

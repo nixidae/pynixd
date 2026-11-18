@@ -27,15 +27,15 @@ async def test(vms: Machines) -> None:
     # The socket too: it would start pynixd again for the request.
     await vm.succeed("systemctl stop pynixd.socket pynixd.service")
     try:
-        state = (await vm.succeed("systemctl is-active nix-daemon-upstream.socket")).strip()
-        rc, output = await vm.execute(f"su - tester -c {probe!r}")
-        print(f"[test] pynixd stopped, nix-daemon-upstream.socket {state}: exit {rc}")
-        if rc == 0:
-            raise AssertionError(f"a user's request succeeded with pynixd stopped: {output!r}")
-        rc, output = await vms.client.execute(f"su - tester -c {far!r}", timeout=60)
-        print(f"[test] pynixd stopped, the client over ssh-ng: exit {rc}")
-        if rc == 0:
-            raise AssertionError(f"a request over ssh-ng succeeded with pynixd stopped: {output!r}")
+        state = (await vm.succeed("systemctl is-active nix-daemon-upstream.socket")).stdout.strip()
+        done = await vm.execute(f"su - tester -c {probe!r}")
+        print(f"[test] pynixd stopped, nix-daemon-upstream.socket {state}: exit {done.returncode}")
+        if done.returncode == 0:
+            raise AssertionError(f"a user's request succeeded with pynixd stopped: {done}")
+        done = await vms.client.execute(f"su - tester -c {far!r}", timeout=60)
+        print(f"[test] pynixd stopped, the client over ssh-ng: exit {done.returncode}")
+        if done.returncode == 0:
+            raise AssertionError(f"a request over ssh-ng succeeded with pynixd stopped: {done}")
     finally:
         await vm.succeed("systemctl start pynixd.socket pynixd.service")
     await vm.wait_for_unit("pynixd.service")

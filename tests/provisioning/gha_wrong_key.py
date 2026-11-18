@@ -25,9 +25,9 @@ async def test(vms: Machines) -> None:
     before = {run["id"] for run in await runs(controller, settings)}
 
     drv, out = await feature_drv(controller, settings, "gha-wrong-key", "echo never > $out")
-    rc, _ = await controller.execute(
-        f"su - tester -c {shlex.quote(f'timeout {WAIT_SECONDS} nix-store --realise {drv}')}"
-    )
+    rc = (
+        await controller.execute(f"su - tester -c {shlex.quote(f'timeout {WAIT_SECONDS} nix-store --realise {drv}')}")
+    ).returncode
     assert rc == 124, f"a build no store can take ended with {rc}"
     await controller.fail(f"test -e {out}")
 
@@ -45,7 +45,7 @@ async def test(vms: Machines) -> None:
 
     async def row_ended() -> bool:
         nonlocal row
-        [row] = json.loads(await controller.succeed(f'sqlite3 -json {DB} "{query}"'))
+        [row] = json.loads((await controller.succeed(f'sqlite3 -json {DB} "{query}"')).stdout)
         return bool(row["state"] == "ended")
 
     await until(row_ended, 60)

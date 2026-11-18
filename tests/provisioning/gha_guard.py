@@ -29,7 +29,7 @@ async def test(vms: Machines) -> None:
     await refuse_cancel(controller, settings, refuse=True)
     drv, out = await feature_drv(controller, settings, "gha-selfend-check", "echo self > $out", settings["selfend"])
     await as_tester(controller, f"nix-store --realise {shlex.quote(drv)}", timeout=600)
-    assert (await controller.succeed(f"cat {out}")).strip() == "self"
+    assert (await controller.succeed(f"cat {out}")).stdout.strip() == "self"
 
     [run] = await pool_runs(controller, settings, "selfend")
     built = time.monotonic()

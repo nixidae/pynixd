@@ -22,7 +22,7 @@ API = "curl --silent --show-error --unix-socket /run/vivarium/cloud.sock --write
 
 async def call(vm: Machine, method: str, path: str, body: dict[str, Any] | None = None) -> tuple[int, Any]:
     data = "" if body is None else f" --header 'Content-Type: application/json' --data {shlex.quote(json.dumps(body))}"
-    out = await vm.succeed(f"{API} --request {method}{data} http://cloud{path}")
+    out = (await vm.succeed(f"{API} --request {method}{data} http://cloud{path}")).stdout
     text, _, status = out.rpartition("\n")
     return int(status), json.loads(text)
 
@@ -34,14 +34,16 @@ async def pool_instances(vm: Machine) -> list[dict[str, Any]]:
 
 async def rows(vm: Machine) -> list[dict[str, Any]]:
     """The provisioner's rows, oldest first."""
-    out = await vm.succeed(
-        f"sqlite3 -json {DB} 'SELECT id, state, storeId, endReason, launchedAtMs, registeredAtMs FROM {TABLE} ORDER BY launchedAtMs, id'"
-    )
+    out = (
+        await vm.succeed(
+            f"sqlite3 -json {DB} 'SELECT id, state, storeId, endReason, launchedAtMs, registeredAtMs FROM {TABLE} ORDER BY launchedAtMs, id'"
+        )
+    ).stdout
     return list(json.loads(out or "[]"))
 
 
 async def exists(vm: Machine, path: str) -> bool:
-    rc, _ = await vm.execute(f"test -e {path}")
+    rc = (await vm.execute(f"test -e {path}")).returncode
     return rc == 0
 
 
@@ -70,7 +72,7 @@ async def feature_drv(
     `${bb}` is busybox."""
     expression = feature_expression(settings, name, script, feature)
     drv = store_path(await as_tester(vm, f"nix-instantiate --expr {shlex.quote(expression)}"))
-    out = (await vm.succeed(f"nix-store -q --outputs {drv}")).strip()
+    out = (await vm.succeed(f"nix-store -q --outputs {drv}")).stdout.strip()
     return drv, out
 
 
@@ -87,9 +89,9 @@ async def logged(vm: Machine, event: str, timeout: float) -> str:
 
     async def present() -> bool:
         nonlocal found
-        rc, out = await vm.execute(f"journalctl -u pynixd -o cat | grep -m1 -F {shlex.quote(event)}")
-        found = out.strip()
-        return rc == 0
+        done = await vm.execute(f"journalctl -u pynixd -o cat | grep -m1 -F {shlex.quote(event)}")
+        found = done.stdout.strip()
+        return done.returncode == 0
 
     await until(present, timeout)
     return found
@@ -112,4 +114,4 @@ async def stdenv_drv(vm: Machine, settings: Mapping[str, str], note: str) -> tup
         " }"
     )
     drv = store_path(await as_tester(vm, f"nix-instantiate --expr {shlex.quote(expression)}"))
-    return drv, (await vm.succeed(f"nix-store -q --outputs {drv}")).strip()
+    return drv, (await vm.succeed(f"nix-store -q --outputs {drv}")).stdout.strip()

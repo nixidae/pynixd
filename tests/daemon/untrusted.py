@@ -39,7 +39,7 @@ async def test(vms: Machines) -> None:
         answers[name]["stranger"] = [rc != 0]
         print(f"[test] {name}: stranger refused with {errors(stderr)}")
         # The roots of another user's processes are not tester's to read.
-        _, roots = await vm.execute(f"su - tester -c {'nix-store --gc --print-roots'!r} 2>/dev/null")
+        roots = (await vm.execute(f"su - tester -c {'nix-store --gc --print-roots'!r} 2>/dev/null")).stdout
         answers[name]["uncensored roots"] = [
             line for line in roots.splitlines() if "{temp:" in line or "/proc/" in line
         ]

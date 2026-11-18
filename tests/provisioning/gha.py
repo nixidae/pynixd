@@ -36,7 +36,7 @@ async def test(vms: Machines) -> None:
     drv, out = await stdenv_drv(controller, settings, NOTE)
     started = time.monotonic()
     await as_tester(controller, f"nix-store --realise {drv}", timeout=600)
-    built = (await controller.succeed(f"cat {out}")).strip()
+    built = (await controller.succeed(f"cat {out}")).stdout.strip()
     print(f"[test] {out} built in {time.monotonic() - started:.0f} s: {built}")
     assert built == NOTE, built
 
@@ -51,14 +51,14 @@ async def test(vms: Machines) -> None:
     assert await builder.count_processes("nix-daemon") == 0, "a nix-daemon runs on the builder"
     print(f"[test] run {run['id']} installed pynixd on a runner with no Nix and built it")
 
-    assert (await builder.succeed("stat -c %a /etc/pynixd/join-ticket.json")).strip() == "600"
-    token = json.loads(await builder.succeed("cat /etc/pynixd/join-ticket.json"))["token"]
+    assert (await builder.succeed("stat -c %a /etc/pynixd/join-ticket.json")).stdout.strip() == "600"
+    token = json.loads((await builder.succeed("cat /etc/pynixd/join-ticket.json")).stdout)["token"]
     assert token not in json.dumps(run), "the join token is in the dispatch, which a run's page shows"
-    rc, _ = await builder.execute(f"journalctl --no-pager | grep -F -q {token}")
+    rc = (await builder.execute(f"journalctl --no-pager | grep -F -q {token}")).returncode
     assert rc != 0, "the join token reached the runner's journal, which the job's log carries"
     print("[test] the ticket travelled sealed, opened 0600, and its token is in no input and no log")
 
-    lease = json.loads(await builder.succeed(f"cat {LEASE}"))
+    lease = json.loads((await builder.succeed(f"cat {LEASE}")).stdout)
     [registered] = await rows(controller)
     boot = (registered["registeredAtMs"] - registered["launchedAtMs"]) / 1000
     assert abs(lease["boot_seconds"] - boot) < 0.01, (lease, registered)

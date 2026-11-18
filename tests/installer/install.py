@@ -18,7 +18,7 @@ async def as_tester(vm: Machine, command: str) -> str:
     """`command`'s stdout alone, run as tester; stderr still reaches a failure's message."""
     out = "/tmp/as-tester.out"
     await vm.succeed(f"su - tester -c {shlex.quote(command)} > {out}", timeout=300)
-    return (await vm.succeed(f"cat {out}; rm -f {out}")).strip()
+    return (await vm.succeed(f"cat {out}; rm -f {out}")).stdout.strip()
 
 
 def expression(python: str, system: str) -> str:
@@ -55,7 +55,7 @@ async def test(vms: Machines) -> None:
     try:
         await work(vms, vm)
     finally:
-        _, log = await vm.execute("journalctl -u pynixd.service --no-pager")
+        log = (await vm.execute("journalctl -u pynixd.service --no-pager")).stdout
         (vms.artifacts / "runner" / "pynixd.log").write_text(log)
 
 
@@ -74,7 +74,7 @@ async def work(vms: Machines, vm: Machine) -> None:
 
     expr = shlex.quote(expression(settings["python"], settings["system"]))
     out = await as_tester(vm, f"{NIX} build --no-link --print-out-paths --impure --expr {expr}")
-    content = (await vm.succeed(f"cat {out}")).strip()
+    content = (await vm.succeed(f"cat {out}")).stdout.strip()
     if content != "built":
         raise AssertionError(f"{out} holds {content!r}")
     # Without build users a root daemon builds as root, and the build still succeeds: the lock is the proof.
@@ -84,7 +84,7 @@ async def work(vms: Machines, vm: Machine) -> None:
     # pynixd writes the file as root; the build user must own it, as under Nix's `writeBuilderFile`.
     noted_expr = shlex.quote(pass_as_file(settings["python"], settings["system"]))
     noted = await as_tester(vm, f"{NIX} build --no-link --print-out-paths --impure --expr {noted_expr}")
-    if (await vm.succeed(f"cat {noted}")).strip() != "owned by the build user":
+    if (await vm.succeed(f"cat {noted}")).stdout.strip() != "owned by the build user":
         raise AssertionError(f"{noted} holds the wrong text")
     print("[test] a build chmodded its passAsFile file")
 

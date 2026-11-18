@@ -55,7 +55,7 @@ def producer(settings: Mapping[str, str]) -> str:
 
 async def build(vm: Machine, drv: str) -> str:
     out = store_path(await as_tester(vm, f"nix build --no-link --print-out-paths {shlex.quote(drv + '^out^out')}"))
-    content = (await vm.succeed(f"cat {out}")).strip()
+    content = (await vm.succeed(f"cat {out}")).stdout.strip()
     if content != "dynamic":
         raise AssertionError(f"{out} holds {content!r}, not 'dynamic'")
     return out

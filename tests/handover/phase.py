@@ -39,7 +39,7 @@ async def long_drv(vm: Machine, settings: Mapping[str, str], job: str, seconds: 
         " }"
     )
     drv = store_path(await as_tester(vm, f"nix-instantiate --expr {shlex.quote(expression)}"))
-    out = (await vm.succeed(f"nix-store -q --outputs {drv}")).strip()
+    out = (await vm.succeed(f"nix-store -q --outputs {drv}")).stdout.strip()
     return drv, out
 
 
@@ -50,7 +50,7 @@ def nix_string(text: str) -> str:
 async def builder_alive(vm: Machine, job: str) -> bool:
     """Whether the build's shell still runs. Its arguments carry the job's name."""
     # `-ww`: off a terminal, ps cuts `args` at 80 columns, before the job's name.
-    processes = await vm.succeed("ps -ww -eo pid,args")
+    processes = (await vm.succeed("ps -ww -eo pid,args")).stdout
     return any(line.split()[1:2] == ["sh"] and f"tick {job} " in line for line in processes.splitlines())
 
 
@@ -65,7 +65,7 @@ async def until(check: Callable[[], Awaitable[bool]], timeout: float, step: floa
 
 
 async def read(vm: Machine, path: str) -> str:
-    return (await vm.succeed(f"cat {path} 2>/dev/null || true")).strip()
+    return (await vm.succeed(f"cat {path} 2>/dev/null || true")).stdout.strip()
 
 
 async def background(vm: Machine, unit: str, command: str, *, user: str | None = None) -> None:
@@ -92,22 +92,22 @@ async def client_outcome(vm: Machine, unit: str, timeout: float) -> tuple[str, s
     """The client's exit status and the last lines of its output."""
     await until(lambda: _exists(vm, f"/tmp/{unit}.rc"), timeout)
     rc = await read(vm, f"/tmp/{unit}.rc") or "still running"
-    tail = await vm.succeed(f"tail -n 4 /tmp/{unit}.out 2>/dev/null || true")
+    tail = (await vm.succeed(f"tail -n 4 /tmp/{unit}.out 2>/dev/null || true")).stdout
     return rc, " | ".join(line.strip() for line in tail.splitlines() if line.strip())
 
 
 async def _exists(vm: Machine, path: str) -> bool:
-    rc, _ = await vm.execute(f"test -e {path}")
+    rc = (await vm.execute(f"test -e {path}")).returncode
     return rc == 0
 
 
 async def valid(vm: Machine, path: str) -> bool:
-    rc, _ = await vm.execute(f"nix-store --check-validity {path}")
+    rc = (await vm.execute(f"nix-store --check-validity {path}")).returncode
     return rc == 0
 
 
 async def main_pid(vm: Machine, unit: str) -> str:
-    return (await vm.succeed(f"systemctl show -P MainPID {unit}")).strip()
+    return (await vm.succeed(f"systemctl show -P MainPID {unit}")).stdout.strip()
 
 
 async def restart(vm: Machine, settings: Mapping[str, str]) -> None:
@@ -135,9 +135,9 @@ async def restart(vm: Machine, settings: Mapping[str, str]) -> None:
     measure("restart: /run/pynixd/marker survives:", await _exists(vm, "/run/pynixd/marker"))
     await anyio.sleep(BUILD_SECONDS)
     measure("restart: output valid after the build's whole length:", await valid(vm, out))
-    journal = await vm.succeed(
-        "journalctl --no-pager -u nix-daemon-upstream.service -g 'interrupt|restart' -n 5 || true"
-    )
+    journal = (
+        await vm.succeed("journalctl --no-pager -u nix-daemon-upstream.service -g 'interrupt|restart' -n 5 || true")
+    ).stdout
     measure("restart: upstream journal:", " | ".join(journal.splitlines()[-5:]))
 
 
@@ -180,7 +180,7 @@ async def chatty(vm: Machine, settings: Mapping[str, str]) -> None:
         " }"
     )
     drv = store_path(await as_tester(vm, f"nix-instantiate --expr {shlex.quote(expression)}"))
-    out = (await vm.succeed(f"nix-store -q --outputs {drv}")).strip()
+    out = (await vm.succeed(f"nix-store -q --outputs {drv}")).stdout.strip()
     hold = 20
     await background(
         vm, "toy-chatty", f"{TOY} direct --drv {drv} --then fork-hold --hold {hold} --out /var/lib/toy/chatty.result"
@@ -267,7 +267,7 @@ async def probe_stop(vm: Machine, label: str, since: float) -> None:
 
 
 async def pid_alive(vm: Machine, pid: str) -> bool:
-    rc, _ = await vm.execute(f"kill -0 {pid}")
+    rc = (await vm.execute(f"kill -0 {pid}")).returncode
     return rc == 0
 
 
@@ -319,9 +319,9 @@ async def switch(vm: Machine, settings: Mapping[str, str], to: str, label: str) 
     await anyio.sleep(2)
     since = time.time()
     t0 = time.monotonic()
-    rc, output = await vm.switch_to(to, check=False)
-    measure(f"{label}: switch to {to}: exit {rc} in {time.monotonic() - t0:.1f} s")
-    for line in output.splitlines():
+    done = await vm.switch_to(to, check=False)
+    measure(f"{label}: switch to {to}: exit {done.returncode} in {time.monotonic() - t0:.1f} s")
+    for line in [*done.stdout.splitlines(), *done.stderr.splitlines()]:
         if line.startswith(("stopping", "starting", "restarting", "reloading", "NOT restarting")):
             measure(f"{label}: s-t-c said: {line}")
     await anyio.sleep(1)
@@ -365,16 +365,16 @@ async def overlap_crash(vm: Machine, settings: Mapping[str, str]) -> None:
     old = await overlap_start(vm, settings, unit, "overlap-crash")
     await vm.succeed(f"systemctl reload {unit}.service")
     new = await main_pid(vm, f"{unit}.service")
-    restarts = (await vm.succeed(f"systemctl show -P NRestarts {unit}.service")).strip()
+    restarts = (await vm.succeed(f"systemctl show -P NRestarts {unit}.service")).stdout.strip()
     measure(f"overlap-crash: reloaded, main {old} -> {new}; NRestarts {restarts}")
     await vm.succeed(f"kill -9 {new}")
     for wait in (1, 3, 6):
         await anyio.sleep(wait)
         state = await vm.unit_state(f"{unit}.service")
         pid = await main_pid(vm, f"{unit}.service")
-        restarts = (await vm.succeed(f"systemctl show -P NRestarts {unit}.service")).strip()
+        restarts = (await vm.succeed(f"systemctl show -P NRestarts {unit}.service")).stdout.strip()
         measure(f"overlap-crash: +{wait}s after kill -9 of {new}: unit {state}, main {pid}, NRestarts {restarts}")
-    journal = await vm.succeed(f"journalctl --no-pager -u {unit} -n 8 -o cat | grep -v 'toy '")
+    journal = (await vm.succeed(f"journalctl --no-pager -u {unit} -n 8 -o cat | grep -v 'toy '")).stdout
     measure("overlap-crash: journal: " + " | ".join(journal.splitlines()))
     await vm.execute(f"systemctl stop {unit}.service")
 

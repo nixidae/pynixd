@@ -30,7 +30,7 @@ async def test(vms: Machines) -> None:
     )
 
     async def building() -> bool:
-        state = json.loads(await controller.succeed("pynixd state"))
+        state = json.loads((await controller.succeed("pynixd state")).stdout)
         return any(
             row["state"] == "building" and (row["store"] or "").startswith("provisioned-") for row in state["builds"]
         )
@@ -42,9 +42,9 @@ async def test(vms: Machines) -> None:
     print(f"[test] {first['id']} ended mid-build, with no notice")
 
     await until(lambda: exists(controller, "/tmp/crash.rc"), 600)
-    rc = (await controller.succeed("cat /tmp/crash.rc")).strip()
-    assert rc == "0", await controller.succeed("tail -n 20 /tmp/crash.out")
-    assert (await controller.succeed(f"cat {out}")).strip() == "crashed"
+    rc = (await controller.succeed("cat /tmp/crash.rc")).stdout.strip()
+    assert rc == "0", (await controller.succeed("tail -n 20 /tmp/crash.out")).stdout
+    assert (await controller.succeed(f"cat {out}")).stdout.strip() == "crashed"
     print(f"[test] {out} built {time.monotonic() - crashed:.0f} s after the crash")
 
     *_, lost, replacement = await rows(controller)

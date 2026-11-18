@@ -38,7 +38,7 @@ async def test(vms: Machines) -> None:
     drv, out = await feature_drv(controller, settings, "provisioned", "echo provisioned > $out")
     started = time.monotonic()
     await as_tester(controller, f"nix-store --realise {drv}", timeout=600)
-    built = (await controller.succeed(f"cat {out}")).strip()
+    built = (await controller.succeed(f"cat {out}")).stdout.strip()
     print(f"[test] {out} built in {time.monotonic() - started:.0f} s: {built}")
 
     [launched] = await pool_instances(controller)
@@ -53,10 +53,11 @@ async def test(vms: Machines) -> None:
     # (`derivation-building-goal.cc:289`). Short: the builder idles all the while, and ends 15 s after its
     # last build.
     other, other_out = await feature_drv(controller, settings, "spare-only", "echo spare > $out", settings["spare"])
-    rc, out = await controller.execute(f"su - tester -c {shlex.quote(f'timeout 30 nix-store --realise {other}')}")
+    done = await controller.execute(f"su - tester -c {shlex.quote(f'timeout 30 nix-store --realise {other}')} 2>&1")
+    rc, out = done.returncode, done.stdout
     assert rc not in (0, 124), f"a spare-only build ended with {rc}; it may run on no store here"
     assert "missing system features" in out, out
-    rc, _ = await builder.execute(f"nix-store --check-validity {other_out}")
+    rc = (await builder.execute(f"nix-store --check-validity {other_out}")).returncode
     assert rc != 0, "the builder built a build that needs none of its pool's mandatory features"
     assert [one["id"] for one in await pool_instances(controller)] == [launched["id"]], "it launched a builder"
     print("[test] a build that needs only a spare feature launched nothing and stayed off the builder")
