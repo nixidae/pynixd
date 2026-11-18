@@ -1827,6 +1827,15 @@ class PynixdSettings(BaseSettings):
             return self.health_loop_lag_max / 2
         return self.stall_traceback_seconds
 
+    @model_validator(mode="after")
+    def _one_cold_tier(self) -> Self:
+        cold = sorted(
+            name for name, spec in self.stores.items() if isinstance(spec, S3BinaryCacheSpec) and spec.gc_cold
+        )
+        if len(cold) > 1:
+            raise ValueError(f"one gc_cold store at most, and {', '.join(cold)} set it")
+        return self
+
     def to_stores(self) -> dict[StoreId, Store]:
         """Convert all store specs to live Store instances."""
         stores: dict[StoreId, Store] = {}
