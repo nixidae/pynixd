@@ -323,12 +323,14 @@ let
         ./nix-daemon-protocol
         ./pynixd-store
         vivariumLib.runnerSource
+        vivariumLib.agentSource
       ];
       overlay = pySelf: _pyPrev: {
         pynixd = pySelf.callPackage (own "pynixd" ./.) { };
         nix-daemon-protocol = pySelf.callPackage (own "nix-daemon-protocol" ./nix-daemon-protocol) { };
         pynixd-store = pySelf.callPackage (own "pynixd-store" ./pynixd-store) { };
         vivarium-runner = pySelf.callPackage (mkProject "vivarium-runner" vivariumLib.runnerSource) { };
+        vivarium-agent = pySelf.callPackage (mkProject "vivarium-agent" vivariumLib.agentSource) { };
       };
     };
 
