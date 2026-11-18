@@ -84,6 +84,9 @@ let
   phases = [
     "handover"
     "remote"
+    "idle"
+    "again"
+    "refused"
     "broken"
     "control"
   ];
@@ -151,6 +154,9 @@ vivariumLib.mkTest {
       addresses = [ "10.9.0.2/24" ];
     };
     environment.systemPackages = [ pkgs.procps ];
+    # A reverse initiator refuses the overlap, so a change restarts it.
+    vivarium.configurations.changed.services.pynixd.settings.stall_traceback_path =
+      "/var/lib/pynixd/stall-changed.txt";
   };
 
   nodes.machine = {
@@ -180,6 +186,9 @@ vivariumLib.mkTest {
         upgrade.pynixd = pynixdB;
       };
       c.upgrade.tag = "C";
+      d.upgrade.tag = "D";
+      e.upgrade.tag = "E";
+      f.upgrade.tag = "F";
       broken = {
         upgrade.tag = "broken";
         upgrade.pynixd = pynixdBroken;

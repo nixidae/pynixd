@@ -352,6 +352,14 @@ Done when `tests.upgrade` shows each of these on a switch from configuration A t
 8. A second switch while the first drains.
 9. An upgrade with a schema migration refuses the overlap.
 
+Where each stands, 2026-11-18: `tests.upgrade` phases `handover` (1, 3, 5), `remote` (2), `idle` (4), `again`
+(8), `broken` (7) and `control` (6). Item 9 is `tests/unit/test_handover.py`; the `refused` phase shows what any
+refusal does in a guest: a builder with a reverse initiator restarts, and registers again.
+
+Rollout: the first switch from a pynixd without the control socket finds nobody on it and restarts, as before.
+Every switch after that hands over. A `systemctl restart pynixd` by hand still ends a drain in progress
+(point 6 above).
+
 ## Found on the way
 
 - pynixd adds `https://cache.nixos.org/` as a store whatever `nix.conf`

@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from build_helpers import (
+    background,
     builder_alive,
     client_build,
     client_outcome,
@@ -163,7 +164,98 @@ async def control(vm: Machine, builder: Machine, settings: Mapping[str, str], pr
         problems.append(f"the control build did not fail as a restart fails it: rc {rc}: {tail}")
 
 
-PHASES = {"handover": handover, "remote": remote, "broken": broken, "control": control}
+async def idle(vm: Machine, _builder: Machine, settings: Mapping[str, str], problems: list[str]) -> None:
+    """4: a client connected before the switch, idle across it, still gets answers. A stock client never reconnects."""
+    await vm.succeed("rm -f /tmp/repl.in; touch /tmp/repl.in; chmod 666 /tmp/repl.in")
+    await background(
+        vm,
+        "repl",
+        "/run/current-system/sw/bin/tail -f /tmp/repl.in | /run/current-system/sw/bin/nix repl --store daemon",
+        user="tester",
+    )
+    await vm.succeed(f"echo 'builtins.storePath \"{settings['busybox']}\"' >> /tmp/repl.in")
+    if await until(lambda: _says(vm, settings["busybox"]), 60) is None:
+        problems.append(f"the repl did not answer before the switch: {await read(vm, '/tmp/repl.out')}")
+        return
+    old = await main_pid(vm, "pynixd.service")
+    done = await vm.switch_to("d", check=False)
+    if done.returncode != 0:
+        problems.append(f"switch exited {done.returncode}")
+    system = (await vm.succeed("readlink -f /run/current-system")).stdout.strip()
+    await vm.succeed(f"echo 'builtins.storePath \"{system}\"' >> /tmp/repl.in")
+    if await until(lambda: _says(vm, system), 60) is None:
+        problems.append(f"the idle client got no answer after the switch: {await read(vm, '/tmp/repl.out')}")
+    if not await alive(vm, old):
+        problems.append("the old process left while its client was connected")
+    # `kill`, not `stop`: the unit has KillMode=process, and its pipeline outlives a stop.
+    await vm.succeed("systemctl kill repl.service")
+    if await until(lambda: _gone(vm, old), 60) is None:
+        problems.append(f"the old process {old} still runs after its last client left")
+
+
+async def _says(vm: Machine, text: str) -> bool:
+    return text in await read(vm, "/tmp/repl.out")
+
+
+async def again(vm: Machine, builder: Machine, settings: Mapping[str, str], problems: list[str]) -> None:
+    """8: a second switch while the first old process drains."""
+    drv, out = await long_drv(vm, settings, "again", BUILD_SECONDS)
+    await client_build(vm, "client-again", drv)
+    if await until(lambda: running(vm, builder, "again"), 90) is None:
+        problems.append("the build never started")
+        return
+    first = await main_pid(vm, "pynixd.service")
+    for name in ("e", "f"):
+        done = await vm.switch_to(name, check=False)
+        print(f"[test] switch to {name}: exit {done.returncode}")
+        if done.returncode != 0:
+            problems.append(f"switch to {name} exited {done.returncode}")
+    second = await main_pid(vm, "pynixd.service")
+    if second == first:
+        problems.append("the main pid did not move")
+    rc, tail = await client_outcome(vm, "client-again", BUILD_SECONDS + 120)
+    if rc != "0" or not await valid(vm, out):
+        problems.append(f"the build failed across two switches: rc {rc}: {tail}")
+    if await until(lambda: _gone(vm, first), 60) is None:
+        problems.append(f"the first old process {first} still runs")
+    if await main_pid(vm, "pynixd.service") != second:
+        problems.append("the main pid moved after the second switch")
+
+
+async def refused(vm: Machine, builder: Machine, settings: Mapping[str, str], problems: list[str]) -> None:
+    """A pynixd that cannot overlap restarts, so the new configuration applies."""
+    old = await main_pid(builder, "pynixd.service")
+    done = await builder.switch_to("changed", check=False)
+    print(f"[test] builder switch: exit {done.returncode}")
+    if done.returncode != 0:
+        problems.append(f"the builder's switch exited {done.returncode}")
+    if await until(lambda: _moved(builder, old), 60) is None:
+        problems.append("the refused hand-over did not restart the builder's pynixd")
+    journal = (await builder.succeed("journalctl --no-pager -o cat -u pynixd.service")).stdout
+    if "refuses: a reverse initiator" not in journal:
+        problems.append("the builder's journal names no refusal")
+    # The builder registers again; a remote build runs.
+    drv, out = await long_drv(vm, settings, "after-refused", 2, [settings["remoteFeature"]])
+    await client_build(vm, "client-after-refused", drv)
+    rc, tail = await client_outcome(vm, "client-after-refused", 120)
+    if rc != "0" or not await valid(vm, out):
+        problems.append(f"no remote build after the builder restarted: rc {rc}: {tail}")
+
+
+async def _moved(vm: Machine, pid: str) -> bool:
+    current = await main_pid(vm, "pynixd.service")
+    return current not in ("0", pid)
+
+
+PHASES = {
+    "handover": handover,
+    "remote": remote,
+    "idle": idle,
+    "again": again,
+    "refused": refused,
+    "broken": broken,
+    "control": control,
+}
 
 
 async def test(vms: Machines) -> None:
