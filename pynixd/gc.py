@@ -327,6 +327,37 @@ class Collector:
         # run under its read transaction.
         return await self._delete(batch, weights, lines, client)
 
+    async def upload_ahead(self, tier: ColdTier, budget: int, pressure: float) -> int:
+        """Upload the closures of the paths a pressed pass would delete first, up to *budget* bytes of them.
+
+        The plan is the pressed one, every dead path in weight order at *pressure*: the pass the
+        watermark starts. Covered paths count toward the budget and cost nothing. The plan's
+        transaction closes before the first upload. Answers how many seeds went up.
+        """
+        local = self.ctx.local_store
+        db = self.planner().plan_database()
+        if db is None:
+            return 0
+        volatile = await run_sync(self.planner().volatile_roots)
+        vetoed = await self._veto_closure(volatile)
+        live = await self._live_paths(local)
+        async with SqlPlan.open(db) as plan:
+            await plan.plan(live=live, vetoed=vetoed, cutoff=None)
+            rows = await plan.weighed(pressure=pressure, now=int(time.time()), bound=None, limit=None)
+        covered = await tier.covered([path for path, _, _ in rows])
+        head: list[str] = []
+        total = 0
+        for path, size, _ in rows:
+            if total >= budget:
+                break
+            total += size
+            if path not in covered:
+                head.append(path)
+        for path in head:
+            await tier.upload_closure({StorePath(path)})
+        log.info("gc_cold_ahead", seeds=len(head), budget=budget, planned=len(rows), covered=len(covered))
+        return len(head)
+
     @asynccontextmanager
     async def _open_plan(
         self, *, pressed: bool, vetoed: set[str], tier: ColdTier | None = None

@@ -275,8 +275,9 @@ class S3BinaryCacheStore(HTTPBinaryCacheStore):
                 with anyio.CancelScope(shield=True), anyio.move_on_after(_ABORT_TIMEOUT_S):
                     try:
                         status, _ = await self._send("DELETE", name, query=f"uploadId={multipart}")
-                    except CacheFault:
-                        # The bucket keeps the parts until its lifecycle rule ends the upload.
+                    except (CacheFault, RuntimeError):
+                        # The bucket keeps the parts until its lifecycle rule ends the upload. RuntimeError: a
+                        # shutdown closed the store's session under the cancelled upload.
                         log.warning("s3_multipart_abort_failed", store_id=self.store_id, object=name, exc_info=True)
                     else:
                         log.warning("s3_multipart_aborted", store_id=self.store_id, object=name, status=status)

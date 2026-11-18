@@ -105,3 +105,20 @@ async def test_over_the_target_the_rest_goes_and_is_counted(tmp_path: Path, monk
     assert {str(path) for path in deleted.store_paths} == {lab.stale, lab.parent, lab.child, lab.fresh}
     assert counted == 3
     assert await _valid(lab.store_path) == {lab.rooted}
+
+
+async def test_upload_ahead_covers_what_the_pressed_pass_takes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No budget uploads nothing; a budget over the plan covers it, and the pressed pass then counts none."""
+    lab = await _lab(tmp_path)
+    dead = {lab.stale, lab.parent, lab.child, lab.fresh}
+    with s3_bucket(monkeypatch, tmp_path / "xdg-cache") as bucket:
+        async with _pynixd(lab, tmp_path, bucket.endpoint, target=1e-9) as (server, tier):
+            assert await Collector(server.ctx).upload_ahead(tier, 0, 1.0) == 0
+            assert await tier.covered(dead) == set()
+            assert await Collector(server.ctx).upload_ahead(tier, 2**62, 1.0) == len(dead)
+            assert await tier.covered(dead | {lab.rooted}) == dead
+            before = metrics.GC_DELETED_UNCOVERED._value.get()
+            deleted = await Collector(server.ctx).run(PynixdGCAction.EXECUTE)
+            counted = metrics.GC_DELETED_UNCOVERED._value.get() - before
+    assert {str(path) for path in deleted.store_paths} == dead
+    assert counted == 0

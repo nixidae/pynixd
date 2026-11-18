@@ -1713,6 +1713,14 @@ class PynixdSettings(BaseSettings):
     not re-collected, short enough that a fresh flood waits minutes, not an
     hour. Zero disables it, and every due trigger fires.
     """
+    gc_cold_interval: float = 900.0
+    """Seconds between the cold tier's uploads ahead of eviction (`gc_cold` on an `s3://` store)."""
+    gc_cold_ahead: float | None = None
+    """The disk fraction of the next eviction to keep uploaded.
+
+    `None` is the gap between `gc_high_watermark` and the store's `gc_target_usage`, one watermark
+    drive, or 0.05 when either is unset. nixidae/nixidae#1417.
+    """
     gc_liveness_interval: float | None = None
     """Seconds between Python liveness refreshes. `None` disables the background watch.
 

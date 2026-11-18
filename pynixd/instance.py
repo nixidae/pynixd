@@ -18,15 +18,17 @@ from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from nix_daemon_protocol.store_dir import set_real_store_dir, set_store_dir
 from pynixd_store.background import Background
 from pynixd_store.gc import LivenessWatch, pressure_usage
+from pynixd_store.local_store_db import DatabaseError
 from pynixd_store.store_layout import DEFAULT_STORE_DIR
 
 from . import _optional, metrics
+from .cold_tier import ColdTier
 from .config import (
     LocalSocketStoreSpec,
     PynixdSettings,
 )
 from .context import PynixdContext
-from .exceptions import GCNotPermittedError
+from .exceptions import CacheFault, GCNotPermittedError
 from .execution import output_paths
 from .gc import Collector
 from .health import HealthReport, LoopLagMonitor, StallWatchdog
@@ -510,6 +512,35 @@ class Server:
                 await self._gc_pass("scheduled")
                 last_trigger = time.monotonic()
 
+    async def _cold_tick(self, tier: ColdTier) -> None:
+        """Upload ahead of eviction, so a pressed pass finds its paths covered.
+
+        A refusing bucket or a busy database skips one round: the collector then deletes only
+        what is covered, or counts what it deletes over its target.
+        """
+        settings = self.ctx.settings
+        local = self.ctx.local_store
+        target = local.gc_target_usage
+        watermark = settings.gc_high_watermark
+        ahead = settings.gc_cold_ahead
+        if ahead is None:
+            ahead = watermark - target if watermark is not None and target is not None else 0.05
+        log.info("gc_cold_loop_started", store_id=tier.cold.store_id, interval=settings.gc_cold_interval, ahead=ahead)
+        # The bucket opens in the background, after this loop starts.
+        if self.ctx.scheduler is not None and self.ctx.scheduler.stores_opened is not None:
+            await self.ctx.scheduler.stores_opened.wait()
+        while True:
+            # A round reads the whole plan: a restart must not start one at once.
+            await anyio.sleep(settings.gc_cold_interval)
+            usage = Collector._disk_usage(local)
+            if usage is not None and usage[1] > 0:
+                used, total = usage
+                pressure = max(used / total, watermark or 0.0)
+                try:
+                    await Collector(self.ctx).upload_ahead(tier, int(total * ahead), pressure)
+                except (CacheFault, DatabaseError):
+                    log.warning("gc_cold_round_failed", store_id=tier.cold.store_id, exc_info=True)
+
     async def _drive_to_target(self) -> None:
         """Bounded passes back to back until pressure drops or progress stops.
 
@@ -826,6 +857,8 @@ class Server:
 
         if self.ctx.db and self.ctx.settings.gc_enabled:
             self._spawn(self._gc_tick)
+            if (tier := ColdTier.of(self.ctx)) is not None:
+                self._spawn(self._cold_tick, tier)
             liveness_interval = self.ctx.settings.gc_liveness_interval
             if liveness_interval is not None:
                 watch = LivenessWatch.of(self.ctx.local_store.layout, self.ctx.db)
