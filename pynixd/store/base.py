@@ -178,6 +178,11 @@ class Store(ABC):
         """Whether this substituter joins the list of a client that names its own: no client can name it by URL."""
         return False
 
+    def vouches_for(self, info: ValidPathInfo) -> bool:
+        """Whether this store's own key signed *info*, so a substitution takes it whatever keys the client trusts."""
+        del info
+        return False
+
     def take_built_outputs(self, local: Store, paths: Iterable[StorePath]) -> None:
         """*paths*, outputs a build just put in *local*; a store that keeps built outputs queues them."""
         del local, paths

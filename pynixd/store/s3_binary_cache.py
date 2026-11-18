@@ -23,7 +23,7 @@ from botocore.session import Session
 from nix_daemon_protocol.signature import Signature
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from pynixd_store.s3_url import DEFAULT_REGION
-from pynixd_store.signing import SecretKey, sign_path_info
+from pynixd_store.signing import PublicKey, SecretKey, check_signatures, sign_path_info
 
 from ..exceptions import CacheFault, CacheUnopened
 from ..serde import QueryPathInfoRequest
@@ -103,6 +103,22 @@ class S3BinaryCacheStore(HTTPBinaryCacheStore):
     @property
     def writable(self) -> bool:
         return self.secret_key_file is not None
+
+    @property
+    def joins_every_client(self) -> bool:
+        """The cold tier holds what the collector took from the local store, so every client reaches it."""
+        return self.gc_cold
+
+    def vouches_for(self, info: ValidPathInfo) -> bool:
+        """NIX-DEVIATION (#27): `substitution-goal.cc:116` takes a substitute only under the client's
+        `trusted-public-keys`. A cold tier's path is one pynixd signed and the collector deleted from the local
+        store, so its own key admits it: a client that sends its own keys still gets back what the collector took.
+        Without it that client rebuilds the path. Reverse it if the cold tier serves paths pynixd did not upload.
+        """
+        key = self._secret_key
+        if not self.gc_cold or key is None:
+            return False
+        return check_signatures(info, {key.name: PublicKey(key.name, key.public_key_bytes)}, self.store_dir) > 0
 
     async def start(self, sync_paths: bool = True) -> None:
         if not self._started:

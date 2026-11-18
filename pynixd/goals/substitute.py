@@ -227,7 +227,7 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
         """
         router = write_router(self.engine.ctx.local_store)
         for candidate in candidates:
-            if candidate.store.trusted:
+            if candidate.store.trusted or candidate.store.vouches_for(candidate.path_info):
                 return candidate, True
             verdict = await router.signatures(candidate.path_info, dict(self.keys))
             if verdict is not Signatures.UNTRUSTED:

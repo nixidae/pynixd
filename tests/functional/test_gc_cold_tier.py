@@ -12,14 +12,22 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from nix_daemon_protocol.ensure_path import EnsurePathRequest
 from nix_daemon_protocol.ids import StoreId
 from nix_daemon_protocol.store_path import StorePath
 from pynixd import Server, metrics
 from pynixd.cold_tier import ColdTier
 from pynixd.config import S3BinaryCacheSpec
+from pynixd.connection import Connection
 from pynixd.daemon_extensions import PynixdGCAction
+from pynixd.exceptions import BackendError
 from pynixd.gc import Collector
 from pynixd.store import LocalDBStore, Store
+from pynixd.unix_socket import open_unix_connection
+from pynixd.wire import UnixNixReader, UnixNixWriter
+from pynixd_store.signing import SecretKey
+from tests._conftest.client_options import set_options
+from tests._conftest.nix_config import for_test_store
 from tests._conftest.s3_bucket import s3_bucket
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 from tests.functional.test_gc_max_age import MAX_AGE, STALE_AGE, _backdate, _freeze_tracker, _Lab, _lab, _valid
@@ -28,21 +36,32 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
     from pathlib import Path
 
+    from pynixd.nix_config import NixConfig
+
 
 async def _nix(*args: str, stdin: bytes | None = None) -> str:
     _rc, stdout, _stderr, _both = await run_subproc([str(NIX_BIN), *args], verbose=False, stdin=stdin)
     return stdout.strip()
 
 
+async def _key(tmp_path: Path) -> str:
+    """The cold tier's signing key at `cold.sec`; answers its public half."""
+    key = tmp_path / "cold.sec"
+    if not key.exists():  # noqa: ASYNC240 -- test setup
+        key.write_text(await _nix("key", "generate-secret", "--key-name", "cold-test"))  # noqa: ASYNC240 -- test setup
+    return await _nix("key", "convert-secret-to-public", stdin=key.read_bytes())  # noqa: ASYNC240 -- test setup
+
+
 @asynccontextmanager
 async def _pynixd(
-    lab: _Lab, tmp_path: Path, endpoint: str, target: float | None = None
+    lab: _Lab, tmp_path: Path, endpoint: str, target: float | None = None, nix_config: NixConfig | None = None
 ) -> AsyncIterator[tuple[Server, ColdTier]]:
     key = tmp_path / "cold.sec"
-    key.write_text(await _nix("key", "generate-secret", "--key-name", "cold-test"))  # noqa: ASYNC240 -- test setup
+    await _key(tmp_path)
     spec = make_test_spec(
         store_id="local",
         store_path=lab.store_path,
+        nix_config=nix_config,
         no_probe=True,
         postgres=None,
         gc_max_age=MAX_AGE,
@@ -51,7 +70,7 @@ async def _pynixd(
     )
     cold = S3BinaryCacheSpec(bucket="cache", endpoint=endpoint, region="us-east-1", secret_key=key, gc_cold=True)
     stores: dict[StoreId, Store] = {StoreId("local"): LocalDBStore(spec), StoreId("cold"): cold.to_store("cold")}
-    async with Server(stores=stores, unix_path=tmp_path / "pynixd.sock", ssh_port=None, http_port=None) as server:
+    async with Server(stores=stores, unix_path=_socket(tmp_path), ssh_port=None, http_port=None) as server:
         _freeze_tracker(server)
         scheduler = server.ctx.scheduler
         assert scheduler is not None
@@ -62,6 +81,21 @@ async def _pynixd(
         await _backdate(lab.store_path, {lab.stale, lab.parent, lab.child, lab.rooted}, STALE_AGE)
         await _backdate(lab.store_path, {lab.fresh}, 0)
         yield server, tier
+
+
+def _socket(tmp_path: Path) -> Path:
+    return tmp_path / "pynixd.sock"
+
+
+@asynccontextmanager
+async def _client(tmp_path: Path) -> AsyncIterator[Connection]:
+    link = await open_unix_connection(_socket(tmp_path))
+    conn = Connection(UnixNixReader(link, identifier="t"), UnixNixWriter(link, identifier="t"), "t")
+    await conn.connect()
+    try:
+        yield conn
+    finally:
+        await conn.close()
 
 
 async def _plan(server: Server) -> set[str]:
@@ -122,3 +156,63 @@ async def test_upload_ahead_covers_what_the_pressed_pass_takes(tmp_path: Path, m
             counted = metrics.GC_DELETED_UNCOVERED._value.get() - before
     assert {str(path) for path in deleted.store_paths} == dead
     assert counted == 0
+
+
+@pytest.mark.parametrize("signer", ["trusted-key", "own-key", "foreign-key"])
+async def test_an_evicted_path_comes_back_through_pynixd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signer: str
+) -> None:
+    """A client asks pynixd for a path its collector moved to the bucket: pynixd fetches the closure back.
+
+    The bucket is the one substituter, and the store requires signatures. The cold key admits its own paths
+    whether `trusted-public-keys` names it or not. The control: a bucket signed by a key the store no longer
+    holds, and no client trusts, gives nothing back, so the path came from the bucket, signature checked.
+    """
+    lab = await _lab(tmp_path)
+    keys = (await _key(tmp_path),) if signer == "trusted-key" else ()
+    config = for_test_store(substituters=(), trusted_public_keys=keys, require_sigs=True)
+    with s3_bucket(monkeypatch, tmp_path / "xdg-cache") as bucket:
+        async with _pynixd(lab, tmp_path, bucket.endpoint, nix_config=config) as (server, tier):
+            await tier.upload_closure({StorePath(lab.parent)})
+            deleted = await Collector(server.ctx).run(PynixdGCAction.EXECUTE)
+            assert {lab.parent, lab.child} <= {str(path) for path in deleted.store_paths}
+            assert not {lab.parent, lab.child} & await _valid(lab.store_path)
+            if signer == "foreign-key":
+                rotated = SecretKey.from_string(await _nix("key", "generate-secret", "--key-name", "cold-test"))
+                monkeypatch.setattr(tier.cold, "_secret_key", rotated)
+            async with _client(tmp_path) as conn:
+                request = EnsurePathRequest(path=StorePath(lab.parent))
+                if signer == "foreign-key":
+                    with pytest.raises(BackendError, match="there is no substituter that can build it"):
+                        await conn.call(request, raise_on_error=True)
+                    return
+                await conn.call(request, raise_on_error=True)
+    assert {lab.parent, lab.child} <= await _valid(lab.store_path)
+
+
+@pytest.mark.parametrize("names", ["substituters", "trusted-public-keys"])
+async def test_a_client_with_its_own_list_still_gets_an_evicted_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, names: str
+) -> None:
+    """The bucket holds what the collector took from the local store, so it serves every client.
+
+    A client's `substituters` replaces the daemon's list, and `extra-substituters` sends one too; its
+    `trusted-public-keys` replaces the daemon's keys. Neither names the bucket or its key.
+    """
+    lab = await _lab(tmp_path)
+    public = await _key(tmp_path)
+    config = for_test_store(substituters=(), trusted_public_keys=(public,), require_sigs=True)
+    empty = tmp_path / "empty-cache"
+    empty.mkdir()  # noqa: ASYNC240 -- test setup
+    secret = await _nix("key", "generate-secret", "--key-name", "other")
+    other = await _nix("key", "convert-secret-to-public", stdin=secret.encode())
+    overrides = {"substituters": f"file://{empty}", "trusted-public-keys": other}
+    with s3_bucket(monkeypatch, tmp_path / "xdg-cache") as bucket:
+        async with _pynixd(lab, tmp_path, bucket.endpoint, nix_config=config) as (server, tier):
+            await tier.upload_closure({StorePath(lab.parent)})
+            await Collector(server.ctx).run(PynixdGCAction.EXECUTE)
+            assert not {lab.parent, lab.child} & await _valid(lab.store_path)
+            async with _client(tmp_path) as conn:
+                await conn.call(set_options(overrides={names: overrides[names]}), raise_on_error=True)
+                await conn.call(EnsurePathRequest(path=StorePath(lab.parent)), raise_on_error=True)
+    assert {lab.parent, lab.child} <= await _valid(lab.store_path)
