@@ -10,18 +10,12 @@ answer proves nothing about what a remote holds.
 from __future__ import annotations
 
 import contextlib
-import json
-import urllib.request
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-import botocore.session
 import pytest
 from aiohttp import web
-from moto import settings as moto_settings
-from moto.core.authorization import ActionAuthenticatorMixin
-from moto.server import ThreadedMotoServer
 
 from nix_daemon_protocol.ensure_path import EnsurePathRequest
 from nix_daemon_protocol.ids import StoreId
@@ -39,10 +33,11 @@ from pynixd.wire import UnixNixReader, UnixNixWriter
 from tests._conftest.client_options import set_options
 from tests._conftest.nix_cli_store import nix_cli_store
 from tests._conftest.nix_config import for_test_store
+from tests._conftest.s3_bucket import s3_bucket
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator
+    from collections.abc import AsyncIterator
     from pathlib import Path
 
     from pynixd.substitution_queue import SubstitutionQueue
@@ -84,55 +79,6 @@ async def _valid(store_path: Path) -> set[str]:
     return {line.strip() for line in stdout.splitlines() if line.strip()}
 
 
-@contextmanager
-def _s3_bucket(monkeypatch: pytest.MonkeyPatch, cache_home: Path) -> Iterator[str]:
-    """An S3 server that checks each signature, a bucket `cache`, and keys for it in the environment: the endpoint.
-
-    moto checks a signature only once its first requests are spent (`INITIAL_NO_AUTH_ACTION_COUNT`): those make
-    the user and its key. A request without a valid signature then gets 403, so a pass proves pynixd signed.
-
-    *cache_home* holds Nix's narinfo disk cache. Nix keys it by `s3://cache` alone, whatever the endpoint
-    (`http-binary-cache-store.cc:76`), so with a shared one `nix copy` takes the last test's bucket for this one
-    and uploads nothing (Lillecarl/nix#406).
-    """
-    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_home))
-    monkeypatch.setattr(moto_settings, "INITIAL_NO_AUTH_ACTION_COUNT", 3)
-    monkeypatch.setattr(ActionAuthenticatorMixin, "request_count", 0)
-    for name, value in {
-        "AWS_ACCESS_KEY_ID": "bootstrap",
-        "AWS_SECRET_ACCESS_KEY": "bootstrap",
-        "AWS_EC2_METADATA_DISABLED": "true",
-        "AWS_CONFIG_FILE": "/dev/null",
-        "AWS_SHARED_CREDENTIALS_FILE": "/dev/null",
-    }.items():
-        monkeypatch.setenv(name, value)
-    server = ThreadedMotoServer(ip_address="127.0.0.1", port=0, verbose=False)
-    server.start()
-    host, port = server.get_host_and_port()
-    endpoint = f"http://{host}:{port}"
-    # moto's accounts live in the process, past the server: each bucket starts from none.
-    reset = urllib.request.Request(f"{endpoint}/moto-api/reset", method="POST")
-    try:
-        urllib.request.urlopen(reset).close()  # noqa: S310 -- the test's own loopback server
-        iam = botocore.session.get_session().create_client("iam", endpoint_url=endpoint, region_name="us-east-1")
-        iam.create_user(UserName="cache")
-        statement = {"Effect": "Allow", "Action": "s3:*", "Resource": "*"}
-        iam.put_user_policy(
-            UserName="cache",
-            PolicyName="cache",
-            PolicyDocument=json.dumps({"Version": "2012-10-17", "Statement": [statement]}),
-        )
-        key = iam.create_access_key(UserName="cache")["AccessKey"]
-        monkeypatch.setenv("AWS_ACCESS_KEY_ID", key["AccessKeyId"])
-        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", key["SecretAccessKey"])
-        s3 = botocore.session.get_session().create_client("s3", endpoint_url=endpoint, region_name="us-east-1")
-        s3.create_bucket(Bucket="cache")
-        yield endpoint
-    finally:
-        urllib.request.urlopen(reset).close()  # noqa: S310 -- as above
-        server.stop()
-
-
 @pytest.fixture(params=["http", "file", "s3", "client-http", "client-file", "client-s3"])
 async def lab(
     tmp_path_factory: pytest.TempPathFactory, request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
@@ -163,7 +109,7 @@ async def lab(
         cache_url = f"file://{cache_dir}"
         s3_url = None
         if request.param.endswith("s3"):
-            endpoint = stack.enter_context(_s3_bucket(monkeypatch, tmp_path / "xdg-cache"))
+            endpoint = stack.enter_context(s3_bucket(monkeypatch, tmp_path / "xdg-cache")).endpoint
             s3_url = cache_url = f"s3://cache?endpoint={endpoint}&region=us-east-1"
         await run_subproc(
             [str(NIX_BIN), "copy", "--no-check-sigs", "--from", str(source), "--to", cache_url, *sorted(held)]
