@@ -49,10 +49,10 @@ async def starts(vm: Machine, unit: str, job: str) -> int:
     return (await read(vm, f"/tmp/{unit}.out")).count(f"tick {job} 0\n")
 
 
-async def handover(vm: Machine, settings: Mapping[str, str], problems: list[str]) -> None:
+async def handover(vm: Machine, builder: Machine, settings: Mapping[str, str], problems: list[str]) -> None:
     drv, out = await long_drv(vm, settings, "handover", BUILD_SECONDS)
     await client_build(vm, "client-handover", drv)
-    if await until(lambda: builder_alive(vm, "handover"), 90) is None:
+    if await until(lambda: running(vm, builder, "handover"), 90) is None:
         problems.append("the build never started")
         return
     old = await main_pid(vm, "pynixd.service")
@@ -93,11 +93,46 @@ async def handover(vm: Machine, settings: Mapping[str, str], problems: list[str]
         problems.append(f"after the drain the unit is {state} with main {await main_pid(vm, 'pynixd.service')}")
 
 
+async def running(vm: Machine, builder: Machine, job: str) -> bool:
+    """Whether the build runs on this guest or on the reverse builder: the scheduler picks either."""
+    return await builder_alive(vm, job) or await builder_alive(builder, job)
+
+
 async def _gone(vm: Machine, pid: str) -> bool:
     return not await alive(vm, pid)
 
 
-async def broken(vm: Machine, settings: Mapping[str, str], problems: list[str]) -> None:
+async def remote(vm: Machine, builder: Machine, settings: Mapping[str, str], problems: list[str]) -> None:
+    """2: a build on a reverse builder completes across the switch, and the builder then serves the new main."""
+    features = [settings["remoteFeature"]]
+    drv, out = await long_drv(vm, settings, "remote", BUILD_SECONDS, features)
+    await client_build(vm, "client-remote", drv)
+    if await until(lambda: builder_alive(builder, "remote"), 120) is None:
+        problems.append("the remote build never started on the builder")
+        return
+    old = await main_pid(vm, "pynixd.service")
+    done = await vm.switch_to("c", check=False)
+    print(f"[test] switch to c: exit {done.returncode}")
+    if done.returncode != 0:
+        problems.append(f"switch exited {done.returncode}")
+    rc, tail = await client_outcome(vm, "client-remote", BUILD_SECONDS + 120)
+    print(f"[test] remote client: rc {rc}: {tail}")
+    if rc != "0" or not await valid(vm, out):
+        problems.append(f"the remote build failed: rc {rc}: {tail}")
+    count = await starts(vm, "client-remote", "remote")
+    if count != 1:
+        problems.append(f"the remote build started {count} times")
+    if await until(lambda: _gone(vm, old), 60) is None:
+        problems.append(f"the old process {old} still runs after its remote build")
+    # The builder left the old process and registered with the new one.
+    after, after_out = await long_drv(vm, settings, "remote-after", 2, features)
+    await client_build(vm, "client-remote-after", after)
+    rc, tail = await client_outcome(vm, "client-remote-after", 120)
+    if rc != "0" or not await valid(vm, after_out):
+        problems.append(f"the new main got no build onto the builder: rc {rc}: {tail}")
+
+
+async def broken(vm: Machine, _builder: Machine, settings: Mapping[str, str], problems: list[str]) -> None:
     """7: a successor that cannot start fails the reload, and the old main serves on."""
     old = await main_pid(vm, "pynixd.service")
     done = await vm.switch_to("broken", check=False)
@@ -113,11 +148,11 @@ async def broken(vm: Machine, settings: Mapping[str, str], problems: list[str]) 
         problems.append(f"the old main did not serve after the failed reload: rc {rc}: {tail}")
 
 
-async def control(vm: Machine, settings: Mapping[str, str], problems: list[str]) -> None:
+async def control(vm: Machine, builder: Machine, settings: Mapping[str, str], problems: list[str]) -> None:
     """6: without the hand-over, the same switch kills the build."""
     drv, _ = await long_drv(vm, settings, "control", BUILD_SECONDS)
     await client_build(vm, "client-control", drv)
-    if await until(lambda: builder_alive(vm, "control"), 90) is None:
+    if await until(lambda: running(vm, builder, "control"), 90) is None:
         problems.append("the build never started")
         return
     done = await vm.switch_to("control", check=False)
@@ -128,12 +163,11 @@ async def control(vm: Machine, settings: Mapping[str, str], problems: list[str])
         problems.append(f"the control build did not fail as a restart fails it: rc {rc}: {tail}")
 
 
-PHASES = {"handover": handover, "broken": broken, "control": control}
+PHASES = {"handover": handover, "remote": remote, "broken": broken, "control": control}
 
 
 async def test(vms: Machines) -> None:
-    vm = vms.machine
     problems: list[str] = []
-    await PHASES[vms.phase or ""](vm, vms.settings, problems)
+    await PHASES[vms.phase or ""](vms.machine, vms.builder, vms.settings, problems)
     if problems:
         raise AssertionError("\n".join(problems))

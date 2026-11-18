@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shlex
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 
 import anyio
 from daemon_helpers import as_tester, store_path
@@ -13,8 +13,10 @@ from vivarium_runner import Machine
 BUILD_SECONDS = 40
 
 
-async def long_drv(vm: Machine, settings: Mapping[str, str], job: str, seconds: int = BUILD_SECONDS) -> tuple[str, str]:
-    """A derivation that ticks once a second for `seconds`: its `.drv` and its output."""
+async def long_drv(
+    vm: Machine, settings: Mapping[str, str], job: str, seconds: int = BUILD_SECONDS, features: Sequence[str] = ()
+) -> tuple[str, str]:
+    """A derivation that ticks once a second for `seconds`, needing *features*: its `.drv` and its output."""
     script = (
         f"i=0; while [ $i -lt {seconds} ]; do echo tick {job} $i;"
         f" ${{bb}}/bin/sleep 1; i=$((i+1)); done; echo {job} > $out"
@@ -25,6 +27,7 @@ async def long_drv(vm: Machine, settings: Mapping[str, str], job: str, seconds: 
         f' system = "{settings["system"]}";'
         ' builder = "${bb}/bin/sh";'
         f' args = [ "-c" {nix_string(script)} ];'
+        f" requiredSystemFeatures = [ {' '.join(nix_string(feature) for feature in features)} ];"
         " }"
     )
     drv = store_path(await as_tester(vm, f"nix-instantiate --expr {shlex.quote(expression)}"))

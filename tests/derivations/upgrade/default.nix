@@ -65,6 +65,12 @@ let
             ranking.min_free_bytes = 0;
             # The tag changes the settings file, as a configuration change does.
             stall_traceback_path = "/var/lib/pynixd/stall-${cfg.tag}.txt";
+            # The builder guest registers here; its key is nobody's to pin in a test.
+            reverse_acceptor = {
+              enabled = true;
+              port = acceptorPort;
+              authorized_builder_keys = null;
+            };
           };
         };
         # The control: the same switch, restarting as before the hand-over.
@@ -72,8 +78,12 @@ let
       };
     };
 
+  remoteFeature = "upgrade-remote";
+  acceptorPort = 2235;
+
   phases = [
     "handover"
+    "remote"
     "broken"
     "control"
   ];
@@ -92,7 +102,10 @@ vivariumLib.mkTest {
     busybox = "${pkgs.busybox}";
     system = pkgs.stdenv.hostPlatform.system;
     pynixdB = "${pynixdB}";
+    inherit remoteFeature;
   };
+
+  segments.fleet = { };
 
   phases = lib.listToAttrs (
     lib.imap0 (
@@ -103,6 +116,42 @@ vivariumLib.mkTest {
       }
     ) phases
   );
+
+  # A reverse builder: the only store with `remoteFeature`, so a build that needs it runs here.
+  nodes.builder = {
+    imports = [ ../../../nix/nixos/default.nix ];
+    vivarium.memory = "1024M";
+    services.pynixd = {
+      enable = true;
+      mode = "replace";
+      inherit package;
+      settings = {
+        ranking.min_schedule_score = -1.0e9;
+        ranking.min_free_bytes = 0;
+        reverse_initiator = {
+          enabled = true;
+          acceptor_host = "10.9.0.1";
+          acceptor_port = acceptorPort;
+          systems = [ pkgs.stdenv.hostPlatform.system ];
+          system_features = [ remoteFeature ];
+          max_jobs = 1;
+          reconnect_min_delay = 1.0;
+          reconnect_max_delay = 2.0;
+        };
+      };
+    };
+    nix.settings = {
+      experimental-features = [ "nix-command" ];
+      substituters = lib.mkForce [ ];
+      system-features = [ remoteFeature ];
+    };
+    networking.hosts."127.0.0.1" = [ "cache.nixos.org" ];
+    vivarium.interfaces.eth1 = {
+      segment = "fleet";
+      addresses = [ "10.9.0.2/24" ];
+    };
+    environment.systemPackages = [ pkgs.procps ];
+  };
 
   nodes.machine = {
     imports = [ upgrade ];
@@ -120,11 +169,17 @@ vivariumLib.mkTest {
       substituters = lib.mkForce [ ];
     };
     networking.hosts."127.0.0.1" = [ "cache.nixos.org" ];
+    vivarium.interfaces.eth1 = {
+      segment = "fleet";
+      addresses = [ "10.9.0.1/24" ];
+    };
+    networking.firewall.allowedTCPPorts = [ acceptorPort ];
     vivarium.configurations = {
       b = {
         upgrade.tag = "B";
         upgrade.pynixd = pynixdB;
       };
+      c.upgrade.tag = "C";
       broken = {
         upgrade.tag = "broken";
         upgrade.pynixd = pynixdBroken;
