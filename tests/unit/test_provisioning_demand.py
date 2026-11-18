@@ -4,15 +4,21 @@ from __future__ import annotations
 
 import functools
 
+import pytest
+
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId, StoreId
 from pynixd import state as state_collector
 from pynixd.build_queue import QueuedBuild
-from pynixd.config import PynixdSettings
+from pynixd.command_options import PynixdOption
+from pynixd.config import ProvisioningPoolSettings, ProvisioningSettings, PynixdSettings
+from pynixd.connection import ClientConn
 from pynixd.context import PynixdContext
 from pynixd.provisioning.decide import Pool, Want
 from pynixd.provisioning.demand import launchable, wants
 from pynixd.scheduler import Scheduler
 from pynixd.serde import BasicDerivation, BuildDerivationRequest, BuildMode, BuildResultStatus, StorePath
+from pynixd.session_builders import SessionBuilderError, SessionBuilders
+from pynixd.wire import BytesWriter
 from tests.functional.mock_store import MockStore
 from tests.unit.test_local_build_slots import _options
 
@@ -95,6 +101,77 @@ async def test_a_build_that_names_a_pool_waits_for_it() -> None:
     assert steered.build_id in scheduler.no_candidate
     assert not steered.answer.done()
     assert _waiting(scheduler) == [Want("aarch64-linux", pools=frozenset({"spot"}))]
+
+
+def _steering_scheduler() -> Scheduler:
+    """A scheduler that knows the pool `spot`, with no store for aarch64."""
+    settings = PynixdSettings(
+        provisioning=ProvisioningSettings(
+            pools=[ProvisioningPoolSettings(name="spot", template="t", systems=["aarch64-linux"])]
+        )
+    )
+    store = MockStore("local", feature_matrix={"x86_64-linux": set()})
+    ctx = PynixdContext(settings=settings, _stores={LOCAL_STORE_ID: store})
+    ctx.scheduler = scheduler = Scheduler(ctx)
+    ctx.session_builders = SessionBuilders(settings, "/bin/nix", _no_store, _no_removal, list, _no_pending)
+    scheduler.launchable = functools.partial(launchable, (SPOT,))
+    return scheduler
+
+
+async def _no_store(_store: object) -> bool:
+    return False
+
+
+async def _no_removal(_store_id: StoreId) -> None:
+    return None
+
+
+async def _no_pending() -> list[frozenset[StoreId] | None]:
+    return []
+
+
+def _request(name: str) -> BuildDerivationRequest:
+    return BuildDerivationRequest(
+        drv_path=StorePath(path=f"/nix/store/0000000000000000000000000000000{name}-{name}.drv"),
+        derivation=BasicDerivation(platform="aarch64-linux", builder="", env={}),
+        build_mode=BuildMode.NORMAL,
+    )
+
+
+def _asker(**settings: str) -> ClientConn:
+    asker = ClientConn(BytesWriter("client"))
+    asker.pynixd_options = {PynixdOption(name): value for name, value in settings.items()}
+    return asker
+
+
+async def test_a_pool_named_on_the_ssh_command_steers_the_build() -> None:
+    """An `ssh-ng://` client sends no `SetOptions`; `pynixd-pool` on its SSH command names the pool instead."""
+    scheduler = _steering_scheduler()
+    build_id, answer = await scheduler.build_derivation(
+        _request("1"), options=_options(4), askers=[_asker(**{"pynixd-pool": "spot"})]
+    )
+    build = scheduler.queue.by_id[build_id]
+    assert (build.builders, build.pools) == (frozenset(), frozenset({"spot"}))
+
+    await scheduler.schedule()
+
+    assert not answer.done()
+
+
+async def test_the_same_build_unsteered_fails() -> None:
+    """The control: with no pool named, the pool's mandatory feature refuses it."""
+    scheduler = _steering_scheduler()
+    _build_id, answer = await scheduler.build_derivation(_request("1"), options=_options(4), askers=[_asker()])
+
+    await scheduler.schedule()
+
+    assert answer.done()
+
+
+async def test_an_unknown_pool_on_the_ssh_command_is_refused() -> None:
+    scheduler = _steering_scheduler()
+    with pytest.raises(SessionBuilderError, match="no provisioning pool 'spto'"):
+        await scheduler.build_derivation(_request("1"), options=_options(4), askers=[_asker(**{"pynixd-pool": "spto"})])
 
 
 async def test_a_build_that_launches_nothing_still_waits_for_a_pool() -> None:

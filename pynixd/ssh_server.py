@@ -15,12 +15,14 @@ import asyncssh
 import structlog
 
 from . import wire
+from .command_options import parse_command
 from .config import ScheduleMode
 from .constants import SSH_ENCRYPTION_ALGS, SSH_KEEPALIVE_COUNT_MAX, SSH_KEEPALIVE_INTERVAL
 from .hangup import ssh_hangup
 from .proxy import DaemonProxy
 from .serde.auth import Role
 from .sftp_server import PSIMonitorSFTPServer
+from .trust import warning_text
 from .wire import SSHNixReader, SSHNixWriter
 
 if TYPE_CHECKING:
@@ -175,6 +177,10 @@ async def start_ssh_server(
         exit_code = 0
         username = str(process.get_extra_info("username", "unknown"))
         role: Role = process.get_extra_info(_ROLE_INFO, Role.USER)
+        settings = parse_command(cmd, role)
+        for warning in settings.warnings:
+            # Before the handshake, so not a log message: ssh prints the channel's stderr to the client.
+            process.stderr.write(warning_text(warning).encode())
         try:
             proxy = DaemonProxy(
                 SSHNixReader(process.stdin, identifier="client"),
@@ -186,6 +192,7 @@ async def start_ssh_server(
                 transport="ssh",
                 hangup=ssh_hangup(process),
             )
+            proxy.client.pynixd_options = settings.options
             await proxy.run()
         except Exception:
             log.exception("proxy_session_failed")

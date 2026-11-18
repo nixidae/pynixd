@@ -31,6 +31,7 @@ from .allocator import (
     TelemetryStoreRanker,
 )
 from .build_queue import BuildQueue, QueuedBuild
+from .command_options import PynixdOption
 from .exceptions import error_text
 from .execution import Executor
 from .placement import (
@@ -271,6 +272,12 @@ class Scheduler:
             target = await self.ctx.session_builders.stores_for(value)
             if target is not None:
                 builders, pools = target.stores, target.pools
+        named = next((c.pynixd_options[PynixdOption.POOL] for c in askers if PynixdOption.POOL in c.pynixd_options), "")
+        if named and self.ctx.session_builders is not None:
+            pools |= self.ctx.session_builders.named_pools(name for name in named.split(",") if name)
+            if builders is None:
+                # Not `None`: the build runs on its pools and the local store only.
+                builders = frozenset()
 
         res = await self.queue.enqueue(
             request,

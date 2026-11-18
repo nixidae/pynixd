@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from nix_daemon_protocol.wire_ops import WireRequest
     from pynixd_store.local_store_db import SyncReader
 
+    from .command_options import PynixdOption
     from .serde import SetOptionsRequest
     from .wire import (
         NixReader,
@@ -97,6 +98,8 @@ class ClientConn:
         self.on_this_machine = False
         """Whether the client runs on this machine: a Unix socket session, or recursive Nix from a local build.
         `DaemonProxy` sets it from its transport."""
+        self.pynixd_options: dict[PynixdOption, str] = {}
+        """pynixd's own settings for the session, from the SSH command (`command_options`). Never sent upstream."""
         self.options: SetOptionsRequest | None = None
         """The options that this client set for its session.
 

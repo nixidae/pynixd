@@ -189,6 +189,14 @@ class SessionBuilders:
         # reopen during the close registers a store that the close then forgets.
         self._lock = anyio.Lock()
 
+    def named_pools(self, names: Iterable[str]) -> frozenset[str]:
+        """*names* as provisioning pools; raises `SessionBuilderError` for a name no pool has."""
+        wanted = frozenset(names)
+        known = {pool.name for pool in self.settings.provisioning.pools}
+        for name in sorted(wanted - known):
+            raise SessionBuilderError(f"pynixd has no provisioning pool '{name}'")
+        return wanted
+
     async def stores_for(self, builders: str) -> SessionTarget | None:
         """The stores and pools of *builders*, or `None` when it names neither; raises `MachinesError`."""
         async with self._lock:
@@ -206,10 +214,7 @@ class SessionBuilders:
             pools: set[str] = set()
             for machine in machines:
                 if machine.reference.scheme == POOL_SCHEME:
-                    name = machine.reference.authority
-                    if name not in {pool.name for pool in self.settings.provisioning.pools}:
-                        raise SessionBuilderError(f"pynixd has no provisioning pool '{name}'")
-                    pools.add(name)
+                    pools |= self.named_pools([machine.reference.authority])
                     continue
                 spec = builder_spec(machine, self.settings, self.nix_bin)
                 if spec.store_id is None:

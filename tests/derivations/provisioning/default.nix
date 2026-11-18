@@ -68,6 +68,12 @@ vivariumLib.mkTest {
   nodes.controller = {
     imports = [
       (pynixdNode {
+        # The `ssh-options` phase writes both files; the listener reads them at each login.
+        # `nix/common.nix` turns the listener off by default.
+        ssh_host = "127.0.0.1";
+        ssh_port = 2234;
+        ssh_admin_keys = [ "/etc/pynixd-ssh/admin" ];
+        ssh_user_keys = [ "/etc/pynixd-ssh/users" ];
         reverse_acceptor = {
           enabled = true;
           port = acceptorPort;
@@ -106,6 +112,7 @@ vivariumLib.mkTest {
     networking.firewall.allowedTCPPorts = [ acceptorPort ];
     environment.systemPackages = [
       pkgs.curl
+      pkgs.openssh
       pkgs.sqlite
     ];
     users.users.tester = {
@@ -146,9 +153,13 @@ vivariumLib.mkTest {
     script = ../../provisioning/steer.py;
     after = [ "provision" ];
   };
+  phases.ssh-options = {
+    script = ../../provisioning/ssh_options.py;
+    after = [ "steer" ];
+  };
   phases.interrupt = {
     script = ../../provisioning/interrupt.py;
-    after = [ "steer" ];
+    after = [ "ssh-options" ];
   };
   phases.crash = {
     script = ../../provisioning/crash.py;
