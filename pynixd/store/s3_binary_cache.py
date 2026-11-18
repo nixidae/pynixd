@@ -25,7 +25,7 @@ from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from pynixd_store.s3_url import DEFAULT_REGION
 from pynixd_store.signing import PublicKey, SecretKey, check_signatures, sign_path_info
 
-from ..exceptions import CacheFault, CacheUnopened
+from ..exceptions import CacheFault, CacheUnopened, PathGone
 from ..serde import QueryPathInfoRequest
 from .binary_cache import parse_cache_info
 from .daemon import DaemonStore
@@ -240,7 +240,7 @@ class S3BinaryCacheStore(HTTPBinaryCacheStore):
         # An upload reads a GC candidate: marking it would make it fresh again.
         resp = await (local.execute(request, mark=False) if isinstance(local, LocalDBStore) else local.execute(request))
         if not resp.valid or resp.info is None:
-            raise CacheFault(f"{path} is not valid in {local.store_id}")
+            raise PathGone(f"{path} is not valid in {local.store_id}")
         info = ValidPathInfo(path=path, info=resp.info)
         signature = Signature(sign_path_info(key, info))
         info = ValidPathInfo(path=path, info=info.info.model_copy(update={"sigs": {*info.info.sigs, signature}}))

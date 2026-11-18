@@ -22,6 +22,7 @@ from pynixd_store.gc import GarbagePlanner
 from pynixd_store.gc_sql import referrer_first
 
 from .daemon_extensions import QueryClosureRequest
+from .exceptions import PathGone
 from .store.local_db import LocalDBStore
 from .store.s3_binary_cache import S3BinaryCacheStore
 from .store.s3_upload import Uploaded
@@ -96,13 +97,14 @@ class ColdTier:
     async def upload_closure(self, paths: Collection[StorePath]) -> ClosureUpload:
         """Put the closure of *paths* in the bucket, minus what a stable store holds, references first.
 
-        Raises `CacheFault` at the first refusal; each path uploaded before it stays recorded.
+        Raises `CacheFault` at the first refusal, and `PathGone` when a path left the local store; each path
+        uploaded before it stays recorded.
         """
         db = self._db()
         answer: QueryClosureResponse = await self._unmarked(QueryClosureRequest(paths=set(paths)))
         closure = {str(path) for path in answer.paths}
         if not {str(path) for path in paths} <= closure:
-            raise ValueError(f"{self.local.store_id} answered a closure without its seeds")
+            raise PathGone(f"{self.local.store_id} answered a closure without its seeds")
         recorded = await db.held_by.held(self.keys, closure)
         todo = closure - recorded
         now = int(time.time())
@@ -117,7 +119,7 @@ class ColdTier:
         infos: QueryPathInfosResponse = await self._unmarked(QueryPathInfosRequest(paths={StorePath(p) for p in todo}))
         references = {str(info.path): {str(ref) for ref in info.info.references} for info in infos.infos}
         if references.keys() != todo:
-            raise ValueError(f"{self.local.store_id} answered no path info for {sorted(todo - references.keys())[:3]}")
+            raise PathGone(f"{self.local.store_id} answered no path info for {sorted(todo - references.keys())[:3]}")
         counts = {Uploaded.UPLOADED: 0, Uploaded.PRESENT: 0}
         for path in reversed(referrer_first(sorted(todo), references)):
             outcome = await self.cold.upload(self.local, StorePath(path))

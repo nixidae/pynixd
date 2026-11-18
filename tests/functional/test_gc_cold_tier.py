@@ -216,3 +216,27 @@ async def test_a_client_with_its_own_list_still_gets_an_evicted_path(
                 await conn.call(set_options(overrides={names: overrides[names]}), raise_on_error=True)
                 await conn.call(EnsurePathRequest(path=StorePath(lab.parent)), raise_on_error=True)
     assert {lab.parent, lab.child} <= await _valid(lab.store_path)
+
+
+async def test_a_path_gone_before_its_upload_skips_only_itself(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The plan closes before the uploads start, so another delete can take a planned path first.
+
+    The round goes on with the rest: one gone path must not end the cold loop, nor the daemon with it.
+    """
+    lab = await _lab(tmp_path)
+    with s3_bucket(monkeypatch, tmp_path / "xdg-cache") as bucket:
+        async with _pynixd(lab, tmp_path, bucket.endpoint, target=1e-9) as (server, tier):
+            upload = tier.upload_closure
+
+            async def racing(paths: set[StorePath]) -> object:
+                if StorePath(lab.stale) in paths:
+                    await _nix("store", "delete", "--store", str(lab.store_path), lab.stale)
+                return await upload(paths)
+
+            monkeypatch.setattr(tier, "upload_closure", racing)
+            await Collector(server.ctx).upload_ahead(tier, 2**62, 1.0)
+            assert await tier.covered({lab.stale, lab.parent, lab.child, lab.fresh}) == {
+                lab.parent,
+                lab.child,
+                lab.fresh,
+            }

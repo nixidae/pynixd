@@ -55,7 +55,7 @@ from .daemon_extensions import (
     PynixdGCAction,
     QueryClosureRequest,
 )
-from .exceptions import BackendError, GCNotPermittedError, PynixdError
+from .exceptions import BackendError, GCNotPermittedError, PathGone, PynixdError
 from .store.local_db import LocalDBStore
 
 if TYPE_CHECKING:
@@ -353,10 +353,16 @@ class Collector:
             total += size
             if path not in covered:
                 head.append(path)
+        uploaded = 0
         for path in head:
-            await tier.upload_closure({StorePath(path)})
-        log.info("gc_cold_ahead", seeds=len(head), budget=budget, planned=len(rows), covered=len(covered))
-        return len(head)
+            try:
+                await tier.upload_closure({StorePath(path)})
+            except PathGone:
+                log.info("gc_cold_ahead_gone", path=path)
+                continue
+            uploaded += 1
+        log.info("gc_cold_ahead", seeds=uploaded, budget=budget, planned=len(rows), covered=len(covered))
+        return uploaded
 
     @asynccontextmanager
     async def _open_plan(
