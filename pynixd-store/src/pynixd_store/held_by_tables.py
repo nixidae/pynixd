@@ -27,6 +27,13 @@ class HeldByTables:
                 session.sql.held_by.record, {"store": store, "paths": codec.path_set(sorted(paths)), "at": at}
             )
 
+    async def forget(self, store: str, paths: Collection[str]) -> None:
+        if not paths:
+            return
+        async with self._db.transaction() as session:
+            codec = session.sql.codec
+            await session.execute(session.sql.held_by.forget, {"store": store, "paths": codec.path_set(sorted(paths))})
+
     async def held(self, stores: Collection[str], paths: Collection[str]) -> set[str]:
         """The paths of *paths* that any of *stores* holds."""
         if not stores or not paths:

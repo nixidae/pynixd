@@ -55,7 +55,7 @@ from .daemon_extensions import (
     PynixdGCAction,
     QueryClosureRequest,
 )
-from .exceptions import BackendError, GCNotPermittedError, PathGone, PynixdError
+from .exceptions import BackendError, CacheFault, GCNotPermittedError, PathGone, PynixdError
 from .store.local_db import LocalDBStore
 
 if TYPE_CHECKING:
@@ -325,7 +325,33 @@ class Collector:
             return self._answered(empty, lines)
         # The plan's connection is closed by here: the deletes below must not
         # run under its read transaction.
+        if tier is not None and not await self._cold_still_holds(tier, batch, lines, client):
+            return self._answered(empty, lines)
         return await self._delete(batch, weights, lines, client)
+
+    async def _cold_still_holds(
+        self, tier: ColdTier, batch: list[str], lines: list[LogNext], client: ClientConn | None
+    ) -> bool:
+        """Whether the bucket still holds every path of *batch* its record covers.
+
+        One missing path stops the whole pass: dropping it from the batch would leave its referrers in the
+        batch, and the next plan, without its row, keeps it and them.
+        """
+        try:
+            gone = await tier.missing(batch)
+        except CacheFault:
+            log.warning("gc_cold_verify_failed", store_id=tier.cold.store_id, exc_info=True)
+            text = "the cold tier could not answer for its paths: this pass deletes nothing"
+        else:
+            if not gone:
+                return True
+            log.warning("gc_cold_lost_paths", store_id=tier.cold.store_id, paths=len(gone), first=sorted(gone)[:3])
+            text = f"the cold tier no longer holds {len(gone)} recorded paths: this pass deletes nothing"
+        line = LogNext(text=text)
+        lines.append(line)
+        if client is not None:
+            await client.send(line)
+        return False
 
     async def upload_ahead(self, tier: ColdTier, budget: int, pressure: float) -> int:
         """Upload the closures of the paths a pressed pass would delete first, up to *budget* bytes of them.

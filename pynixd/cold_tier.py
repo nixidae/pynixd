@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import time
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
+import anyio
 import structlog
 
 from nix_daemon_protocol import QueryValidPathsRequest, StorePath
@@ -40,6 +41,9 @@ if TYPE_CHECKING:
     from .store.local_daemon import LocalStore
 
 log = structlog.get_logger(__name__)
+
+VERIFY_CONCURRENCY: Final = 16
+"""HEAD requests in flight while a pass asks the bucket for its recorded paths."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +91,32 @@ class ColdTier:
     async def covered(self, paths: Collection[str]) -> set[str]:
         """The paths of *paths* the record shows held by the cold tier or a stable store."""
         return await self._db().held_by.held(self.keys, paths)
+
+    async def missing(self, paths: Collection[str]) -> set[str]:
+        """The paths of *paths* that only the bucket's record covers and the bucket no longer holds.
+
+        Their rows go, so the next plan keeps them. With `gc_cold_verify` off the record stands unasked.
+        Raises `CacheFault` when the bucket cannot answer.
+        """
+        if not self.cold.gc_cold_verify:
+            return set()
+        db = self._db()
+        stable = await db.held_by.held({store.held_key for store in self.stable}, paths)
+        ask = sorted(await db.held_by.held({self.cold.held_key}, paths) - stable)
+        gone: set[str] = set()
+        limiter = anyio.CapacityLimiter(VERIFY_CONCURRENCY)
+
+        async def one(path: str) -> None:
+            async with limiter:
+                if not await self.cold.holds(StorePath(path)):
+                    gone.add(path)
+
+        async with anyio.create_task_group() as tg:
+            for path in ask:
+                tg.start_soon(one, path)
+        await db.held_by.forget(self.cold.held_key, gone)
+        log.info("cold_verified", store_id=self.cold.store_id, asked=len(ask), gone=len(gone))
+        return gone
 
     async def _unmarked(self, request: WireRequest) -> Any:  # noqa: ANN401 -- `Store.execute` answers the request's own response type
         # Reading a candidate must not freshen it: the access date is what ages it out.

@@ -13,6 +13,8 @@ class HeldBySql:
     """`store`, `paths` (a path set), `at`: one row per path; a second answer moves its time."""
     held: str
     """`paths`, `stores` (path sets): the paths that any of the stores holds."""
+    forget: str
+    """`store`, `paths` (a path set): the rows of paths the store no longer holds."""
 
 
 SQLITE = HeldBySql(
@@ -25,6 +27,7 @@ ON CONFLICT (store, path) DO UPDATE SET recordedAt = excluded.recordedAt
 SELECT DISTINCT path FROM {T}
 WHERE store IN (SELECT value FROM json_each(:stores)) AND path IN (SELECT value FROM json_each(:paths))
 """,
+    forget=f"DELETE FROM {T} WHERE store = :store AND path IN (SELECT value FROM json_each(:paths))",
 )
 
 POSTGRES = HeldBySql(
@@ -33,4 +36,5 @@ INSERT INTO {T} (store, path, recordedAt) SELECT %(store)s, p, %(at)s FROM unnes
 ON CONFLICT (store, path) DO UPDATE SET recordedAt = excluded.recordedAt
 """,
     held=f"SELECT DISTINCT path FROM {T} WHERE path = ANY(%(paths)s) AND store = ANY(%(stores)s)",
+    forget=f"DELETE FROM {T} WHERE store = %(store)s AND path = ANY(%(paths)s)",
 )

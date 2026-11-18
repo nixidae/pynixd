@@ -95,6 +95,7 @@ class S3BinaryCacheStore(HTTPBinaryCacheStore):
         self.compression = spec.compression
         self.chunk_size = spec.multipart_chunk_size
         self.gc_cold = spec.gc_cold
+        self.gc_cold_verify = spec.gc_cold_verify
         self._secret_key: SecretKey | None = None
         self._credentials: Credentials | None = None
         if "." in spec.bucket and spec.addressing_style == "auto" and spec.endpoint is None:
@@ -230,12 +231,9 @@ class S3BinaryCacheStore(HTTPBinaryCacheStore):
         if not isinstance(local, (DaemonStore, LocalDBStore)):
             raise TypeError(f"{local.store_id} serves no NARs to upload")
         name = f"{path.hash_part()}.narinfo"
-        status, _ = await self._send("HEAD", name)
-        if status == 200:
+        if await self.holds(path):
             log.debug("s3_upload_present", store_id=self.store_id, path=str(path))
             return Uploaded.PRESENT
-        if status != 404:
-            raise CacheFault(f"HEAD {name} in '{self.store_id}': HTTP {status}")
         request = QueryPathInfoRequest(path=path)
         # An upload reads a GC candidate: marking it would make it fresh again.
         resp = await (local.execute(request, mark=False) if isinstance(local, LocalDBStore) else local.execute(request))
@@ -251,6 +249,14 @@ class S3BinaryCacheStore(HTTPBinaryCacheStore):
         self.add_path_info(info)
         log.info("s3_uploaded", store_id=self.store_id, path=str(path), nar_size=info.info.nar_size, size=digest.size)
         return Uploaded.UPLOADED
+
+    async def holds(self, path: StorePath) -> bool:
+        """Whether the bucket has *path*'s narinfo now, asked with a HEAD; `CacheFault` when it cannot say."""
+        name = f"{path.hash_part()}.narinfo"
+        status, _ = await self._send("HEAD", name)
+        if status in (200, 404):
+            return status == 200
+        raise CacheFault(f"HEAD {name} in '{self.store_id}': HTTP {status}")
 
     async def _put_nar(self, local: DaemonStore | LocalDBStore, info: ValidPathInfo, name: str) -> FileDigest:
         """The NAR of *info*, compressed, into object *name*: one PUT when it fits a part, else a multipart upload."""

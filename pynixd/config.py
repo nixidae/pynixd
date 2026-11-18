@@ -1390,6 +1390,12 @@ class S3BinaryCacheSpec(BinaryCacheSpecBase):
 
     Needs `secret_key`. One store at most carries it. nixidae/nixidae#1417.
     """
+    gc_cold_verify: bool = True
+    """Ask the bucket for each recorded path before a pass deletes it locally: one HEAD a path.
+
+    Off, the record alone admits a delete. That holds while nothing removes objects from the bucket: no
+    lifecycle rule, no hand.
+    """
 
     @model_validator(mode="after")
     def _cold_writes(self) -> Self:

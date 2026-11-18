@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 import anyio
+import botocore.session
 import pytest
 
 from nix_daemon_protocol.ensure_path import EnsurePathRequest
@@ -61,6 +62,7 @@ async def _pynixd(
     target: float | None = None,
     nix_config: NixConfig | None = None,
     cold_interval: float = 900.0,
+    verify: bool = True,
 ) -> AsyncIterator[tuple[Server, ColdTier]]:
     key = tmp_path / "cold.sec"
     await _key(tmp_path)
@@ -74,7 +76,9 @@ async def _pynixd(
         gc_target_usage=target,
         gc_allow_execute=True,
     )
-    cold = S3BinaryCacheSpec(bucket="cache", endpoint=endpoint, region="us-east-1", secret_key=key, gc_cold=True)
+    cold = S3BinaryCacheSpec(
+        bucket="cache", endpoint=endpoint, region="us-east-1", secret_key=key, gc_cold=True, gc_cold_verify=verify
+    )
     stores: dict[StoreId, Store] = {StoreId("local"): LocalDBStore(spec), StoreId("cold"): cold.to_store("cold")}
     async with Server(
         stores=stores, unix_path=_socket(tmp_path), ssh_port=None, http_port=None, gc_cold_interval=cold_interval
@@ -274,3 +278,30 @@ async def test_the_cold_loop_outlives_a_failed_round(tmp_path: Path, monkeypatch
                 await second.wait()
             assert rounds == ["refused", "uploaded"]
             assert dead <= await tier.covered(dead | {lab.rooted})
+
+
+@pytest.mark.parametrize("verify", [True, False], ids=["verify", "trust-the-record"])
+async def test_a_path_the_bucket_lost_stays(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verify: bool) -> None:
+    """Someone removes `parent`'s narinfo from the bucket after the upload recorded it.
+
+    With `gc_cold_verify` the pass asks the bucket, deletes nothing and forgets the row; the next pass keeps
+    `parent` and the `child` it names. The control: trusting the record deletes both, and `parent` is lost.
+    """
+    lab = await _lab(tmp_path)
+    with s3_bucket(monkeypatch, tmp_path / "xdg-cache") as bucket:
+        async with _pynixd(lab, tmp_path, bucket.endpoint, verify=verify) as (server, tier):
+            await tier.upload_closure({StorePath(lab.parent), StorePath(lab.stale)})
+            s3 = botocore.session.get_session().create_client(
+                "s3", endpoint_url=bucket.endpoint, region_name="us-east-1"
+            )
+            s3.delete_object(Bucket="cache", Key=f"{StorePath(lab.parent).hash_part()}.narinfo")
+            first = await Collector(server.ctx).run(PynixdGCAction.EXECUTE)
+            if verify:
+                assert first.store_paths == set()
+                assert await tier.covered({lab.parent, lab.child, lab.stale}) == {lab.child, lab.stale}
+                second = await Collector(server.ctx).run(PynixdGCAction.EXECUTE)
+                assert {str(path) for path in second.store_paths} == {lab.stale}
+                assert {lab.parent, lab.child} <= await _valid(lab.store_path)
+            else:
+                assert {str(path) for path in first.store_paths} == {lab.stale, lab.parent, lab.child}
+                assert lab.parent not in await _valid(lab.store_path)
