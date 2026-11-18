@@ -56,6 +56,9 @@ async def handover(vm: Machine, builder: Machine, settings: Mapping[str, str], p
     if await until(lambda: running(vm, builder, "handover"), 90) is None:
         problems.append("the build never started")
         return
+    # One connection reused for 40 requests, 2 a second: a keep-alive scraper across the switch.
+    urls = " ".join(["http://127.0.0.1:8080/nix-cache-info"] * 40)
+    await background(vm, "scraper", f"/run/current-system/sw/bin/curl --fail --silent --rate 2/s {urls}")
     old = await main_pid(vm, "pynixd.service")
     done = await vm.switch_to("b", check=False)
     print(f"[test] switch to b: exit {done.returncode}\n{done.stdout}\n{done.stderr}")
@@ -86,6 +89,9 @@ async def handover(vm: Machine, builder: Machine, settings: Mapping[str, str], p
     count = await starts(vm, "client-handover", "handover")
     if count != 1:
         problems.append(f"the build started {count} times")
+    rc, tail = await client_outcome(vm, "scraper", 60)
+    if rc != "0":
+        problems.append(f"the keep-alive HTTP client failed across the switch: rc {rc}: {tail}")
     # 5: the old process ends once its work does, and the unit stays with the new main.
     if await until(lambda: _gone(vm, old), 60) is None:
         problems.append(f"the old process {old} still runs after its build")
@@ -242,6 +248,24 @@ async def refused(vm: Machine, builder: Machine, settings: Mapping[str, str], pr
         problems.append(f"no remote build after the builder restarted: rc {rc}: {tail}")
 
 
+async def rollout(vm: Machine, _builder: Machine, _settings: Mapping[str, str], problems: list[str]) -> None:
+    """The first switch from a pynixd with no control socket restarts it, as before the hand-over."""
+    for name in ("legacy", "g"):
+        old = await main_pid(vm, "pynixd.service")
+        done = await vm.switch_to(name, check=False)
+        print(f"[test] switch to {name}: exit {done.returncode}")
+        if done.returncode != 0:
+            problems.append(f"switch to {name} exited {done.returncode}")
+        if await until(lambda old=old: _moved(vm, old), 60) is None:
+            problems.append(f"the main pid did not move on the switch to {name}")
+    state = (await vm.succeed("systemctl show -P ActiveState pynixd.service")).stdout.strip()
+    if state != "active":
+        problems.append(f"after the rollout the unit is {state}")
+    journal = (await vm.succeed("journalctl --no-pager -o cat -u pynixd.service")).stdout
+    if "no pynixd answers on" not in journal:
+        problems.append("the switch from the legacy pynixd did not fall back to a restart")
+
+
 async def _moved(vm: Machine, pid: str) -> bool:
     current = await main_pid(vm, "pynixd.service")
     return current not in ("0", pid)
@@ -253,6 +277,7 @@ PHASES = {
     "idle": idle,
     "again": again,
     "refused": refused,
+    "rollout": rollout,
     "broken": broken,
     "control": control,
 }

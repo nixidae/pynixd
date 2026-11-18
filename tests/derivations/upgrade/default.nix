@@ -65,6 +65,8 @@ let
             ranking.min_free_bytes = 0;
             # The tag changes the settings file, as a configuration change does.
             stall_traceback_path = "/var/lib/pynixd/stall-${cfg.tag}.txt";
+            # A keep-alive client holds a connection here across a switch.
+            http_port = 8080;
             # The builder guest registers here; its key is nobody's to pin in a test.
             reverse_acceptor = {
               enabled = true;
@@ -87,6 +89,7 @@ let
     "idle"
     "again"
     "refused"
+    "rollout"
     "broken"
     "control"
   ];
@@ -169,6 +172,7 @@ vivariumLib.mkTest {
     environment.systemPackages = [
       pkgs.iproute2
       pkgs.procps
+      pkgs.curl
     ];
     nix.settings = {
       experimental-features = [ "nix-command" ];
@@ -189,6 +193,12 @@ vivariumLib.mkTest {
       d.upgrade.tag = "D";
       e.upgrade.tag = "E";
       f.upgrade.tag = "F";
+      # As a pynixd from before the hand-over: no control socket.
+      legacy = {
+        upgrade.tag = "legacy";
+        services.pynixd.settings.handover_path = lib.mkForce null;
+      };
+      g.upgrade.tag = "G";
       broken = {
         upgrade.tag = "broken";
         upgrade.pynixd = pynixdBroken;
