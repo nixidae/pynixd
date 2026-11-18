@@ -10,6 +10,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
+import anyio
 import pytest
 
 from nix_daemon_protocol.ensure_path import EnsurePathRequest
@@ -20,7 +21,7 @@ from pynixd.cold_tier import ColdTier
 from pynixd.config import S3BinaryCacheSpec
 from pynixd.connection import Connection
 from pynixd.daemon_extensions import PynixdGCAction
-from pynixd.exceptions import BackendError
+from pynixd.exceptions import BackendError, CacheFault
 from pynixd.gc import Collector
 from pynixd.store import LocalDBStore, Store
 from pynixd.unix_socket import open_unix_connection
@@ -54,7 +55,12 @@ async def _key(tmp_path: Path) -> str:
 
 @asynccontextmanager
 async def _pynixd(
-    lab: _Lab, tmp_path: Path, endpoint: str, target: float | None = None, nix_config: NixConfig | None = None
+    lab: _Lab,
+    tmp_path: Path,
+    endpoint: str,
+    target: float | None = None,
+    nix_config: NixConfig | None = None,
+    cold_interval: float = 900.0,
 ) -> AsyncIterator[tuple[Server, ColdTier]]:
     key = tmp_path / "cold.sec"
     await _key(tmp_path)
@@ -70,7 +76,9 @@ async def _pynixd(
     )
     cold = S3BinaryCacheSpec(bucket="cache", endpoint=endpoint, region="us-east-1", secret_key=key, gc_cold=True)
     stores: dict[StoreId, Store] = {StoreId("local"): LocalDBStore(spec), StoreId("cold"): cold.to_store("cold")}
-    async with Server(stores=stores, unix_path=_socket(tmp_path), ssh_port=None, http_port=None) as server:
+    async with Server(
+        stores=stores, unix_path=_socket(tmp_path), ssh_port=None, http_port=None, gc_cold_interval=cold_interval
+    ) as server:
         _freeze_tracker(server)
         scheduler = server.ctx.scheduler
         assert scheduler is not None
@@ -240,3 +248,29 @@ async def test_a_path_gone_before_its_upload_skips_only_itself(tmp_path: Path, m
                 lab.child,
                 lab.fresh,
             }
+
+
+async def test_the_cold_loop_outlives_a_failed_round(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The loop the server starts: a round the bucket refuses is skipped, and the next one uploads."""
+    lab = await _lab(tmp_path)
+    rounds: list[str] = []
+    second = anyio.Event()
+    upload_ahead = Collector.upload_ahead
+
+    async def flaky(collector: Collector, tier: ColdTier, budget: int, pressure: float) -> int:
+        if not rounds:
+            rounds.append("refused")
+            raise CacheFault("refused by the test")
+        uploaded = await upload_ahead(collector, tier, budget, pressure)
+        rounds.append("uploaded")
+        second.set()
+        return uploaded
+
+    monkeypatch.setattr(Collector, "upload_ahead", flaky)
+    dead = {lab.stale, lab.parent, lab.child}
+    with s3_bucket(monkeypatch, tmp_path / "xdg-cache") as bucket:
+        async with _pynixd(lab, tmp_path, bucket.endpoint, cold_interval=0.5) as (_server, tier):
+            with anyio.fail_after(30):
+                await second.wait()
+            assert rounds == ["refused", "uploaded"]
+            assert dead <= await tier.covered(dead | {lab.rooted})
