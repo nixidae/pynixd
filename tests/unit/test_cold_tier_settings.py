@@ -50,3 +50,21 @@ def test_two_cold_stores_are_refused_when_the_settings_load(tmp_path: Path) -> N
     stores = {"a": _cold(tmp_path / "a.sec"), "b": _cold(tmp_path / "b.sec", bucket="other")}
     with pytest.raises(ValidationError, match="one gc_cold store at most, and a, b set it"):
         PynixdSettings.model_validate({"stores": stores})
+
+
+def test_the_endpoint_comes_from_a_file_that_names_the_account(tmp_path: Path) -> None:
+    secret = tmp_path / "endpoint"
+    secret.write_text("https://account.eu.r2.cloudflarestorage.com\n")
+    document = _cold(tmp_path / "cold.sec", endpoint_file=str(secret))
+    del document["endpoint"]
+    spec = PynixdSettings.model_validate({"stores": {"cold": document}}).stores["cold"]
+    assert isinstance(spec, S3BinaryCacheSpec)
+    assert "account" not in spec.model_dump_json(exclude={"settings"})
+    assert spec.url() == "https://account.eu.r2.cloudflarestorage.com/dynhetz-store/"
+
+
+def test_an_endpoint_and_an_endpoint_file_are_refused_together(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="endpoint_file"):
+        PynixdSettings.model_validate(
+            {"stores": {"cold": _cold(tmp_path / "cold.sec", endpoint_file=str(tmp_path / "endpoint"))}}
+        )

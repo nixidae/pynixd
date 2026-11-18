@@ -98,7 +98,7 @@ class S3BinaryCacheStore(HTTPBinaryCacheStore):
         self.gc_cold_verify = spec.gc_cold_verify
         self._secret_key: SecretKey | None = None
         self._credentials: Credentials | None = None
-        if "." in spec.bucket and spec.addressing_style == "auto" and spec.endpoint is None:
+        if "." in spec.bucket and spec.addressing_style == "auto" and not spec.has_endpoint:
             log.warning("s3_dotted_bucket_takes_path_style", store_id=self.store_id, bucket=spec.bucket)
 
     @property

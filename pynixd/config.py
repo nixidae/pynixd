@@ -1374,6 +1374,9 @@ class S3BinaryCacheSpec(BinaryCacheSpecBase):
     region: str | None = None
     scheme: str | None = None
     endpoint: str | None = None
+    endpoint_file: Path | None = None
+    """A file that holds `endpoint`, read when the store is built: for an endpoint that names an account, which a
+    settings file in the world-readable store must not carry. Not with `endpoint`."""
     addressing_style: Literal["auto", "path", "virtual"] = "auto"
     profile: str | None = None
     """The AWS configuration profile the credentials come from; `None` is botocore's default chain."""
@@ -1401,7 +1404,19 @@ class S3BinaryCacheSpec(BinaryCacheSpecBase):
     def _cold_writes(self) -> Self:
         if self.gc_cold and self.secret_key is None:
             raise ValueError("gc_cold needs secret_key: the cold tier uploads what it keeps")
+        if self.endpoint is not None and self.endpoint_file is not None:
+            raise ValueError("endpoint and endpoint_file name the same thing: set one")
         return self
+
+    @property
+    def has_endpoint(self) -> bool:
+        return self.endpoint is not None or self.endpoint_file is not None
+
+    def resolved_endpoint(self) -> str | None:
+        """`endpoint`, or what `endpoint_file` holds. Reads the file."""
+        if self.endpoint_file is None:
+            return self.endpoint
+        return self.endpoint_file.read_text().strip()
 
     @property
     def writable(self) -> bool:
@@ -1414,7 +1429,7 @@ class S3BinaryCacheSpec(BinaryCacheSpecBase):
             self.key,
             region=self.region,
             scheme=self.scheme,
-            endpoint=self.endpoint,
+            endpoint=self.resolved_endpoint(),
             style=self.addressing_style,
         )
 
@@ -1427,6 +1442,7 @@ class S3BinaryCacheSpec(BinaryCacheSpecBase):
             self.region,
             self.scheme,
             self.endpoint,
+            self.endpoint_file,
             self.addressing_style,
             self.profile,
             self.store_dir,
