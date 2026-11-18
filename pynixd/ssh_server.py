@@ -8,6 +8,7 @@ subsystem restricted to PSI/cgroup monitoring files.
 
 from __future__ import annotations
 
+import socket
 from typing import TYPE_CHECKING
 
 import anyio
@@ -118,6 +119,20 @@ class _NixSSHServer(asyncssh.SSHServer):
         return True
 
 
+def load_host_key(host_key_path: Path | None) -> asyncssh.SSHKey:
+    """The key at *host_key_path*, or a new one written there, or an ephemeral one without a path."""
+    if host_key_path and host_key_path.exists():
+        log.info("host_key_loaded_from_file", host_key_path=host_key_path)
+        return asyncssh.read_private_key(str(host_key_path))
+    host_key = asyncssh.generate_private_key("ssh-rsa", key_size=4096)
+    if host_key_path:
+        host_key.write_private_key(str(host_key_path))
+        log.info("host_key_generated", host_key_path=host_key_path)
+    else:
+        log.info("host_key_ephemeral_generated")
+    return host_key
+
+
 async def start_ssh_server(
     ctx: PynixdContext,
     host: str = "127.0.0.1",
@@ -127,6 +142,9 @@ async def start_ssh_server(
     user_keys: list[Path] | None = None,
     admin_keys: list[Path] | None = None,
     admin_users: set[str] | None = None,
+    *,
+    sock: socket.socket | None = None,
+    host_key: asyncssh.SSHKey | None = None,
 ) -> asyncssh.SSHAcceptor:
     """Start the SSH server.
 
@@ -141,6 +159,9 @@ async def start_ssh_server(
         admin_users: Deprecated. Usernames that raise a `user_keys` key to
             `Role.ADMIN`.
 
+        sock: A listening socket to serve instead of binding *host* and *port*
+        host_key: The host key, instead of reading or making one from *host_key_path*
+
     Returns:
         The asyncssh acceptor instance.
     """
@@ -150,17 +171,8 @@ async def start_ssh_server(
     if not user_keys and not admin_keys:
         log.warning("ssh_no_client_keys", reason="the SSH listener admits nobody")
 
-    # Load or generate host key
-    if host_key_path and host_key_path.exists():  # noqa: ASYNC240 — one-time startup check
-        host_key: asyncssh.SSHKey = asyncssh.read_private_key(str(host_key_path))
-        log.info("host_key_loaded_from_file", host_key_path=host_key_path)
-    else:
-        host_key = asyncssh.generate_private_key("ssh-rsa", key_size=4096)
-        if host_key_path:
-            host_key.write_private_key(str(host_key_path))
-            log.info("host_key_generated", host_key_path=host_key_path)
-        else:
-            log.info("host_key_ephemeral_generated")
+    if host_key is None:
+        host_key = load_host_key(host_key_path)
 
     async def handle_client(process: asyncssh.SSHServerProcess[bytes]) -> None:
         cmd: str | None = process.command
@@ -202,8 +214,9 @@ async def start_ssh_server(
 
     # Start the SSH server
     server = await asyncssh.listen(
-        host,
-        port,
+        None if sock else host,
+        () if sock else port,
+        sock=sock,
         server_host_keys=[host_key],
         server_factory=lambda: _NixSSHServer(keyring),
         process_factory=handle_client,

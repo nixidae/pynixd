@@ -11,6 +11,7 @@ dispatching.
 from __future__ import annotations
 
 import json
+import socket
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, cast
 
@@ -190,6 +191,7 @@ async def start_reverse_acceptor(
     spawn: Callable[[Callable[[], Awaitable[None]]], object],
     joiner: Joiner | None = None,
     host_key: asyncssh.SSHKey | None = None,
+    sock: socket.socket | None = None,
 ) -> asyncssh.SSHAcceptor | None:
     """Start the reverse store SSH listener on the controller.
 
@@ -324,8 +326,9 @@ async def start_reverse_acceptor(
         spawn(_guarded)
 
     acceptor = await asyncssh.listen_reverse(
-        host=settings.host,
-        port=settings.port,
+        host=None if sock else settings.host,
+        port=() if sock else settings.port,
+        sock=sock,
         acceptor=handle_builder,
         client_keys=[host_key],
         known_hosts=_known_hosts_matcher(pins) if pins and joiner is None else None,

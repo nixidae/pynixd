@@ -47,6 +47,7 @@ from .session_builders import SessionBuilders
 from .state import upstream_in_flight
 from .store import LocalDBStore, LocalStore, Store
 from .store_url import reference_key, substituter_spec
+from .tcp_listen import adopt_tcp
 from .unix_server import UnixServer, bind_unix_server, serve_unix_clients
 
 if TYPE_CHECKING:
@@ -264,6 +265,10 @@ class Server:
         self._singletons: list[anyio.CancelScope] = []
         """Loops one process runs for the whole machine. A drain stops them; the successor runs its own."""
         self._passes = 0
+        self._tcp: dict[ListenerName, list[socket.socket]] = {}
+        """The TCP listening sockets, by listener, for a hand-over."""
+        self._more_acceptors: list[asyncssh.SSHAcceptor] = []
+        """SSH acceptors past the first of `ssh_server` and `reverse_acceptor`: one per address of the host."""
         """Singleton passes running now: a GC pass, a cold-tier round, a liveness refresh."""
 
     @staticmethod
@@ -514,8 +519,13 @@ class Server:
             return f"the database schema moves from version {TARGET_VERSION} to {schema_version}"
         return None
 
+    def _tcp_sockets(self, name: ListenerName, host: str, port: int) -> list[socket.socket]:
+        handed = self._inherited.take(name) if self._inherited is not None else []
+        sockets = self._tcp[name] = adopt_tcp(handed, host, port)
+        return sockets
+
     def listener_sockets(self) -> dict[ListenerName, list[socket.socket]]:
-        sockets: dict[ListenerName, list[socket.socket]] = {}
+        sockets: dict[ListenerName, list[socket.socket]] = dict(self._tcp)
         if self.unix_server is not None:
             sockets[ListenerName.UNIX] = [raw_socket(self.unix_server.listener)]
         if self.handover is not None:
@@ -541,6 +551,18 @@ class Server:
         if self.handover is not None:
             await self.handover.aclose(unlink=False)
             self.handover = None
+        # `close`, not `wait_closed`: established connections stay, and a reverse builder's carry its builds.
+        for acceptor in (self.ssh_server, self.reverse_acceptor, *self._more_acceptors):
+            if acceptor is not None:
+                acceptor.close()
+        self.ssh_server = self.reverse_acceptor = None
+        self._more_acceptors.clear()
+        # A site's `stop` closes its listener; the runner keeps the transfers until `close`.
+        for runner in (self.http_server, self.https_server):
+            if runner is not None:
+                for site in list(runner.sites):
+                    await site.stop()
+        self._tcp.clear()
         if not self._passes:
             self._stop_singletons()
         self._spawn(self._drain_watch)
@@ -548,17 +570,35 @@ class Server:
     def _holds_work(self) -> bool:
         if len(self.ctx.sessions):
             return True
+        for runner in (self.http_server, self.https_server):
+            # An idle keep-alive connection counts too, until aiohttp's keep-alive timeout closes it.
+            if runner is not None and runner.server is not None and runner.server.connections:
+                return True
         scheduler = self.ctx.scheduler
         if scheduler is None:
             return False
         counts = scheduler.queue.counts()
         return counts.pending + counts.building > 0
 
+    async def _release_reverse_builders(self) -> None:
+        """Close each reverse builder no build here needs, so it registers with the successor.
+
+        Only once no build waits here: a queued build could lose the one builder of its system.
+        """
+        scheduler = self.ctx.scheduler
+        if scheduler is not None and scheduler.queue.counts().pending:
+            return
+        for store_id, store in list(self.ctx.stores.items()):
+            if store.reconnects_on_close and not store.in_flight:
+                log.info("drain_releases_reverse_builder", store_id=store_id)
+                await self.remove_store(store_id, drain_timeout=0, missing_ok=True)
+
     async def _drain_watch(self) -> None:
         started = time.monotonic()
         with anyio.move_on_after(self.settings.drain_limit) as limit:
             # Polled: sessions and builds end in many places, and none of them signals a waiter.
             while self._holds_work():
+                await self._release_reverse_builders()
                 await anyio.sleep(DRAIN_POLL)
         if limit.cancelled_caught:
             log.warning(
@@ -1005,16 +1045,23 @@ class Server:
             self._spawn(self.ctx.session_builders.run)
 
         if s.ssh_port is not None:
-            self.ssh_server = await _optional.ssh_server.start_ssh_server(
-                ctx=self.ctx,
-                host=s.ssh_host,
-                port=s.ssh_port,
-                host_key_path=s.ssh_host_key,
-                schedule_mode=s.schedule_mode,
-                user_keys=s.ssh_user_keys,
-                admin_keys=s.ssh_admin_keys,
-                admin_users=s.admin_users,
-            )
+            ssh_key = _optional.ssh_server.load_host_key(s.ssh_host_key)
+            acceptors = [
+                await _optional.ssh_server.start_ssh_server(
+                    ctx=self.ctx,
+                    host=s.ssh_host,
+                    port=s.ssh_port,
+                    schedule_mode=s.schedule_mode,
+                    user_keys=s.ssh_user_keys,
+                    admin_keys=s.ssh_admin_keys,
+                    admin_users=s.admin_users,
+                    sock=sock,
+                    host_key=ssh_key,
+                )
+                for sock in self._tcp_sockets(ListenerName.SSH, s.ssh_host, s.ssh_port)
+            ]
+            self.ssh_server, *more = acceptors
+            self._more_acceptors.extend(more)
 
         # **The `enabled` check belongs here as well as in the function.**
         # `start_reverse_acceptor` answers `None` for a set that is off, and
@@ -1022,13 +1069,19 @@ class Server:
         if s.reverse_acceptor.enabled:
             host_key = _optional.reverse_server.client_key(s.reverse_acceptor)
             self.provisioner = self.ctx.provisioner = self._provisioner(host_key.export_public_key().decode())
-            self.reverse_acceptor = await _optional.reverse_server.start_reverse_acceptor(
-                server=self,
-                settings=s.reverse_acceptor,
-                spawn=self._spawn,
-                joiner=self.provisioner,
-                host_key=host_key,
-            )
+            reverse = [
+                await _optional.reverse_server.start_reverse_acceptor(
+                    server=self,
+                    settings=s.reverse_acceptor,
+                    spawn=self._spawn,
+                    joiner=self.provisioner,
+                    host_key=host_key,
+                    sock=sock,
+                )
+                for sock in self._tcp_sockets(ListenerName.REVERSE, s.reverse_acceptor.host, s.reverse_acceptor.port)
+            ]
+            self.reverse_acceptor, *more_reverse = reverse
+            self._more_acceptors.extend(acceptor for acceptor in more_reverse if acceptor is not None)
             if self.provisioner is not None:
                 self._spawn(self.provisioner.run)
         elif s.provisioning.pools:
@@ -1042,8 +1095,6 @@ class Server:
             serve_unix_clients(self.unix_server, self.ctx, self._spawn, s.schedule_mode)
         if self.handover is not None:
             self.handover.serve(self._spawn, self)
-        if inherited is not None:
-            inherited.close_rest()
 
         if s.http_port is not None or s.https_port is not None:
             scheduler = self.ctx.scheduler
@@ -1065,6 +1116,7 @@ class Server:
                 runner, port = await cache.start(
                     host=s.http_host,
                     port=s.http_port,
+                    sockets=self._tcp_sockets(ListenerName.HTTP, s.http_host, s.http_port),
                 )
                 self.http_server = runner
                 self.http_bound_port = port
@@ -1074,9 +1126,13 @@ class Server:
                     port=s.https_port,
                     ssl_cert=str(s.https_cert) if s.https_cert else None,
                     ssl_key=str(s.https_key) if s.https_key else None,
+                    sockets=self._tcp_sockets(ListenerName.HTTPS, s.http_host, s.https_port),
                 )
                 self.https_server = runner
                 self.https_bound_port = port
+
+        if inherited is not None:
+            inherited.close_rest()
 
         if not (self.reverse_acceptor or self.ssh_server or self.unix_server or self.http_server or self.https_server):
             log.warning("no_servers_started")
@@ -1115,6 +1171,10 @@ class Server:
             self.ssh_server.close()
             await self.ssh_server.wait_closed()
             self.ssh_server = None
+        for acceptor in self._more_acceptors:
+            acceptor.close()
+            await acceptor.wait_closed()
+        self._more_acceptors.clear()
         if self.unix_server:
             await self.unix_server.aclose()
             self.unix_server = None

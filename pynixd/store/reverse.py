@@ -38,6 +38,8 @@ class ReverseStore(SSHStore):
     ``nix-daemon --stdio`` processes on the builder.
     """
 
+    reconnects_on_close = True
+
     def __init__(self, spec: ReverseStoreSpec, ssh_conn: asyncssh.SSHClientConnection) -> None:
         """Wrap an existing reverse SSH connection for daemon operations on the builder."""
         super().__init__(spec)

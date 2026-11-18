@@ -66,6 +66,8 @@ class Store(ABC):
     """
 
     _executors: ClassVar[dict[int, str]] = {}
+    reconnects_on_close: ClassVar[bool] = False
+    """The far end opened this store's connection and opens it again when it closes: a reverse builder."""
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)

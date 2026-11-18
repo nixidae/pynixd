@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -68,6 +69,13 @@ def test_a_watch_mirrors_the_served_store(tmp_path: Path) -> None:
     assert watch.tracker.db is db
 
 
+class PassesOnly:
+    """The one piece of server state a tick reads: the marker a drain waits on."""
+
+    def _singleton_pass(self) -> contextlib.nullcontext[None]:
+        return contextlib.nullcontext()
+
+
 @pytest.mark.parametrize("root_change", [False, True])
 async def test_background_tick_uses_python_only(root_change: bool) -> None:
     tracker = StubTracker(live={A, B})
@@ -76,5 +84,5 @@ async def test_background_tick_uses_python_only(root_change: bool) -> None:
     if root_change:
         dirty.set()
     with anyio.move_on_after(0.1):
-        await Server._liveness_tick(None, watch, 0.01, dirty)  # type: ignore[arg-type]  # no server state
+        await Server._liveness_tick(PassesOnly(), watch, 0.01, dirty)  # type: ignore[arg-type]  # no server state
     assert tracker.refreshed > 0

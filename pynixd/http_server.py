@@ -17,6 +17,7 @@ import bz2
 import contextlib
 import gzip
 import lzma
+import socket
 import ssl
 import time
 from http import HTTPStatus
@@ -47,7 +48,7 @@ from .store.local_db import LocalDBStore, write_router
 from .store.nar_reader import NarReader
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Sequence
     from typing import Any
 
     from .health import HealthReport
@@ -596,8 +597,9 @@ class PynixdHttpServer:
         port: int = 8080,
         ssl_cert: str | None = None,
         ssl_key: str | None = None,
+        sockets: Sequence[socket.socket] = (),
     ) -> tuple[web.AppRunner, int]:
-        """Start the HTTP server. Returns (runner, bound_port)."""
+        """Start the HTTP server, on *sockets* when given. Returns (runner, bound_port)."""
         ssl_ctx = None
         if ssl_cert and ssl_key:
             ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -608,8 +610,11 @@ class PynixdHttpServer:
 
         runner = web.AppRunner(self.app)
         await runner.setup()
-        site = web.TCPSite(runner, host, port, ssl_context=ssl_ctx)
-        await site.start()
+        sites: list[web.BaseSite] = [web.SockSite(runner, sock, ssl_context=ssl_ctx) for sock in sockets] or [
+            web.TCPSite(runner, host, port, ssl_context=ssl_ctx)
+        ]
+        for site in sites:
+            await site.start()
 
         # Resolve the actual bound port (important when port=0). The server is
         # uvloop's under uvloop, which is not an asyncio.Server.
