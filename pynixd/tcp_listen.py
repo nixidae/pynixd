@@ -45,7 +45,12 @@ def bind_tcp(host: str, port: int) -> list[socket.socket]:
     sockets: list[socket.socket] = []
     try:
         for address in _addresses(host, port):
-            sock = socket.socket(address.family, socket.SOCK_STREAM)
+            try:
+                sock = socket.socket(address.family, socket.SOCK_STREAM)
+            except OSError:
+                # As asyncio does: a family the kernel lacks, such as IPv6 turned off, is skipped.
+                log.debug("tcp_family_skipped", family=address.family.name, host=address.host)
+                continue
             sockets.append(sock)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             if address.family == socket.AF_INET6:
@@ -57,6 +62,8 @@ def bind_tcp(host: str, port: int) -> list[socket.socket]:
         for sock in sockets:
             sock.close()
         raise
+    if not sockets:
+        raise OSError(f"no address family of {host or '*'}:{port} can listen here")
     return sockets
 
 

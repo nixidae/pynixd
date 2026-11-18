@@ -72,7 +72,7 @@ def test_a_watch_mirrors_the_served_store(tmp_path: Path) -> None:
 class PassesOnly:
     """The one piece of server state a tick reads: the marker a drain waits on."""
 
-    def _singleton_pass(self) -> contextlib.nullcontext[None]:
+    def _singleton_pass(self) -> contextlib.AbstractAsyncContextManager[None]:
         return contextlib.nullcontext()
 
 

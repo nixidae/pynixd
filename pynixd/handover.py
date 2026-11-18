@@ -26,12 +26,14 @@ from anyio.abc import SocketAttribute, SocketListener, UNIXSocketStream
 from anyio.streams.buffered import BufferedByteReceiveStream
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from nix_daemon_protocol.ids import LOCAL_STORE_ID
 from pynixd_store.db_migrations import TARGET_VERSION
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, MutableMapping, Sequence
     from pathlib import Path
 
+    from .config import PynixdSettings
     from .unix_server import Spawn
 
 log = structlog.get_logger(__name__)
@@ -64,9 +66,25 @@ class _Message(BaseModel):
 
 
 class Offer(_Message):
-    """From `pynixd handover`: what the new binary is."""
+    """From `pynixd handover`: what the new binary and its settings are. `None` is a field an older one lacks."""
 
     schema_version: int
+    unix_path: str | None = None
+    local_store: str | None = None
+
+    @classmethod
+    def of(cls, settings: PynixdSettings) -> Offer:
+        return cls(
+            schema_version=TARGET_VERSION,
+            unix_path=str(settings.unix_path) if settings.unix_path else "",
+            local_store=local_store_key(settings),
+        )
+
+
+def local_store_key(settings: PynixdSettings) -> str:
+    """The local store's settings, as text two versions compare. A field one version adds reads as a change."""
+    spec = settings.stores.get(str(LOCAL_STORE_ID))
+    return "" if spec is None else spec.model_dump_json(exclude={"settings"})
 
 
 class Answer(_Message):
@@ -139,7 +157,7 @@ def raw_socket(listener: SocketListener) -> socket.socket:
 class Handing(Protocol):
     """What the old main answers on the control socket. `instance.Server` implements it."""
 
-    def handover_refusal(self, schema_version: int) -> str | None: ...
+    def handover_refusal(self, offer: Offer) -> str | None: ...
 
     def listener_sockets(self) -> Mapping[ListenerName, Sequence[socket.socket]]: ...
 
@@ -214,7 +232,7 @@ class HandoverControl:
     async def _hand_over(self, stream: UNIXSocketStream, server: Handing) -> None:
         reader = BufferedByteReceiveStream(stream)
         offer = Offer.model_validate_json(await _read_line(reader))
-        refused = server.handover_refusal(offer.schema_version)
+        refused = server.handover_refusal(offer)
         if refused is not None:
             log.warning("handover_refused", reason=refused)
             await _send(stream, Answer(pid=os.getpid(), refused=refused))
@@ -249,7 +267,7 @@ class Refused(Exception):
     """The old main cannot overlap with a successor."""
 
 
-async def _restart(unit: str | None, reason: str) -> int:
+async def restart_instead(unit: str | None, reason: str) -> int:
     """Fall back to today's restart, so the new configuration still applies."""
     if unit is None:
         print(f"pynixd handover: {reason}; no --unit to restart", file=sys.stderr)
@@ -262,12 +280,12 @@ async def _restart(unit: str | None, reason: str) -> int:
     return result.returncode
 
 
-async def _offer(path: Path) -> tuple[UNIXSocketStream, BufferedByteReceiveStream, Answer, list[int]]:
+async def _offer(path: Path, offer: Offer) -> tuple[UNIXSocketStream, BufferedByteReceiveStream, Answer, list[int]]:
     try:
         stream = await anyio.connect_unix(path)
     except (FileNotFoundError, ConnectionRefusedError) as ex:
         raise Refused(f"no pynixd answers on {path}: {ex.strerror}") from ex
-    await _send(stream, Offer(schema_version=TARGET_VERSION))
+    await _send(stream, offer)
     data, fds = await stream.receive_fds(MESSAGE_LIMIT, MAX_FDS)
     buffered = BufferedByteReceiveStream(stream)
     if b"\n" not in data:
@@ -316,12 +334,14 @@ async def _stop(process: subprocess.Popen[bytes]) -> None:
             await anyio.to_thread.run_sync(lambda: process.wait())
 
 
-async def hand_over(path: Path, command: Sequence[str], *, unit: str | None, timeout: float = READY_TIMEOUT) -> int:
+async def hand_over(
+    path: Path, command: Sequence[str], offer: Offer, *, unit: str | None, timeout: float = READY_TIMEOUT
+) -> int:
     """Start *command* with the old main's listeners, then drain the old main. The exit status for `ExecReload=`."""
     try:
-        stream, reader, answer, fds = await _offer(path)
+        stream, reader, answer, fds = await _offer(path, offer)
     except Refused as ex:
-        return await _restart(unit, str(ex))
+        return await restart_instead(unit, str(ex))
     async with stream:
         ours, theirs = socket.socketpair()
         env = dict(os.environ)

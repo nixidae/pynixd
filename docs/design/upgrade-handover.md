@@ -356,6 +356,25 @@ Where each stands, 2026-11-18: `tests.upgrade` phases `handover` (1, 3, 5), `rem
 (8), `broken` (7) and `control` (6). Item 9 is `tests/unit/test_handover.py`; the `refused` phase shows what any
 refusal does in a guest: a builder with a reverse initiator restarts, and registers again.
 
+Found while testing, and the rule for each:
+
+- A switch that moves the daemon socket or changes the local store's settings (a `mode` change) restarts. The
+  reload starts the successor before switch-to-configuration starts the new socket units, so it found no daemon
+  (`tests.switch`, beside to replace). The offer carries both, and the old process refuses when they differ.
+- Settings with `handover_path = null` turn the hand-over off: a reload restarts.
+- During a drain each HTTP response closes its connection, so a keep-alive client (a metrics scraper) reconnects
+  to the successor. `RequestHandler.close` does not do it in aiohttp 3.14. An idle connection ends at aiohttp's
+  keep-alive timeout, 75 s.
+- A GC or cold-tier pass in flight is work: the drain waits for it, and starts no new one.
+
+Limits:
+
+- An idle session keeps the old process, and the old process releases its reverse builders once none of its
+  builds wait. A build the idle client asks for later, on a feature only a reverse builder has, waits until a
+  builder registers there again, which may be never. The successor has the builders by then.
+- The hand-over keeps builds across a change of pynixd. A switch that changes `nix-daemon-upstream.service`
+  (a new Nix) restarts that unit, and its local builds die whatever pynixd does.
+
 Rollout: the first switch from a pynixd without the control socket finds nobody on it and restarts, as before.
 Every switch after that hands over. A `systemctl restart pynixd` by hand still ends a drain in progress
 (point 6 above).

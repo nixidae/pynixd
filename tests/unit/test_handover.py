@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import socket
 
-from pynixd.handover import Answer, Inherited, ListenerName, _inherited
+import anyio
+import anyio.lowlevel
+import pytest
+
+from pynixd.handover import Answer, Inherited, ListenerName, Offer, _inherited
 from pynixd.instance import Server
 from pynixd.tcp_listen import adopt_tcp, bind_tcp
 from pynixd_store.db_migrations import TARGET_VERSION
@@ -12,16 +16,36 @@ from pynixd_store.db_migrations import TARGET_VERSION
 
 def test_a_schema_change_refuses_the_overlap() -> None:
     server = Server()
-    assert server.handover_refusal(TARGET_VERSION) is None
-    refusal = server.handover_refusal(TARGET_VERSION + 1)
+    assert server.handover_refusal(Offer.of(server.settings)) is None
+    refusal = server.handover_refusal(Offer(schema_version=TARGET_VERSION + 1))
     assert refusal is not None
     assert "schema" in refusal
+
+
+def test_a_moved_daemon_socket_refuses_the_overlap() -> None:
+    server = Server()
+    offer = Offer.of(server.settings)
+    offer.unix_path = "/run/elsewhere.sock"
+    refusal = server.handover_refusal(offer)
+    assert refusal is not None
+    assert "/run/elsewhere.sock" in refusal
+
+
+def test_a_changed_local_store_refuses_the_overlap() -> None:
+    server = Server()
+    offer = Offer.of(server.settings)
+    offer.local_store = '{"socket_path": "/nix/var/nix/daemon-socket/upstream"}'
+    assert server.handover_refusal(offer) == "the local store's settings change"
+
+
+def test_an_offer_from_an_older_handover_checks_the_schema_only() -> None:
+    assert Server().handover_refusal(Offer(schema_version=TARGET_VERSION)) is None
 
 
 def test_a_draining_process_refuses_a_second_hand_over() -> None:
     server = Server()
     server.draining = True
-    assert server.handover_refusal(TARGET_VERSION) == "it is draining already"
+    assert server.handover_refusal(Offer.of(server.settings)) == "it is draining already"
 
 
 def test_the_fds_keep_their_listener_in_order() -> None:
@@ -56,6 +80,65 @@ def test_a_moved_port_binds_anew_and_closes_the_old_socket() -> None:
         assert new[0].family == socket.AF_INET
     finally:
         for sock in new:
+            sock.close()
+
+
+async def _drain_around_a_loop(drain_inside: bool) -> tuple[int, int]:
+    """Drain a server whose one singleton loop runs passes; answers (passes started, passes finished)."""
+    server = Server()
+    started = finished = 0
+    inside = anyio.Event()
+    release = anyio.Event()
+
+    async def loop() -> None:
+        nonlocal started, finished
+        while True:
+            async with server._singleton_pass():
+                started += 1
+                inside.set()
+                await release.wait()
+                finished += 1
+            await anyio.lowlevel.checkpoint()
+
+    async with server._background.running():
+        if not drain_inside:
+            release.set()
+        server._spawn_singleton(loop)
+        await inside.wait()
+        await server.drain()
+        await anyio.lowlevel.checkpoint()
+        if drain_inside:
+            # The pass running is work: the drain must not end under it.
+            assert not server.drained.is_set()
+        release.set()
+        with anyio.fail_after(5):
+            await server.drained.wait()
+    return started, finished
+
+
+async def test_a_drain_inside_a_pass_lets_it_finish_and_starts_no_other() -> None:
+    assert await _drain_around_a_loop(drain_inside=True) == (1, 1)
+
+
+async def test_a_drain_between_passes_starts_no_other() -> None:
+    started, finished = await _drain_around_a_loop(drain_inside=False)
+    assert started == finished
+
+
+def test_a_family_the_kernel_lacks_is_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
+    real = socket.socket
+
+    def no_ipv6(family: socket.AddressFamily = socket.AF_INET, *args: object, **kwargs: object) -> socket.socket:
+        if family == socket.AF_INET6:
+            raise OSError(97, "Address family not supported by protocol")
+        return real(family, *args, **kwargs)  # type: ignore[arg-type]  # pass-through of socket's own arguments
+
+    monkeypatch.setattr(socket, "socket", no_ipv6)
+    sockets = bind_tcp("", 0)
+    try:
+        assert {sock.family for sock in sockets} == {socket.AF_INET}
+    finally:
+        for sock in sockets:
             sock.close()
 
 

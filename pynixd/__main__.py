@@ -21,7 +21,7 @@ from .cli.gc import register as register_gc
 from .cli.gha_cache import register as register_gha_cache
 from .cli.roots import register as register_roots
 from .cli.state import register as register_state
-from .handover import Inherited, hand_over, say_ready, take_ready_fd
+from .handover import Inherited, Offer, hand_over, restart_instead, say_ready, take_ready_fd
 from .instance import Server
 from .systemd import notify
 
@@ -87,13 +87,13 @@ def handover_main(args: argparse.Namespace) -> None:
     settings = load_settings()
     setup_logging(settings)
     if settings.handover_path is None:
-        raise SystemExit("pynixd handover: the settings name no handover_path")
+        raise SystemExit(anyio.run(restart_instead, args.unit, "the new settings turn the hand-over off"))
     command = list(args.command)
     if command[:1] == ["--"]:
         command = command[1:]
     if not command:
         raise SystemExit("pynixd handover: name the successor's command after --")
-    raise SystemExit(anyio.run(lambda: hand_over(settings.handover_path, command, unit=args.unit)))
+    raise SystemExit(anyio.run(lambda: hand_over(settings.handover_path, command, Offer.of(settings), unit=args.unit)))
 
 
 def main() -> None:

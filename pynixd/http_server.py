@@ -181,6 +181,9 @@ class PynixdHttpServer:
             middlewares=[self.metrics_middleware, self.auth_middleware],
             client_max_size=1024**4,  # 1 TiB
         )
+        self.draining = False
+        """Set by a hand-over: each response then closes its connection, and the client reconnects to the successor."""
+        self.app.on_response_prepare.append(self._close_when_draining)
 
         self.app.router.add_get("/healthz", self.handle_healthz)
 
@@ -273,6 +276,11 @@ class PynixdHttpServer:
         return await handler(request)
 
     # ── Handlers ──────────────────────────────────────────────────────
+
+    async def _close_when_draining(self, _request: web.Request, response: web.StreamResponse) -> None:
+        # Not `RequestHandler.close`: aiohttp 3.14 keeps a keep-alive connection open through it (tests.upgrade).
+        if self.draining:
+            response.force_close()
 
     async def handle_healthz(self, request: web.Request) -> web.Response:
         """Kubernetes health check endpoint.

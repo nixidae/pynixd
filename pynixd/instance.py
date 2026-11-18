@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import anyio
+import anyio.lowlevel
 import structlog
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
@@ -33,7 +34,7 @@ from .context import PynixdContext
 from .exceptions import CacheFault, GCNotPermittedError
 from .execution import output_paths
 from .gc import Collector
-from .handover import HandoverControl, ListenerName, raw_socket
+from .handover import HandoverControl, ListenerName, local_store_key, raw_socket
 from .health import HealthReport, LoopLagMonitor, StallWatchdog
 from .liveness_watch import DirtyFlag, StableRootsWatch
 from .provisioning.ec2 import Ec2Provider
@@ -51,7 +52,7 @@ from .tcp_listen import adopt_tcp
 from .unix_server import UnixServer, bind_unix_server, serve_unix_clients
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
+    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
     from types import TracebackType
 
     import asyncssh
@@ -60,7 +61,8 @@ if TYPE_CHECKING:
 
     from .build_queue import QueuedBuild
     from .daemon_extensions.pynixd_collect_garbage import PynixdCollectGarbageResponse
-    from .handover import Inherited
+    from .handover import Inherited, Offer
+    from .http_server import PynixdHttpServer
     from .provisioning.provider import Provider
     from .serde import BuildDerivationResponse
 
@@ -252,6 +254,7 @@ class Server:
         self.http_bound_port: int | None = None
         self.https_server: web.AppRunner | None = None
         self.https_bound_port: int | None = None
+        self._http_cache: PynixdHttpServer | None = None
         self._started = False
         self._done_event = anyio.Event()
         self._background = Background("Server")
@@ -483,14 +486,17 @@ class Server:
         """`_spawn`, for a loop that a drain stops: GC, the cold tier, liveness."""
         self._singletons.append(self._background.spawn(fn, *args))
 
-    @contextlib.contextmanager
-    def _singleton_pass(self) -> Iterator[None]:
+    @contextlib.asynccontextmanager
+    async def _singleton_pass(self) -> AsyncIterator[None]:
         """One pass of a singleton loop. A drain stops the loops between passes, never inside one.
 
         A pass cut short leaves what it started: a GC pass its deletes half recorded, an upload its NAR without
         a narinfo. The successor's first pass may overlap the last one here; the daemon serialises collectors,
-        and the bucket keys a NAR by its hash.
+        and the bucket keys a NAR by its hash. A drain counts a running pass as work, and starts no new one.
         """
+        if self.draining:
+            self._stop_singletons()
+            await anyio.lowlevel.checkpoint()
         self._passes += 1
         try:
             yield
@@ -503,10 +509,17 @@ class Server:
         for scope in self._singletons:
             scope.cancel()
 
-    def handover_refusal(self, schema_version: int) -> str | None:
+    def handover_refusal(self, offer: Offer) -> str | None:
         """Why this process cannot overlap with a successor, or `None`. docs/design/upgrade-handover.md."""
         if self.draining:
             return "it is draining already"
+        # A moved socket or local store comes up with units the switch starts after the reload: the successor
+        # found no daemon (tests.switch, beside to replace). A restart orders after them.
+        unix_path = str(self.settings.unix_path) if self.settings.unix_path else ""
+        if offer.unix_path is not None and offer.unix_path != unix_path:
+            return f"the daemon socket moves from {unix_path or 'none'} to {offer.unix_path or 'none'}"
+        if offer.local_store is not None and offer.local_store != local_store_key(self.settings):
+            return "the local store's settings change"
         if self.ctx.local_store.managed:
             # The successor would remove the socket and kill the daemon this process builds on.
             return "pynixd manages the local store's daemon"
@@ -515,8 +528,8 @@ class Server:
             return "provisioning pools have no adoption yet"
         if self.settings.reverse_initiator.enabled:
             return "a reverse initiator would register this builder twice"
-        if schema_version != TARGET_VERSION:
-            return f"the database schema moves from version {TARGET_VERSION} to {schema_version}"
+        if offer.schema_version != TARGET_VERSION:
+            return f"the database schema moves from version {TARGET_VERSION} to {offer.schema_version}"
         return None
 
     def _tcp_sockets(self, name: ListenerName, host: str, port: int) -> list[socket.socket]:
@@ -557,7 +570,10 @@ class Server:
                 acceptor.close()
         self.ssh_server = self.reverse_acceptor = None
         self._more_acceptors.clear()
-        # A site's `stop` closes its listener; the runner keeps the transfers until `close`.
+        # A site's `stop` closes its listener; the runner keeps the transfers until `close`. Each response
+        # from now closes its connection, so a keep-alive scraper reconnects to the successor.
+        if self._http_cache is not None:
+            self._http_cache.draining = True
         for runner in (self.http_server, self.https_server):
             if runner is not None:
                 for site in list(runner.sites):
@@ -568,7 +584,7 @@ class Server:
         self._spawn(self._drain_watch)
 
     def _holds_work(self) -> bool:
-        if len(self.ctx.sessions):
+        if len(self.ctx.sessions) or self._passes:
             return True
         for runner in (self.http_server, self.https_server):
             # An idle keep-alive connection counts too, until aiohttp's keep-alive timeout closes it.
@@ -650,7 +666,7 @@ class Server:
                     metrics.GC_TRIGGER_SKIPPED.labels(reason="watermark").inc()
                     log.debug("gc_trigger_cooldown", reason="watermark")
                     continue
-                with self._singleton_pass():
+                async with self._singleton_pass():
                     await self._drive_to_target()
                 last_trigger = time.monotonic()
                 continue
@@ -660,7 +676,7 @@ class Server:
                     metrics.GC_TRIGGER_SKIPPED.labels(reason="scheduled").inc()
                     log.debug("gc_trigger_cooldown", reason="scheduled")
                     continue
-                with self._singleton_pass():
+                async with self._singleton_pass():
                     await self._gc_pass("scheduled")
                 last_trigger = time.monotonic()
 
@@ -689,7 +705,7 @@ class Server:
                 used, total = usage
                 pressure = max(used / total, watermark or 0.0)
                 try:
-                    with self._singleton_pass():
+                    async with self._singleton_pass():
                         await Collector(self.ctx).upload_ahead(tier, int(total * ahead), pressure)
                 except (CacheFault, DatabaseError):
                     log.warning("gc_cold_round_failed", store_id=tier.cold.store_id, exc_info=True)
@@ -811,7 +827,7 @@ class Server:
                 await dirty.wait()
             dirty.clear()
             try:
-                with self._singleton_pass():
+                async with self._singleton_pass():
                     await watch.refresh()
             except anyio.get_cancelled_exc_class():
                 raise
@@ -1098,7 +1114,7 @@ class Server:
 
         if s.http_port is not None or s.https_port is not None:
             scheduler = self.ctx.scheduler
-            cache = _optional.http_server.PynixdHttpServer(
+            cache = self._http_cache = _optional.http_server.PynixdHttpServer(
                 local_store,
                 enable_cache=s.http_enable_cache,
                 enable_metrics=s.http_enable_metrics,
