@@ -268,10 +268,13 @@ class Scheduler:
         builders = None
         pools: frozenset[str] = frozenset()
         value = options.overrides.get("builders") if options is not None else None
-        if value and self.ctx.session_builders is not None:
+        if value is not None and not value.strip():
+            # Nix's word for "no remote builders": the build stays on the local store. An untrusted client may say it
+            # too (`daemon.cc:297`).
+            builders = frozenset()
+        elif value and self.ctx.session_builders is not None:
             target = await self.ctx.session_builders.stores_for(value)
-            if target is not None:
-                builders, pools = target.stores, target.pools
+            builders, pools = (target.stores, target.pools) if target is not None else (frozenset(), frozenset())
         named = next((c.pynixd_options[PynixdOption.POOL] for c in askers if PynixdOption.POOL in c.pynixd_options), "")
         if named and self.ctx.session_builders is not None:
             pools |= self.ctx.session_builders.named_pools(name for name in named.split(",") if name)

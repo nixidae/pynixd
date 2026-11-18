@@ -19,6 +19,7 @@ from pynixd.scheduler import Scheduler
 from pynixd.serde import BasicDerivation, BuildDerivationRequest, BuildMode, BuildResultStatus, StorePath
 from pynixd.session_builders import SessionBuilderError, SessionBuilders
 from pynixd.wire import BytesWriter
+from tests._conftest.client_options import set_options
 from tests.functional.mock_store import MockStore
 from tests.unit.test_local_build_slots import _options
 
@@ -172,6 +173,51 @@ async def test_an_unknown_pool_on_the_ssh_command_is_refused() -> None:
     scheduler = _steering_scheduler()
     with pytest.raises(SessionBuilderError, match="no provisioning pool 'spto'"):
         await scheduler.build_derivation(_request("1"), options=_options(4), askers=[_asker(**{"pynixd-pool": "spto"})])
+
+
+def _arm_scheduler() -> Scheduler:
+    """A scheduler with an x86 local store, and a pool `arm` that launches aarch64 builders with no mandatory feature."""
+    scheduler = _steering_scheduler()
+    scheduler.launchable = functools.partial(launchable, (Pool("arm", frozenset({"aarch64-linux"})),))
+    return scheduler
+
+
+async def test_an_empty_builders_keeps_the_build_local() -> None:
+    """Nix's `builders = ""` is "no remote builders": no launch, and a build only another system takes fails."""
+    scheduler = _arm_scheduler()
+    build_id, answer = await scheduler.build_derivation(
+        _request("1"), options=set_options(overrides={"builders": ""}), askers=[_asker()]
+    )
+    assert scheduler.queue.by_id[build_id].builders == frozenset()
+
+    await scheduler.schedule()
+
+    assert answer.done()
+    result = answer.result().result
+    assert result.status == BuildResultStatus.INPUT_REJECTED
+    assert result.error_msg.startswith("Cannot build"), result.error_msg
+    assert _waiting(scheduler) == []
+
+
+async def test_without_builders_the_same_build_waits_for_a_launch() -> None:
+    """The control: no `builders` override leaves the build to pynixd's stores and pools."""
+    scheduler = _arm_scheduler()
+    build_id, answer = await scheduler.build_derivation(_request("1"), options=set_options(), askers=[_asker()])
+    assert scheduler.queue.by_id[build_id].builders is None
+
+    await scheduler.schedule()
+
+    assert not answer.done()
+    assert _waiting(scheduler) == [Want("aarch64-linux")]
+
+
+async def test_an_empty_builders_still_takes_a_named_pool() -> None:
+    scheduler = _arm_scheduler()
+    build_id, _ = await scheduler.build_derivation(
+        _request("1"), options=set_options(overrides={"builders": ""}), askers=[_asker(**{"pynixd-pool": "spot"})]
+    )
+    build = scheduler.queue.by_id[build_id]
+    assert (build.builders, build.pools) == (frozenset(), frozenset({"spot"}))
 
 
 async def test_a_build_that_launches_nothing_still_waits_for_a_pool() -> None:
