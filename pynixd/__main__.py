@@ -21,6 +21,7 @@ from .cli.gc import register as register_gc
 from .cli.gha_cache import register as register_gha_cache
 from .cli.roots import register as register_roots
 from .cli.state import register as register_state
+from .handover import Inherited, hand_over, say_ready, take_ready_fd
 from .instance import Server
 from .systemd import notify
 
@@ -31,8 +32,10 @@ async def async_daemon_main() -> None:
     """Async entry point: load settings, create server, and run until shutdown."""
     settings = load_settings()
     stores = settings.to_stores()
+    inherited = Inherited.from_env(os.environ)
+    ready_fd = take_ready_fd(os.environ)
 
-    server = Server(stores=stores, settings=settings)
+    server = Server(stores=stores, settings=settings, inherited=inherited)
     shutdown_event = anyio.Event()
 
     async def _handle_signals() -> None:
@@ -44,15 +47,25 @@ async def async_daemon_main() -> None:
                 log.info("shutdown_signal_received")
                 shutdown_event.set()
 
+    async def _drained() -> None:
+        await server.drained.wait()
+        shutdown_event.set()
+
     async with anyio.create_task_group() as tg:
         tg.start_soon(_handle_signals)
+        tg.start_soon(_drained)
         async with server:
             # After every listener is bound: in `replace` mode the daemon
             # socket is one, and `Type=notify` holds back what is ordered
-            # after us.
-            notify("READY=1")
+            # after us. A successor takes the main pid in the same message.
+            notify(f"MAINPID={os.getpid()}\nREADY=1" if inherited is not None else "READY=1")
+            if ready_fd is not None:
+                say_ready(ready_fd)
             await shutdown_event.wait()
-            notify("STOPPING=1")
+            # A process that handed over is no longer the unit's main: under `NotifyAccess=all` its
+            # STOPPING=1 would stop the successor's unit.
+            if not server.draining:
+                notify("STOPPING=1")
         tg.cancel_scope.cancel()
 
 
@@ -69,6 +82,20 @@ def daemon_main(_args: argparse.Namespace) -> None:
     anyio.run(async_daemon_main, backend="asyncio", backend_options={"loop_factory": uvloop.new_event_loop})
 
 
+def handover_main(args: argparse.Namespace) -> None:
+    """CLI entry point for ``pynixd handover``: the unit's `ExecReload=`."""
+    settings = load_settings()
+    setup_logging(settings)
+    if settings.handover_path is None:
+        raise SystemExit("pynixd handover: the settings name no handover_path")
+    command = list(args.command)
+    if command[:1] == ["--"]:
+        command = command[1:]
+    if not command:
+        raise SystemExit("pynixd handover: name the successor's command after --")
+    raise SystemExit(anyio.run(lambda: hand_over(settings.handover_path, command, unit=args.unit)))
+
+
 def main() -> None:
     """Top-level CLI entry point: parse args and dispatch to subcommand handlers."""
     parser = argparse.ArgumentParser(description="pynixd — Nix daemon protocol proxy")
@@ -76,6 +103,13 @@ def main() -> None:
 
     daemon_parser = root_sub.add_parser("daemon", help="Start the pynixd daemon server")
     daemon_parser.set_defaults(func=daemon_main)
+
+    handover_parser = root_sub.add_parser(
+        "handover", help="Start a successor with the running daemon's listeners, then drain the running one"
+    )
+    handover_parser.add_argument("--unit", help="Restart this unit when the running daemon cannot hand over")
+    handover_parser.add_argument("command", nargs=argparse.REMAINDER, help="-- the successor's command")
+    handover_parser.set_defaults(func=handover_main)
 
     register_gc(root_sub)
     register_gha_cache(root_sub)

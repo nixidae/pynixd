@@ -36,7 +36,10 @@ in
   # whether or not the service was enabled. A module that does something when
   # it is disabled is a module that cannot be imported and left alone.
   config = lib.mkIf cfg.enable {
-    services.pynixd.settings = common.settingsDefaultsFor cfg;
+    services.pynixd.settings = common.settingsDefaultsFor cfg // {
+      # `pynixd handover`, the reload below, takes the listeners through it.
+      handover_path = lib.mkDefault "/run/pynixd/handover.sock";
+    };
 
     /*
       `replace`: nix-daemon listens behind pynixd, under other unit names,
@@ -135,6 +138,14 @@ in
       # nixpkgs sets the same on nix-daemon, for the same reason; pynixd has
       # no `ExecStop` either.
       stopIfChanged = false;
+      /*
+        A change reloads: `ExecReload=` comes from the new unit file, after
+        switch-to-configuration's daemon-reload, so it runs the new pynixd. That
+        one starts beside the old, takes its listeners and the main pid, and the
+        old one drains its sessions and builds (docs/design/upgrade-handover.md).
+        A running pynixd that cannot hand over is restarted, as without this.
+      */
+      reloadIfChanged = true;
       # pynixd reads `trusted-users` and `allowed-users` with `nix config
       # show`, from the same Nix as nix-daemon.
       path = [ config.nix.package ];
@@ -144,6 +155,9 @@ in
         # it active two seconds before the socket existed.
         Type = "notify";
         ExecStart = "${lib.getExe cfg.package} daemon";
+        ExecReload = "${lib.getExe cfg.package} handover --unit %n -- ${lib.getExe cfg.package} daemon";
+        # The successor, a child of the reload, sends `MAINPID=` itself.
+        NotifyAccess = "all";
         User = "root";
         Group = "root";
         RuntimeDirectory = "pynixd";

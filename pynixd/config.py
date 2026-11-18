@@ -1558,6 +1558,13 @@ class PynixdSettings(BaseSettings):
     """
 
     unix_path: Path | None = Path("/run/pynixd/pynixd.sock")
+    handover_path: Path | None = None
+    """The control socket of a hand-over: `pynixd handover` takes this process's listeners through it.
+
+    Root only (mode 0600). `None` serves none, and a reload then restarts. docs/design/upgrade-handover.md.
+    """
+    drain_limit: float = 86400.0
+    """Seconds a process that handed over serves its remaining sessions and builds; then it closes as on a stop."""
 
     # `""`, and not `"0.0.0.0"`. asyncio reads an empty host as "every
     # interface" and binds one socket per family, so the server answers over

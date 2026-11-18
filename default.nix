@@ -844,6 +844,14 @@ let
       }
     );
 
+    # An upgrade by switch hands over to the new pynixd, and the work in flight completes.
+    upgrade = withDefaultNix (
+      pkgs.callPackage ./tests/derivations/upgrade {
+        inherit package;
+        inherit vivariumLib;
+      }
+    );
+
     # A build no store takes launches a builder through vivarium's cloud API. nixidae/nixidae#1198.
     provisioning = withDefaultNix (
       pkgs.callPackage ./tests/derivations/provisioning {

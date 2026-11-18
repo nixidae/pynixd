@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import dataclasses
 import os
+import socket
 import sys
 import time
 from pathlib import Path
@@ -17,6 +18,7 @@ import structlog
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from nix_daemon_protocol.store_dir import set_real_store_dir, set_store_dir
 from pynixd_store.background import Background
+from pynixd_store.db_migrations import TARGET_VERSION
 from pynixd_store.gc import LivenessWatch, pressure_usage
 from pynixd_store.local_store_db import DatabaseError
 from pynixd_store.store_layout import DEFAULT_STORE_DIR
@@ -31,6 +33,7 @@ from .context import PynixdContext
 from .exceptions import CacheFault, GCNotPermittedError
 from .execution import output_paths
 from .gc import Collector
+from .handover import HandoverControl, ListenerName, raw_socket
 from .health import HealthReport, LoopLagMonitor, StallWatchdog
 from .liveness_watch import DirtyFlag, StableRootsWatch
 from .provisioning.ec2 import Ec2Provider
@@ -47,7 +50,7 @@ from .store_url import reference_key, substituter_spec
 from .unix_server import UnixServer, bind_unix_server, serve_unix_clients
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+    from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
     from types import TracebackType
 
     import asyncssh
@@ -56,6 +59,7 @@ if TYPE_CHECKING:
 
     from .build_queue import QueuedBuild
     from .daemon_extensions.pynixd_collect_garbage import PynixdCollectGarbageResponse
+    from .handover import Inherited
     from .provisioning.provider import Provider
     from .serde import BuildDerivationResponse
 
@@ -87,6 +91,7 @@ def _trigger_due(now: float, last_trigger: float, cooldown: float) -> bool:
 SILENT_UPSTREAM_WARN = 600.0
 """Seconds of silence after which an upstream operation is logged once."""
 SILENT_UPSTREAM_CHECK = 60.0
+DRAIN_POLL = 1.0
 
 _SUN_PATH_LIMIT = {"linux": 108, "darwin": 104}
 _SUN_PATH_LIMIT_DEFAULT = 104
@@ -174,6 +179,8 @@ class Server:
         self,
         stores: dict[StoreId, Store] | None = None,
         settings: PynixdSettings | None = None,
+        *,
+        inherited: Inherited | None = None,
         **kwargs: Any,
     ) -> None:
         if settings is None:
@@ -249,6 +256,15 @@ class Server:
         self._background = Background("Server")
         self._running: contextlib.AbstractAsyncContextManager[Server] | None = None
         self._store_hosts: dict[StoreId, _StoreHost] = {}
+        self._inherited = inherited
+        self.handover: HandoverControl | None = None
+        self.draining = False
+        self.drained = anyio.Event()
+        """Set when a drain ends: no session and no build left, or the drain limit passed."""
+        self._singletons: list[anyio.CancelScope] = []
+        """Loops one process runs for the whole machine. A drain stops them; the successor runs its own."""
+        self._passes = 0
+        """Singleton passes running now: a GC pass, a cold-tier round, a liveness refresh."""
 
     @staticmethod
     def _ensure_unix_socket_parent(socket_path: Path) -> None:
@@ -458,6 +474,100 @@ class Server:
         """
         self._background.spawn(fn, *args)
 
+    def _spawn_singleton(self, fn: Callable[..., Awaitable[object]], *args: object) -> None:
+        """`_spawn`, for a loop that a drain stops: GC, the cold tier, liveness."""
+        self._singletons.append(self._background.spawn(fn, *args))
+
+    @contextlib.contextmanager
+    def _singleton_pass(self) -> Iterator[None]:
+        """One pass of a singleton loop. A drain stops the loops between passes, never inside one.
+
+        A pass cut short leaves what it started: a GC pass its deletes half recorded, an upload its NAR without
+        a narinfo. The successor's first pass may overlap the last one here; the daemon serialises collectors,
+        and the bucket keys a NAR by its hash.
+        """
+        self._passes += 1
+        try:
+            yield
+        finally:
+            self._passes -= 1
+            if self.draining and not self._passes:
+                self._stop_singletons()
+
+    def _stop_singletons(self) -> None:
+        for scope in self._singletons:
+            scope.cancel()
+
+    def handover_refusal(self, schema_version: int) -> str | None:
+        """Why this process cannot overlap with a successor, or `None`. docs/design/upgrade-handover.md."""
+        if self.draining:
+            return "it is draining already"
+        if self.ctx.local_store.managed:
+            # The successor would remove the socket and kill the daemon this process builds on.
+            return "pynixd manages the local store's daemon"
+        if self.settings.provisioning.pools:
+            # The successor's `reconcile` would end the machines this process builds on.
+            return "provisioning pools have no adoption yet"
+        if self.settings.reverse_initiator.enabled:
+            return "a reverse initiator would register this builder twice"
+        if schema_version != TARGET_VERSION:
+            return f"the database schema moves from version {TARGET_VERSION} to {schema_version}"
+        return None
+
+    def listener_sockets(self) -> dict[ListenerName, list[socket.socket]]:
+        sockets: dict[ListenerName, list[socket.socket]] = {}
+        if self.unix_server is not None:
+            sockets[ListenerName.UNIX] = [raw_socket(self.unix_server.listener)]
+        if self.handover is not None:
+            sockets[ListenerName.HANDOVER] = [raw_socket(self.handover.listener)]
+        return sockets
+
+    def unix_owns_path(self) -> bool:
+        return self.unix_server is not None and self.unix_server.owns_path
+
+    async def drain(self) -> None:
+        """Stop accepting, stop the singleton loops, and set `drained` once no session and no build is left.
+
+        The successor holds the same listening sockets, so every path stays.
+        """
+        if self.draining:
+            return
+        self.draining = True
+        log.info("server_draining", limit=self.settings.drain_limit)
+        if self.unix_server is not None:
+            self.unix_server.owns_path = False
+            await self.unix_server.aclose()
+            self.unix_server = None
+        if self.handover is not None:
+            await self.handover.aclose(unlink=False)
+            self.handover = None
+        if not self._passes:
+            self._stop_singletons()
+        self._spawn(self._drain_watch)
+
+    def _holds_work(self) -> bool:
+        if len(self.ctx.sessions):
+            return True
+        scheduler = self.ctx.scheduler
+        if scheduler is None:
+            return False
+        counts = scheduler.queue.counts()
+        return counts.pending + counts.building > 0
+
+    async def _drain_watch(self) -> None:
+        started = time.monotonic()
+        with anyio.move_on_after(self.settings.drain_limit) as limit:
+            # Polled: sessions and builds end in many places, and none of them signals a waiter.
+            while self._holds_work():
+                await anyio.sleep(DRAIN_POLL)
+        if limit.cancelled_caught:
+            log.warning(
+                "server_drain_limit", sessions=len(self.ctx.sessions), seconds=round(time.monotonic() - started)
+            )
+        else:
+            log.info("server_drained", seconds=round(time.monotonic() - started, 3))
+        self.drained.set()
+
     async def _open_stores(self, opened: anyio.Event) -> None:
         """Open every store but the local one, at once, then set *opened*."""
         started = time.monotonic()
@@ -500,7 +610,8 @@ class Server:
                     metrics.GC_TRIGGER_SKIPPED.labels(reason="watermark").inc()
                     log.debug("gc_trigger_cooldown", reason="watermark")
                     continue
-                await self._drive_to_target()
+                with self._singleton_pass():
+                    await self._drive_to_target()
                 last_trigger = time.monotonic()
                 continue
             if now - last_full >= settings.gc_interval:
@@ -509,7 +620,8 @@ class Server:
                     metrics.GC_TRIGGER_SKIPPED.labels(reason="scheduled").inc()
                     log.debug("gc_trigger_cooldown", reason="scheduled")
                     continue
-                await self._gc_pass("scheduled")
+                with self._singleton_pass():
+                    await self._gc_pass("scheduled")
                 last_trigger = time.monotonic()
 
     async def _cold_tick(self, tier: ColdTier) -> None:
@@ -537,7 +649,8 @@ class Server:
                 used, total = usage
                 pressure = max(used / total, watermark or 0.0)
                 try:
-                    await Collector(self.ctx).upload_ahead(tier, int(total * ahead), pressure)
+                    with self._singleton_pass():
+                        await Collector(self.ctx).upload_ahead(tier, int(total * ahead), pressure)
                 except (CacheFault, DatabaseError):
                     log.warning("gc_cold_round_failed", store_id=tier.cold.store_id, exc_info=True)
 
@@ -658,7 +771,8 @@ class Server:
                 await dirty.wait()
             dirty.clear()
             try:
-                await watch.refresh()
+                with self._singleton_pass():
+                    await watch.refresh()
             except anyio.get_cancelled_exc_class():
                 raise
             except Exception:
@@ -780,9 +894,19 @@ class Server:
         # client that connects early waits in the backlog. Nix's functional
         # suite waits 6 s for the socket (`common/functions.sh:82`), and the
         # store work took 0.3-0.4 s of a 1.5 s start in its guest (#1302).
+        inherited = self._inherited
         if s.unix_path:
             self._ensure_unix_socket_parent(s.unix_path)
-            self.unix_server = await bind_unix_server(s.unix_path)
+            self.unix_server = await bind_unix_server(
+                s.unix_path,
+                inherited.take(ListenerName.UNIX) if inherited else [],
+                inherited_owns_path=inherited is not None and inherited.unix_owns_path,
+            )
+        if s.handover_path:
+            self._ensure_unix_socket_parent(s.handover_path)
+            self.handover = await HandoverControl.bind(
+                s.handover_path, inherited.take(ListenerName.HANDOVER) if inherited else []
+            )
 
         await self._background.start(self._host_store, local_store, False, None, True)
 
@@ -857,9 +981,9 @@ class Server:
             self._spawn(self.ctx.scheduler.start)
 
         if self.ctx.db and self.ctx.settings.gc_enabled:
-            self._spawn(self._gc_tick)
+            self._spawn_singleton(self._gc_tick)
             if (tier := ColdTier.of(self.ctx)) is not None:
-                self._spawn(self._cold_tick, tier)
+                self._spawn_singleton(self._cold_tick, tier)
             liveness_interval = self.ctx.settings.gc_liveness_interval
             if liveness_interval is not None:
                 watch = LivenessWatch.of(self.ctx.local_store.layout, self.ctx.db)
@@ -868,8 +992,8 @@ class Server:
                 else:
                     dirty = DirtyFlag()
                     roots = StableRootsWatch(watch.tracker.state_dir)
-                    self._spawn(roots.run, dirty)
-                    self._spawn(self._liveness_tick, watch, liveness_interval, dirty)
+                    self._spawn_singleton(roots.run, dirty)
+                    self._spawn_singleton(self._liveness_tick, watch, liveness_interval, dirty)
 
         # Before the listeners, so a stall during their startup is recorded.
         if self.stall_watchdog is not None:
@@ -916,6 +1040,10 @@ class Server:
 
         if self.unix_server is not None:
             serve_unix_clients(self.unix_server, self.ctx, self._spawn, s.schedule_mode)
+        if self.handover is not None:
+            self.handover.serve(self._spawn, self)
+        if inherited is not None:
+            inherited.close_rest()
 
         if s.http_port is not None or s.https_port is not None:
             scheduler = self.ctx.scheduler
@@ -990,6 +1118,9 @@ class Server:
         if self.unix_server:
             await self.unix_server.aclose()
             self.unix_server = None
+        if self.handover:
+            await self.handover.aclose(unlink=True)
+            self.handover = None
 
         # Answer every established client before tearing down the state
         # their operations read. The listeners are gone, so no new client

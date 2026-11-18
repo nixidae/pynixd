@@ -112,8 +112,19 @@ class UnixServer:
                 await anyio.Path(self.socket_path).unlink()
 
 
-async def bind_unix_server(socket_path: Path) -> UnixServer:
-    """Bind and listen on `socket_path`, accepting nothing yet: a client waits in the backlog."""
+async def bind_unix_server(
+    socket_path: Path, handed: list[socket.socket] | None = None, *, inherited_owns_path: bool = False
+) -> UnixServer:
+    """Bind and listen on `socket_path`, accepting nothing yet: a client waits in the backlog.
+
+    *handed* are the sockets a predecessor passed on a hand-over. One bound at `socket_path` is adopted, and
+    the path stays whose it was: *inherited_owns_path* says whether the predecessor bound it or systemd did.
+    """
+    for sock in handed or []:
+        if sock.getsockname() == str(socket_path):
+            log.info("unix_server_listening", socket_path=socket_path, handed_over=True)
+            return UnixServer(await SocketListener.from_socket(sock), socket_path, owns_path=inherited_owns_path)
+        sock.close()
     inherited = inherited_listener(socket_path)
     if inherited is not None:
         server = UnixServer(await SocketListener.from_socket(inherited), socket_path, owns_path=False)

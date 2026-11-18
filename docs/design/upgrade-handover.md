@@ -300,8 +300,24 @@ Mechanics, as measured above:
   `MAINPID=` and `READY=1` itself (`NotifyAccess=all`) and binds the control socket in turn. On failure the old
   main keeps everything and the reload fails.
 - The old main then drains. It closes its listeners without unlinking a path, and stops its singleton loops: GC,
-  the cold tier, liveness and the provisioner. It keeps its sessions and its scheduler, and closes once neither
-  holds work.
+  the cold tier and liveness. It serves its live sessions in full, new operations included, and runs its queued
+  builds. It closes when no session and no build is left, or at the drain limit. So an idle client (`nix repl`)
+  keeps the old process until it disconnects or the limit passes: a stock client does not reconnect.
+- A running pynixd that cannot overlap (the rules below, or one that predates the control socket) refuses. Then
+  `pynixd handover --unit %n` starts `systemctl --no-block restart`: the new configuration applies as it does
+  without the hand-over. A successor that fails to start fails the reload instead, and the old main serves on.
+
+GC and the cold tier across a hand-over:
+
+- A drain stops a singleton loop between two passes, never inside one. A GC pass cut short leaves its deletes
+  half recorded, and a cut cold-tier round leaves a NAR without its narinfo. A pass in flight runs to its end.
+- The successor's loops sleep first (`gc_poll_interval`, `gc_cold_interval`), so its first pass seldom meets the
+  old one's last. If they meet, nix-daemon's GC lock orders two collectors, and the bucket keys a NAR by its
+  hash, so a second upload of a path writes the same objects.
+- The old process's sessions keep their temporary roots: flock'd files under `temproots`. The successor's veto
+  reads them fresh before each pass (`volatile_roots`), so it spares what the old process's clients hold.
+- A build that outlives its client has no temporary root, in either process. That is so without a hand-over too.
+- `PynixdHeldBy` and the access times are rows of the one database; both processes write it in WAL mode.
 
 What assumes the previous instance is dead, and the rule for each:
 
@@ -309,7 +325,9 @@ What assumes the previous instance is dead, and the rule for each:
 | --- | --- |
 | `UnixServer.aclose` unlinks a path it bound | a drain closes without unlinking |
 | managed local daemon: `removing_stale_socket`, `killpg` | refuse the handover (step 1) |
-| provisioner `reconcile` ends machines of a previous run; its shutdown ends every live machine | the successor adopts the old main's rows; a drain ends none (remote step) |
+| provisioner `reconcile` ends machines of a previous run; its shutdown ends every live machine | refuse while `provisioning.pools` is set; later the successor adopts the rows and a drain ends none |
+| reverse initiator: the builder would register twice with its controller | refuse (step 1) |
+| GC, cold-tier and liveness loops | stop between passes (above) |
 | `http_server.cleanup()` cuts NAR transfers | stop accepting, then wait for the transfers |
 | a schema migration under a running old process | refuse the overlap |
 | per-build cgroups (`build-<pid>-<n>`, shared leaf) | safe as is |
@@ -318,8 +336,8 @@ Owner's answers, 2026-11-18:
 
 - Drain limit: a setting, default 24 h. At the limit the old process closes as today, and what it still holds dies.
 - Build limit: accepted for now. **Shortcoming:** during a drain each process counts only its own builds against a
-  store's limit, so a builder can get up to twice its jobs. The old process starts no new build, so the excess only
-  shrinks. Shared counting in the database comes with HA (nixidae/nixidae#1407).
+  store's limit, so a builder can get up to twice its jobs. The old process takes no new client, so its queue only
+  empties. Shared counting in the database comes with HA (nixidae/nixidae#1407).
 - Every config change hands over; no setting forces a restart.
 
 Done when `tests.upgrade` shows each of these on a switch from configuration A to B:
