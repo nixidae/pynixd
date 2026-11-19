@@ -18,6 +18,7 @@ import anyio
 import pytest
 
 from pynixd.liveness_watch import DirtyFlag, StableRootsWatch
+from tests._conftest.loop_files import LoopFileCalls
 
 TARGET = "/nix/store/00000000000000000000000000000000-a"
 
@@ -195,6 +196,22 @@ async def test_no_watch_outside_the_trees(tmp_path: Path) -> None:
         tg.cancel_scope.cancel()
 
     assert held == 4
+
+
+@pytest.mark.anyio
+async def test_start_and_stop_walk_no_tree_on_the_loop(tmp_path: Path) -> None:
+    """The observer walks each tree to watch every directory in it; that walk runs in a thread."""
+    auto, _profiles = _lab(tmp_path)
+    for n in range(20):
+        (auto / str(n)).mkdir()
+    watch = StableRootsWatch(tmp_path)
+    with LoopFileCalls() as loop:
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(watch.run, DirtyFlag())
+            await anyio.sleep(0.2)
+            tg.cancel_scope.cancel()
+
+    assert loop.calls == []
 
 
 @pytest.mark.anyio

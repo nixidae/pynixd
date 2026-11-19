@@ -175,17 +175,28 @@ class StableRootsWatch:
                 self._trees[tree] = (watch, now)
         return moved
 
+    def _start(self, wake: queue.Queue[bool]) -> bool:
+        """Start the observer; whether it runs."""
+        self._handler = _TreeHandler(wake)
+        self._observer.schedule(_StateDirHandler(self, wake), str(self.state_dir), recursive=False)
+        self.sync()
+        try:
+            self._observer.start()
+        except OSError as exc:
+            log.warning("stable_roots_no_state_dir", state_dir=str(self.state_dir), error=str(exc))
+            return False
+        return True
+
+    def _stop(self) -> None:
+        self._observer.stop()
+        self._observer.join()
+
     async def run(self, dirty: DirtyFlag) -> None:
         """Watch until cancelled, setting *dirty* on every relevant change."""
         wake: queue.Queue[bool] = queue.Queue()
-        observer = self._observer
-        self._handler = _TreeHandler(wake)
-        observer.schedule(_StateDirHandler(self, wake), str(self.state_dir), recursive=False)
-        self.sync()
-        try:
-            observer.start()
-        except OSError as exc:
-            log.warning("stable_roots_no_state_dir", state_dir=str(self.state_dir), error=str(exc))
+        # Off the loop: `start` walks each tree to put a watch on every directory in it, and the
+        # trees are as large as the machine's roots. `run_sync` waits for the thread when cancelled.
+        if not await run_sync(self._start, wake):
             await anyio.sleep_forever()
             return
         try:
@@ -197,5 +208,4 @@ class StableRootsWatch:
                 if woke:
                     dirty.set()
         finally:
-            observer.stop()
-            await run_sync(observer.join)  # type: ignore[call-arg]  # zuban-bug: run_sync counts join's defaulted timeout as required; mypy accepts the call
+            await run_sync(self._stop)
