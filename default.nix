@@ -783,6 +783,17 @@ let
       }
     );
 
+    # A store path's files copied as a NAR stream or by the kernel, on btrfs,
+    # XFS and ext4, in a QEMU guest. Not a gate on speed.
+    # `nix run --file . internal.tests.copy-offload.driver -- --out <abs>`.
+    copy-offload = withDefaultNix (
+      pkgs.callPackage ./tests/derivations/copy-offload {
+        src = testSrc;
+        inherit vivariumLib;
+        devEnv = guestEnv;
+      }
+    );
+
     # The same suites in a guest, where cleanup is a poweroff rather than
     # a promise.
     guest = withDefaultNix (pkgs.callPackage ./tests/derivations/guest guestArgs);
