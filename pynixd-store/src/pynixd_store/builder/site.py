@@ -247,7 +247,7 @@ class HostSite(BuildSite):
         self, paths: BuildPaths, cgroup: Path | None, samples: tuple[UsageSample, ...]
     ) -> BuildUsage | None:
         if cgroup is None:
-            return read_usage(paths.top / USAGE_NAME)
+            return await anyio.to_thread.run_sync(read_usage, paths.top / USAGE_NAME)
         read = await anyio.to_thread.run_sync(build_cgroup.read, cgroup)
         return replace(read, samples=samples)
 
@@ -344,19 +344,22 @@ class VmSite(BuildSite):
         if paths.chroot_parent is None:
             raise ValueError("a build VM runs the sandbox only")
         await self.vm.make_disk(paths.top, paths.tmp)
-        argv = self.vm.argv(
-            top=paths.top,
-            chroot_parent=paths.chroot_parent,
-            real_store_dir=self.real_store_dir,
-            visible=self.visible,
-            sources=self.sources,
-            spec_file=spec_file,
-            build_dir=paths.tmp,
-            recursive=recursive,
-            net_fd=self.net_fd,
-            cgroup=cgroup,
-            socket_owner=None if self.user is None else (self.user.uid, self.user.gid),
-            tso=self.tso,
+        # `argv` stats the sources and writes the guest's files.
+        argv = await anyio.to_thread.run_sync(
+            lambda: self.vm.argv(
+                top=paths.top,
+                chroot_parent=paths.chroot_parent,
+                real_store_dir=self.real_store_dir,
+                visible=self.visible,
+                sources=self.sources,
+                spec_file=spec_file,
+                build_dir=paths.tmp,
+                recursive=recursive,
+                net_fd=self.net_fd,
+                cgroup=cgroup,
+                socket_owner=None if self.user is None else (self.user.uid, self.user.gid),
+                tso=self.tso,
+            )
         )
         # libkrun connects to the host's sockets by their names in the top directory.
         return Launch(argv, [] if self.net_fd is None else [self.net_fd], paths.top)
@@ -388,12 +391,11 @@ class VmSite(BuildSite):
     async def usage(
         self, paths: BuildPaths, cgroup: Path | None, samples: tuple[UsageSample, ...]
     ) -> BuildUsage | None:
-        usage = read_usage(paths.top / USAGE_NAME)
-        host = (
-            read_usage(paths.top / VMM_USAGE_NAME)
-            if cgroup is None
-            else await anyio.to_thread.run_sync(build_cgroup.read, cgroup)
-        )
+        usage = await anyio.to_thread.run_sync(read_usage, paths.top / USAGE_NAME)
+        if cgroup is None:
+            host = await anyio.to_thread.run_sync(read_usage, paths.top / VMM_USAGE_NAME)
+        else:
+            host = await anyio.to_thread.run_sync(build_cgroup.read, cgroup)
         if usage is not None and host is not None:
             return with_host(usage, host)
         return usage

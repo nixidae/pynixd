@@ -1512,7 +1512,8 @@ async def _run(
             await process.wait()
             os.close(master)
             tracked.close()
-    setup_error = site.setup_error(paths, launch)
+    # A site reads its status files to say how the set-up ended.
+    setup_error = await anyio.to_thread.run_sync(site.setup_error, paths, launch)
     if timed_out is not None:
         return BuildFailure(BuildResultStatus.TIMED_OUT, f"building '{magenta(drv_path)}' {timed_out}")
     if too_long:
@@ -1536,7 +1537,7 @@ async def _run(
             f"while waiting for the build environment for '{magenta(drv_path)}' to initialize "
             f"({'succeeded' if ended is None else ended.reason}, previous messages: {'|'.join(setup.messages)})",
         )
-    return site.ended(paths, drv_path, process.returncode)
+    return await anyio.to_thread.run_sync(site.ended, paths, drv_path, process.returncode)
 
 
 def _disk_full(*paths: Path) -> bool:

@@ -14,11 +14,5 @@ EXEMPT: Final[dict[str, str]] = {
     "nix_daemon_protocol/wire_message.py _compiled_or_none": DEBT,
     "pynixd/store/__init__.py __getattr__": DEBT,
     "pynixd/store/local_db.py close": DEBT,
-    "pynixd_store/builder/usage.py read_usage": DEBT,
-    "pynixd_store/builder/vm.py argv": DEBT,
-    "pynixd_store/builder/vm.py ending": DEBT,
-    "pynixd_store/builder/vm.py make_disk": DEBT,
-    "pynixd_store/builder/vm.py status": DEBT,
-    "pynixd_store/builder/vm.py uplink": DEBT,
     "pynixd_store/collect.py serve": DEBT,
 }

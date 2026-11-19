@@ -149,8 +149,7 @@ class BuildVm:
         DIR` does the same for ext4; no journal, as a build directory need not outlive a crash.
         """
         image = top / DISK_NAME
-        with image.open("wb") as file:
-            file.truncate(self.disk_gib * 1024**3)
+        await anyio.to_thread.run_sync(_sparse, image, self.disk_gib * 1024**3)
         if self.mkfs.name == "mke2fs":
             argv = [str(self.mkfs), "-q", "-F", "-t", "ext4", "-O", "^has_journal", "-m", "0"]
             argv += ["-E", "nodiscard,lazy_itable_init=1", "-d", str(build_dir), str(image)]
@@ -373,6 +372,11 @@ def status(top: Path) -> str:
         return ""
 
 
+def _sparse(path: Path, size: int) -> None:
+    with path.open("wb") as file:
+        file.truncate(size)
+
+
 @asynccontextmanager
 async def uplink(passt: Path, top: Path) -> AsyncIterator[int]:
     """The VM's end of a socketpair that *passt* serves, for the launcher's `--net`; passt's log in *top*.
@@ -383,7 +387,7 @@ async def uplink(passt: Path, top: Path) -> AsyncIterator[int]:
     """
     ours, theirs = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        with (top / PASST_LOG_NAME).open("wb") as log:
+        with await anyio.to_thread.run_sync(lambda: (top / PASST_LOG_NAME).open("wb")) as log:
             process = await anyio.open_process(
                 [
                     str(passt),
