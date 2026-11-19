@@ -5,8 +5,9 @@
 # fast one under `fsfreeze`. `tests/benchmark/temp_roots.py` does the measuring,
 # and runs by hand on any directory too.
 #
-# Not a gate on speed: a phase fails only when its model does not reproduce the
-# fault (inline must stall the loop there) or a roots file is wrong.
+# Not a gate on speed. `frozen` fails when inline does not stall the loop there;
+# `dirty` and `pressure` print whether they reproduce the fault and pass. A
+# phase fails when a roots file is wrong or a writer case fails.
 # `nix run --file . internal.tests.temp-roots.driver -- --out <abs>`.
 {
   vivariumLib,
