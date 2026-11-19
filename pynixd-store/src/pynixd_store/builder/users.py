@@ -15,6 +15,10 @@ import pwd
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 DEFAULT_STATE_DIR = Path("/nix/var/nix")
 LINUX = sys.platform == "linux"
@@ -137,6 +141,11 @@ def chown_to(user: BuildUser | None, path: Path) -> None:
     """`chownToBuilder`: nothing without a build user."""
     if user is not None:
         os.chown(path, user.uid, user.gid)
+
+
+def chown_each(user: BuildUser | None, paths: Iterable[Path]) -> None:
+    for path in paths:
+        chown_to(user, path)
 
 
 def check_not_world_writable(path: Path) -> None:

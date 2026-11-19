@@ -581,6 +581,19 @@ def _binds(
     return [(target, source, optional) for target, (source, optional) in sorted(binds.items())]
 
 
+def _write_builder_files(tmp: Path, files: Mapping[str, str], user: build_users.BuildUser | None) -> None:
+    """`writeBuilderFile` (`derivation-builder.cc:918`): the build user owns each, so stdenv may chmod it."""
+    for name, contents in files.items():
+        (tmp / name).write_text(contents, encoding="utf-8")
+        build_users.chown_to(user, tmp / name)
+
+
+def _write_spec(spec_file: Path, text: str) -> None:
+    """0600: without the chroot the build user can reach the top directory, and the job may hold a netrc."""
+    with open(os.open(spec_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as job:
+        job.write(text)
+
+
 def _network_files(settings: BuildSettings, binds: list[tuple[str, str, bool]]) -> list[tuple[str, str, bool]]:
     """The host files a fixed-output build reads to reach the network, as `(target, source, optional)`.
 
@@ -869,10 +882,7 @@ async def build(
             exported=exported,
             build_dir=build_dir,
         )
-        for name, contents in env.files.items():
-            # `writeBuilderFile` (`derivation-builder.cc:918`): the build user owns it, so stdenv may chmod it.
-            (paths.tmp / name).write_text(contents, encoding="utf-8")
-            build_users.chown_to(user, paths.tmp / name)
+        await anyio.to_thread.run_sync(_write_builder_files, paths.tmp, env.files, user)
         # A builtin finds no `out` in `ctx.outputs` and fails in its own words (`derivation-builder.cc:999`).
         builtin_out = str(scratch["out"]) if "out" in scratch else None
         fetch = (
@@ -926,7 +936,7 @@ async def build(
             "darwin": darwin_spec,
         }
         # `startBuild` (`derivation-builder.cc:465`): only a build that rewrites hashes, one without the chroot.
-        if not chroot and os.path.exists(HOME_DIR):
+        if not chroot and await anyio.Path(HOME_DIR).exists():
             return LocalBuildResult(
                 BuildResultStatus.MISC_FAILURE,
                 show_error(
@@ -1013,7 +1023,7 @@ async def build(
             if (refused := site.refusal()) is not None:
                 return LocalBuildResult(BuildResultStatus.MISC_FAILURE, refused)
             if chroot and not sandboxed and paths.root is not None:
-                files = _network_files(settings, spec["binds"])
+                files = await anyio.to_thread.run_sync(_network_files, settings, spec["binds"])
                 spec["binds"] = [*spec["binds"], *await anyio.to_thread.run_sync(site.host_files, paths.root, files)]
             await site.start(stack, paths)
             cgroup = await stack.enter_async_context(build_cgroup.build_cgroup())
@@ -1025,8 +1035,8 @@ async def build(
                     return LocalBuildResult(
                         BuildResultStatus.MISC_FAILURE, show_error("cannot determine the cgroups file system")
                     )
-                for owned in (cgroup, cgroup / "cgroup.procs", cgroup / "cgroup.threads"):
-                    build_users.chown_to(user, owned)
+                owned = (cgroup, cgroup / "cgroup.procs", cgroup / "cgroup.threads")
+                await anyio.to_thread.run_sync(build_users.chown_each, user, owned)
             site.configure(spec, sample_seconds)
             samples: list[UsageSample] = []
             sampler = await stack.enter_async_context(anyio.create_task_group())
@@ -1422,9 +1432,7 @@ async def _run(
     on the terminal (`SetupMessages`): an external builder does.
     """
     spec_file = paths.top / "spec.json"
-    # 0600: without the chroot the build user can reach the top directory, and the job may hold a netrc.
-    with open(os.open(spec_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as job:
-        job.write(json.dumps(spec))
+    await anyio.to_thread.run_sync(_write_spec, spec_file, json.dumps(spec))
     master, slave = os.openpty()
     # `openSlave` (`derivation-builder.cc:980`): raw, so no `\n` becomes `\r\n` in the log.
     mode = termios.tcgetattr(slave)

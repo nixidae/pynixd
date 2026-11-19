@@ -218,14 +218,14 @@ class HostSite(BuildSite):
                 inputs, None, real_store_dir, submitting=submitting, repairing=repairing, binds=False
             )
             listener = await anyio.to_thread.run_sync(listen, paths.tmp / SOCKET_NAME)
-            build_users.chown_to(user, paths.tmp / SOCKET_NAME)
+            await anyio.to_thread.run_sync(build_users.chown_to, user, paths.tmp / SOCKET_NAME)
             return Endpoint(listener, restriction)
         ours, control = socket.socketpair()
         stack.callback(control.close)
         stream = await stack.enter_async_context(await SocketStream.from_socket(ours))
         restriction = RestrictionContext(inputs, stream, real_store_dir, submitting=submitting, repairing=repairing)
         listener = await anyio.to_thread.run_sync(listen, paths.tmp / SOCKET_NAME)
-        build_users.chown_to(user, paths.tmp / SOCKET_NAME)
+        await anyio.to_thread.run_sync(build_users.chown_to, user, paths.tmp / SOCKET_NAME)
         return Endpoint(listener, restriction, control)
 
     def configure(self, spec: ChildSpec, sample_seconds: float) -> None:
@@ -440,7 +440,7 @@ class DarwinVmSite(BuildSite):
             binds=False,
         )
         listener = await anyio.to_thread.run_sync(listen, paths.tmp / SOCKET_NAME)
-        build_users.chown_to(user, paths.tmp / SOCKET_NAME)
+        await anyio.to_thread.run_sync(build_users.chown_to, user, paths.tmp / SOCKET_NAME)
         return Endpoint(listener, restriction)
 
     def configure(self, spec: ChildSpec, sample_seconds: float) -> None:

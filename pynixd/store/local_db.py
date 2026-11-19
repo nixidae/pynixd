@@ -842,7 +842,10 @@ class LocalDBStore(Store):
         if session is not None:
             refusal = local_builder.rejection(request.drv_path, request.derivation, session)
             # With no daemon, no build hook takes what pynixd refuses.
-            if refusal is not None and not (local_builder.hands_off(session) and self.mode.has_daemon):
+            # `hands_off` reads an `@file` of `builders` from disk.
+            if refusal is not None and not (
+                self.mode.has_daemon and await anyio.to_thread.run_sync(local_builder.hands_off, session)
+            ):
                 return BuildDerivationResponse(
                     result=BuildResult(
                         status=int(BuildResultStatus.INPUT_REJECTED),
