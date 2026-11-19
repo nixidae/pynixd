@@ -18,7 +18,8 @@ from pathlib import Path
 
 from nix_daemon_protocol.ids import StoreId
 from pynixd.config import SSHSocketStoreSpec, SSHSubprocessStoreSpec
-from pynixd.store.daemon import PROBE_CONCURRENCY, SSHD_DEFAULT_MAX_SESSIONS, DaemonStore
+from pynixd.store.daemon import SSHD_DEFAULT_MAX_SESSIONS, DaemonStore
+from pynixd.store.probe import PROBE_CONCURRENCY
 from pynixd.store.ssh import SSHSocketStore, SSHSubprocessStore
 
 

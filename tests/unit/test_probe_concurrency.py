@@ -19,7 +19,8 @@ from typing import TYPE_CHECKING
 import anyio
 import pytest
 
-from pynixd.store.daemon import PROBE_CONCURRENCY, DaemonStore
+from pynixd.store.daemon import DaemonStore
+from pynixd.store.probe import PROBE_CONCURRENCY
 from pynixd.system_features import KNOWN_FEATURES
 
 if TYPE_CHECKING:

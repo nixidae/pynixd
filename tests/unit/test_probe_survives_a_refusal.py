@@ -30,7 +30,8 @@ from nix_daemon_protocol.logs import ActivityField, LogNext, LogResult
 from nix_daemon_protocol.protocol import FieldType, ResultType
 from pynixd.exceptions import BackendError
 from pynixd.serde import BuildDerivationResponse, ReadContext
-from pynixd.store.daemon import PROBE_SYSTEM_SCRIPT, DaemonStore, _refusal_with_builder_output
+from pynixd.store.daemon import DaemonStore, _refusal_with_builder_output
+from pynixd.store.probe import PROBE_SYSTEM_SCRIPT
 
 REFUSAL = "you are not privileged to build input-addressed derivations"
 

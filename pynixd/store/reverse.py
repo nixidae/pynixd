@@ -18,7 +18,7 @@ from .. import wire
 from ..connection import Connection
 from ..monitor import PeerHealthMonitor
 from ..wire import SSHNixReader, SSHNixWriter
-from .daemon import PROBE_SYSTEM_SCRIPT
+from .probe import PROBE_SYSTEM_SCRIPT
 from .scheduled import ProbeState
 from .ssh import SSHStore
 

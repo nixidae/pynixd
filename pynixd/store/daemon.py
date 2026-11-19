@@ -19,25 +19,18 @@ from nix_daemon_protocol import (
     QueryValidPathsRequest,
 )
 from nix_daemon_protocol.build_result import DUMMY_DRV_HASH
-from nix_daemon_protocol.protocol import ResultType
 from nix_daemon_protocol.store_dir import store_prefix
 from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
 from nix_daemon_protocol.wire_ops import WireRequest
 from pynixd_store.drv_parser import drv_bytes, parse_drv_bytes
 from pynixd_store.hintfmt import magenta
-from pynixd_store.utils import random_nix32_hash
 
 from .. import metrics, wire
 from .._lazy import ssh_errors
 from ..exceptions import BackendError, PynixdError
 from ..serde import (
     AddToStoreRequest,
-    BasicDerivation,
-    BuildDerivationRequest,
-    BuildMode,
-    BuildResultStatus,
     ContentAddress,
-    DerivationOutput,
     DrvOutput,
     QueryRealisationResponse,
     Realisation,
@@ -45,6 +38,7 @@ from ..serde import (
 )
 from ..system_features import KNOWN_FEATURES, PROBE_SYSTEMS
 from .pool import ConnectionPool
+from .probe import ACCEPTED, PROBE_CONCURRENCY, probe_features, probe_request, probe_systems, refusal
 from .scheduled import ProbeState, ScheduledStore
 
 if TYPE_CHECKING:
@@ -118,19 +112,6 @@ login and subsystem sessions **while still permitting forwarding**". So a
 forwarded channel does not count against it and a session channel does. That
 is why `SSHSubprocessStore` and `SSHSocketStore` take different bounds."""
 
-PROBE_CONCURRENCY: Final[int] = 5
-"""Probes in flight at once, over every system and every feature.
-
-Each probe is one build, and over SSH each build takes a channel. `sshd`
-permits ten sessions by default, and `nix` assumes the same ten for its own
-channels, so half of that leaves room for a build running beside a probe.
-
-Measured on issue #15: eighteen probes at once -- two systems by nine
-features -- failed eight of them with `OPEN_REQUEST_SESSION_FAILED`, which
-is eighteen minus the ten `sshd` allows. The store then sat in a 300 second
-cooldown, so the failure was not transient from the caller's side. A client
-cannot read `MaxSessions`, so this is a constant and not a negotiation."""
-
 # **The asyncssh half is read at the moment of the `except`, and not here.**
 # A `try: import asyncssh` at module level loads the library for every store,
 # and a Unix-socket daemon opens no SSH connection. `ssh_errors` answers with
@@ -144,74 +125,9 @@ _TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
 )
 
 
-_BUILDER_OUTPUT_LINES: Final[int] = 6
-"""How many lines of a refused probe's build log travel with its reason.
-
-Enough to carry what the builder said and not enough to fill a log line. The
-build log of a probe is six lines of `nix` chatter at most, because the
-derivation is one `echo`."""
-
-
-PROBE_SYSTEM_SCRIPT: Final[str] = (
-    'echo {system} > "$out"; test -e "$out" && echo "probe wrote $out" >&2 || echo "probe wrote no $out" >&2'
-)
-"""The shell a system probe runs, and the one line it says about the result.
-
-**A silent builder tells a refusal nothing.** `echo <system> > $out` alone
-exits 0 and prints nothing, so a store that answered `failed to produce output
-path` carried no evidence of where the builder had written. The report names
-the path the builder saw, which a reader compares against the path Nix names
-in that message. Issue #47."""
-
-
-_BUILD_LOG_RESULTS: Final[frozenset[int]] = frozenset(
-    {ResultType.BUILD_LOG_LINE, ResultType.POST_BUILD_LOG_LINE},
-)
-
-
-def _builder_lines(logs: Any) -> list[str]:
-    """Every line the builder wrote, taken from the log stream of a response.
-
-    **Build output is an activity result, not a log line.** The daemon sends
-    it as `STDERR_RESULT` with type `BUILD_LOG_LINE`, and the text sits in
-    `fields[0].valstr`. `LogResult` carries no `text` attribute at all, so
-    reading `message.text` collected Nix's own progress chatter and dropped
-    every line the builder wrote. Measured against nix 2.34.8: a builder that
-    printed one line to stderr and produced no output path answered with
-    exactly one `BUILD_LOG_LINE` result holding that line. Issue #47.
-    """
-    lines: list[str] = []
-    for message in getattr(logs, "messages", []):
-        if getattr(message, "result_type", None) not in _BUILD_LOG_RESULTS:
-            continue
-        lines.extend(field.valstr.rstrip("\n") for field in message.fields if field.valstr and field.valstr.strip())
-    return lines
-
-
 def _refusal_with_builder_output(resp: Any) -> str:
-    """Why a store refused a probe, with what its builder said.
-
-    **`BuildResult.error_msg` alone does not say why a build produced no
-    output.** On a GitHub runner the x86_64-linux probe answered `builder for
-    '...-probe-system-x86_64-linux.drv' failed to produce output path for
-    output 'out'`, which states the symptom and nothing else: the builder ran,
-    so it is not a missing `/bin/sh` and not a permission refusal, and there
-    the trail ended. pynixd issue #47.
-
-    The daemon already sent the builder's output, and the response buffers it.
-    Nix's progress lines are the fallback, because a store that refuses before
-    it starts a builder says why there and only there.
-    """
-    error_msg = resp.result.error_msg or f"status {resp.result.status}"
-    lines = _builder_lines(resp.logs) or [
-        text.rstrip("\n")
-        for message in getattr(resp.logs, "messages", [])
-        if (text := getattr(message, "text", "")).strip()
-    ]
-    if not lines:
-        return error_msg
-    tail = " | ".join(lines[-_BUILDER_OUTPUT_LINES:])
-    return f"{error_msg} [builder said: {tail}]"
+    """Why a store refused a probe, with what its builder said; the daemon's response buffers the builder's output."""
+    return refusal(resp.result.error_msg, resp.result.status, getattr(resp.logs, "messages", []))
 
 
 def answer_in_both_shapes(response: QueryRealisationResponse, request: Any) -> QueryRealisationResponse:
@@ -596,45 +512,7 @@ class DaemonStore(ScheduledStore):
         self._probe_event.set()
 
     async def _probe_systems(self, candidates: set[str], limiter: anyio.CapacityLimiter) -> set[str]:
-        # An anyio task group hands back no task object, so each child records
-        # its answer at its own index. `candidates` becomes a list first,
-        # because the zip below needs the same order twice.
-        ordered = sorted(candidates)
-        supported: list[bool] = [False] * len(ordered)
-
-        refusals: list[str] = [""] * len(ordered)
-
-        async def probe_system(index: int, system: str) -> None:
-            async with limiter:
-                _, ok, reason = await self._send_probe(
-                    f"probe-system-{system}",
-                    system,
-                    "",
-                    ["-c", PROBE_SYSTEM_SCRIPT.format(system=system)],
-                )
-            supported[index] = ok
-            refusals[index] = reason
-
-        async with anyio.create_task_group() as tg:
-            for index, system in enumerate(ordered):
-                tg.start_soon(probe_system, index, system)
-
-        systems = {system for system, ok in zip(ordered, supported, strict=True) if ok}
-        log.info("systems_probed", store_id=self.store_id, systems=sorted(systems))
-        if not systems:
-            # **A warning, and the reasons with it.** A store with no system
-            # builds nothing, and the scheduler then answers every request
-            # with `No compatible store for <system>`, which names the system
-            # the client wanted and not the store that could not take it.
-            # The reasons were at debug level, so a CI run reported 35 of that
-            # message and nothing about its cause. Issue #47.
-            log.warning(
-                "store_probed_no_system",
-                store_id=self.store_id,
-                candidates=ordered,
-                refusals={system: reason for system, reason in zip(ordered, refusals, strict=True) if reason},
-            )
-        return systems
+        return await probe_systems(str(self.store_id), self._send_probe, candidates, limiter)
 
     async def _probe_features(
         self,
@@ -642,64 +520,10 @@ class DaemonStore(ScheduledStore):
         system_features: set[str],
         limiter: anyio.CapacityLimiter,
     ) -> dict[str, set[str]]:
-        to_probe = (system_features or set()) | KNOWN_FEATURES
-        probes: list[Callable[[], Awaitable[tuple[str, bool, str]]]] = []
-        probe_keys: list[tuple[str, str]] = []
-        for system in systems:
-            for feature in to_probe:
-                if feature == "kvm":
-                    args = [
-                        "-c",
-                        "test -w /dev/kvm && echo kvm > $out || { echo 'kvm: /dev/kvm not writable' >&2; exit 1; }",
-                    ]
-                else:
-                    args = ["-c", f"echo {feature} > $out"]
-
-                extra_env: dict[str, str] = {
-                    "requiredSystemFeatures": feature,
-                    "NIXBUILDNET_MIN_CPU": "1",
-                    "NIXBUILDNET_MAX_CPU": "1",
-                    "NIXBUILDNET_MIN_MEM": "128",
-                    "NIXBUILDNET_MAX_MEM": "128",
-                }
-                probe_keys.append((system, feature))
-                # A partial, and not a coroutine object: `start_soon` takes a
-                # callable and its arguments, and it calls that callable in the
-                # child task.
-                probes.append(
-                    functools.partial(
-                        self._send_probe,
-                        f"probe-feature-{feature}",
-                        system,
-                        feature,
-                        args,
-                        extra_env,
-                    ),
-                )
-
-        supported: list[bool] = [False] * len(probes)
-
-        async def run_probe(index: int, probe: Callable[[], Awaitable[tuple[str, bool, str]]]) -> None:
-            async with limiter:
-                _, ok, _reason = await probe()
-            supported[index] = ok
-
-        async with anyio.create_task_group() as tg:
-            for index, probe in enumerate(probes):
-                tg.start_soon(run_probe, index, probe)
-
-        feature_matrix: dict[str, set[str]] = {system: set() for system in systems}
-        for (system, feature), ok in zip(probe_keys, supported, strict=True):
-            if ok:
-                feature_matrix[system].add(feature)
-
-        self._feature_matrix = feature_matrix
-        log.info(
-            "features_probed",
-            store_id=self.store_id,
-            feature_matrix={key: sorted(value) for key, value in feature_matrix.items()},
+        self._feature_matrix = await probe_features(
+            str(self.store_id), self._send_probe, systems, (system_features or set()) | KNOWN_FEATURES, limiter
         )
-        return feature_matrix
+        return self._feature_matrix
 
     async def _send_probe(
         self,
@@ -715,42 +539,10 @@ class DaemonStore(ScheduledStore):
         daemon's own message otherwise, so that a caller can say why a store
         probed to nothing without a reader turning on debug logging.
         """
-        drv_hash = random_nix32_hash()
-        out_path = f"{store_prefix()}{drv_hash}-{name}"
-        drv_path = StorePath(path=f"{store_prefix()}{drv_hash}-{name}.drv")
-
-        env: dict[str, str] = {
-            "builder": "/bin/sh",
-            "name": name,
-            "out": out_path,
-            "system": system,
-            "hash": drv_hash,
-        }
-        if required_features:
-            env["requiredSystemFeatures"] = required_features
-        if extra_env:
-            env.update(extra_env)
-
-        request = BuildDerivationRequest(
-            drv_path=drv_path,
-            derivation=BasicDerivation(
-                outputs={"out": DerivationOutput(path=out_path, method="", hash_digest="")},
-                input_srcs=set(),
-                platform=system,
-                builder="/bin/sh",
-                args=args,
-                env=env,
-            ),
-            build_mode=BuildMode.NORMAL,
-        )
+        request = probe_request(name, system, required_features, args, extra_env)
         try:
             resp = await self.call(request, skip_probe=True, keep_logs=True)
-            accepted = resp.result.status in (
-                BuildResultStatus.BUILT,
-                BuildResultStatus.SUBSTITUTED,
-                BuildResultStatus.ALREADY_VALID,
-                BuildResultStatus.RESOLVES_TO_ALREADY_VALID,
-            )
+            accepted = resp.result.status in ACCEPTED
             if accepted:
                 log.debug("probe_accepted", store_id=self.store_id, probe=name)
                 reason = ""
