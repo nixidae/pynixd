@@ -36,6 +36,7 @@ def test_the_site_is_the_innermost_pynixd_frame() -> None:
     assert site.leaf == "/usr/lib/python3.14/pathlib/_local.py:10 exists"
     assert site.kind is Kind.FILE
     assert not site.from_test
+    assert site.callers == ("pynixd/server.py:7 serve",)
 
 
 def test_a_call_with_no_pynixd_frame_is_the_tests_own() -> None:

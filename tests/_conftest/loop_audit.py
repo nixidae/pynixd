@@ -106,6 +106,8 @@ class Site:
     leaf: str
     """The innermost frame of all, where the call is made: `path:line function`."""
     from_test: bool
+    callers: tuple[str, ...] = ()
+    """The audited frames outside `site`, innermost first, at most `CALLERS`: which path reached it."""
 
     @property
     def key(self) -> str:
@@ -113,6 +115,8 @@ class Site:
         where, _, function = self.site.partition(" ")
         return f"{where.rpartition(':')[0]} {function}"
 
+
+CALLERS: Final = 4
 
 GATED: Final = frozenset({Kind.FILE, Kind.IMPORT})
 """What the gate fails on. A traceback is an error path; a pseudo file or a spawn waits on no disk."""
@@ -132,14 +136,18 @@ def classify(event: str, target: str, frames: Iterable[Frame], roots: Roots) -> 
     """The site of *event* on *target* raised under *frames*, innermost first; `None` when no audited frame is there."""
     leaf: Frame | None = None
     site: Frame | None = None
+    callers: list[Frame] = []
     from_test = importing = tracing = False
     for frame in frames:
         if frame.filename in roots.skip:
             continue
         if leaf is None:
             leaf = frame
-        if site is None and frame.filename.startswith(roots.first_party):
-            site = frame
+        if frame.filename.startswith(roots.first_party):
+            if site is None:
+                site = frame
+            elif len(callers) < CALLERS:
+                callers.append(frame)
         from_test = from_test or frame.filename.startswith(roots.tests)
         importing = importing or frame.filename.startswith(_IMPORT_PREFIX)
         tracing = tracing or frame.filename.endswith(_TRACEBACK_FILES)
@@ -151,6 +159,7 @@ def classify(event: str, target: str, frames: Iterable[Frame], roots: Roots) -> 
         site=_where(site, roots),
         leaf=_where(leaf, roots),
         from_test=from_test,
+        callers=tuple(_where(frame, roots) for frame in callers),
     )
 
 
@@ -191,6 +200,7 @@ class _Row(TypedDict):
     site: str
     leaf: str
     from_test: bool
+    callers: list[str]
     count: int
     first_test: str
 
@@ -250,6 +260,7 @@ class LoopAudit:
                 site=site.site,
                 leaf=site.leaf,
                 from_test=site.from_test,
+                callers=list(site.callers),
                 count=seen.count,
                 first_test=seen.first_test,
             )
@@ -266,6 +277,7 @@ class LoopAudit:
                 site=row["site"],
                 leaf=row["leaf"],
                 from_test=row["from_test"],
+                callers=tuple(row["callers"]),
             )
             seen = self.sites.setdefault(site, _Seen(first_test=row["first_test"]))
             seen.count += row["count"]
