@@ -28,6 +28,7 @@ from pynixd_store.hintfmt import magenta
 from .. import metrics, wire
 from .._lazy import ssh_errors
 from ..exceptions import BackendError, PynixdError
+from ..nar import NarRegular, parse_nar
 from ..serde import (
     AddToStoreRequest,
     ContentAddress,
@@ -936,7 +937,6 @@ class DaemonStore(ScheduledStore):
     async def read_derivation(self, drv_store_path: StorePath | str) -> Derivation | None:
         """Fetch and parse a .drv file from the daemon via NAR stream."""
 
-        from ..nar import NarRegular, parse_nar
         from ..serde import IsValidPathRequest, NarFromPathRequest, QueryPathInfoRequest, StorePath
 
         sp = StorePath(path=str(drv_store_path))
