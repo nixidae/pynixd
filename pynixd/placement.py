@@ -685,7 +685,7 @@ class Placer[S: PlacedStore]:
             # All compatible stores are busy, or this build can't be placed
             # A builder of a dynamic platform can still register, and its
             # registration runs a pass (`on_store_added`) that places the build.
-            dynamic = self._dynamic_supports_build(build, build_features)
+            dynamic = self.builder_may_come(build, build_features)
             used_up = None if dynamic else self._compatible_and_used_up(build, build_features)
             if used_up:
                 notes.end(Outcome.FAILED, "every capable store failed it too often")
@@ -800,7 +800,7 @@ class Placer[S: PlacedStore]:
             return True
         return features.issubset(sys_features)
 
-    def _dynamic_supports_build(self, build: QueuedBuild, build_features: set[str]) -> bool:
+    def builder_may_come(self, build: QueuedBuild, build_features: set[str]) -> bool:
         """Whether a builder may still come for *build*: a pool may launch one, or a dynamic platform's may register.
         A client's builders and pools register none of the second kind."""
         return self.launchable(build) or (
@@ -830,7 +830,7 @@ class Placer[S: PlacedStore]:
             s.store_id != self.local.store_id
             and s.supports_derivation(build.request.derivation.platform, steered_features(s, build, build_features))
             for s in self._stores_of(build)
-        ) or self._dynamic_supports_build(build, build_features)
+        ) or self.builder_may_come(build, build_features)
 
     async def _fail_no_compatible_store(
         self,

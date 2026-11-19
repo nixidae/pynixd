@@ -280,6 +280,7 @@ def fake_executor(
     output_locations: dict[str, StoreId] | None = None,
     silent_build_probe: float = 600.0,
     handshake_timeout: float = 60.0,
+    builder_may_come: Callable[[QueuedBuild, set[str]], bool] = lambda _build, _features: False,
 ) -> Executor[FakeStore, FakeLocal, FakeSandbox]:
     """An executor over fake stores. The local builder is `stores["local"]`, or a fresh one."""
     return Executor(
@@ -297,6 +298,7 @@ def fake_executor(
         marks=lambda: None,
         add_build_log=logs or Logs(),
         output_locations={} if output_locations is None else output_locations,
+        builder_may_come=builder_may_come,
         trace=PlacementTrace(None, PlacementTraceSettings()),
         pull_backoff=0.0,
         silent_build_probe=silent_build_probe,

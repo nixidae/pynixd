@@ -38,15 +38,46 @@ SG1 = StoreId("sg1-n1")
 STORES = {store_id: FakeStore(store_id) for store_id in (LOCAL_STORE_ID, SG1, StoreId("sg1-n2"))}
 
 
-async def _retry(failed: dict[str, int], on: StoreId, message: str, *, forbids_local: bool = False) -> str | None:
-    """Whether a build that failed with *message* on *on* moves on, after failing on each store in *failed*."""
+async def _retry(
+    failed: dict[str, int],
+    on: StoreId,
+    message: str,
+    *,
+    forbids_local: bool = False,
+    stores: dict[StoreId, FakeStore] = STORES,
+    coming: bool = False,
+) -> str | None:
+    """Whether a build that failed with *message* on *on* moves on, after failing on each store in *failed*.
+
+    *coming* is whether a builder that has not registered yet may still take it.
+    """
     queue = BuildQueue()
     build = await queued(queue, options=options(0) if forbids_local else None)
     build.store_failures = {StoreId(k): v for k, v in failed.items()}
     resp = BuildDerivationResponse(
         result=BuildResult(status=int(BuildResultStatus.PERMANENT_FAILURE), error_msg=message)
     )
-    return fake_executor(queue, STORES).retryable_elsewhere(build, STORES[on], resp)
+    executor = fake_executor(queue, stores, builder_may_come=lambda _build, _features: coming)
+    return executor.retryable_elsewhere(build, stores[on], resp)
+
+
+ALONE = {LOCAL_STORE_ID: STORES[LOCAL_STORE_ID]}
+"""The local store, with no builder registered yet: sg1's pynixd-0 48 s after a restart."""
+
+
+async def test_a_local_fault_waits_for_a_builder_still_to_come() -> None:
+    """nixidae/nixidae#1542: the failure reached the client 48 s before the first builder pod registered."""
+    assert await _retry({}, LOCAL_STORE_ID, FULL, stores=ALONE, coming=True) == "No space left on device"
+
+
+async def test_a_local_fault_with_no_builder_to_come_fails() -> None:
+    assert await _retry({}, LOCAL_STORE_ID, FULL, stores=ALONE) is None
+
+
+async def test_a_build_waits_for_a_coming_builder_only_so_often() -> None:
+    """Each builder pod is a new store, so a build failed on every machine would move from pod to pod forever."""
+    failed = {"pod-a": 1, "pod-b": 1}
+    assert await _retry(failed, LOCAL_STORE_ID, FULL, stores=ALONE, coming=True) is None
 
 
 async def test_a_full_disk_is_retried_while_another_remote_has_not_tried() -> None:

@@ -75,6 +75,11 @@ HANDSHAKE_TIMEOUT = 60.0
 """How long that handshake may take before pynixd moves the build to another store."""
 _ROOTS_CLOSE_SECONDS = 10.0
 """The bound on releasing a build's roots on a store with no daemon, under a shield."""
+COMING_BUILDER_WAITS = 2
+"""How many stores a build may fail on and still wait for a builder that has not registered yet.
+
+Each nixkube builder pod is a new store, so without a bound a build that a
+machine fault fails on every machine moves from pod to pod forever."""
 
 _MACHINE_FAULTS = (
     "No space left on device",
@@ -453,6 +458,7 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         add_build_log: Callable[[str, bytes], Awaitable[object]],
         output_locations: MutableMapping[str, StoreId],
         trace: PlacementTrace,
+        builder_may_come: Callable[[QueuedBuild, set[str]], bool] = lambda _build, _features: False,
         pull_backoff: float = PULL_BACKOFF_SECONDS,
         silent_build_probe: float = SILENT_BUILD_PROBE,
         handshake_timeout: float = HANDSHAKE_TIMEOUT,
@@ -474,6 +480,8 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         self._add_build_log = add_build_log
         self.output_locations = output_locations
         self.trace = trace
+        self.builder_may_come = builder_may_come
+        """Whether a builder that is not registered yet may still take a build: `Placer.builder_may_come`."""
         self.pull_backoff = pull_backoff
         self.silent_build_probe = silent_build_probe
         self.handshake_timeout = handshake_timeout
@@ -960,11 +968,16 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
             log.warning("store_held_back_for_disk", store_id=store.store_id)
 
     def retryable_elsewhere(self, build: QueuedBuild, store: S, resp: BuildDerivationResponse) -> str | None:
-        """The machine fault behind a failed result, when another store has not tried yet.
+        """The machine fault behind a failed result, when another store has not tried yet, or may still come.
 
         The local store is a store like the others here: a remote's fault
         may fall back to it, and its own fault may move to a remote. It stays
         out when the client forbids local builds (`--max-jobs 0`).
+
+        A builder that a pool launches or a dynamic platform registers counts,
+        for a build that has failed on fewer than `COMING_BUILDER_WAITS`
+        stores: placement waits for it. sg1's pynixd-0 failed a build to the
+        client 48 s before its first builder pod registered. nixidae/nixidae#1542.
         """
         fault = machine_fault(resp.result)
         if fault is None:
@@ -981,7 +994,8 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
             and not (other.store_id == self.local_id and local_forbidden)
             and other.supports_derivation(platform, features)
         ]
-        return fault if untried else None
+        coming = len(build.store_failures) < COMING_BUILDER_WAITS and self.builder_may_come(build, features)
+        return fault if untried or coming else None
 
     async def retry_elsewhere(self, build: QueuedBuild, store: S, resp: BuildDerivationResponse, fault: str) -> None:
         """The builder's machine failed, not the derivation: try another store.

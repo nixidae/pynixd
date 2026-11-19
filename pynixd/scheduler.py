@@ -134,6 +134,7 @@ class Scheduler:
             add_build_log=lambda name, text: write_router(local).add_build_log(name, text),
             output_locations=ctx.output_locations,
             trace=self.trace,
+            builder_may_come=self.placer.builder_may_come,
         )
         for client in [*self.stores.values(), self.local_builder]:
             client.on_capacity = self.trigger
