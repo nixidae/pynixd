@@ -7,10 +7,12 @@ over SFTP while restricting access to everything else.
 
 from __future__ import annotations
 
+import inspect
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import anyio.to_thread
 import asyncssh
 from anyio import Path as AsyncPath
 from asyncssh.constants import (
@@ -55,6 +57,10 @@ _ALLOWED_DIRS: frozenset[str] = frozenset(
 )
 
 
+async def _awaited(result: _StatResult | Awaitable[_StatResult]) -> _StatResult:
+    return await result if inspect.isawaitable(result) else result
+
+
 class PSIMonitorSFTPServer(asyncssh.SFTPServer):
     """SFTP server that only serves PSI/cgroup monitoring files.
 
@@ -63,37 +69,39 @@ class PSIMonitorSFTPServer(asyncssh.SFTPServer):
     Write operations always fail with permission denied.
     """
 
-    def _resolve(self, path: bytes) -> str:
-        return str(Path(path.decode()).resolve())
+    # asyncssh awaits what a handler returns, so each one is a coroutine: the client names the path, and resolving
+    # or opening a path on a hung mount stalls whatever thread asks.
+    async def _resolve(self, path: bytes) -> str:
+        return str(await AsyncPath(path.decode()).resolve())
 
     def _is_allowed_path(self, path: str) -> bool:
         return path in _ALLOWED_PATHS or path in _ALLOWED_DIRS
 
-    def _check_allowed(self, path: bytes) -> None:
-        if not self._is_allowed_path(self._resolve(path)):
+    async def _check_allowed(self, path: bytes) -> None:
+        if not self._is_allowed_path(await self._resolve(path)):
             raise asyncssh.SFTPError(FX_NO_SUCH_FILE, "Access denied")
 
-    def open(self, path: bytes, pflags: int, attrs: asyncssh.SFTPAttrs) -> object:
+    async def open(self, path: bytes, pflags: int, attrs: asyncssh.SFTPAttrs) -> object:  # type: ignore[override]  # asyncssh awaits it
         """Open a file for read-only access, checking against allowed paths."""
-        self._check_allowed(path)
+        await self._check_allowed(path)
         if pflags & (FXF_WRITE | FXF_CREAT | FXF_TRUNC):
             raise asyncssh.SFTPError(FX_PERMISSION_DENIED, "Read only")
-        return super().open(path, pflags, attrs)
+        return await anyio.to_thread.run_sync(super().open, path, pflags, attrs)
 
-    def stat(self, path: bytes) -> _StatResult | Awaitable[_StatResult]:
+    async def stat(self, path: bytes) -> _StatResult:  # type: ignore[override]  # asyncssh awaits it
         """Stat a file, restricted to allowed paths."""
-        self._check_allowed(path)
-        return super().stat(path)
+        await self._check_allowed(path)
+        return await _awaited(await anyio.to_thread.run_sync(super().stat, path))
 
-    def lstat(self, path: bytes) -> _StatResult | Awaitable[_StatResult]:
+    async def lstat(self, path: bytes) -> _StatResult:  # type: ignore[override]  # asyncssh awaits it
         """Lstat a file, restricted to allowed paths (does not follow symlinks)."""
-        self._check_allowed(path)
-        return super().lstat(path)
+        await self._check_allowed(path)
+        return await _awaited(await anyio.to_thread.run_sync(super().lstat, path))
 
     async def scandir(self, path: bytes) -> AsyncIterator[asyncssh.SFTPName]:
         """List directory entries, filtering out disallowed paths."""
-        self._check_allowed(path)
-        parent = Path(self._resolve(path))
+        await self._check_allowed(path)
+        parent = Path(await self._resolve(path))
         async for entry in super().scandir(path):
             entry_name = entry.filename.decode() if isinstance(entry.filename, bytes) else entry.filename
             entry_path = str(await (AsyncPath(parent) / entry_name).resolve())

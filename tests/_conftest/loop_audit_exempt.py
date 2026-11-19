@@ -13,8 +13,6 @@ EXEMPT: Final[dict[str, str]] = {
     "nix_daemon_protocol/experimental_compiled.py compile_codec": DEBT,
     "nix_daemon_protocol/wire_message.py _compiled_or_none": DEBT,
     "pynixd/agent.py launch": DEBT,
-    "pynixd/sftp_server.py _resolve": DEBT,
-    "pynixd/sftp_server.py stat": DEBT,
     "pynixd/store/__init__.py __getattr__": DEBT,
     "pynixd/store/local_db.py close": DEBT,
     "pynixd_store/builder/usage.py read_usage": DEBT,
