@@ -678,8 +678,10 @@ class LocalDBStore(Store):
         await self.db.close()
         if isinstance(self.engine, OverlayEngine):
             await self.engine.lower.db.close()
-        while self._big_locks:
-            os.close(self._big_locks.pop())
+        # The lock file is a regular file: its close may flush on a network mount. Teardown, so shielded.
+        with anyio.CancelScope(shield=True):
+            while self._big_locks:
+                await anyio.to_thread.run_sync(os.close, self._big_locks.pop())
 
     async def execute(
         self,
