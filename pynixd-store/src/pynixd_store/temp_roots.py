@@ -126,6 +126,18 @@ class _Job:
     error: BaseException | None = None
 
 
+@dataclasses.dataclass(slots=True, eq=False)
+class _Run:
+    """One `async with` of a `RootWriter`: the thread, its queue, and whether it takes jobs."""
+
+    loop: asyncio.AbstractEventLoop
+    jobs: queue.SimpleQueue[_Job | None] = dataclasses.field(default_factory=queue.SimpleQueue)
+    # Guards `closed` and the put together, so no job can land behind the stop marker.
+    accepting: threading.Lock = dataclasses.field(default_factory=threading.Lock)
+    closed: bool = False
+    thread: threading.Thread = dataclasses.field(default_factory=threading.Thread)
+
+
 class RootWriter:
     """The thread that does every file operation of one store's temporary roots.
 
@@ -139,44 +151,51 @@ class RootWriter:
         self.state = state
         self.passes = 0
         """Passes the thread made, each one wake-up of the loop. A test reads it."""
-        self._jobs: queue.SimpleQueue[_Job | None] = queue.SimpleQueue()
-        # Guards `_closed` and the put together, so no job can land behind the stop marker.
-        self._accepting = threading.Lock()
-        self._closed = False
-        self._thread = threading.Thread(target=self._run, name=f"temp-roots {state}", daemon=True)
-        self._loop: asyncio.AbstractEventLoop | None = None
+        self._run: _Run | None = None
 
     @property
     def thread_ident(self) -> int | None:
-        return self._thread.ident
+        return self._run.thread.ident if self._run is not None else None
 
     def join(self) -> None:
-        """Block until the thread ends; for a worker thread, never the loop."""
-        if self._thread.ident is not None:
-            self._thread.join()
+        """Block until the last run's thread ends; for a worker thread, never the loop."""
+        if self._run is not None and self._run.thread.ident is not None:
+            self._run.thread.join()
 
     def session(self, *, read_only: bool = False) -> TempRoots:
         return TempRoots(self.state, self, read_only=read_only)
 
     async def __aenter__(self) -> Self:
+        # A store opens again after it closed (a server restarted in one process), and a thread
+        # starts once: each `async with` is a run with its own thread, queue and stop flag. A
+        # thread that outlived its shutdown keeps its own run and never touches the next one.
+        if self._run is not None and not self._run.closed:
+            raise RuntimeError(f"the temporary roots writer of {self.state} is already running")
         # Waking a task from the thread must not wait for the loop: the writer exists to keep a
         # stalled write off the loop, and a wake that waits for the loop ties the two together
         # again. `anyio.from_thread.run_sync` waits, and so does `BlockingPortal.start_task_soon`
         # (`from_thread.py`, `_spawn_task_from_thread` calls `run_sync`). The loop's own
         # thread-safe call does not; aiosqlite's worker thread wakes its callers the same way.
-        self._loop = asyncio.get_running_loop()
-        self._thread.start()
+        run = _Run(asyncio.get_running_loop())
+        run.thread = threading.Thread(
+            target=self._thread_main, args=(run,), name=f"temp-roots {self.state}", daemon=True
+        )
+        self._run = run
+        run.thread.start()
         return self
 
     async def __aexit__(
         self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None
     ) -> None:
-        with self._accepting:
-            self._closed = True
-            self._jobs.put(None)
+        run = self._run
+        if run is None:
+            return
+        with run.accepting:
+            run.closed = True
+            run.jobs.put(None)
         with anyio.CancelScope(shield=True), anyio.move_on_after(SHUTDOWN_SECONDS):
-            await anyio.to_thread.run_sync(self.join, abandon_on_cancel=True)
-        if self._thread.is_alive():
+            await anyio.to_thread.run_sync(_join, run.thread, abandon_on_cancel=True)
+        if run.thread.is_alive():
             log.warning(
                 "temp_roots_writer_outlived_shutdown",
                 state=str(self.state),
@@ -191,14 +210,15 @@ class RootWriter:
         still runs: a root written after its session gave up stays held until that session's
         close, which runs after it.
         """
+        run = self._run
+        if run is None:
+            # Nothing would ever take the job, and its caller would wait forever.
+            raise RuntimeError(f"the temporary roots writer of {self.state} runs outside `async with`")
         job = _Job(owner, kind, roots, anyio.Event())
-        with self._accepting:
-            if self._closed:
+        with run.accepting:
+            if run.closed:
                 raise WriterClosedError(f"the temporary roots writer of {self.state} has stopped")
-            if self._loop is None:
-                # Nothing would ever take the job, and its caller would wait forever.
-                raise RuntimeError(f"the temporary roots writer of {self.state} runs outside `async with`")
-            self._jobs.put(job)
+            run.jobs.put(job)
         await job.done.wait()
         if job.error is not None:
             raise RootWriteError(f"{kind.value} of {len(roots)} temporary roots failed") from job.error
@@ -208,38 +228,38 @@ class RootWriter:
 
     # ── The thread ────────────────────────────────────────────────────
 
-    def _run(self) -> None:
+    def _thread_main(self, run: _Run) -> None:
         try:
-            self._serve()
+            self._serve(run)
         finally:
-            self._refuse_the_rest()
+            self._refuse_the_rest(run)
 
-    def _refuse_the_rest(self) -> None:
+    def _refuse_the_rest(self, run: _Run) -> None:
         """Stop taking jobs, and fail every job still queued, so no caller waits on a thread that is gone."""
-        with self._accepting:
-            self._closed = True
+        with run.accepting:
+            run.closed = True
         left: list[_Job] = []
         while True:
             try:
-                job = self._jobs.get_nowait()
+                job = run.jobs.get_nowait()
             except queue.Empty:
                 break
             if job is not None:
                 job.error = WriterClosedError(f"the temporary roots writer of {self.state} stopped first")
                 left.append(job)
         if left:
-            self._wake(left)
+            _wake(run, left)
 
-    def _serve(self) -> None:
+    def _serve(self, run: _Run) -> None:
         stopping = False
         while not stopping:
-            first = self._jobs.get()
+            first = run.jobs.get()
             if first is None:
                 break
             jobs = [first]
             while True:
                 try:
-                    job = self._jobs.get_nowait()
+                    job = run.jobs.get_nowait()
                 except queue.Empty:
                     break
                 if job is None:
@@ -252,10 +272,10 @@ class RootWriter:
                 for job in jobs:
                     if job.outcome is None and job.error is None:
                         job.error = exc
-                self._wake(jobs)
+                _wake(run, jobs)
                 raise
             self.passes += 1
-            if not self._wake(jobs):
+            if not _wake(run, jobs):
                 return
 
     def _perform(self, jobs: list[_Job]) -> None:
@@ -298,16 +318,19 @@ class RootWriter:
         except Exception as exc:  # noqa: BLE001 -- handed to the waiting caller, which raises it
             job.error = exc
 
-    def _wake(self, jobs: list[_Job]) -> bool:
-        """Wake every caller of one pass with one call into the loop; False when the loop is gone."""
-        if self._loop is None:
-            raise RuntimeError("the temporary roots writer runs outside `async with`")
-        try:
-            self._loop.call_soon_threadsafe(_set_all, jobs)
-        except RuntimeError:
-            # The loop closed under the writer: nobody is left to wake, and nothing can queue more.
-            return False
-        return True
+
+def _wake(run: _Run, jobs: list[_Job]) -> bool:
+    """Wake every caller of one pass with one call into the loop; False when the loop is gone."""
+    try:
+        run.loop.call_soon_threadsafe(_set_all, jobs)
+    except RuntimeError:
+        # The loop closed under the writer: nobody is left to wake, and nothing can queue more.
+        return False
+    return True
+
+
+def _join(thread: threading.Thread) -> None:
+    thread.join()
 
 
 def _set_all(jobs: list[_Job]) -> None:

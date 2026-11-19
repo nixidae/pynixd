@@ -390,6 +390,30 @@ async def test_a_dying_writer_wakes_its_callers_and_refuses_new_jobs(
         await roots.close()
 
 
+async def test_a_writer_runs_again_after_it_stopped(
+    tmp_path: Path, gate: Gate, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A store opens again in the same process; a thread stuck in the first run never touches the second."""
+    monkeypatch.setattr(temp_roots, "SHUTDOWN_SECONDS", 0.2)
+    writer = RootWriter(tmp_path)
+    async with anyio.create_task_group() as tg:
+        async with writer:
+            stuck = writer.session()
+            tg.start_soon(stuck.add, ROOTS[0])
+            await gate.wait_reached()
+        first = writer.thread_ident
+        monkeypatch.undo()  # the gate holds the first run's thread; the second writes freely
+        async with writer:
+            roots = writer.session()
+            assert await roots.add(ROOTS[1])
+            assert writer.thread_ident != first
+            await roots.close()
+        gate.open()
+    assert read_roots(stuck.path) == [ROOTS[0]]
+    await stuck.close()
+    assert leftover_files(tmp_path) == []
+
+
 async def test_a_writer_nobody_started_refuses_a_job(tmp_path: Path) -> None:
     """No thread would ever take the job, so the caller would wait forever."""
     roots = RootWriter(tmp_path).session()
