@@ -62,6 +62,20 @@ def test_an_import_and_a_spawn_are_kinds_of_their_own() -> None:
     assert spawned.kind is Kind.SPAWN
 
 
+def test_a_close_while_a_process_starts_is_part_of_the_spawn() -> None:
+    pynixd = Frame("/work/pynixd-store/src/pynixd_store/builder/vm.py", 1, "uplink")
+    anyio_spawn = Frame("/x/anyio/_backends/_asyncio.py", 2745, "open_process")
+    closed = classify("os.close", "", [anyio_spawn, pynixd], ROOTS)
+    written = classify("open", "/work/f", [anyio_spawn, pynixd], ROOTS)
+    elsewhere = classify("os.close", "", [Frame("/x/anyio/_backends/_asyncio.py", 9, "other"), pynixd], ROOTS)
+    assert closed is not None
+    assert closed.kind is Kind.SPAWN
+    assert written is not None
+    assert written.kind is Kind.FILE
+    assert elsewhere is not None
+    assert elsewhere.kind is Kind.FILE
+
+
 def test_a_traceback_and_a_proc_file_are_kinds_of_their_own() -> None:
     pynixd = Frame("/work/pynixd/monitor.py", 1, "sample")
     traced = classify("os.stat", "/work/pynixd/x.py", [Frame("/usr/lib/linecache.py", 9, "checkcache"), pynixd], ROOTS)

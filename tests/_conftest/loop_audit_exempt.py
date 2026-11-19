@@ -12,7 +12,6 @@ DEBT: Final = "not moved off the loop yet (nixidae/nixidae#1547)"
 EXEMPT: Final[dict[str, str]] = {
     "nix_daemon_protocol/experimental_compiled.py compile_codec": DEBT,
     "nix_daemon_protocol/wire_message.py _compiled_or_none": DEBT,
-    "pynixd/agent.py launch": DEBT,
     "pynixd/store/__init__.py __getattr__": DEBT,
     "pynixd/store/local_db.py close": DEBT,
     "pynixd_store/builder/usage.py read_usage": DEBT,
@@ -22,5 +21,4 @@ EXEMPT: Final[dict[str, str]] = {
     "pynixd_store/builder/vm.py status": DEBT,
     "pynixd_store/builder/vm.py uplink": DEBT,
     "pynixd_store/collect.py serve": DEBT,
-    "pynixd_store/overlay_engine.py remount_if_necessary": DEBT,
 }

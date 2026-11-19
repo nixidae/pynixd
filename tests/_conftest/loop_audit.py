@@ -51,6 +51,8 @@ BLIND: Final = (
 _SPAWN_EVENTS: Final = frozenset({"os.fork", "os.forkpty", "os.posix_spawn", "os.posix_spawnp", "os.system"})
 _IMPORT_PREFIX: Final = "<frozen importlib"
 _TRACEBACK_FILES: Final = ("/linecache.py", "/traceback.py")
+_SPAWN_FRAMES: Final = (("/subprocess.py", None), ("/anyio/_backends/_asyncio.py", "open_process"))
+"""Frames that start a process: their `os.close` of the parent's copy of a child's fd is part of the spawn."""
 _PSEUDO_FILES: Final = ("/proc/", "/sys/", "/dev/")
 _WORKER_KEY: Final = "pynixd_loop_audit"
 _NOT_FILES: Final = frozenset({"os.kill", "os.killpg", "os.putenv", "os.unsetenv"})
@@ -137,7 +139,7 @@ def classify(event: str, target: str, frames: Iterable[Frame], roots: Roots) -> 
     leaf: Frame | None = None
     site: Frame | None = None
     callers: list[Frame] = []
-    from_test = importing = tracing = False
+    from_test = importing = tracing = spawning = False
     for frame in frames:
         if frame.filename in roots.skip:
             continue
@@ -151,10 +153,13 @@ def classify(event: str, target: str, frames: Iterable[Frame], roots: Roots) -> 
         from_test = from_test or frame.filename.startswith(roots.tests)
         importing = importing or frame.filename.startswith(_IMPORT_PREFIX)
         tracing = tracing or frame.filename.endswith(_TRACEBACK_FILES)
+        spawning = spawning or any(
+            frame.filename.endswith(file) and function in (None, frame.function) for file, function in _SPAWN_FRAMES
+        )
     if site is None or leaf is None:
         return None
     return Site(
-        kind=_kind(event, target, importing=importing, tracing=tracing),
+        kind=_kind(event, target, importing=importing, tracing=tracing, spawning=spawning),
         event=event,
         site=_where(site, roots),
         leaf=_where(leaf, roots),
@@ -163,12 +168,12 @@ def classify(event: str, target: str, frames: Iterable[Frame], roots: Roots) -> 
     )
 
 
-def _kind(event: str, target: str, *, importing: bool, tracing: bool) -> Kind:
+def _kind(event: str, target: str, *, importing: bool, tracing: bool, spawning: bool) -> Kind:
     if importing:
         return Kind.IMPORT
     if tracing:
         return Kind.TRACEBACK
-    if event in _SPAWN_EVENTS:
+    if event in _SPAWN_EVENTS or (spawning and event == "os.close"):
         return Kind.SPAWN
     if target.startswith(_PSEUDO_FILES):
         return Kind.PSEUDO
