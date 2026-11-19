@@ -48,6 +48,34 @@ ghalib.evalWorkflow {
     ];
   };
 
+  # Every test store with no Nix daemon under it (`PYNIXD_NO_DAEMON`,
+  # `tests/_conftest/config.py`). The standard set keeps the daemon, so a store
+  # with none advertised systems its sandbox could not build, and no lane saw
+  # it. nixidae/nixidae#1541.
+  jobs.no-daemon = {
+    runs-on = "ubuntu-latest";
+    timeout-minutes = 60;
+    ghanix = divertedStores;
+    env.PYNIXD_NO_DAEMON = "1";
+    steps = [
+      {
+        name = "Generate SSH key for ssh-ng:// tests";
+        run = ''
+          mkdir -p ~/.ssh
+          ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -q
+        '';
+      }
+      {
+        name = "Functional tests with no daemon";
+        run = "nix develop --impure --file shell.nix --command pytest tests/functional";
+      }
+      {
+        name = "Unit tests with no daemon";
+        run = "nix develop --impure --file shell.nix --command pytest tests/unit";
+      }
+    ];
+  };
+
   jobs.extended = {
     runs-on = "ubuntu-latest";
     timeout-minutes = 120;
