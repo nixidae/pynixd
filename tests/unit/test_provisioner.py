@@ -9,7 +9,13 @@ from typing import TYPE_CHECKING
 import pytest
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId, StoreId
-from pynixd.config import ProvisioningPoolSettings, ProvisioningSettings, PynixdSettings
+from pynixd.config import (
+    GhaSettings,
+    GhaTemplateSettings,
+    ProvisioningPoolSettings,
+    ProvisioningSettings,
+    PynixdSettings,
+)
 from pynixd.context import PynixdContext
 from pynixd.provisioning.provider import Machine, MachineState, NoCapacity
 from pynixd.provisioning.provisioner import (
@@ -35,7 +41,7 @@ if TYPE_CHECKING:
 
 
 class _Provider:
-    name = "fake"
+    name = "vivarium"
 
     def __init__(self) -> None:
         self.machines_: dict[str, Machine] = {}
@@ -96,7 +102,7 @@ class _World:
         )
         self.provisioner = Provisioner(
             settings,
-            provider,
+            [provider],
             db.provisioned,
             scheduler,
             self._remove,
@@ -277,7 +283,7 @@ async def test_a_builder_stuck_booting_is_replaced(world: _World) -> None:
 
 
 async def test_a_start_ends_what_the_last_run_left(world: _World) -> None:
-    await world.db.provisioned.record_launch("arm-old", "arm", "fake", "00" * 32, at_ms=1)
+    await world.db.provisioned.record_launch("arm-old", "arm", "vivarium", "00" * 32, at_ms=1)
     await world.provider.launch("worker", {OWNER_TAG: "controller", INSTANCE_TAG: "arm-old"}, "")
     await world.provider.launch("worker", {OWNER_TAG: "controller", INSTANCE_TAG: "arm-lost"}, "")
     await world.provider.launch("worker", {OWNER_TAG: "someone-else"}, "")
@@ -415,3 +421,66 @@ def test_a_pool_whose_idle_maximum_is_under_its_minimum_is_refused() -> None:
         ProvisioningPoolSettings(name="p", template="t", systems=["x"], idle_seconds=60.0, idle_max_seconds=30.0)
     pool = pool_of(ProvisioningPoolSettings(name="p", template="t", systems=["x"], idle_max_seconds=900.0))
     assert (pool.idle_seconds, pool.idle_max_seconds) == (300.0, 900.0)
+
+
+class _GhaProvider(_Provider):
+    name = "gha"
+
+
+def _two_providers(tmp_path: Path) -> ProvisioningSettings:
+    """`first` takes the default provider and another system, so an aarch64-linux build is `second`'s."""
+    return ProvisioningSettings(
+        owner="controller",
+        gha=GhaSettings(
+            repository="o/r",
+            token_file=tmp_path / "token",
+            ticket_key_file=tmp_path / "key",
+            templates={"runner": GhaTemplateSettings(runs_on=["x"])},
+        ),
+        pools=[
+            ProvisioningPoolSettings(name="first", template="worker", systems=["x86_64-linux"]),
+            ProvisioningPoolSettings(
+                name="second", provider="gha", template="runner", systems=["aarch64-linux"], idle_seconds=60.0
+            ),
+        ],
+    )
+
+
+async def test_each_pool_launches_and_ends_through_its_own_provider(world: _World, tmp_path: Path) -> None:
+    settings = _two_providers(tmp_path)
+    assert settings.providers == {"vivarium", "gha"}
+    default, gha = _Provider(), _GhaProvider()
+    provisioner = Provisioner(
+        settings, [default, gha], world.db.provisioned, world.scheduler, world._remove, None, clock=lambda: world.now
+    )
+    await world.wait_for("1")
+
+    await provisioner.step()
+
+    assert (default.launches, gha.launches) == (0, 1)
+    [row] = await world.db.provisioned.live()
+    assert (row.pool, row.provider) == ("second", "gha")
+    [launched] = gha.machines_.values()
+    assert await provisioner.join(JoinTicket.model_validate_json(gha.user_data[launched.provider_id]).token)
+    await world.finish_all()
+    await provisioner.step()
+    world.now += 61
+    await provisioner.step()
+    assert (default.terminated, gha.terminated) == ([], [launched.provider_id])
+
+
+async def test_a_row_of_a_provider_no_longer_configured_ends_without_a_call(world: _World) -> None:
+    await world.db.provisioned.record_launch("gone-1", "gone", "ec2", "00" * 32, at_ms=1)
+    await world.provisioner.reconcile()
+    assert await world.db.provisioned.live() == []
+    assert world.provider.terminated == []
+
+
+def test_a_pool_whose_provider_has_no_settings_is_refused() -> None:
+    with pytest.raises(ValueError, match="gha settings"):
+        ProvisioningSettings(pools=[ProvisioningPoolSettings(name="p", provider="gha", template="t", systems=["x"])])
+
+
+async def test_a_provisioner_without_a_pool_s_provider_is_refused(world: _World, tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match=r"no provider \['gha'\]"):
+        Provisioner(_two_providers(tmp_path), [_Provider()], world.db.provisioned, world.scheduler, world._remove, None)

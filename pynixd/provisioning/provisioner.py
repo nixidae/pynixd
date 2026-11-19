@@ -16,6 +16,10 @@ and its builder drains until `NOTICE_MARGIN` before the notice ends: the
 builds that do not finish go back to the queue. A machine the provider
 ended ends its row.
 
+Each pool names its provider, so one pynixd can launch EC2 machines for
+one pool and macOS machines for another. A row records its provider's
+name, and that provider ends the row's machine.
+
 At start, every row still live and every machine tagged with this
 pynixd's owner is an orphan: its builder's token was for the pynixd that
 died. At shutdown the provisioner ends every machine it holds.
@@ -45,7 +49,7 @@ from .provider import MachineState, NoCapacity, ProviderError
 from .ticket import JoinTicket, Lease
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
     from anyio.abc import TaskGroup
 
@@ -106,7 +110,7 @@ class Provisioner:
     def __init__(
         self,
         settings: ProvisioningSettings,
-        provider: Provider,
+        providers: Sequence[Provider],
         tables: ProvisioningTables,
         scheduler: Scheduler,
         remove_store: Callable[[StoreId], Awaitable[None]],
@@ -114,7 +118,10 @@ class Provisioner:
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._settings = settings
-        self._provider = provider
+        self._providers = {provider.name: provider for provider in providers}
+        self._pool_providers = {pool.name: pool.provider or settings.provider for pool in settings.pools}
+        if missing := set(self._pool_providers.values()) - set(self._providers):
+            raise ValueError(f"provisioning: no provider {sorted(missing)} for the pools that name it")
         self._tables = tables
         self._scheduler = scheduler
         self._remove_store = remove_store
@@ -160,7 +167,8 @@ class Provisioner:
                 with anyio.move_on_after(SHUTDOWN_SECONDS):
                     for row in await self._tables.live():
                         await self._end(row, EndReason.SHUTDOWN)
-                await self._provider.close()
+                for provider in self._providers.values():
+                    await provider.close()
 
     @contextlib.asynccontextmanager
     async def tasks(self) -> AsyncIterator[None]:
@@ -177,15 +185,16 @@ class Provisioner:
         """End every machine a previous run of this pynixd left."""
         for row in await self._tables.live():
             await self._end(row, EndReason.ORPHAN)
-        try:
-            machines = await self._provider.machines({OWNER_TAG: self.owner})
-        except ProviderError:
-            log.warning("provisioning_reconcile_list_failed", exc_info=True)
-            return
-        for machine in machines:
-            if machine.state is not MachineState.ENDED:
-                log.info("provisioning_orphan_terminated", provider_id=machine.provider_id)
-                await self._terminate(machine.provider_id)
+        for provider in self._providers.values():
+            try:
+                machines = await provider.machines({OWNER_TAG: self.owner})
+            except ProviderError:
+                log.warning("provisioning_reconcile_list_failed", provider=provider.name, exc_info=True)
+                continue
+            for machine in machines:
+                if machine.state is not MachineState.ENDED:
+                    log.info("provisioning_orphan_terminated", provider=provider.name, provider_id=machine.provider_id)
+                    await self._terminate(provider, machine.provider_id)
 
     async def step(self) -> float:
         """Launch and end what `decide` says; answer how long until a timer could change the answer."""
@@ -253,13 +262,16 @@ class Provisioner:
         ]
 
     async def _machines(self) -> dict[str, Machine]:
-        """This owner's machines by instance id; none when the provider does not answer."""
-        try:
-            listed = await self._provider.machines({OWNER_TAG: self.owner})
-        except ProviderError:
-            log.warning("provisioning_list_failed", exc_info=True)
-            return {}
-        return {machine.tags[INSTANCE_TAG]: machine for machine in listed if INSTANCE_TAG in machine.tags}
+        """This owner's machines by instance id; none of a provider that does not answer."""
+        found: dict[str, Machine] = {}
+        for provider in self._providers.values():
+            try:
+                listed = await provider.machines({OWNER_TAG: self.owner})
+            except ProviderError:
+                log.warning("provisioning_list_failed", provider=provider.name, exc_info=True)
+                continue
+            found.update((machine.tags[INSTANCE_TAG], machine) for machine in listed if INSTANCE_TAG in machine.tags)
+        return found
 
     def _drain(self, row: InstanceRow, notice: float) -> None:
         if row.id in self._draining or row.store_id is None or self._group is None:
@@ -307,8 +319,9 @@ class Provisioner:
     async def _launch(self, pool_name: str, now: float) -> bool:
         instance_id = f"{pool_name}-{secrets.token_hex(4)}"
         token = secrets.token_urlsafe(32)
+        provider = self._providers[self._pool_providers[pool_name]]
         await self._tables.record_launch(
-            instance_id, pool_name, self._provider.name, token_sha256(token), at_ms=int(now * 1000)
+            instance_id, pool_name, provider.name, token_sha256(token), at_ms=int(now * 1000)
         )
         pool = next(pool for pool in self.pools if pool.name == pool_name)
         ticket = JoinTicket(
@@ -321,7 +334,7 @@ class Provisioner:
         )
         tags = {OWNER_TAG: self.owner, INSTANCE_TAG: instance_id, POOL_TAG: pool_name}
         try:
-            machine = await self._provider.launch(self._templates[pool_name], tags, ticket.model_dump_json())
+            machine = await provider.launch(self._templates[pool_name], tags, ticket.model_dump_json())
         except NoCapacity as error:
             log.info("provisioning_no_capacity", pool=pool_name, error=str(error))
             await self._tables.ended(instance_id, EndReason.NO_CAPACITY, at_ms=self._ms())
@@ -342,9 +355,16 @@ class Provisioner:
             log.info("provisioning_ending", instance=row.id, pool=row.pool, reason=str(reason))
             if row.store_id is not None and reason is not EndReason.DISCONNECTED:
                 await self._remove_store(StoreId(row.store_id))
-            provider_ids = [row.provider_id] if row.provider_id is not None else await self._tagged(row.id)
-            for provider_id in provider_ids:
-                await self._terminate(provider_id)
+            provider = self._providers.get(row.provider)
+            if provider is None:
+                # The settings no longer name it: nothing here can end the machine, which its own limits bound.
+                log.warning("provisioning_provider_unknown", instance=row.id, provider=row.provider)
+            else:
+                provider_ids = (
+                    [row.provider_id] if row.provider_id is not None else await self._tagged(provider, row.id)
+                )
+                for provider_id in provider_ids:
+                    await self._terminate(provider, provider_id)
             await self._tables.ended(row.id, reason, at_ms=self._ms())
             self._back_off(row.pool, reason)
             self._idle_since.pop(row.id, None)
@@ -364,18 +384,18 @@ class Provisioner:
         delay = min(self._settings.heartbeat * 2 ** (count - 1), BACKOFF_CEILING)
         self._cooldown[pool] = max(self._cooldown.get(pool, 0.0), self._clock() + delay)
 
-    async def _tagged(self, instance_id: str) -> list[str]:
+    async def _tagged(self, provider: Provider, instance_id: str) -> list[str]:
         """The machine of a row whose launch never answered, found by its tag."""
         try:
-            machines = await self._provider.machines({OWNER_TAG: self.owner, INSTANCE_TAG: instance_id})
+            machines = await provider.machines({OWNER_TAG: self.owner, INSTANCE_TAG: instance_id})
         except ProviderError:
             log.warning("provisioning_list_failed", instance=instance_id, exc_info=True)
             return []
         return [machine.provider_id for machine in machines if machine.state is not MachineState.ENDED]
 
-    async def _terminate(self, provider_id: str) -> None:
+    async def _terminate(self, provider: Provider, provider_id: str) -> None:
         try:
-            await self._provider.terminate(provider_id)
+            await provider.terminate(provider_id)
         except ProviderError:
             # The next start's reconcile finds it by its owner tag.
             log.warning("provisioning_terminate_failed", provider_id=provider_id, exc_info=True)

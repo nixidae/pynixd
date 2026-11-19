@@ -952,12 +952,18 @@ class ReverseInitiatorSettings(BaseModel):
     """
 
 
+ProviderName = Literal["vivarium", "ec2", "gha"]
+"""A provisioning provider: each has its own settings block in `ProvisioningSettings`."""
+
+
 class ProvisioningPoolSettings(BaseModel):
     """One kind of builder machine the provisioner starts. nixidae/nixidae#1198."""
 
     model_config = ConfigDict(extra="forbid")
 
     name: str
+    provider: ProviderName | None = None
+    """Who starts this pool's machines; `None` takes `ProvisioningSettings.provider`."""
     template: str
     """The provider's name for the kind of machine: a vivarium template, an EC2 launch template."""
     systems: list[str] = Field(min_length=1)
@@ -1104,7 +1110,8 @@ class ProvisioningSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    provider: Literal["vivarium", "ec2", "gha"] = "vivarium"
+    provider: ProviderName = "vivarium"
+    """The provider of each pool that names none."""
     vivarium_socket: Path = Path("/run/vivarium/cloud.sock")
     ec2: Ec2Settings | None = None
     """Required with `provider = "ec2"`."""
@@ -1127,12 +1134,19 @@ class ProvisioningSettings(BaseModel):
     heartbeat: float = Field(default=30.0, gt=0)
     """The longest the loop sleeps without a scheduling pass, a join or a leave to wake it."""
 
+    @property
+    def providers(self) -> frozenset[ProviderName]:
+        """The providers the pools use."""
+        return frozenset(pool.provider or self.provider for pool in self.pools)
+
     @model_validator(mode="after")
     def _provider_settings(self) -> ProvisioningSettings:
-        if self.provider == "ec2" and self.ec2 is None:
-            raise ValueError('provider "ec2" needs the ec2 settings')
-        if self.provider == "gha" and self.gha is None:
-            raise ValueError('provider "gha" needs the gha settings')
+        # Without pools, `provider` alone names one: it must have its settings too.
+        for name in self.providers | {self.provider}:
+            if name == "ec2" and self.ec2 is None:
+                raise ValueError('provider "ec2" needs the ec2 settings')
+            if name == "gha" and self.gha is None:
+                raise ValueError('provider "gha" needs the gha settings')
         return self
 
 

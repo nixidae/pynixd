@@ -455,19 +455,20 @@ class Server:
             return None
         if self.ctx.db is None or self.ctx.scheduler is None:
             raise RuntimeError("provisioning pools need the store database and the scheduler: the rows outlive pynixd")
-        provider: Provider
-        match settings.provider:
-            case "vivarium":
-                provider = VivariumProvider(str(settings.vivarium_socket))
-            case "ec2" if settings.ec2 is not None:
-                provider = Ec2Provider(settings.ec2)
-            case "gha" if settings.gha is not None:
-                provider = GhaProvider(settings.gha)
-            case other:
-                raise RuntimeError(f"provider {other!r} has no settings")
+        providers: list[Provider] = []
+        for name in sorted(settings.providers):
+            match name:
+                case "vivarium":
+                    providers.append(VivariumProvider(str(settings.vivarium_socket)))
+                case "ec2" if settings.ec2 is not None:
+                    providers.append(Ec2Provider(settings.ec2))
+                case "gha" if settings.gha is not None:
+                    providers.append(GhaProvider(settings.gha))
+                case other:
+                    raise RuntimeError(f"provider {other!r} has no settings")
         return Provisioner(
             settings,
-            provider,
+            providers,
             self.ctx.db.provisioned,
             self.ctx.scheduler,
             self.remove_store,
