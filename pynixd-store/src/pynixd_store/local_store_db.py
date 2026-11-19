@@ -36,6 +36,7 @@ from itertools import batched
 from typing import TYPE_CHECKING, Literal, Self
 
 import anyio
+import anyio.to_thread
 import structlog
 
 from .build_stats import BuildEstimateSource, ExpectedBytes, StoreLink
@@ -319,11 +320,13 @@ class LocalStoreDB:
         *read_only* opens a database pynixd must not change even where it
         can, such as the lower store of an overlay: no migration writes to it.
         """
-        db_path = resolve_db_path(layout)
+        db_path = await anyio.to_thread.run_sync(resolve_db_path, layout)
         if db_path is None:
             return cls.inactive(layout, reference_flush_interval=reference_flush_interval)
 
-        read_only = read_only or layout.read_only or not os.access(db_path.parent, os.W_OK)
+        read_only = (
+            read_only or layout.read_only or not await anyio.to_thread.run_sync(os.access, db_path.parent, os.W_OK)
+        )
 
         instance = cls(
             db_path=db_path,

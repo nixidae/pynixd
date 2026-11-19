@@ -29,8 +29,6 @@ EXEMPT: Final[dict[str, str]] = {
     "pynixd_store/builder/vm.py status": DEBT,
     "pynixd_store/builder/vm.py uplink": DEBT,
     "pynixd_store/collect.py serve": DEBT,
-    "pynixd_store/local_store_db.py open": DEBT,
-    "pynixd_store/local_store_db.py resolve_db_path": DEBT,
     "pynixd_store/overlay_engine.py remount_if_necessary": DEBT,
     "pynixd_store/signing.py from_file": DEBT,
 }

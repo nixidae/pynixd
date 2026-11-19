@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 import anyio
+import anyio.to_thread
 import pytest
 
 from pynixd_store.local_store_db import LocalStoreDB
@@ -27,6 +28,9 @@ async def test_a_failed_open_closes_what_the_probe_opened(tmp_path: Path) -> Non
     db_path = tmp_path / "nix" / "var" / "nix" / "db" / "db.sqlite"
     db_path.parent.mkdir(parents=True)
     db_path.touch()
+    # `open` stats and probes the path through `anyio.to_thread`. Its worker belongs to anyio's shared pool and
+    # idles for 10 s before it ends; started here, it is in `before` and `open` reuses it.
+    await anyio.to_thread.run_sync(lambda: None)
     before = {t.ident for t in threading.enumerate() if not t.daemon}
 
     db = await LocalStoreDB.open(StoreLayout.chroot(tmp_path))
