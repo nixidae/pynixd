@@ -10,9 +10,8 @@ Approaches:
 - `inline`: `TempRoots.add`, the shipped code: the write runs on the event loop.
 - `hop`: `TempRoots.add_many([root])` for each root, the shipped code: one worker thread call each.
 - `batch`: `TempRoots.add_many(roots)`, the shipped code: one call for a set that arrives together.
-- `writer`: PROTOTYPE. One thread for the process takes roots from a queue and writes what
-  it finds queued with `TempRoots._add_many_inline`, so the syscalls are the shipped ones and
-  only the scheduling differs. No collector path.
+- `writer`: `temp_roots_writer.RootWriter`, the candidate: one thread per store does every file
+  operation, and writes what it finds queued with the shipped `TempRoots._add_many_inline`.
 
 Patterns:
 
@@ -20,33 +19,34 @@ Patterns:
 - `burst`: one session gets a set at once (3,344, the sg1 substitution that killed pynixd-0).
 - `sessions`: concurrent sessions, each adding its own roots one at a time to its own file.
 
-stdout: one JSON object per run, then a summary table on stderr.
+stdout: one JSON object per run, then a summary table on stderr. Run from the tree root as
+`python -m tests.benchmark.temp_roots`. `--loop uvloop` is the default because pynixd runs on it
+(`pynixd/__main__.py`).
 """
 
 from __future__ import annotations
 
 import argparse
-import asyncio
 import contextlib
 import dataclasses
 import enum
 import json
-import queue
 import shutil
 import statistics
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import anyio
+import uvloop
 
 from pynixd_store.temp_roots import TempRoots
+from tests.benchmark.temp_roots_writer import RootWriter
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable, Sequence
+    from collections.abc import Awaitable, Callable, Sequence
 
 BUILD_ROOTS: Final = 7177
 BURST_ROOTS: Final = 3344
@@ -61,6 +61,11 @@ class Approach(enum.StrEnum):
     HOP = "hop"
     BATCH = "batch"
     WRITER = "writer"
+
+
+class Loop(enum.StrEnum):
+    ASYNCIO = "asyncio"
+    UVLOOP = "uvloop"
 
 
 class Pattern(enum.StrEnum):
@@ -78,94 +83,13 @@ def read_roots(path: Path) -> list[str]:
     return [part.decode() for part in path.read_bytes().split(b"\0") if part]
 
 
-# ── The prototype ─────────────────────────────────────────────────────
-
-
-@dataclasses.dataclass(slots=True)
-class _Job:
-    owner: WriterRoots
-    roots: list[str]
-    done: anyio.Event
-    held: bool = True
-
-
-class Writer:
-    """One thread that writes every queued root, a write per roots file per pass (group commit)."""
-
-    def __init__(self) -> None:
-        # Waking a task from the thread must not wait for the loop: `anyio.from_thread.run_sync`
-        # blocks the writer until the loop runs the call, which couples the writer to the very
-        # stall it exists to avoid. So the prototype uses the asyncio loop's thread-safe call.
-        self._loop = asyncio.get_running_loop()
-        self._jobs: queue.SimpleQueue[_Job | None] = queue.SimpleQueue()
-        self.passes = 0
-        self._thread = threading.Thread(target=self._run, name="temp-roots-writer", daemon=True)
-        self._thread.start()
-
-    async def submit(self, owner: WriterRoots, roots: list[str]) -> bool:
-        job = _Job(owner, roots, anyio.Event())
-        self._jobs.put(job)
-        await job.done.wait()
-        return job.held
-
-    def close(self) -> None:
-        self._jobs.put(None)
-        self._thread.join()
-
-    def _run(self) -> None:
-        while (first := self._jobs.get()) is not None:
-            jobs = [first]
-            stop = False
-            while True:
-                try:
-                    job = self._jobs.get_nowait()
-                except queue.Empty:
-                    break
-                if job is None:
-                    stop = True
-                    break
-                jobs.append(job)
-            by_owner: dict[WriterRoots, list[_Job]] = {}
-            for job in jobs:
-                by_owner.setdefault(job.owner, []).append(job)
-            for owner, owned in by_owner.items():
-                held = owner.write_inline([root for job in owned for root in job.roots])
-                for job in owned:
-                    job.held = held
-            self.passes += 1
-            self._loop.call_soon_threadsafe(_wake, jobs)
-            if stop:
-                return
-
-
-def _wake(jobs: list[_Job]) -> None:
-    for job in jobs:
-        job.done.set()
-
-
-class WriterRoots(TempRoots):
-    """`TempRoots` whose writes go through a shared `Writer`."""
-
-    def __init__(self, state: Path, writer: Writer) -> None:
-        super().__init__(state)
-        self._writer = writer
-
-    def write_inline(self, roots: list[str]) -> bool:
-        return self._add_many_inline(roots)
-
-    async def add(self, path: str) -> bool:  # type: ignore[override]  # prototype takes str only
-        return await self._writer.submit(self, [path])
-
-    async def add_many(self, paths: Iterable[str]) -> bool:  # type: ignore[override]  # prototype takes str only
-        return await self._writer.submit(self, list(paths))
-
-
 # ── Measuring ─────────────────────────────────────────────────────────
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class Result:
     scenario: str
+    loop: Loop
     round_index: int
     approach: Approach
     pattern: Pattern
@@ -235,13 +159,26 @@ def applies(approach: Approach, pattern: Pattern) -> bool:
     return approach is not Approach.BATCH or pattern is Pattern.BURST
 
 
-async def measure(
-    scenario: str, round_: int, approach: Approach, pattern: Pattern, state: Path, freeze: Freeze | None
+async def measure(  # noqa: PLR0913 -- one run's coordinates
+    scenario: str, loop: Loop, round_: int, approach: Approach, pattern: Pattern, state: Path, freeze: Freeze | None
 ) -> Result:
-    writer = Writer() if approach is Approach.WRITER else None
+    async with contextlib.AsyncExitStack() as stack:
+        writer = await stack.enter_async_context(RootWriter(state)) if approach is Approach.WRITER else None
+        return await _measure_with(scenario, loop, round_, approach, pattern, state, freeze, writer)
 
+
+async def _measure_with(  # noqa: PLR0913 -- one run's coordinates
+    scenario: str,
+    loop: Loop,
+    round_: int,
+    approach: Approach,
+    pattern: Pattern,
+    state: Path,
+    freeze: Freeze | None,
+    writer: RootWriter | None,
+) -> Result:
     def make() -> TempRoots:
-        return WriterRoots(state, writer) if writer is not None else TempRoots(state)
+        return writer.session() if writer is not None else TempRoots(state)
 
     if pattern is Pattern.SESSIONS:
         stores = [make() for _ in range(SESSIONS)]
@@ -283,11 +220,10 @@ async def measure(
             freeze.end()
         for store in stores:
             await store.close()
-        if writer is not None:
-            writer.close()
 
     return Result(
         scenario=scenario,
+        loop=loop,
         round_index=round_,
         approach=approach,
         pattern=pattern,
@@ -365,7 +301,7 @@ async def main(args: argparse.Namespace) -> None:
                 state = args.dir / f"{args.scenario}-{round_}-{pattern}-{approach}"
                 state.mkdir(parents=True)
                 try:
-                    result = await measure(args.scenario, round_, approach, pattern, state, freeze)
+                    result = await measure(args.scenario, args.loop, round_, approach, pattern, state, freeze)
                 finally:
                     shutil.rmtree(state, ignore_errors=True)
                 results.append(result)
@@ -382,9 +318,12 @@ def parse(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--patterns", nargs="+", default=list(Pattern), choices=list(Pattern))
     parser.add_argument("--freeze", type=Path, help="freeze this mount at the start of each run (needs root)")
     parser.add_argument("--freeze-seconds", type=float, default=2.0)
+    parser.add_argument("--loop", type=Loop, default=Loop.UVLOOP, choices=list(Loop))
     return parser.parse_args(argv)
 
 
 if __name__ == "__main__":
     with contextlib.suppress(KeyboardInterrupt):
-        anyio.run(main, parse(sys.argv[1:]))
+        args = parse(sys.argv[1:])
+        options = {"loop_factory": uvloop.new_event_loop} if args.loop is Loop.UVLOOP else {}
+        anyio.run(main, args, backend="asyncio", backend_options=options)

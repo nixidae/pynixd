@@ -49,9 +49,14 @@ vivariumLib.mkTest {
         after = [ "boot" ];
         description = "a fast and a slow filesystem on one disk";
       };
-      fast = {
+      writer = {
         inherit script;
         after = [ "disks" ];
+        description = "the candidate writer's edge cases, on asyncio and uvloop";
+      };
+      fast = {
+        inherit script;
+        after = [ "writer" ];
         description = "temp roots on a fast disk";
       };
       frozen = {

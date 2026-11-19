@@ -56,6 +56,9 @@ async def test(vms: Machines) -> None:
     if vms.phase == "disks":
         await _disks(vm, vms.settings["src"])
         return
+    if vms.phase == "writer":
+        await _writer_cases(vm)
+        return
     if vms.phase == "fast":
         results = await _bench(vm, "fast", "/mnt/fast/bench")
         _report(results)
@@ -125,10 +128,24 @@ async def _disks(vm: Machine, src: str) -> None:
     print((await vm.succeed("dmsetup table && findmnt --types ext4")).stdout)
 
 
+async def _writer_cases(vm: Machine) -> None:
+    """The edge cases of the candidate writer, as root, on both loops, with a filesystem to freeze."""
+    command = (
+        "cd /work && TEMP_ROOTS_FREEZE=/mnt/fast TEMP_ROOTS_OTHER=/mnt/slow "
+        "python -m pytest --noconftest tests/benchmark/temp_roots_writer_cases.py -p no:cacheprovider -v "
+        "--junitxml=/artifacts/junit/temp-roots-writer.xml > /artifacts/temp-roots-writer.log 2>&1"
+    )
+    await vm.succeed("mkdir -p /artifacts/junit")
+    rc = (await vm.execute(command, timeout=TIMEOUT, label="writer edge cases")).returncode
+    print((await vm.succeed("tail -n 60 /artifacts/temp-roots-writer.log")).stdout)
+    if rc != 0:
+        raise AssertionError(f"the writer's edge cases exited {rc}")
+
+
 async def _bench(vm: Machine, scenario: str, directory: str, extra: str = "") -> list[dict[str, object]]:
     out = f"/artifacts/temp-roots-{scenario}.jsonl"
     command = (
-        f"cd /work && python tests/benchmark/temp_roots.py --dir {directory} --scenario {scenario} {extra} "
+        f"cd /work && python -m tests.benchmark.temp_roots --dir {directory} --scenario {scenario} {extra} "
         f"> {out} 2> /artifacts/temp-roots-{scenario}.log"
     )
     rc = (await vm.execute(command, timeout=TIMEOUT, label=f"temp roots on {scenario}")).returncode
