@@ -161,6 +161,28 @@ class PathLock:
         self._fd = -1
 
 
+RELEASE_SECONDS = 30.0
+"""How long a caller waits for its path locks to go; past it the worker thread goes on and releases them."""
+
+
+async def release_locks(locks: Iterable[PathLock], *, delete: bool) -> None:
+    """`PathLock.release` of each of *locks*, in a worker thread, shielded from the caller's cancellation.
+
+    An unlink, a write and a close stall on a slow disk, and on the event loop they stall every
+    client: the functional suite hung 8 tests in `PathLock.release` under host I/O load (nixidae/nixidae#1545).
+    """
+    held = list(locks)
+    if not held:
+        return
+
+    def release() -> None:
+        for lock in held:
+            lock.release(delete=delete)
+
+    with anyio.CancelScope(shield=True), anyio.move_on_after(RELEASE_SECONDS):
+        await anyio.to_thread.run_sync(release, abandon_on_cancel=True)
+
+
 @dataclass
 class TempDir:
     """`LocalStore::createTempDirInStore` (`local-store.cc:1335`): `tmp-<pid>-<n>`, 0700, locked."""
@@ -440,7 +462,7 @@ async def add_nar(
         await engine.register_valid_paths([info], report)
         delete_lock = True
     finally:
-        lock.release(delete=delete_lock)
+        await release_locks([lock], delete=delete_lock)
 
 
 async def import_nar(
@@ -626,7 +648,7 @@ async def add_dump(
                 await engine.register_valid_paths([info], report)
             delete_lock = True
         finally:
-            lock.release(delete=delete_lock)
+            await release_locks([lock], delete=delete_lock)
         return path
     finally:
         with anyio.CancelScope(shield=True):

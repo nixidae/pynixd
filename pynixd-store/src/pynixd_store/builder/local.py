@@ -36,7 +36,7 @@ from nix_daemon_protocol.store_path import StorePath
 
 from .. import optimise
 from ..active_builds import ActiveBuild
-from ..add import PathLock, delete_path, sync_store_path
+from ..add import PathLock, delete_path, release_locks, sync_store_path
 from ..content_address import Method, fixed_output_address, output_method
 from ..drv_parser import BUILDER_RPC as BUILDER_RPC
 from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta, missing_feature, show_error
@@ -774,9 +774,7 @@ async def build(
             # the builder's own add of it locks the same path (`local-store.cc:1314`): a fixed output, or one
             # repaired, waits for itself forever. The builder never writes to an output path, so pynixd lets go of
             # each one that is not valid. Lillecarl/nix#415.
-            for path, lock in held.items():
-                if path not in valid:
-                    lock.release(delete=False)
+            await release_locks((lock for path, lock in held.items() if path not in valid), delete=False)
         if len(known) == len(drv.outputs) and valid == set(known.values()) and not check:
             settled = True
             return LocalBuildResult(BuildResultStatus.ALREADY_VALID, paths=known)
@@ -1163,7 +1161,7 @@ async def build(
                 return LocalBuildResult(failure.status, failure.message, start, stop)
             await engine.register_valid_paths(collected.infos.values())
         finally:
-            collected.release()
+            await release_locks(collected.locks, delete=True)
         built = True
         made = {name: info.path for name, info in collected.infos.items()}
         return LocalBuildResult(
@@ -1191,10 +1189,9 @@ async def build(
             if built:
                 for path in redirected.values():
                     await anyio.to_thread.run_sync(delete_path, layout.real_path(path))
-            for lock in locks:
-                lock.release(delete=built or settled)
+            await release_locks(locks, delete=built or settled)
             if user is not None:
-                user.release()
+                await anyio.to_thread.run_sync(user.release)
 
 
 def _write_external_job(

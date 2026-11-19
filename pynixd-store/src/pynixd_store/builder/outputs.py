@@ -197,10 +197,6 @@ class Collected:
     locks: list[PathLock]
     actual: dict[str, Path] = field(default_factory=dict)
 
-    def release(self) -> None:
-        for lock in self.locks:
-            lock.release(delete=True)
-
 
 @dataclass(frozen=True)
 class _Fixed:
