@@ -7,6 +7,7 @@ import dataclasses
 import functools
 import json
 import os
+import time
 import types
 from enum import Enum
 from pathlib import Path
@@ -66,6 +67,7 @@ from .base import Store
 from .daemon_writes import DaemonWrites
 from .local_daemon import LocalStore
 from .no_daemon import NoDaemonStore
+from .probe import ACCEPTED, BUILT_FEATURES, probe_features, probe_request, probe_systems, refusal
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Set as AbstractSet
@@ -96,6 +98,8 @@ log = structlog.get_logger(__name__)
 _OP_CODES = {op.name: op.code for op in STANDARD_OPERATIONS}
 _OP_NAMES = {op.code: op.name for op in STANDARD_OPERATIONS}
 _HASH_PART_LENGTH = 32  # `StorePath::HashLen`
+_PROBE_SECONDS = 60.0
+"""A bound on one probe build, an `echo` with no inputs: past it the sandbox does not build, and start goes on."""
 
 #: The most of one value a shadow mismatch logs: `QueryAllValidPaths` answers the whole store.
 _LOGGED_CHARACTERS = 2000
@@ -592,6 +596,76 @@ class LocalDBStore(Store):
         self._refuse_routes_without_a_database()
         self.engine.hashes_self_reference_positions = hashes_self_reference_positions(self._daemon.nix_version)
         self.db.start(self._background)
+        if isinstance(self._daemon, NoDaemonStore) and self._daemon.probes_own_builder:
+            self._daemon.feature_matrix = await self.probe_own_builder()
+
+    async def probe_own_builder(self) -> dict[str, set[str]]:
+        """What pynixd's sandbox builds into this store: nix.conf's systems and features, proven by builds.
+
+        Each system nix.conf names builds a probe, and so does each of `BUILT_FEATURES` it names on each
+        system that built. Its other features go with each system that built.
+
+        Before the server serves: a store that has not proved a system builds
+        nothing, and placement fails a build for which no store is left
+        (`Placer._fail_no_compatible_store`). sg1's pynixd-0 took every build
+        and failed each in 0.33 s, as its sandbox could not mount `/proc`.
+        """
+        settings = BuildSettings.from_nix_config(await self.engine.nix_config(), _build_overrides(None))
+        systems = {settings.system, *settings.extra_platforms}
+        built = set(settings.system_features) & BUILT_FEATURES
+        labels = set(settings.system_features) - built
+        store_id = str(self.store_id)
+        log.info("store_probing", store_id=store_id, systems=sorted(systems), features=sorted(settings.system_features))
+        started = time.monotonic()
+        # All at once: `PROBE_CONCURRENCY` is for an SSH server's sessions, and no SSH runs here.
+        limiter = anyio.CapacityLimiter(max(1, len(systems) * max(1, len(built))))
+        proven = await probe_systems(store_id, self._send_probe, systems, limiter)
+        tested = await probe_features(store_id, self._send_probe, proven, built, limiter)
+        matrix = {system: features | labels for system, features in tested.items()}
+        log.info(
+            "store_probed",
+            store_id=store_id,
+            feature_matrix={k: sorted(v) for k, v in matrix.items()},
+            seconds=round(time.monotonic() - started, 2),
+        )
+        return matrix
+
+    async def _send_probe(
+        self, name: str, system: str, required_features: str, args: list[str], extra_env: dict[str, str] | None = None
+    ) -> tuple[str, bool, str]:
+        """Build one probe in pynixd's sandbox: its name, whether it built, and why it did not."""
+        request = probe_request(name, system, required_features, args, extra_env)
+        messages: list[LogMessage] = []
+
+        async def keep(message: LogMessage) -> None:
+            messages.append(message)
+
+        try:
+            with anyio.fail_after(_PROBE_SECONDS):
+                session = await self._session_build_settings(request, None)
+                if session is None:
+                    return name, False, "pynixd's builder does not build into this store"
+                rejected = local_builder.rejection(request.drv_path, request.derivation, session)
+                if rejected is not None:
+                    return name, False, rejected
+                settings = await self.local_build_settings(request, None, count=False)
+                if isinstance(settings, NotBuiltHere):
+                    return name, False, settings.reason
+                roots = self.engine.temp_roots()
+                try:
+                    for path in request.derivation.output_paths().values():
+                        await roots.add(path)
+                    resp = await self.build_here(request, settings, keep, Verbosity.INFO)
+                finally:
+                    with anyio.CancelScope(shield=True), anyio.move_on_after(_PROBE_SECONDS):
+                        await roots.close()
+        except Exception as e:
+            # A probe answers whether the sandbox builds; a raise or a hang here is a no, not a failed start.
+            log.warning("probe_crashed", store_id=str(self.store_id), probe=name, exc_info=True)
+            return name, False, f"{type(e).__name__}: {e}"
+        if resp.result.status in ACCEPTED:
+            return name, True, ""
+        return name, False, refusal(resp.result.error_msg, resp.result.status, messages)
 
     async def close(self) -> None:
         """Close the SQLite databases, and let go of the big lock."""

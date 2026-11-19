@@ -21,6 +21,7 @@ from ..serde import BasicDerivation, BuildDerivationRequest, BuildMode, BuildRes
 
 __all__ = [
     "ACCEPTED",
+    "BUILT_FEATURES",
     "PROBE_CONCURRENCY",
     "PROBE_SYSTEM_SCRIPT",
     "ProbeSend",
@@ -66,6 +67,14 @@ ACCEPTED: Final[frozenset[int]] = frozenset(
     }
 )
 """The results that prove the store builds the probe."""
+
+BUILT_FEATURES: Final[frozenset[str]] = frozenset({"kvm", "uid-range"})
+"""The features a sandbox must prove with a build: `kvm` needs `/dev/kvm`, `uid-range` 65536 ids.
+
+Every other feature only labels the machine, and `rejection` checks it against
+nix.conf. A build for each cost a store with no daemon a median of 21 s at
+start: 6 systems by 6 features, 42 builds (nixidae/nixidae#1541).
+"""
 
 _BUILDER_OUTPUT_LINES: Final[int] = 6
 """How many lines of a refused probe's build log travel with its reason.

@@ -3,8 +3,9 @@
 `LocalDBStore` holds a `LocalStore` in a mode with a daemon and a `NoDaemonStore`
 in the `daemonless` mode (`pynixd/store_mode.py`). Both are a `LocalHost`: the
 layout, the monitor, nix.conf and what the store builds. This one has no
-connection pool, no reconnect loop and no probe, and refuses every operation it
-would send to a daemon.
+connection pool and no reconnect loop, and refuses every operation it would send
+to a daemon. It builds nothing until `LocalDBStore.probe_own_builder` proves what
+pynixd's sandbox builds (nixidae/nixidae#1541).
 """
 
 from __future__ import annotations
@@ -44,6 +45,18 @@ class NoDaemonStore(LocalHost):
         super().__init__(spec)
         self._features = set(_NO_DAEMON_FEATURES)
         self._on_sqlite = spec.postgres is None
+        if self._probe:
+            # Fail closed: `None` takes every build, and nix.conf names systems the sandbox may not build.
+            self._feature_matrix = {}
+
+    @property
+    def _features_from_config(self) -> bool:
+        return False
+
+    @property
+    def probes_own_builder(self) -> bool:
+        """Whether `LocalDBStore` proves what this store builds; not with `probe: false` or a `feature_matrix`."""
+        return self._probe
 
     async def _prepare(self) -> None:
         self.nix_version = await read_nix_version(self.nix_bin, nix_environment(self.layout, self.extra_env))
