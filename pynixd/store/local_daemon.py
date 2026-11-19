@@ -183,20 +183,20 @@ class LocalStore(LocalHost, DaemonStore):
             return
 
         _refuse_a_socket_path_python_cannot_reach(self.socket_path)
+        socket_path = anyio.Path(self.socket_path)
 
         if not self.managed:
-            if not self.socket_path.exists():
+            if not await socket_path.exists():
                 raise RuntimeError(f"System Nix daemon socket does not exist: {self.socket_path}")
             return
 
         self.daemon_ready = anyio.Event()
 
-        if self.socket_path.exists():
+        if await socket_path.exists():
             log.info("removing_stale_socket", socket_path=str(self.socket_path))
-            self.socket_path.unlink()
+            await socket_path.unlink()
 
-        socket_dir = self.socket_path.parent
-        socket_dir.mkdir(parents=True, exist_ok=True)
+        await socket_path.parent.mkdir(parents=True, exist_ok=True)
 
         cmd = [self.nix_bin, "daemon", *self.config_arguments(), "--log-format", "internal-json"]
 
@@ -239,7 +239,7 @@ class LocalStore(LocalHost, DaemonStore):
 
         # Wait for the socket file to appear.
         deadline = time.monotonic() + _DAEMON_START_TIMEOUT
-        while not self.socket_path.exists():
+        while not await socket_path.exists():
             if self.daemon_proc.returncode is not None:
                 stderr_output = self._recent_output_text()
                 raise RuntimeError(

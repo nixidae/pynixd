@@ -21,7 +21,6 @@ EXEMPT: Final[dict[str, str]] = {
     "pynixd/sftp_server.py stat": DEBT,
     "pynixd/store/__init__.py __getattr__": DEBT,
     "pynixd/store/gha_cache.py _upload": DEBT,
-    "pynixd/store/local_daemon.py ensure_daemon": DEBT,
     "pynixd/store/local_db.py close": DEBT,
     "pynixd/store/local_host.py read_derivation": DEBT,
     "pynixd/store_url.py substituter_spec": DEBT,
