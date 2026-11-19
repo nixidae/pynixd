@@ -77,7 +77,7 @@ from .wire import FramedReader, UnixNixReader, UnixNixWriter
 
 if TYPE_CHECKING:
     import socket
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Collection
 
     from anyio.abc import SocketStream
 
@@ -177,6 +177,11 @@ class RestrictedProxy(DaemonProxy):
         if self._adding is not None:
             self._adding.append(str(path))
         await super().add_temp_root(path)
+
+    async def add_temp_roots(self, paths: Collection[StorePath]) -> None:
+        if self._adding is not None:
+            self._adding.extend(str(path) for path in paths)
+        await super().add_temp_roots(paths)
 
     async def dispatch(self, op_num: int) -> WireResponse | None:
         if self.restriction.submitting:

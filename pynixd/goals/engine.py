@@ -42,7 +42,7 @@ from .results import goal_failure, goal_success
 from .substitute import SubstituteAttempt, SubstitutePathGoal, substituter_fingerprint
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+    from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Iterable
 
     from nix_daemon_protocol.ids import BuildId
     from pynixd_store.content_address import ContentAddress
@@ -55,8 +55,8 @@ if TYPE_CHECKING:
     from ..substitution_queue import SubstitutionQueue
     from .goal import Goal
 
-    Hold = Callable[[StorePath], Awaitable[None]]
-    """Roots one path for the client's session: `DaemonProxy.add_temp_root`."""
+    Hold = Callable[[Collection[StorePath]], Awaitable[None]]
+    """Roots paths for the client's session, at once: `DaemonProxy.add_temp_roots`."""
 
 log = structlog.get_logger(__name__)
 
@@ -269,8 +269,7 @@ class GoalEngine:
             try:
                 response = await BuildPathsWithResultsGoal(self, request, client).result()
                 if hold is not None:
-                    for path in _realised_paths(response):
-                        await hold(path)
+                    await hold(list(_realised_paths(response)))
                 return response
             finally:
                 # The answer of this request is the moment it wants nothing more.
@@ -477,9 +476,9 @@ class GoalEngine:
                     for path, goal in goals.items():
                         tg.start_soon(run_one, path, goal)
                 if hold is not None:
-                    for attempt in attempts.values():
-                        for produced in attempt.result.produced_paths:
-                            await hold(produced)
+                    await hold(
+                        [produced for attempt in attempts.values() for produced in attempt.result.produced_paths]
+                    )
                 return attempts
             finally:
                 self.reap()
@@ -488,11 +487,13 @@ class GoalEngine:
         self, paths: Iterable[StorePath], hold: Hold | None
     ) -> dict[StorePath, SubstituteAttempt]:
         attempts: dict[StorePath, SubstituteAttempt] = {}
+        paths = list(paths)
+        # Rooted before the check, as one write: a root on a path that turns out invalid holds nothing.
+        if hold is not None:
+            await hold(paths)
         for path in paths:
             response = await self.ctx.local_store.execute(IsValidPathRequest(path=StorePath(str(path))), mark=False)
             if response.valid:
-                if hold is not None:
-                    await hold(path)
                 result = goal_success()
                 result.produced_paths.add(path)
                 attempts[path] = SubstituteAttempt(found=True, result=result)

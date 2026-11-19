@@ -31,6 +31,7 @@ import itertools
 import os
 import socket
 import time
+from collections.abc import Iterable
 from pathlib import Path
 
 import anyio
@@ -137,6 +138,26 @@ class TempRoots:
             await self._wait_for_the_collector(root)
         return not self._disabled
 
+    async def add_many(self, paths: Iterable[str | StorePath]) -> bool:
+        """Hold every one of *paths* until `close`, with one shared lock and one write, in a worker thread.
+
+        `add` writes on the event loop, three syscalls a root. sg1's pynixd-0
+        held 3,344 roots of one substitution that way, on Ceph RBD, and the
+        loop lagged until the liveness probe killed the pod.
+        """
+        roots = [str(path) if isinstance(path, StorePath) else str(StorePath(str(path))) for path in paths]
+        if self.read_only or not roots:
+            return True
+        if self._disabled:
+            return False
+        async with self._lock:
+            if self._disabled:
+                return False
+            if not await run_sync(self._add_many_inline, roots):
+                for root in roots:
+                    await self._wait_for_the_collector(root)
+        return not self._disabled
+
     async def close(self) -> None:
         """Release every root of this session."""
         async with self._lock:
@@ -158,6 +179,22 @@ class TempRoots:
         """
         try:
             return self._write_root(root)
+        except OSError as exc:
+            self._disable(exc)
+            return True
+
+    def _add_many_inline(self, roots: list[str]) -> bool:
+        """`_add_inline` for many roots: False when the collector runs and each root needs its socket."""
+        try:
+            self._ensure_file()
+            gc_lock = self._gc_lock()
+            if not self._hold_the_gc_lock(gc_lock):
+                return False
+            try:
+                self._write_bytes(b"".join(root.encode() + b"\0" for root in roots))
+                return True
+            finally:
+                fcntl.flock(gc_lock, fcntl.LOCK_UN)
         except OSError as exc:
             self._disable(exc)
             return True
@@ -192,11 +229,16 @@ class TempRoots:
         socket, so Nix writes the root to the file in both cases: the file is
         what the next run of the collector reads.
         """
+        self._write_bytes(root.encode() + b"\0")
+
+    def _write_bytes(self, data: bytes) -> None:
         self._ensure_file()
         fd = self._fd
         if fd is None:
             raise RuntimeError("pynixd: the temporary roots file is not open")
-        os.write(fd, root.encode() + b"\0")
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view) :]
 
     def _ensure_file(self) -> None:
         if self._fd is None:

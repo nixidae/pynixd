@@ -32,7 +32,7 @@ from pynixd_store.store_path import StorePath
 from tests.substitution_fakes import ServesAsBackends
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Collection, Iterable
     from pathlib import Path
 
 HELD = StorePath("/nix/store/00000000000000000000000000000001-held")
@@ -80,9 +80,7 @@ class _Engine:
             if path in (BROKEN, OTHER_BROKEN) and client is not None:
                 await client.send(SimpleNamespace(text="\x1b[31;1merror:\x1b[0m the NAR is gone\n"))
         self.asked.extend(attempts)
-        for attempt in attempts.values():
-            for produced in attempt.result.produced_paths:
-                await hold(produced)
+        await hold([produced for attempt in attempts.values() for produced in attempt.result.produced_paths])
         return attempts
 
 
@@ -98,9 +96,11 @@ class _Client:
 class _Holds:
     def __init__(self) -> None:
         self.paths: list[StorePath] = []
+        self.calls = 0
 
-    async def __call__(self, path: StorePath) -> None:
-        self.paths.append(path)
+    async def __call__(self, paths: Collection[StorePath]) -> None:
+        self.calls += 1
+        self.paths.extend(paths)
 
 
 async def _ensure(path: StorePath, client: _Client, holds: _Holds | None = None, engine: _Engine | None = None) -> Any:
@@ -243,4 +243,6 @@ class TestWithoutSubstitutes:
         assert attempts[HELD].found
         assert attempts[HELD].result.produced_paths == {HELD}
         assert not attempts[MISSING].found
-        assert holds.paths == [HELD]
+        # Rooted before the check, both: a root on a path that is not there holds nothing.
+        assert holds.paths == [HELD, MISSING]
+        assert holds.calls == 1, "one write for the set: sg1 held its event loop with one write a root"

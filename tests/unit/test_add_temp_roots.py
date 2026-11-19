@@ -53,18 +53,20 @@ async def test_response_carries_success() -> None:
 
 @pytest.mark.anyio
 async def test_handler_holds_every_path_of_the_set() -> None:
-    """Each path reaches `add_temp_root`: the roots belong to the session."""
+    """The set reaches `add_temp_roots` at once: the roots belong to the session, and one write holds them."""
     data = await _encode_request()
     held: list[str] = []
+    calls: list[int] = []
 
-    async def record(path: StorePath | str) -> None:
-        held.append(str(path))
+    async def record(paths: list[StorePath]) -> None:
+        calls.append(len(paths))
+        held.extend(str(path) for path in paths)
 
     proxy = SimpleNamespace(
         r=BytesReader(data[8:], "test"),
         version=PROTOCOL_VERSION,
         standard_features=frozenset(),
-        add_temp_root=record,
+        add_temp_roots=record,
     )
     proxy.read_context = ReadContext(reader=proxy.r, version=proxy.version, features=proxy.standard_features)
     resp = cast(
@@ -73,4 +75,5 @@ async def test_handler_holds_every_path_of_the_set() -> None:
     )
 
     assert set(held) == {FIRST, SECOND}
+    assert calls == [2]
     assert resp.value == 1

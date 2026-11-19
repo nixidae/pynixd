@@ -18,8 +18,8 @@ class AddTempRootsHandler(Handler):
     destination set with it before every copy, so without this handler a
     new client silently holds no roots on pynixd at all — the feature gate
     has no fallback for old daemons. Like op 11 the roots belong to the
-    client session, so each path goes through `DaemonProxy.add_temp_root`
-    and no backend is involved. Issue #66.
+    client session, so the set goes through `DaemonProxy.add_temp_roots`,
+    one write for all of it, and no backend is involved. Issue #66.
     """
 
     op: ClassVar[int] = 49
@@ -29,6 +29,5 @@ class AddTempRootsHandler(Handler):
         req = await AddTempRootsRequest.from_reader(
             ctx.proxy.read_context,
         )
-        for path in req.paths:
-            await ctx.proxy.add_temp_root(path)
+        await ctx.proxy.add_temp_roots(list(req.paths))
         return AddTempRootsResponse.fast(value=1)  # type: ignore[return-value]  # the base returns object | None

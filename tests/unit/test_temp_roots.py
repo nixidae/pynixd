@@ -305,3 +305,43 @@ async def test_a_waiting_root_ends_with_its_session(short_path: Path) -> None:
     finally:
         os.close(lock)
         await roots.close()
+
+
+SUBSTITUTED = [f"/nix/store/{i:032d}-path" for i in range(3344)]
+"""The roots of one `ekn kubeapply` store-path check on sg1, which held pynixd-0's event loop until its liveness probe
+killed the pod: one write each, on the loop, on Ceph RBD."""
+
+
+@pytest.mark.anyio
+async def test_many_roots_are_one_write_off_the_event_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    roots = TempRoots(tmp_path)
+    loop_thread = threading.get_ident()
+    writes: list[int] = []
+    write = os.write
+
+    def counted(fd: int, data: bytes | memoryview) -> int:
+        if fd == roots._fd:
+            assert threading.get_ident() != loop_thread, "a roots file write blocks the event loop"
+            writes.append(len(data))
+        return write(fd, data)
+
+    monkeypatch.setattr(os, "write", counted)
+    try:
+        assert await roots.add_many(SUBSTITUTED)
+        assert len(writes) == 1
+        assert read_roots(roots.path) == SUBSTITUTED
+    finally:
+        await roots.close()
+
+
+@pytest.mark.anyio
+async def test_many_roots_added_while_the_collector_runs_go_over_the_socket(short_path: Path) -> None:
+    collector = Collector(short_path)
+    roots = TempRoots(short_path)
+    try:
+        assert await roots.add_many([PATH_A, PATH_B])
+        assert collector.roots == [PATH_A, PATH_B]
+        assert read_roots(roots.path) == [PATH_A, PATH_B]
+    finally:
+        await roots.close()
+        collector.stop()

@@ -61,6 +61,9 @@ class UnwritableRoots:
     async def add(self, _path: Any) -> bool:
         return False
 
+    async def add_many(self, _paths: Any) -> bool:
+        return False
+
 
 class Daemon:
     def __init__(self) -> None:
@@ -74,9 +77,26 @@ class Daemon:
 @pytest.mark.anyio
 async def test_a_root_pynixd_cannot_write_goes_to_the_daemon() -> None:
     daemon = Daemon()
-    proxy = SimpleNamespace(_temp_roots=UnwritableRoots(), local_store=daemon)
+    roots = UnwritableRoots()
+    proxy = SimpleNamespace(_session_roots=lambda: roots, local_store=daemon)
 
     await DaemonProxy.add_temp_root(cast("Any", proxy), OUT)
 
     assert [type(request) for request in daemon.asked] == [AddTempRootRequest]
     assert str(daemon.asked[0].path) == OUT
+
+
+@pytest.mark.anyio
+async def test_a_set_pynixd_cannot_write_goes_to_the_daemon_a_root_each() -> None:
+    daemon = Daemon()
+    roots = UnwritableRoots()
+    proxy = SimpleNamespace(_session_roots=lambda: roots, local_store=daemon)
+
+    async def one(path: Any) -> None:
+        await DaemonProxy.add_temp_root(cast("Any", proxy), path)
+
+    proxy.add_temp_root = one
+
+    await DaemonProxy.add_temp_roots(cast("Any", proxy), [StorePath(OUT), StorePath(OPAQUE)])
+
+    assert [str(request.path) for request in daemon.asked] == [OUT, OPAQUE]

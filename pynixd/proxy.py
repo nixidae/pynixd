@@ -56,7 +56,7 @@ from .serde.context import ReadContext, RequestContext as RequestContext, WriteC
 from .serde.protocol import OptTrusted, Verbosity
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 
     from nix_daemon_protocol.wire_ops import WireRequest
 
@@ -588,20 +588,20 @@ class DaemonProxy:
             self.request_id = engine.request_id
             try:
                 if isinstance(request, BuildPathsWithResultsRequest):
-                    return await engine.build_paths_with_results(request, client=self.client, hold=self.add_temp_root)
+                    return await engine.build_paths_with_results(request, client=self.client, hold=self.add_temp_roots)
                 if isinstance(request, BuildPathsRequest):
-                    return await engine.build_paths(request, client=self.client, hold=self.add_temp_root)
+                    return await engine.build_paths(request, client=self.client, hold=self.add_temp_roots)
                 return await engine.query_missing(request, client=self.client)
             finally:
                 self.request_id = None
 
         if isinstance(request, EnsurePathRequest) and await self._pynixd_substitutes():
-            return await ensure_path(self.goal_engine, request, self.client, self.add_temp_root)
+            return await ensure_path(self.goal_engine, request, self.client, self.add_temp_roots)
 
         if isinstance(request, QueryValidPathsRequest):
             self._force_substitute_on_destination(request)
             if request.substitute and await self._pynixd_substitutes():
-                request = await substitute_paths(self.goal_engine, request, self.client, self.add_temp_root)
+                request = await substitute_paths(self.goal_engine, request, self.client, self.add_temp_roots)
 
         local_resp: WireResponse | None = None
         try:
@@ -765,6 +765,22 @@ class DaemonProxy:
 
     # ── Temporary roots ──────────────────────────────────────────────
 
+    def _session_roots(self) -> TempRoots:
+        if self._temp_roots is None:
+            # The state directory of the store that pynixd serves, which is
+            # `<root>/nix/var/nix` for a chroot store and `NIX_STATE_DIR` for
+            # a relocated one. `StoreLayout` answers both. Issue nixidae/nixidae#215.
+            layout = self.local_store.layout
+            self._temp_roots = TempRoots(layout.state_dir, read_only=layout.read_only)
+        return self._temp_roots
+
+    async def add_temp_roots(self, paths: Collection[StorePath]) -> None:
+        """`add_temp_root` for many paths, written at once off the event loop (`TempRoots.add_many`)."""
+        if await self._session_roots().add_many(paths):
+            return
+        for path in paths:
+            await self.add_temp_root(path)
+
     async def add_temp_root(self, path: str | StorePath) -> None:
         """Hold `path` against the collector until this client goes away.
 
@@ -774,13 +790,7 @@ class DaemonProxy:
         client that asked for it. Issue #20, and `temp_roots.py` for how the
         file works.
         """
-        if self._temp_roots is None:
-            # The state directory of the store that pynixd serves, which is
-            # `<root>/nix/var/nix` for a chroot store and `NIX_STATE_DIR` for
-            # a relocated one. `StoreLayout` answers both. Issue nixidae/nixidae#215.
-            layout = self.local_store.layout
-            self._temp_roots = TempRoots(layout.state_dir, read_only=layout.read_only)
-        if await self._temp_roots.add(path):
+        if await self._session_roots().add(path):
             return
         # NIX-DEVIATION (#27): Nix fails `AddTempRoot` when it cannot write
         # its roots file (`gc.cc:84-143`). An unprivileged pynixd always
