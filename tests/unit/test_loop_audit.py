@@ -56,8 +56,11 @@ def test_an_import_and_a_spawn_are_kinds_of_their_own() -> None:
     pynixd = Frame("/work/pynixd/cli/x.py", 1, "f")
     imported = classify("open", "/work/f", [Frame("<frozen importlib._bootstrap>", 1, "_load"), pynixd], ROOTS)
     spawned = classify("os.posix_spawn", "/work/f", [pynixd], ROOTS)
+    module_body = classify("exec", "", [Frame("<frozen importlib._bootstrap>", 1, "_load"), pynixd], ROOTS)
     assert imported is not None
     assert imported.kind is Kind.IMPORT
+    assert module_body is not None
+    assert module_body.kind is Kind.IMPORT
     assert spawned is not None
     assert spawned.kind is Kind.SPAWN
 
@@ -129,6 +132,18 @@ async def test_a_stat_on_the_loop_is_recorded_and_one_in_a_thread_is_not(audit: 
     [site] = audit.sites
     assert site.event == "os.stat"
     assert site.site.endswith(" _stat_here")
+
+
+def _compile_here() -> None:
+    exec(compile("x = 1", "<generated>", "exec"), {})  # noqa: S102 -- the code under audit compiles a constant
+
+
+async def test_python_compiled_on_the_loop_is_a_code_site(audit: LoopAudit) -> None:
+    await anyio.to_thread.run_sync(_compile_here)
+    assert not audit.sites
+    _compile_here()
+    assert {(site.kind, site.event) for site in audit.sites} == {(Kind.CODE, "compile"), (Kind.CODE, "exec")}
+    assert all(site.site.endswith(" _compile_here") for site in audit.sites)
 
 
 async def test_shutil_still_copies_with_the_wrappers(audit: LoopAudit, tmp_path: Path) -> None:

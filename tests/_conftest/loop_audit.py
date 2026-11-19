@@ -74,6 +74,8 @@ class Kind(enum.StrEnum):
     PSEUDO = "pseudo"
     """A file under `/proc`, `/sys` or `/dev`: the kernel or a device answers it, not a disk."""
     SPAWN = "spawn"
+    CODE = "code"
+    """Python compiled or run from a code object on the loop: a wire codec compiled at first use."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +122,7 @@ class Site:
 
 CALLERS: Final = 4
 
-GATED: Final = frozenset({Kind.FILE, Kind.IMPORT})
+GATED: Final = frozenset({Kind.FILE, Kind.IMPORT, Kind.CODE})
 """What the gate fails on. A traceback is an error path; a pseudo file or a spawn waits on no disk."""
 
 
@@ -173,6 +175,8 @@ def _kind(event: str, target: str, *, importing: bool, tracing: bool, spawning: 
         return Kind.IMPORT
     if tracing:
         return Kind.TRACEBACK
+    if event in loop_files.CODE_EVENTS:
+        return Kind.CODE
     if event in _SPAWN_EVENTS or (spawning and event == "os.close"):
         return Kind.SPAWN
     if target.startswith(_PSEUDO_FILES):
@@ -241,7 +245,10 @@ class LoopAudit:
         try:
             if event in _NOT_FILES or (args and isinstance(args[0], int) and not _regular(args[0])):
                 return
-            target = os.fsdecode(args[0]) if args and isinstance(args[0], str | bytes | os.PathLike) else ""
+            # A `compile` event's first argument is the source, not a path.
+            target = ""
+            if args and event not in loop_files.CODE_EVENTS and isinstance(args[0], str | bytes | os.PathLike):
+                target = os.fsdecode(args[0])
             site = classify(event, target, _frames(sys._getframe(1)), self.roots)  # noqa: SLF001 -- the hook has no frame argument
             if site is not None:
                 seen = self.sites.setdefault(site, _Seen(first_test=self.test))

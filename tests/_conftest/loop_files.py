@@ -24,6 +24,9 @@ if TYPE_CHECKING:
 _WATCHED_PREFIXES = ("open", "os.", "fcntl.", "shutil.")
 """`os.remove`, `os.mkdir`, `os.rename`, `os.scandir`, `fcntl.flock`, `shutil.copyfile`, ..."""
 
+CODE_EVENTS: Final = frozenset({"compile", "exec"})
+"""Python code compiled or run from a code object. Only the session sink gets these: they are CPU, not files."""
+
 UNAUDITED: Final = (
     "stat",
     "lstat",
@@ -102,11 +105,12 @@ def _audited[**P, R](event: str, original: Callable[P, R]) -> Callable[P, R]:
 
 
 def _hook(event: str, args: tuple[object, ...]) -> None:
-    if not event.startswith(_WATCHED_PREFIXES):
+    code = event in CODE_EVENTS
+    if not code and not event.startswith(_WATCHED_PREFIXES):
         return
     for sink in _session_sink:
         sink(event, args)
-    if not _active:
+    if code or not _active:
         return
     ident = threading.get_ident()
     for recorder in _active:
