@@ -143,7 +143,6 @@ def builder_spec(machine: Machine, settings: PynixdSettings, nix_bin: str) -> St
             update={
                 **common,
                 "known_hosts": spec.known_hosts,
-                "scheduleable": True,
                 "no_schedule": False,
                 "priority": 1.0,
             }

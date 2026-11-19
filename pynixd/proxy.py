@@ -394,7 +394,7 @@ class DaemonProxy:
             our_features.add(wire.FEATURE_QUERY_ACTIVE_BUILDS)
 
         # Only build-capable stores contribute scheduling capabilities.
-        # Substituters are deliberately non-scheduleable; advertising
+        # Substituters are deliberately `no_schedule`; advertising
         # their host features would incorrectly tell clients that this
         # server can build for those platforms.
         for store in self.stores.values():

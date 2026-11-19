@@ -25,7 +25,7 @@ implemented. It prepares `ssh-ng://` substituters for nixidae/nixidae#1155
 
 - `StoreSpecBase` is Nix's `StoreConfig`, and `Spec.to_store()` is
   `openStore()`. This part does not change: no class renames, no new hierarchy.
-- The roles (`scheduleable`, `no_schedule`, `gc_enabled`, `last_resort`) are
+- The roles (`no_schedule`, `gc_enabled`, `last_resort`) are
   settings on the spec, as Nix's are. They stay settings.
 - A substituter is a `no_schedule` store (`SubstitutionQueue.substituter_stores`).
   A builder is not one. A build output comes back through `store/transfer.py`,
@@ -81,7 +81,7 @@ Nine sites go and four stay. The narinfo race is a cache ability, as Nix's
 ## Where `ssh-ng://` fits
 
 `ssh-ng://[user@]host[:port]` becomes an `SSHSubprocessStoreSpec` with
-`no_schedule`, not `scheduleable`, no GC, no probe builds, `monitor=False` and
+`no_schedule`, no GC, no probe builds, `monitor=False` and
 no agent upload. The parameters it reads: `ssh-key`,
 `base64-ssh-public-host-key`, `compress`, `remote-program`, `remote-store`,
 `trusted`, `priority`. Any other gives `None`.

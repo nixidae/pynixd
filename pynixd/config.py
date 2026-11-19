@@ -325,7 +325,6 @@ class StoreSpecBase(BaseModel):
     pooled connection keeps that worker alive, so a connection in steady
     use holds every root it ever made. Zero turns the rule off. Issue #20.
     """
-    scheduleable: bool = True
     priority: float = 1.0
     trusted: bool = True
     """Import a substitute from this store without checking its signatures, as Nix's `?trusted=1`.
@@ -349,8 +348,8 @@ class StoreSpecBase(BaseModel):
     last_resort: bool = False
     """Build here only what no other store can: capability, never offload.
 
-    A derivation goes to a last-resort store only when no other healthy,
-    scheduleable store supports its system and features, or each that does
+    A derivation goes to a last-resort store only when no other healthy
+    store that takes builds supports its system and features, or each that does
     already failed it. Load, disk and the ranking do not count: a busy
     regular store means wait, not move. For borrowed machines, such as the
     nix-community builders. nixidae/nixidae#1018.
@@ -818,7 +817,6 @@ class ExternalUnixStoreSpec(StoreSpecBase):
     type: Literal["external-unix"] = "external-unix"
     socket_path: Path = Path("/nix/var/nix/daemon-socket/socket")
     monitor: bool = False
-    scheduleable: bool = False
     no_schedule: bool = True
     gc_enabled: bool = False
     probe: bool | None = False
@@ -844,7 +842,6 @@ class LocalStoreSubstituterSpec(StoreSpecBase):
     """
 
     type: Literal["local-store-substituter"] = "local-store-substituter"
-    scheduleable: bool = False
     no_schedule: bool = True
     gc_enabled: bool = False
     probe: bool | None = False
@@ -1380,7 +1377,6 @@ class BinaryCacheSpecBase(StoreSpecBase):
     """`?store=`: the store directory the cache serves (`StoreDirConfig::storeDir`); `None` is pynixd's own."""
     max_fail_ratio: float = 0.5
     health_window: int = 10
-    scheduleable: bool = False
     no_schedule: bool = True
     gc_enabled: bool = False
     drop_unopened: bool = False

@@ -98,7 +98,6 @@ class ScheduledStore(Store):
         a store: the temporary roots and the SQLite fast paths belong to the
         local store that pynixd serves.
         """
-        self.scheduleable = spec.scheduleable
         self.priority = spec.priority
         self.score_penalty = spec.score_penalty
         self.last_resort = spec.last_resort

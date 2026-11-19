@@ -45,7 +45,7 @@ def test_nixkubes_substituter_is_a_store_that_only_substitutes() -> None:
     assert (spec.username, spec.host, spec.port) == ("nix", "pynixd", 22)
     assert spec.trusted
     assert spec.priority == 0
-    assert (spec.no_schedule, spec.scheduleable, spec.gc_enabled, spec.monitor) == (True, False, False, False)
+    assert (spec.no_schedule, spec.gc_enabled, spec.monitor) == (True, False, False)
     assert spec.remote_command == ["nix-daemon", "--stdio"]
     assert spec.known_hosts == list(OPENSSH_KNOWN_HOSTS)
     assert spec.host_public_key is None
@@ -129,7 +129,7 @@ def test_want_mass_query_reaches_the_spec_and_the_key() -> None:
 
 def test_a_configured_builder_is_not_a_substituters_store() -> None:
     url = _ssh("ssh-ng://b?trusted=1")
-    builder = url.model_copy(update={"no_schedule": False, "scheduleable": True})
+    builder = url.model_copy(update={"no_schedule": False})
     assert builder.reference_key() != url.reference_key()
 
 

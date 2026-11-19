@@ -265,7 +265,6 @@ def _ssh_ng(ref: StoreReference) -> StoreSpecBase | None:
             "connect_timeout": SSH_NG_CONNECT_TIMEOUT,
             "monitor": False,
             "probe": False,
-            "scheduleable": False,
             "no_schedule": True,
             "gc_enabled": False,
             **settings,
