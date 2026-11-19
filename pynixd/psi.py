@@ -133,12 +133,40 @@ class DiskSpace:
     That collection holds the GC lock while it traces roots, and every build on the host waits for it.
     A host with little room over its floor ran one before nearly every build (sg1-n1, 2026-11-19).
     """
+    room_bytes: int | None = None
+    """Free space plus what a full collection could free, less the floor, at the last GC plan; `None` before one.
+
+    An upper bound: the reclaimable part counts NAR bytes, and a compressing filesystem frees fewer.
+    So only its low end is a fact: a store with little room has little lasting capacity, however
+    much a collection runs (sg1-n1: 1.9 GB over its floor and nothing dead, 2026-11-19).
+    nixidae/nixidae#1527.
+    """
+    room_age_s: float | None = None
+    """Seconds since the plan `room_bytes` comes from."""
 
     @classmethod
     def from_statvfs(cls, stat: os.statvfs_result, floor_bytes: int = 0) -> DiskSpace:
         return cls(
             free_bytes=stat.f_bavail * stat.f_frsize, total_bytes=stat.f_blocks * stat.f_frsize, floor_bytes=floor_bytes
         )
+
+
+@dataclass(frozen=True)
+class ReclaimSample:
+    """One GC plan's view of a store: free space and what a full collection could free, taken together.
+
+    A pair from one moment: a later free figure beside an earlier reclaimable one misses the
+    garbage written since, and reads less room than there is.
+    """
+
+    free_bytes: int
+    reclaimable_bytes: int
+    at: float
+    """`time.monotonic()` of the plan."""
+
+    def room(self, floor_bytes: int, now: float) -> tuple[int, float]:
+        """`(room_bytes, room_age_s)` over *floor_bytes*, as of *now*."""
+        return self.free_bytes + self.reclaimable_bytes - floor_bytes, now - self.at
 
 
 @dataclass

@@ -177,6 +177,8 @@ async def test_the_plan_and_its_order_match_python(
 
     assert counts.planned == len(planned)
     assert counts.spared == len(planned & store.vetoed)
+    # Every dead path the veto leaves, whatever the age rule: what a full collection could free.
+    assert counts.reclaimable_bytes == sum(store.size[path] for path in set(store.paths) - store.live - store.vetoed)
     assert [path for path, _, _ in rows] == by_weight(weights, pressure)
     assert {path: (size, age) for path, size, age in rows} == weights
 

@@ -56,6 +56,7 @@ from .daemon_extensions import (
     QueryClosureRequest,
 )
 from .exceptions import BackendError, CacheFault, GCNotPermittedError, PathGone, PynixdError
+from .psi import ReclaimSample
 from .store.local_db import LocalDBStore
 
 if TYPE_CHECKING:
@@ -409,6 +410,12 @@ class Collector:
         live = await self._live_paths(local)
         async with SqlPlan.open(db) as plan:
             counts = await plan.plan(live=live, vetoed=vetoed, cutoff=None if pressed else int(time.time()) - max_age)
+            usage = self._disk_usage(local)
+            if usage is not None:
+                used, total = usage
+                local.daemon_client.disk_reclaim = ReclaimSample(
+                    free_bytes=total - used, reclaimable_bytes=counts.reclaimable_bytes, at=time.monotonic()
+                )
             log.info(
                 "gc_plan_lru",
                 valid=counts.valid,
@@ -416,6 +423,7 @@ class Collector:
                 stale=counts.stale,
                 pressed=pressed,
                 droppable=counts.planned,
+                reclaimable_bytes=counts.reclaimable_bytes,
                 planner="sqlite",
             )
             if tier is not None:

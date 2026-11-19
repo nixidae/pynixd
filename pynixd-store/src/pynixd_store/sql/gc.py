@@ -73,7 +73,8 @@ SELECT
     (SELECT count(*) FROM ValidPaths v LEFT JOIN {PATH_ACCESS_TABLE} a ON a.path = v.path
         WHERE :cutoff IS NOT NULL AND COALESCE(a.lastReferencedAt, v.registrationTime) < :cutoff),
     (SELECT count(*) FROM gc_planned),
-    (SELECT count(*) FROM gc_planned WHERE id IN (SELECT id FROM gc_veto))
+    (SELECT count(*) FROM gc_planned WHERE id IN (SELECT id FROM gc_veto)),
+    (SELECT COALESCE(sum(size), 0) FROM gc_dead WHERE id NOT IN (SELECT id FROM gc_veto))
 """,
     weighed="""
 WITH w AS (
@@ -185,7 +186,8 @@ SELECT
     (SELECT count(*) FROM ValidPaths v LEFT JOIN {PATH_ACCESS_TABLE} a ON a.pathId = v.id
         WHERE %(cutoff)s::bigint IS NOT NULL AND COALESCE(a.lastReferencedAt, v.registrationTime) < %(cutoff)s::bigint),
     (SELECT count(*) FROM gc_planned),
-    (SELECT count(*) FROM gc_planned WHERE id IN (SELECT id FROM gc_veto))
+    (SELECT count(*) FROM gc_planned WHERE id IN (SELECT id FROM gc_veto)),
+    (SELECT COALESCE(sum(size), 0) FROM gc_dead WHERE id NOT IN (SELECT id FROM gc_veto))
 """,
     weighed="""
 WITH w AS (

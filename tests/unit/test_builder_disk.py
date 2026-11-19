@@ -34,10 +34,11 @@ from pynixd.daemon_extensions.pynixd_host_health import (
 )
 from pynixd.handlers.pynixd_host_health import PynixdHostHealthHandler
 from pynixd.monitor import PeerHealthMonitor, local_disk
-from pynixd.psi import DiskSpace, SystemHealth
+from pynixd.psi import DiskSpace, ReclaimSample, SystemHealth
 from pynixd.serde.auth import Role
 from pynixd.serde.context import ReadContext, WriteContext
 from pynixd.store.local_host import disk_floor_from_nix_config
+from pynixd.store.scheduled import ScheduledStore
 from pynixd.wire import BytesReader, BytesWriter
 from tests._conftest.execution import fake_executor
 from tests._conftest.placement import FakeBuild, FakeMonitor, FakeStore
@@ -200,3 +201,40 @@ async def test_the_peer_monitor_reads_the_disk_the_peer_answered() -> None:
 
     assert samples[-1].disk == DiskSpace(free_bytes=5, total_bytes=9)
     assert samples[-1].load1 == 0.5
+
+
+class TestRoom:
+    """Free plus reclaimable, less the floor, from one GC plan. nixidae/nixidae#1527."""
+
+    def test_sg1_n1_has_its_free_space_over_the_floor_and_nothing_more(self) -> None:
+        """Every path live, so a collection frees nothing: the room is what sits over min-free."""
+        sample = ReclaimSample(free_bytes=17_886_392_320, reclaimable_bytes=0, at=100.0)
+        assert sample.room(SG1_MIN_FREE, now=130.0) == (17_886_392_320 - SG1_MIN_FREE, 30.0)
+
+    def test_dead_paths_count_as_room(self) -> None:
+        sample = ReclaimSample(free_bytes=GIB, reclaimable_bytes=5 * GIB, at=0.0)
+        assert sample.room(0, now=0.0) == (6 * GIB, 0.0)
+
+    @pytest.mark.anyio
+    async def test_the_sampler_carries_the_last_plans_room(self, tmp_path: Path) -> None:
+        store = SimpleNamespace(
+            layout=SimpleNamespace(real_store_dir=tmp_path),
+            disk_floor_bytes=GIB,
+            disk_reclaim=ReclaimSample(free_bytes=3 * GIB, reclaimable_bytes=2 * GIB, at=time.monotonic()),
+        )
+        disk = await ScheduledStore.disk_sampler(cast("Any", store))()
+        assert disk is not None
+        assert disk.room_bytes == 4 * GIB
+        assert disk.room_age_s is not None
+        assert disk.room_age_s < 60
+
+    @pytest.mark.anyio
+    async def test_no_plan_yet_reports_no_room(self, tmp_path: Path) -> None:
+        store = SimpleNamespace(layout=SimpleNamespace(real_store_dir=tmp_path), disk_floor_bytes=0, disk_reclaim=None)
+        disk = await ScheduledStore.disk_sampler(cast("Any", store))()
+        assert disk is not None
+        assert disk.room_bytes is None
+
+    def test_a_sample_carries_the_room_across_the_wire(self) -> None:
+        sent = SystemHealth(disk=DiskSpace(free_bytes=5, total_bytes=9, floor_bytes=1, room_bytes=7, room_age_s=2.5))
+        assert HEALTH_JSON.validate_json(HEALTH_JSON.dump_json(sent)).disk == sent.disk

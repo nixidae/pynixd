@@ -247,6 +247,10 @@ def _limit_of(store: ScheduledStore | None, now: float) -> LimitRow | None:
         disk_free_mb=health.disk.free_bytes // 2**20 if health and health.disk else None,
         disk_total_mb=health.disk.total_bytes // 2**20 if health and health.disk else None,
         disk_floor_mb=health.disk.floor_bytes // 2**20 if health and health.disk else None,
+        disk_room_mb=(
+            health.disk.room_bytes // 2**20 if health and health.disk and health.disk.room_bytes is not None else None
+        ),
+        disk_room_age_s=health.disk.room_age_s if health and health.disk else None,
     )
 
 

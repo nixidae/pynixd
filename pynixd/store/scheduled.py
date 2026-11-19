@@ -7,6 +7,7 @@ daemon; a daemonless local store has the facts and no wire. nixidae/nixidae#1325
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from abc import abstractmethod
 from enum import IntEnum
@@ -37,7 +38,7 @@ if TYPE_CHECKING:
     from ..config import StoreSpecBase
     from ..connection import Connection
     from ..monitor import ResourceMonitor
-    from ..psi import CpuUtil, DiskSpace, MemInfo, SystemHealth
+    from ..psi import CpuUtil, DiskSpace, MemInfo, ReclaimSample, SystemHealth
     from ..serde import SetOptionsRequest
     from .pool import ConnectionPool
 
@@ -132,6 +133,8 @@ class ScheduledStore(Store):
         """Until when a build failed here for want of disk; read when no disk sample is known."""
         self.disk_floor_bytes: int = 0
         """The `min-free` of this store's Nix, when pynixd knows it; each disk sample of its host carries it."""
+        self.disk_reclaim: ReclaimSample | None = None
+        """The last GC plan's free and reclaimable bytes; each disk sample of its host turns it into room."""
         self.sample_listeners: set[Callable[[SystemHealth], None]] = set()
         """Each hears every sample of this store's host: a `PynixdHostHealthStream` session. nixidae/nixidae#1016."""
         self._features: set[str] = set()
@@ -142,8 +145,17 @@ class ScheduledStore(Store):
         """Called after a reconnect; the instance sets it. A store with no connection never calls it."""
 
     def disk_sampler(self) -> Callable[[], Awaitable[DiskSpace | None]]:
-        """A sampler of this store's filesystem on this machine, carrying `disk_floor_bytes`."""
-        return local_disk(self.layout.real_store_dir, lambda: self.disk_floor_bytes)
+        """A sampler of this store's filesystem on this machine, carrying `disk_floor_bytes` and the room."""
+        statvfs = local_disk(self.layout.real_store_dir, lambda: self.disk_floor_bytes)
+
+        async def sample() -> DiskSpace | None:
+            disk = await statvfs()
+            if disk is None or self.disk_reclaim is None:
+                return disk
+            room, age = self.disk_reclaim.room(disk.floor_bytes, time.monotonic())
+            return dataclasses.replace(disk, room_bytes=room, room_age_s=round(age, 1))
+
+        return sample
 
     # ── What the store builds ─────────────────────────────────────────────
 

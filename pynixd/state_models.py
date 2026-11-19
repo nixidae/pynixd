@@ -109,6 +109,9 @@ class LimitRow(_Model):
     disk_total_mb: int | None = None
     disk_floor_mb: int | None = None
     """The host's own `min-free`: under it, its Nix collects before builds go on."""
+    disk_room_mb: int | None = None
+    """Free plus reclaimable, less the floor, at the host's last GC plan: an upper bound (`DiskSpace.room_bytes`)."""
+    disk_room_age_s: float | None = None
 
 
 class StoreRow(_Model):

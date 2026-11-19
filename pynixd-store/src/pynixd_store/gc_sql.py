@@ -72,6 +72,11 @@ class PlanCounts:
     stale: int
     planned: int
     spared: int
+    reclaimable_bytes: int
+    """The NAR bytes of every dead path the veto leaves: what a pass with no age rule could free at most.
+
+    Logical bytes: a compressing or deduplicating filesystem frees less (sg1's btrfs, zstd).
+    """
 
 
 class SqlPlan:
@@ -110,7 +115,9 @@ class SqlPlan:
         row = await self._session.fetchone(self._sql.counts, {"cutoff": cutoff})
         if row is None:
             raise RuntimeError("the plan counts returned no row")
-        counts = PlanCounts(valid=row[0], live=row[1], stale=row[2], planned=row[3], spared=row[4])
+        counts = PlanCounts(
+            valid=row[0], live=row[1], stale=row[2], planned=row[3], spared=row[4], reclaimable_bytes=int(row[5])
+        )
         self.size = counts.planned
         self.spared = counts.spared
         return counts
