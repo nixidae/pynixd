@@ -16,6 +16,7 @@ from pynixd import Server
 from pynixd.config import LocalSocketStoreSpec
 from pynixd.op_routes import OpRoute
 from pynixd.store.local_db import LocalDBStore
+from tests._conftest import loop_audit
 from tests._conftest.constants import (
     _NO_PROBE_FEATURE_MATRIX,
     SESSION_NIX_CONFIG,
@@ -118,6 +119,7 @@ def pytest_configure(config: pytest.Config) -> None:
     if asyncio_plugin is not None:
         config.pluginmanager.unregister(asyncio_plugin)
     install_session_keys()
+    loop_audit.register(config)
     # Off by default, so on here: every build of every suite then runs the
     # trace's path through the scheduler. nixidae/nixidae#1070.
     os.environ.setdefault("PYNIXD_PLACEMENT_TRACE", '{"enabled": true}')

@@ -112,6 +112,11 @@ vivariumLib.mkTest (
       default = "";
       description = "postgres keeps the database of every test store with no daemon on a PostgreSQL server";
     };
+    knobs.loopAudit = {
+      env = "PYNIXD_LOOP_AUDIT";
+      default = "gate";
+      description = "gate fails a suite on a file call pynixd makes on the event loop that no exemption names; record only writes loop-file-calls.json; off";
+    };
     backend = config.resolved.backend.value;
 
     # Every path `settings` names is one the guests read.
@@ -218,6 +223,8 @@ vivariumLib.mkTest (
         # Without it a failure names `/tmp/pynixd-logs/...`, which dies
         # with the guest.
         PYNIXD_TEST_LOG_DIR = "/artifacts/${name}-logs";
+        # `tests/_conftest/loop_audit.py`.
+        PYNIXD_LOOP_AUDIT = config.resolved.loopAudit.value;
       }
       // lib.optionalAttrs (nixFunctionalTests != [ ]) {
         NIX_FUNCTIONAL_TESTS = lib.concatStringsSep ":" nixFunctionalTests;
