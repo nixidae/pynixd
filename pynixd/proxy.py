@@ -472,6 +472,9 @@ class DaemonProxy:
         self.w.write_uint64(wire.STDERR_LAST)
         await self.w.drain()
 
+        await wire.warm_codecs(self.version, self.standard_features)
+        # `ClientConn.send` writes log messages at pynixd's own version.
+        await wire.warm_codecs(wire.PROTOCOL_VERSION, self.standard_features)
         log.info("client_handshake_complete")
 
     # ── Op loop ──────────────────────────────────────────────────────

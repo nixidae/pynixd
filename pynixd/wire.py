@@ -18,9 +18,11 @@ import time
 from typing import TYPE_CHECKING, Any, Protocol, overload
 
 import anyio
+import anyio.to_thread
 from anyio.lowlevel import checkpoint
 
 from nix_daemon_protocol.logs import LogMessage, drain as drain_log_stream, read_stream as read_log_stream
+from nix_daemon_protocol.wire_message import precompile
 
 from ._lazy import ssh_connection_lost
 from .constants import (
@@ -53,6 +55,27 @@ if TYPE_CHECKING:
     from anyio.abc import SocketStream
 
     from .unix_socket import UnixLink
+
+
+_WARM: set[tuple[int, frozenset[str]]] = set()
+"""The (version, features) pairs whose codecs `warm_codecs` compiled."""
+
+
+def compile_codecs(version: int, features: frozenset[str]) -> None:
+    """Compile every wire codec of one (version, features) pair. It blocks: call it in a worker thread."""
+    precompile(version, features)
+    _WARM.add((version, features))
+
+
+async def warm_codecs(version: int, features: frozenset[str]) -> None:
+    """Compile every wire codec of a negotiated pair in a worker thread, the first time any connection names it.
+
+    A codec otherwise compiles on the event loop at its first message. Two
+    connections that name a new pair at once each compile it in a thread;
+    the caches make the second one cheap, and neither waits on the loop.
+    """
+    if (version, features) not in _WARM:
+        await anyio.to_thread.run_sync(compile_codecs, version, features)
 
 
 def _env_int(name: str, default: int) -> int:

@@ -9,7 +9,8 @@ starts none of them, and it used to load all four anyway: 232 modules and
 does `from . import _optional` at the top, and
 `_optional.ssh_server.start_ssh_server(...)` inside `Server.start`. That is an
 attribute read on a module object, so `__getattr__` below runs and imports the
-module at the moment the configuration asks for it.
+module at the moment the configuration asks for it, unless `preload` loaded
+it in a worker thread as the server started.
 
 The table is written twice, once for the interpreter and once for the type checker.
 """
@@ -31,6 +32,12 @@ if TYPE_CHECKING:
 
 MODULES = frozenset({"http_server", "reverse_client", "reverse_server", "ssh_server"})
 """The submodules of `pynixd` that this module resolves. Nothing else."""
+
+
+def preload() -> None:
+    """Import every module of `MODULES`."""
+    for name in sorted(MODULES):
+        __getattr__(name)
 
 
 def __getattr__(name: str) -> ModuleType:

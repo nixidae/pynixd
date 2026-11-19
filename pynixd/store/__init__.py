@@ -1,6 +1,6 @@
 """Public API for pynixd stores.
 
-**A store type loads when a configuration names it, and not before.**
+**A store type loads when a configuration names it, or when a server starts.**
 `http_binary_cache` pulls `aiohttp`, and `ssh` pulls `asyncssh`, which
 `reverse` pulls in turn. A daemon that serves a Unix socket uses none of the
 three, and this file used to load all of them for every start: 232 modules and
@@ -10,6 +10,9 @@ three, and this file used to load all of them for every start: 232 modules and
 `from pynixd.store import SSHSocketStore` still works and pays for `asyncssh`
 only at that moment. `config.py` already imports each store class inside its
 `to_store`, so a spec that no configuration holds now costs nothing.
+
+A server calls `preload` in a worker thread as it starts. An import at
+first use reads the module's files on the event loop.
 
 The table is written twice, once for the interpreter and once for the type checker.
 """
@@ -109,6 +112,12 @@ def __getattr__(name: str) -> object:
     value = getattr(importlib.import_module(f".{origin}", __name__), name)
     globals()[name] = value
     return value
+
+
+def preload() -> None:
+    """Import the module of every name in `ORIGIN`."""
+    for origin in sorted(set(ORIGIN.values())):
+        importlib.import_module(f".{origin}", __name__)
 
 
 def is_binary_cache(store: Store) -> TypeGuard[BinaryCacheStore]:

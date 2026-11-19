@@ -10,11 +10,9 @@ from typing import Final
 DEBT: Final = "not moved off the loop yet (nixidae/nixidae#1547)"
 
 EXEMPT: Final[dict[str, str]] = {
-    "nix_daemon_protocol/experimental_compiled.py <module>": DEBT,
-    "nix_daemon_protocol/experimental_compiled.py compile_codec": DEBT,
-    "nix_daemon_protocol/wire_message.py _compiled_or_none": DEBT,
-    "nix_daemon_protocol/wire_message.py _wire_fields": DEBT,
-    "pynixd/ssh_server.py _listed_role": DEBT,
-    "pynixd/store/__init__.py __getattr__": DEBT,
+    "pynixd/ssh_server.py _listed_role": (
+        "asyncssh's `match_options` (`auth_keys.py:180`) subscripts `List['X509NamePattern']`;"
+        " typing compiles that forward reference once per process and caches it"
+    ),
     "pynixd_store/collect.py serve": DEBT,
 }

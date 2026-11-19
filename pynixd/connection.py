@@ -507,6 +507,7 @@ class Connection:
         self.nix_version = await self.r.read_string()
         log.debug("daemon_nix_version", nix_version=self.nix_version)
         await self.r.read_uint64()
+        await wire.warm_codecs(self.version, self.standard_features)
 
         # Drain initial STDERR_LAST
         await self.r.drain_stderr()

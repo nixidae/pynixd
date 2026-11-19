@@ -102,7 +102,7 @@ def _nested_context(ctx: ReadContext) -> ReadContext:
     )
 
 
-@functools.lru_cache(maxsize=256)
+@functools.cache
 def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozenset()) -> Any:
     """Look up a reader for a wire type.
 
@@ -255,7 +255,7 @@ def _find_reader(ann: type, version: int = 0, features: frozenset[str] = frozens
     raise TypeError(f"No reader for {ann}")
 
 
-@functools.lru_cache(maxsize=256)
+@functools.cache
 def _find_writer(ann: type, version: int = 0, features: frozenset[str] = frozenset()) -> Any:
     """Look up an async writer for a wire type, mirroring `_find_reader`.
 
@@ -487,7 +487,13 @@ def WireField(  # noqa: N802
 # ── Field collection ──
 
 
-@functools.lru_cache(maxsize=256)
+@functools.cache
+def _type_hints(cls: type) -> dict[str, Any]:
+    """`get_type_hints` of *cls*, once for every version: it compiles and evaluates each postponed annotation."""
+    return get_type_hints(cls, include_extras=True)
+
+
+@functools.cache
 def _wire_fields(
     cls: type[BaseModel],
     version: int = 0,
@@ -506,7 +512,7 @@ def _wire_fields(
     whatever the version is, because an empty set is a real answer: it is what
     Nix 2.34 offers, and what a peer below 1.38 can say at all.
     """
-    hints = get_type_hints(cls, include_extras=True)
+    hints = _type_hints(cls)  # type: ignore[arg-type]  # zuban-bug: as at `_wire_fields` in `_wire_plan`
     result = []
     for name in cls.model_fields:
         field = cls.model_fields[name]
@@ -548,7 +554,7 @@ def _wire_fields(
     return result
 
 
-@functools.lru_cache(maxsize=256)
+@functools.cache
 def _compiled_or_none(cls: type, version: int = 0, features: frozenset[str] = frozenset()) -> Any:
     """The compiled codec for (model, version, features), or `None`.
 
@@ -557,7 +563,9 @@ def _compiled_or_none(cls: type, version: int = 0, features: frozenset[str] = fr
     error each time would cost what the cache exists to remove. Only the
     deliberate refusal is caught: any other error is a compiler bug, and a
     silent fallback would hide it. The import is lazy because the compiler
-    imports this module.
+    imports this module. The cache has no bound, as `compile_codec`'s has
+    none: a bounded one evicts a pair that `precompile` warmed, and the
+    next operation compiles again on the event loop.
     """
     from .experimental_compiled import NotCompilableError, compile_codec
 
@@ -633,7 +641,7 @@ def _lossless_shape(ann: Any) -> str | None:
     return None
 
 
-@functools.lru_cache(maxsize=256)
+@functools.cache
 def _wire_plan(
     cls: type[BaseModel],
     version: int = 0,
@@ -765,3 +773,30 @@ class WireModel(BaseModel):
         Uses Pydantic's ``model_validate_json``.
         """
         return cls.model_validate_json(json_data, **kwargs)
+
+
+def wire_models() -> frozenset[type[WireModel]]:
+    """Every subclass of `WireModel` loaded now, at any depth."""
+    found: set[type[WireModel]] = set()
+    pending = [WireModel]
+    while pending:
+        for sub in pending.pop().__subclasses__():
+            if sub not in found:
+                found.add(sub)
+                pending.append(sub)
+    return frozenset(found)
+
+
+def precompile(version: int, features: frozenset[str]) -> None:
+    """Compile the codec of every loaded wire model for one negotiated (version, features) pair.
+
+    A codec compiles at its first use otherwise, on the thread that reads or
+    writes the message: 0.7 ms on average and 6.6 ms for `BuildResources`,
+    86 ms for the 99 models of this package, 140-240 ms for the 128 that
+    pynixd loads (measured per pair, protocol 1.35-1.38). A server calls this in a worker
+    thread when a connection negotiates a pair, after it loaded every module
+    that defines a model.
+    """
+    for model in wire_models():
+        _type_hints(model)
+        _compiled_or_none(model, version, features)

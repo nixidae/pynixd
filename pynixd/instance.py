@@ -10,13 +10,14 @@ import socket
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import anyio
 import anyio.lowlevel
 import anyio.to_thread
 import structlog
 
+from nix_daemon_protocol.add_multiple_to_store import UNVERSIONED_PATH_INFO
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from nix_daemon_protocol.store_dir import set_real_store_dir, set_store_dir
 from pynixd_store.background import Background
@@ -25,7 +26,7 @@ from pynixd_store.gc import LivenessWatch, pressure_usage
 from pynixd_store.local_store_db import DatabaseError
 from pynixd_store.store_layout import DEFAULT_STORE_DIR
 
-from . import _optional, metrics
+from . import _optional, metrics, wire
 from .cold_tier import ColdTier
 from .config import (
     LocalSocketStoreSpec,
@@ -48,7 +49,7 @@ from .scheduler import Scheduler
 from .serde.protocol import PynixdGCAction
 from .session_builders import SessionBuilders
 from .state import upstream_in_flight
-from .store import LocalDBStore, LocalStore, Store
+from .store import LocalDBStore, LocalStore, Store, preload as preload_stores
 from .store_url import reference_key, substituter_spec
 from .tcp_listen import adopt_tcp
 from .unix_server import UnixServer, bind_unix_server, serve_unix_clients
@@ -171,6 +172,23 @@ def _add_substituter_stores(
         added.append(stores[store_id])
         keys.add(key)
     return added
+
+
+_START_PAIRS: Final = ((wire.PROTOCOL_VERSION, frozenset[str]()), (UNVERSIONED_PATH_INFO, frozenset[str]()))
+"""The codec pairs no handshake names: build logs and stderr at pynixd's own version, and the path infos of an
+unversioned `AddMultipleToStore` stream."""
+
+
+def preload() -> None:
+    """Load what a server needs later, so its first use does not load it on the event loop. It blocks.
+
+    Every module a configuration may load (an import reads files), and the
+    codecs of `_START_PAIRS` (a codec compiles at its first message).
+    """
+    preload_stores()
+    _optional.preload()
+    for version, features in _START_PAIRS:
+        wire.compile_codecs(version, features)
 
 
 class Server:
@@ -981,6 +999,8 @@ class Server:
             self.handover = await HandoverControl.bind(
                 s.handover_path, inherited.take(ListenerName.HANDOVER) if inherited else []
             )
+
+        await anyio.to_thread.run_sync(preload)
 
         await self._background.start(self._host_store, local_store, False, None, True)
 
