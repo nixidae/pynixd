@@ -989,12 +989,17 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         The local one is included, as a crashed connection already does.
         nixidae/nixidae#1015.
         """
-        log.warning("build_failed_on_the_machine", build_id=build.build_id, store_id=store.store_id, fault=fault)
-        self.note_disk_full(store, str(resp.result.error_msg))
-        await build.post_log_and_fanout(
-            LogNext(text=f"pynixd: build failed on {store.store_id} ({fault}), retrying elsewhere\n")
+        # The error with it: a store that failed every build in 0.33 s said only "misc_failure" (sg1 pynixd-0).
+        error = str(resp.result.error_msg)
+        log.warning(
+            "build_failed_on_the_machine", build_id=build.build_id, store_id=store.store_id, fault=fault, error=error
         )
-        build.reset_for_retry(store.store_id, str(resp.result.error_msg) or fault, elsewhere=True)
+        self.note_disk_full(store, error)
+        why = f":\n{error.rstrip()}" if error.strip() else ""
+        await build.post_log_and_fanout(
+            LogNext(text=f"pynixd: build failed on {store.store_id} ({fault}), retrying elsewhere{why}\n")
+        )
+        build.reset_for_retry(store.store_id, error or fault, elsewhere=True)
         self.trigger()
 
     async def prepare_build(self, build: QueuedBuild, store: S, conn: BuildConn) -> int:

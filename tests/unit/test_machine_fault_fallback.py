@@ -8,6 +8,7 @@ full-disk failure `TransientFailure` (`derivation-builder.cc:242-250`).
 from __future__ import annotations
 
 import pytest
+import structlog
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from pynixd.build_queue import BuildQueue
@@ -83,3 +84,20 @@ async def test_the_store_that_failed_is_not_tried_again() -> None:
 
     assert build.is_blacklisted(SG1)
     assert not build.is_blacklisted(StoreId("sg1-n2"))
+
+
+SANDBOX = "error: setting up the sandbox: [Errno 1] Operation not permitted"
+
+
+async def test_a_machine_fault_says_why_in_the_log_and_to_the_client() -> None:
+    """sg1's pynixd-0 failed every local build in 0.33 s, and the log and the client said only "misc_failure"."""
+    queue = BuildQueue()
+    build = await queued(queue)
+    resp = BuildDerivationResponse(result=BuildResult(status=int(BuildResultStatus.MISC_FAILURE), error_msg=SANDBOX))
+
+    with structlog.testing.capture_logs() as logs:
+        await fake_executor(queue, STORES).retry_elsewhere(build, STORES[LOCAL_STORE_ID], resp, "misc_failure")
+
+    [line] = [entry for entry in logs if entry["event"] == "build_failed_on_the_machine"]
+    assert line["error"] == SANDBOX
+    assert SANDBOX.encode() in build._log_writer.get_bytes()
