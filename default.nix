@@ -773,6 +773,16 @@ let
       }
     );
 
+    # Each way of writing temporary roots on models of a slow disk, in a QEMU
+    # guest. Not a gate on speed. `nix run --file . internal.tests.temp-roots.driver -- --out <abs>`.
+    temp-roots = withDefaultNix (
+      pkgs.callPackage ./tests/derivations/temp-roots {
+        src = testSrc;
+        inherit vivariumLib;
+        devEnv = guestEnv;
+      }
+    );
+
     # The same suites in a guest, where cleanup is a poweroff rather than
     # a promise.
     guest = withDefaultNix (pkgs.callPackage ./tests/derivations/guest guestArgs);
