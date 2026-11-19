@@ -549,6 +549,7 @@ class Placer[S: PlacedStore]:
         local_can_build = (
             local_store.is_healthy
             and not local_store.draining
+            and not local_store.no_schedule
             and not build.is_blacklisted(local_store.store_id)
             and (
                 builds_externally(build)

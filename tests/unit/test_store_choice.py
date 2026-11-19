@@ -742,6 +742,23 @@ async def test_a_prefer_local_build_leaves_a_local_store_short_of_disk() -> None
     assert spawned.stores == [REMOTE]
 
 
+@pytest.mark.anyio
+async def test_a_prefer_local_build_leaves_a_local_store_that_takes_no_builds() -> None:
+    """sg1 sets `no_schedule` on pynixd-0's store, and each `preferLocalBuild` derivation still went there.
+
+    Its sandbox could not mount `/proc`, so each failed and moved to a builder pod.
+    """
+    queue = BuildQueue()
+    build_id, _ = await queue.enqueue(_request(1, {"preferLocalBuild": "1"}))
+    spawned = Spawned()
+    local = FakeStore(LOCAL_STORE_ID)
+    local.no_schedule = True
+
+    await fake_placer(queue, _remote_alone(), spawned, local=local).assign([queue.by_id[build_id]], {})
+
+    assert spawned.stores == [REMOTE]
+
+
 class ValidityStore:
     """A remote that holds *held*, or that does not answer."""
 
