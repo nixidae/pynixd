@@ -12,6 +12,7 @@ import time
 from typing import TYPE_CHECKING
 
 import anyio
+import anyio.to_thread
 import structlog
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
@@ -99,7 +100,8 @@ class ClientSubstituters:
         async with self._lock:
             if (store := self._made.get(key)) is not None:
                 return store
-            spec = substituter_spec(url, self._settings, prefix="client-")
+            # `substituter_spec` asks whether a `file://` directory is readable.
+            spec = await anyio.to_thread.run_sync(lambda: substituter_spec(url, self._settings, prefix="client-"))
             if spec is None:
                 return None
             if isinstance(spec, BinaryCacheSpecBase):

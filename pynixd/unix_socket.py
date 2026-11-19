@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import anyio
+import anyio.to_thread
 from anyio.abc import SocketAttribute, SocketStream
 
 if TYPE_CHECKING:
@@ -111,7 +112,8 @@ async def open_unix_connection(socket_path: Path) -> UnixLink:
         raise _refusal(socket_path, len(os.fsencode(str(socket_path))))
     if sys.platform != "linux":
         raise _refusal(socket_path, len(os.fsencode(str(socket_path))))
-    fd = os.open(socket_path.parent, os.O_PATH | os.O_CLOEXEC)
+    # The open resolves the parent path, as a `stat` does: in a thread.
+    fd = await anyio.to_thread.run_sync(lambda: os.open(socket_path.parent, os.O_PATH | os.O_CLOEXEC))
     try:
         return await as_link(await anyio.connect_unix(f"/proc/self/fd/{fd}/{socket_path.name}"))
     finally:

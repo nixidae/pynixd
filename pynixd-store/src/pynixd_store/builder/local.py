@@ -41,7 +41,7 @@ from ..content_address import Method, fixed_output_address, output_method
 from ..drv_parser import BUILDER_RPC as BUILDER_RPC
 from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta, missing_feature, show_error
 from ..s3_url import S3URLError, parse as parse_s3_url
-from ..signing import SecretKey, fingerprint
+from ..signing import fingerprint, read_secret_keys
 from . import buildenv, cgroup as build_cgroup, darwin, hooks, users as build_users
 from .buildlog import BuildLog
 from .env import (
@@ -662,7 +662,7 @@ def _sync(real_store_dir: Path, names: Iterable[str]) -> None:
 
 def _sign(infos: Iterable[ValidPathInfo], secret_key_files: Sequence[str]) -> None:
     """`Store::signPathInfo` (`store-api.cc:1238`): each key file read again, a bad one fails the build."""
-    keys = [SecretKey.from_file(Path(file)) for file in secret_key_files]
+    keys = read_secret_keys(secret_key_files)
     for info in infos:
         fp = fingerprint(info.path, info.info.nar_hash, info.info.nar_size, info.info.references)
         for key in keys:

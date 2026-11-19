@@ -326,10 +326,16 @@ class GhaCacheStore(BinaryCacheStore):
         if not resp.valid or resp.info is None:
             raise RuntimeError(f"built output {path} is not valid in {local.store_id}")
         info = ValidPathInfo(path=path, info=resp.info)
-        with tempfile.TemporaryFile(prefix="pynixd-gha-") as spool:
+        spool = await anyio.to_thread.run_sync(
+            lambda: tempfile.TemporaryFile(prefix="pynixd-gha-")  # noqa: SIM115 -- closed in a thread below
+        )
+        try:
             file_hash, file_size = await self._compress(local, info, spool)
             narinfo = entry_narinfo(info, file_hash, file_size)
             size = await api.put_blob(upload_url, _entry_chunks(entry_head(narinfo), spool))
+        finally:
+            with anyio.CancelScope(shield=True):
+                await anyio.to_thread.run_sync(spool.close)
         await api.finalize(key, size)
         self.counts.uploaded += 1
         metrics.GHA_CACHE_UPLOADS.labels(store_id=self.store_id, result="uploaded").inc()
@@ -375,9 +381,15 @@ class GhaCacheStore(BinaryCacheStore):
         async with NarReader(local) as nars:
             async for chunk in nars.read(info.path, info.info.nar_size):
                 await anyio.to_thread.run_sync(feed, chunk)
-        await anyio.to_thread.run_sync(lambda: write(compressor.flush()))
-        size = spool.tell()
-        spool.seek(0)
+
+        def finish() -> int:
+            write(compressor.flush())
+            size = spool.tell()
+            # A seek flushes the buffered writes: a disk write.
+            spool.seek(0)
+            return size
+
+        size = await anyio.to_thread.run_sync(finish)
         return nix32_encode(digest.digest()), size
 
 

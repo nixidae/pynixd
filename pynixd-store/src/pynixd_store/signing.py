@@ -241,6 +241,11 @@ def _parse_colon_base64(text: str, kind: str) -> tuple[str, bytes]:
     return name, raw
 
 
+def read_secret_keys(files: Iterable[str]) -> list[SecretKey]:
+    """Each key file of `secret-key-files`, read again. Blocking: an async caller runs it in a thread."""
+    return [SecretKey.from_file(Path(file)) for file in files]
+
+
 @dataclass(frozen=True)
 class PublicKey:
     """An Ed25519 public key in Nix's `<name>:<base64>` form (`local-keys.cc:139`)."""

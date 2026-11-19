@@ -537,8 +537,8 @@ class PynixdHttpServer:
         # Check for any compressed variant
         nar_temp_path = None
         for ext in ["", ".xz", ".bz2", ".gz", ".zst", ".lz4", ".br"]:
-            p = self.upload_dir / f"{nar_hash_part}.nar{ext}"
-            if p.exists():
+            p = anyio.Path(self.upload_dir / f"{nar_hash_part}.nar{ext}")
+            if await p.exists():
                 nar_temp_path = p
                 break
 
@@ -555,7 +555,7 @@ class PynixdHttpServer:
 
         log.info("finalizing_upload_to_store", path=str(vinfo.path))
         try:
-            async with Pieces(_nar_pieces(nar_temp_path)) as nar:
+            async with Pieces(_nar_pieces(Path(nar_temp_path))) as nar:
                 await write_router(self.store).import_nar(vinfo, nar, dont_check_sigs=False)
         except Exception as e:
             log.exception("finalize_upload_failed", path=str(vinfo.path))
@@ -565,8 +565,8 @@ class PynixdHttpServer:
             )
         finally:
             # Clean up temporary NAR
-            with contextlib.suppress(OSError):
-                nar_temp_path.unlink()
+            with anyio.CancelScope(shield=True), contextlib.suppress(OSError):
+                await nar_temp_path.unlink()
 
         self.store.add_path_info(vinfo)
         log.info("upload_to_store_complete", path=str(vinfo.path))

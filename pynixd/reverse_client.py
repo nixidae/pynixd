@@ -14,6 +14,7 @@ import os
 from typing import TYPE_CHECKING
 
 import anyio
+import anyio.to_thread
 import asyncssh
 import structlog
 from pydantic import ValidationError
@@ -130,7 +131,8 @@ class ReverseInitiator:
                 delay = min(delay * 2, max_delay)
 
     async def _connect_and_serve(self) -> None:
-        host_keys = self._load_host_keys()
+        # A key file read, or a 2048-bit RSA key made: both stall the loop.
+        host_keys = await anyio.to_thread.run_sync(self._load_host_keys)
         host, port = self._settings.acceptor_host, self._settings.acceptor_port
         controller: asyncssh.SSHKey | None = None
         registration = self._registration_info

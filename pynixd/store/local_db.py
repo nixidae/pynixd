@@ -10,7 +10,6 @@ import os
 import time
 import types
 from enum import Enum
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Union, get_args, get_origin
 
 import anyio
@@ -43,8 +42,8 @@ from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.nix_config import nix_environment, read_nix_config, read_nix_config_text, read_nix_version
 from pynixd_store.overlay_engine import LowerPathNeedsSync, OverlayEngine, check_mount
 from pynixd_store.signing import (
-    SecretKey,
     hash_keyed_realisation_fingerprint,
+    read_secret_keys,
     realisation_fingerprint,
     sign_path_info,
 )
@@ -1033,7 +1032,7 @@ class LocalDBStore(Store):
         """
         by_path, drv_keys = self._realisation_keys(request)
         fingerprint = realisation_fingerprint if by_path else hash_keyed_realisation_fingerprint
-        keys = [SecretKey.from_file(Path(file)) for file in settings.secret_key_files]
+        keys = await anyio.to_thread.run_sync(read_secret_keys, settings.secret_key_files)
         signed: dict[str, set[Signature]] = {}
         for name, path in built:
             fp = fingerprint(drv_keys[name], name, path.name)
@@ -1185,7 +1184,7 @@ class LocalDBStore(Store):
 
         With *expected*, a path whose stored NAR hash or references differ stays unsigned.
         """
-        keys = [SecretKey.from_file(Path(file)) for file in (await self.engine.settings()).secret_key_files]
+        keys = await anyio.to_thread.run_sync(read_secret_keys, (await self.engine.settings()).secret_key_files)
         if not keys:
             return
         router = write_router(self)
