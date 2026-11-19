@@ -39,6 +39,7 @@ from .health import HealthReport, LoopLagMonitor, StallWatchdog
 from .liveness_watch import DirtyFlag, StableRootsWatch
 from .provisioning.ec2 import Ec2Provider
 from .provisioning.gha import GhaProvider
+from .provisioning.nomac import NomacProvider
 from .provisioning.provisioner import Provisioner
 from .provisioning.vivarium import VivariumProvider
 from .recursive import restricted_server
@@ -464,6 +465,8 @@ class Server:
                     providers.append(Ec2Provider(settings.ec2))
                 case "gha" if settings.gha is not None:
                     providers.append(GhaProvider(settings.gha))
+                case "nomac" if settings.nomac is not None:
+                    providers.append(NomacProvider(settings.nomac))
                 case other:
                     raise RuntimeError(f"provider {other!r} has no settings")
         return Provisioner(

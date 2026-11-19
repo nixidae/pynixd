@@ -952,7 +952,7 @@ class ReverseInitiatorSettings(BaseModel):
     """
 
 
-ProviderName = Literal["vivarium", "ec2", "gha"]
+ProviderName = Literal["vivarium", "ec2", "gha", "nomac"]
 """A provisioning provider: each has its own settings block in `ProvisioningSettings`."""
 
 
@@ -1105,6 +1105,50 @@ class GhaSettings(BaseModel):
     runner's job after 6 h."""
 
 
+class NomacTemplateSettings(BaseModel):
+    """One kind of NoMac Mac: its limits and how it becomes a builder. Every limit is set on each start, so
+    NoMac's own defaults never apply."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    installer_url: str = (
+        "https://github.com/nixidae/nixidae/releases/download/pynixd-installer/pynixd-aarch64-darwin.tar.xz"
+    )
+    volume: Literal["case-insensitive", "case-sensitive"] = "case-insensitive"
+    """The /nix volume's format, as ghanix's `macosVolume`."""
+    max_duration_seconds: int = Field(default=8 * 3600, ge=60)
+    """NoMac stops the Mac after this long, whatever it does."""
+    idle_timeout_seconds: int = Field(default=1800, ge=60, le=3600)
+    """NoMac stops the Mac after this long with no command, SSH or CPU use: the end of a Mac whose
+    controller died. The controller ends an idle builder sooner, by the pool's `idle_seconds`."""
+    spend_cap_usd: float = Field(default=2.0, gt=0)
+    """NoMac stops the Mac once it has cost this much. A Mac costs $0.90 an hour (2026-11-19)."""
+    parallel: bool = False
+    """Start beside a Mac the account already runs. Without it, a start while one runs is `NoCapacity`."""
+    bootstrap_seconds: int = Field(default=600, ge=60, le=3600)
+    """The bootstrap job's own limit. The pool's `launch_timeout` ends a Mac that has not joined sooner."""
+
+    @property
+    def volume_format(self) -> str:
+        """The format as `diskutil` names it."""
+        return "APFS" if self.volume == "case-insensitive" else "Case-sensitive APFS"
+
+
+class NomacSettings(BaseModel):
+    """Which NoMac account the NoMac provider starts Macs in. nixidae/nixidae#1198."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    api_key_file: Path
+    """A NoMac API key (`nmk_...`)."""
+    api_url: str = "https://nomac.app/api/v1"
+    state_file: Path = Path("/var/lib/pynixd/nomac.json")
+    """The tags of each start, which a NoMac session cannot carry, and its join ticket until it is used."""
+    templates: dict[str, NomacTemplateSettings]
+    history_seconds: float = Field(default=86400.0, gt=0)
+    """How long the provider remembers a start whose session is gone."""
+
+
 class ProvisioningSettings(BaseModel):
     """Builders started on demand, which register through the reverse acceptor. nixidae/nixidae#1198."""
 
@@ -1117,6 +1161,8 @@ class ProvisioningSettings(BaseModel):
     """Required with `provider = "ec2"`."""
     gha: GhaSettings | None = None
     """Required with `provider = "gha"`."""
+    nomac: NomacSettings | None = None
+    """Required with `provider = "nomac"`."""
     owner: str | None = None
     """The tag that marks this pynixd's machines, so a restart finds them. `None` takes the host name."""
     acceptor_host: str | None = None
@@ -1147,6 +1193,8 @@ class ProvisioningSettings(BaseModel):
                 raise ValueError('provider "ec2" needs the ec2 settings')
             if name == "gha" and self.gha is None:
                 raise ValueError('provider "gha" needs the gha settings')
+            if name == "nomac" and self.nomac is None:
+                raise ValueError('provider "nomac" needs the nomac settings')
         return self
 
 
