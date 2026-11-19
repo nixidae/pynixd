@@ -14,11 +14,7 @@ EXEMPT: Final[dict[str, str]] = {
     "nix_daemon_protocol/experimental_compiled.py compile_codec": DEBT,
     "nix_daemon_protocol/wire_message.py _compiled_or_none": DEBT,
     "nix_daemon_protocol/wire_message.py _wire_fields": DEBT,
-    "pynixd/reverse_server.py reverse_spec": DEBT,
     "pynixd/ssh_server.py _listed_role": DEBT,
     "pynixd/store/__init__.py __getattr__": DEBT,
-    "pynixd/store_url.py _file": DEBT,
-    "pynixd/store_url.py _local": DEBT,
-    "pynixd/store_url.py _ssh_ng": DEBT,
     "pynixd_store/collect.py serve": DEBT,
 }

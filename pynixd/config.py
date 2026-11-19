@@ -1959,6 +1959,16 @@ class PynixdSettings(BaseSettings):
         return stores
 
 
-StoreSpecBase.model_rebuild()
-LocalSocketStoreSpec.model_rebuild()
+def _rebuild(model: type[BaseModel]) -> None:
+    """Resolve the forward references of *model* and of its subclasses at import.
+
+    A model left incomplete rebuilds at its first validation: pydantic parses
+    and evaluates each annotation then, on the event loop.
+    """
+    model.model_rebuild()
+    for sub in model.__subclasses__():
+        _rebuild(sub)
+
+
+_rebuild(StoreSpecBase)
 PynixdSettings.model_rebuild()
