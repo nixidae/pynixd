@@ -99,6 +99,12 @@ A process that adds a temporary root during the collection cannot write it where
 It sends the path to the socket and waits for one byte.
 The engine serves it on the `pynixd` route of CollectGarbage (`pynixd_store.collect.RootsServer`).
 
+### Root Writer (`RootWriter`)
+The thread that does every file operation of one store's temporary roots: the roots files, `gc.lock` and the GC roots socket.
+A session queues a job and awaits its outcome; the thread writes every file's queued roots with one write and wakes the loop once per pass.
+A local store runs one (`LocalHost.root_writer`), and its engine shares it.
+So a slow or frozen filesystem stalls only the sessions of that store, never the event loop (`pynixd_store.temp_roots`).
+
 ### Pending Path
 The path the collector deletes at this moment, by hash part.
 The roots socket holds its answer to a client that roots that path until the deletion ends.

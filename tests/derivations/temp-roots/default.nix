@@ -52,7 +52,7 @@ vivariumLib.mkTest {
       writer = {
         inherit script;
         after = [ "disks" ];
-        description = "the candidate writer's edge cases, on asyncio and uvloop";
+        description = "the root writer's edge cases, on asyncio and uvloop, with a frozen filesystem";
       };
       fast = {
         inherit script;

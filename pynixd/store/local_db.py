@@ -85,6 +85,7 @@ if TYPE_CHECKING:
     from pynixd_store.content_address import ContentAddress
     from pynixd_store.drv_parser import Derivation
     from pynixd_store.local_store_db import SyncReader
+    from pynixd_store.temp_roots import RootWriter
 
     from ..config import LocalSocketStoreSpec
     from ..connection import ClientConn, Connection
@@ -328,6 +329,7 @@ class LocalDBStore(Store):
             read_config=lambda: read_nix_config(spec.nix_bin, nix_environment(self.layout, spec.extra_env)),
             on_change=self.forget_path_info,
             name=str(self.store_id),
+            roots=self._daemon.root_writer,
         )
         self._nix_version_command = (spec.nix_bin, spec.extra_env)
         self._nix_version: str | None = None
@@ -507,6 +509,11 @@ class LocalDBStore(Store):
         return await self._daemon.nar_from_path(request, client=client, suppress_last=suppress_last)
 
     # ── The engine ──────────────────────────────────────────────────
+
+    @property
+    def root_writer(self) -> RootWriter:
+        """The daemon client's writer, which the engine shares: one per state directory."""
+        return self._daemon.root_writer
 
     @property
     def db(self) -> LocalStoreDB:

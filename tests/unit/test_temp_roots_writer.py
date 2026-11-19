@@ -1,12 +1,11 @@
-"""The edge cases of `temp_roots_writer`, run by the `writer` phase of `internal.tests.temp-roots`.
+"""The edge cases of `RootWriter`: the thread, its queue, and the order of a session's jobs.
 
-Not a `test_*.py`: the phase names this file, so it runs in the guest, as root, beside the
-filesystems the freeze cases need, and in no host suite. It runs with `--noconftest`: the suite's
-conftest starts a managed nix-daemon for every test, and nothing here needs one. Each case runs
-on asyncio and on uvloop, pynixd's loop.
+`test_temp_roots.py` holds the contract with Nix's collector; this file holds the writer's own.
+Each case runs on asyncio and on uvloop, pynixd's loop. The `writer` phase of
+`internal.tests.temp-roots` runs this file too, as root, with `--noconftest`.
 
-The freeze cases need `TEMP_ROOTS_FREEZE` (a mount this process may freeze) and
-`TEMP_ROOTS_OTHER` (a directory on another filesystem); they skip without them.
+The freeze case needs `TEMP_ROOTS_FREEZE` (a mount this process may freeze) and
+`TEMP_ROOTS_OTHER` (a directory on another filesystem); it skips without them.
 """
 
 from __future__ import annotations
@@ -14,7 +13,6 @@ from __future__ import annotations
 import fcntl
 import os
 import shutil
-import socket
 import subprocess
 import tempfile
 import threading
@@ -29,15 +27,16 @@ import uvloop
 from anyio import wait_all_tasks_blocked
 from anyio.lowlevel import checkpoint
 
-from tests._conftest.loop_lag import LoopLag
-from tests.benchmark import temp_roots_writer
-from tests.benchmark.temp_roots_writer import (
+from pynixd_store import temp_roots
+from pynixd_store.temp_roots import (
     Outcome,
     RootWriteError,
     RootWriter,
+    TempRoots,
     WriterClosedError,
-    WrittenRoots,
 )
+from tests._conftest.loop_lag import LoopLag
+from tests._conftest.temp_roots import Collector, read_roots, short_path as short_path
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Iterator
@@ -67,22 +66,9 @@ async def bounded() -> AsyncIterator[None]:
         yield
 
 
-def read_roots(path: Path) -> list[str]:
-    """A roots file as Nix's `findTempRoots` reads it."""
-    return [part.decode() for part in path.read_bytes().split(b"\0") if part]
-
-
 def leftover_files(state: Path) -> list[str]:
     directory = state / "temproots"
     return sorted(entry.name for entry in directory.iterdir()) if directory.exists() else []
-
-
-@pytest.fixture
-def short_path() -> Iterator[Path]:
-    """A directory whose `gc-socket/socket` fits in `sun_path`."""
-    path = Path(tempfile.mkdtemp(prefix="/tmp/trw-"))
-    yield path
-    shutil.rmtree(path, ignore_errors=True)
 
 
 class Gate:
@@ -92,10 +78,10 @@ class Gate:
         self.opened = threading.Event()
         self.reached = threading.Event()
         self.written: list[str] = []
-        original = WrittenRoots.write_now
+        original = TempRoots.write_now
         gate = self
 
-        def gated(roots_self: WrittenRoots, roots: list[str]) -> Outcome:
+        def gated(roots_self: TempRoots, roots: list[str]) -> Outcome:
             gate.reached.set()
             if not gate.opened.wait(GATE_LIMIT_S):
                 raise TimeoutError("the gate never opened")
@@ -103,7 +89,7 @@ class Gate:
             gate.written.extend(roots)
             return outcome
 
-        monkeypatch.setattr(WrittenRoots, "write_now", gated)
+        monkeypatch.setattr(TempRoots, "write_now", gated)
 
     def open(self) -> None:
         self.opened.set()
@@ -117,37 +103,6 @@ def gate(monkeypatch: pytest.MonkeyPatch) -> Iterator[Gate]:
     held = Gate(monkeypatch)
     yield held
     held.open()
-
-
-class Collector:
-    """The socket half of Nix's collector, for one client: it holds `gc.lock` and acks each root."""
-
-    def __init__(self, state: Path) -> None:
-        self.roots: list[str] = []
-        self.lock_fd = os.open(state / "gc.lock", os.O_RDWR | os.O_CREAT, 0o600)
-        fcntl.flock(self.lock_fd, fcntl.LOCK_EX)
-        path = state / "gc-socket" / "socket"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.server.bind(str(path))
-        self.server.listen(1)
-        self.thread = threading.Thread(target=self._serve, daemon=True)
-        self.thread.start()
-
-    def _serve(self) -> None:
-        conn, _ = self.server.accept()
-        with conn:
-            data = b""
-            while chunk := conn.recv(4096):
-                data += chunk
-                while b"\n" in data:
-                    line, data = data.split(b"\n", 1)
-                    self.roots.append(line.decode())
-                    conn.sendall(b"1")
-
-    def stop(self) -> None:
-        self.server.close()
-        os.close(self.lock_fd)
 
 
 async def test_roots_reach_the_file_in_the_order_they_were_added(tmp_path: Path) -> None:
@@ -201,7 +156,7 @@ async def test_sessions_at_once_share_the_writers_passes(tmp_path: Path) -> None
         sessions = [writer.session() for _ in range(16)]
         expected = [[f"/nix/store/{s:016d}{i:016d}-root" for i in range(40)] for s in range(16)]
 
-        async def one_at_a_time(roots: WrittenRoots, paths: list[str]) -> None:
+        async def one_at_a_time(roots: TempRoots, paths: list[str]) -> None:
             for path in paths:
                 assert await roots.add(path)
 
@@ -231,7 +186,7 @@ async def test_a_root_waits_for_a_collector_with_no_socket_and_the_loop_runs(
     short_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A collector holding `gc.lock` with no socket (a worker dumping core, nixidae/nixidae#1386)."""
-    monkeypatch.setattr(temp_roots_writer, "RETRY_DELAY", 0.01)
+    monkeypatch.setattr(temp_roots, "RETRY_DELAY", 0.01)
     lock = os.open(short_path / "gc.lock", os.O_RDWR | os.O_CREAT, 0o600)
     fcntl.flock(lock, fcntl.LOCK_EX)
     lag = LoopLag()
@@ -277,16 +232,16 @@ async def test_a_read_only_store_writes_nothing(tmp_path: Path) -> None:
 async def test_a_failed_write_reaches_its_caller_and_the_writer_goes_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    original = WrittenRoots.write_now
+    original = TempRoots.write_now
     failures = iter([ValueError("disk said no")])
 
-    def failing_once(roots_self: WrittenRoots, roots: list[str]) -> Outcome:
+    def failing_once(roots_self: TempRoots, roots: list[str]) -> Outcome:
         failure = next(failures, None)
         if failure is not None:
             raise failure
         return original(roots_self, roots)
 
-    monkeypatch.setattr(WrittenRoots, "write_now", failing_once)
+    monkeypatch.setattr(TempRoots, "write_now", failing_once)
     async with RootWriter(tmp_path) as writer:
         roots = writer.session()
         with pytest.raises(RootWriteError) as raised:
@@ -393,7 +348,7 @@ async def test_a_blocked_write_holds_no_loop(tmp_path: Path, gate: Gate) -> None
 async def test_shutdown_gives_up_on_a_stuck_writer_and_its_jobs_still_finish(
     tmp_path: Path, gate: Gate, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(temp_roots_writer, "SHUTDOWN_SECONDS", 0.2)
+    monkeypatch.setattr(temp_roots, "SHUTDOWN_SECONDS", 0.2)
     held: list[bool] = []
     async with anyio.create_task_group() as tg:
         writer = RootWriter(tmp_path)
@@ -433,6 +388,30 @@ async def test_a_dying_writer_wakes_its_callers_and_refuses_new_jobs(
         with pytest.raises(WriterClosedError):
             await roots.add(ROOTS[1])
         await roots.close()
+
+
+async def test_a_writer_nobody_started_refuses_a_job(tmp_path: Path) -> None:
+    """No thread would ever take the job, so the caller would wait forever."""
+    roots = RootWriter(tmp_path).session()
+    with pytest.raises(RuntimeError, match="outside `async with`"):
+        await roots.add(ROOTS[0])
+    assert leftover_files(tmp_path) == []
+
+
+async def test_a_close_under_a_deadline_returns_and_still_releases(tmp_path: Path, gate: Gate) -> None:
+    """A builder bounds its close (`execution.py`); the close returns at the deadline and runs later."""
+    async with RootWriter(tmp_path) as writer, anyio.create_task_group() as tg:
+        roots = writer.session()
+        tg.start_soon(roots.add, ROOTS[0])
+        await gate.wait_reached()
+        started = time.monotonic()
+        with anyio.move_on_after(0.2):
+            await roots.close()
+        assert time.monotonic() - started < 1.0
+        gate.open()
+    # The gated write made the file, so only the close that ran after it removed it.
+    assert gate.written == [ROOTS[0]]
+    assert leftover_files(tmp_path) == []
 
 
 # ── A frozen filesystem (root, in the guest) ─────────────────────────

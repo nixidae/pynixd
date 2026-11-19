@@ -132,7 +132,7 @@ async def _writer_cases(vm: Machine) -> None:
     """The edge cases of the candidate writer, as root, on both loops, with a filesystem to freeze."""
     command = (
         "cd /work && TEMP_ROOTS_FREEZE=/mnt/fast TEMP_ROOTS_OTHER=/mnt/slow "
-        "python -m pytest --noconftest tests/benchmark/temp_roots_writer_cases.py -p no:cacheprovider -v "
+        "python -m pytest --noconftest tests/unit/test_temp_roots_writer.py -p no:cacheprovider -v "
         "--junitxml=/artifacts/junit/temp-roots-writer.xml > /artifacts/temp-roots-writer.log 2>&1"
     )
     await vm.succeed("mkdir -p /artifacts/junit")

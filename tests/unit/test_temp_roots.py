@@ -9,32 +9,37 @@ from __future__ import annotations
 
 import fcntl
 import os
-import shutil
-import socket
-import tempfile
 import threading
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import anyio
-import anyio.from_thread
+import anyio.to_thread
 import pytest
 
 from nix_daemon_protocol.store_path import StorePath
 from pynixd_store import temp_roots
-from pynixd_store.temp_roots import TempRoots
+from pynixd_store.temp_roots import RootWriter
+from tests._conftest.temp_roots import Collector, read_roots, short_path as short_path
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import AsyncIterator
+    from pathlib import Path
 
 PATH_A = "/nix/store/00000000000000000000000000000000-a"
 PATH_B = "/nix/store/11111111111111111111111111111111-b"
 
 
-def read_roots(path: Path) -> list[str]:
-    """The roots of a temporary roots file, as `findTempRoots` reads them."""
-    return [part.decode() for part in path.read_bytes().split(b"\0") if part]
+@pytest.fixture
+async def writer(tmp_path: Path) -> AsyncIterator[RootWriter]:
+    async with RootWriter(tmp_path) as running:
+        yield running
+
+
+@pytest.fixture
+async def short_writer(short_path: Path) -> AsyncIterator[RootWriter]:
+    async with RootWriter(short_path) as running:
+        yield running
 
 
 def can_write_lock(path: Path) -> bool:
@@ -50,8 +55,8 @@ def can_write_lock(path: Path) -> bool:
 
 
 @pytest.mark.anyio
-async def test_a_root_reaches_the_file(tmp_path: Path) -> None:
-    roots = TempRoots(tmp_path)
+async def test_a_root_reaches_the_file(tmp_path: Path, writer: RootWriter) -> None:
+    roots = writer.session()
     await roots.add(PATH_A)
     try:
         assert read_roots(roots.path) == [PATH_A]
@@ -60,9 +65,9 @@ async def test_a_root_reaches_the_file(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_a_store_path_writes_what_its_string_writes(tmp_path: Path) -> None:
+async def test_a_store_path_writes_what_its_string_writes(tmp_path: Path, writer: RootWriter) -> None:
     """The `StorePath` short-circuit skips the re-parse, not the write."""
-    roots = TempRoots(tmp_path)
+    roots = writer.session()
     await roots.add(StorePath(PATH_A))
     try:
         assert read_roots(roots.path) == [PATH_A]
@@ -71,8 +76,8 @@ async def test_a_store_path_writes_what_its_string_writes(tmp_path: Path) -> Non
 
 
 @pytest.mark.anyio
-async def test_the_file_holds_every_root_of_the_session(tmp_path: Path) -> None:
-    roots = TempRoots(tmp_path)
+async def test_the_file_holds_every_root_of_the_session(tmp_path: Path, writer: RootWriter) -> None:
+    roots = writer.session()
     await roots.add(PATH_A)
     await roots.add(PATH_B)
     try:
@@ -82,8 +87,8 @@ async def test_the_file_holds_every_root_of_the_session(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_the_collector_cannot_take_a_live_file(tmp_path: Path) -> None:
-    roots = TempRoots(tmp_path)
+async def test_the_collector_cannot_take_a_live_file(tmp_path: Path, writer: RootWriter) -> None:
+    roots = writer.session()
     await roots.add(PATH_A)
     try:
         assert not can_write_lock(roots.path)
@@ -92,15 +97,17 @@ async def test_the_collector_cannot_take_a_live_file(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_close_releases_every_root(tmp_path: Path) -> None:
-    roots = TempRoots(tmp_path)
+async def test_close_releases_every_root(tmp_path: Path, writer: RootWriter) -> None:
+    roots = writer.session()
     await roots.add(PATH_A)
     await roots.close()
     assert not roots.path.exists()
 
 
 @pytest.mark.anyio
-async def test_the_gc_lock_is_opened_once_for_the_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_the_gc_lock_is_opened_once_for_the_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, writer: RootWriter
+) -> None:
     """A session opens `gc.lock` once, and not once for each root.
 
     A build adds a root for each derivation of its closure, so this is the hot
@@ -118,7 +125,7 @@ async def test_the_gc_lock_is_opened_once_for_the_session(tmp_path: Path, monkey
 
     monkeypatch.setattr(os, "open", counting_open)
 
-    roots = TempRoots(tmp_path)
+    roots = writer.session()
     try:
         await roots.add(PATH_A)
         await roots.add(PATH_B)
@@ -129,9 +136,9 @@ async def test_the_gc_lock_is_opened_once_for_the_session(tmp_path: Path, monkey
 
 
 @pytest.mark.anyio
-async def test_two_sessions_write_two_files(tmp_path: Path) -> None:
-    one = TempRoots(tmp_path)
-    two = TempRoots(tmp_path)
+async def test_two_sessions_write_two_files(tmp_path: Path, writer: RootWriter) -> None:
+    one = writer.session()
+    two = writer.session()
     await one.add(PATH_A)
     await two.add(PATH_B)
     try:
@@ -144,10 +151,10 @@ async def test_two_sessions_write_two_files(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_one_session_ends_and_the_other_keeps_its_root(tmp_path: Path) -> None:
+async def test_one_session_ends_and_the_other_keeps_its_root(tmp_path: Path, writer: RootWriter) -> None:
     """The reason for this class. A pooled connection cannot do this."""
-    one = TempRoots(tmp_path)
-    two = TempRoots(tmp_path)
+    one = writer.session()
+    two = writer.session()
     await one.add(PATH_A)
     await two.add(PATH_B)
     await one.close()
@@ -160,8 +167,8 @@ async def test_one_session_ends_and_the_other_keeps_its_root(tmp_path: Path) -> 
 
 
 @pytest.mark.anyio
-async def test_a_path_of_another_store_is_refused(tmp_path: Path) -> None:
-    roots = TempRoots(tmp_path)
+async def test_a_path_of_another_store_is_refused(tmp_path: Path, writer: RootWriter) -> None:
+    roots = writer.session()
     with pytest.raises(ValueError, match="not a path of the store"):
         await roots.add("/somewhere/else/00000000000000000000000000000000-a")
 
@@ -173,72 +180,23 @@ async def test_a_state_directory_pynixd_cannot_write_gives_no_root(tmp_path: Pat
     unwritable = tmp_path / "state"
     unwritable.mkdir()
     unwritable.chmod(0o500)
-    roots = TempRoots(unwritable)
     try:
-        await roots.add(PATH_A)
-        await roots.add(PATH_B)  # The second one takes the disabled path.
-        assert not roots.path.exists()
+        async with RootWriter(unwritable) as writer:
+            roots = writer.session()
+            await roots.add(PATH_A)
+            await roots.add(PATH_B)  # The second one takes the disabled path.
+            assert not roots.path.exists()
+            await roots.close()
     finally:
         unwritable.chmod(0o700)
-        await roots.close()
-
-
-class Collector:
-    """The socket half of `LocalStore::collectGarbage`, for one client.
-
-    The real collector holds a write lock on `gc.lock` for as long as it
-    runs, and it takes each later root over `gc-socket/socket`. This is what
-    pynixd must talk to when it cannot get the shared lock.
-    """
-
-    def __init__(self, state: Path) -> None:
-        self.state = state
-        self.roots: list[str] = []
-        self.lock_fd = os.open(state / "gc.lock", os.O_RDWR | os.O_CREAT, 0o600)
-        fcntl.flock(self.lock_fd, fcntl.LOCK_EX)
-        socket_path = state / "gc-socket" / "socket"
-        socket_path.parent.mkdir(parents=True, exist_ok=True)
-        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.server.bind(str(socket_path))
-        self.server.listen(1)
-        self.thread = threading.Thread(target=self._serve, daemon=True)
-        self.thread.start()
-
-    def _serve(self) -> None:
-        conn, _ = self.server.accept()
-        with conn:
-            data = b""
-            while True:
-                chunk = conn.recv(4096)
-                if not chunk:
-                    return
-                data += chunk
-                while b"\n" in data:
-                    line, data = data.split(b"\n", 1)
-                    self.roots.append(line.decode())
-                    conn.sendall(b"1")
-
-    def stop(self) -> None:
-        self.server.close()
-        os.close(self.lock_fd)
-
-
-@pytest.fixture
-def short_path() -> Iterator[Path]:
-    """A directory whose name fits in `sun_path`, which is 104 bytes here.
-
-    The `tmp_path` of pytest holds the name of the test, and the name of this
-    test plus `gc-socket/socket` passes that limit on Darwin.
-    """
-    path = Path(tempfile.mkdtemp(prefix="/tmp/pynixd-tr-"))
-    yield path
-    shutil.rmtree(path, ignore_errors=True)
 
 
 @pytest.mark.anyio
-async def test_a_root_added_while_the_collector_runs_goes_over_the_socket(short_path: Path) -> None:
+async def test_a_root_added_while_the_collector_runs_goes_over_the_socket(
+    short_path: Path, short_writer: RootWriter
+) -> None:
     collector = Collector(short_path)
-    roots = TempRoots(short_path)
+    roots = short_writer.session()
     try:
         await roots.add(PATH_A)
         # The collector read the directory before this file existed, so the
@@ -259,7 +217,9 @@ def _hold_the_big_lock(state: Path) -> int:
 
 
 @pytest.mark.anyio
-async def test_a_root_waits_for_a_collector_with_no_socket(short_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_root_waits_for_a_collector_with_no_socket(
+    short_path: Path, monkeypatch: pytest.MonkeyPatch, short_writer: RootWriter
+) -> None:
     """Nix's `addTempRoot` asks again with no limit (`gc.cc:95-135`), and pynixd does too.
 
     Counted in attempts, not seconds: pynixd gave up after 100, and a dying
@@ -267,16 +227,16 @@ async def test_a_root_waits_for_a_collector_with_no_socket(short_path: Path, mon
     """
     monkeypatch.setattr(temp_roots, "RETRY_DELAY", 0)
     lock = _hold_the_big_lock(short_path)
-    roots = TempRoots(short_path)
+    roots = short_writer.session()
     attempts = 0
-    asked = anyio.Event()
+    asked = threading.Event()
     tell = roots._tell_the_collector  # noqa: SLF001 -- each call is one attempt
 
     def counted(root: str) -> bool:
         nonlocal attempts
         attempts += 1
         if attempts == 300:
-            anyio.from_thread.run_sync(asked.set)
+            asked.set()
         return tell(root)
 
     monkeypatch.setattr(roots, "_tell_the_collector", counted)
@@ -284,7 +244,7 @@ async def test_a_root_waits_for_a_collector_with_no_socket(short_path: Path, mon
         with anyio.fail_after(30):
             async with anyio.create_task_group() as tg:
                 tg.start_soon(roots.add, PATH_A)
-                await asked.wait()
+                await anyio.to_thread.run_sync(asked.wait, 30)
                 os.close(lock)
         assert read_roots(roots.path) == [PATH_A]
     finally:
@@ -292,10 +252,10 @@ async def test_a_root_waits_for_a_collector_with_no_socket(short_path: Path, mon
 
 
 @pytest.mark.anyio
-async def test_a_waiting_root_ends_with_its_session(short_path: Path) -> None:
-    """The wait sleeps on the event loop, so a cancelled session does not hold a worker thread."""
+async def test_a_waiting_root_ends_with_its_session(short_path: Path, short_writer: RootWriter) -> None:
+    """The wait sleeps on the event loop, so a cancelled session does not hold the writer's thread."""
     lock = _hold_the_big_lock(short_path)
-    roots = TempRoots(short_path)
+    roots = short_writer.session()
     started = time.monotonic()
     try:
         with anyio.move_on_after(0.5) as scope:
@@ -313,8 +273,10 @@ killed the pod: one write each, on the loop, on Ceph RBD."""
 
 
 @pytest.mark.anyio
-async def test_many_roots_are_one_write_off_the_event_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    roots = TempRoots(tmp_path)
+async def test_many_roots_are_one_write_off_the_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, writer: RootWriter
+) -> None:
+    roots = writer.session()
     loop_thread = threading.get_ident()
     writes: list[int] = []
     write = os.write
@@ -335,9 +297,11 @@ async def test_many_roots_are_one_write_off_the_event_loop(tmp_path: Path, monke
 
 
 @pytest.mark.anyio
-async def test_many_roots_added_while_the_collector_runs_go_over_the_socket(short_path: Path) -> None:
+async def test_many_roots_added_while_the_collector_runs_go_over_the_socket(
+    short_path: Path, short_writer: RootWriter
+) -> None:
     collector = Collector(short_path)
-    roots = TempRoots(short_path)
+    roots = short_writer.session()
     try:
         assert await roots.add_many([PATH_A, PATH_B])
         assert collector.roots == [PATH_A, PATH_B]

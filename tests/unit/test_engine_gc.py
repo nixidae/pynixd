@@ -10,7 +10,7 @@ from __future__ import annotations
 import fcntl
 import os
 import sqlite3
-from contextlib import asynccontextmanager, closing
+from contextlib import AsyncExitStack, asynccontextmanager, closing
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -25,11 +25,13 @@ from pynixd_store.errors import PynixdError
 from pynixd_store.hintfmt import magenta
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.store_layout import StoreLayout
-from pynixd_store.temp_roots import GC_SOCKET_PATH, TempRoots
+from pynixd_store.temp_roots import GC_SOCKET_PATH, RootWriter, TempRoots
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
     from pathlib import Path
+
+    RootsOf = Callable[[Path], Awaitable[TempRoots]]
 
 _SCHEMA = """
 create table ValidPaths (
@@ -129,6 +131,17 @@ async def _collect(
     return results.paths, results.bytes_freed
 
 
+@pytest.fixture
+async def roots_of() -> AsyncIterator[RootsOf]:
+    """A session's temporary roots on a store's state directory, its writer running until the test ends."""
+    async with AsyncExitStack() as stack:
+
+        async def session(state: Path) -> TempRoots:
+            return (await stack.enter_async_context(RootWriter(state))).session()
+
+        yield session
+
+
 async def test_the_whole_store_loses_what_no_root_keeps(tmp_path: Path) -> None:
     store = _Store(tmp_path)
     store.add(B)
@@ -189,11 +202,13 @@ async def test_a_rooted_named_path_names_its_root(tmp_path: Path, *, censor: boo
 
 
 @pytest.mark.parametrize("censor", [False, True])
-async def test_a_temporary_root_names_its_process_unless_censored(tmp_path: Path, *, censor: bool) -> None:
+async def test_a_temporary_root_names_its_process_unless_censored(
+    tmp_path: Path, roots_of: RootsOf, *, censor: bool
+) -> None:
     """Determinate v3.24.0 `gc.cc:777` and `:290`: `{censored}` for an untrusted client (`daemon.cc:807`)."""
     store = _Store(tmp_path)
     store.add(A)
-    roots = TempRoots(store.layout.state_dir)
+    roots = await roots_of(store.layout.state_dir)
     assert await roots.add(A)
     try:
         with pytest.raises(PynixdError) as error:
@@ -272,10 +287,10 @@ async def test_max_freed_stops_the_collection(tmp_path: Path) -> None:
     assert lines.at(Verbosity.INFO)[-2] == "deleting unused links..."
 
 
-async def test_a_temporary_root_file_keeps_its_path(tmp_path: Path) -> None:
+async def test_a_temporary_root_file_keeps_its_path(tmp_path: Path, roots_of: RootsOf) -> None:
     store = _Store(tmp_path)
     store.add(A)
-    roots = TempRoots(store.layout.state_dir)
+    roots = await roots_of(store.layout.state_dir)
     assert await roots.add(A)
     try:
         paths, _ = await _collect(store, GCOptions(GCAction.DELETE_DEAD), _Lines())
@@ -304,7 +319,7 @@ async def test_ignore_liveness_deletes_a_path_a_root_keeps(tmp_path: Path) -> No
 
 @pytest.mark.parametrize("in_test", [False, True])
 async def test_only_a_nix_test_walks_past_a_temporary_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, in_test: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, roots_of: RootsOf, *, in_test: bool
 ) -> None:
     """Determinate v3.24.0 `gc.cc:770`: the walk skips the check; the deletion loop still keeps the path (`:757`).
 
@@ -316,7 +331,7 @@ async def test_only_a_nix_test_walks_past_a_temporary_root(
         monkeypatch.delenv("_NIX_IN_TEST", raising=False)
     store = _Store(tmp_path)
     store.add(A)
-    roots = TempRoots(store.layout.state_dir)
+    roots = await roots_of(store.layout.state_dir)
     assert await roots.add(A)
     lines = _Lines()
     try:
@@ -332,12 +347,12 @@ async def test_only_a_nix_test_walks_past_a_temporary_root(
     assert (stopped if in_test else walked) not in lines.at(Verbosity.DEBUG)
 
 
-async def test_a_root_given_to_the_socket_during_the_collection_is_kept(tmp_path: Path) -> None:
+async def test_a_root_given_to_the_socket_during_the_collection_is_kept(tmp_path: Path, roots_of: RootsOf) -> None:
     """`gc.cc:463`: a client that roots a path while the lock is held reaches the collector over the socket."""
     store = _Store(tmp_path)
     store.add(A)
     store.add(B)
-    roots = TempRoots(store.layout.state_dir)
+    roots = await roots_of(store.layout.state_dir)
     lines = _Lines()
 
     async def report(level: Verbosity, text: str) -> None:
@@ -361,7 +376,7 @@ async def test_a_root_given_to_the_socket_during_the_collection_is_kept(tmp_path
 
 
 async def test_the_collector_waits_at_nix_s_two_synchronisation_points(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, roots_of: RootsOf
 ) -> None:
     """`gc-non-blocking.sh:27`: a build roots a path while the collector waits after reading the roots.
 
@@ -377,7 +392,7 @@ async def test_the_collector_waits_at_nix_s_two_synchronisation_points(
     monkeypatch.setenv(SYNC_AFTER_LOCK, str(after_lock))
     monkeypatch.setenv(SYNC_AFTER_ROOTS, str(after_roots))
     socket = store.layout.state_dir / GC_SOCKET_PATH
-    roots = TempRoots(store.layout.state_dir)
+    roots = await roots_of(store.layout.state_dir)
     lines = _Lines()
     collected: list[set[str]] = []
 

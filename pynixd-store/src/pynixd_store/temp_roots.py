@@ -22,23 +22,45 @@ and its life is exactly the life of the client session.
 Nix implements the same three steps in `LocalStore::addTempRoot`, in
 `src/libstore/gc.cc`, and this module follows that function. The lock is
 `flock(2)`, from `src/libstore/unix/pathlocks.cc`.
+
+**The event loop never touches a roots file, `gc.lock` or the collector's
+socket.** A Nix daemon worker serves one client, so it writes inline and a
+slow disk stalls that client alone. pynixd serves every client on one loop:
+sg1's pynixd-0 wrote 3,344 roots inline on Ceph RBD, one `os.write` took
+3.4 s, and the liveness probe killed the pod. A `RootWriter` thread per state
+directory does every file operation. A session queues a job and awaits its
+outcome; the thread takes every job already queued, writes the roots of each
+file with one `flock` and one `write`, and wakes the loop once for the pass.
+Measured by `internal.tests.temp-roots` on uvloop, 7,177 roots added one at a
+time: a thread call per root 244 ms, the writer 138 ms, with the longest loop
+stall 0.7 ms; a filesystem frozen for 2 s stalled the inline loop 1.95 s and
+the writer's 2.7 ms.
 """
 
 from __future__ import annotations
 
+import asyncio
+import dataclasses
+import enum
 import fcntl
 import itertools
 import os
+import queue
 import socket
+import threading
 import time
-from collections.abc import Iterable
-from pathlib import Path
+from typing import TYPE_CHECKING, Final, Self
 
 import anyio
+import anyio.to_thread
 import structlog
-from anyio.to_thread import run_sync
 
 from .store_path import StorePath
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from pathlib import Path
+    from types import TracebackType
 
 log = structlog.get_logger(__name__)
 
@@ -65,28 +87,251 @@ cancellation ends it.
 WAIT_REPORTED_AFTER = 5.0
 """A root that waits this long for the collector logs it once."""
 
+SHUTDOWN_SECONDS: Final = 30.0
+"""How long the writer's owner waits for queued jobs at exit; a frozen filesystem can hold them for longer."""
+
 _names = itertools.count()
+
+
+class Outcome(enum.Enum):
+    HELD = "held"
+    """Written, under the shared GC lock."""
+    COLLECTING = "collecting"
+    """The collector holds the GC lock: the root must go over its socket."""
+    DISABLED = "disabled"
+    """The state directory refused a write; the caller must hold the root some other way."""
+
+
+class Kind(enum.Enum):
+    WRITE = "write"
+    COLLECT = "collect"
+    CLOSE = "close"
+
+
+class WriterClosedError(RuntimeError):
+    """A job arrived after the writer stopped taking jobs."""
+
+
+class RootWriteError(RuntimeError):
+    """The writer thread raised while it did this job; `__cause__` holds what it raised."""
+
+
+@dataclasses.dataclass(slots=True)
+class _Job:
+    owner: TempRoots
+    kind: Kind
+    roots: list[str]
+    done: anyio.Event
+    outcome: Outcome | None = None
+    error: BaseException | None = None
+
+
+class RootWriter:
+    """The thread that does every file operation of one store's temporary roots.
+
+    `async with RootWriter(state) as writer:` runs it; `writer.session()` gives the `TempRoots` of
+    one client session. At exit the thread finishes every queued job, and the owner waits for it
+    up to `SHUTDOWN_SECONDS`. One writer per state directory, not per process: a frozen
+    filesystem holds only the sessions of the store on it.
+    """
+
+    def __init__(self, state: Path) -> None:
+        self.state = state
+        self.passes = 0
+        """Passes the thread made, each one wake-up of the loop. A test reads it."""
+        self._jobs: queue.SimpleQueue[_Job | None] = queue.SimpleQueue()
+        # Guards `_closed` and the put together, so no job can land behind the stop marker.
+        self._accepting = threading.Lock()
+        self._closed = False
+        self._thread = threading.Thread(target=self._run, name=f"temp-roots {state}", daemon=True)
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    @property
+    def thread_ident(self) -> int | None:
+        return self._thread.ident
+
+    def join(self) -> None:
+        """Block until the thread ends; for a worker thread, never the loop."""
+        if self._thread.ident is not None:
+            self._thread.join()
+
+    def session(self, *, read_only: bool = False) -> TempRoots:
+        return TempRoots(self.state, self, read_only=read_only)
+
+    async def __aenter__(self) -> Self:
+        # Waking a task from the thread must not wait for the loop: the writer exists to keep a
+        # stalled write off the loop, and a wake that waits for the loop ties the two together
+        # again. `anyio.from_thread.run_sync` waits, and so does `BlockingPortal.start_task_soon`
+        # (`from_thread.py`, `_spawn_task_from_thread` calls `run_sync`). The loop's own
+        # thread-safe call does not; aiosqlite's worker thread wakes its callers the same way.
+        self._loop = asyncio.get_running_loop()
+        self._thread.start()
+        return self
+
+    async def __aexit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None
+    ) -> None:
+        with self._accepting:
+            self._closed = True
+            self._jobs.put(None)
+        with anyio.CancelScope(shield=True), anyio.move_on_after(SHUTDOWN_SECONDS):
+            await anyio.to_thread.run_sync(self.join, abandon_on_cancel=True)
+        if self._thread.is_alive():
+            log.warning(
+                "temp_roots_writer_outlived_shutdown",
+                state=str(self.state),
+                waited_s=SHUTDOWN_SECONDS,
+                detail="the filesystem holds a write; its sessions stay waiting until it returns",
+            )
+
+    async def submit(self, owner: TempRoots, kind: Kind, roots: list[str]) -> Outcome:
+        """Queue one job and wait for its outcome.
+
+        The job is queued before the first wait. A cancelled caller stops waiting and the job
+        still runs: a root written after its session gave up stays held until that session's
+        close, which runs after it.
+        """
+        job = _Job(owner, kind, roots, anyio.Event())
+        with self._accepting:
+            if self._closed:
+                raise WriterClosedError(f"the temporary roots writer of {self.state} has stopped")
+            if self._loop is None:
+                # Nothing would ever take the job, and its caller would wait forever.
+                raise RuntimeError(f"the temporary roots writer of {self.state} runs outside `async with`")
+            self._jobs.put(job)
+        await job.done.wait()
+        if job.error is not None:
+            raise RootWriteError(f"{kind.value} of {len(roots)} temporary roots failed") from job.error
+        if job.outcome is None:
+            raise RuntimeError(f"the writer finished a {kind.value} job with no outcome")
+        return job.outcome
+
+    # ── The thread ────────────────────────────────────────────────────
+
+    def _run(self) -> None:
+        try:
+            self._serve()
+        finally:
+            self._refuse_the_rest()
+
+    def _refuse_the_rest(self) -> None:
+        """Stop taking jobs, and fail every job still queued, so no caller waits on a thread that is gone."""
+        with self._accepting:
+            self._closed = True
+        left: list[_Job] = []
+        while True:
+            try:
+                job = self._jobs.get_nowait()
+            except queue.Empty:
+                break
+            if job is not None:
+                job.error = WriterClosedError(f"the temporary roots writer of {self.state} stopped first")
+                left.append(job)
+        if left:
+            self._wake(left)
+
+    def _serve(self) -> None:
+        stopping = False
+        while not stopping:
+            first = self._jobs.get()
+            if first is None:
+                break
+            jobs = [first]
+            while True:
+                try:
+                    job = self._jobs.get_nowait()
+                except queue.Empty:
+                    break
+                if job is None:
+                    stopping = True
+                    break
+                jobs.append(job)
+            try:
+                self._perform(jobs)
+            except BaseException as exc:
+                for job in jobs:
+                    if job.outcome is None and job.error is None:
+                        job.error = exc
+                self._wake(jobs)
+                raise
+            self.passes += 1
+            if not self._wake(jobs):
+                return
+
+    def _perform(self, jobs: list[_Job]) -> None:
+        """Every job of one pass, each file's jobs in the order they were queued.
+
+        A file's queued writes become one write; a collector attempt or a close first writes
+        what that file queued before it.
+        """
+        pending: dict[TempRoots, list[_Job]] = {}
+        for job in jobs:
+            if job.kind is Kind.WRITE:
+                pending.setdefault(job.owner, []).append(job)
+                continue
+            self._write(job.owner, pending.pop(job.owner, []))
+            self._each(job)
+        for owner, writes in pending.items():
+            self._write(owner, writes)
+
+    @staticmethod
+    def _write(owner: TempRoots, writes: list[_Job]) -> None:
+        if not writes:
+            return
+        try:
+            outcome = owner.write_now([root for job in writes for root in job.roots])
+        except Exception as exc:  # noqa: BLE001 -- handed to each waiting caller, which raises it
+            for job in writes:
+                job.error = exc
+            return
+        for job in writes:
+            job.outcome = outcome
+
+    @staticmethod
+    def _each(job: _Job) -> None:
+        try:
+            if job.kind is Kind.COLLECT:
+                job.outcome = job.owner.collect_now(job.roots[0])
+            else:
+                job.owner.close_now()
+                job.outcome = Outcome.HELD
+        except Exception as exc:  # noqa: BLE001 -- handed to the waiting caller, which raises it
+            job.error = exc
+
+    def _wake(self, jobs: list[_Job]) -> bool:
+        """Wake every caller of one pass with one call into the loop; False when the loop is gone."""
+        if self._loop is None:
+            raise RuntimeError("the temporary roots writer runs outside `async with`")
+        try:
+            self._loop.call_soon_threadsafe(_set_all, jobs)
+        except RuntimeError:
+            # The loop closed under the writer: nobody is left to wake, and nothing can queue more.
+            return False
+        return True
+
+
+def _set_all(jobs: list[_Job]) -> None:
+    for job in jobs:
+        job.done.set()
 
 
 class TempRoots:
     """One temporary roots file, and the paths that it holds.
 
-    One instance belongs to one client session. `close` releases every root
-    of that session at once, and it is the reason this class exists: there is
-    no operation in the daemon protocol that removes a temporary root, so the
-    only way to release one is to let go of the file.
+    One instance belongs to one client session, made by `RootWriter.session`. `close` releases
+    every root of that session at once, and it is the reason this class exists: there is no
+    operation in the daemon protocol that removes a temporary root, so the only way to release
+    one is to let go of the file.
 
-    Every method runs on the session task: `add` from dispatch, `close`
-    after the operation loop ends. The two never run together, so the lock
-    below guards only the collector path against itself, and not `add`
-    against `close`.
+    The coroutines run on the loop and queue jobs; the `*_now` methods and everything below them
+    run on the writer's thread alone.
 
-    When pynixd cannot write the directory, which happens when it serves
-    the system store as an unprivileged user, `add` answers `False` and
-    `DaemonProxy.add_temp_root` gives the root to the daemon instead.
+    When pynixd cannot write the directory, which happens when it serves the system store as an
+    unprivileged user, `add` answers `False` and `DaemonProxy.add_temp_root` gives the root to
+    the daemon instead.
     """
 
-    def __init__(self, state: Path, *, read_only: bool = False) -> None:
+    def __init__(self, state: Path, writer: RootWriter, *, read_only: bool = False) -> None:
         """Prepare a roots file under `state`, and open nothing yet.
 
         *read_only* is a read-only store: `add` holds every root and writes nothing, as
@@ -96,130 +341,132 @@ class TempRoots:
         self.read_only = read_only
         self.dir = state / TEMP_ROOTS_DIR
         self.path = self.dir / f"{PYNIXD_TEMP_ROOTS_PREFIX}{os.getpid()}-{next(_names)}"
+        self._writer = writer
         self._fd: int | None = None
         self._gc_lock_fd: int | None = None
         self._socket: socket.socket | None = None
         self._disabled = False
-        self._lock = anyio.Lock()
+        self._released = False
 
     async def add(self, path: str | StorePath) -> bool:
-        """Hold `path` against the collector until `close`, and say whether it is held.
+        """Hold `path` against the collector until `close`, and say whether it is held."""
+        return await self.add_many([path])
 
-        `False` once this instance has disabled itself: the state directory
-        is not writable, and the caller must hold the root some other way.
+    async def add_many(self, paths: Iterable[str | StorePath]) -> bool:
+        """Hold every one of *paths* until `close`; False when the state directory refused them.
 
-        The common case does no waiting and takes no lock: the roots file and
-        the GC lock are already open, and the shared lock is non-blocking, so
-        the write runs on the event loop. A session adds one root for each
-        derivation of a build, and the `anyio` lock and a thread hop for each
-        of those cost more than the syscalls they carry.
-
-        **The lock is for the collector path alone.** The proxy dispatches
-        the operations of a session one at a time and closes the roots after
-        the loop, so nothing runs `add` beside `add` and nothing runs `add`
-        beside `close`. Only the collector path can wait, so that path keeps
-        the lock and the thread hop.
-
-        The collector running is the case that waits, over its socket. That
-        runs in a worker thread, so the event loop is free while it does.
+        Raises `RuntimeError` after `close`: a write then would make a file nobody releases.
         """
         # A `StorePath` is already normalized, so stringifying it is enough:
         # parsing it again costs a prefix strip per root, 7177 times a build.
-        root = str(path) if isinstance(path, StorePath) else str(StorePath(str(path)))
-        if self.read_only:
-            return True
-        if self._disabled:
-            return False
-        if self._add_inline(root):
-            return not self._disabled
-        async with self._lock:
-            if self._disabled:
-                return False
-            await self._wait_for_the_collector(root)
-        return not self._disabled
-
-    async def add_many(self, paths: Iterable[str | StorePath]) -> bool:
-        """Hold every one of *paths* until `close`, with one shared lock and one write, in a worker thread.
-
-        `add` writes on the event loop, three syscalls a root. sg1's pynixd-0
-        held 3,344 roots of one substitution that way, on Ceph RBD, and the
-        loop lagged until the liveness probe killed the pod.
-        """
         roots = [str(path) if isinstance(path, StorePath) else str(StorePath(str(path))) for path in paths]
         if self.read_only or not roots:
             return True
+        if self._released:
+            raise RuntimeError(f"temporary roots {self.path} are closed")
         if self._disabled:
             return False
-        async with self._lock:
-            if self._disabled:
-                return False
-            if not await run_sync(self._add_many_inline, roots):
-                for root in roots:
-                    await self._wait_for_the_collector(root)
-        return not self._disabled
+        outcome = await self._writer.submit(self, Kind.WRITE, roots)
+        if outcome is Outcome.COLLECTING:
+            for root in roots:
+                outcome = await self._collect(root)
+                if outcome is Outcome.DISABLED:
+                    break
+        return outcome is Outcome.HELD
+
+    async def _collect(self, root: str) -> Outcome:
+        """Give *root* to a running collector, asking again with no limit, as Nix's `addTempRoot` does."""
+        started = time.monotonic()
+        reported = False
+        while (outcome := await self._writer.submit(self, Kind.COLLECT, [root])) is Outcome.COLLECTING:
+            waited = time.monotonic() - started
+            if not reported and waited >= WAIT_REPORTED_AFTER:
+                reported = True
+                log.warning(
+                    "temp_root_waits_for_collector",
+                    root=root,
+                    waited_s=round(waited, 1),
+                    detail="a process holds gc.lock for writing and its roots socket does not answer",
+                )
+            await anyio.sleep(RETRY_DELAY)
+        if reported:
+            log.info("temp_root_collector_answered", root=root, waited_s=round(time.monotonic() - started, 1))
+        return outcome
 
     async def close(self) -> None:
-        """Release every root of this session."""
-        async with self._lock:
-            await run_sync(self._close)
+        """Release every root of this session, after every write it queued.
 
-    # ── The blocking half ────────────────────────────────────────────
-    #
-    # `_add_inline` is the fast path and stays synchronous: an `open` on the
-    # first root, a non-blocking `flock`, and a `write`. The rest runs in a
-    # worker thread. The socket is the one part that waits, and only while
-    # the collector runs.
-
-    def _add_inline(self, root: str) -> bool:
-        """Write `root` without waiting, and say whether the thread path is unneeded.
-
-        True means written, or disabled: either way there is nothing for a
-        worker thread to do. False means the collector is running, so the
-        root needs its socket and the caller must hand the work to a thread.
+        The close is queued before the first wait, so a cancelled caller still releases the file.
         """
+        if self._released:
+            return
         try:
-            return self._write_root(root)
-        except OSError as exc:
-            self._disable(exc)
-            return True
+            await self._writer.submit(self, Kind.CLOSE, [])
+        except WriterClosedError:
+            # The writer stopped taking jobs first. Its thread may still be inside a write of this
+            # file, so the close waits for the thread to end before it touches the file.
+            with anyio.CancelScope(shield=True):
+                await anyio.to_thread.run_sync(self._writer.join)
+                await anyio.to_thread.run_sync(self.close_now)
+
+    # ── On the writer's thread ────────────────────────────────────────
+
+    def write_now(self, roots: list[str]) -> Outcome:
+        self._refuse_after_close()
+        if self._disabled:
+            return Outcome.DISABLED
+        if not self._add_many_inline(roots):
+            return Outcome.COLLECTING
+        return Outcome.DISABLED if self._disabled else Outcome.HELD
+
+    def collect_now(self, root: str) -> Outcome:
+        self._refuse_after_close()
+        if self._disabled:
+            return Outcome.DISABLED
+        if not self._try_the_collector(root):
+            return Outcome.COLLECTING
+        return Outcome.DISABLED if self._disabled else Outcome.HELD
+
+    def close_now(self) -> None:
+        self._released = True
+        self._close()
+
+    def _refuse_after_close(self) -> None:
+        """A write queued behind the close would make a new file that nothing ever releases."""
+        if self._released:
+            raise RuntimeError(f"temporary roots {self.path} are closed")
 
     def _add_many_inline(self, roots: list[str]) -> bool:
-        """`_add_inline` for many roots: False when the collector runs and each root needs its socket."""
+        """Write *roots* under the shared lock: False when the collector runs and each root needs its socket."""
         try:
             self._ensure_file()
             gc_lock = self._gc_lock()
             if not self._hold_the_gc_lock(gc_lock):
                 return False
             try:
+                # Under the shared lock, so the collector cannot start between
+                # this write and the read of the file that it makes.
                 self._write_bytes(b"".join(root.encode() + b"\0" for root in roots))
                 return True
             finally:
+                # Release the shared lock, but keep the descriptor. Nix keeps the
+                # same descriptor in `LocalStore::_fdGCLock` for the process
+                # (`src/libstore/gc.cc`, `addTempRoot`).
                 fcntl.flock(gc_lock, fcntl.LOCK_UN)
         except OSError as exc:
             self._disable(exc)
             return True
 
     def _write_root(self, root: str) -> bool:
-        """Write `root` under the shared lock, or report the collector running.
-
-        False says the collector holds the big lock, so the caller must give
-        the root to the collector over its socket instead.
-        """
+        """Write `root` under the shared lock, or report the collector running."""
         self._ensure_file()
         gc_lock = self._gc_lock()
         if not self._hold_the_gc_lock(gc_lock):
             return False
         try:
-            # Under the shared lock, so the collector cannot start between
-            # this write and the read of the file that it makes.
             self._write_raw(root)
             return True
         finally:
-            # Release the shared lock, but keep the descriptor. The lock is
-            # per call; the open and the close are not, and a session adds one
-            # root for each derivation of a build. Nix keeps the same
-            # descriptor in `LocalStore::_fdGCLock` for the process
-            # (`src/libstore/gc.cc`, `addTempRoot`).
             fcntl.flock(gc_lock, fcntl.LOCK_UN)
 
     def _write_raw(self, root: str) -> None:
@@ -249,23 +496,6 @@ class TempRoots:
             self._gc_lock_fd = os.open(self.state / GC_LOCK_FILE, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
         return self._gc_lock_fd
 
-    async def _wait_for_the_collector(self, root: str) -> None:
-        started = time.monotonic()
-        reported = False
-        while not await run_sync(self._try_the_collector, root):
-            waited = time.monotonic() - started
-            if not reported and waited >= WAIT_REPORTED_AFTER:
-                reported = True
-                log.warning(
-                    "temp_root_waits_for_collector",
-                    root=root,
-                    waited_s=round(waited, 1),
-                    detail="a process holds gc.lock for writing and its roots socket does not answer",
-                )
-            await anyio.sleep(RETRY_DELAY)
-        if reported:
-            log.info("temp_root_collector_answered", root=root, waited_s=round(time.monotonic() - started, 1))
-
     def _disable(self, exc: OSError) -> None:
         self._disabled = True
         log.warning(
@@ -282,10 +512,10 @@ class TempRoots:
     def _try_the_collector(self, root: str) -> bool:
         """One attempt while the collector runs: the socket takes the root, then the file.
 
-        `_write_root` failed its lock, so the collector holds the big lock. It
-        read the `temproots` directory before this root existed, so the socket
-        is how it learns about the root now. The file still gets it as well,
-        for the next run of the collector. False asks the caller to try again;
+        The shared lock failed, so the collector holds the big lock. It read
+        the `temproots` directory before this root existed, so the socket is
+        how it learns about the root now. The file still gets it as well, for
+        the next run of the collector. False asks the caller to try again;
         True is held, or disabled.
         """
         try:
@@ -300,9 +530,8 @@ class TempRoots:
     def _hold_the_gc_lock(self, gc_lock: int) -> bool:
         """True when the collector is not running, and pynixd may write.
 
-        The shared lock lasts until the caller releases it with `LOCK_UN`,
-        which `_write_root` does once the root is written. The collector takes
-        the same file for writing, so it waits for every reader.
+        The shared lock lasts until the caller releases it with `LOCK_UN`. The
+        collector takes the same file for writing, so it waits for every reader.
         """
         try:
             fcntl.flock(gc_lock, fcntl.LOCK_SH | fcntl.LOCK_NB)

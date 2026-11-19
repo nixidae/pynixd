@@ -8,6 +8,7 @@ nixidae/nixidae#1325.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -17,6 +18,7 @@ from nix_daemon_protocol.store_dir import on_disk
 from pynixd_store.autogc import AutoGCSettings
 from pynixd_store.nix_config import nix_environment, read_nix_config
 from pynixd_store.store_path import StorePath
+from pynixd_store.temp_roots import RootWriter
 
 from ..agent import local_monitor
 from ..config import LocalSocketStoreSpec, PynixdSettings
@@ -27,6 +29,8 @@ from .base import get_current_system
 from .scheduled import ScheduledStore
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from pynixd_store.drv_parser import Derivation
     from pynixd_store.store_layout import StoreLayout
 
@@ -98,6 +102,8 @@ class LocalHost(ScheduledStore):
         self.monitor_enabled = spec.monitor
         self.nix_config = spec.nix_config
         self.extra_env = spec.extra_env or {}
+        #: Every temporary root of this store goes through it: the sessions' and the engine's.
+        self.root_writer = RootWriter(self.layout.state_dir)
         self._trust_policy: TrustPolicy | None = None
         self._daemon_header: DaemonHeader | None = None
         self.extra_args = spec.extra_args or []
@@ -118,6 +124,12 @@ class LocalHost(ScheduledStore):
         monitor.disk_fn = self.disk_sampler()
         self.monitor = monitor
         monitor.start(self._background)
+
+    @contextlib.asynccontextmanager
+    async def _run(self) -> AsyncIterator[None]:
+        """The root writer outlives the store's start and close: a session's roots close after its last operation."""
+        async with self.root_writer, super()._run():
+            yield
 
     async def start(self, sync_paths: bool = True) -> None:
         await self._prepare()

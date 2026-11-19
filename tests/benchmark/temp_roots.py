@@ -7,11 +7,11 @@ and the wall time, and checks that the roots file holds what was added.
 
 Approaches:
 
-- `inline`: `TempRoots.add`, the shipped code: the write runs on the event loop.
-- `hop`: `TempRoots.add_many([root])` for each root, the shipped code: one worker thread call each.
-- `batch`: `TempRoots.add_many(roots)`, the shipped code: one call for a set that arrives together.
-- `writer`: `temp_roots_writer.RootWriter`, the candidate: one thread per store does every file
-  operation, and writes what it finds queued with the shipped `TempRoots._add_many_inline`.
+- `inline`: `InlineRoots.add` (`temp_roots_reference`): the write runs on the event loop.
+- `hop`: `InlineRoots.add_many([root])` for each root: one worker thread call each.
+- `batch`: `InlineRoots.add_many(roots)`: one worker thread call for a set that arrives together.
+- `writer`: `pynixd_store.temp_roots.RootWriter`, the shipped code: one thread per store does every
+  file operation, and writes what it finds queued in one write per file.
 
 Patterns:
 
@@ -42,8 +42,8 @@ from typing import TYPE_CHECKING, Final
 import anyio
 import uvloop
 
-from pynixd_store.temp_roots import TempRoots
-from tests.benchmark.temp_roots_writer import RootWriter
+from pynixd_store.temp_roots import RootWriter, TempRoots
+from tests.benchmark.temp_roots_reference import InlineRoots
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -54,6 +54,9 @@ SESSIONS: Final = 16
 SESSION_ROOTS: Final = 450
 TICK: Final = 0.001
 """The loop-stall probe sleeps this long; a stall is how much later than that it woke."""
+
+
+Roots = TempRoots | InlineRoots
 
 
 class Approach(enum.StrEnum):
@@ -138,13 +141,13 @@ async def _one_at_a_time(add: Callable[[str], Awaitable[bool]], roots: list[str]
         latencies.append(time.monotonic() - started)
 
 
-def _adder(approach: Approach, store: TempRoots) -> Callable[[str], Awaitable[bool]]:
+def _adder(approach: Approach, store: Roots) -> Callable[[str], Awaitable[bool]]:
     if approach is Approach.HOP:
         return lambda root: store.add_many([root])
     return store.add
 
 
-async def _burst(approach: Approach, store: TempRoots, roots: list[str], latencies: list[float]) -> None:
+async def _burst(approach: Approach, store: Roots, roots: list[str], latencies: list[float]) -> None:
     if approach in {Approach.BATCH, Approach.WRITER}:
         started = time.monotonic()
         if not await store.add_many(roots):
@@ -177,8 +180,8 @@ async def _measure_with(  # noqa: PLR0913 -- one run's coordinates
     freeze: Freeze | None,
     writer: RootWriter | None,
 ) -> Result:
-    def make() -> TempRoots:
-        return writer.session() if writer is not None else TempRoots(state)
+    def make() -> Roots:
+        return writer.session() if writer is not None else InlineRoots(state)
 
     if pattern is Pattern.SESSIONS:
         stores = [make() for _ in range(SESSIONS)]

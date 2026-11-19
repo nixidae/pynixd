@@ -30,7 +30,7 @@ from .liveness import unlink_stale_auto_roots, walk_roots
 from .local_store_db import LocalStoreDB
 from .nix_config import nix_at_least
 from .nix_tables import path_info
-from .temp_roots import GC_SOCKET_PATH, TempRoots
+from .temp_roots import GC_SOCKET_PATH, RootWriter, TempRoots
 from .utils import nix32_encode
 
 if TYPE_CHECKING:
@@ -67,8 +67,11 @@ class StoreEngine:
         read_config: Callable[[], Awaitable[Mapping[str, Any]]],
         on_change: Callable[[StorePath], None],
         name: str,
+        roots: RootWriter | None = None,
     ) -> None:
         self.layout = layout
+        #: The thread that writes the store's temporary roots; its owner runs it (`LocalHost`).
+        self.roots = roots if roots is not None else RootWriter(layout.state_dir)
         #: Whether pynixd itself may change the store (`LocalSocketStoreSpec.pynixd_writes`).
         self.writes = writes
         self._config: Mapping[str, Any] | None = None
@@ -273,7 +276,7 @@ class StoreEngine:
 
     def temp_roots(self) -> TempRoots:
         """A roots file of its own, for an import no client session holds."""
-        return TempRoots(self.layout.state_dir)
+        return self.roots.session()
 
     def check_signatures(
         self, info: ValidPathInfo, settings: add.ImportSettings, overrides: Mapping[str, str], warnings: list[str]

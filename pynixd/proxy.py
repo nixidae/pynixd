@@ -770,12 +770,11 @@ class DaemonProxy:
             # The state directory of the store that pynixd serves, which is
             # `<root>/nix/var/nix` for a chroot store and `NIX_STATE_DIR` for
             # a relocated one. `StoreLayout` answers both. Issue nixidae/nixidae#215.
-            layout = self.local_store.layout
-            self._temp_roots = TempRoots(layout.state_dir, read_only=layout.read_only)
+            self._temp_roots = self.local_store.root_writer.session(read_only=self.local_store.layout.read_only)
         return self._temp_roots
 
     async def add_temp_roots(self, paths: Collection[StorePath]) -> None:
-        """`add_temp_root` for many paths, written at once off the event loop (`TempRoots.add_many`)."""
+        """`add_temp_root` for many paths, in one job of the store's root writer (`TempRoots.add_many`)."""
         if await self._session_roots().add_many(paths):
             return
         for path in paths:

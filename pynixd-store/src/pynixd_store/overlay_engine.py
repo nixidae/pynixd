@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from .engine import Report
     from .local_store_db import SyncReader
     from .store_layout import Overlay, StoreLayout
+    from .temp_roots import RootWriter
 
 
 class LowerPathNeedsSync(Exception):
@@ -113,8 +114,9 @@ class OverlayEngine(StoreEngine):
         read_config: Callable[[], Awaitable[Mapping[str, Any]]],
         on_change: Callable[[StorePath], None],
         name: str,
+        roots: RootWriter | None = None,
     ) -> None:
-        super().__init__(layout, writes=writes, read_config=read_config, on_change=on_change, name=name)
+        super().__init__(layout, writes=writes, read_config=read_config, on_change=on_change, name=name, roots=roots)
         if layout.overlay is None:
             raise ValueError(f"store {name}: an overlay engine needs an overlay layout")
         self.overlay: Overlay = layout.overlay
