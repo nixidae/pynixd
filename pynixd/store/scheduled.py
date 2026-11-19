@@ -22,6 +22,7 @@ from .. import metrics, wire
 from ..config import PressureSettings
 from ..constants import FEATURE_REALISATION_WITH_PATH
 from ..exceptions import BackendError
+from ..monitor import local_disk
 from ..pressure import BuildLimit
 from ..serde import DrvOutput, Realisation, StorePath
 from ..system_features import BUILTIN_SYSTEM
@@ -36,7 +37,7 @@ if TYPE_CHECKING:
     from ..config import StoreSpecBase
     from ..connection import Connection
     from ..monitor import ResourceMonitor
-    from ..psi import CpuUtil, MemInfo, SystemHealth
+    from ..psi import CpuUtil, DiskSpace, MemInfo, SystemHealth
     from ..serde import SetOptionsRequest
     from .pool import ConnectionPool
 
@@ -129,6 +130,8 @@ class ScheduledStore(Store):
         self.cooldown_until: float = 0.0
         self.disk_full_until: float = 0.0
         """Until when a build failed here for want of disk; read when no disk sample is known."""
+        self.disk_floor_bytes: int = 0
+        """The `min-free` of this store's Nix, when pynixd knows it; each disk sample of its host carries it."""
         self.sample_listeners: set[Callable[[SystemHealth], None]] = set()
         """Each hears every sample of this store's host: a `PynixdHostHealthStream` session. nixidae/nixidae#1016."""
         self._features: set[str] = set()
@@ -137,6 +140,10 @@ class ScheduledStore(Store):
         self.draining: bool = False
         self._on_reconnect: Callable[[], Awaitable[None]] | None = None
         """Called after a reconnect; the instance sets it. A store with no connection never calls it."""
+
+    def disk_sampler(self) -> Callable[[], Awaitable[DiskSpace | None]]:
+        """A sampler of this store's filesystem on this machine, carrying `disk_floor_bytes`."""
+        return local_disk(self.layout.real_store_dir, lambda: self.disk_floor_bytes)
 
     # ── What the store builds ─────────────────────────────────────────────
 

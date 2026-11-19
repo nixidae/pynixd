@@ -17,7 +17,7 @@ from ..daemon_extensions.pynixd_host_health import (
     PynixdHostHealthResponse,
     PynixdHostHealthStreamRequest,
 )
-from ..monitor import SAMPLED_FILES, DummyResourceMonitor, cores_from, create_monitor, local_disk, local_read
+from ..monitor import SAMPLED_FILES, DummyResourceMonitor, cores_from, create_monitor, local_read
 from ..psi import SystemHealth
 from ..serde import LogNext
 from ..serde.auth import Role
@@ -41,7 +41,7 @@ class PynixdHostHealthHandler(Handler):
             await ctx.proxy.send_error("Operation 'PynixdHostHealth' requires administrative privileges.")
             return None
         files = {path: await local_read(path) for path in SAMPLED_FILES}
-        disk = await local_disk(ctx.proxy.local_store.layout.real_store_dir)()
+        disk = await ctx.proxy.local_store.daemon_client.disk_sampler()()
         payload = {
             "files": files,
             "cores": await cores_from(local_read),
@@ -83,7 +83,7 @@ class PynixdHostHealthStreamHandler(Handler):
         async with background.running():
             if monitor is None or isinstance(monitor, DummyResourceMonitor) or monitor.interval > interval:
                 own = create_monitor(local.pressure_settings.model_copy(update={"interval": interval}), listen)
-                own.disk_fn = local_disk(local.layout.real_store_dir)
+                own.disk_fn = local.disk_sampler()
                 own.start(background)
             else:
                 local.sample_listeners.add(listen)

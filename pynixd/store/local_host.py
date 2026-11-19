@@ -14,12 +14,13 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from nix_daemon_protocol.store_dir import on_disk
+from pynixd_store.autogc import AutoGCSettings
 from pynixd_store.nix_config import nix_environment, read_nix_config
 from pynixd_store.store_path import StorePath
 
 from ..agent import local_monitor
 from ..config import LocalSocketStoreSpec, PynixdSettings
-from ..monitor import DummyResourceMonitor, local_disk
+from ..monitor import DummyResourceMonitor
 from ..session_options import DaemonHeader
 from ..trust import TrustPolicy
 from .base import get_current_system
@@ -31,7 +32,7 @@ if TYPE_CHECKING:
 
     from ..monitor import ResourceMonitor
 
-__all__ = ["LocalHost", "feature_matrix_from_nix_config"]
+__all__ = ["LocalHost", "disk_floor_from_nix_config", "feature_matrix_from_nix_config"]
 
 log = structlog.get_logger(__name__)
 
@@ -46,6 +47,11 @@ def feature_matrix_from_nix_config(config: dict[str, Any]) -> dict[str, set[str]
     systems = {config["system"]["value"], *config["extra-platforms"]["value"]}
     features = set(config["system-features"]["value"])
     return {system: set(features) for system in systems}
+
+
+def disk_floor_from_nix_config(config: dict[str, Any]) -> int:
+    """The free space under which this store's Nix collects as it builds: `min-free`, from `nix config show --json`."""
+    return AutoGCSettings.from_nix_config(config, {}).min_free
 
 
 def _sandbox_fallback_arguments(layout: StoreLayout) -> list[str]:
@@ -105,16 +111,17 @@ class LocalHost(ScheduledStore):
             if self.monitor_enabled
             else DummyResourceMonitor(self.pressure_settings, self.on_pressure_sample)
         )
-        monitor.disk_fn = local_disk(self.layout.real_store_dir)
+        monitor.disk_fn = self.disk_sampler()
         self.monitor = monitor
 
     def _replace_monitor(self, monitor: ResourceMonitor) -> None:
-        monitor.disk_fn = local_disk(self.layout.real_store_dir)
+        monitor.disk_fn = self.disk_sampler()
         self.monitor = monitor
         monitor.start(self._background)
 
     async def start(self, sync_paths: bool = True) -> None:
         await self._prepare()
+        self.disk_floor_bytes = disk_floor_from_nix_config(await self.read_nix_config())
         if self._features_from_config and self._feature_matrix is None and self._probe_requested is None:
             # The machine's own daemon, or none: nix.conf says what it builds.
             # Probing it with builds waits for free build slots before

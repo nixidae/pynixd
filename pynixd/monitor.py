@@ -308,12 +308,12 @@ async def local_read(path: str) -> str | None:
         return None
 
 
-def local_disk(path: Path) -> Callable[[], Awaitable[DiskSpace | None]]:
-    """A disk sampler of *path* on this machine."""
+def local_disk(path: Path, floor: Callable[[], int] = lambda: 0) -> Callable[[], Awaitable[DiskSpace | None]]:
+    """A disk sampler of *path* on this machine; *floor* answers the host's `min-free` at each sample."""
 
     async def sample() -> DiskSpace | None:
         try:
-            return DiskSpace.from_statvfs(os.statvfs(path))
+            return DiskSpace.from_statvfs(os.statvfs(path), floor())
         except OSError:
             return None
 

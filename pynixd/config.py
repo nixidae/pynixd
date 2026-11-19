@@ -183,7 +183,11 @@ class StoreRankingSettings(BaseModel):
     """
 
     min_free_bytes: int = 2 * 1024**3
-    """A store whose last sample shows less free disk than this gets no build. nixidae/nixidae#1013."""
+    """A store whose last sample shows less free disk than this, over its host's own `min-free`, gets no build.
+
+    A pynixd peer reports its `min-free` with each sample (`DiskSpace.floor_bytes`); other hosts count 0.
+    nixidae/nixidae#1013.
+    """
 
     disk_full_hold_seconds: float = 600.0
     """How long a store that reports no disk figure is held back after "No space left on device"."""

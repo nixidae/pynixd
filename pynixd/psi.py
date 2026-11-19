@@ -127,10 +127,18 @@ class DiskSpace:
 
     free_bytes: int
     total_bytes: int
+    floor_bytes: int = 0
+    """Free space under which the host's own Nix collects garbage as it builds: its `min-free`. 0: it never does.
+
+    That collection holds the GC lock while it traces roots, and every build on the host waits for it.
+    A host with little room over its floor ran one before nearly every build (sg1-n1, 2026-11-19).
+    """
 
     @classmethod
-    def from_statvfs(cls, stat: os.statvfs_result) -> DiskSpace:
-        return cls(free_bytes=stat.f_bavail * stat.f_frsize, total_bytes=stat.f_blocks * stat.f_frsize)
+    def from_statvfs(cls, stat: os.statvfs_result, floor_bytes: int = 0) -> DiskSpace:
+        return cls(
+            free_bytes=stat.f_bavail * stat.f_frsize, total_bytes=stat.f_blocks * stat.f_frsize, floor_bytes=floor_bytes
+        )
 
 
 @dataclass

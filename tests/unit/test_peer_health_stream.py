@@ -17,7 +17,7 @@ from nix_daemon_protocol.constants import PROTOCOL_VERSION
 from pynixd.config import PressureSettings
 from pynixd.daemon_extensions.pynixd_host_health import HEALTH_JSON, PynixdHostHealthStreamRequest
 from pynixd.handlers.pynixd_host_health import PynixdHostHealthStreamHandler
-from pynixd.monitor import PeerHealthMonitor
+from pynixd.monitor import PeerHealthMonitor, local_disk
 from pynixd.psi import DiskSpace, SystemHealth
 from pynixd.serde import LogNext
 from pynixd.serde.auth import Role
@@ -60,12 +60,16 @@ async def _ctx(local: Any, client: Client, interval_ms: int) -> Any:
     return SimpleNamespace(proxy=proxy, role=Role.ADMIN)
 
 
+FLOOR = 16 * 1024**3
+"""The peer's `min-free`, as sg1's nodes set it."""
+
+
 def _local(monitor: Any, tmp_path: Path) -> Any:
     client = SimpleNamespace(
         monitor=monitor,
         sample_listeners=set(),
         pressure_settings=PressureSettings(),
-        layout=SimpleNamespace(real_store_dir=tmp_path),
+        disk_sampler=lambda: local_disk(tmp_path, lambda: FLOOR),
     )
     return SimpleNamespace(daemon_client=client)
 
@@ -109,6 +113,7 @@ async def test_the_peer_samples_itself_when_its_monitor_cannot_serve(tmp_path: P
 
     assert client.samples[0].meminfo is not None
     assert client.samples[0].disk is not None
+    assert client.samples[0].disk.floor_bytes == FLOOR, "the controller must learn the peer's min-free"
     assert local.daemon_client.sample_listeners == set()
 
 

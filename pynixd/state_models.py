@@ -107,6 +107,8 @@ class LimitRow(_Model):
     disk_free_mb: int | None = None
     """Free space of the store's filesystem. nixidae/nixidae#1013."""
     disk_total_mb: int | None = None
+    disk_floor_mb: int | None = None
+    """The host's own `min-free`: under it, its Nix collects before builds go on."""
 
 
 class StoreRow(_Model):

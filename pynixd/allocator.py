@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from pynixd_store.build_stats import StoreEstimate
 
     from .build_queue import QueuedBuild
-    from .psi import CpuUtil, SystemHealth
+    from .psi import CpuUtil, DiskSpace, SystemHealth
     from .serde import BasicDerivation
 
 log = structlog.get_logger(__name__)
@@ -388,6 +388,15 @@ class TelemetryStoreRanker(StoreRanker):
         return RankedStores(ranked, excluded).sort()
 
 
+def disk_needed(disk: DiskSpace, settings: StoreRankingSettings) -> int:
+    """The free bytes a build needs on *disk*: `min_free_bytes` over the host's own `min-free`.
+
+    Under its `min-free` a host's Nix collects before its builds go on, so a
+    build that takes it there stalls every build on it.
+    """
+    return disk.floor_bytes + settings.min_free_bytes
+
+
 def short_of_disk(store: Candidate, settings: StoreRankingSettings, now: float) -> bool:
     """Whether *store* has too little disk for a build. nixidae/nixidae#1013.
 
@@ -398,8 +407,7 @@ def short_of_disk(store: Candidate, settings: StoreRankingSettings, now: float) 
     monitor = store.monitor
     disk = monitor.health.disk if monitor is not None else None
     if disk is not None:
-        enough: bool = disk.free_bytes < settings.min_free_bytes
-        return enough
+        return disk.free_bytes < disk_needed(disk, settings)
     return now < store.disk_full_until
 
 
@@ -408,8 +416,16 @@ class DiskWait:
     """Why a build that no store takes waits for disk, or fails for it."""
 
     never_fits: bool
-    """Each store short of disk has less disk in all than `min_free_bytes`, and no other store may come back."""
+    """Each store short of disk has less disk in all than it needs free, and no other store may come back."""
     text: str
+
+
+def _needs(disk: DiskSpace, settings: StoreRankingSettings) -> str:
+    """What *disk* needs free, in words."""
+    margin = f"ranking.min_free_bytes ({settings.min_free_bytes // MIB} MiB)"
+    if disk.floor_bytes:
+        return f"under its min-free ({disk.floor_bytes // MIB} MiB) plus {margin}"
+    return f"under {margin}"
 
 
 def disk_wait(
@@ -418,28 +434,31 @@ def disk_wait(
     """The disk verdict of a build that no store takes, when free disk keeps a store out; else `None`.
 
     A store held back by its score or its silence may come back, so the
-    build waits. A disk smaller than `min_free_bytes` never qualifies: a
-    build that waits for it waits forever.
+    build waits. A disk smaller than it needs free never qualifies: a build
+    that waits for it waits forever.
     """
     short = [stores[e.store_id] for e in excluded if e.reason == SHORT_OF_DISK and e.store_id in stores]
     if not short:
         return None
-    floor = f"ranking.min_free_bytes ({settings.min_free_bytes // MIB} MiB)"
     disks = [(s.store_id, s.monitor.health.disk if s.monitor is not None else None) for s in short]
     sizes = [(store_id, disk) for store_id, disk in disks if disk is not None]
     never_fits = (
         len(sizes) == len(disks)
-        and all(disk.total_bytes < settings.min_free_bytes for _, disk in sizes)
+        and all(disk.total_bytes < disk_needed(disk, settings) for _, disk in sizes)
         and not any(e.reason in (UNDER_MIN_SCORE, SILENT) for e in excluded)
     )
     if never_fits:
-        details = ", ".join(f"{store_id} has {disk.total_bytes // MIB} MiB" for store_id, disk in sizes)
-        return DiskWait(never_fits=True, text=f"no store has the disk for a build: {details} in all, under {floor}")
+        details = ", ".join(
+            f"{store_id} has {disk.total_bytes // MIB} MiB in all, {_needs(disk, settings)}" for store_id, disk in sizes
+        )
+        return DiskWait(never_fits=True, text=f"no store has the disk for a build: {details}")
     details = ", ".join(
-        f"{store_id} has {disk.free_bytes // MIB} MiB free" if disk else f"{store_id} ran out of space"
+        f"{store_id} has {disk.free_bytes // MIB} MiB free, {_needs(disk, settings)}"
+        if disk
+        else f"{store_id} ran out of space"
         for store_id, disk in disks
     )
-    return DiskWait(never_fits=False, text=f"waiting for disk space: {details}, under {floor}")
+    return DiskWait(never_fits=False, text=f"waiting for disk space: {details}")
 
 
 def memory_room(store: Candidate, reserved_bytes: int) -> int | None:
