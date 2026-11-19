@@ -22,7 +22,6 @@ EXEMPT: Final[dict[str, str]] = {
     "pynixd/store/__init__.py __getattr__": DEBT,
     "pynixd/store/gha_cache.py _upload": DEBT,
     "pynixd/store/local_db.py close": DEBT,
-    "pynixd/store/local_host.py read_derivation": DEBT,
     "pynixd/store_url.py substituter_spec": DEBT,
     "pynixd/unix_socket.py open_unix_connection": DEBT,
     "pynixd_store/builder/local.py _builder_lines": DEBT,

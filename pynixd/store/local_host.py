@@ -12,6 +12,7 @@ import contextlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import anyio
 import structlog
 
 from nix_daemon_protocol.store_dir import on_disk
@@ -198,9 +199,9 @@ class LocalHost(ScheduledStore):
         # `real_store_dir()` is where the files of the store are, and a chroot
         # store puts them somewhere other than the directory a store path
         # names. See `read_drv_file` in `drv_parser.py`.
-        drv_file = Path(on_disk(str(StorePath(str(drv_store_path)))))
+        drv_file = anyio.Path(on_disk(str(StorePath(str(drv_store_path)))))
         try:
-            contents = drv_file.read_bytes()
+            contents = await drv_file.read_bytes()
         except (FileNotFoundError, OSError):
             return await self._read_derivation_without_file(drv_store_path)
 
