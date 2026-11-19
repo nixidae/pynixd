@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import anyio
+import anyio.to_thread
 import structlog
 
 from .daemon_extensions.pynixd_host_health import (
@@ -313,7 +314,7 @@ def local_disk(path: Path, floor: Callable[[], int] = lambda: 0) -> Callable[[],
 
     async def sample() -> DiskSpace | None:
         try:
-            return DiskSpace.from_statvfs(os.statvfs(path), floor())
+            return DiskSpace.from_statvfs(await anyio.to_thread.run_sync(os.statvfs, path), floor())
         except OSError:
             return None
 

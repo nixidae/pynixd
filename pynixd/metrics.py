@@ -901,21 +901,32 @@ class StoreSpaceCollector:
     It is also too slow to serve. `select count(*), sum(narSize)` took 584 ms
     over 141,749 paths, against 0.010 ms for the `statvfs` here. A scrape
     every 15 s cannot pay half a second.
+
+    `read` makes the `statvfs` and `collect` serves its answer: a hung mount
+    blocks a `statvfs` for good, so `read` runs in a thread (`read_file_facts`)
+    and `collect` runs on the event loop.
     """
 
-    def collect(self) -> Iterable[Metric]:
-        """Yield the two numbers, or nothing when the store is unreachable."""
+    def __init__(self) -> None:
+        self._stat: os.statvfs_result | None = None
+
+    def read(self) -> None:
         path = real_store_dir()
         try:
-            stat = os.statvfs(path)
+            self._stat = os.statvfs(path)
         except OSError:
             # A store directory that is gone or unreadable is not a reason to
             # fail a scrape: every other metric in the registry is still an
             # answer. Absent series read as absent on a dashboard, which is
             # what this is.
             log.warning("store_space_unreadable", path=path, exc_info=True)
-            return
+            self._stat = None
 
+    def collect(self) -> Iterable[Metric]:
+        """Yield the two numbers of the last `read`, or nothing when it found the store unreachable."""
+        stat = self._stat
+        if stat is None:
+            return
         yield GaugeMetricFamily(
             "pynixd_store_filesystem_size_bytes",
             "Total size of the file system that holds the store directory",
@@ -931,7 +942,8 @@ class StoreSpaceCollector:
         )
 
 
-REGISTRY.register(StoreSpaceCollector())
+STORE_SPACE = StoreSpaceCollector()
+REGISTRY.register(STORE_SPACE)
 
 
 # --- appstarter ---
@@ -976,11 +988,16 @@ class AppstarterCollector:
 
     The store root is the parent of the *real* store directory, so a chroot
     store finds its own state file rather than the host's.
+
+    `read` reads the file in a thread (`read_file_facts`); `collect` serves its answer on the event loop.
     """
 
-    def collect(self) -> Iterable[Metric]:
-        """Yield the one bit, or nothing when no state was recorded."""
+    def __init__(self) -> None:
+        self._degraded: bool | None = None
+
+    def read(self) -> None:
         path = Path(real_store_dir()).parent / APPSTARTER_STATE
+        self._degraded = None
         try:
             recorded = json.loads(path.read_text())
             wanted, running = recorded["wanted"], recorded["running"]
@@ -992,14 +1009,27 @@ class AppstarterCollector:
             # seconds would then repeat it for ever. The absent series is the
             # signal.
             return
+        self._degraded = wanted != running
+
+    def collect(self) -> Iterable[Metric]:
+        """Yield the one bit of the last `read`, or nothing when it found no state."""
+        if self._degraded is None:
+            return
         yield GaugeMetricFamily(
             "pynixd_appstarter_degraded",
             "1 when this pod runs the environment baked into its image instead of the one the deployment asks for",
-            value=float(wanted != running),
+            value=float(self._degraded),
         )
 
 
-REGISTRY.register(AppstarterCollector())
+APPSTARTER = AppstarterCollector()
+REGISTRY.register(APPSTARTER)
+
+
+def read_file_facts() -> None:
+    """The file reads behind the scrape. Blocking: the scrape runs it in a thread first."""
+    STORE_SPACE.read()
+    APPSTARTER.read()
 
 
 def get_metrics_response() -> tuple[bytes, str]:

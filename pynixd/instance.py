@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import anyio
 import anyio.lowlevel
+import anyio.to_thread
 import structlog
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
@@ -678,7 +679,7 @@ class Server:
             if checkpoint_due:
                 checkpoint_due = not await self._checkpoint_wal()
             now = time.monotonic()
-            if self._over_watermark():
+            if await anyio.to_thread.run_sync(self._over_watermark):
                 if not _trigger_due(now, last_trigger, settings.gc_cooldown):
                     metrics.GC_TRIGGER_SKIPPED.labels(reason="watermark").inc()
                     log.debug("gc_trigger_cooldown", reason="watermark")
@@ -717,7 +718,7 @@ class Server:
         while True:
             # A round reads the whole plan: a restart must not start one at once.
             await anyio.sleep(settings.gc_cold_interval)
-            usage = Collector._disk_usage(local)
+            usage = await anyio.to_thread.run_sync(Collector._disk_usage, local)
             if usage is not None and usage[1] > 0:
                 used, total = usage
                 pressure = max(used / total, watermark or 0.0)
@@ -740,7 +741,7 @@ class Server:
         """
         cap = self.ctx.settings.gc_watermark_max_passes
         for _ in range(cap):
-            if not self._over_gc_target():
+            if not await anyio.to_thread.run_sync(self._over_gc_target):
                 return
             resp = await self._gc_pass("watermark")
             if resp is None or not resp.store_paths:
@@ -748,7 +749,7 @@ class Server:
         log.info("gc_drive_capped", cap=cap)
 
     def _over_gc_target(self) -> bool:
-        """Continue an active drive until the local store reaches its target."""
+        """Continue an active drive until the local store reaches its target. A `statvfs`: call it in a thread."""
         local = self.ctx.local_store
         target = local.gc_target_usage
         if target is None:
@@ -760,7 +761,7 @@ class Server:
         return total > 0 and used / total > target
 
     def _over_watermark(self) -> bool:
-        """Whether disk pressure currently warrants a bounded pass."""
+        """Whether disk pressure currently warrants a bounded pass. A `statvfs`: call it in a thread."""
         watermark = self.ctx.settings.gc_high_watermark
         if watermark is None:
             return False

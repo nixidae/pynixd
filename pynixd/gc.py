@@ -202,7 +202,7 @@ class Collector:
             )
         lines: list[LogNext] = []
         local = self.ctx.local_store
-        usage = self._disk_usage(local)
+        usage = await run_sync(self._disk_usage, local)
         target = target_usage if target_usage is not None else local.gc_target_usage
         if (
             action == PynixdGCAction.EXECUTE
@@ -225,7 +225,7 @@ class Collector:
         response = await self._pass(action, client, limit, target, usage, lines, tier)
         if tier is None or action != PynixdGCAction.EXECUTE or target is None or local.gc_max_age is None:
             return response
-        usage = self._disk_usage(local)
+        usage = await run_sync(self._disk_usage, local)
         if not over_target(usage, target):
             return response
         # Over target with every covered path gone: the disk wins over the cold tier.
@@ -410,7 +410,7 @@ class Collector:
         live = await self._live_paths(local)
         async with SqlPlan.open(db) as plan:
             counts = await plan.plan(live=live, vetoed=vetoed, cutoff=None if pressed else int(time.time()) - max_age)
-            usage = self._disk_usage(local)
+            usage = await run_sync(self._disk_usage, local)
             if usage is not None:
                 used, total = usage
                 local.daemon_client.disk_reclaim = ReclaimSample(
@@ -830,7 +830,7 @@ class Collector:
 
     @staticmethod
     def _disk_usage(local: LocalStore | LocalDBStore) -> tuple[int, int] | None:
-        """`(used, total)` bytes of pressure on the filesystem holding the store."""
+        """`(used, total)` bytes of pressure on the filesystem holding the store. A `statvfs`: call it in a thread."""
         return _planner_of(local).disk_usage()
 
 

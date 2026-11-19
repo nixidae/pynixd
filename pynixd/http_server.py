@@ -299,6 +299,7 @@ class PynixdHttpServer:
 
     async def handle_metrics(self, request: web.Request) -> web.Response:
         """Expose Prometheus metrics."""
+        await anyio.to_thread.run_sync(metrics.read_file_facts)
         body, content_type = metrics.get_metrics_response()
         # aiohttp: charset must not be in content_type argument
         content_type_only = content_type.split(";")[0]

@@ -136,6 +136,7 @@ class TestStoreSpace:
     """
 
     def _series(self) -> dict[str, float]:
+        metrics.read_file_facts()
         body, _ = metrics.get_metrics_response()
         return {
             line.split(" ")[0]: float(line.split(" ")[1])
