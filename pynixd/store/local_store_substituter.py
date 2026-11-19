@@ -33,6 +33,7 @@ from .base import Store
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
+    from pathlib import Path
 
     from nix_daemon_protocol.wire_ops import WireRequest
     from pynixd_store.drv_parser import Derivation
@@ -137,6 +138,10 @@ class LocalStoreSubstituter(Store):
 
     async def nar_from_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
         raise OpNotImplementedError(f"{type(self).__name__} streams NARs through read_nar()")
+
+    def local_tree(self, path: StorePath) -> Path:
+        """The store never changes under pynixd, so a path its database holds is its files."""
+        return self.layout.real_store_dir / path.name
 
     async def read_nar(self, path: StorePath, nar_size: int) -> AsyncIterator[bytes]:
         """The NAR of *path*, dumped from the store's files (`Store::narFromPath`, `store-api.cc:334`)."""

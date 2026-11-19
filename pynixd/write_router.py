@@ -46,6 +46,7 @@ from .store.daemon_writes import DaemonWrites
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
+    from pathlib import Path
 
     from nix_daemon_protocol.collect_garbage import CollectGarbageRequest
     from nix_daemon_protocol.signature import Signature
@@ -678,10 +679,20 @@ class WriteRouter:
         )
 
     async def import_nar(
-        self, info: ValidPathInfo, source: Source, *, dont_check_sigs: bool, repair: bool = False
+        self,
+        info: ValidPathInfo,
+        source: Source,
+        *,
+        dont_check_sigs: bool,
+        repair: bool = False,
+        tree: Path | None = None,
     ) -> None:
-        """A NAR pynixd itself fetched or received: a substitution, or the HTTP cache's upload."""
+        """A NAR pynixd itself fetched or received: a substitution, or the HTTP cache's upload.
+
+        *tree* is the path's files in a store on this machine. The engine copies them and reads
+        nothing from *source*; the daemon takes the NAR.
+        """
         if await self.engine_takes(pynixd_import(info, repair=repair)):
-            await self._engine().import_nar(info, source, dont_check_sigs=dont_check_sigs, repair=repair)
+            await self._engine().import_nar(info, source, dont_check_sigs=dont_check_sigs, repair=repair, tree=tree)
         else:
             await self.daemon.add_to_store(info, source, dont_check_sigs=dont_check_sigs, repair=repair)

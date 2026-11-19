@@ -48,7 +48,7 @@ from ..content_address import (
 )
 from ..drv_hash import output_path_name
 from ..hintfmt import magenta
-from ..nar_fs import dump_path, restore_path
+from ..nar_fs import copy_path, dump_path, restore_path
 from ..utils import nix32_encode
 from .env import is_store_path, parse_structured_attrs
 from .refscan import scan_for_references
@@ -281,7 +281,7 @@ def collect_outputs(
             if fresh and output.kind in (OutputKind.CA_FIXED, OutputKind.IMPURE):
                 copy = TempDir.create(real_store_dir)
                 copies.append(copy)
-                restore_path(copy.path / "x", _Reader(dump_path(actual)))
+                copy_path(actual, copy.path / "x")
                 delete_path(actual)
                 actual = copy.path / "x"
                 canonicalise(actual)

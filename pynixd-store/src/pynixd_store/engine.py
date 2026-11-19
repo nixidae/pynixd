@@ -312,10 +312,16 @@ class StoreEngine:
         )
 
     async def import_nar(
-        self, info: ValidPathInfo, source: Source, *, dont_check_sigs: bool, repair: bool = False
+        self,
+        info: ValidPathInfo,
+        source: Source,
+        *,
+        dont_check_sigs: bool,
+        repair: bool = False,
+        tree: Path | None = None,
     ) -> None:
-        """`addToStore` for pynixd's own callers, with its own temporary root."""
-        await add.import_nar(self, info, source, dont_check_sigs=dont_check_sigs, repair=repair)
+        """`addToStore` for pynixd's own callers, with its own temporary root; *tree* as `add.import_nar`."""
+        await add.import_nar(self, info, source, dont_check_sigs=dont_check_sigs, repair=repair, tree=tree)
 
     async def add_to_store_from_dump(
         self,

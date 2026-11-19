@@ -27,6 +27,7 @@ from .realisation_query import query_realisation_over_wire
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Mapping, Set as AbstractSet
+    from pathlib import Path
     from types import TracebackType
 
     from nix_daemon_protocol.ids import StoreId
@@ -295,6 +296,11 @@ class Store(ABC):
     async def download_size(self, path: StorePath) -> int:
         """The bytes a substitute of *path* downloads, 0 when unknown (`misc.cc:139`)."""
         return 0
+
+    def local_tree(self, path: StorePath) -> Path | None:
+        """*path*'s files on this machine, for a copy by the kernel instead of a NAR; `None` when they are elsewhere."""
+        del path
+        return None
 
     async def read_nar(self, path: StorePath, nar_size: int) -> AsyncIterator[bytes]:
         """The NAR of *path*, piece by piece: Nix's `narFromPath`. A worker-protocol store reads it over a transfer connection."""

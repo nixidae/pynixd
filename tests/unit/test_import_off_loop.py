@@ -1,4 +1,4 @@
-"""An import into pynixd's own store makes no file call on the event loop (nixidae/nixidae#1545).
+"""An import into pynixd's own store makes no file call on the event loop (nixidae/nixidae#1545), NAR or tree.
 
 The functional suite hung 8 tests under host I/O load with the loop inside `PathLock.release`.
 `LoopFileCalls` records every audited file call on the loop's thread while the import runs.
@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 import anyio.to_thread
+import pytest
 
 from nix_daemon_protocol.content_address import ContentAddress as WireContentAddress
 from nix_daemon_protocol.nar_hash import NARHash
@@ -19,12 +20,13 @@ from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
 from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
-from pynixd_store.add import add_dump, add_nar
+from pynixd_store import add
+from pynixd_store.add import AddError, add_dump, add_nar
 from pynixd_store.content_address import Method
 from pynixd_store.create_store import open_local_store
 from pynixd_store.engine import StoreEngine
 from pynixd_store.local_store_db import LocalStoreDB
-from pynixd_store.nar_fs import dump_path
+from pynixd_store.nar_fs import copy_path, dump_path
 from pynixd_store.source import Pieces
 from pynixd_store.store_layout import StoreLayout
 from tests._conftest.loop_files import LoopFileCalls
@@ -80,11 +82,12 @@ def _tree(at: Path) -> bytes:
     return b"".join(dump_path(at))
 
 
-async def test_add_nar_makes_no_file_call_on_the_loop(tmp_path: Path) -> None:
-    nar = _tree(tmp_path / "src")
-    path = StorePath(path=f"/nix/store/{'1' * 32}-tree")
-    info = ValidPathInfo(
-        path=path,
+PATH = StorePath(path=f"/nix/store/{'1' * 32}-tree")
+
+
+def _info(nar: bytes) -> ValidPathInfo:
+    return ValidPathInfo(
+        path=PATH,
         info=UnkeyedValidPathInfo(
             nar_hash=NARHash(hash=hashlib.sha256(nar).hexdigest()),
             references=set(),
@@ -95,6 +98,17 @@ async def test_add_nar_makes_no_file_call_on_the_loop(tmp_path: Path) -> None:
             ca=WireContentAddress(value=""),
         ),
     )
+
+
+async def _unread() -> AsyncIterator[bytes]:
+    raise AssertionError("a tree import read the NAR")
+    yield b""  # an async generator, so the raise waits for the first read
+
+
+async def test_add_nar_makes_no_file_call_on_the_loop(tmp_path: Path) -> None:
+    nar = _tree(tmp_path / "src")
+    path = PATH
+    info = _info(nar)
     async with _engine(tmp_path / "root") as engine:
         with LoopFileCalls() as loop:
             await add_nar(engine, info, Pieces(_pieces(nar)), repair=False, auto_optimise=False, fsync=False)
@@ -123,3 +137,30 @@ async def test_add_dump_makes_no_file_call_on_the_loop(tmp_path: Path) -> None:
             )
         assert await engine.is_valid_path_uncached(path)
     assert loop.calls == []
+
+
+async def test_a_tree_import_copies_the_files_reads_no_nar_and_makes_no_file_call_on_the_loop(tmp_path: Path) -> None:
+    nar = _tree(tmp_path / "src")
+    async with _engine(tmp_path / "root") as engine, engine.roots:
+        with LoopFileCalls() as loop:
+            await engine.import_nar(_info(nar), Pieces(_unread()), dont_check_sigs=True, tree=tmp_path / "src")
+        assert await engine.is_valid_path_uncached(str(PATH))
+        real = engine.layout.real_store_dir / PATH.name
+        assert b"".join(dump_path(real)) == nar
+    assert loop.calls == []
+
+
+async def test_a_tree_import_hashes_the_copy_not_the_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A copy that differs from its source fails the NAR hash, so a changed source cannot register a wrong hash."""
+    nar = _tree(tmp_path / "src")
+
+    def corrupting(src: Path, dest: Path) -> None:
+        copy_path(src, dest)
+        (dest / "data").chmod(0o644)
+        (dest / "data").write_bytes(b"y" * 100_000)
+
+    monkeypatch.setattr(add, "copy_path", corrupting)
+    async with _engine(tmp_path / "root") as engine, engine.roots:
+        with pytest.raises(AddError, match="hash mismatch"):
+            await engine.import_nar(_info(nar), Pieces(_unread()), dont_check_sigs=True, tree=tmp_path / "src")
+        assert not await engine.is_valid_path_uncached(str(PATH))

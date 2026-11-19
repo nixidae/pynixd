@@ -745,9 +745,12 @@ class SubstitutionQueue:
 
         `SubstitutePathGoal` checks before the download, with the client's keys (`substitution-goal.cc:116`).
         """
+        # A store on this machine gives its files, which the kernel copies: on btrfs and XFS that shares the
+        # extents. The NAR stays the fallback and is read only when the daemon takes the import.
+        tree = candidate.store.local_tree(candidate.store_path or path)
         async with Pieces(self._nar_pieces(path, candidate)) as nar:
             await write_router(self.ctx.local_store).import_nar(
-                candidate.path_info, nar, dont_check_sigs=candidate.store.trusted or checked, repair=repair
+                candidate.path_info, nar, dont_check_sigs=candidate.store.trusted or checked, repair=repair, tree=tree
             )
 
     async def _nar_pieces(self, path: StorePath, candidate: SubstitutionCandidate) -> AsyncGenerator[bytes]:

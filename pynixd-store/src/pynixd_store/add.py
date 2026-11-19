@@ -41,7 +41,7 @@ from .builder.refscan import scan_for_references
 from .content_address import ContentAddress, Method, content_addressed_path, new_hash, parse_any_sha256
 from .errors import PynixdError
 from .hintfmt import magenta
-from .nar_fs import BadArchive, dump_path, restore_path
+from .nar_fs import BadArchive, copy_path, dump_path, restore_path
 from .signing import check_signatures, key_settings, public_keys
 from .source import BlockingReader, Prefixed, read_up_to
 from .utils import MTIME_STORE, nix32_encode
@@ -57,6 +57,8 @@ if TYPE_CHECKING:
     from .source import Source
 
     Report = Callable[[Verbosity, str], Awaitable[None]]
+    # Makes a path's files at the path it is given, and answers the SHA-256 and size of their NAR. Blocking.
+    Stage = Callable[[Path], tuple[bytes, int]]
 
 log = structlog.get_logger(__name__)
 
@@ -426,6 +428,31 @@ def _sri(digest: bytes) -> str:
     return "sha256-" + base64.b64encode(digest).decode()
 
 
+def nar_stage(source: Source) -> Stage:
+    """The NAR from *source*, restored and hashed as it is read: `addToStore`'s `TeeSource` (`local-store.cc:1080`)."""
+
+    def stage(staged: Path) -> tuple[bytes, int]:
+        reader = HashingReader(BlockingReader(source))
+        restore_path(staged, reader)
+        return reader.hasher.digest(), reader.size
+
+    return stage
+
+
+def tree_stage(tree: Path) -> Stage:
+    """*tree*'s files copied by the kernel (`nar_fs.copy_path`), then the copy hashed.
+
+    The copy is hashed, not *tree*: a source that changed between a hash and the copy would
+    register the copy under a hash that is not its own.
+    """
+
+    def stage(staged: Path) -> tuple[bytes, int]:
+        copy_path(tree, staged)
+        return _nar_hash(staged)
+
+    return stage
+
+
 async def add_nar(
     engine: StoreEngine,
     info: ValidPathInfo,
@@ -444,6 +471,30 @@ async def add_nar(
     `daemon.cc:946`), or the rest of a `Bounded` path (`EnsureRead::finish`,
     `daemon.cc:564`).
     """
+    await add_staged(
+        engine,
+        info,
+        nar_stage(source),
+        repair=repair,
+        ignored_acls=ignored_acls,
+        auto_optimise=auto_optimise,
+        fsync=fsync,
+        report=report,
+    )
+
+
+async def add_staged(
+    engine: StoreEngine,
+    info: ValidPathInfo,
+    stage: Stage,
+    *,
+    repair: bool,
+    ignored_acls: frozenset[str] = IGNORED_ACLS,
+    auto_optimise: bool | None = None,
+    fsync: bool | None = None,
+    report: Report | None = None,
+) -> None:
+    """`add_nar` with the files made by *stage*: the NAR hash, size and address checks are the same."""
     path = str(info.path)
     real = engine.layout.real_store_dir / path.rsplit("/", 1)[-1]
     if not repair and await engine.is_valid_path_uncached(path):
@@ -456,8 +507,8 @@ async def add_nar(
         if not repair and await engine.is_valid_path_uncached(path):
             delete_lock = True
             return
-        await _restore_into_place(
-            engine, info, real, source, await _placement(engine, ignored_acls, repair, auto_optimise, fsync)
+        await _stage_into_place(
+            engine, info, real, stage, await _placement(engine, ignored_acls, repair, auto_optimise, fsync)
         )
         await engine.register_valid_paths([info], report)
         delete_lock = True
@@ -466,13 +517,23 @@ async def add_nar(
 
 
 async def import_nar(
-    engine: StoreEngine, info: ValidPathInfo, source: Source, *, dont_check_sigs: bool, repair: bool = False
+    engine: StoreEngine,
+    info: ValidPathInfo,
+    source: Source,
+    *,
+    dont_check_sigs: bool,
+    repair: bool = False,
+    tree: Path | None = None,
 ) -> None:
     """AddToStoreNar for pynixd's own callers: the substitution queue and the HTTP cache's upload.
+
+    *tree* is the path's files in a store on this machine: they are copied by the kernel
+    (`tree_stage`), and *source* is not read.
 
     No client session holds the path, so the import holds its own temporary
     root, as the daemon worker of a transfer connection did.
     """
+    stage = tree_stage(tree) if tree is not None else nar_stage(source)
     settings = await engine.settings()
     if not dont_check_sigs and settings.require_sigs:
         warnings: list[str] = []
@@ -485,29 +546,27 @@ async def import_nar(
     try:
         if not await roots.add(info.path):
             raise AddError(f"pynixd cannot write a temporary root for '{magenta(info.path)}'")
-        await add_nar(engine, info, source, repair=repair, ignored_acls=settings.ignored_acls)
+        await add_staged(engine, info, stage, repair=repair, ignored_acls=settings.ignored_acls)
     finally:
         with anyio.CancelScope(shield=True):
             await roots.close()
 
 
-async def _restore_into_place(
+async def _stage_into_place(
     engine: StoreEngine,
     info: ValidPathInfo,
     real: Path,
-    source: Source,
+    stage: Stage,
     placement: Placement,
 ) -> None:
     path = str(info.path)
     temp = await anyio.to_thread.run_sync(TempDir.create, engine.layout.real_store_dir)
     try:
         staged = temp.path / "x"
-        reader = HashingReader(BlockingReader(source))
         try:
-            await anyio.to_thread.run_sync(restore_path, staged, reader)
+            got, size = await anyio.to_thread.run_sync(stage, staged)
         except BadArchive as error:
             raise AddError(str(error)) from error
-        got = reader.hasher.digest()
         expected = parse_any_sha256(str(info.info.nar_hash))
         if got != expected:
             specified = _sri(expected)
@@ -515,10 +574,10 @@ async def _restore_into_place(
                 f"hash mismatch importing path '{magenta(path)}';\n"
                 f"  specified: {magenta(specified)}\n  got:       {magenta(_sri(got))}"
             )
-        if reader.size != info.info.nar_size:
+        if size != info.info.nar_size:
             raise AddError(
                 f"size mismatch importing path '{magenta(path)}';\n"
-                f"  specified: {magenta(info.info.nar_size)}\n  got:       {magenta(reader.size)}"
+                f"  specified: {magenta(info.info.nar_size)}\n  got:       {magenta(size)}"
             )
         if info.info.ca:
             specified_ca = ContentAddress.parse(str(info.info.ca))

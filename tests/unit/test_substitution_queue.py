@@ -13,10 +13,13 @@ from nix_daemon_protocol.ids import StoreId
 from nix_daemon_protocol.nar_hash import NARHash
 from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
 from nix_daemon_protocol.store_dir import store_dir
+from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
+from pynixd import substitution_queue
 from pynixd.config import PynixdSettings
 from pynixd.serde import QueryPathInfoResponse
 from pynixd.substitution_queue import (
+    SubstitutionCandidate,
     SubstitutionHealthLog,
     SubstitutionImportResult,
     SubstitutionQueryResult,
@@ -26,8 +29,12 @@ from pynixd_store.store_path import StorePath
 from tests._conftest.all_of import all_of
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+    from pathlib import Path
+
     from nix_daemon_protocol.wire_ops import WireRequest
     from pynixd.context import PynixdContext
+    from pynixd.store import Store
 
 
 class FakeSubstituter:
@@ -440,3 +447,41 @@ async def test_imports_stream_max_substitution_jobs_at_once(monkeypatch: pytest.
     assert peak == 2
     queue.set_import_slots(0)
     assert queue.import_limit.total_tokens == 1
+
+
+@pytest.mark.anyio
+async def test_a_store_on_this_machine_hands_its_files_to_the_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A substituter with `local_tree` gives the import the path's files; the kernel copies them, not a NAR."""
+    path = StorePath("/nix/store/00000000000000000000000000000000-example")
+    there = tmp_path / path.name
+
+    async def no_nar(_path: StorePath, _size: int) -> AsyncIterator[bytes]:
+        raise AssertionError("the import read the NAR")
+        yield b""  # an async generator, so the raise waits for the first read
+
+    store = SimpleNamespace(local_tree=lambda asked: tmp_path / asked.name, read_nar=no_nar, trusted=True)
+    info = ValidPathInfo(
+        path=path,
+        info=UnkeyedValidPathInfo(
+            nar_hash=NARHash(hash="0" * 52),
+            references=set(),
+            registration_time=Time(ts=0),
+            nar_size=8,
+            ultimate=False,
+            sigs=set(),
+            ca=ContentAddress(value=""),
+        ),
+    )
+    trees: list[Path | None] = []
+
+    class Router:
+        async def import_nar(self, _info: ValidPathInfo, _source: object, **kwargs: Any) -> None:
+            trees.append(kwargs["tree"])
+
+    monkeypatch.setattr(substitution_queue, "write_router", lambda _store: Router())
+    ctx = cast("PynixdContext", SimpleNamespace(settings=PynixdSettings(), stores={}, local_store=object()))
+    candidate = SubstitutionCandidate(store=cast("Store", store), path_info=info)
+    await SubstitutionQueue(ctx)._import_nar(path, candidate)  # noqa: SLF001 -- the import step alone
+    assert trees == [there]

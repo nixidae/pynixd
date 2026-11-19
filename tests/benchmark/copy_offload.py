@@ -13,8 +13,9 @@ Approaches:
   read and write; then the copy is hashed. On btrfs and XFS the kernel may share the extents.
 - `clone`: file by file with the `FICLONE` ioctl, which shares the extents or refuses; then the
   copy is hashed. Refused on a filesystem without reflinks, and across filesystems.
-- `auto`: coreutils' `cp --reflink=auto` (9.12, `copy.c`, `copy-file-data.c`): `FICLONE`, then
-  `copy_file_range` until it refuses before the first byte, then read and write; then hashed.
+- `auto`: the shipped `nar_fs.copy_path`, coreutils' `cp --reflink=auto` order (9.12, `copy.c`,
+  `copy-file-data.c`): `FICLONE`, then `copy_file_range` until it refuses before the first byte, then
+  read and write; then hashed.
 
 `used_bytes` is how much free space the copy took after a `sync`: near zero for shared extents.
 stdout: one JSON object per run, then a summary table on stderr. Run from the tree root as
@@ -27,7 +28,6 @@ import argparse
 import contextlib
 import dataclasses
 import enum
-import errno
 import fcntl
 import hashlib
 import json
@@ -44,7 +44,7 @@ import anyio
 import anyio.to_thread
 import uvloop
 
-from pynixd_store.nar_fs import dump_path, nar_sha256, restore_path
+from pynixd_store.nar_fs import copy_path, dump_path, nar_sha256, restore_path
 from tests.benchmark.temp_roots import Stalls
 
 if TYPE_CHECKING:
@@ -152,61 +152,9 @@ def _clone(src: Path, dst: Path) -> None:
         fcntl.ioctl(target.fileno(), FICLONE, source.fileno())
 
 
-COPY_REFUSED: Final = frozenset(
-    {
-        errno.ENOSYS,
-        errno.ENOTTY,
-        errno.ENOTSUP,
-        errno.EOPNOTSUPP,
-        errno.EINVAL,
-        errno.EBADF,
-        errno.EXDEV,
-        errno.ETXTBSY,
-        errno.EPERM,
-        errno.EACCES,
-        errno.ENOENT,
-    }
-)
-"""`is_CLONENOTSUP` plus `ENOENT` (`copy-file-data.c:92`, `:171`): before the first byte, fall back; `EPERM` is a seccomp filter."""
-COPY_CHUNK: Final = 1 << 30
-"""coreutils' `copy_max`, rounded to a gigabyte."""
-
-
-def auto_copy_file(src: Path, dst: Path) -> None:
-    """One file the way `cp --reflink=auto` copies it."""
-    with src.open("rb") as source, dst.open("xb") as target:
-        try:
-            fcntl.ioctl(target.fileno(), FICLONE, source.fileno())
-        except OSError as exc:
-            # A clone that fails with EIO may leave a partial target (Linux bugs, bugs.gnu.org/60489).
-            if exc.errno == errno.EIO:
-                raise
-        else:
-            return
-        copied = 0
-        while True:
-            try:
-                n = os.copy_file_range(source.fileno(), target.fileno(), COPY_CHUNK)
-            except OSError as exc:
-                if copied == 0 and exc.errno in COPY_REFUSED:
-                    break
-                if exc.errno == errno.EFBIG:
-                    return
-                raise
-            # 0 on the first call is procfs saying nothing; read it instead.
-            if n == 0:
-                if copied == 0:
-                    break
-                return
-            copied += n
-        os.lseek(target.fileno(), 0, os.SEEK_SET)
-        target.truncate()
-        source.seek(0)
-        shutil.copyfileobj(source, target, 1024 * 1024)
-
-
 def auto(src: Path, dst: Path) -> bytes:
-    copy_tree(src, dst, auto_copy_file)
+    """The shipped `nar_fs.copy_path`, then the copy hashed, as `add.tree_stage` does."""
+    copy_path(src, dst)
     return nar_sha256(dst).digest()
 
 
