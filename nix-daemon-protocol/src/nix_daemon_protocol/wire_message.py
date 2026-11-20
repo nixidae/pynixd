@@ -397,6 +397,18 @@ def _find_writer(ann: type, version: int = 0, features: frozenset[str] = frozens
 # ── Version-constrained fields ──
 
 
+CODEC_FEATURES: set[str] = set()
+"""Every feature that a field names in `needs_features` or `unless_features`.
+
+A codec depends on no other feature, so `_compiled_or_none` compiles for the
+negotiated set cut to these. A client picks its set: pynixd's 10 features make
+4096 pairs over 1.35-1.38, and one compiled pair holds 805 KiB (3.2 GiB for
+all). Cut to the 4 that fields name, 64 pairs compile, and every other pair
+holds 16 KiB of cache entries: about 115 MiB at most. A field is made before
+any codec of its model compiles, so this set is complete for it.
+"""
+
+
 @dataclass(frozen=True)
 class VersionMeta:
     """Protocol version and feature constraint for a wire field."""
@@ -409,6 +421,9 @@ class VersionMeta:
     needs_features: frozenset[str] | None = None
     unless_features: frozenset[str] | None = None
     text_errors: str = "strict"
+
+    def __post_init__(self) -> None:
+        CODEC_FEATURES.update(self.needs_features or (), self.unless_features or ())
 
 
 def WireField(  # noqa: N802
@@ -570,7 +585,7 @@ def _compiled_or_none(cls: type, version: int = 0, features: frozenset[str] = fr
     from .experimental_compiled import NotCompilableError, compile_codec
 
     try:
-        return compile_codec(cls, version, features)
+        return compile_codec(cls, version, features & CODEC_FEATURES)
     except NotCompilableError:
         return None
 

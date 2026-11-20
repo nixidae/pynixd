@@ -20,11 +20,11 @@ from nix_daemon_protocol import (
     StorePath,
     UnkeyedRealisation,
 )
-from nix_daemon_protocol.constants import FEATURE_REALISATION_WITH_PATH
+from nix_daemon_protocol.constants import FEATURE_OPEN_TELEMETRY, FEATURE_REALISATION_WITH_PATH
 from nix_daemon_protocol.context import ReadContext, WriteContext
 from nix_daemon_protocol.experimental_compiled import compile_codec
 from nix_daemon_protocol.io import BytesReader, BytesWriter
-from nix_daemon_protocol.wire_message import WireModel
+from nix_daemon_protocol.wire_message import CODEC_FEATURES, WireModel, _compiled_or_none
 from nix_daemon_protocol.wire_ops import WireRequest
 
 
@@ -188,3 +188,17 @@ async def test_compiled_codec_follows_features() -> None:
         assert compiled_decoded.model_dump() == generic_decoded.model_dump()
 
     assert encoded[plain] != encoded[shaped]
+
+
+def test_a_feature_no_field_names_shares_the_compiled_codec() -> None:
+    """A client picks its feature set; a feature no field reads must not compile the codecs again."""
+    version = SUPPORTED_PROTOCOL_VERSIONS[-1]
+    assert FEATURE_OPEN_TELEMETRY not in CODEC_FEATURES
+    assert FEATURE_REALISATION_WITH_PATH in CODEC_FEATURES
+    # zuban-bug: zuban checks type[BaseModel] against Hashable through BaseModel's `__hash__ = None`.
+    model: type = BuildResult
+    plain = _compiled_or_none(model, version, frozenset())
+    traced = _compiled_or_none(model, version, frozenset({FEATURE_OPEN_TELEMETRY}))
+    shaped = _compiled_or_none(model, version, frozenset({FEATURE_REALISATION_WITH_PATH}))
+    assert traced is plain
+    assert shaped is not plain
