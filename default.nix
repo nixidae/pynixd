@@ -13,12 +13,30 @@ let
   inherit (pkgs) lib;
   inherit ((import sources.nixvenv { inherit pkgs sources; }).lib) nixvenv ps;
 
+  /*
+    anyio from `fixes-4.14.2` of Lillecarl/anyio: the 4.14.2 that nixpkgs
+    gives the rest of the set, plus fixes meant for upstream.
+    `setup_unix_local_socket` stats and unlinks a stale socket file on the
+    event loop upstream (nixidae/nixidae#1547). Not upstream `master`: it
+    failed four wirelog recorder tests and `test_collect` with
+    `InvalidStateError` from `Future.set_result`. The fork's tarball has no
+    git history for setuptools-scm, so the version is set here. Its suite is
+    not this build's to run.
+  */
+  anyioVersion = "4.14.2+lillecarl.1";
+  anyio = pkgs.python3Packages.anyio.overridePythonAttrs {
+    version = anyioVersion;
+    src = sources.anyio;
+    doCheck = false;
+  };
+
   daemon-protocol = pkgs.python3Packages.callPackage ./nix/nix-daemon-protocol.nix {
     pythonBuilder = pkgs.python3Packages.buildPythonPackage;
   };
   store = pkgs.python3Packages.callPackage ./nix/pynixd-store.nix {
     pythonBuilder = pkgs.python3Packages.buildPythonPackage;
     nix-daemon-protocol = daemon-protocol;
+    inherit anyio;
   };
 
   # Not pkgsCross.musl64: that is x86_64 on every host, and the agent is
@@ -166,6 +184,7 @@ let
     pythonBuilder = pkgs.python3Packages.buildPythonPackage;
     nix-daemon-protocol = daemon-protocol;
     pynixd-store = store;
+    inherit anyio;
   };
 
   mkTests =
@@ -324,6 +343,8 @@ let
         ./pynixd-store
         vivariumLib.runnerSource
         vivariumLib.agentSource
+        # For its build system: the overlay builds anyio from this source.
+        sources.anyio
       ];
       overlay = pySelf: _pyPrev: {
         pynixd = pySelf.callPackage (own "pynixd" ./.) { };
@@ -331,6 +352,16 @@ let
         pynixd-store = pySelf.callPackage (own "pynixd-store" ./pynixd-store) { };
         vivarium-runner = pySelf.callPackage (mkProject "vivarium-runner" vivariumLib.runnerSource) { };
         vivarium-agent = pySelf.callPackage (mkProject "vivarium-agent" vivariumLib.agentSource) { };
+        # The fork, as for `library`. Every lifted package names anyio, so this one serves them all.
+        anyio = pySelf.callPackage (ps.mkProject {
+          projectRoot = sources.anyio;
+          inherit (nanopynix.lib.pythonSet) python;
+          extra = rendered: {
+            env = (rendered.env or { }) // {
+              SETUPTOOLS_SCM_PRETEND_VERSION = anyioVersion;
+            };
+          };
+        }) { };
       };
     };
 
@@ -460,10 +491,13 @@ let
         ];
         dependencies = lib.concatMap (package: package.propagatedBuildInputs) firstParty;
       in
-      lib.subtractLists firstParty (
+      # nixpkgs' anyio and not the fork: vivarium's packages bring nixpkgs' anyio, a venv
+      # holds one, and the fork changes no type.
+      lib.subtractLists (firstParty ++ [ anyio ]) (
         lib.filter (package: package ? pythonModule) (lib.unique dependencies)
       )
       ++ [
+        ps.anyio
         ps.pytest
         ps.moto
         ps.hypothesis

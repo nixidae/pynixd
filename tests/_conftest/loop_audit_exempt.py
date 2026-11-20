@@ -1,6 +1,6 @@
 """The sites `loop_audit`'s gate lets through: `path function` to the reason.
 
-Each entry is a debt, not a decision. Moving the call off the loop removes its entry.
+An entry is a debt (`DEBT`) or a measured reason the call stays. Moving a call off the loop removes its entry.
 """
 
 from __future__ import annotations
@@ -14,5 +14,4 @@ EXEMPT: Final[dict[str, str]] = {
         "asyncssh's `match_options` (`auth_keys.py:180`) subscripts `List['X509NamePattern']`;"
         " typing compiles that forward reference once per process and caches it"
     ),
-    "pynixd_store/collect.py serve": DEBT,
 }
