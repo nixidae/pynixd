@@ -1,0 +1,176 @@
+"""A store whose every build is a Kubernetes pod of its own, which dials central and ends. nixidae/nixidae#1560, spike.
+
+The scheduler places a build here like on any builder, up to the spec's
+slots. No connection goes from central to a pod: the executor creates the
+pod (`Executor.build_in_pod`), grants the pod's key the derivation
+(`build_grant.py`), follows the pod's log, and reads the `BuildResult` from
+the pod's termination message (`pod_build.py`). The pod has added the
+outputs to central's store by then.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import secrets
+from typing import TYPE_CHECKING, Any, Final
+
+import anyio
+import asyncssh
+import structlog
+
+from nix_daemon_protocol.store_path import StorePath
+
+from ..build_grant import BuildGrant
+from ..build_job import JOB_NAME, KEY_NAME, Job, decode_response, encode
+from ..exceptions import InfrastructureError
+from ..provisioning.provider import ProviderError
+from .scheduled import ProbeState, ScheduledStore
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+    from contextlib import AbstractAsyncContextManager
+
+    from nix_daemon_protocol.build_derivation import BuildDerivationRequest, BuildDerivationResponse
+    from nix_daemon_protocol.set_options import SetOptionsRequest
+    from nix_daemon_protocol.wire_ops import WireRequest
+    from pynixd_store.drv_parser import Derivation
+
+    from ..build_grant import Grants
+    from ..config import BuildPodStoreSpec
+    from ..connection import ClientConn, Connection
+    from ..provisioning.kubernetes import KubernetesProvider
+
+log = structlog.get_logger(__name__)
+
+_DELETE_SECONDS: Final = 30.0
+
+
+class FloatingOutputs(ValueError):
+    """A derivation whose output paths are known only after it builds: no grant can name them."""
+
+
+class BuildPodStore(ScheduledStore):
+    def __init__(self, spec: BuildPodStoreSpec) -> None:
+        super().__init__(spec)
+        self.spec = spec
+        self.grants: Grants | None = None
+        """The context's; `Server` sets it, as the stores exist before the context does."""
+        self.central_host_key: str | None = None
+        """Central's SSH host key, which the pod pins; `Server` sets it when the SSH listener starts."""
+        self.kubernetes: KubernetesProvider | None = None
+
+    @property
+    def daemon_client(self) -> BuildPodStore:
+        # What the scheduler places on; `Executor.build_in_pod` takes it before any connection is asked for.
+        return self
+
+    async def start(self, sync_paths: bool = True) -> None:
+        del sync_paths
+        await self.probe()
+
+    async def probe(self) -> None:
+        self.probe_state = ProbeState.PROBED
+        self._probe_event.set()
+
+    def _holds_nothing(self) -> InfrastructureError:
+        # A pod's store lives only as long as its build; central has none to ask.
+        return InfrastructureError(f"{self.store_id}: a build pod store holds no paths")
+
+    async def create_conn(self) -> Connection:
+        raise self._holds_nothing()
+
+    async def call(
+        self,
+        request: WireRequest,
+        client: ClientConn | None = None,
+        suppress_last: bool = False,
+        raise_on_error: bool = False,
+        skip_probe: bool = False,
+    ) -> Any:  # noqa: ANN401 -- the base class's signature
+        raise self._holds_nothing()
+
+    async def execute(
+        self,
+        request: WireRequest,
+        client: ClientConn | None = None,
+        suppress_last: bool = False,
+        skip_probe: bool = False,
+    ) -> Any:  # noqa: ANN401 -- the base class's signature
+        raise self._holds_nothing()
+
+    async def read_derivation(self, drv_store_path: StorePath | str) -> Derivation | None:
+        return None
+
+    async def is_valid_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:  # noqa: ANN401 -- the base class's
+        raise self._holds_nothing()
+
+    async def query_path_info(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:  # noqa: ANN401 -- the base class's
+        raise self._holds_nothing()
+
+    async def query_path_from_hash_part(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:  # noqa: ANN401 -- the base class's
+        raise self._holds_nothing()
+
+    async def query_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:  # noqa: ANN401 -- the base class's
+        raise self._holds_nothing()
+
+    async def nar_from_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:  # noqa: ANN401 -- the base class's
+        raise self._holds_nothing()
+
+    async def answer_handshake(self) -> None:
+        # Each pod dials central; there is nothing here to answer.
+        return
+
+    def build_conn(self, options: SetOptionsRequest | None = None) -> AbstractAsyncContextManager[Connection]:
+        raise InfrastructureError(f"{self.store_id}: a build pod store has no connection")
+
+    def transfer_conn(self, options: SetOptionsRequest | None = None) -> AbstractAsyncContextManager[Connection]:
+        raise InfrastructureError(f"{self.store_id}: a build pod store has no connection")
+
+    async def build(
+        self, request: BuildDerivationRequest, on_line: Callable[[str], Awaitable[None]]
+    ) -> BuildDerivationResponse:
+        """Build *request* in a pod; `InfrastructureError` when the pod, not the build, failed."""
+        if self.grants is None or self.central_host_key is None or self.kubernetes is None:
+            raise InfrastructureError(f"{self.store_id}: no SSH listener or no Kubernetes settings for build pods")
+        paths = request.derivation.output_paths()
+        outputs = frozenset(str(path) for path in paths.values() if path != StorePath(""))
+        if len(outputs) != len(request.derivation.outputs):
+            raise FloatingOutputs(f"{request.drv_path}: a build pod needs output paths known before the build")
+        key = asyncssh.generate_private_key("ssh-ed25519")
+        public = key.export_public_key().decode()
+        name = f"pynixd-build-{StorePath(str(request.drv_path)).hash_part()[:12]}-{secrets.token_hex(3)}"
+        job = Job(
+            central_host=self.spec.central_host,
+            central_port=self.spec.central_port,
+            central_host_key=self.central_host_key,
+            request=await encode(request),
+        )
+        self.grants.grant(public, BuildGrant(drv_path=str(request.drv_path), outputs=outputs))
+        try:
+            secret = {JOB_NAME: job.model_dump_json(), KEY_NAME: key.export_private_key().decode()}
+            await self.kubernetes.start_build_pod(self.spec.template, name, secret)
+            log.info("build_pod_started", pod=name, drv=str(request.drv_path))
+            async for line in self.kubernetes.follow_build_pod(name, self.spec.container):
+                await on_line(line)
+            ended = await self.kubernetes.build_pod_ended(name, self.spec.container)
+            if ended is None:
+                raise InfrastructureError(f"build pod {name}: its log ended while its container ran")
+            message = ended.get("message")
+            if ended.get("exitCode") != 0 or not message:
+                reason = ended.get("reason") or "exited"
+                raise InfrastructureError(f"build pod {name}: {reason} with exit {ended.get('exitCode')} and no result")
+            try:
+                return await decode_response(str(message))
+            except (ValueError, EOFError) as error:
+                raise InfrastructureError(f"build pod {name}: its result does not read: {error}") from error
+        except ProviderError as error:
+            raise InfrastructureError(str(error)) from error
+        finally:
+            self.grants.revoke(public)
+            # A pod left behind ends at its template's `activeDeadlineSeconds`.
+            with (
+                anyio.CancelScope(shield=True),
+                anyio.move_on_after(_DELETE_SECONDS),
+                contextlib.suppress(ProviderError),
+            ):
+                await self.kubernetes.terminate(name)

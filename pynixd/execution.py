@@ -46,6 +46,7 @@ from .serde import (
     SetOptionsRequest,
 )
 from .store.base import get_current_system
+from .store.build_pods import BuildPodStore, FloatingOutputs
 from .system_features import effective_required_features
 from .tracing import Phase
 from .trust import warning_text
@@ -618,6 +619,9 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
                 if not store.runs_daemon:
                     await self._fail_unbuildable(build, _cannot_build_there(build, store.store_id, settings))
                     return
+            if isinstance(store, BuildPodStore):
+                await self.build_in_pod(build, store)
+                return
             # A local store with no daemon has none to delegate to: pynixd builds into it itself.
             other = self._sandbox_at(store.store_id)
             if other is not None and not store.runs_daemon:
@@ -793,6 +797,40 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         elif (fault := self.retryable_elsewhere(build, store, resp)) is not None:
             await self.retry_elsewhere(build, store, resp, fault)
             return
+        await self.queue.complete(build.build_id, resp)
+        self.trigger()
+
+    async def build_in_pod(self, build: QueuedBuild, store: BuildPodStore) -> None:
+        """A pod of its own builds it, and adds the outputs to the local store itself (`store/build_pods.py`).
+
+        A pod that fails without a result is the machine's fault: the build goes back to the queue.
+        """
+        observation = build.observation = BuildObservation(
+            store_id=str(store.store_id), status=-1, queued_ms=ms_since(build.enqueued_at), cores=None
+        )
+        await say_where_it_builds(build, store)
+        build.started_at = build.last_output_at = time.monotonic()
+
+        async def line(text: str) -> None:
+            build.last_output_at = time.monotonic()
+            await build.post_log_and_fanout(LogNext(text=text if text.endswith("\n") else text + "\n"))
+
+        try:
+            resp = without_error_prefix(await store.build(build.request, line))
+        except FloatingOutputs as e:
+            await self._fail_unbuildable(build, str(e))
+            return
+        observation.build_ms = ms_since(build.started_at)
+        if result_succeeded(resp.result):
+            outputs = output_paths(build, resp)
+            valid = await self.local.execute(QueryValidPathsRequest(paths=outputs, substitute=0), client=None)
+            if missing := outputs - set(valid.paths):
+                reason = f"built in a pod, but {', '.join(sorted(map(str, missing)))} did not reach the store"
+                await build.post_log_and_fanout(LogNext(text=f"pynixd: {reason}\n"))
+                await self.queue.fail(build.build_id, reason)
+                self.trigger()
+                return
+            await self._record_observation(build, resp)
         await self.queue.complete(build.build_id, resp)
         self.trigger()
 

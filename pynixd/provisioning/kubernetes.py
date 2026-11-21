@@ -36,7 +36,7 @@ from kr8s.asyncio.objects import Pod, Secret
 from .provider import Machine, MachineState, NoCapacity, ProviderError
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import AsyncIterator, Iterator, Mapping
 
     from ..config import KubernetesSettings, KubernetesTemplateSettings
 
@@ -271,3 +271,89 @@ class KubernetesProvider:
     async def close(self) -> None:
         # kr8s keeps one client per argument set for the thread and has no close.
         self._api = None
+
+    async def start_build_pod(self, template: str, name: str, job: Mapping[str, str]) -> None:
+        """A pod for one build, with *job* in a Secret it owns (nixidae/nixidae#1560, spike).
+
+        The pod has no tags, so `machines` and the provisioner never see it.
+        """
+        spec = self._template(template)
+        api = await self._client()
+        pod = Pod(build_pod_manifest(spec, name), api=api)
+        with failing(f"creating build pod {name}"):
+            try:
+                await pod.create()
+            except kr8s.ServerError as error:
+                if _quota(error):
+                    raise NoCapacity(f"kubernetes: {error}") from error
+                raise
+        try:
+            with failing(f"creating secret {name}"):
+                await Secret(job_secret_manifest(name, str(pod.raw["metadata"]["uid"]), job), api=api).create()
+        except ProviderError:
+            with contextlib.suppress(ProviderError):
+                await self.terminate(name)
+            raise
+
+    async def follow_build_pod(self, name: str, container: str) -> AsyncIterator[str]:
+        """The container's log lines, until the container ends."""
+        api = await self._client()
+        with failing(f"reading build pod {name}"):
+            pod = await Pod.get(name, namespace=self._settings.namespace, api=api)
+        while True:
+            try:
+                async for line in pod.logs(container=container, follow=True):
+                    yield line
+                return
+            except kr8s.ServerError as error:
+                if _status_code(error) != HTTPStatus.BAD_REQUEST:
+                    raise ProviderError(f"kubernetes: reading the log of {name}: {error}") from error
+            # 400 is "waiting to start": the API tells no client when a container's log opens.
+            await anyio.sleep(1.0)
+
+    async def build_pod_ended(self, name: str, container: str) -> Manifest | None:
+        """The container's `terminated` state, or `None` while it runs."""
+        api = await self._client()
+        with failing(f"reading build pod {name}"):
+            pod = await Pod.get(name, namespace=self._settings.namespace, api=api)
+        raw: Manifest = pod.raw
+        for status in (raw.get("status") or {}).get("containerStatuses") or []:
+            if status.get("name") == container:
+                terminated: Manifest | None = (status.get("state") or {}).get("terminated")
+                return terminated
+        return None
+
+
+BUILD_LABEL: Final = "pynixd.nixidae.org/build"
+JOB_VOLUME: Final = "pynixd-job"
+JOB_DIR: Final = "/run/pynixd-job"
+
+
+def build_pod_manifest(template: KubernetesTemplateSettings, name: str) -> Manifest:
+    """The template's pod for one build: no tags, a build label, and the job Secret at `JOB_DIR` in its container."""
+    pod: Manifest = copy.deepcopy(template.pod)
+    pod["apiVersion"] = "v1"
+    pod["kind"] = "Pod"
+    metadata = pod.setdefault("metadata", {})
+    metadata["name"] = name
+    metadata.pop("generateName", None)
+    labels = metadata.setdefault("labels", {})
+    labels[MANAGED_LABEL] = MANAGED_VALUE
+    labels[BUILD_LABEL] = "true"
+    spec = pod.setdefault("spec", {})
+    spec["restartPolicy"] = "Never"
+    spec.setdefault("volumes", []).append({"name": JOB_VOLUME, "secret": {"secretName": name, "defaultMode": 0o400}})
+    containers: list[Manifest] = spec.get("containers") or []
+    target = next((c for c in containers if c.get("name") == template.container), None)
+    if template.container is None and containers:
+        target = containers[0]
+    if target is None:
+        raise ValueError(f"kubernetes: the template has no container {template.container!r}")
+    target.setdefault("volumeMounts", []).append({"name": JOB_VOLUME, "mountPath": JOB_DIR, "readOnly": True})
+    return pod
+
+
+def job_secret_manifest(name: str, pod_uid: str, job: Mapping[str, str]) -> Manifest:
+    manifest = secret_manifest(name, pod_uid, "")
+    manifest["stringData"] = dict(job)
+    return manifest

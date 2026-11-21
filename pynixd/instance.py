@@ -52,6 +52,7 @@ from .serde.protocol import PynixdGCAction
 from .session_builders import SessionBuilders
 from .state import upstream_in_flight
 from .store import LocalDBStore, LocalStore, Store, preload as preload_stores
+from .store.build_pods import BuildPodStore
 from .store_url import reference_key, substituter_spec
 from .tcp_listen import adopt_tcp
 from .tracing import NO_TRACING
@@ -465,6 +466,15 @@ class Server:
     async def _pending_builders(self) -> list[frozenset[StoreId] | None]:
         scheduler = self.ctx.scheduler
         return [] if scheduler is None else [build.builders for build in await scheduler.queue.get_pending()]
+
+    def _arm_build_pods(self, host_key: str) -> None:
+        """Give each build pod store what it reaches only once the server runs (nixidae/nixidae#1560, spike)."""
+        kubernetes = self.settings.provisioning.kubernetes
+        for store in self.ctx.stores.values():
+            if isinstance(store, BuildPodStore) and kubernetes is not None:
+                store.grants = self.ctx.grants
+                store.central_host_key = host_key
+                store.kubernetes = KubernetesProvider(kubernetes)
 
     def _provisioner(self, controller_key: str) -> Provisioner | None:
         """The provisioner `provisioning.pools` asks for, or None for no pools."""
@@ -1142,6 +1152,7 @@ class Server:
             ]
             self.ssh_server, *more = acceptors
             self._more_acceptors.extend(more)
+            self._arm_build_pods(ssh_key.export_public_key().decode())
 
         # **The `enabled` check belongs here as well as in the function.**
         # `start_reverse_acceptor` answers `None` for a set that is off, and

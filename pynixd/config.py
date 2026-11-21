@@ -68,6 +68,7 @@ if TYPE_CHECKING:
         SSHSubprocessStore,
         Store,
     )
+    from .store.build_pods import BuildPodStore
 
 
 def _feature_matrix_from_config(
@@ -921,6 +922,26 @@ class ReverseStoreSpec(StoreSpecBase):
         raise NotImplementedError("Reverse stores are created dynamically, not from config")
 
 
+class BuildPodStoreSpec(StoreSpecBase):
+    """Each build a pod of its own from `provisioning.kubernetes.templates`, which dials central (spike).
+
+    The pod reaches central's SSH listener at `central_host`, so `ssh_port` must be set. nixidae/nixidae#1560.
+    """
+
+    type: Literal["kubernetes-build-pods"] = "kubernetes-build-pods"
+    template: str
+    container: str = "pynixd"
+    """The template's container that runs `pynixd build-one`: its termination message is the result."""
+    central_host: str
+    central_port: int = 2234
+    gc_enabled: bool = False
+
+    def to_store(self, store_id: str) -> BuildPodStore:
+        from .store.build_pods import BuildPodStore
+
+        return BuildPodStore(self.model_copy(update={"store_id": StoreId(store_id)}))
+
+
 class ReverseAcceptorSettings(BaseModel):
     """Settings for the reverse acceptor (controller side).
 
@@ -1651,6 +1672,7 @@ StoreSpec = Annotated[
     | SSHSubprocessStoreSpec
     | SSHSocketStoreSpec
     | ReverseStoreSpec
+    | BuildPodStoreSpec
     | HTTPBinaryCacheSpec
     | LocalBinaryCacheSpec
     | S3BinaryCacheSpec
