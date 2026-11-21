@@ -11,6 +11,7 @@ import contextlib
 import errno
 import functools
 import itertools
+import math
 import os
 import time
 from pathlib import Path
@@ -50,6 +51,47 @@ def own_cgroup(proc_self_cgroup: str) -> str | None:
         if line.startswith("0::"):
             return line[3:]
     return None
+
+
+def quota_cores(cpu_max_texts: list[str]) -> int | None:
+    """The cores the tightest of these `cpu.max` quotas allows, rounded up; `None` when none sets one."""
+    limits = []
+    for text in cpu_max_texts:
+        quota, _, period = text.strip().partition(" ")
+        if quota and quota != "max" and period:
+            limits.append(math.ceil(int(quota) / int(period)))
+    return min(limits, default=None)
+
+
+@functools.cache
+def default_cores() -> int:
+    """The cores a build gets when `cores` is 0. It reads files: `instance.preload` calls it first, in a thread.
+
+    NIX-DEVIATION (#27): `getDefaultCores` (`globals.cc:183`) takes the `cpu.max` quota of the daemon's own cgroup
+    (`getMaxCPU`, `current-process.cc:27`), else every core of the host. pynixd moves itself into a `pynixd` leaf
+    that has no quota, and a pod's limit sits on an ancestor, so pynixd takes the tightest quota of its cgroup and
+    every ancestor, and the CPU affinity besides. With the host's cores, a pod's build runs `make -j<host cores>`
+    and runs out of memory (nixidae/nixidae#1558). Read once per process: a limit that changes needs a restart.
+    """
+    cores = os.process_cpu_count() or 1
+    try:
+        path = own_cgroup(Path("/proc/self/cgroup").read_text())
+    except OSError:
+        return cores
+    limit = None if path is None else cgroup_cores(ROOT, path)
+    return cores if limit is None else max(1, min(cores, limit))
+
+
+def cgroup_cores(root: Path, path: str) -> int | None:
+    """The cores that the `cpu.max` of cgroup *path* under *root*, and of each ancestor, allow; `None` for no quota."""
+    texts = []
+    directory = root / path.lstrip("/")
+    for candidate in (directory, *directory.parents):
+        if not candidate.is_relative_to(root):
+            break
+        with contextlib.suppress(OSError):
+            texts.append((candidate / "cpu.max").read_text())
+    return quota_cores(texts)
 
 
 @functools.cache

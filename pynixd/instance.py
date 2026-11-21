@@ -21,6 +21,7 @@ from nix_daemon_protocol.add_multiple_to_store import UNVERSIONED_PATH_INFO
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from nix_daemon_protocol.store_dir import set_real_store_dir, set_store_dir
 from pynixd_store.background import Background
+from pynixd_store.builder.cgroup import default_cores
 from pynixd_store.db_migrations import TARGET_VERSION
 from pynixd_store.gc import LivenessWatch, pressure_usage
 from pynixd_store.local_store_db import DatabaseError
@@ -182,11 +183,13 @@ unversioned `AddMultipleToStore` stream."""
 def preload() -> None:
     """Load what a server needs later, so its first use does not load it on the event loop. It blocks.
 
-    Every module a configuration may load (an import reads files), and the
-    codecs of `_START_PAIRS` (a codec compiles at its first message).
+    Every module a configuration may load (an import reads files), the codecs
+    of `_START_PAIRS` (a codec compiles at its first message), and a build's
+    default cores (they come from cgroup files).
     """
     preload_stores()
     _optional.preload()
+    default_cores()
     for version, features in _START_PAIRS:
         wire.compile_codecs(version, features)
 

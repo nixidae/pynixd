@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import anyio
 import pytest
 
-from pynixd_store.builder.cgroup import io_bytes, own_cgroup, sample_every, stall_us
+from pynixd_store.builder.cgroup import cgroup_cores, io_bytes, own_cgroup, quota_cores, sample_every, stall_us
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -31,6 +31,25 @@ async def test_an_empty_cgroup_gives_no_sample(tmp_path: Path, populated: int, s
 def test_the_v2_line_names_the_cgroup() -> None:
     assert own_cgroup("12:pids:/old\n0::/system.slice/pynixd.service\n") == "/system.slice/pynixd.service"
     assert own_cgroup("12:pids:/old\n") is None
+
+
+def test_the_tightest_quota_of_the_ancestors_gives_the_cores() -> None:
+    """A pod's limit sits on an ancestor; pynixd's own leaf says `max` (`getMaxCPU`, `current-process.cc:27`)."""
+    assert quota_cores(["max 100000\n", "250000 100000\n", "800000 100000\n"]) == 3
+    assert quota_cores(["max 100000\n", "max 100000\n"]) is None
+    assert quota_cores([]) is None
+
+
+def test_the_quota_of_an_ancestor_limits_a_leaf_without_one(tmp_path: Path) -> None:
+    """pynixd runs in its `pynixd` leaf, whose `cpu.max` is `max`; the pod's quota is two levels up."""
+    leaf = tmp_path / "kubepods" / "pod" / "pynixd"
+    leaf.mkdir(parents=True)
+    (leaf / "cpu.max").write_text("max 100000\n")
+    (tmp_path / "kubepods" / "pod" / "cpu.max").write_text("max 100000\n")
+    (tmp_path / "kubepods" / "cpu.max").write_text("400000 100000\n")
+    (tmp_path / "cpu.max").write_text("max 100000\n")
+    assert cgroup_cores(tmp_path, "/kubepods/pod/pynixd") == 4
+    assert cgroup_cores(tmp_path / "kubepods" / "pod", "/pynixd") is None
 
 
 def test_io_bytes_sum_over_devices() -> None:

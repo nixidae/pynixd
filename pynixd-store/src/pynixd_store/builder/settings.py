@@ -11,6 +11,7 @@ from typing import Any
 import structlog
 
 from ..signing import key_settings
+from .cgroup import default_cores
 
 _log = structlog.get_logger(__name__)
 
@@ -256,7 +257,7 @@ class BuildSettings:
             extra_platforms=frozenset(words(value("extra-platforms", ()))),
             sandbox=sandbox if isinstance(sandbox, str) else ("true" if sandbox else "false"),
             sandbox_paths=sandbox_paths(),
-            build_cores=cores or os.cpu_count() or 1,
+            build_cores=cores or default_cores(),
             max_silent_time=int(value("max-silent-time", 0) or 0),
             timeout=int(value("timeout", 0) or 0),
             max_build_log_size=int(value("max-build-log-size", 0, alias="build-max-log-size") or 0),
