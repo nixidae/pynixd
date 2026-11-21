@@ -30,6 +30,10 @@ let
   siblingFeature = "k8s-sibling";
   # The build pod store's: central makes a pod for the build, and the pod dials central's SSH listener.
   podBuildFeature = "k8s-podbuild";
+  # The rogue store's: its pod pushes a path that is not its output (`kubernetes_rogue_pod.py`).
+  rogueFeature = "k8s-rogue";
+  # A pod central makes for one build: nothing in it ends the pod, so central deletes it.
+  buildPod = feature: feature == podBuildFeature || feature == rogueFeature;
   # Both run their build in the sandbox container.
   sandboxed = feature: feature == siblingFeature || feature == podBuildFeature;
   rendezvous = "/build/sibling";
@@ -91,7 +95,7 @@ let
   pod = image: feature: {
     spec.terminationGracePeriodSeconds = 5;
     # A build pod whose central went away ends here; its sandbox container serves for ever.
-    spec.activeDeadlineSeconds = if feature == podBuildFeature then 600 else null;
+    spec.activeDeadlineSeconds = if buildPod feature then 600 else null;
     spec.containers = [
       {
         name = "pynixd";
@@ -104,6 +108,13 @@ let
             [
               "${package}/bin/pynixd"
               "build-one"
+              "/run/pynixd-job"
+            ]
+          else if feature == rogueFeature then
+            [
+              "${package.venv}/lib/venv/bin/python"
+              "-I"
+              "${../../provisioning/kubernetes_rogue_pod.py}"
               "/run/pynixd-job"
             ]
           else
@@ -133,10 +144,14 @@ let
           }
           {
             name = "PATH";
-            value = lib.makeBinPath [
-              pkgs.nix
-              pkgs.coreutils
-            ];
+            value = lib.makeBinPath (
+              [
+                pkgs.nix
+                pkgs.coreutils
+              ]
+              # `nix copy` to an ssh-ng store runs ssh.
+              ++ lib.optional (feature == rogueFeature) pkgs.openssh
+            );
           }
         ];
         # The `nested` kind: Nix's own sandbox, in namespaces inside the pod's. The `krun` kind needs the
@@ -266,6 +281,7 @@ vivariumLib.mkTest {
       brokenFeature
       siblingFeature
       podBuildFeature
+      rogueFeature
       ;
     kubectl = "${pkgs.kubectl}/bin/kubectl";
   };
@@ -308,6 +324,15 @@ vivariumLib.mkTest {
           system_features = [ podBuildFeature ];
           mandatory_features = [ podBuildFeature ];
         };
+        stores.roguepods = {
+          type = "kubernetes-build-pods";
+          template = "rogue";
+          central_host = address;
+          central_port = sshPort;
+          systems = [ system ];
+          system_features = [ rogueFeature ];
+          mandatory_features = [ rogueFeature ];
+        };
         reverse_acceptor = {
           enabled = true;
           port = acceptorPort;
@@ -325,6 +350,7 @@ vivariumLib.mkTest {
               broken.pod = pod config.services.vivarium-k8s.workloadImage brokenFeature;
               sibling.pod = pod config.services.vivarium-k8s.workloadImage siblingFeature;
               buildpod.pod = pod config.services.vivarium-k8s.workloadImage podBuildFeature;
+              rogue.pod = pod config.services.vivarium-k8s.workloadImage rogueFeature;
             }
             // lib.optionalAttrs krun {
               krun.pod = pod config.services.vivarium-k8s.workloadImage krunFeature;
@@ -397,6 +423,10 @@ vivariumLib.mkTest {
         };
         pod-build = {
           script = ../../provisioning/kubernetes_pod_build.py;
+          after = [ "cluster" ];
+        };
+        pod-refused = {
+          script = ../../provisioning/kubernetes_pod_refused.py;
           after = [ "cluster" ];
         };
       }
