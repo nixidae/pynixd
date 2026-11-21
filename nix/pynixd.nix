@@ -20,6 +20,9 @@
   brotli,
   asyncssh,
   watchdog,
+  kr8s,
+  httpx,
+  httpcore,
   structlog,
   pydantic,
   pydantic-settings,
@@ -85,6 +88,9 @@ pythonBuilder (finalAttrs: {
     anyio
     uvloop
     watchdog
+    kr8s
+    httpx
+    httpcore
     nix-daemon-protocol
     pynixd-store
   ];

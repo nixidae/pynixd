@@ -191,11 +191,32 @@ let
     # Its own suite loads every service's model.
     doCheck = false;
   });
+  /*
+    The kr8s fork nanopynix builds, on this anyio. httpcore, httpx and
+    httpx-ws depend on anyio too; each takes this one, or the venv holds two
+    and `pythonCatchConflictsPhase` fails. Their suites are not this build's
+    to run.
+  */
+  onAnyio =
+    package: extra:
+    (package.override ({ inherit anyio; } // extra)).overridePythonAttrs { doCheck = false; };
+  httpcore = onAnyio pkgs.python3Packages.httpcore { };
+  httpx = onAnyio pkgs.python3Packages.httpx { inherit httpcore; };
+  kr8s = pkgs.python3Packages.callPackage "${sources.nanopynix}/nix/kr8s.nix" {
+    src = sources.kr8s;
+    inherit anyio httpx;
+    httpx-ws = onAnyio pkgs.python3Packages.httpx-ws { inherit httpcore httpx; };
+  };
   library = pkgs.python3Packages.callPackage ./nix/pynixd.nix {
     pythonBuilder = pkgs.python3Packages.buildPythonPackage;
     nix-daemon-protocol = daemon-protocol;
     pynixd-store = store;
-    inherit anyio;
+    inherit
+      anyio
+      kr8s
+      httpx
+      httpcore
+      ;
   };
 
   mkTests =
@@ -504,11 +525,18 @@ let
       in
       # nixpkgs' anyio and not the fork: vivarium's packages bring nixpkgs' anyio, a venv
       # holds one, and the fork changes no type.
-      lib.subtractLists (firstParty ++ [ anyio ]) (
-        lib.filter (package: package ? pythonModule) (lib.unique dependencies)
-      )
+      lib.subtractLists (
+        firstParty
+        ++ [
+          anyio
+          kr8s
+          httpx
+          httpcore
+        ]
+      ) (lib.filter (package: package ? pythonModule) (lib.unique dependencies))
       ++ [
         ps.anyio
+        (ps.callPackage "${sources.nanopynix}/nix/kr8s.nix" { src = sources.kr8s; })
         ps.pytest
         ps.moto
         ps.hypothesis
@@ -924,6 +952,14 @@ let
         inherit package;
         inherit vivariumLib;
         inherit (nanopynix.packages) pynix;
+      }
+    );
+
+    # A pod on a kubeadm node as a builder: the real provider and API server. nixidae/nixidae#1560.
+    provisioning-kubernetes = withDefaultNix (
+      pkgs.callPackage ./tests/derivations/provisioning-kubernetes {
+        inherit package vivariumLib;
+        k8sModule = vivarium.nixosModules.k8s;
       }
     );
 

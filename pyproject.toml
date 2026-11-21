@@ -46,6 +46,12 @@ dependencies = [
     "zstandard",
     # `s3://` substituters: credentials and SigV4 signing only; aiohttp carries the transfers.
     "botocore",
+    # Kubernetes builder pods (`provisioning/kubernetes.py`), through nixidae's kr8s fork.
+    "kr8s",
+    # Its transport errors: kr8s raises httpx's own.
+    "httpx",
+    # Imported for its load, which httpx defers to the event loop (`provisioning/kubernetes.py`).
+    "httpcore",
 ]
 
 [project.optional-dependencies]

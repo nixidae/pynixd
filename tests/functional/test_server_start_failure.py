@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import threading
 import time
 from pathlib import Path
@@ -54,8 +55,10 @@ def test_start_failure_tears_down_started_state(tmp_path: Path) -> None:
             async with server:
                 pass
 
+    # An empty context: anyio's pytest plugin marks this thread's as running asyncio while the session's
+    # `pynixd_server` holds its runner, and with sniffio installed `anyio.run` then refuses to start.
     with pytest.raises(RuntimeError, match="repro61"):
-        anyio.run(start, backend="asyncio", backend_options={"use_uvloop": True})
+        contextvars.Context().run(anyio.run, start, backend="asyncio", backend_options={"use_uvloop": True})
 
     assert not servers[0]._started
 

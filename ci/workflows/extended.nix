@@ -45,6 +45,10 @@ ghalib.evalWorkflow {
         name = "Run a GitHub Actions job as a builder";
         run = "nix build --file . internal.tests.provisioning-gha --no-link --print-build-logs";
       }
+      {
+        name = "Run a Kubernetes pod as a builder";
+        run = "nix build --file . internal.tests.provisioning-kubernetes --no-link --print-build-logs";
+      }
     ];
   };
 

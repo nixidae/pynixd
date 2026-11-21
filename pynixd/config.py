@@ -953,7 +953,7 @@ class ReverseInitiatorSettings(BaseModel):
     """
 
 
-ProviderName = Literal["vivarium", "ec2", "gha", "nomac"]
+ProviderName = Literal["vivarium", "ec2", "gha", "nomac", "kubernetes"]
 """A provisioning provider: each has its own settings block in `ProvisioningSettings`."""
 
 
@@ -1150,6 +1150,33 @@ class NomacSettings(BaseModel):
     """How long the provider remembers a start whose session is gone."""
 
 
+class KubernetesTemplateSettings(BaseModel):
+    """One kind of builder pod. nixidae/nixidae#1560."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pod: dict[str, Any]  # A Pod manifest: its schema is the API server's, which validates it at each launch.
+    """The pod, as `kubectl` takes it. The provider sets its name, adds a label, the tags annotation and the
+    ticket volume, and `restartPolicy: Never` unless the pod sets one. Its pynixd runs the reverse initiator
+    with `join_ticket` at `ticket_dir`/ticket. The container needs a passwd entry for its uid: without one, uid 0
+    is no `root`, and the controller's session to the builder is an untrusted user's."""
+    container: str | None = None
+    """The container the ticket is mounted in; `None`: the first."""
+    ticket_dir: Path = Path("/run/pynixd-join")
+
+
+class KubernetesSettings(BaseModel):
+    """Which cluster and namespace the Kubernetes provider starts builder pods in. nixidae/nixidae#1560."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kubeconfig: Path | None = None
+    """`None`: kr8s' own search, the pod's service account first, then `KUBECONFIG` and `~/.kube/config`."""
+    context: str | None = None
+    namespace: str = "default"
+    templates: dict[str, KubernetesTemplateSettings]
+
+
 class ProvisioningSettings(BaseModel):
     """Builders started on demand, which register through the reverse acceptor. nixidae/nixidae#1198."""
 
@@ -1164,6 +1191,8 @@ class ProvisioningSettings(BaseModel):
     """Required with `provider = "gha"`."""
     nomac: NomacSettings | None = None
     """Required with `provider = "nomac"`."""
+    kubernetes: KubernetesSettings | None = None
+    """Required with `provider = "kubernetes"`."""
     owner: str | None = None
     """The tag that marks this pynixd's machines, so a restart finds them. `None` takes the host name."""
     acceptor_host: str | None = None
@@ -1196,6 +1225,8 @@ class ProvisioningSettings(BaseModel):
                 raise ValueError('provider "gha" needs the gha settings')
             if name == "nomac" and self.nomac is None:
                 raise ValueError('provider "nomac" needs the nomac settings')
+            if name == "kubernetes" and self.kubernetes is None:
+                raise ValueError('provider "kubernetes" needs the kubernetes settings')
         return self
 
 

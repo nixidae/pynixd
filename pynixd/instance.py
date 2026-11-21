@@ -42,6 +42,7 @@ from .health import HealthReport, LoopLagMonitor, StallWatchdog
 from .liveness_watch import DirtyFlag, StableRootsWatch
 from .provisioning.ec2 import Ec2Provider
 from .provisioning.gha import GhaProvider
+from .provisioning.kubernetes import KubernetesProvider
 from .provisioning.nomac import NomacProvider
 from .provisioning.provisioner import Provisioner
 from .provisioning.vivarium import VivariumProvider
@@ -489,6 +490,8 @@ class Server:
                     providers.append(GhaProvider(settings.gha))
                 case "nomac" if settings.nomac is not None:
                     providers.append(NomacProvider(settings.nomac))
+                case "kubernetes" if settings.kubernetes is not None:
+                    providers.append(KubernetesProvider(settings.kubernetes))
                 case other:
                     raise RuntimeError(f"provider {other!r} has no settings")
         return Provisioner(
