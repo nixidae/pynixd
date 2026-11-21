@@ -259,11 +259,11 @@ class Scheduler:
         """Add a build to the queue and trigger the scheduler. *askers* go to `BuildQueue.enqueue`."""
         t0 = time.monotonic()
         hint = None
-        peak = None
+        memory = None
         if isinstance(self.local_store, LocalDBStore):
             identity = identity_of(request.derivation)
             hint = await self.local_store.db.expected_build_ms(identity)
-            peak = await self.local_store.db.expected_peak_memory(identity)
+            memory = await self.local_store.db.memory_model(identity)
         t_hint = time.monotonic()
 
         builders = None
@@ -297,8 +297,8 @@ class Scheduler:
             pools=pools,
         )
         queued = self.queue.by_id.get(res[0])
-        if queued is not None and queued.expected_peak_bytes is None:
-            queued.expected_peak_bytes = peak
+        if queued is not None and queued.memory_model is None:
+            queued.memory_model = memory
         if queued is not None and isinstance(self.local_store, LocalDBStore):
             queued.external_systems |= await self.local_store.external_builder_systems(options)
         t_enqueue = time.monotonic()

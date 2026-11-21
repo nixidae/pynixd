@@ -71,6 +71,9 @@ class BuildObservation:
     host_peak_memory_bytes: int | None = None
     cores: int | None = None
     """The cores the build ran with: what the builder reported, else what pynixd gave it."""
+    oom_kills: int | None = None
+    """The processes the OOM killer ended. A killed attempt is kept beside the successes: its peak is a lower
+    bound on what its cores need."""
 
 
 def name_without_version(name: str) -> str:

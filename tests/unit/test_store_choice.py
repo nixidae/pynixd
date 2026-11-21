@@ -16,11 +16,13 @@ from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest, QueryV
 from pynixd.allocator import (
     SHORT_OF_DISK,
     BuildAllocator,
+    CoreChoice,
     ExcludedStore,
     PreferLocal,
     RankedStore,
     RankedStores,
     TelemetryStoreRanker,
+    choose_cores,
     explore_store,
     fit_memory,
     pick_store,
@@ -34,6 +36,7 @@ from pynixd.psi import MemInfo, SystemHealth
 from pynixd.scheduler import Scheduler
 from pynixd.serde import BasicDerivation, BuildDerivationRequest, BuildMode, StorePath
 from pynixd_store.build_stats import ExpectedBytes, StoreEstimate, StoreLink, slot_wait_seconds, transfer_seconds
+from pynixd_store.memory_model import MemoryModel
 from tests._conftest.placement import (
     FakeBuild,
     FakeMonitor,
@@ -622,7 +625,7 @@ async def test_a_second_large_build_goes_where_memory_is_left() -> None:
     first, _ = await queue.enqueue(_request(1))
     second, _ = await queue.enqueue(_request(2))
     for build_id in (first, second):
-        queue.by_id[build_id].expected_peak_bytes = 3 * GIB
+        queue.by_id[build_id].memory_model = MemoryModel(3.0 * GIB, 0.0)
     # REMOTE first; each remote has 4 GiB available.
     ranked = [_with_memory(REMOTE, 4 * GIB), _with_memory(OTHER, 4 * GIB)]
     spawned = Spawned()
@@ -632,6 +635,47 @@ async def test_a_second_large_build_goes_where_memory_is_left() -> None:
     )
 
     assert spawned.stores == [REMOTE, OTHER]
+
+
+@pytest.mark.anyio
+async def test_each_store_gets_the_cores_its_memory_holds() -> None:
+    """The same derivation gets 30 cores where 62 GiB are free and 7 where 16 GiB are. nixidae/nixidae#1558.
+
+    The first build's reservation leaves REMOTE too little for the second even at 1 core, so it goes to OTHER.
+    """
+    queue = BuildQueue()
+    builds = [(await queue.enqueue(_request(n)))[0] for n in (1, 2)]
+    for build_id in builds:
+        queue.by_id[build_id].memory_model = MemoryModel(2.0 * GIB, 2.0 * GIB)
+    roomy, starved = _with_memory(REMOTE, 63 * GIB), _with_memory(OTHER, 17 * GIB)
+    for candidate in (roomy, starved):
+        candidate.store.cores = 64
+    spawned = Spawned()
+    placer = fake_placer(queue, FixedRanking(lambda _build: [roomy, starved]), spawned)
+
+    await placer.assign([queue.by_id[build_id] for build_id in builds], {})
+
+    assert spawned.stores == [REMOTE, OTHER]
+    assert [queue.by_id[b].cores_cap for b in builds] == [30, 7]
+    assert [queue.by_id[b].expected_peak_bytes for b in builds] == [62 * GIB, 16 * GIB]
+
+
+@pytest.mark.parametrize(
+    ("model", "room", "client", "killed", "choice"),
+    [
+        pytest.param(MemoryModel(2.0 * GIB, 2.0 * GIB), 18 * GIB, None, None, CoreChoice(8, 18 * GIB), id="fits-8"),
+        pytest.param(MemoryModel(2.0 * GIB, 2.0 * GIB), 999 * GIB, None, None, CoreChoice(None, 130 * GIB), id="all"),
+        pytest.param(MemoryModel(2.0 * GIB, 2.0 * GIB), 999 * GIB, 4, None, CoreChoice(None, 10 * GIB), id="client"),
+        pytest.param(MemoryModel(2.0 * GIB, 2.0 * GIB), 999 * GIB, None, 16, CoreChoice(16, 34 * GIB), id="killed"),
+        pytest.param(MemoryModel(2.0 * GIB, 2.0 * GIB), 1 * GIB, None, None, CoreChoice(1, 4 * GIB), id="no-fit"),
+        pytest.param(MemoryModel(2.0 * GIB, 2.0 * GIB), None, None, None, CoreChoice(None, 130 * GIB), id="unmeasured"),
+        pytest.param(None, 18 * GIB, None, 16, CoreChoice(16, None), id="no-model"),
+    ],
+)
+def test_the_cores_a_store_gets(
+    model: MemoryModel | None, room: int | None, client: int | None, killed: int | None, choice: CoreChoice
+) -> None:
+    assert choose_cores(model, room, 64, client, killed) == choice
 
 
 @pytest.mark.parametrize(("draw", "expected"), [(0.0, OTHER), (0.5, REMOTE)])

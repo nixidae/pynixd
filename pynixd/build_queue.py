@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
     from nix_daemon_protocol.logs import LogMessage
     from pynixd_store.build_stats import BuildObservation, StoreEstimate
+    from pynixd_store.memory_model import MemoryModel
 
     from .connection import ClientConn
     from .derived_path import DerivedPath
@@ -119,8 +120,10 @@ class QueuedBuild:
         """
         self.answer = answer
         self.expected_duration = expected_duration
+        self.memory_model: MemoryModel | None = None
+        """The derivation's peak memory as a function of its cores, from its history and its kills."""
         self.expected_peak_bytes: int | None = None
-        """The median peak memory of the derivation's recent builds; the scheduler reserves it on the chosen store."""
+        """The peak memory reserved on the chosen store, at the cores placement gave the build there."""
         self.external_systems: frozenset[str] = frozenset()
         """The systems an external builder of the local store takes under the client's settings."""
         self.enqueued_at = time.monotonic()
@@ -153,8 +156,10 @@ class QueuedBuild:
         self.finished_at: float | None = None
         self.retries = 0
         self.cores_cap: int | None = None
-        """The most cores the next attempt may use: half of what the last one ran with, after the OOM killer ended
-        it (nixidae/nixidae#1558). `None` leaves the cores to the client's options and the store."""
+        """The most cores this attempt may use, as placement chose them (nixidae/nixidae#1558). `None` leaves the
+        cores to the client's options and the store."""
+        self.cores_ceiling: int | None = None
+        """Fewer cores than the last attempt that the OOM killer ended. No later placement gives more."""
         self.store_failures: dict[StoreId, int] = {}
         self.store_errors: dict[StoreId, str] = {}
         """The last failure of each store, which the final error names."""
@@ -277,7 +282,7 @@ class QueuedBuild:
         self.retries += 1
         self.started_at = None
         self.worker = None
-        self.cores_cap = cores
+        self.cores_cap = self.cores_ceiling = cores
 
     @property
     def wait_time(self) -> float | None:

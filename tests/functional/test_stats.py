@@ -45,6 +45,7 @@ if TYPE_CHECKING:
 
     from nix_daemon_protocol.wire_ops import WireRequest
     from pynixd.connection import ClientConn
+    from pynixd_store.build_stats import DerivationIdentity
 
 log = structlog.get_logger(__name__)
 
@@ -326,8 +327,17 @@ async def test_scheduler_local_fasttrack(tmp_path: Path) -> None:
         assert tiny_build.is_building
 
 
-async def test_expected_peak_memory_is_the_median_of_the_identity() -> None:
-    """The peak estimate is the median of the identity's measured `BUILT` builds. nixidae/nixidae#1187."""
+async def _peak(db: LocalStoreDB, identity: DerivationIdentity) -> int:
+    model = await db.memory_model(identity)
+    assert model is not None
+    return model.peak(1)
+
+
+async def test_the_memory_model_of_rows_without_cores_is_their_median() -> None:
+    """Rows that name no cores give the median of the identity's measured `BUILT` builds, at any cores.
+
+    nixidae/nixidae#1187, nixidae/nixidae#1558.
+    """
     path = STORE_PREFIX / "stats-peak-test"
     rmtree_robust(path)
     (path / "nix/var/nix/db").mkdir(parents=True)
@@ -343,16 +353,16 @@ async def test_expected_peak_memory_is_the_median_of_the_identity() -> None:
             testpkg, BuildObservation(store_id="a", status=BuildResultStatus.MISC_FAILURE, peak_memory_bytes=9000)
         )
 
-        assert await db.expected_peak_memory(testpkg) == 400
+        assert await _peak(db, testpkg) == 400
         # A VM build costs the host its guest's RAM: the host's peak is the one a store's free memory loses.
         vmpkg = identity_of(BasicDerivation(platform="x86_64-linux", builder="", env={"pname": "vmpkg"}))
         await db.record_build_observation(
             vmpkg,
             BuildObservation(store_id="a", status=0, build_ms=1, peak_memory_bytes=300, host_peak_memory_bytes=900),
         )
-        assert await db.expected_peak_memory(vmpkg) == 900
+        assert await _peak(db, vmpkg) == 900
         other = identity_of(BasicDerivation(platform="x86_64-linux", builder="", env={"pname": "otherpkg"}))
-        assert await db.expected_peak_memory(other) is None
+        assert await db.memory_model(other) is None
 
 
 async def test_pruning_keeps_the_last_successful_build_of_an_identity() -> None:
@@ -373,7 +383,7 @@ async def test_pruning_keeps_the_last_successful_build_of_an_identity() -> None:
             )
 
         assert await db.expected_build_ms(testpkg) == 500
-        assert await db.expected_peak_memory(testpkg) == 700
+        assert await _peak(db, testpkg) == 700
 
 
 async def test_expected_build_ms_is_the_median_of_the_identity(tmp_path: Path) -> None:

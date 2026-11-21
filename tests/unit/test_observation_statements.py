@@ -22,6 +22,12 @@ def _built(store: str, build_ms: int) -> BuildObservation:
     return BuildObservation(store_id=store, status=BUILT, build_ms=build_ms)
 
 
+async def _peak(db: LocalStoreDB, identity: DerivationIdentity) -> int:
+    model = await db.memory_model(identity)
+    assert model is not None
+    return model.peak(1)
+
+
 async def _count(db: LocalStoreDB, table: str) -> int:
     row = await db.fetchone(f"SELECT count(*) FROM {table}")
     assert row is not None
@@ -51,10 +57,10 @@ async def test_the_estimates_read_the_newest_built_rows(store_db: LocalStoreDB) 
     )
 
     assert await store_db.expected_build_ms(HELLO) == 200
-    assert await store_db.expected_peak_memory(HELLO) == 1 << 33
+    assert await _peak(store_db, HELLO) == 1 << 33
     unseen = DerivationIdentity(name="hello", system="x86_64-linux", shape="s3", keys=(), features=())
     assert await store_db.expected_build_ms(unseen) == 250
-    assert await store_db.expected_peak_memory(RESHAPED) == 1 << 34
+    assert await _peak(store_db, RESHAPED) == 1 << 34
     assert await store_db.expected_build_ms_on(HELLO, "remote") == (200, BuildEstimateSource.SHAPE_ON_STORE)
     assert await store_db.expected_build_ms_on(HELLO, "local") == (200, BuildEstimateSource.SHAPE)
     assert await store_db.expected_build_ms_on(unseen, "local") == (250, BuildEstimateSource.NAME)

@@ -34,9 +34,11 @@ from .allocator import (
     RankedStore,
     RankedStores,
     builds_externally,
+    choose_cores,
     disk_wait,
     explore_store,
     fit_memory,
+    memory_room,
     outside_the_session,
     pick_store,
     reserved_memory,
@@ -619,7 +621,7 @@ class Placer[S: PlacedStore]:
                 notes.end(Outcome.WAITING, "every candidate is at its build limit")
                 self.held_by_pressure.add(build.build_id)
                 return True
-            fit = fit_memory(roomy, build.expected_peak_bytes, reserved)
+            fit = fit_memory(roomy, build.memory_model.peak(1) if build.memory_model else None, reserved)
             roomy = fit.stores
             notes.short_of_memory = fit.short
             notes.local_slot_full = local_slot_is_full(
@@ -678,6 +680,15 @@ class Placer[S: PlacedStore]:
             # running builds reads this field, and a task that has not
             # started yet would otherwise carry no store and go uncounted.
             build.assigned_store_id = rs.store_id
+            room = memory_room(rs.store, reserved.get(rs.store_id, 0))
+            choice = choose_cores(
+                build.memory_model,
+                None if room is None else room - self.settings.memory_headroom_bytes,
+                rs.store.cores,
+                build.options.build_cores if build.options is not None and build.options.build_cores > 0 else None,
+                build.cores_ceiling,
+            )
+            build.cores_cap, build.expected_peak_bytes = choice.cores, choice.peak_bytes
             self.spawn(build, rs.store)
             assigned_this_pass[rs.store_id] = assigned_this_pass.get(rs.store_id, 0) + 1
             if build.expected_peak_bytes:

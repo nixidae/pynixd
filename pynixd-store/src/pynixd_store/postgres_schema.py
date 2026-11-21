@@ -269,6 +269,7 @@ STEPS: tuple[tuple[int, tuple[str, ...]], ...] = (
         ),
     ),
     (15, (f"ALTER TABLE {BUILD_OBSERVATION_TABLE} ADD COLUMN IF NOT EXISTS cores BIGINT",)),
+    (16, (f"ALTER TABLE {BUILD_OBSERVATION_TABLE} ADD COLUMN IF NOT EXISTS oomKills BIGINT",)),
 )
 """The twin of each SQLite migration after `BASE_VERSION`, by version, applied in order."""
 

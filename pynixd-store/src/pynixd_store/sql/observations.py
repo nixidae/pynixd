@@ -20,8 +20,9 @@ class ObservationSql:
     build_ms_of_shape: str
     build_ms_of_shape_on_store: str
     build_ms_of_name: str
-    peak_memory_of_shape: str
-    peak_memory_of_name: str
+    memory_points_of_shape: str
+    """The cores, peak and OOM kills of the identity's `BUILT` attempts and its killed ones, newest first."""
+    memory_points_of_name: str
     store_link: str
     inputs_bytes: str
     pull_bytes: str
@@ -50,8 +51,8 @@ INSERT INTO {BUILD_OBSERVATION_TABLE}
 (name, system, shape, storeId, status, queuedMs, inputsMs, inputsBytes, buildMs,
  cpuUserUs, cpuSystemUs, pullMs, pullBytes, resourceSource, peakMemoryBytes, ioReadBytes, ioWriteBytes,
  cpuStallUs, memoryStallUs, ioStallUs, hostResourceSource, hostCpuUserUs, hostCpuSystemUs, hostPeakMemoryBytes,
- cores, finishedAt)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+ cores, oomKills, finishedAt)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
 """,
     insert_build_observation_sample=f"""
 INSERT INTO {BUILD_OBSERVATION_SAMPLE_TABLE}
@@ -78,15 +79,15 @@ SELECT buildMs FROM {BUILD_OBSERVATION_TABLE}
 WHERE name = ? AND system = ? AND status = 0 AND buildMs IS NOT NULL
 ORDER BY id DESC LIMIT ?
 """,
-    peak_memory_of_shape=f"""
-SELECT coalesce(hostPeakMemoryBytes, peakMemoryBytes) FROM {BUILD_OBSERVATION_TABLE}
-WHERE name = ? AND system = ? AND shape = ? AND status = 0
+    memory_points_of_shape=f"""
+SELECT cores, coalesce(hostPeakMemoryBytes, peakMemoryBytes), oomKills FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = ? AND system = ? AND shape = ? AND (status = 0 OR oomKills > 0)
 AND coalesce(hostPeakMemoryBytes, peakMemoryBytes) IS NOT NULL
 ORDER BY id DESC LIMIT ?
 """,
-    peak_memory_of_name=f"""
-SELECT coalesce(hostPeakMemoryBytes, peakMemoryBytes) FROM {BUILD_OBSERVATION_TABLE}
-WHERE name = ? AND system = ? AND status = 0
+    memory_points_of_name=f"""
+SELECT cores, coalesce(hostPeakMemoryBytes, peakMemoryBytes), oomKills FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = ? AND system = ? AND (status = 0 OR oomKills > 0)
 AND coalesce(hostPeakMemoryBytes, peakMemoryBytes) IS NOT NULL
 ORDER BY id DESC LIMIT ?
 """,
@@ -129,8 +130,8 @@ INSERT INTO {BUILD_OBSERVATION_TABLE}
 (name, system, shape, storeId, status, queuedMs, inputsMs, inputsBytes, buildMs,
  cpuUserUs, cpuSystemUs, pullMs, pullBytes, resourceSource, peakMemoryBytes, ioReadBytes, ioWriteBytes,
  cpuStallUs, memoryStallUs, ioStallUs, hostResourceSource, hostCpuUserUs, hostCpuSystemUs, hostPeakMemoryBytes,
- cores, finishedAt)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+ cores, oomKills, finishedAt)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
  extract(epoch FROM now())::bigint)
 RETURNING id
 """,
@@ -159,15 +160,15 @@ SELECT buildMs FROM {BUILD_OBSERVATION_TABLE}
 WHERE name = %s AND system = %s AND status = 0 AND buildMs IS NOT NULL
 ORDER BY id DESC LIMIT %s
 """,
-    peak_memory_of_shape=f"""
-SELECT coalesce(hostPeakMemoryBytes, peakMemoryBytes) FROM {BUILD_OBSERVATION_TABLE}
-WHERE name = %s AND system = %s AND shape = %s AND status = 0
+    memory_points_of_shape=f"""
+SELECT cores, coalesce(hostPeakMemoryBytes, peakMemoryBytes), oomKills FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = %s AND system = %s AND shape = %s AND (status = 0 OR oomKills > 0)
 AND coalesce(hostPeakMemoryBytes, peakMemoryBytes) IS NOT NULL
 ORDER BY id DESC LIMIT %s
 """,
-    peak_memory_of_name=f"""
-SELECT coalesce(hostPeakMemoryBytes, peakMemoryBytes) FROM {BUILD_OBSERVATION_TABLE}
-WHERE name = %s AND system = %s AND status = 0
+    memory_points_of_name=f"""
+SELECT cores, coalesce(hostPeakMemoryBytes, peakMemoryBytes), oomKills FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = %s AND system = %s AND (status = 0 OR oomKills > 0)
 AND coalesce(hostPeakMemoryBytes, peakMemoryBytes) IS NOT NULL
 ORDER BY id DESC LIMIT %s
 """,

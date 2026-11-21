@@ -442,6 +442,12 @@ MIGRATIONS: tuple[Migration, ...] = (
         # The cores a build ran with, nixidae/nixidae#1558. A row from before has none.
         statements=(f"ALTER TABLE {BUILD_OBSERVATION_TABLE} ADD COLUMN cores INTEGER",),
     ),
+    Migration(
+        version=16,
+        name="build-observation-oom-kills",
+        # The processes the OOM killer ended in an attempt, nixidae/nixidae#1558. A row from before has none.
+        statements=(f"ALTER TABLE {BUILD_OBSERVATION_TABLE} ADD COLUMN oomKills INTEGER",),
+    ),
 )
 
 TARGET_VERSION = MIGRATIONS[-1].version if MIGRATIONS else 0

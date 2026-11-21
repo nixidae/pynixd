@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
     from nix_daemon_protocol.ids import StoreId
     from pynixd_store.build_stats import StoreEstimate
+    from pynixd_store.memory_model import MemoryModel
 
     from .build_queue import QueuedBuild
     from .psi import CpuUtil, DiskSpace, SystemHealth
@@ -77,6 +78,8 @@ class Candidate(SessionMember, Protocol):
     def last_resort(self) -> bool: ...
     @property
     def disk_full_until(self) -> float: ...
+    @property
+    def cores(self) -> int | None: ...
     def supports_derivation(self, system: str, features: set[str], /) -> bool: ...
 
 
@@ -519,6 +522,36 @@ def fit_memory[S: Candidate](
         {},
         f"no candidate has memory for an expected peak of {_mib(expected_peak_bytes)} MiB; the most room goes first",
     )
+
+
+@dataclass(frozen=True)
+class CoreChoice:
+    """The cores a build gets on its store, and the peak memory reserved for it there."""
+
+    cores: int | None
+    """The cap sent to the builder; `None` leaves it to the client's `cores` and the store's own."""
+    peak_bytes: int | None
+
+
+def choose_cores(
+    model: MemoryModel | None,
+    room_bytes: int | None,
+    store_cores: int | None,
+    client_cores: int | None,
+    killed_ceiling: int | None,
+) -> CoreChoice:
+    """The most cores whose expected peak fits *room_bytes*, at most what the store, the client and a kill allow.
+
+    Without a model or a room, the kill's ceiling alone. A build that fits at no count gets 1 core: placement gave
+    it the store with the most room. nixidae/nixidae#1558.
+    """
+    ceiling = min((c for c in (store_cores, client_cores, killed_ceiling) if c), default=None)
+    if model is None:
+        return CoreChoice(killed_ceiling, None)
+    if room_bytes is None or ceiling is None:
+        return CoreChoice(killed_ceiling, model.peak(ceiling or 1))
+    cores = model.most_cores_within(room_bytes, ceiling) or 1
+    return CoreChoice(None if cores == ceiling and killed_ceiling is None else cores, model.peak(cores))
 
 
 def _mib(count: int | None) -> int:

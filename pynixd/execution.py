@@ -26,6 +26,7 @@ from nix_daemon_protocol.wire_time import TimeSpan
 from pynixd_store.build_stats import BuildObservation, identity_of
 from pynixd_store.builder.settings import NotBuiltHere
 from pynixd_store.builder.usage import UsageSource
+from pynixd_store.memory_model import MemoryModel
 from pynixd_store.store_path import StorePath
 
 from . import metrics
@@ -1025,6 +1026,8 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         if (used := resp.result.resources).measured:
             if used.cores > 0:
                 observation.cores = used.cores
+            if used.oom_kills:
+                observation.oom_kills = used.oom_kills
             observation.resource_source = used.source
             observation.peak_memory_bytes = used.peak_memory_bytes
             observation.io_read_bytes = used.io_read_bytes
@@ -1092,8 +1095,18 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
     async def retry_with_fewer_cores(
         self, build: QueuedBuild, store: S, resp: BuildDerivationResponse, cores: int
     ) -> None:
-        """A Nix daemon's builder lost the build to SIGKILL: queue it again, on at most *cores* cores."""
+        """A Nix daemon's builder lost the build to SIGKILL: queue it again, on at most *cores* cores.
+
+        The killed attempt is kept, so the next build of the derivation is placed below its cores. Its peak, when the
+        builder measured one, is a lower bound on what those cores need, and placement reads it for this build too.
+        """
         error = str(resp.result.error_msg)
+        if (observation := build.observation) is not None:
+            observation.oom_kills = max(1, resp.result.resources.oom_kills)
+            await self._record_observation(build, resp)
+            peak = observation.host_peak_memory_bytes or observation.peak_memory_bytes
+            if observation.cores and peak:
+                build.memory_model = (build.memory_model or MemoryModel(0.0, 0.0)).killed_at(observation.cores, peak)
         log.warning("build_killed_on_the_daemon", build_id=build.build_id, store_id=store.store_id, cores=cores)
         await build.post_log_and_fanout(
             LogNext(

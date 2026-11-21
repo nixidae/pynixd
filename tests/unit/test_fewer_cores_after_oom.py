@@ -155,6 +155,23 @@ def _killed() -> Callable[[WireRequest], Awaitable[BuildDerivationResponse]]:
     return answer
 
 
+async def test_a_measured_kill_raises_the_build_s_own_model() -> None:
+    """Placement must not hand the next attempt cores that the peak just showed too few bytes for."""
+    store = FakeStore(BUILDER)
+    store.cores = 16
+
+    async def answer(request: WireRequest) -> BuildDerivationResponse:
+        del request
+        return _failed(KILLED_MESSAGE, BuildResources(measured=1, source="rusage", cores=16, peak_memory_bytes=1 << 34))
+
+    store.conn.answer = answer
+    queue = BuildQueue()
+    build = await queued(queue)
+    await fake_executor(queue, {BUILDER: store}, here=FakeSandbox()).run(build, store)
+    assert build.memory_model is not None
+    assert build.memory_model.peak(16) > 1 << 34
+
+
 async def test_a_build_killed_on_a_nix_daemon_is_queued_again_with_half_the_cores() -> None:
     store = FakeStore(BUILDER)
     store.cores = 64
@@ -162,9 +179,11 @@ async def test_a_build_killed_on_a_nix_daemon_is_queued_again_with_half_the_core
     queue = BuildQueue()
     build = await queued(queue)
     trigger = Triggers()
-    executor = fake_executor(queue, {BUILDER: store}, here=FakeSandbox(), trigger=trigger)
+    sandbox = FakeSandbox()
+    executor = fake_executor(queue, {BUILDER: store}, here=sandbox, trigger=trigger)
     await executor.run(build, store)
-    assert build.cores_cap == 32
+    assert (build.cores_cap, build.cores_ceiling) == (32, 32)
+    assert [(o.cores, o.oom_kills) for o in sandbox.db.observations] == [(64, 1)]
     assert not build.answer.done()
     assert BUILDER not in build.store_failures
     assert trigger.count >= 1

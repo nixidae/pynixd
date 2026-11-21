@@ -189,6 +189,10 @@ class StoreRankingSettings(BaseModel):
     nixidae/nixidae#1013.
     """
 
+    memory_headroom_bytes: int = Field(default=1024**3, ge=0)
+    """Memory left free beside a build's expected peak when placement picks its cores; the pressure limiter's
+    `min_available_memory_mb` by default. nixidae/nixidae#1558."""
+
     disk_full_hold_seconds: float = 600.0
     """How long a store that reports no disk figure is held back after "No space left on device"."""
 

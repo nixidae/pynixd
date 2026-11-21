@@ -43,6 +43,7 @@ from .build_stats import BuildEstimateSource, ExpectedBytes, StoreLink
 from .database import Backend, DatabaseError, Params, Row, Session
 from .db_migrations import SchemaState
 from .held_by_tables import HeldByTables
+from .memory_model import MemoryPoint, fit
 from .nix_tables import NixTables
 from .placement_tables import PlacementTables
 from .provisioning_tables import ProvisioningTables
@@ -61,6 +62,7 @@ if TYPE_CHECKING:
     from .background import Background
     from .build_stats import BuildObservation, DerivationIdentity
     from .database import SyncSession
+    from .memory_model import MemoryModel
     from .sql import Statements
 
 log = structlog.get_logger(__name__)
@@ -640,6 +642,7 @@ class LocalStoreDB:
                         observation.host_cpu_system_us,
                         observation.host_peak_memory_bytes,
                         observation.cores,
+                        observation.oom_kills,
                     ),
                 )
                 await db.executemany(
@@ -681,26 +684,30 @@ class LocalStoreDB:
             log.debug("expected_build_ms_failed", name=identity.name, exc_info=True)
         return None
 
-    async def expected_peak_memory(self, identity: DerivationIdentity) -> int | None:
-        """The median peak memory of the identity's recent `BUILT` builds, on any store, in bytes.
+    async def memory_model(self, identity: DerivationIdentity) -> MemoryModel | None:
+        """The peak memory of the identity's recent `BUILT` and killed attempts, on any store, as a function of cores.
 
-        A VM build counts its host peak: the guest's RAM is what the host's available memory loses. Falls back to the name and system under any shape, as `expected_build_ms` does.
+        A VM build counts its host peak: the guest's RAM is what the host's available memory loses. Falls back to the
+        name and system under any shape, as `expected_build_ms` does.
         """
         if not self.active or not self.schema.usable:
             return None
         try:
             for query, params in (
                 (
-                    self.sql.observations.peak_memory_of_shape,
+                    self.sql.observations.memory_points_of_shape,
                     (identity.name, identity.system, identity.shape, OBSERVATIONS_KEPT),
                 ),
-                (self.sql.observations.peak_memory_of_name, (identity.name, identity.system, OBSERVATIONS_KEPT)),
+                (self.sql.observations.memory_points_of_name, (identity.name, identity.system, OBSERVATIONS_KEPT)),
             ):
                 rows = await self.fetchall(query, params)
                 if rows:
-                    return int(statistics.median(int(row[0]) for row in rows))
+                    return fit(
+                        MemoryPoint(cores=int(cores or 0), peak_bytes=int(peak), killed=bool(kills))
+                        for cores, peak, kills in rows
+                    )
         except DatabaseError:
-            log.debug("expected_peak_memory_failed", name=identity.name, exc_info=True)
+            log.debug("memory_model_failed", name=identity.name, exc_info=True)
         return None
 
     async def expected_build_ms_on(
