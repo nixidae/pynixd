@@ -77,4 +77,5 @@ async def test_the_oom_killer_halves_the_cores_until_another_failure(
     assert ran_with == [8, 4, 2]
     assert resp.result.status == BuildResultStatus.PERMANENT_FAILURE
     assert resp.result.resources.cores == 2
+    assert resp.result.resources.killed_cores == 4
     assert sum("OOM killer" in text for text in said) == 2

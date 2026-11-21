@@ -221,7 +221,7 @@ def fewer_cores_here(status: BuildResultStatus, used: list[BuildUsage], cores: i
     return cores // 2 if used and used[-1].oom_kills > 0 else None
 
 
-def _resources(usage: BuildUsage) -> BuildResources:
+def _resources(usage: BuildUsage, killed: BuildUsage | None) -> BuildResources:
     return BuildResources(
         measured=1,
         source=usage.source,
@@ -240,6 +240,8 @@ def _resources(usage: BuildUsage) -> BuildResources:
         host_peak_memory_bytes=usage.host_peak_memory_bytes or 0,
         cores=usage.cores,
         oom_kills=usage.oom_kills,
+        killed_cores=killed.cores if killed else 0,
+        killed_peak_bytes=(killed.host_peak_memory_bytes or killed.peak_memory_bytes) if killed else 0,
     )
 
 
@@ -1076,6 +1078,7 @@ class LocalDBStore(Store):
         repairing = request.build_mode == BuildMode.REPAIR
         activity = BuildActivity(drv_path, on_log, verbosity, checking=checking, repairing=repairing)
         used: list[BuildUsage] = []
+        killed: BuildUsage | None = None
         await activity.start()
         try:
             while True:
@@ -1097,6 +1100,7 @@ class LocalDBStore(Store):
                 )
                 if (cores := fewer_cores_here(built.status, used, settings.build_cores)) is None:
                     break
+                killed = used[-1]
                 log.warning("build_out_of_memory", drv=drv_path, cores=settings.build_cores, retry_cores=cores)
                 await on_log(
                     LogNext(
@@ -1157,7 +1161,7 @@ class LocalDBStore(Store):
                 # To reverse it, show a client that misreads a BuildResult with CPU times.
                 cpu_user=OptMicroseconds(tag=1, value=used[0].cpu_user_us) if used else OptMicroseconds(),
                 cpu_system=OptMicroseconds(tag=1, value=used[0].cpu_system_us) if used else OptMicroseconds(),
-                resources=_resources(used[0]) if used else BuildResources(),
+                resources=_resources(used[0], killed) if used else BuildResources(),
             )
         )
 

@@ -65,3 +65,8 @@ class BuildResources(WireModel):
     oom_kills: int = WireField(default=0, wire_depends_on=lambda self: self.measured == 1)
     """Processes of the build that the kernel's OOM killer ended: `oom_kill` of the cgroup's `memory.events`.
     0 without a cgroup. A build with one failed for want of memory, and may pass with fewer cores."""
+    killed_cores: int = WireField(default=0, wire_depends_on=lambda self: self.measured == 1)
+    """The fewest cores of an earlier attempt of this build that the OOM killer ended; 0 when none did. The builder
+    built again with fewer, and the fields above are the last attempt's. nixidae/nixidae#1558."""
+    killed_peak_bytes: int = WireField(default=0, wire_depends_on=lambda self: self.measured == 1)
+    """That attempt's peak memory: a lower bound on what its cores need."""

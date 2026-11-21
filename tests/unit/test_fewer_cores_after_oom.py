@@ -217,6 +217,28 @@ async def test_the_observation_keeps_the_cores_a_remote_build_ran_with(resources
     assert [observation.cores for observation in sandbox.db.observations] == [cores]
 
 
+@pytest.mark.parametrize(
+    "status",
+    [pytest.param(BuildResultStatus.BUILT, id="built"), pytest.param(BuildResultStatus.MISC_FAILURE, id="failed")],
+)
+async def test_a_builder_s_own_kill_is_kept_beside_the_build(status: BuildResultStatus) -> None:
+    """The builder built again with fewer cores; the attempt it lost is kept whatever the last one did."""
+    resources = BuildResources(measured=1, source="cgroup", cores=8, killed_cores=16, killed_peak_bytes=1 << 34)
+
+    async def built() -> BuildDerivationResponse:
+        return BuildDerivationResponse(result=BuildResult(status=int(status), resources=resources))
+
+    stores = {StoreId("local"): FakeStore(StoreId("local"))}
+    sandbox = FakeSandbox(build=built)
+    queue = BuildQueue()
+    build = await queued(queue)
+    await fake_executor(queue, stores, here=sandbox).build_in_sandbox(
+        build, stores[StoreId("local")], sandbox, sandbox_settings()
+    )
+    kills = [(o.cores, o.peak_memory_bytes) for o in sandbox.db.observations if o.oom_kills]
+    assert kills == [(16, 1 << 34)]
+
+
 async def test_the_observation_keeps_the_cores_a_local_build_ran_with() -> None:
     async def built() -> BuildDerivationResponse:
         return BuildDerivationResponse(result=BuildResult(status=int(BuildResultStatus.BUILT)))

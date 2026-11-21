@@ -648,6 +648,7 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
                     observation.inputs_ms = ms_since(inputs_started)
                     await say_where_it_builds(build, store)
                     build_resp = await self._execute(build, store, conn)
+                    await self._record_kill(build, build_resp)
                     if build.started_at is not None:
                         observation.build_ms = ms_since(build.started_at)
                     # Every success, not `BUILT` alone. A builder that already
@@ -761,6 +762,7 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
             log.exception("local_build_crashed", build_id=build.build_id)
             resp = BuildDerivationResponse(result=failure(f"pynixd's sandbox failed: {error_text(e)}"))
         observation.build_ms = ms_since(build.started_at)
+        await self._record_kill(build, resp)
         for message in messages:
             await build.post_log_and_fanout(message)
         if result_succeeded(resp.result) and roots is not None:
@@ -1008,6 +1010,26 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
                 current = self._current(store.store_id)
                 if current is not None:
                     store = current
+
+    async def _record_kill(self, build: QueuedBuild, resp: BuildDerivationResponse) -> None:
+        """Keep the attempt a pynixd builder lost to the OOM killer before it built again with fewer cores.
+
+        Whatever the last attempt did: when it failed for another reason, this row is all that says how many cores
+        were too many.
+        """
+        used = resp.result.resources
+        here, observation = self.here, build.observation
+        if not used.killed_cores or here is None or observation is None:
+            return
+        killed = BuildObservation(
+            store_id=observation.store_id,
+            status=int(BuildResultStatus.PERMANENT_FAILURE),
+            resource_source=used.source,
+            peak_memory_bytes=used.killed_peak_bytes or None,
+            cores=used.killed_cores,
+            oom_kills=1,
+        )
+        await here.db.record_build_observation(identity_of(build.request.derivation), killed)
 
     async def _record_observation(self, build: QueuedBuild, resp: BuildDerivationResponse) -> None:
         """Write what this build cost, for the next build of the same identity.
