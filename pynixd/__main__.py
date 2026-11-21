@@ -24,6 +24,7 @@ from .cli.roots import register as register_roots
 from .cli.state import register as register_state
 from .handover import Inherited, Offer, hand_over, restart_instead, say_ready, take_ready_fd
 from .instance import Server
+from .pod_build import register as register_build_one
 from .systemd import notify
 
 log = structlog.get_logger(__name__)
@@ -117,6 +118,7 @@ def main() -> None:
     register_reapi_runner(root_sub)
     register_roots(root_sub)
     register_state(root_sub)
+    register_build_one(root_sub)
 
     args = parser.parse_args()
     args.func(args)
