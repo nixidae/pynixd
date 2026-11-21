@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import pytest
+
+from pynixd.config import ProvisioningPoolSettings
 from pynixd.provisioning.decide import Decision, EndReason, Held, InstanceState, Pool, Want, attribute, decide
+from pynixd.provisioning.provisioner import pool_of
 
 ARM = Pool(
     name="arm", systems=frozenset({"aarch64-linux"}), max_instances=3, slots=2, idle_seconds=60, launch_timeout=100
@@ -132,3 +136,51 @@ def test_a_build_that_names_another_pool_never_comes_here() -> None:
 def test_naming_a_pool_waives_no_system_and_no_feature() -> None:
     assert not SPOT.builds(Want("x86_64-linux", pools=frozenset({"spot"})))
     assert not SPOT.builds(Want("aarch64-linux", frozenset({"kvm"}), pools=frozenset({"spot"})))
+
+
+ONCE = Pool(name="once", systems=frozenset({"x86_64-linux"}), max_instances=2, single_use=True, idle_seconds=60)
+ONCE_BUILD = Want("x86_64-linux")
+
+
+def _once(id_: str, builds: int, used: bool, idle_since: float | None = None) -> Held:
+    return Held(
+        id=id_,
+        pool="once",
+        state=InstanceState.RUNNING,
+        launched_at=0,
+        builds=builds,
+        idle_since=idle_since,
+        used=used,
+    )
+
+
+def test_a_used_instance_ends_as_its_build_ends_while_builds_wait() -> None:
+    # A waiting build skips the idle rule; a used instance must end anyway, or it holds the room for ever.
+    done = _once("i-1", builds=0, used=True, idle_since=10)
+    assert decide([ONCE], [ONCE_BUILD], [done], now=11) == Decision(
+        launch={"once": 1}, terminate={"i-1": EndReason.USED}
+    )
+
+
+def test_a_used_instance_that_builds_gives_no_slot_and_keeps_its_room() -> None:
+    building = _once("i-1", builds=1, used=True)
+    # One instance's room is left, so the three waiting builds get one launch, not two.
+    assert decide([ONCE], [ONCE_BUILD] * 3, [building], now=5) == Decision(launch={"once": 1})
+
+
+def test_an_idle_unused_single_use_instance_takes_a_waiting_build() -> None:
+    fresh = _once("i-1", builds=0, used=False, idle_since=0)
+    assert decide([ONCE], [ONCE_BUILD], [fresh], now=5) == Decision()
+
+
+def test_a_single_use_pool_has_one_slot() -> None:
+    pool = {"name": "once", "template": "t", "systems": ["x86_64-linux"], "single_use": True}
+    assert pool_of(ProvisioningPoolSettings.model_validate(pool)).single_use
+    with pytest.raises(ValueError, match="a single_use pool has one slot, not 2"):
+        ProvisioningPoolSettings.model_validate({**pool, "slots": 2})
+
+
+def test_used_means_nothing_without_single_use() -> None:
+    # `used` comes from the store's drain mark; a notice drain on another pool must not end it early.
+    drained = Held(id="i-1", pool="arm", state=InstanceState.RUNNING, launched_at=0, idle_since=0, used=True)
+    assert decide([ARM], [ARM_BUILD], [drained], now=5) == Decision()

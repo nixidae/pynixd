@@ -96,6 +96,7 @@ def pool_of(settings: ProvisioningPoolSettings) -> Pool:
         idle_seconds=settings.idle_seconds,
         idle_max_seconds=settings.idle_max_seconds,
         launch_timeout=settings.launch_timeout,
+        single_use=settings.single_use,
     )
 
 
@@ -152,6 +153,8 @@ class Provisioner:
         # Not the feature union in `add_dynamic_features`: that ignores `mandatory_features` and named pools, so a
         # build no pool takes would wait forever and a steered one would fail at once.
         self._scheduler.launchable = functools.partial(launchable, tuple(self.pools))
+        single_use = frozenset(pool.name for pool in self.pools if pool.single_use)
+        self._scheduler.single_use = lambda store: store.pool in single_use
         self._scheduler.trigger()
         self._scheduler.pass_listeners.append(self.wake)
         await self.reconcile()
@@ -301,7 +304,14 @@ class Provisioner:
             idle_since=idle_since,
             notice=None if machine is None else machine.notice,
             boot_seconds=boot_seconds(row),
+            used=self._used(store_id),
         )
+
+    def _used(self, store_id: StoreId) -> bool:
+        """Whether the scheduler stopped a single-use builder taking builds (`Scheduler.single_use`)."""
+        held = self._scheduler.ctx.stores.get(store_id)
+        store = None if held is None else held.daemon_client
+        return store is not None and self._scheduler.single_use(store) and store.draining
 
     def _until_next(self, held: list[Held], now: float) -> float:
         pools = {pool.name: pool for pool in self.pools}
@@ -376,7 +386,7 @@ class Provisioner:
     def _back_off(self, pool: str, reason: EndReason) -> None:
         """A machine ended by its provider, or lost, launches no replacement at once: on dynhetz a builder
         terminated by hand was replaced 22 s later, eleven times in five minutes (nixidae/nixidae#1445)."""
-        if reason is EndReason.IDLE:
+        if reason in {EndReason.IDLE, EndReason.USED}:
             self._early_ends.pop(pool, None)
         if reason not in EARLY_ENDS:
             return

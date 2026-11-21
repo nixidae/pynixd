@@ -11,6 +11,11 @@ before it ends. An idle instance is terminated once it has been idle for as
 long as it took to boot, within the pool's `idle_seconds` and
 `idle_max_seconds`, and no build waits for its pool; one stuck booting past
 `launch_timeout` is terminated too.
+
+A single-use pool's instance takes one build. Once it has, it gives no slot
+but still counts against the pool's maximum, and it is terminated as soon as
+that build ends, whether or not builds wait: a build that waits needs a new
+instance, not this one.
 """
 
 from __future__ import annotations
@@ -42,6 +47,8 @@ class EndReason(StrEnum):
     ORPHAN = "orphan"
     """Live when this pynixd started: its builder lost the pynixd that admitted it."""
     SHUTDOWN = "shutdown"
+    USED = "used"
+    """A single-use instance ran its build."""
     GONE = "gone"
     """The provider ended it: the end of a notice, or a boot that failed."""
 
@@ -64,6 +71,8 @@ class Pool:
     idle_max_seconds: float | None = None
     launch_timeout: float = 600.0
     """Seconds an instance may stay pending before it is given up."""
+    single_use: bool = False
+    """Each instance takes one build, then ends."""
 
     def idle_limit(self, boot_seconds: float | None) -> float:
         """How long an instance that took *boot_seconds* to register may idle: its boot, within the pool's bounds."""
@@ -111,6 +120,8 @@ class Held:
     boot_seconds: float | None = None
     """From launch to registration; None while pending. It includes the provider's launch call and,
     for a CI job, its queue time."""
+    used: bool = False
+    """A single-use instance that has taken its build."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +142,15 @@ def attribute(pools: Sequence[Pool], waiting: Sequence[Want]) -> Counter[str]:
     return counts
 
 
+def free_slots(pool: Pool, one: Held) -> int:
+    """The builds *one* can still take: all its slots while it boots, none once a single-use one is used."""
+    if one.state is InstanceState.PENDING:
+        return pool.slots
+    if pool.single_use and one.used:
+        return 0
+    return max(pool.slots - one.builds, 0)
+
+
 def decide(pools: Sequence[Pool], waiting: Sequence[Want], held: Sequence[Held], now: float) -> Decision:
     demand = attribute(pools, waiting)
     launch: dict[str, int] = {}
@@ -140,11 +160,11 @@ def decide(pools: Sequence[Pool], waiting: Sequence[Want], held: Sequence[Held],
         for one in mine:
             if one.state is InstanceState.PENDING and now - one.launched_at > pool.launch_timeout:
                 terminate[one.id] = EndReason.LAUNCH_TIMEOUT
+            elif pool.single_use and one.used and one.builds == 0:
+                terminate[one.id] = EndReason.USED
         live = [one for one in mine if one.id not in terminate]
         lasting = [one for one in live if one.notice is None]
-        free = sum(
-            pool.slots if one.state is InstanceState.PENDING else max(pool.slots - one.builds, 0) for one in lasting
-        )
+        free = sum(free_slots(pool, one) for one in lasting)
         need = math.ceil(max(demand[pool.name] - free, 0) / pool.slots)
         room = pool.max_instances - len(lasting)
         short = max(pool.min_instances - len(lasting), 0)

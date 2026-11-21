@@ -17,38 +17,42 @@
 
 let
   feature = "k8s-pod";
+  # The single-use pool's: a build that needs it gets a pod of its own.
+  onceFeature = "k8s-once";
   acceptorPort = 2235;
   address = "10.109.0.1";
   system = pkgs.stdenv.hostPlatform.system;
 
   # The builder's pynixd: its own store under /build, no listener but the dial to the controller.
-  builderConfig = pkgs.writeText "pynixd-builder.json" (
-    builtins.toJSON {
-      stores.local = {
-        type = "local-socket";
-        store_path = "/build";
-        managed = true;
-      };
-      unix_path = "/build/pynixd.sock";
-      ssh_port = null;
-      gc_enabled = false;
-      # A one-CPU guest's local store scores under the default 0.0, and its disk is under the 2 GiB floor.
-      ranking.min_schedule_score = -1.0e9;
-      ranking.min_free_bytes = 0;
-      reverse_initiator = {
-        enabled = true;
-        join_ticket = "/run/pynixd-join/ticket";
-        systems = [ system ];
-        system_features = [ feature ];
-        max_jobs = 1;
-        reconnect_min_delay = 1.0;
-        reconnect_max_delay = 5.0;
-      };
-    }
-  );
+  builderConfig =
+    feature:
+    pkgs.writeText "pynixd-builder-${feature}.json" (
+      builtins.toJSON {
+        stores.local = {
+          type = "local-socket";
+          store_path = "/build";
+          managed = true;
+        };
+        unix_path = "/build/pynixd.sock";
+        ssh_port = null;
+        gc_enabled = false;
+        # A one-CPU guest's local store scores under the default 0.0, and its disk is under the 2 GiB floor.
+        ranking.min_schedule_score = -1.0e9;
+        ranking.min_free_bytes = 0;
+        reverse_initiator = {
+          enabled = true;
+          join_ticket = "/run/pynixd-join/ticket";
+          systems = [ system ];
+          system_features = [ feature ];
+          max_jobs = 1;
+          reconnect_min_delay = 1.0;
+          reconnect_max_delay = 5.0;
+        };
+      }
+    );
 
   # The node's busybox image: no registry, so the kubelet must not pull.
-  pod = image: {
+  pod = image: feature: {
     spec.terminationGracePeriodSeconds = 5;
     spec.containers = [
       {
@@ -62,7 +66,7 @@ let
         env = [
           {
             name = "PYNIXD_CONFIG";
-            value = "${builderConfig}";
+            value = "${builderConfig feature}";
           }
           # The pod has no nix.conf. pynixd's managed daemon needs `nix-command`; the pod has no
           # build users and no network to substitute from.
@@ -151,7 +155,7 @@ vivariumLib.mkTest {
   defaults = vivariumLib.settingsClosure;
   settings = {
     busybox = "${pkgs.busybox}";
-    inherit system feature;
+    inherit system feature onceFeature;
     kubectl = "${pkgs.kubectl}/bin/kubectl";
   };
 
@@ -191,7 +195,8 @@ vivariumLib.mkTest {
             # kubeadm writes it when the `cluster` phase brings the node up; until then a launch fails and waits.
             kubeconfig = "/etc/kubernetes/admin.conf";
             namespace = "default";
-            templates.nested.pod = pod config.services.vivarium-k8s.workloadImage;
+            templates.nested.pod = pod config.services.vivarium-k8s.workloadImage feature;
+            templates.once.pod = pod config.services.vivarium-k8s.workloadImage onceFeature;
           };
           acceptor_host = address;
           acceptor_port = acceptorPort;
@@ -203,6 +208,18 @@ vivariumLib.mkTest {
               systems = [ system ];
               features = [ feature ];
               mandatory_features = [ feature ];
+              max_instances = 1;
+              idle_seconds = 15.0;
+              idle_max_seconds = 15.0;
+              launch_timeout = 300.0;
+            }
+            {
+              name = "once";
+              template = "once";
+              systems = [ system ];
+              features = [ onceFeature ];
+              mandatory_features = [ onceFeature ];
+              single_use = true;
               max_instances = 1;
               idle_seconds = 15.0;
               idle_max_seconds = 15.0;
@@ -236,5 +253,9 @@ vivariumLib.mkTest {
   phases.pod = {
     script = ../../provisioning/kubernetes.py;
     after = [ "cluster" ];
+  };
+  phases.single-use = {
+    script = ../../provisioning/kubernetes_single_use.py;
+    after = [ "pod" ];
   };
 }

@@ -987,6 +987,15 @@ class ProvisioningPoolSettings(BaseModel):
     launch_timeout: float = Field(default=180.0, gt=0)
     """Seconds a machine may take from launch to registration before it is ended. An EC2 builder took
     21-29 s on 2026-11-17."""
+    single_use: bool = False
+    """Each machine takes one build and is ended when that build ends, so no build sees what another left.
+    `slots` must be 1. nixidae/nixidae#1560."""
+
+    @model_validator(mode="after")
+    def _single_use_has_one_slot(self) -> ProvisioningPoolSettings:
+        if self.single_use and self.slots != 1:
+            raise ValueError(f"pool {self.name}: a single_use pool has one slot, not {self.slots}")
+        return self
 
     @model_validator(mode="after")
     def _mandatory_are_features(self) -> ProvisioningPoolSettings:

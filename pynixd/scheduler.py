@@ -99,6 +99,8 @@ class Scheduler:
         """Called after each pass: a provisioner reads what it left waiting."""
         self.launchable: Callable[[QueuedBuild], bool] = lambda _build: False
         """Whether a provisioning pool may launch a machine for a build; a provisioner sets it."""
+        self.single_use: Callable[[ScheduledStore], bool] = lambda _store: False
+        """Whether a store takes one build and then no more: a single-use pool's builder; a provisioner sets it."""
         self.trace = PlacementTrace(None, ctx.settings.placement_trace)
         """Writes nothing until `start` hands it the database, which the local store opens after this."""
         self.estimator = TransferEstimator(
@@ -328,6 +330,9 @@ class Scheduler:
         workers = self._workers
         if workers is None:
             raise RuntimeError("builds run only inside Scheduler.workers")
+        if self.single_use(store):
+            # Here, with no await since the placer chose it: the next placement in this pass skips the store.
+            store.draining = True
         scope = anyio.CancelScope()
         build.worker = scope
         workers.start_soon(self._run_worker, build, store, scope)
