@@ -747,6 +747,16 @@ class LocalSocketStoreSpec(StoreSpecBase):
         ),
     ] = None
     """Run pynixd's sandboxed darwin builds in a macOS guest; `None` runs them on the host."""
+    sibling_sandbox: Annotated[
+        Path | None,
+        Experiment(
+            replaces="a sandboxed build runs in the namespace helper, in pynixd's own process tree",
+            issue=1560,
+            tests=("tests/provisioning/kubernetes_sibling.py",),
+        ),
+    ] = None
+    """Run pynixd's sandboxed builds in a pod's sandbox container, which serves `sibling run` in this directory;
+    `None` runs them here. Takes the place of `build_vm`."""
     postgres: Annotated[
         PostgresSpec | None,
         Experiment(

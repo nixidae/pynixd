@@ -69,6 +69,7 @@ from .outputs import (
 )
 from .restriction import SOCKET_NAME, RestrictionContext
 from .settings import SandboxPath
+from .sibling import SiblingSandbox
 from .site import BuilderFailed, BuildPaths, BuildSite, builder_ended, choose_site
 from .spec import AwsCredentials, BuildenvSpec, ChildSpec, DarwinSpec, FetchSpec
 from .usage import USAGE_NAME
@@ -127,7 +128,9 @@ def _reaches_network(drv: BasicDerivation) -> bool:
     return any(o.kind in (OutputKind.CA_FIXED, OutputKind.IMPURE) for o in drv.outputs.values())
 
 
-def in_linux_guest(drv: BasicDerivation, settings: BuildSettings, vm: BuildVm | DarwinBuildVm | None) -> bool:
+def in_linux_guest(
+    drv: BasicDerivation, settings: BuildSettings, vm: BuildVm | DarwinBuildVm | SiblingSandbox | None
+) -> bool:
     """Whether a Mac builds *drv* in its Linux build VM: the helper's job is then Linux's, not darwin's."""
     return isinstance(vm, BuildVm) and vm.builds(drv.platform) and external_builder(drv, settings) is None
 
@@ -694,7 +697,7 @@ async def build(
     check: bool = False,
     repair: bool = False,
     recursive: RecursiveServer | None = None,
-    vm: BuildVm | DarwinBuildVm | None = None,
+    vm: BuildVm | DarwinBuildVm | SiblingSandbox | None = None,
     on_usage: Callable[[BuildUsage], None] | None = None,
     sample_seconds: float = 0,
     aws_credentials: Callable[[str | None], AwsCredentials | None] | None = None,

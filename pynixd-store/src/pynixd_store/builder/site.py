@@ -32,6 +32,11 @@ from . import cgroup as build_cgroup, users as build_users
 from .darwin_vm import DarwinBuildVm
 from .outputs import BuildFailure
 from .restriction import SOCKET_NAME, RestrictionContext
+from .sibling import (
+    CONTROL_SOCKET_NAME as SIBLING_CONTROL_SOCKET_NAME,
+    STATUS_NAME as SIBLING_STATUS_NAME,
+    SiblingSandbox,
+)
 from .usage import USAGE_NAME, read_usage, with_host
 from .vm import (
     BUILDER_SOCKET_NAME as VM_BUILDER_SOCKET_NAME,
@@ -65,6 +70,7 @@ __all__ = [
     "Endpoint",
     "HostSite",
     "Launch",
+    "SiblingSite",
     "VmSite",
     "builder_ended",
     "choose_site",
@@ -491,10 +497,69 @@ class DarwinVmSite(BuildSite):
         return usage
 
 
+@dataclass
+class SiblingSite(BuildSite):
+    """The helper runs in the pod's sandbox container (`sibling.py`, nixidae/nixidae#1560, spike).
+
+    Both containers mount the build's volume at one path, so the builder's socket in the build directory needs no
+    relay. The helper reports in the top directory, and measures the builder with `wait4`: the daemon container's
+    cgroup does not hold it.
+    """
+
+    sandbox: SiblingSandbox
+    waits_for_exit: bool = True
+    samples_on_host: bool = False
+
+    async def endpoint(
+        self,
+        stack: contextlib.AsyncExitStack,
+        paths: BuildPaths,
+        inputs: set[StorePath],
+        real_store_dir: Path,
+        *,
+        submitting: bool,
+        repairing: bool,
+        user: build_users.BuildUser | None,
+    ) -> Endpoint:
+        restriction = RestrictionContext(inputs, None, real_store_dir, submitting=submitting, repairing=repairing)
+        controls = await anyio.to_thread.run_sync(listen, paths.top / SIBLING_CONTROL_SOCKET_NAME)
+        listener = await anyio.to_thread.run_sync(listen, paths.tmp / SOCKET_NAME)
+        await anyio.to_thread.run_sync(build_users.chown_to, user, paths.tmp / SOCKET_NAME)
+        group = await stack.enter_async_context(anyio.create_task_group())
+        stack.callback(group.cancel_scope.cancel)
+        group.start_soon(_attach_control, controls, restriction)
+        return Endpoint(listener, restriction)
+
+    def configure(self, spec: ChildSpec, sample_seconds: float) -> None:
+        spec["pid_namespace"] = False
+        spec["cgroup"] = None
+
+    async def launch(self, paths: BuildPaths, spec_file: Path, cgroup: Path | None, *, recursive: bool) -> Launch:
+        if paths.chroot_parent is None:
+            raise ValueError("a sibling sandbox runs the sandbox only")
+        argv = [sys.executable, "-I", "-m", "pynixd_store.builder.sibling", "wait"]
+        argv += [str(self.sandbox.rendezvous), str(spec_file), str(paths.top), *(["recursive"] if recursive else [])]
+        return Launch(argv)
+
+    def setup_error(self, paths: BuildPaths, launch: Launch) -> str:
+        try:
+            return (paths.top / SIBLING_STATUS_NAME).read_bytes().decode(errors="surrogateescape")
+        except FileNotFoundError:
+            return ""
+
+    def ended(self, paths: BuildPaths, drv_path: StorePath, returncode: int | None) -> BuilderFailed | None:
+        return builder_ended(returncode)
+
+    async def usage(
+        self, paths: BuildPaths, cgroup: Path | None, samples: tuple[UsageSample, ...]
+    ) -> BuildUsage | None:
+        return await anyio.to_thread.run_sync(read_usage, paths.top / USAGE_NAME)
+
+
 def choose_site(
     drv: BasicDerivation,
     settings: BuildSettings,
-    vm: BuildVm | DarwinBuildVm | None,
+    vm: BuildVm | DarwinBuildVm | SiblingSandbox | None,
     *,
     chroot: bool,
     sandboxed: bool,
@@ -511,6 +576,8 @@ def choose_site(
     host = HostSite(chroot=chroot)
     if vm is None:
         return host, None
+    if isinstance(vm, SiblingSandbox):
+        return (SiblingSite(vm), None) if chroot else (host, "the build has no sandbox")
     if isinstance(vm, DarwinBuildVm):
         return _choose_darwin(drv, settings, vm, host, darwin_sandbox, real_store_dir, visible, outputs or [])
     if not chroot:

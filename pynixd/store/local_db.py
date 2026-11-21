@@ -32,6 +32,7 @@ from pynixd_store.autogc import AutoGC, free_space
 from pynixd_store.builder import hooks, local as local_builder
 from pynixd_store.builder.darwin_vm import DarwinBuildVm
 from pynixd_store.builder.settings import BuildSettings, NotBuiltHere
+from pynixd_store.builder.sibling import SiblingSandbox
 from pynixd_store.builder.vm import BuildVm
 from pynixd_store.create_store import check_read_only_store, open_local_store
 from pynixd_store.drv_parser import drv_bytes, from_basic_derivation
@@ -371,6 +372,7 @@ class LocalDBStore(Store):
         self.darwin_build_vm = (
             DarwinBuildVm.from_environment(spec.darwin_build_vm.snapshot) if spec.darwin_build_vm is not None else None
         )
+        self.sibling_sandbox = SiblingSandbox(spec.sibling_sandbox) if spec.sibling_sandbox is not None else None
         self.configured_routes = {_OP_CODES[name]: route for name, route in spec.op_routes.items()}
         for op, route in self.configured_routes.items():
             if route is OpRoute.daemon:
@@ -892,8 +894,11 @@ class LocalDBStore(Store):
         verbosity = options.verbosity if options is not None else Verbosity.INFO
         return await self.build_here(request, settings, send, verbosity)
 
-    def _vm_for(self, drv: BasicDerivation, settings: BuildSettings) -> BuildVm | DarwinBuildVm | None:
-        """The VM a build of *drv* may run in: on a Mac, the Linux build VM for a Linux build, else the darwin one."""
+    def _vm_for(self, drv: BasicDerivation, settings: BuildSettings) -> BuildVm | DarwinBuildVm | SiblingSandbox | None:
+        """The VM a build of *drv* may run in: on a Mac, the Linux build VM for a Linux build, else the darwin one.
+        A pod's sandbox container takes the place of either."""
+        if self.sibling_sandbox is not None:
+            return self.sibling_sandbox
         if self.darwin_build_vm is None or local_builder.in_linux_guest(drv, settings, self.build_vm):
             return self.build_vm
         return self.darwin_build_vm
