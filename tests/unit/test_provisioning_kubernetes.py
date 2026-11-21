@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import anyio
 import httpx
 import kr8s
 import pytest
@@ -146,15 +147,24 @@ def test_pod_without_tags_is_not_a_machine() -> None:
     ],
     ids=type,
 )
-def test_api_failures_are_provider_errors(error: Exception) -> None:
+async def test_api_failures_are_provider_errors(error: Exception) -> None:
     with pytest.raises(ProviderError, match="kubernetes: listing pods: ") as raised, failing("listing pods"):
         raise error
     assert raised.value.__cause__ is error
 
 
-def test_other_errors_pass_through() -> None:
+async def test_other_errors_pass_through() -> None:
     with pytest.raises(KeyError), failing("listing pods"):
         raise KeyError("a bug, not a failed call")
+
+
+async def test_unanswered_call_is_a_provider_error() -> None:
+    """kr8s sets no timeout: without this bound, an unanswered request holds the provisioner's loop."""
+    with (
+        pytest.raises(ProviderError, match=r"kubernetes: listing pods: no answer in 0\.05 s"),
+        failing("listing pods", seconds=0.05),
+    ):
+        await anyio.Event().wait()
 
 
 def test_kubernetes_provider_needs_its_settings() -> None:

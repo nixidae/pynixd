@@ -23,6 +23,8 @@ import re
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Final
 
+import anyio
+
 # httpx imports httpcore inside its transport's `__init__`, so kr8s' first client would load 178 modules on
 # the event loop: 100-124 ms, measured 2026-11-21.
 import httpcore  # noqa: F401 -- imported for that load, before the loop runs
@@ -160,11 +162,20 @@ _FAILURES: Final = (kr8s.ServerError, kr8s.NotFoundError, kr8s.ConnectionClosedE
 errors for a transport failure. A 403 on `/version` comes while a new cluster's RBAC is not yet in place."""
 
 
+REQUEST_SECONDS: Final = 30.0
+"""How long one call waits for the API server. kr8s sets no timeout, so an unanswered request would hold the
+provisioner's loop for ever."""
+
+
 @contextlib.contextmanager
-def failing(what: str) -> Iterator[None]:
-    """A failed call as `ProviderError`, which the provisioner retries; any other exception ends pynixd."""
+def failing(what: str, seconds: float = REQUEST_SECONDS) -> Iterator[None]:
+    """A failed or unanswered call as `ProviderError`, which the provisioner retries; any other exception ends
+    pynixd."""
     try:
-        yield
+        with anyio.fail_after(seconds):
+            yield
+    except TimeoutError as error:
+        raise ProviderError(f"kubernetes: {what}: no answer in {seconds:g} s") from error
     except _FAILURES as error:
         raise ProviderError(f"kubernetes: {what}: {error}") from error
 
