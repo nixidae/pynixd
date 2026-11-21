@@ -69,7 +69,14 @@ let
     install -D -m 0555 ${lib.getBin pkgs.xfsprogs}/bin/mkfs.xfs $out/bin/mkfs.xfs
   '';
   # One passt per build VM: each needs its own host UDP ports (nix/passt/0001-*.patch says why).
-  passt = pkgs.passt.overrideAttrs (old: {
+  # The source is pinned to the release the patch is written against: a consumer's own
+  # `pkgs` may carry an older passt, and 2025_09_19 (sg1's nodes) rejects three of its hunks.
+  passt = pkgs.passt.overrideAttrs (old: rec {
+    version = "2026_07_16.090d739";
+    src = pkgs.fetchurl {
+      url = "https://passt.top/passt/snapshot/passt-${version}.tar.gz";
+      hash = "sha256-UD4fkctSqMDQTmZxpmBjR1uKLV0Lf9QoqtSK1u8EQ+4=";
+    };
     patches = (old.patches or [ ]) ++ [ ./nix/passt/0001-udp-kernel-picked-host-port.patch ];
   });
   krunVariables = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
