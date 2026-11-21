@@ -26,6 +26,9 @@ let
   krunFeature = "k8s-krun";
   # The broken pool's: its pod exits at start.
   brokenFeature = "k8s-broken";
+  # The sibling pool's: the pod's sandbox container runs the build, with no privilege.
+  siblingFeature = "k8s-sibling";
+  rendezvous = "/build/sibling";
   acceptorPort = 2235;
   address = "10.109.0.1";
   system = pkgs.stdenv.hostPlatform.system;
@@ -50,6 +53,11 @@ let
             cpus = 1;
             disk_gib = 4;
           };
+        }
+        // lib.optionalAttrs (feature == siblingFeature) {
+          op_routes.BuildDerivation = "pynixd";
+          pynixd_writes = true;
+          sibling_sandbox = rendezvous;
         };
         unix_path = "/build/pynixd.sock";
         ssh_port = null;
@@ -99,6 +107,10 @@ let
               build-users-group =
               substituters =
               system-features = ${feature}
+            ''
+            # The sandbox container's root has no CAP_SETGID, so the helper cannot drop its groups.
+            + lib.optionalString (feature == siblingFeature) ''
+              require-drop-supplementary-groups = false
             '';
           }
           {
@@ -111,7 +123,7 @@ let
         ];
         # The `nested` kind: Nix's own sandbox, in namespaces inside the pod's. The `krun` kind needs the
         # node's `/dev/kvm`, which a privileged container sees.
-        securityContext.privileged = true;
+        securityContext.privileged = feature != siblingFeature;
         volumeMounts = [
           {
             name = "nix-store";
@@ -134,7 +146,43 @@ let
           }
         ];
       }
-    ];
+    ]
+    ++ lib.optional (feature == siblingFeature) {
+      name = "sandbox";
+      inherit image;
+      imagePullPolicy = "Never";
+      command = [
+        "${package.venv}/lib/venv/bin/python"
+        "-I"
+        "-m"
+        "pynixd_store.builder.sibling"
+        "run"
+        rendezvous
+      ];
+      # One capability: the helper makes the user namespace, and the rest in it. Root maps its uid 0 into
+      # it only with CAP_SETFCAP (`verify_root_map`, Linux 5.12; measured: uid_map EPERM without it).
+      # RuntimeDefault refuses every `unshare`, a user namespace's too (measured).
+      securityContext = {
+        runAsUser = 0;
+        allowPrivilegeEscalation = false;
+        capabilities = {
+          drop = [ "ALL" ];
+          add = [ "SETFCAP" ];
+        };
+        seccompProfile.type = "Unconfined";
+      };
+      volumeMounts = [
+        {
+          name = "nix-store";
+          mountPath = "/nix/store";
+          readOnly = true;
+        }
+        {
+          name = "build";
+          mountPath = "/build";
+        }
+      ];
+    };
     spec.volumes = [
       {
         name = "nix-store";
@@ -198,6 +246,7 @@ vivariumLib.mkTest {
       onceFeature
       krunFeature
       brokenFeature
+      siblingFeature
       ;
     kubectl = "${pkgs.kubectl}/bin/kubectl";
   };
@@ -243,6 +292,7 @@ vivariumLib.mkTest {
               nested.pod = pod config.services.vivarium-k8s.workloadImage feature;
               once.pod = pod config.services.vivarium-k8s.workloadImage onceFeature;
               broken.pod = pod config.services.vivarium-k8s.workloadImage brokenFeature;
+              sibling.pod = pod config.services.vivarium-k8s.workloadImage siblingFeature;
             }
             // lib.optionalAttrs krun {
               krun.pod = pod config.services.vivarium-k8s.workloadImage krunFeature;
@@ -255,6 +305,7 @@ vivariumLib.mkTest {
             (pool "pods" "nested" feature { })
             (pool "once" "once" onceFeature { single_use = true; })
             (pool "broken" "broken" brokenFeature { })
+            (pool "sibling" "sibling" siblingFeature { single_use = true; })
           ]
           ++ lib.optional krun (pool "vms" "krun" krunFeature { single_use = true; });
         };
@@ -304,6 +355,10 @@ vivariumLib.mkTest {
         broken = {
           script = ../../provisioning/kubernetes_broken.py;
           after = [ "single-use" ];
+        };
+        sibling = {
+          script = ../../provisioning/kubernetes_sibling.py;
+          after = [ "cluster" ];
         };
       }
   );
