@@ -207,6 +207,9 @@ class Provisioner:
         for row in list(rows):
             machine = machines.get(row.id)
             if row.provider_id is not None and machine is not None and machine.state is MachineState.ENDED:
+                if machine.error is not None:
+                    # Else a builder that fails at start shows only as a `gone` row, launched again and again.
+                    log.warning("provisioning_machine_failed", instance=row.id, pool=row.pool, error=machine.error)
                 await self._end(row, EndReason.GONE)
                 rows.remove(row)
         held = [self._held(row, now, machines.get(row.id)) for row in rows]

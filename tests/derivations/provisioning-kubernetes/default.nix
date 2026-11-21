@@ -24,6 +24,8 @@ let
   # The single-use pool's: a build that needs it gets a pod of its own.
   onceFeature = "k8s-once";
   krunFeature = "k8s-krun";
+  # The broken pool's: its pod exits at start.
+  brokenFeature = "k8s-broken";
   acceptorPort = 2235;
   address = "10.109.0.1";
   system = pkgs.stdenv.hostPlatform.system;
@@ -75,10 +77,14 @@ let
         name = "pynixd";
         inherit image;
         imagePullPolicy = "Never";
-        command = [
-          "${package}/bin/pynixd"
-          "daemon"
-        ];
+        command =
+          if feature == brokenFeature then
+            [ "${pkgs.coreutils}/bin/false" ]
+          else
+            [
+              "${package}/bin/pynixd"
+              "daemon"
+            ];
         env = [
           {
             name = "PYNIXD_CONFIG";
@@ -191,6 +197,7 @@ vivariumLib.mkTest {
       feature
       onceFeature
       krunFeature
+      brokenFeature
       ;
     kubectl = "${pkgs.kubectl}/bin/kubectl";
   };
@@ -235,6 +242,7 @@ vivariumLib.mkTest {
             templates = {
               nested.pod = pod config.services.vivarium-k8s.workloadImage feature;
               once.pod = pod config.services.vivarium-k8s.workloadImage onceFeature;
+              broken.pod = pod config.services.vivarium-k8s.workloadImage brokenFeature;
             }
             // lib.optionalAttrs krun {
               krun.pod = pod config.services.vivarium-k8s.workloadImage krunFeature;
@@ -246,6 +254,7 @@ vivariumLib.mkTest {
           pools = [
             (pool "pods" "nested" feature { })
             (pool "once" "once" onceFeature { single_use = true; })
+            (pool "broken" "broken" brokenFeature { })
           ]
           ++ lib.optional krun (pool "vms" "krun" krunFeature { single_use = true; });
         };
@@ -291,6 +300,10 @@ vivariumLib.mkTest {
         single-use = {
           script = ../../provisioning/kubernetes_single_use.py;
           after = [ "pod" ];
+        };
+        broken = {
+          script = ../../provisioning/kubernetes_broken.py;
+          after = [ "single-use" ];
         };
       }
   );
