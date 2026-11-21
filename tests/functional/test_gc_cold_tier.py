@@ -136,25 +136,27 @@ async def test_a_path_goes_only_with_its_closure_in_the_bucket(tmp_path: Path, m
         assert await _valid(restored) == {lab.parent, lab.child}
 
 
-async def test_over_the_target_the_rest_goes_and_is_counted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A target no disk meets: the covered `stale` goes first and counts zero, then every other dead path.
+async def test_over_the_target_it_stops_short_of_what_the_bucket_lacks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A target no disk meets: the covered `stale` goes, and every dead path the bucket lacks stays.
 
-    Pressure lifts the age (`plan`), so `fresh` is dead enough to go too.
+    Pressure lifts the age (`plan`), so `fresh` is dead enough to go, and stays only for being uncovered.
     """
     lab = await _lab(tmp_path)
     with s3_bucket(monkeypatch, tmp_path / "xdg-cache") as bucket:
         async with _pynixd(lab, tmp_path, bucket.endpoint, target=1e-9) as (server, tier):
             await tier.upload_closure({StorePath(lab.stale)})
-            before = metrics.GC_DELETED_UNCOVERED._value.get()
+            before = metrics.GC_STOPPED_SHORT._value.get()
             deleted = await Collector(server.ctx).run(PynixdGCAction.EXECUTE)
-            counted = metrics.GC_DELETED_UNCOVERED._value.get() - before
-    assert {str(path) for path in deleted.store_paths} == {lab.stale, lab.parent, lab.child, lab.fresh}
-    assert counted == 3
-    assert await _valid(lab.store_path) == {lab.rooted}
+            counted = metrics.GC_STOPPED_SHORT._value.get() - before
+    assert {str(path) for path in deleted.store_paths} == {lab.stale}
+    assert counted == 1
+    assert await _valid(lab.store_path) == {lab.parent, lab.child, lab.fresh, lab.rooted}
 
 
 async def test_upload_ahead_covers_what_the_pressed_pass_takes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """No budget uploads nothing; a budget over the plan covers it, and the pressed pass then counts none."""
+    """No budget uploads nothing; a budget over the plan covers it, and the pressed pass then takes all of it."""
     lab = await _lab(tmp_path)
     dead = {lab.stale, lab.parent, lab.child, lab.fresh}
     with s3_bucket(monkeypatch, tmp_path / "xdg-cache") as bucket:
@@ -163,11 +165,8 @@ async def test_upload_ahead_covers_what_the_pressed_pass_takes(tmp_path: Path, m
             assert await tier.covered(dead) == set()
             assert await Collector(server.ctx).upload_ahead(tier, 2**62, 1.0) == len(dead)
             assert await tier.covered(dead | {lab.rooted}) == dead
-            before = metrics.GC_DELETED_UNCOVERED._value.get()
             deleted = await Collector(server.ctx).run(PynixdGCAction.EXECUTE)
-            counted = metrics.GC_DELETED_UNCOVERED._value.get() - before
     assert {str(path) for path in deleted.store_paths} == dead
-    assert counted == 0
 
 
 @pytest.mark.parametrize("signer", ["trusted-key", "own-key", "foreign-key"])

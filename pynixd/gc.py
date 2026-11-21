@@ -226,23 +226,21 @@ class Collector:
         if tier is None or action != PynixdGCAction.EXECUTE or target is None or local.gc_max_age is None:
             return response
         usage = await run_sync(self._disk_usage, local)
-        if not over_target(usage, target):
+        if usage is None or not over_target(usage, target):
             return response
-        # Over target with every covered path gone: the disk wins over the cold tier.
-        forced = await self._pass(action, client, limit, target, usage, lines, None)
-        uncovered = len(forced.store_paths) - len(await tier.covered({str(path) for path in forced.store_paths}))
-        metrics.GC_DELETED_UNCOVERED.inc(uncovered)
-        log.warning("gc_deleted_uncovered", paths=uncovered, deleted=len(forced.store_paths), target=target)
-        line = LogNext(text=f"over the target after the cold tier's paths: deleted {uncovered} paths it does not hold")
+        # Over target with every covered path gone: stop short. Deleting a path the tier does not
+        # hold is the rebuild the tier exists to prevent (#1417); the upload-ahead loop covers more
+        # each round, and the next pass takes what it covered.
+        metrics.GC_STOPPED_SHORT.inc()
+        log.warning("gc_stopped_short", target=target, used=usage[0], total=usage[1])
+        line = LogNext(
+            text=f"usage {usage[0] / usage[1]:.3f} is over the target {target}, "
+            "but the cold tier holds no more of the dead paths: stopping short"
+        )
         lines.append(line)
         if client is not None:
             await client.send(line)
-        return self._answered(
-            PynixdCollectGarbageResponse(
-                store_paths=response.store_paths | forced.store_paths, bytes=response.bytes + forced.bytes
-            ),
-            lines,
-        )
+        return self._answered(response, lines)
 
     async def _pass(
         self,

@@ -552,9 +552,9 @@ GC_BYTES_FREED = Counter(
     "Bytes the collector reports it freed",
 )
 
-GC_DELETED_UNCOVERED = Counter(
-    "pynixd_gc_deleted_uncovered_total",
-    "Store paths the collector deleted over its target that the cold tier did not hold",
+GC_STOPPED_SHORT = Counter(
+    "pynixd_gc_stopped_short_total",
+    "Collector passes that ended over their target because the cold tier held no more dead paths",
 )
 
 GC_TRIGGER_SKIPPED = Counter(
