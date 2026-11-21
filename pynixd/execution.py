@@ -9,11 +9,12 @@ phase. nixidae/nixidae#1246.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import functools
 import json
 import re
 import time
-from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
 
 import anyio
 import structlog
@@ -21,8 +22,10 @@ import structlog
 from nix_daemon_protocol.ids import LOCAL_STORE_ID
 from nix_daemon_protocol.logs import LogResult
 from nix_daemon_protocol.protocol import ResultType, Verbosity
+from nix_daemon_protocol.wire_time import TimeSpan
 from pynixd_store.build_stats import BuildObservation, identity_of
 from pynixd_store.builder.settings import NotBuiltHere
+from pynixd_store.builder.usage import UsageSource
 from pynixd_store.store_path import StorePath
 
 from . import metrics
@@ -39,6 +42,7 @@ from .serde import (
     BuildResultStatus,
     LogNext,
     QueryValidPathsRequest,
+    SetOptionsRequest,
 )
 from .store.base import get_current_system
 from .system_features import effective_required_features
@@ -61,7 +65,7 @@ if TYPE_CHECKING:
     from .config import StoreRankingSettings
     from .connection import ClientConn
     from .placement_trace import PlacementTrace
-    from .serde import BuildDerivationRequest, BuildResult, SetOptionsRequest
+    from .serde import BuildDerivationRequest, BuildResult
 
 log = structlog.get_logger(__name__)
 
@@ -153,6 +157,8 @@ class Builder(Answers, Protocol):
     def mandatory_features(self) -> frozenset[str]: ...
     @property
     def runs_daemon(self) -> bool: ...
+    @property
+    def cores(self) -> int | None: ...
 
     disk_full_until: float
 
@@ -378,15 +384,91 @@ def marked_raised(resp: BuildDerivationResponse) -> BuildDerivationResponse:
 
 
 def builder_options(
-    options: SetOptionsRequest | None, store: Answers, local_builder: Answers | None
+    options: SetOptionsRequest | None, store: Answers, local_builder: Answers | None, cores_cap: int | None = None
 ) -> SetOptionsRequest | None:
     """The client's options, with `max-jobs = 1` for a builder, as the hook sends them (`build-remote.cc:97`).
 
-    The client's `--max-jobs 0` means "not here"; forwarded, it makes the builder refuse the build.
+    The client's `--max-jobs 0` means "not here"; forwarded, it makes the builder refuse the build. *cores_cap*
+    bounds `cores` after an OOM kill; without client options it sends Nix's client defaults with that cap.
     """
+    if cores_cap is not None:
+        base = options or _client_defaults()
+        cores = cores_cap if base.build_cores == 0 else min(base.build_cores, cores_cap)
+        options = base.model_copy(update={"build_cores": cores})
     if options is None or store is local_builder:
         return options
     return options.model_copy(update={"max_build_jobs": 1})
+
+
+def _client_defaults() -> SetOptionsRequest:
+    """What a Nix client with no settings sends (`RemoteStore::setOptions`, `remote-store.cc:115`)."""
+    return SetOptionsRequest(
+        keep_failed=0,
+        keep_going=0,
+        try_fallback=0,
+        verbosity=Verbosity.ERROR,
+        max_build_jobs=1,
+        max_silent_time=TimeSpan(0),
+        obsolete_use_build_hook=1,
+        build_verbosity=Verbosity.ERROR,
+        obsolete_log_type=0,
+        obsolete_print_build_trace=0,
+        build_cores=0,
+        use_substitutes=1,
+    )
+
+
+KILLED_MARKERS: Final = (
+    "failed due to signal 9 (Killed)",
+    "Killed signal terminated program",
+    "Error 137",
+    "(signal: 9, SIGKILL: kill)",
+)
+"""What a build's error says when SIGKILL ended one of its processes, which the OOM killer sends. The builder
+itself (`statusToString`, `processes.cc:387`); more often a compiler under it, and the builder then exits 2 and Nix
+says only that: gcc's driver, make's `Error 137` (128 + 9), cargo's rustc. Nix puts the log's tail in the error."""
+
+BUILDER_FAILED: Final = frozenset({int(BuildResultStatus.PERMANENT_FAILURE), int(BuildResultStatus.TRANSIENT_FAILURE)})
+"""The statuses of a builder that exited badly (`derivation-builder.cc:242-250`), not a timeout or a refusal."""
+
+
+def fewer_cores_on_a_daemon(resp: BuildDerivationResponse, ran_with: int | None) -> int | None:
+    """Half the cores of a build that its builder lost to SIGKILL, or `None` when that cannot help.
+
+    A pynixd builder with a build cgroup counts the OOM kills (`resources.source` is `cgroup`) and builds again
+    with fewer cores itself (`LocalDBStore.build_here`). A Nix daemon, or a pynixd builder without a cgroup, counts
+    none, so pynixd reads SIGKILL in the error as the OOM killer here and queues the build again. Something else may
+    have sent it; halving bounds the cost to one attempt per halving. `NIX_BUILD_CORES` is not part of the
+    derivation's hash, so each attempt builds the same outputs. A builder that reported its cores wins over
+    *ran_with*, which is unknown when neither the client nor the store said.
+    """
+    result = resp.result
+    used = result.resources
+    if result_succeeded(result) or result.status not in BUILDER_FAILED:
+        return None
+    if used.measured and used.source == UsageSource.CGROUP:
+        return None
+    cores = used.cores if used.measured and used.cores > 0 else ran_with
+    if cores is None or cores <= 1:
+        return None
+    message = str(result.error_msg)
+    return cores // 2 if any(marker in message for marker in KILLED_MARKERS) else None
+
+
+def capped(settings: BuildSettings, cores_cap: int | None) -> BuildSettings:
+    """*settings* with at most *cores_cap* cores."""
+    if cores_cap is None or settings.build_cores <= cores_cap:
+        return settings
+    return dataclasses.replace(settings, build_cores=cores_cap)
+
+
+def ran_with(build: QueuedBuild, store: Builder) -> int | None:
+    """The cores the last attempt of *build* had on *store*: the cap, the client's `cores`, or the store's own."""
+    if build.cores_cap is not None:
+        return build.cores_cap
+    if build.options is not None and build.options.build_cores > 0:
+        return build.options.build_cores
+    return store.cores
 
 
 def build_decision_seeds(drv_path: str, input_srcs: Iterable[str]) -> set[str]:
@@ -516,6 +598,7 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
             if store is self.local_builder and here is not None:
                 settings = await here.local_build_settings(build.request, build.options)
                 if not isinstance(settings, NotBuiltHere):
+                    settings = capped(settings, build.cores_cap)
                     # `derivation-building-goal.cc:44`, `derivation-goal.cc:67`: the derivation and its outputs.
                     # The collector matches hash parts, so the `.lock` and `.drv.chroot` beside them stay too.
                     roots = here.engine.temp_roots()
@@ -540,6 +623,7 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
                 if isinstance(settings, NotBuiltHere):
                     await self._fail_unbuildable(build, _cannot_build_there(build, store.store_id, settings))
                     return
+                settings = capped(settings, build.cores_cap)
                 roots = other.engine.temp_roots()
                 try:
                     await self.send_inputs(build, other, roots)
@@ -549,7 +633,9 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
                         await roots.close()
                 return
             async with contextlib.AsyncExitStack() as held:
-                async with store.build_conn(builder_options(build.options, store, self.local_builder)) as conn:
+                async with store.build_conn(
+                    builder_options(build.options, store, self.local_builder, build.cores_cap)
+                ) as conn:
                     observation = build.observation = BuildObservation(
                         store_id=str(store.store_id),
                         status=-1,
@@ -569,6 +655,9 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
                     # until the builder collected it. nixidae/nixidae#998.
                     if result_succeeded(build_resp.result):
                         await self._hold_outputs(held, build, store, build_resp)
+                    elif (cores := fewer_cores_on_a_daemon(build_resp, ran_with(build, store))) is not None:
+                        await self.retry_with_fewer_cores(build, store, build_resp, cores)
+                        build_resp = None
                     elif (fault := self.retryable_elsewhere(build, store, build_resp)) is not None:
                         await self.retry_elsewhere(build, store, build_resp, fault)
                         build_resp = None
@@ -728,7 +817,7 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
             conn.call,
             build.request,
             client=cast("ClientConn", _OutputClock(build)),
-            options=builder_options(build.options, store, self.local_builder),
+            options=builder_options(build.options, store, self.local_builder, build.cores_cap),
             keep_logs=True,
         )
         resp: BuildDerivationResponse = await self._while_the_builder_answers(build, store, call)
@@ -996,6 +1085,21 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         ]
         coming = len(build.store_failures) < COMING_BUILDER_WAITS and self.builder_may_come(build, features)
         return fault if untried or coming else None
+
+    async def retry_with_fewer_cores(
+        self, build: QueuedBuild, store: S, resp: BuildDerivationResponse, cores: int
+    ) -> None:
+        """A Nix daemon's builder lost the build to SIGKILL: queue it again, on at most *cores* cores."""
+        error = str(resp.result.error_msg)
+        log.warning("build_killed_on_the_daemon", build_id=build.build_id, store_id=store.store_id, cores=cores)
+        await build.post_log_and_fanout(
+            LogNext(
+                text=f"pynixd: the builder on {store.store_id} was killed, likely out of memory; "
+                f"building again with {cores} cores:\n{error.rstrip()}\n"
+            )
+        )
+        build.reset_for_fewer_cores(cores)
+        self.trigger()
 
     async def retry_elsewhere(self, build: QueuedBuild, store: S, resp: BuildDerivationResponse, fault: str) -> None:
         """The builder's machine failed, not the derivation: try another store.

@@ -152,6 +152,9 @@ class QueuedBuild:
         that is not the owner reads it for its own `max-silent-time`."""
         self.finished_at: float | None = None
         self.retries = 0
+        self.cores_cap: int | None = None
+        """The most cores the next attempt may use: half of what the last one ran with, after the OOM killer ended
+        it (nixidae/nixidae#1558). `None` leaves the cores to the client's options and the store."""
         self.store_failures: dict[StoreId, int] = {}
         self.store_errors: dict[StoreId, str] = {}
         """The last failure of each store, which the final error names."""
@@ -268,6 +271,13 @@ class QueuedBuild:
         failures = self.store_failures.get(failed_store_id, 0) + 1
         self.store_failures[failed_store_id] = max(failures, MAX_STORE_RETRIES) if elsewhere else failures
         self.store_errors[failed_store_id] = reason
+
+    def reset_for_fewer_cores(self, cores: int) -> None:
+        """Queue the build again, at most on *cores* cores. The store did nothing wrong, so it counts no failure."""
+        self.retries += 1
+        self.started_at = None
+        self.worker = None
+        self.cores_cap = cores
 
     @property
     def wait_time(self) -> float | None:

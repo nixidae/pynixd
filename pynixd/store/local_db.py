@@ -59,6 +59,7 @@ from ..serde import (
     BuildMode,
     BuildResult,
     BuildResultStatus,
+    LogNext,
     StorePath,
 )
 from ..write_router import Dump, Write, WriteClient, WriteRouter
@@ -205,6 +206,19 @@ def referenced_paths(request: object) -> set[str]:
             found.update(str(item) for item in value if isinstance(item, StorePath))
     found.discard("")
     return found
+
+
+def fewer_cores_here(status: BuildResultStatus, used: list[BuildUsage], cores: int) -> int | None:
+    """Half of *cores*, after the build's cgroup counted an OOM kill and its builder failed; else `None`.
+
+    Not after a timeout or a refusal: a build that also met the OOM killer would time out again, once per halving.
+
+    `NIX_BUILD_CORES` is not part of the derivation's hash, so the next attempt builds the same outputs, and here,
+    with its inputs in place already. A build on one core fails as it stands (nixidae/nixidae#1558).
+    """
+    if status not in (BuildResultStatus.PERMANENT_FAILURE, BuildResultStatus.TRANSIENT_FAILURE) or cores <= 1:
+        return None
+    return cores // 2 if used and used[-1].oom_kills > 0 else None
 
 
 def _resources(usage: BuildUsage) -> BuildResources:
@@ -1064,21 +1078,33 @@ class LocalDBStore(Store):
         used: list[BuildUsage] = []
         await activity.start()
         try:
-            built = await local_builder.build(
-                self.engine,
-                request.drv_path,
-                request.derivation,
-                settings,
-                on_lines=activity.emit,
-                realised=realised,
-                check=checking,
-                repair=repairing,
-                recursive=self.recursive_server,
-                vm=self._vm_for(request.derivation, settings),
-                on_usage=used.append,
-                sample_seconds=self.usage_sample_seconds,
-                aws_credentials=_aws_credentials,
-            )
+            while True:
+                used.clear()
+                built = await local_builder.build(
+                    self.engine,
+                    request.drv_path,
+                    request.derivation,
+                    settings,
+                    on_lines=activity.emit,
+                    realised=realised,
+                    check=checking,
+                    repair=repairing,
+                    recursive=self.recursive_server,
+                    vm=self._vm_for(request.derivation, settings),
+                    on_usage=used.append,
+                    sample_seconds=self.usage_sample_seconds,
+                    aws_credentials=_aws_credentials,
+                )
+                if (cores := fewer_cores_here(built.status, used, settings.build_cores)) is None:
+                    break
+                log.warning("build_out_of_memory", drv=drv_path, cores=settings.build_cores, retry_cores=cores)
+                await on_log(
+                    LogNext(
+                        text=f"pynixd: the OOM killer ended the build of '{drv_path}' on {settings.build_cores} "
+                        f"cores; building it again with {cores}\n"
+                    )
+                )
+                settings = dataclasses.replace(settings, build_cores=cores)
             signed: dict[str, set[Signature]] = {}
             if (
                 built.status is BuildResultStatus.BUILT

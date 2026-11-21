@@ -8,6 +8,7 @@ daemon; a daemonless local store has the facts and no wire. nixidae/nixidae#1325
 from __future__ import annotations
 
 import dataclasses
+import math
 import time
 from abc import abstractmethod
 from enum import IntEnum
@@ -245,6 +246,12 @@ class ScheduledStore(Store):
     def cpu_util(self) -> CpuUtil | None:
         """CPU utilization from cgroupv2, or None if unavailable."""
         return self.monitor.health.cpu_util if self.monitor else None
+
+    @property
+    def cores(self) -> int | None:
+        """The cores of the store's host or cgroup quota, as its monitor read them; `None` when unknown."""
+        cores = self.monitor.health.cores if self.monitor else None
+        return math.ceil(cores) if cores else None
 
     # ── Circuit breaker ─────────────────────────────────────────────
 
