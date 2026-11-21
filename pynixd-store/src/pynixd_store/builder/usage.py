@@ -56,6 +56,10 @@ class BuildUsage:
     host_cpu_user_us: int | None = None
     host_cpu_system_us: int | None = None
     host_peak_memory_bytes: int | None = None
+    cores: int = 0
+    """`NIX_BUILD_CORES` of the build; 0 when unknown."""
+    oom_kills: int = 0
+    """Processes the OOM killer ended in the build's cgroup; 0 without one."""
 
 
 def with_host(usage: BuildUsage, host: BuildUsage) -> BuildUsage:

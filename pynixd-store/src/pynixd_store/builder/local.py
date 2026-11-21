@@ -1069,7 +1069,7 @@ async def build(
             # cancelled too. The stack's callback stops the sampler on the way out.
             usage = await site.usage(paths, cgroup, tuple(samples))
         if on_usage is not None and usage is not None:
-            on_usage(usage)
+            on_usage(replace(usage, cores=settings.build_cores))
         if restriction is not None:
             # The paths the builder added may be referenced (`derivation-builder.cc:1434`).
             inputs |= restriction.added

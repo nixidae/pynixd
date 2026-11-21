@@ -60,3 +60,8 @@ class BuildResources(WireModel):
     host_peak_memory_bytes: int = WireField(
         default=0, wire_depends_on=lambda self: self.measured == 1 and self.host_source != ""
     )
+    cores: int = WireField(default=0, wire_depends_on=lambda self: self.measured == 1)
+    """`NIX_BUILD_CORES` of the build: the parallelism its peak memory belongs to. 0 when unknown."""
+    oom_kills: int = WireField(default=0, wire_depends_on=lambda self: self.measured == 1)
+    """Processes of the build that the kernel's OOM killer ended: `oom_kill` of the cgroup's `memory.events`.
+    0 without a cgroup. A build with one failed for want of memory, and may pass with fewer cores."""

@@ -134,7 +134,7 @@ with none (Determinate Nix, `daemon.cc:552` and `remote-store.cc:589` of v3.24.0
 provenance.
 """
 
-FEATURE_PYNIXD_BUILD_RESOURCES: Final[str] = "pynixd-build-resources-2"
+FEATURE_PYNIXD_BUILD_RESOURCES: Final[str] = "pynixd-build-resources-3"
 """`BuildResult.resources`: what the build used (`build_resources.py`), after Nix's fields.
 
 pynixd's own feature, not Nix's, so it is not in `STANDARD_FEATURES`. Two pynixd peers name it. The number

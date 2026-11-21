@@ -243,6 +243,7 @@ def read(path: Path) -> BuildUsage:
         cpu_stall_us=_stall(path / "cpu.pressure"),
         memory_stall_us=_stall(path / "memory.pressure"),
         io_stall_us=_stall(path / "io.pressure"),
+        oom_kills=_fields((path / "memory.events").read_text()).get("oom_kill", 0),
     )
 
 

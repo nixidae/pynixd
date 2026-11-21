@@ -224,6 +224,8 @@ def _resources(usage: BuildUsage) -> BuildResources:
         host_cpu_user_us=usage.host_cpu_user_us or 0,
         host_cpu_system_us=usage.host_cpu_system_us or 0,
         host_peak_memory_bytes=usage.host_peak_memory_bytes or 0,
+        cores=usage.cores,
+        oom_kills=usage.oom_kills,
     )
 
 
