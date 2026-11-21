@@ -21,12 +21,16 @@ let
     failed four wirelog recorder tests and `test_collect` with
     `InvalidStateError` from `Future.set_result`. The fork's tarball has no
     git history for setuptools-scm, so the version is set here. Its suite is
-    not this build's to run.
+    not this build's to run. No nixpkgs patch either: a consumer's newer
+    nixpkgs patches `tests/streams/test_tls.py` with agronholm/anyio 818e4ac,
+    which does not apply to the fork's tree; a fix the fork needs is a commit
+    on the fork.
   */
   anyioVersion = "4.14.2+lillecarl.1";
   anyio = pkgs.python3Packages.anyio.overridePythonAttrs {
     version = anyioVersion;
     src = sources.anyio;
+    patches = [ ];
     doCheck = false;
   };
 
