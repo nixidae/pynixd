@@ -59,6 +59,7 @@ def _spec(tmp_path: Path, script: str, *, sandbox: bool = True, **over: object) 
         "root": "",
         "binds": [],
         "private_network": False,
+        "pid_namespace": True,
         "sandbox_uid": 1000,
         "sandbox_gid": 100,
         "build_user": None,

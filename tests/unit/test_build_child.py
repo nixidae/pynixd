@@ -43,6 +43,7 @@ def _spec(root: Path, script: str, **over: object) -> ChildSpec:
             ("/dev/null", "/dev/null", False),
         ],
         "private_network": True,
+        "pid_namespace": True,
         "sandbox_uid": 1000,
         "sandbox_gid": 100,
         "build_user": None,
@@ -94,6 +95,14 @@ def test_the_builder_runs_as_the_sandbox_user_in_its_own_namespaces(tmp_path: Pa
     assert first == "bar 1000:100 1 /build localhost"
     assert "real-root" not in listing
     assert {"build", "dev", "etc", "nix", "proc", "tmp"} <= set(listing)
+
+
+def test_without_a_pid_namespace_the_sandbox_shows_the_helpers_proc(tmp_path: Path) -> None:
+    """A pod's container gives the pid namespace: the helper binds its `/proc`, and the builder is not pid 1."""
+    script = "[ $$ != 1 ] && echo own-pid; [ -r /proc/self/status ] && echo proc; cat /proc/sys/kernel/hostname"
+    code, out, status = _run(tmp_path, _spec(tmp_path / "root", script, pid_namespace=False))
+    assert (code, status) == (0, ""), out
+    assert out.splitlines() == ["own-pid", "proc", "localhost"]
 
 
 def test_without_the_chroot_the_builder_runs_on_the_host_as_its_caller(tmp_path: Path) -> None:

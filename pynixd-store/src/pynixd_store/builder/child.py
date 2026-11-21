@@ -341,7 +341,10 @@ def _enter_chroot(spec: ChildSpec) -> None:
         _bind(source, root, in_sandbox.lstrip("/"), optional)
 
     (root / "proc").mkdir(exist_ok=True)
-    _mount("none", str(root / "proc"), "proc", 0)
+    if spec["pid_namespace"]:
+        _mount("none", str(root / "proc"), "proc", 0)
+    else:
+        _mount("/proc", str(root / "proc"), None, MS_BIND | MS_REC)
     if spec["id_range"]:
         (root / "sys").mkdir(exist_ok=True)
         _mount("none", str(root / "sys"), "sysfs", 0)
@@ -725,7 +728,9 @@ def run(spec_path: str, status_fd: int, control: socket.socket | None, *, parent
             except OSError as e:
                 raise SetupError(f"setgroups failed: {e.strerror}") from e
             mapper = _start_mapper(spec) if spec["build_user"] is not None else None
-            flags = os.CLONE_NEWUSER | os.CLONE_NEWPID | os.CLONE_NEWNS | os.CLONE_NEWIPC | os.CLONE_NEWUTS
+            flags = os.CLONE_NEWUSER | os.CLONE_NEWNS | os.CLONE_NEWIPC | os.CLONE_NEWUTS
+            if spec["pid_namespace"]:
+                flags |= os.CLONE_NEWPID
             if spec["private_network"]:
                 flags |= os.CLONE_NEWNET
             if spec["id_range"] and spec["cgroup"] is not None:

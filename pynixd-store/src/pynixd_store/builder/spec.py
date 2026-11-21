@@ -123,6 +123,10 @@ class ChildSpec(TypedDict):
     binds: list[tuple[str, str, bool]]
     """(path in the sandbox, source on the host, optional)."""
     private_network: bool
+    pid_namespace: bool
+    """With *chroot*, a pid namespace and a fresh `/proc` of the helper's own. `False` keeps the helper's pid
+    namespace and binds its `/proc`: a container's `/proc` is masked, and the kernel then refuses a fresh one in a
+    user namespace (measured in a pod, nixidae/nixidae#1560)."""
     sandbox_uid: int
     sandbox_gid: int
     work_dir: str

@@ -907,6 +907,7 @@ async def build(
                 else []
             ),
             "private_network": sandboxed,
+            "pid_namespace": True,
             "sandbox_uid": 0 if id_range else SANDBOX_UID,
             "sandbox_gid": 0 if id_range else SANDBOX_GID,
             "work_dir": build_dir if external is None else str(paths.tmp),
