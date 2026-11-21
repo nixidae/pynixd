@@ -69,6 +69,8 @@ class BuildObservation:
     host_cpu_user_us: int | None = None
     host_cpu_system_us: int | None = None
     host_peak_memory_bytes: int | None = None
+    cores: int | None = None
+    """The cores the build ran with: what the builder reported, else what pynixd gave it."""
 
 
 def name_without_version(name: str) -> str:

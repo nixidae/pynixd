@@ -7,6 +7,7 @@ build's cgroup and builds again itself; for a Nix daemon's builder, pynixd reads
 
 from __future__ import annotations
 
+import dataclasses
 from typing import TYPE_CHECKING
 
 import pytest
@@ -19,7 +20,7 @@ from pynixd.serde import BuildDerivationResponse, BuildResult, BuildResultStatus
 from pynixd.store.local_db import fewer_cores_here
 from pynixd_store.builder.cgroup import read
 from pynixd_store.builder.usage import BuildUsage, UsageSource
-from tests._conftest.execution import FakeSandbox, Triggers, fake_executor, queued
+from tests._conftest.execution import FakeSandbox, Triggers, fake_executor, queued, sandbox_settings
 from tests._conftest.placement import FakeStore, options
 
 if TYPE_CHECKING:
@@ -167,3 +168,45 @@ async def test_a_build_killed_on_a_nix_daemon_is_queued_again_with_half_the_core
     assert not build.answer.done()
     assert BUILDER not in build.store_failures
     assert trigger.count >= 1
+
+
+def _built(resources: BuildResources) -> Callable[[WireRequest], Awaitable[BuildDerivationResponse]]:
+    async def answer(request: WireRequest) -> BuildDerivationResponse:
+        del request
+        return BuildDerivationResponse(result=BuildResult(status=int(BuildResultStatus.BUILT), resources=resources))
+
+    return answer
+
+
+@pytest.mark.parametrize(
+    ("resources", "cores"),
+    [
+        pytest.param(BuildResources(), 64, id="a-nix-daemon"),
+        pytest.param(BuildResources(measured=1, source="rusage", cores=12), 12, id="a-pynixd-builder"),
+        pytest.param(BuildResources(measured=1, source="rusage"), 64, id="a-builder-that-named-no-cores"),
+    ],
+)
+async def test_the_observation_keeps_the_cores_a_remote_build_ran_with(resources: BuildResources, cores: int) -> None:
+    """A Nix daemon reports no resources: its row holds the cores pynixd gave it, not NULL."""
+    store = FakeStore(BUILDER)
+    store.cores = 64
+    store.conn.answer = _built(resources)
+    sandbox = FakeSandbox()
+    queue = BuildQueue()
+    build = await queued(queue)
+    await fake_executor(queue, {BUILDER: store}, here=sandbox).run(build, store)
+    assert [observation.cores for observation in sandbox.db.observations] == [cores]
+
+
+async def test_the_observation_keeps_the_cores_a_local_build_ran_with() -> None:
+    async def built() -> BuildDerivationResponse:
+        return BuildDerivationResponse(result=BuildResult(status=int(BuildResultStatus.BUILT)))
+
+    stores = {StoreId("local"): FakeStore(StoreId("local"))}
+    sandbox = FakeSandbox(build=built)
+    queue = BuildQueue()
+    build = await queued(queue)
+    executor = fake_executor(queue, stores, here=sandbox)
+    settings = dataclasses.replace(sandbox_settings(), build_cores=6)
+    await executor.build_in_sandbox(build, stores[StoreId("local")], sandbox, settings)
+    assert [observation.cores for observation in sandbox.db.observations] == [6]

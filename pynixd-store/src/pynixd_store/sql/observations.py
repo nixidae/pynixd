@@ -50,8 +50,8 @@ INSERT INTO {BUILD_OBSERVATION_TABLE}
 (name, system, shape, storeId, status, queuedMs, inputsMs, inputsBytes, buildMs,
  cpuUserUs, cpuSystemUs, pullMs, pullBytes, resourceSource, peakMemoryBytes, ioReadBytes, ioWriteBytes,
  cpuStallUs, memoryStallUs, ioStallUs, hostResourceSource, hostCpuUserUs, hostCpuSystemUs, hostPeakMemoryBytes,
- finishedAt)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+ cores, finishedAt)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
 """,
     insert_build_observation_sample=f"""
 INSERT INTO {BUILD_OBSERVATION_SAMPLE_TABLE}
@@ -129,8 +129,8 @@ INSERT INTO {BUILD_OBSERVATION_TABLE}
 (name, system, shape, storeId, status, queuedMs, inputsMs, inputsBytes, buildMs,
  cpuUserUs, cpuSystemUs, pullMs, pullBytes, resourceSource, peakMemoryBytes, ioReadBytes, ioWriteBytes,
  cpuStallUs, memoryStallUs, ioStallUs, hostResourceSource, hostCpuUserUs, hostCpuSystemUs, hostPeakMemoryBytes,
- finishedAt)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+ cores, finishedAt)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
  extract(epoch FROM now())::bigint)
 RETURNING id
 """,

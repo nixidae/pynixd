@@ -436,6 +436,12 @@ MIGRATIONS: tuple[Migration, ...] = (
         ),
         creates=(HELD_BY_TABLE,),
     ),
+    Migration(
+        version=15,
+        name="build-observation-cores",
+        # The cores a build ran with, nixidae/nixidae#1558. A row from before has none.
+        statements=(f"ALTER TABLE {BUILD_OBSERVATION_TABLE} ADD COLUMN cores INTEGER",),
+    ),
 )
 
 TARGET_VERSION = MIGRATIONS[-1].version if MIGRATIONS else 0

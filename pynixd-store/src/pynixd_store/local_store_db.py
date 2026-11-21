@@ -639,6 +639,7 @@ class LocalStoreDB:
                         observation.host_cpu_user_us,
                         observation.host_cpu_system_us,
                         observation.host_peak_memory_bytes,
+                        observation.cores,
                     ),
                 )
                 await db.executemany(

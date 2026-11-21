@@ -640,6 +640,7 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
                         store_id=str(store.store_id),
                         status=-1,
                         queued_ms=ms_since(build.enqueued_at),
+                        cores=ran_with(build, store),
                     )
                     inputs_started = time.monotonic()
                     observation.inputs_bytes = await self.prepare_build(build, store, conn)
@@ -738,7 +739,7 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         log is fanned out after the build, as `_execute` does.
         """
         observation = build.observation = BuildObservation(
-            store_id=str(store.store_id), status=-1, queued_ms=ms_since(build.enqueued_at)
+            store_id=str(store.store_id), status=-1, queued_ms=ms_since(build.enqueued_at), cores=settings.build_cores
         )
         await say_where_it_builds(build, store)
         build.started_at = build.last_output_at = time.monotonic()
@@ -1022,6 +1023,8 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         observation.cpu_user_us = resp.result.cpu_user.value if resp.result.cpu_user else None
         observation.cpu_system_us = resp.result.cpu_system.value if resp.result.cpu_system else None
         if (used := resp.result.resources).measured:
+            if used.cores > 0:
+                observation.cores = used.cores
             observation.resource_source = used.source
             observation.peak_memory_bytes = used.peak_memory_bytes
             observation.io_read_bytes = used.io_read_bytes

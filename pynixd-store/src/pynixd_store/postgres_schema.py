@@ -268,6 +268,7 @@ STEPS: tuple[tuple[int, tuple[str, ...]], ...] = (
 )""",
         ),
     ),
+    (15, (f"ALTER TABLE {BUILD_OBSERVATION_TABLE} ADD COLUMN IF NOT EXISTS cores BIGINT",)),
 )
 """The twin of each SQLite migration after `BASE_VERSION`, by version, applied in order."""
 

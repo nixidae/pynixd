@@ -60,6 +60,11 @@ async def test_the_estimates_read_the_newest_built_rows(store_db: LocalStoreDB) 
     assert await store_db.expected_build_ms_on(unseen, "local") == (250, BuildEstimateSource.NAME)
 
 
+async def test_an_observation_keeps_its_cores(store_db: LocalStoreDB) -> None:
+    row_id = await store_db.record_build_observation(HELLO, BuildObservation(store_id="local", status=BUILT, cores=12))
+    assert await store_db.fetchone(f"SELECT cores FROM {BUILD_OBSERVATION_TABLE} WHERE id = {row_id}") == (12,)
+
+
 async def test_the_link_and_the_bytes_read_the_store_s_rows(store_db: LocalStoreDB) -> None:
     remote = BuildObservation(
         store_id="remote", status=BUILT, build_ms=50, inputs_bytes=1000, inputs_ms=1000, pull_bytes=4000, pull_ms=2000
