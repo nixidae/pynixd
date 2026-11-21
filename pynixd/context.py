@@ -13,6 +13,7 @@ import structlog
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 
 from ._lazy import ssh_errors
+from .build_grant import Grants
 from .exceptions import BackendError, InfrastructureError, NoDaemonError
 from .serde import QueryValidPathsRequest
 from .session_options import DaemonHeader
@@ -90,6 +91,8 @@ class PynixdContext:
     exit; `Server.close` answers and closes them after closing the
     listeners. Issue #64.
     """
+    grants: Grants = field(default_factory=Grants)
+    """The SSH keys of central's build pods, each granted one derivation (nixidae/nixidae#1560, spike)."""
     output_locations: dict[str, StoreId] = field(default_factory=OutputLocations)
     """Where each output a backend built now lives.
 

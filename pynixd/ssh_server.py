@@ -16,6 +16,7 @@ import asyncssh
 import structlog
 
 from . import wire
+from .build_grant import BuildGrant, Grants
 from .command_options import parse_command
 from .config import ScheduleMode
 from .constants import SSH_ENCRYPTION_ALGS, SSH_KEEPALIVE_COUNT_MAX, SSH_KEEPALIVE_INTERVAL
@@ -36,6 +37,8 @@ log = structlog.get_logger(__name__)
 
 _ROLE_INFO = "pynixd_role"
 """The connection's extra-info key that carries the role its key earned."""
+_GRANT_INFO = "pynixd_grant"
+"""The connection's extra-info key that carries a build pod's `BuildGrant`, or `None`."""
 
 
 class SSHKeyring:
@@ -52,11 +55,23 @@ class SSHKeyring:
     each, and a client authenticates once per connection.
     """
 
-    def __init__(self, user_keys: list[Path], admin_keys: list[Path], admin_users: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        user_keys: list[Path],
+        admin_keys: list[Path],
+        admin_users: set[str] | None = None,
+        grants: Grants | None = None,
+    ) -> None:
         self._files = [(Role.ADMIN, path) for path in admin_keys] + [(Role.USER, path) for path in user_keys]
         self._admin_users = admin_users or set()
+        self._grants = grants or Grants()
+
+    def grant_of(self, key: asyncssh.SSHKey) -> BuildGrant | None:
+        return self._grants.of(key.export_public_key().decode())
 
     async def role_of(self, key: asyncssh.SSHKey, peer: str, username: str) -> Role | None:
+        if self.grant_of(key) is not None:
+            return Role.USER
         role = await self._listed_role(key, peer)
         if role == Role.USER and username in self._admin_users:
             log.warning("ssh_admin_users_deprecated", username=username, fix="list the key in ssh_admin_keys")
@@ -115,7 +130,7 @@ class _NixSSHServer(asyncssh.SSHServer):
         )
         if role is None:
             return False
-        conn.set_extra_info(**{_ROLE_INFO: role})
+        conn.set_extra_info(**{_ROLE_INFO: role, _GRANT_INFO: self._keyring.grant_of(key)})
         return True
 
 
@@ -165,7 +180,7 @@ async def start_ssh_server(
     Returns:
         The asyncssh acceptor instance.
     """
-    keyring = SSHKeyring(user_keys or [], admin_keys or [], admin_users)
+    keyring = SSHKeyring(user_keys or [], admin_keys or [], admin_users, ctx.grants)
     if admin_users:
         log.warning("ssh_admin_users_deprecated", admin_users=sorted(admin_users), fix="use ssh_admin_keys")
     if not user_keys and not admin_keys:
@@ -203,6 +218,7 @@ async def start_ssh_server(
                 schedule_mode=schedule_mode or ScheduleMode.auto,
                 transport="ssh",
                 hangup=ssh_hangup(process),
+                grant=process.get_extra_info(_GRANT_INFO),
             )
             proxy.client.pynixd_options = settings.options
             await proxy.run()

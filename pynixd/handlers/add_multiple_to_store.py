@@ -54,7 +54,11 @@ class AddMultipleToStoreHandler(Handler):
         if req.repair and ctx.role < Role.ADMIN:
             raise ClosingError("you are not privileged to repair store paths")
         # `daemon.cc:502`. The connection is root's, so this is pynixd's to do.
-        if ctx.role < Role.ADMIN:
+        grant = ctx.proxy.grant
+        if grant is not None:
+            # `_paths` refuses each path outside the grant before it reaches the store.
+            req = req.model_copy(update={"dont_check_sigs": 1})
+        elif ctx.role < Role.ADMIN:
             req = req.model_copy(update={"dont_check_sigs": 0})
 
         frames = FramedReader(ctx.proxy.r)
@@ -63,7 +67,8 @@ class AddMultipleToStoreHandler(Handler):
             count = await frames.read_uint64()
             version, features = path_info_version(ctx.proxy.version, ctx.proxy.standard_features)
             pull = functools.partial(pull_backend_references, ctx)
-            async with contextlib.aclosing(_paths(frames, count, version, features, added, pull)) as paths:
+            permit = None if grant is None else grant.check_add
+            async with contextlib.aclosing(_paths(frames, count, version, features, added, pull, permit)) as paths:
                 await write_router(ctx.proxy.local_store).add_multiple_to_store(
                     Write(op=req.name, repair=bool(req.repair) or ctx.proxy.repairs_adds),
                     count,
@@ -95,6 +100,7 @@ async def _paths(
     features: frozenset[str],
     seen: dict[str, UnkeyedValidPathInfo] | None = None,
     pull: Callable[[Iterable[StorePath], Container[str]], Awaitable[None]] | None = None,
+    permit: Callable[[str], None] | None = None,
 ) -> AsyncGenerator[tuple[ValidPathInfo, Source]]:
     """The paths of a client's AddMultipleToStore stream, each NAR `Bounded`.
 
@@ -107,6 +113,8 @@ async def _paths(
     done: set[str] = set()
     for _ in range(count):
         info = await ValidPathInfo.from_reader(ReadContext(reader=frames, version=version, features=features))
+        if permit is not None:
+            permit(str(info.path))
         done.add(str(info.path))
         if pull is not None:
             await pull(info.info.references, done)

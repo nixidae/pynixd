@@ -67,6 +67,7 @@ if TYPE_CHECKING:
 
     from nix_daemon_protocol.wire_ops import WireRequest
 
+    from .build_grant import BuildGrant
     from .build_queue import BuildQueue
     from .context import PynixdContext
     from .scheduler import Scheduler
@@ -161,9 +162,12 @@ class DaemonProxy:
         transport: str = "unknown",
         hangup: Callable[[], Awaitable[None]] | None = None,
         pid: int | None = None,
+        grant: BuildGrant | None = None,
     ) -> None:
         self.r = client_r
         self.pid = pid
+        self.grant = grant
+        """A build pod's: the session reads, and adds only the derivation's outputs (`build_grant.py`)."""
         """The client's process, where the transport knows it (Unix only)."""
         self.request_id: RequestId | None = None
         """The goal request this session runs now: the key of `BuildRow.requests`
@@ -764,6 +768,8 @@ class DaemonProxy:
         if op_num in BUILDER_ONLY_OPS:
             # `daemon.cc:353`: only a builder's own daemon serves these.
             raise ClosingError(f"invalid operation {op_num}")
+        if self.grant is not None:
+            self.grant.check_op(op_num)
         # NEW: try new handler registry first
         if handler_cls := HANDLER_REGISTRY.get(op_num):
             response = await handler_cls().handle(self.request_context)

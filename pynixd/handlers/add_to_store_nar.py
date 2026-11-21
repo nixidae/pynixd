@@ -40,7 +40,12 @@ class AddToStoreNarHandler(Handler):
         if req.repair and ctx.role < Role.ADMIN:
             raise ClosingError("you are not privileged to repair store paths")
         # `daemon.cc:938-941`. The connection is root's, so this is pynixd's to do.
-        if ctx.role < Role.ADMIN:
+        grant = ctx.proxy.grant
+        if grant is not None:
+            grant.check_add(str(req.info.path))
+            # The output of the build central asked for: nobody signed it, and central trusts it as built.
+            req = req.model_copy(update={"dont_check_sigs": 1})
+        elif ctx.role < Role.ADMIN:
             req = req.model_copy(
                 update={"dont_check_sigs": 0, "info": req.info.model_copy(update={"ultimate": False})},
             )
