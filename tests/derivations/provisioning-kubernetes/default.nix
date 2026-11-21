@@ -28,8 +28,13 @@ let
   brokenFeature = "k8s-broken";
   # The sibling pool's: the pod's sandbox container runs the build, with no privilege.
   siblingFeature = "k8s-sibling";
+  # The build pod store's: central makes a pod for the build, and the pod dials central's SSH listener.
+  podBuildFeature = "k8s-podbuild";
+  # Both run their build in the sandbox container.
+  sandboxed = feature: feature == siblingFeature || feature == podBuildFeature;
   rendezvous = "/build/sibling";
   acceptorPort = 2235;
+  sshPort = 2234;
   address = "10.109.0.1";
   system = pkgs.stdenv.hostPlatform.system;
 
@@ -37,49 +42,56 @@ let
   builderConfig =
     feature:
     pkgs.writeText "pynixd-builder-${feature}.json" (
-      builtins.toJSON {
-        stores.local = {
-          type = "local-socket";
-          store_path = "/build";
-          managed = true;
+      builtins.toJSON (
+        {
+          stores.local = {
+            type = "local-socket";
+            store_path = "/build";
+            managed = true;
+          }
+          // lib.optionalAttrs (feature == krunFeature) {
+            # pynixd builds, not the daemon: only pynixd's builder has the VM. A route to pynixd for a write
+            # needs `pynixd_writes`, or the store refuses to start.
+            op_routes.BuildDerivation = "pynixd";
+            pynixd_writes = true;
+            build_vm = {
+              memory_mib = 512;
+              cpus = 1;
+              disk_gib = 4;
+            };
+          }
+          // lib.optionalAttrs (sandboxed feature) {
+            op_routes.BuildDerivation = "pynixd";
+            pynixd_writes = true;
+            sibling_sandbox = rendezvous;
+          };
+          unix_path = "/build/pynixd.sock";
+          ssh_port = null;
+          gc_enabled = false;
+          # A one-CPU guest's local store scores under the default 0.0, and its disk is under the 2 GiB floor.
+          ranking.min_schedule_score = -1.0e9;
+          ranking.min_free_bytes = 0;
         }
-        // lib.optionalAttrs (feature == krunFeature) {
-          # pynixd builds, not the daemon: only pynixd's builder has the VM. A route to pynixd for a write
-          # needs `pynixd_writes`, or the store refuses to start.
-          op_routes.BuildDerivation = "pynixd";
-          pynixd_writes = true;
-          build_vm = {
-            memory_mib = 512;
-            cpus = 1;
-            disk_gib = 4;
+        # A build pod is a client of central only: it registers nowhere.
+        // lib.optionalAttrs (feature != podBuildFeature) {
+          reverse_initiator = {
+            enabled = true;
+            join_ticket = "/run/pynixd-join/ticket";
+            systems = [ system ];
+            system_features = [ feature ];
+            max_jobs = 1;
+            reconnect_min_delay = 1.0;
+            reconnect_max_delay = 5.0;
           };
         }
-        // lib.optionalAttrs (feature == siblingFeature) {
-          op_routes.BuildDerivation = "pynixd";
-          pynixd_writes = true;
-          sibling_sandbox = rendezvous;
-        };
-        unix_path = "/build/pynixd.sock";
-        ssh_port = null;
-        gc_enabled = false;
-        # A one-CPU guest's local store scores under the default 0.0, and its disk is under the 2 GiB floor.
-        ranking.min_schedule_score = -1.0e9;
-        ranking.min_free_bytes = 0;
-        reverse_initiator = {
-          enabled = true;
-          join_ticket = "/run/pynixd-join/ticket";
-          systems = [ system ];
-          system_features = [ feature ];
-          max_jobs = 1;
-          reconnect_min_delay = 1.0;
-          reconnect_max_delay = 5.0;
-        };
-      }
+      )
     );
 
   # The node's busybox image: no registry, so the kubelet must not pull.
   pod = image: feature: {
     spec.terminationGracePeriodSeconds = 5;
+    # A build pod whose central went away ends here; its sandbox container serves for ever.
+    spec.activeDeadlineSeconds = if feature == podBuildFeature then 600 else null;
     spec.containers = [
       {
         name = "pynixd";
@@ -88,6 +100,12 @@ let
         command =
           if feature == brokenFeature then
             [ "${pkgs.coreutils}/bin/false" ]
+          else if feature == podBuildFeature then
+            [
+              "${package}/bin/pynixd"
+              "build-one"
+              "/run/pynixd-job"
+            ]
           else
             [
               "${package}/bin/pynixd"
@@ -109,7 +127,7 @@ let
               system-features = ${feature}
             ''
             # The sandbox container's root has no CAP_SETGID, so the helper cannot drop its groups.
-            + lib.optionalString (feature == siblingFeature) ''
+            + lib.optionalString (sandboxed feature) ''
               require-drop-supplementary-groups = false
             '';
           }
@@ -123,7 +141,7 @@ let
         ];
         # The `nested` kind: Nix's own sandbox, in namespaces inside the pod's. The `krun` kind needs the
         # node's `/dev/kvm`, which a privileged container sees.
-        securityContext.privileged = feature != siblingFeature;
+        securityContext.privileged = !(sandboxed feature);
         volumeMounts = [
           {
             name = "nix-store";
@@ -147,7 +165,7 @@ let
         ];
       }
     ]
-    ++ lib.optional (feature == siblingFeature) {
+    ++ lib.optional (sandboxed feature) {
       name = "sandbox";
       inherit image;
       imagePullPolicy = "Never";
@@ -247,6 +265,7 @@ vivariumLib.mkTest {
       krunFeature
       brokenFeature
       siblingFeature
+      podBuildFeature
       ;
     kubectl = "${pkgs.kubectl}/bin/kubectl";
   };
@@ -277,6 +296,18 @@ vivariumLib.mkTest {
       settings = {
         ranking.min_schedule_score = -1.0e9;
         ranking.min_free_bytes = 0;
+        # Where a build pod dials. It admits only the keys central grants its pods.
+        ssh_host = address;
+        ssh_port = sshPort;
+        stores.buildpods = {
+          type = "kubernetes-build-pods";
+          template = "buildpod";
+          central_host = address;
+          central_port = sshPort;
+          systems = [ system ];
+          system_features = [ podBuildFeature ];
+          mandatory_features = [ podBuildFeature ];
+        };
         reverse_acceptor = {
           enabled = true;
           port = acceptorPort;
@@ -293,6 +324,7 @@ vivariumLib.mkTest {
               once.pod = pod config.services.vivarium-k8s.workloadImage onceFeature;
               broken.pod = pod config.services.vivarium-k8s.workloadImage brokenFeature;
               sibling.pod = pod config.services.vivarium-k8s.workloadImage siblingFeature;
+              buildpod.pod = pod config.services.vivarium-k8s.workloadImage podBuildFeature;
             }
             // lib.optionalAttrs krun {
               krun.pod = pod config.services.vivarium-k8s.workloadImage krunFeature;
@@ -317,7 +349,10 @@ vivariumLib.mkTest {
     };
     # pynixd adds cache.nixos.org whatever nix.conf says; a refused connection answers at once.
     networking.hosts."127.0.0.1" = [ "cache.nixos.org" ];
-    networking.firewall.allowedTCPPorts = [ acceptorPort ];
+    networking.firewall.allowedTCPPorts = [
+      acceptorPort
+      sshPort
+    ];
     environment.systemPackages = [
       pkgs.jq
       pkgs.sqlite
@@ -358,6 +393,10 @@ vivariumLib.mkTest {
         };
         sibling = {
           script = ../../provisioning/kubernetes_sibling.py;
+          after = [ "cluster" ];
+        };
+        pod-build = {
+          script = ../../provisioning/kubernetes_pod_build.py;
           after = [ "cluster" ];
         };
       }
