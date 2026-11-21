@@ -962,6 +962,13 @@ let
         k8sModule = vivarium.nixosModules.k8s;
       }
     );
+    provisioning-kubernetes-krun = withDefaultNix (
+      pkgs.callPackage ./tests/derivations/provisioning-kubernetes {
+        inherit package vivariumLib;
+        k8sModule = vivarium.nixosModules.k8s;
+        krun = true;
+      }
+    );
 
     # The EC2 builder's boot path: the real provider, a fake endpoint, a guest with no Nix. nixidae/nixidae#1420.
     provisioning-ec2 = withDefaultNix (

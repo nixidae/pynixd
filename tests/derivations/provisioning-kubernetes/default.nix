@@ -6,19 +6,24 @@
 # emptyDir. It registers by its join ticket, which the provider mounted from a
 # Secret the pod owns.
 #
-# `nix run --file . internal.tests.provisioning-kubernetes.driver -- --out <abs> --offline`.
+# `nix run --file . internal.tests.provisioning-kubernetes.driver -- --out <abs> --offline`; the `krun`
+# kind is `provisioning-kubernetes-krun`, which needs nested KVM on the host.
 {
   pkgs,
   lib ? pkgs.lib,
   package,
   vivariumLib,
   k8sModule,
+  # The `krun` kind as well: a pod that builds in pynixd's build VM. It needs `/dev/kvm` in the node,
+  # which UML cannot give, so the test runs on QEMU with nesting.
+  krun ? false,
 }:
 
 let
   feature = "k8s-pod";
   # The single-use pool's: a build that needs it gets a pod of its own.
   onceFeature = "k8s-once";
+  krunFeature = "k8s-krun";
   acceptorPort = 2235;
   address = "10.109.0.1";
   system = pkgs.stdenv.hostPlatform.system;
@@ -32,6 +37,17 @@ let
           type = "local-socket";
           store_path = "/build";
           managed = true;
+        }
+        // lib.optionalAttrs (feature == krunFeature) {
+          # pynixd builds, not the daemon: only pynixd's builder has the VM. A route to pynixd for a write
+          # needs `pynixd_writes`, or the store refuses to start.
+          op_routes.BuildDerivation = "pynixd";
+          pynixd_writes = true;
+          build_vm = {
+            memory_mib = 512;
+            cpus = 1;
+            disk_gib = 4;
+          };
         };
         unix_path = "/build/pynixd.sock";
         ssh_port = null;
@@ -87,7 +103,8 @@ let
             ];
           }
         ];
-        # The `nested` kind: Nix's own sandbox, in namespaces inside the pod's.
+        # The `nested` kind: Nix's own sandbox, in namespaces inside the pod's. The `krun` kind needs the
+        # node's `/dev/kvm`, which a privileged container sees.
         securityContext.privileged = true;
         volumeMounts = [
           {
@@ -141,10 +158,24 @@ let
       }
     ];
   };
+
+  pool =
+    name: template: feature: extra:
+    {
+      inherit name template;
+      systems = [ system ];
+      features = [ feature ];
+      mandatory_features = [ feature ];
+      max_instances = 1;
+      idle_seconds = 15.0;
+      idle_max_seconds = 15.0;
+      launch_timeout = 300.0;
+    }
+    // extra;
 in
 vivariumLib.mkTest {
-  name = "pynixd-provisioning-kubernetes";
-  backend = "uml";
+  name = "pynixd-provisioning-kubernetes${lib.optionalString krun "-krun"}";
+  backend = if krun then "qemu" else "uml";
   vivarium.recipes.kubernetes.enable = true;
 
   pythonPath = [
@@ -155,7 +186,12 @@ vivariumLib.mkTest {
   defaults = vivariumLib.settingsClosure;
   settings = {
     busybox = "${pkgs.busybox}";
-    inherit system feature onceFeature;
+    inherit
+      system
+      feature
+      onceFeature
+      krunFeature
+      ;
     kubectl = "${pkgs.kubectl}/bin/kubectl";
   };
 
@@ -169,8 +205,9 @@ vivariumLib.mkTest {
       role = "control-plane";
     };
     vivarium = {
-      memory = "3072M";
+      memory = if krun then "4096M" else "3072M";
       diskSize = 4096;
+      nestedVirtualization = krun;
       lan = {
         network = "pynixd-k8s";
         address = "${address}/24";
@@ -195,37 +232,22 @@ vivariumLib.mkTest {
             # kubeadm writes it when the `cluster` phase brings the node up; until then a launch fails and waits.
             kubeconfig = "/etc/kubernetes/admin.conf";
             namespace = "default";
-            templates.nested.pod = pod config.services.vivarium-k8s.workloadImage feature;
-            templates.once.pod = pod config.services.vivarium-k8s.workloadImage onceFeature;
+            templates = {
+              nested.pod = pod config.services.vivarium-k8s.workloadImage feature;
+              once.pod = pod config.services.vivarium-k8s.workloadImage onceFeature;
+            }
+            // lib.optionalAttrs krun {
+              krun.pod = pod config.services.vivarium-k8s.workloadImage krunFeature;
+            };
           };
           acceptor_host = address;
           acceptor_port = acceptorPort;
           heartbeat = 5.0;
           pools = [
-            {
-              name = "pods";
-              template = "nested";
-              systems = [ system ];
-              features = [ feature ];
-              mandatory_features = [ feature ];
-              max_instances = 1;
-              idle_seconds = 15.0;
-              idle_max_seconds = 15.0;
-              launch_timeout = 300.0;
-            }
-            {
-              name = "once";
-              template = "once";
-              systems = [ system ];
-              features = [ onceFeature ];
-              mandatory_features = [ onceFeature ];
-              single_use = true;
-              max_instances = 1;
-              idle_seconds = 15.0;
-              idle_max_seconds = 15.0;
-              launch_timeout = 300.0;
-            }
-          ];
+            (pool "pods" "nested" feature { })
+            (pool "once" "once" onceFeature { single_use = true; })
+          ]
+          ++ lib.optional krun (pool "vms" "krun" krunFeature { single_use = true; });
         };
       };
     };
@@ -246,16 +268,30 @@ vivariumLib.mkTest {
     };
   };
 
-  phases.cluster = {
-    script = ../../provisioning/kubernetes_cluster.py;
-    after = [ "boot" ];
-  };
-  phases.pod = {
-    script = ../../provisioning/kubernetes.py;
-    after = [ "cluster" ];
-  };
-  phases.single-use = {
-    script = ../../provisioning/kubernetes_single_use.py;
-    after = [ "pod" ];
-  };
+  phases = {
+    cluster = {
+      script = ../../provisioning/kubernetes_cluster.py;
+      after = [ "boot" ];
+    };
+  }
+  // (
+    if krun then
+      {
+        krun = {
+          script = ../../provisioning/kubernetes_krun.py;
+          after = [ "cluster" ];
+        };
+      }
+    else
+      {
+        pod = {
+          script = ../../provisioning/kubernetes.py;
+          after = [ "cluster" ];
+        };
+        single-use = {
+          script = ../../provisioning/kubernetes_single_use.py;
+          after = [ "pod" ];
+        };
+      }
+  );
 }
