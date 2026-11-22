@@ -37,6 +37,8 @@ let
   # Both run their build in the sandbox container.
   sandboxed = feature: feature == siblingFeature || feature == podBuildFeature;
   rendezvous = "/build/sibling";
+  # The sandbox container's profile, relative to the kubelet's seccomp directory.
+  seccompName = "pynixd-builder.json";
   # The user both containers of a sandboxed pod run as.
   builderUser = "builder";
   builderUid = 1000;
@@ -212,11 +214,14 @@ let
       ];
       # No capability: the helper makes the user namespace as the builder, and the rest in it. Root would
       # need CAP_SETFCAP to map its uid 0 (`verify_root_map`, Linux 5.12). RuntimeDefault refuses every
-      # `unshare`, a user namespace's too (measured).
+      # `unshare`, a user namespace's too (measured), so the node carries a profile that allows them.
       securityContext = {
         allowPrivilegeEscalation = false;
         capabilities.drop = [ "ALL" ];
-        seccompProfile.type = "Unconfined";
+        seccompProfile = {
+          type = "Localhost";
+          localhostProfile = seccompName;
+        };
       };
       volumeMounts = [
         {
@@ -397,6 +402,11 @@ vivariumLib.mkTest {
     };
     # pynixd adds cache.nixos.org whatever nix.conf says; a refused connection answers at once.
     networking.hosts."127.0.0.1" = [ "cache.nixos.org" ];
+    systemd.tmpfiles.rules = [
+      "L+ /var/lib/kubelet/seccomp/${seccompName} - - - - ${
+        import ../../../nix/builder-seccomp.nix { inherit pkgs; }
+      }"
+    ];
     networking.firewall.allowedTCPPorts = [
       acceptorPort
       sshPort
