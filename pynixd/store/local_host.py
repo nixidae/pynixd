@@ -123,7 +123,7 @@ class LocalHost(ScheduledStore):
         )
         self.monitor_enabled = spec.monitor
         self.nix_config = spec.nix_config
-        self.extra_env = spec.extra_env or {}
+        self.extra_env = spec.environment
         #: Every temporary root of this store goes through it: the sessions' and the engine's.
         self.root_writer = RootWriter(self.layout.state_dir)
         #: The process that forks this store's sandbox helpers.

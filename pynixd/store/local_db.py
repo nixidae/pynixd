@@ -344,12 +344,12 @@ class LocalDBStore(Store):
         self.engine = (OverlayEngine if self.layout.overlay is not None else StoreEngine)(
             self.layout,
             writes=self.mode.pynixd_writes,
-            read_config=lambda: read_nix_config(spec.nix_bin, nix_environment(self.layout, spec.extra_env)),
+            read_config=lambda: read_nix_config(spec.nix_bin, nix_environment(self.layout, spec.environment)),
             on_change=self.forget_path_info,
             name=str(self.store_id),
             roots=self._daemon.root_writer,
         )
-        self._nix_version_command = (spec.nix_bin, spec.extra_env)
+        self._nix_version_command = (spec.nix_bin, spec.environment)
         self._nix_version: str | None = None
         #: The scheduler's race over the substituters; the instance sets it at start.
         self.substitution_queue: SubstitutionQueue | None = None

@@ -173,6 +173,8 @@ async def _serve(
         conf.write_text(nix_config.to_nix_conf() + "\n")
         del spec.extra_env["NIX_CONFIG"]
         spec.extra_env["NIX_USER_CONF_FILES"] = str(conf)
+        # The file holds the settings now: the store puts `nix_config` into the daemon's NIX_CONFIG.
+        spec.nix_config = None
     async with Server(stores={StoreId("local"): LocalDBStore(spec)}, unix_path=socket, ssh_port=None, http_port=None):
         yield f"unix://{socket}?root={root}", root
 

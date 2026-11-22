@@ -774,6 +774,18 @@ class LocalSocketStoreSpec(StoreSpecBase):
     usage_sample_seconds: float = Field(default=5.0, ge=0)
     """Seconds between two samples of a running build's cgroup (`builder/cgroup.py`); 0 takes none."""
 
+    @property
+    def environment(self) -> dict[str, str]:
+        """`extra_env`, with `nix_config` after any `NIX_CONFIG` it sets: what the store's Nix runs with.
+
+        It renders as `NixConfig.to_nix_config_env` does: a setting it names replaces nix.conf's, except
+        the few that method adds to with an `extra-` prefix.
+        """
+        env = dict(self.extra_env or {})
+        if self.nix_config is not None and (rendered := self.nix_config.to_nix_config_env()):
+            env["NIX_CONFIG"] = "\n".join(filter(None, (env.get("NIX_CONFIG"), rendered)))
+        return env
+
     @model_validator(mode="after")
     def _check_the_op_routes(self) -> LocalSocketStoreSpec:
         unknown = sorted(set(self.op_routes) - OPERATION_NAMES)
