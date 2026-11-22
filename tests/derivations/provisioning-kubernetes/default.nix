@@ -32,12 +32,17 @@ let
   siblingFeature = "k8s-sibling";
   # The build pod store's: central makes a pod for the build, and the pod dials central's SSH listener.
   podBuildFeature = "k8s-podbuild";
+  # The same in a user-namespaced pod whose sandbox container has an unmasked /proc: the helper makes a pid
+  # namespace and a /proc of its own, as Nix's sandbox does. Pod Security `baseline`, not `restricted`.
+  podBuildUsernsFeature = "k8s-podbuild-userns";
   # The rogue store's: its pod pushes a path that is not its output (`kubernetes_rogue_pod.py`).
   rogueFeature = "k8s-rogue";
+  # A pod that runs `pynixd build-one`.
+  buildsOne = feature: feature == podBuildFeature || feature == podBuildUsernsFeature;
   # A pod central makes for one build: nothing in it ends the pod, so central deletes it.
-  buildPod = feature: feature == podBuildFeature || feature == rogueFeature;
+  buildPod = feature: buildsOne feature || feature == rogueFeature;
   # Both run their build in the sandbox container.
-  sandboxed = feature: feature == siblingFeature || feature == podBuildFeature;
+  sandboxed = feature: feature == siblingFeature || buildsOne feature;
   rendezvous = "/build/sibling";
   # The sandbox container's profile, relative to the kubelet's seccomp directory.
   seccompName = "pynixd-builder.json";
@@ -100,7 +105,7 @@ let
           ranking.min_free_bytes = 0;
         }
         # A build pod is a client of central only: it registers nowhere.
-        // lib.optionalAttrs (feature != podBuildFeature) {
+        // lib.optionalAttrs (!buildsOne feature) {
           reverse_initiator = {
             enabled = true;
             join_ticket = "/run/pynixd-join/ticket";
@@ -121,6 +126,7 @@ let
     spec.activeDeadlineSeconds = if buildPod feature then 600 else null;
     # Below every ordinary pod: the scheduler preempts a build pod for one, and the kubelet evicts it first.
     spec.priorityClassName = if buildPod feature then "pynixd-build" else null;
+    spec.hostUsers = if feature == podBuildUsernsFeature then false else null;
     spec.containers = [
       {
         name = "pynixd";
@@ -131,7 +137,7 @@ let
         command =
           if feature == brokenFeature then
             [ "${pkgs.coreutils}/bin/false" ]
-          else if feature == podBuildFeature then
+          else if buildsOne feature then
             [
               "${package}/bin/pynixd"
               "build-one"
@@ -237,7 +243,9 @@ let
           type = "Localhost";
           localhostProfile = seccompName;
         };
-      };
+      }
+      # The kubelet admits it only with `hostUsers: false`.
+      // lib.optionalAttrs (feature == podBuildUsernsFeature) { procMount = "Unmasked"; };
       volumeMounts = [
         {
           name = "nix-store";
@@ -260,35 +268,49 @@ let
       # The kubelet gives this group read on the job Secret, which the provider mounts 0400 and root's.
       fsGroup = builderUid;
     };
-    spec.volumes = [
-      {
-        name = "nix-store";
-        hostPath = {
-          path = "/nix/store";
-          type = "Directory";
-        };
-      }
-      {
-        name = "build";
-        emptyDir = { };
-      }
-      # busybox has no passwd: a uid would have no name, and `trusted-users` names users.
-      {
-        name = "passwd";
-        hostPath = {
-          path = "${nss}/etc/passwd";
-          type = "File";
-        };
-      }
-      {
-        name = "group";
-        hostPath = {
-          path = "${nss}/etc/group";
-          type = "File";
-        };
-      }
-    ];
+    spec.volumes =
+      let
+        root = storeRoot feature;
+      in
+      [
+        {
+          name = "nix-store";
+          hostPath = {
+            path = "${root}/nix/store";
+            type = "Directory";
+          };
+        }
+        {
+          name = "build";
+          emptyDir = { };
+        }
+        # busybox has no passwd: a uid would have no name, and `trusted-users` names users.
+        {
+          name = "passwd";
+          hostPath = {
+            path = "${root}${nss}/etc/passwd";
+            type = "File";
+          };
+        }
+        {
+          name = "group";
+          hostPath = {
+            path = "${root}${nss}/etc/group";
+            type = "File";
+          };
+        }
+      ];
   };
+
+  /*
+    Where a pod's store comes from on the node: the guest's own, or for a user-namespaced pod a copy on
+    the guest's ext4 disk. The kubelet idmaps every volume of such a pod, and the guest's /nix/store is an
+    overlay over UML's hostfs, which refuses it: "failed to set MOUNT_ATTR_IDMAP on /nix/store: invalid
+    argument" (measured). Test packaging only: a real pod has its store in its image or in nixkube's
+    volume, which idmaps it (`mountattr.bind_idmapped`).
+  */
+  podStoreRoot = "/var/lib/pynixd-podstore";
+  storeRoot = feature: if feature == podBuildUsernsFeature then podStoreRoot else "";
 
   pool =
     name: template: feature: extra:
@@ -329,6 +351,7 @@ vivariumLib.mkTest {
       brokenFeature
       siblingFeature
       podBuildFeature
+      podBuildUsernsFeature
       rogueFeature
       helperFeature
       buildPodCpu
@@ -380,6 +403,15 @@ vivariumLib.mkTest {
           system_features = [ podBuildFeature ];
           mandatory_features = [ podBuildFeature ];
         };
+        stores.buildpods-userns = {
+          type = "kubernetes-build-pods";
+          template = "buildpod-userns";
+          central_host = address;
+          central_port = sshPort;
+          systems = [ system ];
+          system_features = [ podBuildUsernsFeature ];
+          mandatory_features = [ podBuildUsernsFeature ];
+        };
         stores.helper = {
           type = "local-socket";
           store_path = "/var/lib/pynixd-helper";
@@ -418,6 +450,7 @@ vivariumLib.mkTest {
               broken.pod = pod config.services.vivarium-k8s.workloadImage brokenFeature;
               sibling.pod = pod config.services.vivarium-k8s.workloadImage siblingFeature;
               buildpod.pod = pod config.services.vivarium-k8s.workloadImage podBuildFeature;
+              buildpod-userns.pod = pod config.services.vivarium-k8s.workloadImage podBuildUsernsFeature;
               rogue.pod = pod config.services.vivarium-k8s.workloadImage rogueFeature;
             }
             // lib.optionalAttrs krun {
@@ -448,6 +481,28 @@ vivariumLib.mkTest {
         import ../../../nix/builder-seccomp.nix { inherit pkgs; }
       }"
     ];
+    # The user-namespaced template's store (`podStoreRoot`): the closure of the template itself, so the copy
+    # holds whatever the template names.
+    systemd.services.pynixd-podstore =
+      let
+        template = pkgs.writeText "buildpod-userns-template.json" (
+          builtins.toJSON (pod config.services.vivarium-k8s.workloadImage podBuildUsernsFeature)
+        );
+      in
+      {
+        wantedBy = [ "multi-user.target" ];
+        after = [ "pynixd.service" ];
+        wants = [ "pynixd.service" ];
+        path = [ config.nix.package ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
+        script = ''
+          nix --extra-experimental-features nix-command copy --no-check-sigs \
+            --to 'local?root=${podStoreRoot}' ${template}
+        '';
+      };
     networking.firewall.allowedTCPPorts = [
       acceptorPort
       sshPort

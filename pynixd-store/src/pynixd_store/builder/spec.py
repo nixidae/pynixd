@@ -126,7 +126,8 @@ class ChildSpec(TypedDict):
     pid_namespace: bool
     """With *chroot*, a pid namespace and a fresh `/proc` of the helper's own. `False` keeps the helper's pid
     namespace and binds its `/proc`: a container's `/proc` is masked, and the kernel then refuses a fresh one in a
-    user namespace (measured in a pod, nixidae/nixidae#1560)."""
+    user namespace (measured in a pod, nixidae/nixidae#1560). A sibling sandbox asks for `False`, and its runner
+    sets `True` where the container lets it (`sibling.fresh_proc_allowed`)."""
     sandbox_uid: int
     sandbox_gid: int
     work_dir: str

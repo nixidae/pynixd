@@ -22,6 +22,7 @@ from vivarium_runner import Machine, Machines
 
 BUILD_PODS = "pynixd.nixidae.org/build=true"
 RESTRICTED = "pynixd-restricted"
+BASELINE = "pynixd-baseline"
 SCRIPT = (
     "${bb}/bin/tr '\\0' ' ' < /proc/1/cmdline > $out; echo >> $out; ${bb}/bin/cat /proc/self/uid_map >> $out;"
     " ${bb}/bin/grep Seccomp_filters /proc/self/status >> $out"
@@ -53,41 +54,48 @@ async def test(vms: Machines) -> None:
     # The pod never registered: the provisioner holds no row for it.
     assert not [row for row in await rows(cp) if row["id"].startswith("buildpod")], await rows(cp)
     print("[test] the build pod ended, and central deleted it")
-    await admitted_as_restricted(cp, api)
+    await admitted_by_level(cp, api)
 
 
-async def admitted_as_restricted(cp: Machine, api: kr8s.asyncio.Api) -> None:
-    """The build pod template passes the `restricted` Pod Security level; the privileged `nested` one does not.
+async def admitted_by_level(cp: Machine, api: kr8s.asyncio.Api) -> None:
+    """Which Pod Security level admits each template.
 
-    The level refuses `hostPath`, and the test's pods take the node's store and passwd from it: the
+    `buildpod` passes `restricted`; the privileged `nested` one passes neither level. `buildpod-userns`
+    sets `procMount: Unmasked`, which `restricted` refuses always and `baseline` admits for a pod with
+    `hostUsers: false` (Kubernetes 1.35 and later, `check_procMount_baseline.go`).
+
+    The levels refuse `hostPath`, and the test's pods take the node's store and passwd from it: the
     check gives them `emptyDir` instead. A real pod has its store in its image, or in nixkube's `csi`
-    volume, which the level allows.
+    volume, which the levels allow.
     """
-    labels = {"pod-security.kubernetes.io/enforce": "restricted"}
-    await Namespace({"metadata": {"name": RESTRICTED, "labels": labels}}, api=api).create()
     config = json.loads((await cp.succeed("cat /etc/pynixd/pynixd.json")).stdout)
-    for template, admitted in (("buildpod", True), ("nested", False)):
-        pod = Pod(
-            restricted_copy(config["provisioning"]["kubernetes"]["templates"][template]["pod"], template), api=api
-        )
-        try:
-            await pod.create(dry_run="server")
-        except kr8s.ServerError as error:
-            print(f"[test] the {template} template in a restricted namespace: {error}")
-            assert not admitted, error
-            assert "violates PodSecurity" in str(error), error
-        else:
-            print(f"[test] the {template} template in a restricted namespace: admitted")
-            assert admitted, template
+    templates = config["provisioning"]["kubernetes"]["templates"]
+    for level, admitted in (
+        (RESTRICTED, {"buildpod": True, "buildpod-userns": False, "nested": False}),
+        (BASELINE, {"buildpod-userns": True, "nested": False}),
+    ):
+        labels = {"pod-security.kubernetes.io/enforce": level.removeprefix("pynixd-")}
+        await Namespace({"metadata": {"name": level, "labels": labels}}, api=api).create()
+        for template, wanted in admitted.items():
+            pod = Pod(level_copy(templates[template]["pod"], template, level), api=api)
+            try:
+                await pod.create(dry_run="server")
+            except kr8s.ServerError as error:
+                print(f"[test] the {template} template in a {level} namespace: {error}")
+                assert not wanted, error
+                assert "violates PodSecurity" in str(error), error
+            else:
+                print(f"[test] the {template} template in a {level} namespace: admitted")
+                assert wanted, (template, level)
 
 
-def restricted_copy(template: dict[str, Any], name: str) -> dict[str, Any]:  # Any: a Kubernetes pod
+def level_copy(template: dict[str, Any], name: str, namespace: str) -> dict[str, Any]:  # Any: a Kubernetes pod
     spec = template["spec"]
     volumes = [{"name": v["name"], "emptyDir": {}} if "hostPath" in v else v for v in spec.get("volumes", [])]
     return {
         **template,
         "apiVersion": "v1",
         "kind": "Pod",
-        "metadata": {"name": name, "namespace": RESTRICTED},
+        "metadata": {"name": name, "namespace": namespace},
         "spec": {**spec, "volumes": volumes},
     }

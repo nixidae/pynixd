@@ -6,6 +6,8 @@ another's output:
   nix         Nix's own sandbox: the guest's `nix-store` into a chroot store, as root with build users
   pynixd      pynixd's helper, on the node: central's `helper` store, whose builds pynixd runs itself
   pod         pynixd's helper in a build pod's sandbox container, at Pod Security `restricted`
+  pod-userns  the same in a user-namespaced pod with an unmasked /proc, at `baseline`: the helper makes a
+              pid namespace and a /proc of its own (`sibling.fresh_proc_allowed`)
 
 Each arm's JSON goes to `<artifacts>/sandbox-probe/<arm>.json`. Each arm but `nix` is compared with
 `nix`, fact by fact, and what differs goes to `differences.json`. It must equal the arm's `KNOWN`: a new
@@ -24,7 +26,7 @@ from daemon_helpers import as_tester, store_path
 from vivarium_runner import Machine, Machines
 
 REFERENCE = "nix"
-ARMS = (REFERENCE, "pynixd", "pod")
+ARMS = (REFERENCE, "pynixd", "pod", "pod-userns")
 # Not under /tmp: Nix refuses a build directory below a world-writable one.
 NIX_ROOT = "/var/lib/nix-arm"
 NIX_STORE = f"local?root={NIX_ROOT}"
@@ -61,6 +63,7 @@ KNOWN: dict[str, dict[str, str]] = {
         "pids visible": "the sibling runner and the helper are visible to the build",
         "pid 1": "pid 1 is the sibling runner, not the build",
     },
+    "pod-userns": EVERY_POD,
 }
 
 
@@ -90,6 +93,7 @@ async def built(cp: Machine, settings: Mapping[str, str], arm: str, nonce: str) 
         REFERENCE: "",
         "pynixd": settings["helperFeature"],
         "pod": settings["podBuildFeature"],
+        "pod-userns": settings["podBuildUsernsFeature"],
     }[arm]
     drv, out = await instantiate(cp, settings, nonce, feature)
     if arm == REFERENCE:
@@ -128,6 +132,8 @@ def differences(reference: Probe, probe: Probe) -> dict[str, tuple[str, str]]:
 async def test(vms: Machines) -> None:
     cp, settings = vms.cp, vms.settings
     await cp.wait_for_unit("pynixd.service")
+    # The user-namespaced pod's store, a copy the node makes at boot.
+    await cp.wait_for_unit("pynixd-podstore.service")
     run = (await cp.succeed("cat /proc/sys/kernel/random/uuid")).stdout.strip()
     probes = {arm: await built(cp, settings, arm, f"{arm}-{run}") for arm in ARMS}
 

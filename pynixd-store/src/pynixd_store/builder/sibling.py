@@ -2,8 +2,12 @@
 
 The pod is one build. Its daemon container runs `build()`; its sandbox container runs `sibling run DIR` and the
 helper. Both mount the build's volume at the same path, so the spec, the build directory, the chroot and the
-store mean the same in each. The sandbox container has no capability and its own pid namespace: the helper keeps
-it (`pid_namespace`) and makes the user, mount, network, IPC and UTS namespaces itself.
+store mean the same in each. The sandbox container has no capability and its own pid namespace. The helper makes
+the user, mount, network, IPC and UTS namespaces itself, and a pid namespace with a fresh `/proc` when the
+container lets it: a pod whose sandbox container sets `procMount: Unmasked`, which needs `hostUsers: false`. The
+runner asks the kernel once, at start (`fresh_proc_allowed`). Otherwise the helper keeps the container's pid
+namespace and binds its masked `/proc`: the kernel refuses a fresh one in a user namespace while a locked mount
+covers a file of the old one, and a container's masks, such as `/proc/keys`, are those.
 
 `build()` starts `sibling wait DIR ...` as the helper's process, on the build's terminal. The waiter connects to
 the runner's socket in DIR, sends the job, and copies the runner's records to the terminal: the log, then the
@@ -14,6 +18,7 @@ on the host. A waiter that goes away, as a cancelled build's does, makes the run
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import json
 import os
 import pty
@@ -23,6 +28,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import termios
 import time
 import tty
@@ -40,6 +46,42 @@ LOG: Final = b"L"
 EXIT: Final = b"E"
 #: How long the waiter tries the runner's socket: the sandbox container may start after the daemon's.
 CONNECT_SECONDS: Final = 60.0
+#: The namespaces `fresh_proc_allowed` tries, as the helper makes them.
+PROBE_NAMESPACES: Final = os.CLONE_NEWUSER | os.CLONE_NEWNS | os.CLONE_NEWPID
+
+_libc = ctypes.CDLL(None, use_errno=True)
+
+
+def fresh_proc_allowed(scratch: Path) -> bool:
+    """Whether a new user and pid namespace here may mount a `/proc` of its own, as the helper would.
+
+    Tried, not read from the mount table: which locked mounts make the kernel refuse is `mnt_already_visible`'s
+    rule, and a mount over an empty directory, as `binfmt_misc` is, does not. The mount point goes under
+    *scratch*: a sandbox container may have no writable /tmp (measured).
+    """
+    with tempfile.TemporaryDirectory(prefix="proc-probe-", dir=scratch) as target:
+        pid = os.fork()
+        if pid == 0:
+            code = 1
+            try:
+                os.unshare(PROBE_NAMESPACES)
+                # The new pid namespace takes the caller's next child as its pid 1, and only that one may mount it.
+                inner = os.fork()
+                if inner == 0:
+                    os._exit(0 if _libc.mount(b"none", target.encode(), b"proc", 0, None) == 0 else 1)
+                code = os.waitstatus_to_exitcode(os.waitpid(inner, 0)[1])
+            except OSError:
+                code = 1
+            finally:
+                os._exit(code)
+        return os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]) == 0
+
+
+def own_pid_namespace(spec_file: Path) -> None:
+    """Ask the helper for a pid namespace of its own in *spec_file*, the job's `ChildSpec`."""
+    spec = json.loads(spec_file.read_text())
+    spec["pid_namespace"] = True
+    spec_file.write_text(json.dumps(spec))
 
 
 @dataclass(frozen=True)
@@ -110,8 +152,10 @@ def _send(conn: socket.socket, kind: bytes, payload: bytes) -> None:
     conn.sendall(HEADER.pack(kind, len(payload)) + payload)
 
 
-def _serve(conn: socket.socket) -> None:
+def _serve(conn: socket.socket, *, fresh_proc: bool) -> None:
     job = json.loads(conn.makefile("rb").readline())
+    if fresh_proc:
+        own_pid_namespace(Path(job["spec"]))
     master, slave = pty.openpty()
     mode = termios.tcgetattr(slave)
     tty.cfmakeraw(mode)
@@ -171,13 +215,17 @@ def run(rendezvous: Path) -> None:
     path = rendezvous / SOCKET_NAME
     with contextlib.suppress(FileNotFoundError):
         path.unlink()
+    fresh_proc = fresh_proc_allowed(rendezvous)
+    which = "its own" if fresh_proc else "the container's"
+    sys.stdout.write(f"sibling: the helper's pid namespace is {which}\n")
+    sys.stdout.flush()
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
         listener.bind(str(path))
         listener.listen(1)
         while True:
             conn, _ = listener.accept()
             with conn:
-                _serve(conn)
+                _serve(conn, fresh_proc=fresh_proc)
 
 
 def main() -> None:
