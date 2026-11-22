@@ -54,6 +54,12 @@ let
     echo "${builderUser}:x:${toString builderUid}:${toString builderUid}::/build:/noshell" >> $out/etc/passwd
     echo "${builderUser}:x:${toString builderUid}:" >> $out/etc/group
   '';
+  # Central's `helper` store's: pynixd's own sandbox helper builds it on the node. Central's local store
+  # hands a build to the Nix daemon behind it, so without this no arm on the node runs pynixd's helper.
+  helperFeature = "pynixd-helper";
+  # `kubernetes_sandbox_probe.py`'s builder, and the Python it runs on.
+  sandboxProbe = ../../provisioning/sandbox_probe.py;
+  probePython = pkgs.python3;
   acceptorPort = 2235;
   sshPort = 2234;
   address = "10.109.0.1";
@@ -324,9 +330,12 @@ vivariumLib.mkTest {
       siblingFeature
       podBuildFeature
       rogueFeature
+      helperFeature
       buildPodCpu
       ;
     kubectl = "${pkgs.kubectl}/bin/kubectl";
+    probePython = "${probePython}";
+    sandboxProbe = "${sandboxProbe}";
   };
 
   nodes.cp = { config, ... }: {
@@ -346,7 +355,11 @@ vivariumLib.mkTest {
         network = "pynixd-k8s";
         address = "${address}/24";
       };
-      nixDatabase.extraRoots = [ "${pkgs.busybox}" ];
+      nixDatabase.extraRoots = [
+        "${pkgs.busybox}"
+        "${probePython}"
+        "${sandboxProbe}"
+      ];
     };
     services.pynixd = {
       enable = true;
@@ -366,6 +379,18 @@ vivariumLib.mkTest {
           systems = [ system ];
           system_features = [ podBuildFeature ];
           mandatory_features = [ podBuildFeature ];
+        };
+        stores.helper = {
+          type = "local-socket";
+          store_path = "/var/lib/pynixd-helper";
+          managed = true;
+          op_routes.BuildDerivation = "pynixd";
+          pynixd_writes = true;
+          systems = [ system ];
+          system_features = [ helperFeature ];
+          mandatory_features = [ helperFeature ];
+          # The store's own builder reads its features from its nix.conf, not from the lines above.
+          nix_config.system-features = [ helperFeature ];
         };
         stores.roguepods = {
           type = "kubernetes-build-pods";
@@ -479,6 +504,10 @@ vivariumLib.mkTest {
         };
         pod-preempted = {
           script = ../../provisioning/kubernetes_pod_preempted.py;
+          after = [ "cluster" ];
+        };
+        sandbox-probe = {
+          script = ../../provisioning/kubernetes_sandbox_probe.py;
           after = [ "cluster" ];
         };
       }
