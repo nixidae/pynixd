@@ -72,6 +72,7 @@ from .handlers.nar_from_path import NarFromPathHandler
 from .proxy import BUILDER_ONLY_OPS, DaemonProxy
 from .serde.auth import Role
 from .store import LocalDBStore
+from .store.transfer import stream_paths_store_to_store
 from .unix_socket import as_link
 from .wire import FramedReader, UnixNixReader, UnixNixWriter
 
@@ -86,6 +87,7 @@ if TYPE_CHECKING:
     from pynixd_store.engine import StoreEngine
 
     from .context import PynixdContext
+    from .store.daemon import DaemonStore
     from .wire import NixReader, NixWriter
 
 log = structlog.get_logger(__name__)
@@ -142,10 +144,20 @@ def _path_of(derived: str) -> StorePath | None:
 class RestrictedProxy(DaemonProxy):
     """One recursive-nix client of a build: an untrusted session that reaches only *restriction*."""
 
-    def __init__(self, reader: NixReader, writer: NixWriter, ctx: PynixdContext, restriction: RestrictionContext):
+    def __init__(
+        self,
+        reader: NixReader,
+        writer: NixWriter,
+        ctx: PynixdContext,
+        restriction: RestrictionContext,
+        *,
+        builds_at: DaemonStore | None = None,
+    ):
         # `processConnection` watches no hangup in recursive mode (`daemon.cc:1016`).
         super().__init__(reader, writer, ctx, role=Role.USER, username="recursive-nix", transport="recursive")
         self.restriction = restriction
+        self.builds_at = builds_at
+        """Where a nested build runs, when not in this store: a build pod's central (nixidae/nixidae#1560)."""
         self._adding: list[str] | None = None
 
     pynixd_features = frozenset()
@@ -404,7 +416,7 @@ class RestrictedProxy(DaemonProxy):
             if not self._knows(str(derived)):
                 text = str(derived).replace("!", "^")
                 raise RestrictedError(f"cannot build {_quoted(text)} in recursive Nix because path is unknown")
-        results = await self._next(
+        results = await self._build_next(
             BuildPathsWithResultsRequest(derived_paths=request.derived_paths, build_mode=request.build_mode)
         )
         if not isinstance(results, BuildPathsWithResultsResponse):
@@ -431,6 +443,28 @@ class RestrictedProxy(DaemonProxy):
             raise BackendError(_build_failure_message(failed))
         return BuildPathsResponse(value=1)
 
+    async def _build_next(self, request: BuildPathsWithResultsRequest) -> WireResponse:
+        """The build of the store behind the restriction, or of `builds_at`, which gets the derivations first.
+
+        A build pod's key may add only its own outputs and content-addressed paths, so whatever the pod built
+        for another derivation never reaches central. Central builds it instead, as for any untrusted client,
+        and the pod copies the outputs back, so the builder sees them in this store.
+        """
+        if self.builds_at is None:
+            return await self._next(request)
+        drvs = {StorePath(_path_part(str(derived))) for derived in request.derived_paths}
+        await stream_paths_store_to_store(self.local_store, self.builds_at, drvs)
+        results = await self.builds_at.execute(request)
+        if not isinstance(results, BuildPathsWithResultsResponse):
+            raise TypeError(f"BuildPathsWithResults answered {type(results).__name__}")
+        built: set[StorePath] = set()
+        for keyed in results.results:
+            if result_succeeded(keyed.result):
+                built.update(unkeyed.out_path for unkeyed in (keyed.result.built_outputs_by_name or {}).values())
+                built.update(r.out_path for r in (keyed.result.built_outputs or {}).values() if r.out_path is not None)
+        await stream_paths_store_to_store(self.builds_at, self.local_store, built)
+        return results
+
     async def _missing(self, request: QueryMissingRequest) -> WireResponse:
         """`queryMissing` (`restricted-store.cc:283`): an unknown path is unknown, and the rest is asked."""
         allowed = {d for d in request.derived_paths if self._knows(str(d))}
@@ -456,8 +490,8 @@ class RestrictedProxy(DaemonProxy):
         return await self._next(request)
 
 
-def restricted_server(ctx: PynixdContext) -> RecursiveServer:
-    """The `RecursiveServer` pynixd's sandbox hands each recursive-nix build."""
+def restricted_server(ctx: PynixdContext, *, builds_at: DaemonStore | None = None) -> RecursiveServer:
+    """The `RecursiveServer` pynixd's sandbox hands each recursive-nix build; *builds_at* runs its nested builds."""
 
     @contextlib.asynccontextmanager
     async def serve(listener: socket.socket, restriction: RestrictionContext) -> AsyncIterator[None]:
@@ -469,6 +503,7 @@ def restricted_server(ctx: PynixdContext) -> RecursiveServer:
                     UnixNixWriter(link, identifier="recursive"),
                     ctx,
                     restriction,
+                    builds_at=builds_at,
                 )
                 await proxy.run()
             except Exception:

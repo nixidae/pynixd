@@ -31,6 +31,7 @@ from .cli.base import load_settings, setup_logging
 from .config import SSHSubprocessStoreSpec
 from .execution import without_error_prefix
 from .instance import Server
+from .recursive import restricted_server
 from .serde.protocol import Verbosity
 from .store.daemon import DaemonStore
 from .store.local_db import LocalDBStore
@@ -77,6 +78,8 @@ async def build_one(job_dir: Path, result_path: Path) -> int:
             raise SystemExit("pynixd build-one: the local store is not one pynixd builds into")
         if not isinstance(central, DaemonStore):
             raise SystemExit("pynixd build-one: central is not a daemon store")
+        # A nested recursive-nix build: central's key would refuse whatever the pod built for it.
+        local.recursive_server = restricted_server(server.ctx, builds_at=central)
         inputs = {StorePath(path=str(p)) for p in request.derivation.input_srcs}
         moved = await stream_paths_store_to_store(central, local, inputs)
         log.info("build_one_inputs", paths=len(inputs), bytes=moved)

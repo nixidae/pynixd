@@ -15,6 +15,7 @@ from nix_daemon_protocol.add_multiple_to_store import AddMultipleToStoreRequest
 from nix_daemon_protocol.add_temp_root import AddTempRootRequest
 from nix_daemon_protocol.add_temp_roots import AddTempRootsRequest
 from nix_daemon_protocol.add_to_store_nar import AddToStoreNarRequest
+from nix_daemon_protocol.build_paths_with_results import BuildPathsWithResultsRequest
 from nix_daemon_protocol.is_valid_path import IsValidPathRequest
 from nix_daemon_protocol.nar_from_path import NarFromPathRequest
 from nix_daemon_protocol.query_path_info import QueryPathInfoRequest
@@ -43,9 +44,11 @@ GRANTED_OPS: Final = ADDS | {
         AddTempRootsRequest,
         QueryClosureRequest,
         QueryClosureWithInfoRequest,
+        BuildPathsWithResultsRequest,
     )
 }
-"""What a pod's copy in and copy out send, and nothing that builds, deletes or roots for good."""
+"""What a pod's copy in and copy out send, and a recursive build's nested builds, which central runs as for any
+untrusted client (`recursive.py`). Nothing that deletes or roots for good."""
 
 
 @dataclass(frozen=True, slots=True)
