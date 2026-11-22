@@ -359,6 +359,8 @@ vivariumLib.mkTest {
     kubectl = "${pkgs.kubectl}/bin/kubectl";
     probePython = "${probePython}";
     sandboxProbe = "${sandboxProbe}";
+    # `kubernetes_pod_throughput.py`'s largest input closure: in the node's store already, as pynixd's.
+    benchLarge = "${package}";
   };
 
   nodes.cp = { config, ... }: {
@@ -564,6 +566,11 @@ vivariumLib.mkTest {
         sandbox-probe = {
           script = ../../provisioning/kubernetes_sandbox_probe.py;
           after = [ "cluster" ];
+        };
+        # Measures; asserts nothing. After the probe, so the two do not share the node.
+        pod-throughput = {
+          script = ../../provisioning/kubernetes_pod_throughput.py;
+          after = [ "sandbox-probe" ];
         };
       }
   );
