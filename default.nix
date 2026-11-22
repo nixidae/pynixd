@@ -932,6 +932,14 @@ let
       }
     );
 
+    # The same, with storage and scheduler on a second machine, reached over mTLS.
+    buildbarn-split = withDefaultNix (
+      pkgs.callPackage ./tests/derivations/buildbarn-split {
+        inherit package;
+        inherit vivariumLib;
+      }
+    );
+
     # A running machine switched to pynixd and back, in each mode.
     switch = pkgs.callPackage ./tests/derivations/switch {
       inherit package;
