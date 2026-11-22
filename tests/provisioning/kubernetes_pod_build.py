@@ -15,7 +15,8 @@ from vivarium_k8s import get_json
 from vivarium_runner import Machines
 
 BUILD_PODS = "pynixd.nixidae.org/build=true"
-SCRIPT = "${bb}/bin/tr '\\0' ' ' < /proc/1/cmdline > $out"
+SCRIPT = "${bb}/bin/tr '\\0' ' ' < /proc/1/cmdline > $out; echo >> $out; ${bb}/bin/cat /proc/self/uid_map >> $out"
+BUILDER_UID = 1000
 
 
 async def test(vms: Machines) -> None:
@@ -24,9 +25,12 @@ async def test(vms: Machines) -> None:
     await cp.wait_for_unit("pynixd.service")
     drv, out = await feature_drv(cp, settings, "podbuild", SCRIPT, settings["podBuildFeature"])
     await as_tester(cp, f"nix-store --realise {drv}", timeout=300)
-    cmdline = (await cp.succeed(f"cat {out}")).stdout.strip()
+    cmdline, uid_map = (await cp.succeed(f"cat {out}")).stdout.strip().splitlines()
     print(f"[test] pid 1 in the build pod's sandbox: {cmdline}")
     assert "pynixd_store.builder.sibling run" in cmdline, cmdline
+    # The second field is the uid outside the sandbox: the pod's, which has no root.
+    print(f"[test] the build's uid map: {uid_map}")
+    assert int(uid_map.split()[1]) == BUILDER_UID, uid_map
 
     async def gone() -> bool:
         return not (await get_json(cp, f"get pods --selector {BUILD_PODS}"))["items"]

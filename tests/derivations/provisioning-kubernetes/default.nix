@@ -37,6 +37,16 @@ let
   # Both run their build in the sandbox container.
   sandboxed = feature: feature == siblingFeature || feature == podBuildFeature;
   rendezvous = "/build/sibling";
+  # The user both containers of a sandboxed pod run as.
+  builderUser = "builder";
+  builderUid = 1000;
+  nss = pkgs.runCommand "pynixd-builder-nss" { } ''
+    mkdir -p $out/etc
+    cp ${pkgs.dockerTools.fakeNss}/etc/passwd ${pkgs.dockerTools.fakeNss}/etc/group $out/etc/
+    chmod u+w $out/etc/*
+    echo "${builderUser}:x:${toString builderUid}:${toString builderUid}::/build:/noshell" >> $out/etc/passwd
+    echo "${builderUser}:x:${toString builderUid}:" >> $out/etc/group
+  '';
   acceptorPort = 2235;
   sshPort = 2234;
   address = "10.109.0.1";
@@ -137,9 +147,10 @@ let
               substituters =
               system-features = ${feature}
             ''
-            # The sandbox container's root has no CAP_SETGID, so the helper cannot drop its groups.
+            # The builder has no CAP_SETGID, so the helper cannot drop its groups.
             + lib.optionalString (sandboxed feature) ''
               require-drop-supplementary-groups = false
+              trusted-users = root ${builderUser}
             '';
           }
           {
@@ -156,7 +167,14 @@ let
         ];
         # The `nested` kind: Nix's own sandbox, in namespaces inside the pod's. The `krun` kind needs the
         # node's `/dev/kvm`, which a privileged container sees.
-        securityContext.privileged = !(sandboxed feature);
+        securityContext =
+          if sandboxed feature then
+            {
+              allowPrivilegeEscalation = false;
+              capabilities.drop = [ "ALL" ];
+            }
+          else
+            { privileged = true; };
         volumeMounts = [
           {
             name = "nix-store";
@@ -192,16 +210,12 @@ let
         "run"
         rendezvous
       ];
-      # One capability: the helper makes the user namespace, and the rest in it. Root maps its uid 0 into
-      # it only with CAP_SETFCAP (`verify_root_map`, Linux 5.12; measured: uid_map EPERM without it).
-      # RuntimeDefault refuses every `unshare`, a user namespace's too (measured).
+      # No capability: the helper makes the user namespace as the builder, and the rest in it. Root would
+      # need CAP_SETFCAP to map its uid 0 (`verify_root_map`, Linux 5.12). RuntimeDefault refuses every
+      # `unshare`, a user namespace's too (measured).
       securityContext = {
-        runAsUser = 0;
         allowPrivilegeEscalation = false;
-        capabilities = {
-          drop = [ "ALL" ];
-          add = [ "SETFCAP" ];
-        };
+        capabilities.drop = [ "ALL" ];
         seccompProfile.type = "Unconfined";
       };
       volumeMounts = [
@@ -216,6 +230,14 @@ let
         }
       ];
     };
+    # Both containers run as the builder: the build pods have no root at all.
+    spec.securityContext = lib.optionalAttrs (sandboxed feature) {
+      runAsUser = builderUid;
+      runAsGroup = builderUid;
+      runAsNonRoot = true;
+      # The kubelet gives this group read on the job Secret, which the provider mounts 0400 and root's.
+      fsGroup = builderUid;
+    };
     spec.volumes = [
       {
         name = "nix-store";
@@ -228,18 +250,18 @@ let
         name = "build";
         emptyDir = { };
       }
-      # busybox has no passwd: uid 0 would have no name, and only `root` is a trusted user.
+      # busybox has no passwd: a uid would have no name, and `trusted-users` names users.
       {
         name = "passwd";
         hostPath = {
-          path = "${pkgs.dockerTools.fakeNss}/etc/passwd";
+          path = "${nss}/etc/passwd";
           type = "File";
         };
       }
       {
         name = "group";
         hostPath = {
-          path = "${pkgs.dockerTools.fakeNss}/etc/group";
+          path = "${nss}/etc/group";
           type = "File";
         };
       }
