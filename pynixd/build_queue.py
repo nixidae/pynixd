@@ -311,6 +311,12 @@ class QueuedBuild:
         self.cores_cap = self.cores_ceiling = cores
         self.trace.attempt_ended(Ending.RETRIED, f"again on at most {cores} cores")
 
+    def reset_for_disruption(self) -> None:
+        """Queue the build again after Kubernetes took its pod for another pod. No store failed, so it counts none."""
+        self.retries += 1
+        self.started_at = None
+        self.worker = None
+
     @property
     def wait_time(self) -> float | None:
         """Seconds between enqueue and build start."""

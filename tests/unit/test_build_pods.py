@@ -11,6 +11,7 @@ from pynixd.build_job import RESULT_BYTES, decode_request, decode_response, enco
 from pynixd.build_result import failure
 from pynixd.config import BuildPodStoreSpec
 from pynixd.exceptions import InfrastructureError
+from pynixd.provisioning.kubernetes import pod_end
 from pynixd.serde import BasicDerivation
 from pynixd.store.build_pods import BuildPodStore
 from pynixd.store.scheduled import ProbeState
@@ -29,6 +30,22 @@ async def test_the_job_and_the_result_read_back_as_written() -> None:
     message = await result_message(response)
     assert len(message) <= RESULT_BYTES
     assert (await decode_response(message)).result.error_msg.endswith("x" * 100)
+
+
+def test_a_pod_says_why_it_ended() -> None:
+    preempted = {
+        "status": {
+            "phase": "Running",
+            "conditions": [{"type": "DisruptionTarget", "status": "True", "reason": "PreemptionByScheduler"}],
+        }
+    }
+    late = {"status": {"phase": "Failed", "reason": "DeadlineExceeded"}}
+    running = {"status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "True"}]}}
+
+    assert pod_end(preempted) == "PreemptionByScheduler"
+    assert pod_end(late) == "DeadlineExceeded"
+    assert pod_end(running) is None
+    assert pod_end({}) is None
 
 
 @pytest.mark.anyio

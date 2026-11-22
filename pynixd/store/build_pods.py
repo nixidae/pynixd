@@ -38,13 +38,17 @@ if TYPE_CHECKING:
     from ..build_grant import Grants
     from ..config import BuildPodStoreSpec
     from ..connection import ClientConn, Connection
-    from ..provisioning.kubernetes import KubernetesProvider
+    from ..provisioning.kubernetes import BuildPodEnd, KubernetesProvider
 
 log = structlog.get_logger(__name__)
 
 _DELETE_SECONDS: Final = 30.0
 _ENDED_SECONDS: Final = 60.0
 """How long the kubelet may take to write a container's end after its log ended."""
+
+
+class PodDisrupted(InfrastructureError):
+    """Kubernetes took the pod for another, by preemption or eviction: the build goes back, and no store failed."""
 
 
 class FloatingOutputs(ValueError):
@@ -152,19 +156,22 @@ class BuildPodStore(ScheduledStore):
             secret = {JOB_NAME: job.model_dump_json(), KEY_NAME: key.export_private_key().decode()}
             await self.kubernetes.start_build_pod(self.spec.template, name, secret)
             log.info("build_pod_started", pod=name, drv=str(request.drv_path))
-            async for line in self.kubernetes.follow_build_pod(name, self.spec.container):
-                await on_line(line)
-            ended: dict[str, Any] | None = None  # Any: a Kubernetes container state
+            try:
+                async for line in self.kubernetes.follow_build_pod(name, self.spec.container):
+                    await on_line(line)
+            except ProviderError as error:
+                # The log of a pod that is preempted or deleted breaks off: how the pod ended says why.
+                log.warning("build_pod_log_ended", pod=name, error=str(error))
+            ended: BuildPodEnd | None = None
             with anyio.move_on_after(_ENDED_SECONDS):
                 ended = await self.kubernetes.build_pod_ended(name, self.spec.container)
             if ended is None:
                 raise InfrastructureError(f"build pod {name}: its log ended while its container ran")
-            message = ended.get("message")
-            if ended.get("exitCode") != 0 or not message:
-                reason = ended.get("reason") or "exited"
-                raise InfrastructureError(f"build pod {name}: {reason} with exit {ended.get('exitCode')} and no result")
+            if ended.exit_code != 0 or not ended.message:
+                fault = PodDisrupted if ended.disrupted else InfrastructureError
+                raise fault(f"build pod {name}: {ended.cause} with exit {ended.exit_code} and no result")
             try:
-                return await decode_response(str(message))
+                return await decode_response(ended.message)
             except (ValueError, EOFError) as error:
                 raise InfrastructureError(f"build pod {name}: its result does not read: {error}") from error
         except ProviderError as error:
