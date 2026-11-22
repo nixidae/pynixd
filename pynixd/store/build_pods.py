@@ -43,6 +43,8 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 _DELETE_SECONDS: Final = 30.0
+_ENDED_SECONDS: Final = 60.0
+"""How long the kubelet may take to write a container's end after its log ended."""
 
 
 class FloatingOutputs(ValueError):
@@ -152,7 +154,9 @@ class BuildPodStore(ScheduledStore):
             log.info("build_pod_started", pod=name, drv=str(request.drv_path))
             async for line in self.kubernetes.follow_build_pod(name, self.spec.container):
                 await on_line(line)
-            ended = await self.kubernetes.build_pod_ended(name, self.spec.container)
+            ended: dict[str, Any] | None = None  # Any: a Kubernetes container state
+            with anyio.move_on_after(_ENDED_SECONDS):
+                ended = await self.kubernetes.build_pod_ended(name, self.spec.container)
             if ended is None:
                 raise InfrastructureError(f"build pod {name}: its log ended while its container ran")
             message = ended.get("message")

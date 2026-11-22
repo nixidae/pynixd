@@ -311,22 +311,35 @@ class KubernetesProvider:
             # 400 is "waiting to start": the API tells no client when a container's log opens.
             await anyio.sleep(1.0)
 
-    async def build_pod_ended(self, name: str, container: str) -> Manifest | None:
-        """The container's `terminated` state, or `None` while it runs."""
+    async def build_pod_ended(self, name: str, container: str) -> Manifest:
+        """The container's `terminated` state, once the kubelet has written it.
+
+        The log ends when the container exits, and the kubelet writes the state after that (measured: a
+        crash read as still running).
+        """
         api = await self._client()
         with failing(f"reading build pod {name}"):
             pod = await Pod.get(name, namespace=self._settings.namespace, api=api)
-        raw: Manifest = pod.raw
-        for status in (raw.get("status") or {}).get("containerStatuses") or []:
-            if status.get("name") == container:
-                terminated: Manifest | None = (status.get("state") or {}).get("terminated")
+            if (terminated := _terminated(pod.raw, container)) is not None:
                 return terminated
-        return None
+            # From the read's resourceVersion: no change between the read and the watch is lost.
+            async for _event, changed in pod.watch():
+                if (terminated := _terminated(changed.raw, container)) is not None:
+                    return terminated
+        raise ProviderError(f"kubernetes: the watch of build pod {name} ended")
 
 
 BUILD_LABEL: Final = "pynixd.nixidae.org/build"
 JOB_VOLUME: Final = "pynixd-job"
 JOB_DIR: Final = "/run/pynixd-job"
+
+
+def _terminated(pod: Manifest, container: str) -> Manifest | None:
+    for status in (pod.get("status") or {}).get("containerStatuses") or []:
+        if status.get("name") == container:
+            terminated: Manifest | None = (status.get("state") or {}).get("terminated")
+            return terminated
+    return None
 
 
 def build_pod_manifest(template: KubernetesTemplateSettings, name: str) -> Manifest:
