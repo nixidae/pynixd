@@ -52,15 +52,14 @@ KNOWN = {
     "ppid": "the build's parent is the helper, in the same pid namespace",
     "pids visible": "the sibling runner and the helper are visible to the build",
     "pid 1": "pid 1 is the sibling runner, not the build",
-    "mounts": "the container's masked /proc and its tmpfs /dev nodes; no busybox store path for /bin/sh",
+    # `/bin/sh` is Nix's built-in sandbox shell in every arm; the pod's store does not hold its closure.
+    "mounts": "the container's masked /proc and its tmpfs /dev nodes; /bin/sh without its store path",
     # The pod's user, which has no build users and no CAP_SETGID.
     "uid_map": "outside, the build is the pod's uid 1000, not a build user",
     "gid_map": "outside, the build is the pod's gid 1000, not the build users' group",
     "groups": "the pod's fsGroup stays a supplementary group: the helper cannot drop it without CAP_SETGID",
-    # containerd's limits for a container, not the node's for a service.
-    "limits.RLIMIT_NOFILE": "containerd gives a container a soft limit of 1024",
-    "limits.RLIMIT_OFILE": "the same limit as RLIMIT_NOFILE, by its old name",
-    "limits.RLIMIT_NPROC": "a container has no process limit",
+    # The open files limit matches: the helper raises it as Nix does (`child._bump_file_limit`).
+    "limits.RLIMIT_NPROC": "a container has no process limit; a service has the node's, sized by its memory",
 }
 
 
