@@ -64,6 +64,8 @@ let
   helperFeature = "pynixd-helper";
   # `kubernetes_sandbox_probe.py`'s builder, and the Python it runs on.
   sandboxProbe = ../../provisioning/sandbox_probe.py;
+  # `kubernetes_input_primitives.py`'s measurement, run in the guest on pynixd's interpreter.
+  inputPrimitives = ../../provisioning/input_primitives.py;
   probePython = pkgs.python3;
   acceptorPort = 2235;
   sshPort = 2234;
@@ -361,6 +363,8 @@ vivariumLib.mkTest {
     sandboxProbe = "${sandboxProbe}";
     # `kubernetes_pod_throughput.py`'s largest input closure: in the node's store already, as pynixd's.
     benchLarge = "${package}";
+    inputPrimitives = "${inputPrimitives}";
+    venvPython = "${package.venv}/lib/venv/bin/python";
   };
 
   nodes.cp = { config, ... }: {
@@ -384,6 +388,7 @@ vivariumLib.mkTest {
         "${pkgs.busybox}"
         "${probePython}"
         "${sandboxProbe}"
+        "${inputPrimitives}"
       ];
     };
     services.pynixd = {
@@ -571,6 +576,10 @@ vivariumLib.mkTest {
         pod-throughput = {
           script = ../../provisioning/kubernetes_pod_throughput.py;
           after = [ "sandbox-probe" ];
+        };
+        input-primitives = {
+          script = ../../provisioning/kubernetes_input_primitives.py;
+          after = [ "cluster" ];
         };
       }
   );
