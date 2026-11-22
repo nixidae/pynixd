@@ -686,7 +686,7 @@ class Placer[S: PlacedStore]:
                 None if room is None else room - self.settings.memory_headroom_bytes,
                 rs.store.cores,
                 build.options.build_cores if build.options is not None and build.options.build_cores > 0 else None,
-                build.cores_ceiling,
+                min((c for c in (build.cores_ceiling, rs.store.build_cores) if c), default=None),
             )
             build.cores_cap, build.expected_peak_bytes = choice.cores, choice.peak_bytes
             self.spawn(build, rs.store)

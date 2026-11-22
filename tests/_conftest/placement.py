@@ -116,6 +116,7 @@ class FakeStore:
         """What the store answers an operation with; a store asked with none fails the test."""
         self.runs_daemon = True
         self.cores: int | None = None
+        self.build_cores: int | None = None
         self.events: list[str] | None = None
         """Each connection taken and given back, when a test watches the order."""
         self.conn = FakeConn()

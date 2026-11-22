@@ -45,6 +45,7 @@ class ReverseStore(SSHStore):
         super().__init__(spec)
         self._ssh_conn: asyncssh.SSHClientConnection = ssh_conn
         self.nix_bin = spec.nix_bin
+        self.build_cores = spec.build_cores
         # Persistent, so `_on_pool_empty` never closes the builder's own
         # connection: this store did not open it and cannot reopen it.
         self.init_ssh_state(monitor_enabled=False, persistent_connection=True)

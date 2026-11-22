@@ -139,7 +139,9 @@ def reverse_spec(
     if systems:
         feature_matrix = {s: set(system_features) for s in systems}
     slots = build_slots(reg.get("max_jobs"), store_id)
+    cores = reg.get("cores")
     return ReverseStoreSpec(
+        build_cores=cores if isinstance(cores, int) and not isinstance(cores, bool) and cores >= 1 else None,
         store_id=StoreId(store_id),
         systems=systems or None,
         system_features=system_features,

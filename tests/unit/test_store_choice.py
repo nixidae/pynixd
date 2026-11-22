@@ -660,6 +660,26 @@ async def test_each_store_gets_the_cores_its_memory_holds() -> None:
     assert [queue.by_id[b].expected_peak_bytes for b in builds] == [62 * GIB, 16 * GIB]
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("model", [None, MemoryModel(2.0 * GIB, 0.0)], ids=["unmodelled", "modelled"])
+async def test_a_store_s_declared_cores_are_sent(model: MemoryModel | None) -> None:
+    """A builder whose Nix says `cores = 8` gets a cap of 8, though the client's `cores = 0` would override it.
+
+    sg1's nodes declare 8 cores on 48 CPUs and cap the daemon's memory for that. nixidae/nixidae#1568.
+    """
+    queue = BuildQueue()
+    build_id, _ = await queue.enqueue(_request(1))
+    queue.by_id[build_id].memory_model = model
+    node = _with_memory(REMOTE, 63 * GIB)
+    node.store.cores = 8
+    node.store.build_cores = 8
+    spawned = Spawned()
+
+    await fake_placer(queue, FixedRanking(lambda _build: [node]), spawned).assign([queue.by_id[build_id]], {})
+
+    assert queue.by_id[build_id].cores_cap == 8
+
+
 @pytest.mark.parametrize(
     ("model", "room", "client", "killed", "choice"),
     [

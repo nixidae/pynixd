@@ -133,6 +133,8 @@ class ScheduledStore(Store):
         """Until when a build failed here for want of disk; read when no disk sample is known."""
         self.disk_floor_bytes: int = 0
         """The `min-free` of this store's Nix, when pynixd knows it; each disk sample of its host carries it."""
+        self.build_cores: int | None = None
+        """The `cores` of this store's Nix, when it declares one: no build gets more."""
         self.disk_reclaim: ReclaimSample | None = None
         """The last GC plan's free and reclaimable bytes; each disk sample of its host turns it into room."""
         self.sample_listeners: set[Callable[[SystemHealth], None]] = set()
@@ -249,9 +251,9 @@ class ScheduledStore(Store):
 
     @property
     def cores(self) -> int | None:
-        """The cores of the store's host or cgroup quota, as its monitor read them; `None` when unknown."""
+        """The cores one build may use: the host's or its cgroup quota's, at most the store's `build_cores`."""
         cores = self.monitor.health.cores if self.monitor else None
-        return math.ceil(cores) if cores else None
+        return min((c for c in (math.ceil(cores) if cores else None, self.build_cores) if c), default=None)
 
     # ── Circuit breaker ─────────────────────────────────────────────
 

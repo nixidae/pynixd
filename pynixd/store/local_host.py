@@ -9,6 +9,7 @@ nixidae/nixidae#1325.
 from __future__ import annotations
 
 import contextlib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -37,7 +38,7 @@ if TYPE_CHECKING:
 
     from ..monitor import ResourceMonitor
 
-__all__ = ["LocalHost", "disk_floor_from_nix_config", "feature_matrix_from_nix_config"]
+__all__ = ["BuildCapacity", "LocalHost", "disk_floor_from_nix_config", "feature_matrix_from_nix_config"]
 
 log = structlog.get_logger(__name__)
 
@@ -57,6 +58,24 @@ def feature_matrix_from_nix_config(config: dict[str, Any]) -> dict[str, set[str]
 def disk_floor_from_nix_config(config: dict[str, Any]) -> int:
     """The free space under which this store's Nix collects as it builds: `min-free`, from `nix config show --json`."""
     return AutoGCSettings.from_nix_config(config, {}).min_free
+
+
+@dataclass(frozen=True, slots=True)
+class BuildCapacity:
+    """What the machine's Nix allows its builds: `max-jobs` builds at once, `cores` each."""
+
+    max_jobs: int | None
+    """`None` for `max-jobs = 0`: this Nix builds nothing itself."""
+    cores: int | None
+    """`None` for `cores = 0`: every core."""
+
+    @classmethod
+    def from_nix_config(cls, config: dict[str, Any]) -> BuildCapacity:
+        """Read from `nix config show --json`; Nix resolves `max-jobs = auto` to the CPU count."""
+        return cls(
+            max_jobs=int(config["max-jobs"]["value"]) or None,
+            cores=int(config["cores"]["value"]) or None,
+        )
 
 
 def _sandbox_fallback_arguments(layout: StoreLayout) -> list[str]:

@@ -870,6 +870,8 @@ class ReverseStoreSpec(StoreSpecBase):
     """
 
     type: Literal["reverse"] = "reverse"
+    build_cores: int | None = Field(default=None, ge=1)
+    """The most cores one build gets: the builder's own Nix `cores`. `None`: every core its host has."""
 
     def to_store(self, store_id: str) -> DaemonStore:
         raise NotImplementedError("Reverse stores are created dynamically, not from config")

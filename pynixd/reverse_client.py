@@ -20,12 +20,13 @@ import structlog
 from pydantic import ValidationError
 
 from . import wire
-from .config import ReverseInitiatorSettings
+from .config import ReverseInitiatorSettings, ScheduleMode
 from .constants import SSH_KEEPALIVE_COUNT_MAX, SSH_KEEPALIVE_INTERVAL
 from .hangup import ssh_hangup
 from .provisioning.ticket import LEASE_COMMAND, JoinTicket, Lease
 from .proxy import DaemonProxy
 from .serde.auth import Role
+from .store.local_host import BuildCapacity
 from .wire import SSHNixReader, SSHNixWriter
 
 if TYPE_CHECKING:
@@ -34,6 +35,17 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 _REGISTRATION_COMMAND = "pynixd-register"
+
+
+def declared_capacity(capacity: BuildCapacity) -> tuple[int, int | None]:
+    """The `max_jobs` and `cores` a proxying builder registers: its own Nix's.
+
+    Every build goes to the local daemon, and its owner sized the machine for those two:
+    sg1's `nix-daemon.service` caps memory at 20 GiB for `cores = 8`, `max-jobs = 2`.
+    The CPU count declared 48 slots there, and 11 builds thrashed in the cap
+    (nixidae/nixidae#1568). `max-jobs = 0` builds nothing here, so it declares the CPU count.
+    """
+    return capacity.max_jobs or os.process_cpu_count() or 1, capacity.cores
 
 
 async def write_lease(path: anyio.Path, lease: Lease) -> None:
@@ -98,9 +110,18 @@ class ReverseInitiator:
             "nix_version": "pynixd-0.1.0",
             "nix_bin": settings.nix_bin,
             "max_jobs": settings.max_jobs or os.process_cpu_count() or 1,
+            "cores": None,
         }
         self._registration = json.dumps(self._registration_info).encode()
         """What `pynixd-register` answers: the info, with the ticket's token once a dial read one."""
+
+    async def _declare_capacity(self) -> None:
+        if self._settings.max_jobs is not None or self._settings.schedule_mode is not ScheduleMode.proxy:
+            return
+        config = await self._ctx.local_store.read_nix_config()
+        max_jobs, cores = declared_capacity(BuildCapacity.from_nix_config(config))
+        self._registration_info.update(max_jobs=max_jobs, cores=cores)
+        log.info("reverse_initiator_capacity", max_jobs=max_jobs, cores=cores)
 
     async def run(self) -> None:
         """Connect to the controller and serve daemon sessions forever.
@@ -108,6 +129,7 @@ class ReverseInitiator:
         Retries on disconnect with exponential backoff.  Only exits on
         cancellation or when `shutdown_on_connect_failure_seconds` is exceeded.
         """
+        await self._declare_capacity()
         delay = self._settings.reconnect_min_delay
         max_delay = self._settings.reconnect_max_delay
 

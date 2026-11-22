@@ -80,6 +80,8 @@ class Candidate(SessionMember, Protocol):
     def disk_full_until(self) -> float: ...
     @property
     def cores(self) -> int | None: ...
+    @property
+    def build_cores(self) -> int | None: ...
     def supports_derivation(self, system: str, features: set[str], /) -> bool: ...
 
 
@@ -538,20 +540,21 @@ def choose_cores(
     room_bytes: int | None,
     store_cores: int | None,
     client_cores: int | None,
-    killed_ceiling: int | None,
+    hard_ceiling: int | None,
 ) -> CoreChoice:
-    """The most cores whose expected peak fits *room_bytes*, at most what the store, the client and a kill allow.
+    """The most cores whose expected peak fits *room_bytes*, at most the store's, the client's and *hard_ceiling*.
 
-    Without a model or a room, the kill's ceiling alone. A build that fits at no count gets 1 core: placement gave
-    it the store with the most room. nixidae/nixidae#1558.
+    *hard_ceiling* is sent whatever the choice: a kill's, or the cores the store's Nix declares, which the client's
+    `cores` would otherwise override on the builder. Without a model or a room, it alone. A build that fits at no
+    count gets 1 core: placement gave it the store with the most room. nixidae/nixidae#1558, #1568.
     """
-    ceiling = min((c for c in (store_cores, client_cores, killed_ceiling) if c), default=None)
+    ceiling = min((c for c in (store_cores, client_cores, hard_ceiling) if c), default=None)
     if model is None:
-        return CoreChoice(killed_ceiling, None)
+        return CoreChoice(hard_ceiling, None)
     if room_bytes is None or ceiling is None:
-        return CoreChoice(killed_ceiling, model.peak(ceiling or 1))
+        return CoreChoice(hard_ceiling, model.peak(ceiling or 1))
     cores = model.most_cores_within(room_bytes, ceiling) or 1
-    return CoreChoice(None if cores == ceiling and killed_ceiling is None else cores, model.peak(cores))
+    return CoreChoice(None if cores == ceiling and hard_ceiling is None else cores, model.peak(cores))
 
 
 def _mib(count: int | None) -> int:
