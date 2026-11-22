@@ -48,9 +48,9 @@ vivariumLib.mkTest {
     };
     services.buildbarn = {
       enable = true;
-      concurrency = 2;
-      casSizeBytes = 512 * 1024 * 1024;
-      workerCacheSizeBytes = 256 * 1024 * 1024;
+      worker.concurrency = 2;
+      storage.casSizeBytes = 512 * 1024 * 1024;
+      worker.cacheSizeBytes = 256 * 1024 * 1024;
     };
     users.users.tester = {
       isNormalUser = true;
