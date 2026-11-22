@@ -56,6 +56,8 @@ dependencies = [
     "opentelemetry-api",
     "opentelemetry-sdk",
     "opentelemetry-exporter-otlp-proto-http",
+    # `pynixd reapi-runner`, a Buildbarn runner (nixidae/nixidae#1574).
+    "grpclib",
 ]
 
 [project.optional-dependencies]

@@ -19,6 +19,7 @@ import uvloop
 from .cli.base import load_settings, setup_logging
 from .cli.gc import register as register_gc
 from .cli.gha_cache import register as register_gha_cache
+from .cli.reapi_runner import register as register_reapi_runner
 from .cli.roots import register as register_roots
 from .cli.state import register as register_state
 from .handover import Inherited, Offer, hand_over, restart_instead, say_ready, take_ready_fd
@@ -113,6 +114,7 @@ def main() -> None:
 
     register_gc(root_sub)
     register_gha_cache(root_sub)
+    register_reapi_runner(root_sub)
     register_roots(root_sub)
     register_state(root_sub)
 

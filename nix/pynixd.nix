@@ -26,6 +26,7 @@
   opentelemetry-api,
   opentelemetry-sdk,
   opentelemetry-exporter-otlp-proto-http,
+  grpclib,
   structlog,
   pydantic,
   pydantic-settings,
@@ -97,6 +98,7 @@ pythonBuilder (finalAttrs: {
     opentelemetry-api
     opentelemetry-sdk
     opentelemetry-exporter-otlp-proto-http
+    grpclib
     nix-daemon-protocol
     pynixd-store
   ];
