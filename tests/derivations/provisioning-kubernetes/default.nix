@@ -41,6 +41,9 @@ let
   rendezvous = "/build/sibling";
   # The sandbox container's profile, relative to the kubelet's seccomp directory.
   seccompName = "pynixd-builder.json";
+  # What a build pod requests: `kubernetes_pod_preempted.py` sizes its ordinary pod against it.
+  # The node has one CPU, and the control plane's pods request 850m of it (measured).
+  buildPodCpu = "100m";
   # The user both containers of a sandboxed pod run as.
   builderUser = "builder";
   builderUid = 1000;
@@ -110,11 +113,15 @@ let
     spec.terminationGracePeriodSeconds = 5;
     # A build pod whose central went away ends here; its sandbox container serves for ever.
     spec.activeDeadlineSeconds = if buildPod feature then 600 else null;
+    # Below every ordinary pod: the scheduler preempts a build pod for one, and the kubelet evicts it first.
+    spec.priorityClassName = if buildPod feature then "pynixd-build" else null;
     spec.containers = [
       {
         name = "pynixd";
         inherit image;
         imagePullPolicy = "Never";
+        # The scheduler preempts by requests: a pod that requests nothing is never in another's way.
+        resources = lib.optionalAttrs (buildPod feature) { requests.cpu = buildPodCpu; };
         command =
           if feature == brokenFeature then
             [ "${pkgs.coreutils}/bin/false" ]
@@ -317,6 +324,7 @@ vivariumLib.mkTest {
       siblingFeature
       podBuildFeature
       rogueFeature
+      buildPodCpu
       ;
     kubectl = "${pkgs.kubectl}/bin/kubectl";
   };
@@ -467,6 +475,10 @@ vivariumLib.mkTest {
         };
         pod-refused = {
           script = ../../provisioning/kubernetes_pod_refused.py;
+          after = [ "cluster" ];
+        };
+        pod-preempted = {
+          script = ../../provisioning/kubernetes_pod_preempted.py;
           after = [ "cluster" ];
         };
       }

@@ -13,6 +13,10 @@ from vivarium_runner import Machines
 NAMESPACE = "default"
 MANAGED = "app.kubernetes.io/managed-by=pynixd"
 """The label the provider sets on each pod and Secret it makes."""
+BUILD_PODS = "pynixd.nixidae.org/build=true"
+"""The label of a pod central makes for one build."""
+BUILD_PRIORITY = "pynixd-build"
+"""The PriorityClass of the build pod templates (`provisioning-kubernetes/default.nix`)."""
 
 
 async def cluster(vms: Machines) -> kr8s.asyncio.Api:
