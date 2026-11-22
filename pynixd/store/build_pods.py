@@ -22,6 +22,7 @@ from nix_daemon_protocol.store_path import StorePath
 
 from ..build_grant import BuildGrant
 from ..build_job import JOB_NAME, KEY_NAME, Job, decode_response, encode
+from ..build_result import failure
 from ..exceptions import InfrastructureError
 from ..provisioning.provider import ProviderError
 from .scheduled import ProbeState, ScheduledStore
@@ -51,8 +52,26 @@ class PodDisrupted(InfrastructureError):
     """Kubernetes took the pod for another, by preemption or eviction: the build goes back, and no store failed."""
 
 
-class FloatingOutputs(ValueError):
-    """A derivation whose output paths are known only after it builds: no grant can name them."""
+def checked_result(request: BuildDerivationRequest, response: BuildDerivationResponse) -> BuildDerivationResponse:
+    """The pod's result, or a failure when it realises what the derivation does not have.
+
+    A pod says which path each output became, and central records that as the
+    realisation. The grant let the pod add only the static outputs and
+    content-addressed paths, so a floating output's path is one of those; this
+    holds the names, and a static output to its own path.
+    """
+    static = request.derivation.output_paths()
+    for name, realisation in response.result.realised_outputs().items():
+        if name not in request.derivation.outputs:
+            return response.model_copy(update={"result": failure(f"a build pod realised {name}, no output of it")})
+        known = static.get(name, StorePath(""))
+        if realisation.out_path is None or known == StorePath(""):
+            continue
+        if StorePath(str(realisation.out_path)).with_store_prefix() != known:
+            return response.model_copy(
+                update={"result": failure(f"a build pod realised {name} as {realisation.out_path}, not {known}")}
+            )
+    return response
 
 
 class BuildPodStore(ScheduledStore):
@@ -138,10 +157,9 @@ class BuildPodStore(ScheduledStore):
         """Build *request* in a pod; `InfrastructureError` when the pod, not the build, failed."""
         if self.grants is None or self.central_host_key is None or self.kubernetes is None:
             raise InfrastructureError(f"{self.store_id}: no SSH listener or no Kubernetes settings for build pods")
+        # A floating output has no path yet: the grant takes it as a content-addressed path.
         paths = request.derivation.output_paths()
         outputs = frozenset(str(path) for path in paths.values() if path != StorePath(""))
-        if len(outputs) != len(request.derivation.outputs):
-            raise FloatingOutputs(f"{request.drv_path}: a build pod needs output paths known before the build")
         key = asyncssh.generate_private_key("ssh-ed25519")
         public = key.export_public_key().decode()
         name = f"pynixd-build-{StorePath(str(request.drv_path)).hash_part()[:12]}-{secrets.token_hex(3)}"
@@ -171,7 +189,7 @@ class BuildPodStore(ScheduledStore):
                 fault = PodDisrupted if ended.disrupted else InfrastructureError
                 raise fault(f"build pod {name}: {ended.cause} with exit {ended.exit_code} and no result")
             try:
-                return await decode_response(ended.message)
+                return checked_result(request, await decode_response(ended.message))
             except (ValueError, EOFError) as error:
                 raise InfrastructureError(f"build pod {name}: its result does not read: {error}") from error
         except ProviderError as error:

@@ -90,6 +90,12 @@ async def build_one(job_dir: Path, result_path: Path) -> int:
             resp = without_error_prefix(await local.build_here(request, build_settings, _show, Verbosity.INFO))
         if result_succeeded(resp.result):
             outputs = {p for p in request.derivation.output_paths().values() if p != StorePath("")}
+            # A floating output's path is known from the result alone.
+            outputs |= {
+                StorePath(str(r.out_path)).with_store_prefix()
+                for r in resp.result.realised_outputs().values()
+                if r.out_path is not None
+            }
             moved = await stream_paths_store_to_store(local, central, outputs)
             log.info("build_one_outputs", paths=len(outputs), bytes=moved)
     await anyio.Path(result_path).write_text(await result_message(resp))

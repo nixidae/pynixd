@@ -46,7 +46,7 @@ from .serde import (
     SetOptionsRequest,
 )
 from .store.base import get_current_system
-from .store.build_pods import BuildPodStore, FloatingOutputs, PodDisrupted
+from .store.build_pods import BuildPodStore, PodDisrupted
 from .system_features import effective_required_features
 from .tracing import Phase
 from .trust import warning_text
@@ -817,9 +817,6 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
 
         try:
             resp = without_error_prefix(await store.build(build.request, line))
-        except FloatingOutputs as e:
-            await self._fail_unbuildable(build, str(e))
-            return
         except PodDisrupted as e:
             # What a Job's `podFailurePolicy` calls Ignore: a low-priority pod gives way, and no store failed.
             log.info("build_pod_disrupted", build_id=build.build_id, error=str(e))
