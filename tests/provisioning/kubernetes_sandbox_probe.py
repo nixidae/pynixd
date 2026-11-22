@@ -3,13 +3,13 @@
 One derivation, `sandbox_probe.py` as its builder, built three ways with a nonce each, so no arm reuses
 another's output:
 
-  nix      Nix's own sandbox: the guest's `nix-store` into a chroot store, as root with build users
-  pynixd   pynixd's helper, on the node: central's `helper` store, whose builds pynixd runs itself
-  pod      pynixd's helper in a build pod's sandbox container
+  nix         Nix's own sandbox: the guest's `nix-store` into a chroot store, as root with build users
+  pynixd      pynixd's helper, on the node: central's `helper` store, whose builds pynixd runs itself
+  pod         pynixd's helper in a build pod's sandbox container, at Pod Security `restricted`
 
-Each arm's JSON goes to `<artifacts>/sandbox-probe/<arm>.json`, and every fact on which the arms disagree
-goes to `differences.json`. pynixd against Nix says what pynixd's copy of the sandbox changes; the pod
-against pynixd says what the container around it changes.
+Each arm's JSON goes to `<artifacts>/sandbox-probe/<arm>.json`. Each arm but `nix` is compared with
+`nix`, fact by fact, and what differs goes to `differences.json`. It must equal the arm's `KNOWN`: a new
+difference and a stale entry both fail.
 """
 
 from __future__ import annotations
@@ -23,7 +23,8 @@ import anyio
 from daemon_helpers import as_tester, store_path
 from vivarium_runner import Machine, Machines
 
-ARMS = ("nix", "pynixd", "pod")
+REFERENCE = "nix"
+ARMS = (REFERENCE, "pynixd", "pod")
 # Not under /tmp: Nix refuses a build directory below a world-writable one.
 NIX_ROOT = "/var/lib/nix-arm"
 NIX_STORE = f"local?root={NIX_ROOT}"
@@ -31,35 +32,35 @@ NIX_STORE = f"local?root={NIX_ROOT}"
 type Probe = dict[str, Any]
 """One arm's JSON: nested facts, each a string, a number or a list."""
 
-# Every fact the arms disagree on, and why. Measured 2026-11-22 (UML guest, containerd, Kubernetes 1.3x).
-# pynixd's helper on the node agrees with Nix on everything but the first two; the rest are the pod's.
-KNOWN = {
+# What every arm differs from Nix's in by design.
+EVERY_ARM = {
     "cgroup": "each arm's build runs under another unit: the agent's, pynixd's, the container's namespace",
     "environment.requiredSystemFeatures": "each arm asks for the feature that sends it to its builder",
-    # The container's profile under the helper's own filter: see `nix/builder-seccomp.nix`.
-    "status.Seccomp_filters": "the pod's build has the container's profile under Nix's filter",
-    "syscalls.add_key user": "the container's profile refuses the keyring calls; Nix's filter allows them",
-    "syscalls.keyctl session": "the container's profile refuses the keyring calls; Nix's filter allows them",
-    "syscalls.fanotify_init": "the profile refuses it with EPERM; on the node the kernel answers ENOSYS",
-    "syscalls.get_mempolicy": "the profile refuses the NUMA policy calls; the node's kernel has no NUMA",
-    "syscalls.kcmp self": "the profile refuses it; the node's kernel has no kcmp",
-    "syscalls.open_by_handle_at null": "the profile refuses it; on the node the kernel reads the bad handle",
-    "syscalls.perf_event_open null": "the profile refuses it; the node's kernel has no perf events",
-    "syscalls.syslog size": "the profile refuses it; on the node an unprivileged build reads the size",
-    "syscalls.userfaultfd": "the profile refuses it; the node's kernel has no userfaultfd",
-    # The helper keeps the container's pid namespace, and so binds its masked /proc (`builder/sibling.py`).
-    "pid": "the build is not pid 1: the sibling runner and the helper are in its pid namespace",
-    "ppid": "the build's parent is the helper, in the same pid namespace",
-    "pids visible": "the sibling runner and the helper are visible to the build",
-    "pid 1": "pid 1 is the sibling runner, not the build",
+}
+# What a pod's build differs in, with any template: the pod's user and the container's /dev and limits.
+EVERY_POD = {
+    **EVERY_ARM,
     # `/bin/sh` is Nix's built-in sandbox shell in every arm; the pod's store does not hold its closure.
-    "mounts": "the container's masked /proc and its tmpfs /dev nodes; /bin/sh without its store path",
-    # The pod's user, which has no build users and no CAP_SETGID.
+    "mounts": "the container's tmpfs /dev nodes; /bin/sh without its store path",
     "uid_map": "outside, the build is the pod's uid 1000, not a build user",
     "gid_map": "outside, the build is the pod's gid 1000, not the build users' group",
     "groups": "the pod's fsGroup stays a supplementary group: the helper cannot drop it without CAP_SETGID",
-    # The open files limit matches: the helper raises it as Nix does (`child._bump_file_limit`).
     "limits.RLIMIT_NPROC": "a container has no process limit; a service has the node's, sized by its memory",
+    # The container's profile allows every call (`nix/builder-seccomp.nix`), but it is a filter.
+    "status.Seccomp_filters": "the container's allow-all profile is a filter under Nix's",
+}
+# Measured 2026-11-22: UML guest, containerd, Kubernetes 1.37.
+KNOWN: dict[str, dict[str, str]] = {
+    "pynixd": EVERY_ARM,
+    "pod": {
+        **EVERY_POD,
+        "mounts": "the container's masked /proc and tmpfs /dev nodes; /bin/sh without its store path",
+        # The helper keeps the container's pid namespace, and so binds its masked /proc (`builder/sibling.py`).
+        "pid": "the build is not pid 1: the sibling runner and the helper are in its pid namespace",
+        "ppid": "the build's parent is the helper, in the same pid namespace",
+        "pids visible": "the sibling runner and the helper are visible to the build",
+        "pid 1": "pid 1 is the sibling runner, not the build",
+    },
 }
 
 
@@ -85,9 +86,13 @@ async def instantiate(cp: Machine, settings: Mapping[str, str], nonce: str, feat
 
 
 async def built(cp: Machine, settings: Mapping[str, str], arm: str, nonce: str) -> Probe:
-    feature = {"nix": "", "pynixd": settings["helperFeature"], "pod": settings["podBuildFeature"]}[arm]
+    feature = {
+        REFERENCE: "",
+        "pynixd": settings["helperFeature"],
+        "pod": settings["podBuildFeature"],
+    }[arm]
     drv, out = await instantiate(cp, settings, nonce, feature)
-    if arm == "nix":
+    if arm == REFERENCE:
         await cp.succeed(
             f"nix --extra-experimental-features nix-command copy --no-check-sigs --to {shlex.quote(NIX_STORE)} {drv}"
         )
@@ -110,14 +115,13 @@ def flattened(value: object, prefix: str = "") -> dict[str, str]:
     return {prefix.removesuffix("."): value if isinstance(value, str) else json.dumps(value)}
 
 
-def differences(probes: Mapping[str, Probe]) -> dict[str, dict[str, str]]:
-    """Every fact the arms do not all agree on, with each arm's value."""
-    flat = {arm: flattened(probe) for arm, probe in probes.items()}
-    keys = sorted(set().union(*flat.values()))
+def differences(reference: Probe, probe: Probe) -> dict[str, tuple[str, str]]:
+    """Every fact *probe* does not share with *reference*: the reference's value, then the probe's."""
+    ours, theirs = flattened(reference), flattened(probe)
     return {
-        key: {arm: leaves.get(key, "<absent>") for arm, leaves in flat.items()}
-        for key in keys
-        if len({leaves.get(key, "<absent>") for leaves in flat.values()}) > 1
+        key: (ours.get(key, "<absent>"), theirs.get(key, "<absent>"))
+        for key in sorted(ours.keys() | theirs.keys())
+        if ours.get(key) != theirs.get(key)
     }
 
 
@@ -131,12 +135,15 @@ async def test(vms: Machines) -> None:
     await directory.mkdir(parents=True, exist_ok=True)
     for arm, probe in probes.items():
         await (directory / f"{arm}.json").write_text(json.dumps(probe, indent=2, sort_keys=True) + "\n")
-    found = differences(probes)
+    found = {arm: differences(probes[REFERENCE], probes[arm]) for arm in ARMS if arm != REFERENCE}
     await (directory / "differences.json").write_text(json.dumps(found, indent=2) + "\n")
-    print(f"[test] {len(found)} facts differ between {', '.join(ARMS)}:")
-    for key, values in found.items():
-        print(f"[test]   {key}: " + " | ".join(f"{arm}={value[:160]}" for arm, value in values.items()))
-    new = sorted(set(found) - set(KNOWN))
-    stale = sorted(set(KNOWN) - set(found))
-    assert not new, f"facts that differ and KNOWN does not name: {new}"
-    assert not stale, f"KNOWN names facts that no longer differ: {stale}"
+    problems = []
+    for arm, facts in found.items():
+        print(f"[test] {arm} differs from {REFERENCE} in {len(facts)} facts:")
+        for key, (want, got) in facts.items():
+            print(f"[test]   {key}: {REFERENCE}={want[:120]} | {arm}={got[:120]}")
+        if new := sorted(set(facts) - set(KNOWN[arm])):
+            problems.append(f"{arm}: facts that differ and KNOWN does not name: {new}")
+        if stale := sorted(set(KNOWN[arm]) - set(facts)):
+            problems.append(f"{arm}: KNOWN names facts that no longer differ: {stale}")
+    assert not problems, "\n".join(problems)
