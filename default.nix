@@ -1036,9 +1036,13 @@ in
     pynixd-agent = agent;
     nix-daemon-protocol = daemon-protocol;
     pynixd-store = store;
+    inherit (buildbarn) bb-storage bb-remote-execution siso;
   };
-  lib = { };
-  nixosModules.default = ./nix/nixos;
+  lib.buildbarn = import ./nix/buildbarn/lib.nix { inherit lib; };
+  nixosModules = {
+    default = ./nix/nixos;
+    buildbarn = ./nix/buildbarn/module.nix;
+  };
   easykubenixModules = { };
   inherit checks;
   docs.default = pynixd-docs;
