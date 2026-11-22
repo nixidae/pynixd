@@ -57,7 +57,13 @@ def test_central_takes_a_pods_realisation_of_its_own_outputs_alone() -> None:
 
     assert _realising(floating, {"out": REALISED}).result.status == BuildResultStatus.BUILT
     assert _realising({"out": DerivationOutput(path=OUT)}, {"out": OUT}).result.status == BuildResultStatus.BUILT
-    assert "no output of it" in _realising(floating, {"dev": REALISED}).result.error_msg
+    assert "realised no path for out" in _realising(floating, {}).result.error_msg
+    assert "realised no path for out" in _realising(floating, {"dev": REALISED}).result.error_msg
+    floating_two = {**floating, "dev": DerivationOutput(path="", method="r:sha256")}
+    assert (
+        "no output of it"
+        in _realising(floating_two, {"out": REALISED, "dev": REALISED, "doc": REALISED}).result.error_msg
+    )
     assert f"not {OUT}" in _realising({"out": DerivationOutput(path=OUT)}, {"out": REALISED}).result.error_msg
 
 

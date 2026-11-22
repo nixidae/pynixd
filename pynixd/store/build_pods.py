@@ -22,7 +22,7 @@ from nix_daemon_protocol.store_path import StorePath
 
 from ..build_grant import BuildGrant
 from ..build_job import JOB_NAME, KEY_NAME, Job, decode_response, encode
-from ..build_result import failure
+from ..build_result import failure, result_succeeded
 from ..exceptions import InfrastructureError
 from ..provisioning.provider import ProviderError
 from .scheduled import ProbeState, ScheduledStore
@@ -53,15 +53,24 @@ class PodDisrupted(InfrastructureError):
 
 
 def checked_result(request: BuildDerivationRequest, response: BuildDerivationResponse) -> BuildDerivationResponse:
-    """The pod's result, or a failure when it realises what the derivation does not have.
+    """The pod's result, or a failure when it realises what the derivation does not have, or too little.
 
     A pod says which path each output became, and central records that as the
     realisation. The grant let the pod add only the static outputs and
     content-addressed paths, so a floating output's path is one of those; this
-    holds the names, and a static output to its own path.
+    holds the names, and a static output to its own path. A success must name
+    each floating output: central's check that the outputs arrived reads the
+    paths from here, and with none it checks nothing.
     """
     static = request.derivation.output_paths()
-    for name, realisation in response.result.realised_outputs().items():
+    realised = response.result.realised_outputs()
+    if result_succeeded(response.result):
+        floating = {name for name in request.derivation.outputs if static.get(name, StorePath("")) == StorePath("")}
+        if missing := sorted(name for name in floating if realised.get(name) is None or not realised[name].out_path):
+            return response.model_copy(
+                update={"result": failure(f"a build pod built, and realised no path for {', '.join(missing)}")}
+            )
+    for name, realisation in realised.items():
         if name not in request.derivation.outputs:
             return response.model_copy(update={"result": failure(f"a build pod realised {name}, no output of it")})
         known = static.get(name, StorePath(""))
