@@ -577,10 +577,10 @@ vivariumLib.mkTest {
           script = ../../provisioning/kubernetes_pod_refused.py;
           after = [ "cluster" ];
         };
-        # Measures; asserts only that the build reached a pod.
+        # After the preemption phase: its build pods beside that phase's took the preemptor's place (measured).
         pod-recursive = {
           script = ../../provisioning/kubernetes_pod_recursive.py;
-          after = [ "cluster" ];
+          after = [ "pod-preempted" ];
         };
         pod-preempted = {
           script = ../../provisioning/kubernetes_pod_preempted.py;
