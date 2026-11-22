@@ -141,6 +141,13 @@ class StoreEngine:
         """A read-only store (`StoreLayout.read_only`): each write goes on until SQLite refuses its first change."""
         return self.layout.read_only
 
+    def files_of(self, path: StorePath | str) -> Path:
+        """Where the files of valid *path* are, to read: a store over a lower store reads some there.
+
+        A write goes to `layout.real_path`, always this store's own directory.
+        """
+        return self.layout.real_path(path)
+
     async def is_valid_path_uncached(self, path: str) -> bool:
         """`isValidPathUncached`: the table itself, never the path-info cache."""
         return await self.db.nix.is_valid_path(path)

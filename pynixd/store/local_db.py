@@ -40,6 +40,7 @@ from pynixd_store.engine import StoreEngine, hashes_self_reference_positions
 from pynixd_store.errors import PynixdError
 from pynixd_store.hintfmt import magenta, missing_feature, show_error
 from pynixd_store.local_store_db import LocalStoreDB
+from pynixd_store.lower_store_engine import LowerStoreEngine
 from pynixd_store.nix_config import nix_environment, read_nix_config, read_nix_config_text, read_nix_version
 from pynixd_store.overlay_engine import LowerPathNeedsSync, OverlayEngine, check_mount
 from pynixd_store.signing import (
@@ -341,7 +342,14 @@ class LocalDBStore(Store):
         self.gc_allow_execute = spec.gc_allow_execute
         self._postgres = spec.postgres
         #: pynixd's own local store (`docs/design/store-engine.md`).
-        self.engine = (OverlayEngine if self.layout.overlay is not None else StoreEngine)(
+        engine_class = (
+            OverlayEngine
+            if self.layout.overlay is not None
+            else LowerStoreEngine
+            if self.layout.lower is not None
+            else StoreEngine
+        )
+        self.engine = engine_class(
             self.layout,
             writes=self.mode.pynixd_writes,
             read_config=lambda: read_nix_config(spec.nix_bin, nix_environment(self.layout, spec.environment)),
@@ -619,6 +627,13 @@ class LocalDBStore(Store):
                     log.warning("lower_store_db_unavailable", store_id=str(self.store_id))
                     await self.engine.db.close()
                     self.engine.db = LocalStoreDB.inactive(self.layout)
+            if isinstance(self.engine, LowerStoreEngine) and self.engine.db.active:
+                # The layout says immutable: the open reads no `-wal` and takes no lock.
+                self.engine.lower.db = await LocalStoreDB.open(self.engine.lower.layout)
+                if not self.engine.lower.db.active:
+                    raise PynixdError(f"store {self.store_id}: the lower store's database does not open")
+                await self.engine.load_lower()
+                log.info("lower_store_loaded", store_id=str(self.store_id), paths=len(self.engine.lower_names))
         self._refuse_routes_without_a_database()
         self.engine.hashes_self_reference_positions = hashes_self_reference_positions(self._daemon.nix_version)
         self.db.start(self._background)
@@ -696,7 +711,7 @@ class LocalDBStore(Store):
     async def close(self) -> None:
         """Close the SQLite databases, and let go of the big lock."""
         await self.db.close()
-        if isinstance(self.engine, OverlayEngine):
+        if isinstance(self.engine, OverlayEngine | LowerStoreEngine):
             await self.engine.lower.db.close()
         # The lock file is a regular file: its close may flush on a network mount. Teardown, so shielded.
         with anyio.CancelScope(shield=True):
@@ -1285,7 +1300,7 @@ class LocalDBStore(Store):
         KiB. A thread that fed a queue would need a task group across the
         `yield`, which an async generator cannot hold.
 
-        The files are under this store's `real_store_dir`. `on_disk` reads the
+        The files are where `StoreEngine.files_of` says: this store's `real_store_dir`, or a lower store's. `on_disk` reads the
         process's one store setting, which in a process with several chroot
         stores names whichever was set last.
         """
@@ -1293,7 +1308,7 @@ class LocalDBStore(Store):
 
         from pynixd_store.nar_fs import dump_path
 
-        pieces = dump_path(self.layout.real_store_dir / path.name)
+        pieces = dump_path(self.engine.files_of(path))
         try:
             while (piece := await run_sync(next, pieces, None)) is not None:
                 yield piece

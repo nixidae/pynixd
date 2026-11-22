@@ -103,13 +103,17 @@ async def _say_nothing(_level: Verbosity, _text: str) -> None:
     """A caller that takes no lines."""
 
 
-class OverlayEngine(StoreEngine):
-    """The operations of a `local-overlay://` store, with Nix's names. `lower` is the lower store."""
+class LayeredEngine(StoreEngine):
+    """The database half of a store over a lower store it never writes: each read asks this store, then the lower.
+
+    `OverlayEngine` adds the OverlayFS mount; `LowerStoreEngine` keeps the two directories apart.
+    """
 
     def __init__(
         self,
         layout: StoreLayout,
         *,
+        lower: StoreLayout,
         writes: bool,
         read_config: Callable[[], Awaitable[Mapping[str, Any]]],
         on_change: Callable[[StorePath], None],
@@ -117,14 +121,9 @@ class OverlayEngine(StoreEngine):
         roots: RootWriter | None = None,
     ) -> None:
         super().__init__(layout, writes=writes, read_config=read_config, on_change=on_change, name=name, roots=roots)
-        if layout.overlay is None:
-            raise ValueError(f"store {name}: an overlay engine needs an overlay layout")
-        self.overlay: Overlay = layout.overlay
         self.lower = StoreEngine(
-            layout.overlay.lower, writes=False, read_config=read_config, on_change=_forget_nothing, name=f"{name} lower"
+            lower, writes=False, read_config=read_config, on_change=_forget_nothing, name=f"{name} lower"
         )
-        #: `_remountRequired`: a delete went through the upper layer, and the mount does not see it yet.
-        self.remount_required = False
 
     async def is_valid_path_uncached(self, path: str) -> bool:
         """`LocalOverlayStore::isValidPathUncached` (`local-overlay-store.cc:143`)."""
@@ -254,6 +253,35 @@ class OverlayEngine(StoreEngine):
             lower_path, lower_sigs = found
             await super().register_drv_output(drv, output_name, str(lower_path), lower_sigs, by_path=by_path)
         await super().register_drv_output(drv, output_name, out_path, sigs, by_path=by_path)
+
+
+class OverlayEngine(LayeredEngine):
+    """The operations of a `local-overlay://` store, with Nix's names. `lower` is the lower store."""
+
+    def __init__(
+        self,
+        layout: StoreLayout,
+        *,
+        writes: bool,
+        read_config: Callable[[], Awaitable[Mapping[str, Any]]],
+        on_change: Callable[[StorePath], None],
+        name: str,
+        roots: RootWriter | None = None,
+    ) -> None:
+        if layout.overlay is None:
+            raise ValueError(f"store {name}: an overlay engine needs an overlay layout")
+        super().__init__(
+            layout,
+            lower=layout.overlay.lower,
+            writes=writes,
+            read_config=read_config,
+            on_change=on_change,
+            name=name,
+            roots=roots,
+        )
+        self.overlay: Overlay = layout.overlay
+        #: `_remountRequired`: a delete went through the upper layer, and the mount does not see it yet.
+        self.remount_required = False
 
     async def delete_store_path(self, base_name: str) -> int:
         """`LocalOverlayStore::deleteStorePath` (`local-overlay-store.cc:214`).

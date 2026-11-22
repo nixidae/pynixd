@@ -53,6 +53,7 @@ class RestrictionContext:
         repairing: bool = False,
         reveal: Callable[[StorePath], None] | None = None,
         binds: bool = True,
+        files_of: Callable[[StorePath], Path] | None = None,
     ) -> None:
         self.inputs = frozenset(inputs)
         self.submitting = submitting
@@ -65,7 +66,8 @@ class RestrictionContext:
         self._control: SocketStream | None = None
         self._replies: BufferedByteReceiveStream | None = None
         self._attached = anyio.Event()
-        self._real_store_dir = real_store_dir
+        # A store over a lower store has a path's files in one of two directories (`StoreEngine.files_of`).
+        self._files_of = files_of if files_of is not None else (lambda path: real_store_dir / path.name)
         self._reveal = reveal
         self._binds = binds
         self._lock = anyio.Lock()
@@ -97,7 +99,7 @@ class RestrictionContext:
                 await anyio.to_thread.run_sync(self._reveal, path)
             if not self._binds:
                 return
-            source = str(self._real_store_dir / path.name)
+            source = str(self._files_of(path))
             await self._attached.wait()
             if self._control is None or self._replies is None:
                 raise RuntimeError("the control socket is attached and missing")

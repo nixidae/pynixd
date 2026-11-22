@@ -100,6 +100,24 @@ class StoreLayout:
     immutable: bool = False
     """The storage of a read-only store cannot change, so SQLite may read it with no lock (`immutable=1`)."""
 
+    lower: StoreLayout | None = None
+    """A lower store: immutable, never written, its paths valid here with their files where they are.
+
+    No OverlayFS merges the two directories, so a path's files are in one of them
+    (`LowerStoreEngine.files_of`). A build pod's nixkube farm is the case: a
+    read-only volume with its own database. nixidae/nixidae#1560, spike.
+    """
+
+    def with_lower(self, lower: StoreLayout) -> StoreLayout:
+        """This chroot store over *lower*, a store of a root that nothing changes."""
+        if self.relocated or self.overlay is not None or self.read_only:
+            raise ValueError("a store over a lower store is a writable chroot store")
+        if lower.relocated or lower.overlay is not None or lower.lower is not None or not lower.immutable:
+            raise ValueError("a lower store is an immutable plain local store of a root")
+        if lower.real_store_dir == self.real_store_dir:
+            raise ValueError("a lower store keeps its files apart from the store over it")
+        return replace(self, lower=lower)
+
     def with_overlay(self, overlay: Overlay) -> StoreLayout:
         """This chroot store as the merged directory of *overlay*."""
         if self.relocated:
@@ -110,8 +128,8 @@ class StoreLayout:
 
     def as_read_only(self, *, immutable: bool = False) -> StoreLayout:
         """This store, opened as `read-only=true` opens it. An overlay writes its upper layer, so it has no such mode."""
-        if self.overlay is not None:
-            raise ValueError("an overlay store writes its upper layer, so it opens no store read-only")
+        if self.overlay is not None or self.lower is not None:
+            raise ValueError("a store over another writes its own layer, so it opens no store read-only")
         return replace(self, read_only=True, immutable=immutable)
 
     @classmethod

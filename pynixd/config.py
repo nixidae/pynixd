@@ -593,6 +593,22 @@ class LocalSocketStoreSpec(StoreSpecBase):
     overlay: OverlaySpec | None = None
     """A `local-overlay://` store over a lower store, for a chroot root (`pynixd_store.store_layout.Overlay`)."""
 
+    lower_store: Annotated[
+        Path | None,
+        Experiment(
+            replaces="a store holds the files of each path it calls valid",
+            issue=1560,
+            tests=("tests/unit/test_lower_store.py",),
+        ),
+    ] = None
+    """The root of an immutable store under this one, such as a build pod's nixkube farm.
+
+    Its paths are valid here, and their files stay at `<lower_store>/nix/store`:
+    no OverlayFS merges the two (`pynixd_store.lower_store_engine`). pynixd
+    opens its database read-only and immutable, and writes only this store. It
+    needs `daemon = false`, as a Nix daemon would not know the lower store.
+    """
+
     store_dir: Path | None = None
     """The directory in a store path, for a relocated store.
 
@@ -808,6 +824,11 @@ class LocalSocketStoreSpec(StoreSpecBase):
                 raise ValueError("postgres takes no overlay: the lower store's database is SQLite")
             if mode.read_only:
                 raise ValueError("postgres takes no read_only: pynixd opens no read-only store on a server")
+        if self.lower_store is not None:
+            if mode.has_daemon:
+                raise ValueError("lower_store needs daemon = false: a Nix daemon would not know the lower store")
+            if self.overlay is not None or mode.read_only or self.postgres is not None or self.store_dir is not None:
+                raise ValueError("lower_store needs a writable chroot store with SQLite, and no overlay")
         return self
 
     @model_validator(mode="after")
@@ -847,6 +868,8 @@ class LocalSocketStoreSpec(StoreSpecBase):
             layout = StoreLayout.relocated_store(self.store_dir, self.state_dir, self.log_dir)
             return layout.as_read_only(immutable=self.immutable) if self.read_only else layout
         layout = StoreLayout.chroot(self.store_path)
+        if self.lower_store is not None:
+            return layout.with_lower(StoreLayout.chroot(self.lower_store).as_read_only(immutable=True))
         if self.overlay is None:
             return layout.as_read_only(immutable=self.immutable) if self.read_only else layout
         return layout.with_overlay(

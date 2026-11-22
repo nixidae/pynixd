@@ -54,6 +54,8 @@ from .vm import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from nix_daemon_protocol.basic_derivation import BasicDerivation
     from nix_daemon_protocol.store_path import StorePath
 
@@ -163,6 +165,7 @@ class BuildSite(ABC):
         submitting: bool,
         repairing: bool,
         user: build_users.BuildUser | None,
+        files_of: Callable[[StorePath], Path],
     ) -> Endpoint:
         """`startDaemon` (`derivation-builder.cc:1171`): the socket is up before the builder starts."""
 
@@ -222,11 +225,12 @@ class HostSite(BuildSite):
         submitting: bool,
         repairing: bool,
         user: build_users.BuildUser | None,
+        files_of: Callable[[StorePath], Path],
     ) -> Endpoint:
         if not self.chroot:
             # `addDependencyImpl` (`derivation-builder.cc:901`) binds nothing: the builder sees the store.
             restriction = RestrictionContext(
-                inputs, None, real_store_dir, submitting=submitting, repairing=repairing, binds=False
+                inputs, None, real_store_dir, submitting=submitting, repairing=repairing, files_of=files_of, binds=False
             )
             listener = await anyio.to_thread.run_sync(listen, paths.tmp / SOCKET_NAME)
             await anyio.to_thread.run_sync(build_users.chown_to, user, paths.tmp / SOCKET_NAME)
@@ -234,7 +238,9 @@ class HostSite(BuildSite):
         ours, control = socket.socketpair()
         stack.callback(control.close)
         stream = await stack.enter_async_context(await SocketStream.from_socket(ours))
-        restriction = RestrictionContext(inputs, stream, real_store_dir, submitting=submitting, repairing=repairing)
+        restriction = RestrictionContext(
+            inputs, stream, real_store_dir, submitting=submitting, repairing=repairing, files_of=files_of
+        )
         listener = await anyio.to_thread.run_sync(listen, paths.tmp / SOCKET_NAME)
         await anyio.to_thread.run_sync(build_users.chown_to, user, paths.tmp / SOCKET_NAME)
         return Endpoint(listener, restriction, control)
@@ -299,6 +305,7 @@ class VmSite(BuildSite):
         submitting: bool,
         repairing: bool,
         user: build_users.BuildUser | None,
+        files_of: Callable[[StorePath], Path],
     ) -> Endpoint:
         # The guest's init listens in the build directory, and the image holds no host socket.
         restriction = RestrictionContext(
@@ -307,6 +314,7 @@ class VmSite(BuildSite):
             real_store_dir,
             submitting=submitting,
             repairing=repairing,
+            files_of=files_of,
             reveal=functools.partial(vm_allow, paths.top, real_store_dir),
         )
         controls = await anyio.to_thread.run_sync(listen, paths.top / VM_CONTROL_SOCKET_NAME)
@@ -441,6 +449,7 @@ class DarwinVmSite(BuildSite):
         submitting: bool,
         repairing: bool,
         user: build_users.BuildUser | None,
+        files_of: Callable[[StorePath], Path],
     ) -> Endpoint:
         """The host's socket, as for a build on the host; the guest relays its own to it. A path the builder adds
         joins the store share's allowlist."""
@@ -450,6 +459,7 @@ class DarwinVmSite(BuildSite):
             real_store_dir,
             submitting=submitting,
             repairing=repairing,
+            files_of=files_of,
             reveal=functools.partial(vm_allow, paths.top, real_store_dir),
             binds=False,
         )
@@ -520,8 +530,11 @@ class SiblingSite(BuildSite):
         submitting: bool,
         repairing: bool,
         user: build_users.BuildUser | None,
+        files_of: Callable[[StorePath], Path],
     ) -> Endpoint:
-        restriction = RestrictionContext(inputs, None, real_store_dir, submitting=submitting, repairing=repairing)
+        restriction = RestrictionContext(
+            inputs, None, real_store_dir, submitting=submitting, repairing=repairing, files_of=files_of
+        )
         controls = await anyio.to_thread.run_sync(listen, paths.top / SIBLING_CONTROL_SOCKET_NAME)
         listener = await anyio.to_thread.run_sync(listen, paths.tmp / SOCKET_NAME)
         await anyio.to_thread.run_sync(build_users.chown_to, user, paths.tmp / SOCKET_NAME)

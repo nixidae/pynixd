@@ -99,6 +99,7 @@ this table to the declarations.
 
 | switch | turns on |
 | --- | --- |
+| `lower_store` | an immutable store under this one, whose files stay where they are; no daemon |
 | `op_routes` | an operation answered by pynixd, or by both sides and compared |
 | `pynixd_writes` | pynixd writes the store |
 | `daemon` | at `false`: no daemon under pynixd |

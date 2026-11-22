@@ -570,10 +570,10 @@ def _binds(
         raise ValueError("a build without the chroot binds nothing")
     binds: dict[str, tuple[str, bool]] = {p.target: (p.source, p.optional) for p in settings.sandbox_paths}
     for path in sandbox_closure:
-        binds[str(path)] = (str(engine.layout.real_path(path)), False)
+        binds[str(path)] = (str(engine.files_of(path)), False)
     binds[SANDBOX_BUILD_DIR] = (str(paths.tmp), False)
     for path in inputs:
-        binds[str(path)] = (str(engine.layout.real_path(path)), False)
+        binds[str(path)] = (str(engine.files_of(path)), False)
     if "/dev" not in binds:
         for name in DEV_FILES:
             binds.setdefault(name, (name, False))
@@ -1024,6 +1024,7 @@ async def build(
                     submitting=submitting,
                     repairing=repairing,
                     user=user,
+                    files_of=engine.files_of,
                 )
                 restriction, control = endpoint.restriction, endpoint.control
                 await stack.enter_async_context(recursive(endpoint.listener, restriction))

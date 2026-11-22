@@ -51,8 +51,9 @@ def test_active_lists_a_switch_off_its_default_and_its_details() -> None:
     ]
 
 
-def test_the_store_spec_declares_the_eight_experiments() -> None:
+def test_the_store_spec_declares_the_nine_experiments() -> None:
     assert list(declared(LocalSocketStoreSpec)) == [
+        "lower_store",
         "op_routes",
         "pynixd_writes",
         "daemon",
