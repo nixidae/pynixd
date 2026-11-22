@@ -167,10 +167,10 @@ let
           {
             name = "NIX_CONFIG";
             value = ''
-              experimental-features = nix-command
+              experimental-features = nix-command${lib.optionalString (buildsOne feature) " recursive-nix ca-derivations"}
               build-users-group =
               substituters =
-              system-features = ${feature}
+              system-features = ${feature}${lib.optionalString (buildsOne feature) " recursive-nix"}
             ''
             # The builder has no CAP_SETGID, so the helper cannot drop its groups.
             + lib.optionalString (sandboxed feature) ''
@@ -345,6 +345,8 @@ vivariumLib.mkTest {
   defaults = vivariumLib.settingsClosure;
   settings = {
     busybox = "${pkgs.busybox}";
+    # `kubernetes_pod_recursive.py`'s builder runs it in the sandbox: an input, so in the pod.
+    nix = "${pkgs.nix}";
     inherit
       system
       feature
@@ -386,6 +388,7 @@ vivariumLib.mkTest {
       };
       nixDatabase.extraRoots = [
         "${pkgs.busybox}"
+        "${pkgs.nix}"
         "${probePython}"
         "${sandboxProbe}"
         "${inputPrimitives}"
@@ -407,7 +410,10 @@ vivariumLib.mkTest {
           central_host = address;
           central_port = sshPort;
           systems = [ system ];
-          system_features = [ podBuildFeature ];
+          system_features = [
+            podBuildFeature
+            "recursive-nix"
+          ];
           mandatory_features = [ podBuildFeature ];
         };
         stores.buildpods-userns = {
@@ -478,7 +484,11 @@ vivariumLib.mkTest {
       };
     };
     nix.settings = {
-      experimental-features = [ "nix-command" ];
+      # `kubernetes_pod_recursive.py` builds a floating content-addressed derivation in a pod.
+      experimental-features = [
+        "nix-command"
+        "ca-derivations"
+      ];
       substituters = lib.mkForce [ ];
     };
     # pynixd adds cache.nixos.org whatever nix.conf says; a refused connection answers at once.
@@ -565,6 +575,11 @@ vivariumLib.mkTest {
         };
         pod-refused = {
           script = ../../provisioning/kubernetes_pod_refused.py;
+          after = [ "cluster" ];
+        };
+        # Measures; asserts only that the build reached a pod.
+        pod-recursive = {
+          script = ../../provisioning/kubernetes_pod_recursive.py;
           after = [ "cluster" ];
         };
         pod-preempted = {
