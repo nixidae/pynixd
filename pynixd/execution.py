@@ -245,11 +245,11 @@ class _OutputClock:
     """The log sink of a running build: it notes when each message arrives."""
 
     options = None
-    # A queued build outlives the client that asked for it, so it carries no trace context.
-    traceparent = ""
 
     def __init__(self, build: QueuedBuild) -> None:
         self._build = build
+        self.traceparent = build.trace.traceparent()
+        """The build's own span, so a pynixd builder's trace of it joins this one (nixidae/nixidae#1570)."""
 
     async def send(self, msg: LogMessage) -> None:
         del msg

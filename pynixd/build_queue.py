@@ -730,7 +730,7 @@ class BuildQueue:
             build.builders = builders
             build.pools = pools
             build.askers.update(askers)
-            build.trace = self.tracing.build(build)
+            build.trace = self.tracing.build(build, next((a.traceparent for a in askers if a.traceparent), ""))
             if from_goal_path and goal_request_id is not None:
                 self._hold_locked(build, goal_request_id)
             if goal_request_id is None:

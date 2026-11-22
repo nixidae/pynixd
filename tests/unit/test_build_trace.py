@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import anyio
 import pytest
@@ -35,6 +35,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
 
     from opentelemetry.sdk.trace import ReadableSpan
+
+    from pynixd.connection import ClientConn
 
 FULL = {LOCAL_STORE_ID: 10**6}
 """More running builds than any build limit."""
@@ -157,6 +159,47 @@ async def test_close_ends_an_open_build_as_stopped(traced: Traced) -> None:
     [root] = traced.exporter.get_finished_spans()
     assert root.attributes is not None
     assert root.attributes["pynixd.ending"] == Ending.STOPPED
+
+
+CLIENT_TRACEPARENT = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+"""What a client sends under `open-telemetry`: Determinate's Nix, or the pynixd that delegates the build."""
+
+
+class Asker:
+    """A client as `enqueue` reads it: hashable, with the trace context of its operation."""
+
+    traceparent = CLIENT_TRACEPARENT
+
+
+async def test_a_build_joins_the_trace_of_the_client_that_asked() -> None:
+    exporter = InMemorySpanExporter()
+    tracing = await anyio.to_thread.run_sync(lambda: OtelTracing.start(TracingSettings(), exporter))
+    traced = Traced(tracing, exporter)
+    asker = cast("ClientConn", Asker())
+    build_id, _ = await traced.queue.enqueue(_request("1"), askers=[asker])
+    await traced.queue.fail(build_id, "x")
+
+    root = _one(await traced.spans(), "build 1")
+    await anyio.to_thread.run_sync(tracing.close)
+    assert root.context is not None
+    assert f"{root.context.trace_id:032x}" == "0af7651916cd43dd8448eb211c80319c"
+    assert root.parent is not None
+    assert f"{root.parent.span_id:016x}" == "b7ad6b7169203331"
+
+
+async def test_the_builder_gets_the_span_of_the_build_phase(traced: Traced) -> None:
+    """`_OutputClock` sends it on the build connection, so a pynixd builder's trace nests under this phase."""
+    build = await traced.enqueue()
+    build.trace.assigned("sg1-n1", attempt=0, cores=8, expected_peak_bytes=None, reason=None)
+    with build.trace.phase(Phase.BUILD):
+        sent = build.trace.traceparent()
+    await traced.queue.fail(build.build_id, "x")
+
+    phase = _one(await traced.spans(), "build")
+    assert phase.context is not None
+    context = phase.context
+    assert sent == f"00-{context.trace_id:032x}-{context.span_id:016x}-{context.trace_flags:02x}"
+    assert NO_TRACE.traceparent() == ""
 
 
 class Recording(SpanExporter):

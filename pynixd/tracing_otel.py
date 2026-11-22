@@ -24,12 +24,14 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter
 from opentelemetry.trace import Status, StatusCode
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 from .tracing import BuildTrace, Ending, Phase, Tracing
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
 
+    from opentelemetry.context import Context
     from opentelemetry.trace import Span, Tracer
 
     from pynixd_store.build_stats import BuildObservation
@@ -40,13 +42,16 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+_PROPAGATOR = TraceContextTextMapPropagator()
+"""W3C trace context: what `open-telemetry` carries on the daemon protocol, as Determinate's Nix sends it."""
+
 # The processor logs a warning for each span it drops, on the thread that ends
 # the span: the event loop. A full queue would write one line per span there.
 logging.getLogger("opentelemetry.sdk._shared_internal").setLevel(logging.ERROR)
 
 
 class OtelBuildTrace(BuildTrace):
-    def __init__(self, tracing: OtelTracing, build: QueuedBuild) -> None:
+    def __init__(self, tracing: OtelTracing, build: QueuedBuild, parent: str = "") -> None:
         self._tracing = tracing
         self._tracer = tracing.tracer
         self._root: Span = self._tracer.start_span(
@@ -56,8 +61,10 @@ class OtelBuildTrace(BuildTrace):
                 "pynixd.drv_path": str(build.request.drv_path),
                 "pynixd.system": build.request.derivation.platform,
             },
+            context=_PROPAGATOR.extract({"traceparent": parent}) if parent else None,
         )
         self._root_context = trace.set_span_in_context(self._root)
+        self._phase_context: Context | None = None
         self._wait: Span | None = None
         self._wait_reason: str | None = None
         self._attempt: Span | None = None
@@ -94,16 +101,23 @@ class OtelBuildTrace(BuildTrace):
     @contextlib.contextmanager
     def phase(self, phase: Phase) -> Iterator[None]:
         span = self._tracer.start_span(str(phase), self._attempt_context)
+        self._phase_context = trace.set_span_in_context(span)
         try:
             yield
         except BaseException as e:
             span.set_status(Status(StatusCode.ERROR, type(e).__name__))
             raise
         finally:
+            self._phase_context = None
             span.end()
 
     def event(self, name: str, attributes: Mapping[str, AttributeValue]) -> None:
         (self._attempt or self._root).add_event(name, dict(attributes))
+
+    def traceparent(self) -> str:
+        carrier: dict[str, str] = {}
+        _PROPAGATOR.inject(carrier, context=self._phase_context or self._attempt_context)
+        return carrier.get("traceparent", "")
 
     def attempt_ended(self, ending: Ending, reason: str | None = None) -> None:
         if self._attempt is None:
@@ -184,12 +198,14 @@ class OtelTracing(Tracing):
         tracing = cls(provider, settings.shutdown_timeout)
         # The SDK's first span imports and compiles what the loop must not. A provider with no processor sends
         # nothing.
-        TracerProvider(shutdown_on_exit=False).get_tracer("pynixd").start_span("warmup").end()
+        warmup = TracerProvider(shutdown_on_exit=False).get_tracer("pynixd").start_span("warmup")
+        _PROPAGATOR.inject({}, context=_PROPAGATOR.extract({"traceparent": ""}))
+        warmup.end()
         log.info("tracing_started", endpoint=settings.endpoint, service=settings.service_name)
         return tracing
 
-    def build(self, build: QueuedBuild) -> BuildTrace:
-        trace_ = OtelBuildTrace(self, build)
+    def build(self, build: QueuedBuild, parent: str = "") -> BuildTrace:
+        trace_ = OtelBuildTrace(self, build, parent)
         self.open.add(trace_)
         return trace_
 

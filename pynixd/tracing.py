@@ -70,6 +70,10 @@ class BuildTrace:
     def event(self, name: str, attributes: Mapping[str, AttributeValue]) -> None:
         """A point in time on the running attempt, or on the build when none runs."""
 
+    def traceparent(self) -> str:
+        """The W3C `traceparent` of the innermost open span, for the store that builds; empty when none."""
+        return ""
+
     def attempt_ended(self, ending: Ending, reason: str | None = None) -> None:
         """The running attempt ended; the build itself goes on or ends next."""
 
@@ -91,8 +95,9 @@ NO_TRACE = BuildTrace()
 class Tracing:
     """Makes the trace of each build. This one makes `NO_TRACE`."""
 
-    def build(self, build: QueuedBuild) -> BuildTrace:
-        del build
+    def build(self, build: QueuedBuild, parent: str = "") -> BuildTrace:
+        """The trace of *build*, under *parent*, the `traceparent` of the client that asked for it."""
+        del build, parent
         return NO_TRACE
 
     def close(self) -> None:
