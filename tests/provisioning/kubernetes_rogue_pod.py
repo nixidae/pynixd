@@ -1,10 +1,11 @@
-"""A build pod that pushes a path its grant does not name, then claims success. nixidae/nixidae#1560, spike.
+"""A build pod that pushes paths its grant does not name, then claims success. nixidae/nixidae#1560, spike.
 
 The pod's program, not a phase: the `rogue` template runs it with pynixd's
 venv Python. It uses the key and the host key central gave it, as a real
-pod does, but adds a path of its own to a chroot store and copies that path
-to central. Central must refuse the copy, and then refuse the claimed result,
-as the derivation's output never reached its store.
+pod does, but adds two paths of its own to a chroot store and copies each to
+central. Central takes the content-addressed one, which vouches for itself,
+and refuses the input-addressed one. It then refuses the claimed result, as
+the derivation's output never reached its store.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from pynixd.build_result import success
 from pynixd.serde import BuildResultStatus
 
 WORK = anyio.Path("/build")
+FORGED = "0" * 32
 
 
 async def main(job_dir: anyio.Path, result: anyio.Path) -> int:
@@ -33,17 +35,27 @@ async def main(job_dir: anyio.Path, result: anyio.Path) -> int:
     foreign = WORK / "foreign.txt"
     await foreign.write_text("not an output of the granted derivation\n")
 
+    # Content-addressed: the grant takes it, as any untrusted client may add it.
     added = await anyio.run_process(["nix", "store", "add-file", "--store", str(WORK / "rogue"), str(foreign)])
-    path = added.stdout.decode().strip()
-    print(f"rogue: added {path}", flush=True)
-    ssh_options = f"-p {job.central_port} -i {key} -o IdentitiesOnly=yes -o UserKnownHostsFile={known_hosts}"
-    copied = await anyio.run_process(
-        ["nix", "copy", "--from", str(WORK / "rogue"), "--to", f"ssh-ng://pod@{job.central_host}", path],
-        check=False,
-        env={**os.environ, "NIX_SSHOPTS": f"{ssh_options} -o StrictHostKeyChecking=yes"},
+    content_addressed = added.stdout.decode().strip()
+    # Input-addressed, under a name of its own choosing: the claim the grant exists to refuse.
+    claimed_path = f"/nix/store/{FORGED}-rogue"
+    forged = WORK / "rogue" / claimed_path.removeprefix("/")
+    await forged.mkdir(parents=True)
+    await (forged / "claim").write_text("a path no derivation of the grant names\n")
+    await anyio.run_process(
+        ["nix-store", "--store", str(WORK / "rogue"), "--register-validity"], input=f"{claimed_path}\n\n0\n".encode()
     )
-    print(f"rogue: nix copy exited {copied.returncode}", flush=True)
-    print(copied.stderr.decode(errors="replace"), flush=True)
+    ssh_options = f"-p {job.central_port} -i {key} -o IdentitiesOnly=yes -o UserKnownHostsFile={known_hosts}"
+    for path in (content_addressed, claimed_path):
+        print(f"rogue: added {path}", flush=True)
+        copied = await anyio.run_process(
+            ["nix", "copy", "--from", str(WORK / "rogue"), "--to", f"ssh-ng://pod@{job.central_host}", path],
+            check=False,
+            env={**os.environ, "NIX_SSHOPTS": f"{ssh_options} -o StrictHostKeyChecking=yes"},
+        )
+        print(f"rogue: nix copy exited {copied.returncode}", flush=True)
+        print(copied.stderr.decode(errors="replace"), flush=True)
     claimed = BuildDerivationResponse(result=success(BuildResultStatus.BUILT))
     await result.write_text(await result_message(claimed))
     return 0
