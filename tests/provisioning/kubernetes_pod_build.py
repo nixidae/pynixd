@@ -11,10 +11,11 @@ from __future__ import annotations
 
 from cloud_helpers import feature_drv, rows, until
 from daemon_helpers import as_tester
-from vivarium_k8s import get_json
-from vivarium_runner import Machines
+from vivarium_k8s import get_json, kubectl
+from vivarium_runner import Machine, Machines
 
 BUILD_PODS = "pynixd.nixidae.org/build=true"
+RESTRICTED = "pynixd-restricted"
 SCRIPT = (
     "${bb}/bin/tr '\\0' ' ' < /proc/1/cmdline > $out; echo >> $out; ${bb}/bin/cat /proc/self/uid_map >> $out;"
     " ${bb}/bin/grep Seccomp_filters /proc/self/status >> $out"
@@ -45,3 +46,28 @@ async def test(vms: Machines) -> None:
     # The pod never registered: the provisioner holds no row for it.
     assert not [row for row in await rows(cp) if row["id"].startswith("buildpod")], await rows(cp)
     print("[test] the build pod ended, and central deleted it")
+    await admitted_as_restricted(cp)
+
+
+async def admitted_as_restricted(cp: Machine) -> None:
+    """The build pod template passes the `restricted` Pod Security level; the privileged `nested` one does not.
+
+    The level refuses `hostPath`, and the test's pods take the node's store and passwd from it: the
+    check gives them `emptyDir` instead. A real pod has its store in its image, or in nixkube's `csi`
+    volume, which the level allows.
+    """
+    await kubectl(cp, f"create namespace {RESTRICTED}")
+    await kubectl(cp, f"label namespace {RESTRICTED} pod-security.kubernetes.io/enforce=restricted")
+    for template, admitted in (("buildpod", True), ("nested", False)):
+        manifest = f"/tmp/{template}.json"
+        await cp.succeed(
+            f"jq '.provisioning.kubernetes.templates.{template}.pod"
+            f' + {{apiVersion: "v1", kind: "Pod", metadata: {{name: "{template}"}}}}'
+            " | .spec.volumes |= map(if .hostPath then {name, emptyDir: {}} else . end)'"
+            f" /etc/pynixd/pynixd.json > {manifest}"
+        )
+        done = await cp.execute(f"kubectl create --dry-run=server --namespace {RESTRICTED} --filename {manifest}")
+        print(f"[test] the {template} template in a restricted namespace: {done.stdout.strip()}{done.stderr.strip()}")
+        assert (done.returncode == 0) == admitted, done.stderr
+        if not admitted:
+            assert "violates PodSecurity" in done.stderr, done.stderr

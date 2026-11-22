@@ -240,6 +240,8 @@ let
       runAsUser = builderUid;
       runAsGroup = builderUid;
       runAsNonRoot = true;
+      # The sandbox container overrides it with the profile that allows its namespaces.
+      seccompProfile.type = "RuntimeDefault";
       # The kubelet gives this group read on the job Secret, which the provider mounts 0400 and root's.
       fsGroup = builderUid;
     };
