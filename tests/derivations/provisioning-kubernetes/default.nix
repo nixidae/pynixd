@@ -37,8 +37,12 @@ let
   podBuildUsernsFeature = "k8s-podbuild-userns";
   # The rogue store's: its pod pushes a path that is not its output (`kubernetes_rogue_pod.py`).
   rogueFeature = "k8s-rogue";
+  # A build pod over a farm: a read-only `/nix` with a database, its lower store (`lower_store`).
+  podFarmFeature = "k8s-podfarm";
+  farm = feature: feature == podFarmFeature;
   # A pod that runs `pynixd build-one`.
-  buildsOne = feature: feature == podBuildFeature || feature == podBuildUsernsFeature;
+  buildsOne =
+    feature: feature == podBuildFeature || feature == podBuildUsernsFeature || farm feature;
   # A pod central makes for one build: nothing in it ends the pod, so central deletes it.
   buildPod = feature: buildsOne feature || feature == rogueFeature;
   # Both run their build in the sandbox container.
@@ -98,6 +102,11 @@ let
             op_routes.BuildDerivation = "pynixd";
             pynixd_writes = true;
             sibling_sandbox = rendezvous;
+          }
+          // lib.optionalAttrs (farm feature) {
+            # A Nix daemon would not know the farm: pynixd answers every operation.
+            daemon = false;
+            lower_store = "/";
           };
           unix_path = "/build/pynixd.sock";
           ssh_port = null;
@@ -106,6 +115,8 @@ let
           ranking.min_schedule_score = -1.0e9;
           ranking.min_free_bytes = 0;
         }
+        # Central relays the pod's log: `kubernetes_pod_farm.py` reads `build_one_inputs` there, an info event.
+        // lib.optionalAttrs (buildsOne feature) { log_level = "INFO"; }
         # A build pod is a client of central only: it registers nowhere.
         // lib.optionalAttrs (!buildsOne feature) {
           reverse_initiator = {
@@ -203,7 +214,7 @@ let
         volumeMounts = [
           {
             name = "nix-store";
-            mountPath = "/nix/store";
+            mountPath = storeMount feature;
             readOnly = true;
           }
           {
@@ -251,7 +262,7 @@ let
       volumeMounts = [
         {
           name = "nix-store";
-          mountPath = "/nix/store";
+          mountPath = storeMount feature;
           readOnly = true;
         }
         {
@@ -278,7 +289,7 @@ let
         {
           name = "nix-store";
           hostPath = {
-            path = "${root}/nix/store";
+            path = "${root}${storeMount feature}";
             type = "Directory";
           };
         }
@@ -312,7 +323,18 @@ let
     volume, which idmaps it (`mountattr.bind_idmapped`).
   */
   podStoreRoot = "/var/lib/pynixd-podstore";
-  storeRoot = feature: if feature == podBuildUsernsFeature then podStoreRoot else "";
+  # The farm's stand-in: a store Nix filled, database and all, mounted read-only as the pod's whole `/nix`.
+  # A nixkube farm volume has the same shape, one bind mount per path.
+  farmRoot = "/var/lib/pynixd-farm";
+  storeRoot =
+    feature:
+    if feature == podBuildUsernsFeature then
+      podStoreRoot
+    else if farm feature then
+      farmRoot
+    else
+      "";
+  storeMount = feature: if farm feature then "/nix" else "/nix/store";
 
   pool =
     name: template: feature: extra:
@@ -356,6 +378,7 @@ vivariumLib.mkTest {
       siblingFeature
       podBuildFeature
       podBuildUsernsFeature
+      podFarmFeature
       rogueFeature
       helperFeature
       buildPodCpu
@@ -425,6 +448,15 @@ vivariumLib.mkTest {
           system_features = [ podBuildUsernsFeature ];
           mandatory_features = [ podBuildUsernsFeature ];
         };
+        stores.buildpods-farm = {
+          type = "kubernetes-build-pods";
+          template = "buildpod-farm";
+          central_host = address;
+          central_port = sshPort;
+          systems = [ system ];
+          system_features = [ podFarmFeature ];
+          mandatory_features = [ podFarmFeature ];
+        };
         stores.helper = {
           type = "local-socket";
           store_path = "/var/lib/pynixd-helper";
@@ -464,6 +496,7 @@ vivariumLib.mkTest {
               sibling.pod = pod config.services.vivarium-k8s.workloadImage siblingFeature;
               buildpod.pod = pod config.services.vivarium-k8s.workloadImage podBuildFeature;
               buildpod-userns.pod = pod config.services.vivarium-k8s.workloadImage podBuildUsernsFeature;
+              buildpod-farm.pod = pod config.services.vivarium-k8s.workloadImage podFarmFeature;
               rogue.pod = pod config.services.vivarium-k8s.workloadImage rogueFeature;
             }
             // lib.optionalAttrs krun {
@@ -519,6 +552,28 @@ vivariumLib.mkTest {
           nix --extra-experimental-features nix-command copy --no-check-sigs \
             --to 'local?root=${podStoreRoot}' ${template} \
             ${inputPrimitives} ${pkgs.busybox} ${probePython} ${package}
+        '';
+      };
+    # The farm template's `/nix`: the template's closure, so the pod runs from it, and busybox, the input
+    # of `kubernetes_pod_farm.py`'s build.
+    systemd.services.pynixd-farm =
+      let
+        template = pkgs.writeText "buildpod-farm-template.json" (
+          builtins.toJSON (pod config.services.vivarium-k8s.workloadImage podFarmFeature)
+        );
+      in
+      {
+        wantedBy = [ "multi-user.target" ];
+        after = [ "pynixd.service" ];
+        wants = [ "pynixd.service" ];
+        path = [ config.nix.package ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
+        script = ''
+          nix --extra-experimental-features nix-command copy --no-check-sigs \
+            --to 'local?root=${farmRoot}' ${template} ${pkgs.busybox}
         '';
       };
     networking.firewall.allowedTCPPorts = [
@@ -581,6 +636,11 @@ vivariumLib.mkTest {
         pod-recursive = {
           script = ../../provisioning/kubernetes_pod_recursive.py;
           after = [ "pod-preempted" ];
+        };
+        # After the recursive phase, which runs after the preemption phase, for the same reason.
+        pod-farm = {
+          script = ../../provisioning/kubernetes_pod_farm.py;
+          after = [ "pod-recursive" ];
         };
         pod-preempted = {
           script = ../../provisioning/kubernetes_pod_preempted.py;
