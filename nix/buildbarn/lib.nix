@@ -1,6 +1,37 @@
 { lib }:
 {
   /**
+    A string that a component reads from its environment when it starts:
+    Jsonnet `std.extVar`. Use it in any string option of `render`, for a
+    value only the running pod knows.
+
+    # Inputs
+
+    `name`
+    : environment variable of the component's process
+
+    # Type
+
+    ```
+    env :: String -> String
+    ```
+
+    # Examples
+    :::{.example}
+    ## `env` usage example
+
+    ```nix
+    render {
+      worker.id.hostname = env "NODE_NAME";
+      # …
+    }
+    ```
+
+    :::
+  */
+  inherit (import ./markers.nix) env;
+
+  /**
     Buildbarn's configurations for a machine that is not NixOS, such as a
     Kubernetes pod. `settings` takes the `services.buildbarn` options of
     module.nix, with the same defaults and assertions; `nixSandbox` has no

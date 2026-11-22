@@ -24,17 +24,26 @@ let
     deny = { };
   };
 
-  # bb_* read their configuration as Jsonnet, so a file renders as `importstr`:
-  # `fileMarker` survives builtins.toJSON, and `importFiles` swaps it in.
+  # bb_* read their configuration as Jsonnet: `resolveMarkers` swaps each
+  # marker (markers.nix) for `importstr` or `std.extVar`.
   # builtins.split drops string context: without addContextFrom, a store path
   # named only in a file option leaves the closure.
-  fileMarker = path: "@importstr@${path}@";
-  importFiles =
+  markers = import ./markers.nix;
+  fileMarker = markers.file;
+  resolveMarkers =
     text:
     lib.addContextFrom text (
       lib.concatMapStrings (
-        part: if builtins.isList part then "importstr ${builtins.toJSON (lib.head part)}" else part
-      ) (builtins.split "\"@importstr@([^@\"]*)@\"" text)
+        part:
+        if builtins.isList part then
+          let
+            kind = lib.elemAt part 0;
+            arg = builtins.toJSON (lib.elemAt part 1);
+          in
+          if kind == "importstr" then "importstr ${arg}" else "std.extVar(${arg})"
+        else
+          part
+      ) (builtins.split markers.pattern text)
     );
   pem =
     inline: file:
@@ -323,6 +332,6 @@ in
   ];
 
   configs = lib.genAttrs running (
-    name: importFiles (builtins.toJSON (lib.recursiveUpdate components.${name} cfg.settings.${name}))
+    name: resolveMarkers (builtins.toJSON (lib.recursiveUpdate components.${name} cfg.settings.${name}))
   );
 }

@@ -748,6 +748,39 @@ let
       ${package.venv}/lib/venv/bin/python -c 'import sys, pynixd_store.builder.child; print(sys.executable)'
       touch $out
     '';
+    # `lib.buildbarn.render`'s markers through real Jsonnet: `env` becomes the
+    # value of the environment variable, a `*File` option the file's text.
+    buildbarnRender =
+      let
+        ca = pkgs.writeText "buildbarn-render-ca.pem" "test-ca";
+        bb = import ./nix/buildbarn/lib.nix { inherit lib; };
+        rendered = bb.render {
+          worker = {
+            enable = true;
+            id.hostname = bb.env "NODE_NAME";
+          };
+          storage.endpoint.address = "storage:8981";
+          scheduler.workerEndpoint = {
+            address = "scheduler:8983";
+            tls.certificateAuthoritiesFile = "${ca}";
+          };
+        };
+      in
+      pkgs.runCommand "pynixd-check-buildbarn-render"
+        {
+          nativeBuildInputs = [
+            pkgs.go-jsonnet
+            pkgs.jq
+          ];
+          inherit (rendered) worker;
+          passAsFile = [ "worker" ];
+        }
+        ''
+          jsonnet --ext-str NODE_NAME=n1 "$workerPath" > worker.json
+          jq -e '.buildDirectories[0].runners[0].workerId.hostname == "n1"' worker.json
+          jq -e '.scheduler.tls.serverCertificateAuthorities == "test-ca"' worker.json
+          touch $out
+        '';
     format = mkCheck "format" [ pkgs.ruff ] "ruff format --check .";
     lint = mkCheck "lint" [ pkgs.ruff ] "ruff check .";
     types = mkCheck "types" [ pkgs.zuban ] typeCheck;
