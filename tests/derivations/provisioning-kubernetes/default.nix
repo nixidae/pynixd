@@ -507,7 +507,8 @@ vivariumLib.mkTest {
         };
         script = ''
           nix --extra-experimental-features nix-command copy --no-check-sigs \
-            --to 'local?root=${podStoreRoot}' ${template}
+            --to 'local?root=${podStoreRoot}' ${template} \
+            ${inputPrimitives} ${pkgs.busybox} ${probePython} ${package}
         '';
       };
     networking.firewall.allowedTCPPorts = [
@@ -515,6 +516,8 @@ vivariumLib.mkTest {
       sshPort
     ];
     environment.systemPackages = [
+      # `input_primitives.py`'s composefs image.
+      pkgs.composefs
       pkgs.jq
       pkgs.sqlite
     ];
