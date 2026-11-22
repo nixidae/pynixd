@@ -10,28 +10,21 @@ from __future__ import annotations
 
 import json
 import time
-from typing import TYPE_CHECKING, Any
 
 from cloud_helpers import feature_drv, rows, until
 from daemon_helpers import as_tester
-from vivarium_k8s import get_json, kubectl
+from k8s_api import cluster, managed
+from kr8s.asyncio.objects import Pod
 from vivarium_runner import Machines
 
-if TYPE_CHECKING:
-    from vivarium_runner import Machine
-
-SELECTOR = "app.kubernetes.io/managed-by=pynixd"
 TAGS = "pynixd.nixidae.org/tags"
 NOTE = "built in a pod"
-
-
-async def managed(cp: Machine, kind: str) -> list[dict[str, Any]]:
-    return list((await get_json(cp, f"get {kind} --selector {SELECTOR}"))["items"])
 
 
 async def test(vms: Machines) -> None:
     cp = vms.cp
     settings = vms.settings
+    api = await cluster(vms)
     await cp.wait_for_unit("pynixd.service")
 
     drv, out = await feature_drv(cp, settings, "k8s-pod", f'echo "{NOTE}" > $out')
@@ -41,19 +34,21 @@ async def test(vms: Machines) -> None:
     assert built == NOTE, built
     print(f"[test] {out} built in {time.monotonic() - started:.0f} s")
 
-    [pod] = await managed(cp, "pods")
-    name = pod["metadata"]["name"]
-    tags = json.loads(pod["metadata"]["annotations"][TAGS])
+    [pod] = await managed(api, "pods")
+    assert isinstance(pod, Pod), pod
+    name = pod.name
+    tags = json.loads(pod.annotations[TAGS])
     assert tags["pynixd-pool"] == "pods", tags
     assert tags["pynixd-instance"].startswith("pods-"), tags
-    assert pod["status"]["phase"] == "Running", pod["status"]
-    [secret] = await managed(cp, "secrets")
-    assert secret["metadata"]["name"] == name, secret["metadata"]
-    [owner] = secret["metadata"]["ownerReferences"]
-    assert (owner["kind"], owner["name"], owner["uid"]) == ("Pod", name, pod["metadata"]["uid"]), owner
-    token = json.loads(await kubectl(cp, f"exec {name} -- cat /run/pynixd-join/ticket"))["token"]
-    assert token not in json.dumps(pod), "the join token is in the pod's spec"
-    await kubectl(cp, f"exec {name} -- nix-store --store /build --check-validity {out}")
+    assert pod.status.phase == "Running", pod.status
+    [secret] = await managed(api, "secrets")
+    assert secret.name == name, secret.metadata
+    [owner] = secret.metadata.ownerReferences
+    assert (owner["kind"], owner["name"], owner["uid"]) == ("Pod", name, pod.metadata.uid), owner
+    ticket = await pod.exec(["cat", "/run/pynixd-join/ticket"])
+    token = json.loads(ticket.stdout)["token"]
+    assert token not in json.dumps(pod.raw), "the join token is in the pod's spec"
+    await pod.exec(["nix-store", "--store", "/build", "--check-validity", out])
     print(f"[test] pod {name} registered by the ticket in Secret {name}, which it owns, and built {out}")
 
     [row] = await rows(cp)
@@ -64,7 +59,7 @@ async def test(vms: Machines) -> None:
     idle_from = time.monotonic()
 
     async def gone() -> bool:
-        return not await managed(cp, "pods") and not await managed(cp, "secrets")
+        return not await managed(api, "pods") and not await managed(api, "secrets")
 
     await until(gone, 120)
     [row] = await rows(cp)

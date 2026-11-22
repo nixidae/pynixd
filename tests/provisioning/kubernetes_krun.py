@@ -11,10 +11,8 @@ import time
 
 from cloud_helpers import feature_drv, rows, until
 from daemon_helpers import as_tester
-from vivarium_k8s import get_json
+from k8s_api import cluster, managed
 from vivarium_runner import Machines
-
-SELECTOR = "app.kubernetes.io/managed-by=pynixd"
 
 
 async def test(vms: Machines) -> None:
@@ -33,9 +31,10 @@ async def test(vms: Machines) -> None:
     assert built, "the build wrote no kernel release"
     assert built != node, f"the build ran under the node's kernel {node}, not in the build VM"
 
+    api = await cluster(vms)
+
     async def ended() -> bool:
-        pods = (await get_json(cp, f"get pods --selector {SELECTOR}"))["items"]
-        return not pods and all(row["state"] == "ended" for row in await rows(cp))
+        return not await managed(api, "pods") and all(row["state"] == "ended" for row in await rows(cp))
 
     await until(ended, 120)
     [row] = await rows(cp)

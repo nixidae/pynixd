@@ -14,6 +14,8 @@
   package,
   vivariumLib,
   k8sModule,
+  # The kr8s the phases import.
+  phaseKr8s,
   # The `krun` kind as well: a pod that builds in pynixd's build VM. It needs `/dev/kvm` in the node,
   # which UML cannot give, so the test runs on QEMU with nesting.
   krun ? false,
@@ -297,7 +299,11 @@ vivariumLib.mkTest {
   pythonPath = [
     ../../daemon/helpers
     ../../provisioning
-  ];
+  ]
+  # The phases reach the API server through the host's kubeconfig (`k8s_api.py`).
+  ++ map (module: "${module}/${pkgs.python3.sitePackages}") (
+    pkgs.python3.pkgs.requiredPythonModules [ phaseKr8s ]
+  );
 
   defaults = vivariumLib.settingsClosure;
   settings = {

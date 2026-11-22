@@ -11,10 +11,9 @@ from __future__ import annotations
 
 from cloud_helpers import feature_drv, rows, until
 from daemon_helpers import as_tester
-from vivarium_k8s import get_json
+from k8s_api import cluster, managed
 from vivarium_runner import Machines
 
-SELECTOR = "app.kubernetes.io/managed-by=pynixd"
 SCRIPT = "${bb}/bin/tr '\\0' ' ' < /proc/1/cmdline > $out; echo >> $out; echo $$ >> $out; ${bb}/bin/cat /proc/net/dev >> $out"
 
 
@@ -34,9 +33,10 @@ async def test(vms: Machines) -> None:
     assert "lo" in interfaces, interfaces
     assert not [name for name in interfaces if name.startswith("eth")], interfaces
 
+    api = await cluster(vms)
+
     async def ended() -> bool:
-        pods = (await get_json(cp, f"get pods --selector {SELECTOR}"))["items"]
-        return not pods and all(row["state"] == "ended" for row in await rows(cp))
+        return not await managed(api, "pods") and all(row["state"] == "ended" for row in await rows(cp))
 
     await until(ended, 120)
     sibling = [row for row in await rows(cp) if row["id"].startswith("sibling-")]

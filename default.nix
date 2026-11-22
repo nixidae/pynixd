@@ -207,6 +207,10 @@ let
     inherit anyio httpx;
     httpx-ws = onAnyio pkgs.python3Packages.httpx-ws { inherit httpcore httpx; };
   };
+  # The same fork for a test's phases, on nixpkgs' anyio: vivarium's runner brings that one.
+  phaseKr8s = pkgs.python3Packages.callPackage "${sources.nanopynix}/nix/kr8s.nix" {
+    src = sources.kr8s;
+  };
   library = pkgs.python3Packages.callPackage ./nix/pynixd.nix {
     pythonBuilder = pkgs.python3Packages.buildPythonPackage;
     nix-daemon-protocol = daemon-protocol;
@@ -1098,13 +1102,13 @@ let
     # A pod on a kubeadm node as a builder: the real provider and API server. nixidae/nixidae#1560.
     provisioning-kubernetes = withDefaultNix (
       pkgs.callPackage ./tests/derivations/provisioning-kubernetes {
-        inherit package vivariumLib;
+        inherit package vivariumLib phaseKr8s;
         k8sModule = vivarium.nixosModules.k8s;
       }
     );
     provisioning-kubernetes-krun = withDefaultNix (
       pkgs.callPackage ./tests/derivations/provisioning-kubernetes {
-        inherit package vivariumLib;
+        inherit package vivariumLib phaseKr8s;
         k8sModule = vivarium.nixosModules.k8s;
         krun = true;
       }
