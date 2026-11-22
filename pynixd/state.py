@@ -233,14 +233,14 @@ def _limit_of(store: ScheduledStore | None, now: float) -> LimitRow | None:
     monitor = store.monitor
     health = monitor.health if monitor is not None and limit.sampled_at is not None else None
     psi = health.psi if health else None
-    mem = health.meminfo if health and health.meminfo and health.meminfo.mem_total else None
+    mem = health.room if health else None
     return LimitRow(
         limit=limit.limit,
         ceiling=limit.ceiling,
         reason=str(limit.reason),
         sample_age_s=None if limit.sampled_at is None else round(now - limit.sampled_at, 1),
         cpu_some=psi.cpu.some_avg10 if psi else None,
-        memory_full=psi.memory.full_avg10 if psi else None,
+        memory_full=health.memory_full if health else None,
         io_full=psi.io.full_avg10 if psi else None,
         available_mb=mem.available_mb if mem else None,
         load1=health.load1 if health else None,

@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from ..config import StoreSpecBase
     from ..connection import Connection
     from ..monitor import ResourceMonitor
-    from ..psi import CpuUtil, DiskSpace, MemInfo, ReclaimSample, SystemHealth
+    from ..psi import CgroupMemory, CpuUtil, DiskSpace, MemInfo, ReclaimSample, SystemHealth
     from ..serde import SetOptionsRequest
     from .pool import ConnectionPool
 
@@ -158,6 +158,10 @@ class ScheduledStore(Store):
             return dataclasses.replace(disk, room_bytes=room, room_age_s=round(age, 1))
 
         return sample
+
+    def build_memory_sampler(self) -> Callable[[], Awaitable[CgroupMemory | None]] | None:
+        """A sampler of the cgroup this store's builds run in; `None` unless the store is on this machine."""
+        return None
 
     # ── What the store builds ─────────────────────────────────────────────
 

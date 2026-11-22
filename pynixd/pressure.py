@@ -104,11 +104,11 @@ class BuildLimit:
         """The reason, and whether it lowers the limit. `steady` lets it rise."""
         s = self.settings
         psi = health.psi
-        mem = health.meminfo if health.meminfo and health.meminfo.mem_total else None
+        mem = health.room
         min_kb = s.min_available_memory_mb * 1024
         memory_full = (
-            psi.memory.full_avg10
-            if psi is not None and (mem is None or mem.mem_available < s.memory_full_below_available * mem.mem_total)
+            health.memory_full or 0.0
+            if mem is None or mem.mem_available < s.memory_full_below_available * mem.mem_total
             else 0.0
         )
         if memory_full >= s.memory_full_high:

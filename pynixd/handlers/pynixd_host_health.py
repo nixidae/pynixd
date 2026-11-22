@@ -84,6 +84,7 @@ class PynixdHostHealthStreamHandler(Handler):
             if monitor is None or isinstance(monitor, DummyResourceMonitor) or monitor.interval > interval:
                 own = create_monitor(local.pressure_settings.model_copy(update={"interval": interval}), listen)
                 own.disk_fn = local.disk_sampler()
+                own.build_memory_fn = local.build_memory_sampler()
                 own.start(background)
             else:
                 local.sample_listeners.add(listen)

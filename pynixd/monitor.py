@@ -17,7 +17,7 @@ import os
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import anyio
 import anyio.to_thread
@@ -31,6 +31,7 @@ from .daemon_extensions.pynixd_host_health import (
 from .exceptions import BackendError
 from .psi import (
     CgroupCpuStat,
+    CgroupMemory,
     DiskSpace,
     SystemHealth,
     compute_cpu_util,
@@ -39,7 +40,11 @@ from .psi import (
     parse_cpu_stat,
     parse_loadavg,
     parse_meminfo,
+    parse_memory_limit,
+    parse_memory_stat,
     parse_psi_output,
+    parse_psi_resource,
+    reclaimable_bytes,
 )
 from .serde import LogError, LogNext
 
@@ -51,6 +56,8 @@ if TYPE_CHECKING:
     from .config import PressureSettings
 
 log = structlog.get_logger(__name__)
+
+CGROUP_ROOT: Final = Path("/sys/fs/cgroup")
 
 
 class ResourceMonitor(ABC):
@@ -75,6 +82,8 @@ class ResourceMonitor(ABC):
         The store sets it: `os.statvfs` locally, SFTP's `statvfs` on an SSH
         builder. A pynixd peer answers its own disk in `PynixdHostHealth`.
         nixidae/nixidae#1013."""
+        self.build_memory_fn: Callable[[], Awaitable[CgroupMemory | None]] | None = None
+        """Samples the cgroup the store's builds run in; the store sets it when it knows one."""
 
     @property
     def interval(self) -> float:
@@ -98,12 +107,17 @@ class ResourceMonitor(ABC):
             self._scope.cancel()
 
     async def _publish_sample(self, health: SystemHealth) -> None:
-        """Add the store's disk to *health*, then publish it."""
+        """Add the store's disk and build cgroup to *health*, then publish it."""
         if self.disk_fn is not None and health.disk is None:
             try:
                 health.disk = await self.disk_fn()
             except Exception:
                 log.warning("disk_sample_failed", exc_info=True)
+        if self.build_memory_fn is not None and health.build_memory is None:
+            try:
+                health.build_memory = await self.build_memory_fn()
+            except Exception:
+                log.warning("build_memory_sample_failed", exc_info=True)
         self._publish(health)
 
     def _publish(self, health: SystemHealth, *, silent: bool = False) -> None:
@@ -317,6 +331,43 @@ def local_disk(path: Path, floor: Callable[[], int] = lambda: 0) -> Callable[[],
             return DiskSpace.from_statvfs(await anyio.to_thread.run_sync(os.statvfs, path), floor())
         except OSError:
             return None
+
+    return sample
+
+
+async def cgroup_memory(
+    cgroup: Path, read_fn: Callable[[str], Coroutine[None, None, str | None]]
+) -> CgroupMemory | None:
+    """The room under the tightest memory limit over *cgroup* and its ancestors; `None` when none has a limit.
+
+    A limit can sit on an ancestor (a slice) as well as on the unit, so each level with one counts, and the level
+    with the least room decides. The pressure is *cgroup*'s own, which covers every build beneath it.
+    """
+    tightest: CgroupMemory | None = None
+    for level in (cgroup, *cgroup.parents):
+        if level == CGROUP_ROOT or not level.is_relative_to(CGROUP_ROOT):
+            break
+        limits = [await read_fn(str(level / name)) for name in ("memory.high", "memory.max")]
+        limit = min((b for text in limits if text and (b := parse_memory_limit(text)) is not None), default=None)
+        if limit is None:
+            continue
+        current, stat = await read_fn(str(level / "memory.current")), await read_fn(str(level / "memory.stat"))
+        if current is None or stat is None:
+            continue
+        held = max(0, int(current) - reclaimable_bytes(parse_memory_stat(stat)))
+        if tightest is None or limit - held < tightest.available_bytes:
+            tightest = CgroupMemory(limit_bytes=limit, available_bytes=limit - held)
+    if tightest is not None:
+        text = await read_fn(str(cgroup / "memory.pressure"))
+        tightest.pressure = parse_psi_resource(text) if text else None
+    return tightest
+
+
+def local_build_memory(cgroup: Path) -> Callable[[], Awaitable[CgroupMemory | None]]:
+    """A sampler of the build cgroup *cgroup* on this machine."""
+
+    async def sample() -> CgroupMemory | None:
+        return await cgroup_memory(cgroup, local_read)
 
     return sample
 

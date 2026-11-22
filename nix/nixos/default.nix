@@ -39,6 +39,11 @@ in
     services.pynixd.settings = common.settingsDefaultsFor cfg // {
       # `pynixd handover`, the reload below, takes the listeners through it.
       handover_path = lib.mkDefault "/run/pynixd/handover.sock";
+      # pynixd builds nothing itself: every build runs in the daemon's unit,
+      # whose memory limit bounds the builds (nixidae/nixidae#1568).
+      pressure.build_cgroup = lib.mkDefault "/sys/fs/cgroup/system.slice/${
+        if cfg.mode == "replace" then "nix-daemon-upstream" else "nix-daemon"
+      }.service";
     };
 
     /*

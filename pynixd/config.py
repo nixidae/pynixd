@@ -281,6 +281,12 @@ class PressureSettings(BaseModel):
     min_available_memory_mb: int = 1024
     """`MemAvailable` under this lowers the limit, and twice this holds it."""
 
+    build_cgroup: Path | None = None
+    """The cgroup v2 directory the local store's builds run in, such as
+    `/sys/fs/cgroup/system.slice/nix-daemon.service`. Its memory limits, and its ancestors', bound the room, and its
+    `memory.pressure` is the memory signal. `None`: the host's. The NixOS module sets the daemon's unit.
+    nixidae/nixidae#1568."""
+
     decrease_factor: float = 0.5
     """A fall sets the limit to this share of the builds that run."""
 

@@ -18,7 +18,7 @@ from pynixd.config import PressureSettings
 from pynixd.daemon_extensions.pynixd_host_health import HEALTH_JSON, PynixdHostHealthStreamRequest
 from pynixd.handlers.pynixd_host_health import PynixdHostHealthStreamHandler
 from pynixd.monitor import PeerHealthMonitor, local_disk
-from pynixd.psi import DiskSpace, SystemHealth
+from pynixd.psi import CgroupMemory, DiskSpace, PsiMetric, SystemHealth
 from pynixd.serde import LogNext
 from pynixd.serde.auth import Role
 from pynixd.serde.context import ReadContext, WriteContext
@@ -62,6 +62,12 @@ async def _ctx(local: Any, client: Client, interval_ms: int) -> Any:
 
 FLOOR = 16 * 1024**3
 """The peer's `min-free`, as sg1's nodes set it."""
+CAPPED = CgroupMemory(limit_bytes=20 * 1024**3, available_bytes=0, pressure=PsiMetric(full_avg10=59.85))
+"""sg1's `nix-daemon.service` under its 20 GiB cap (nixidae/nixidae#1568)."""
+
+
+async def _capped() -> CgroupMemory:
+    return CAPPED
 
 
 def _local(monitor: Any, tmp_path: Path) -> Any:
@@ -70,6 +76,7 @@ def _local(monitor: Any, tmp_path: Path) -> Any:
         sample_listeners=set(),
         pressure_settings=PressureSettings(),
         disk_sampler=lambda: local_disk(tmp_path, lambda: FLOOR),
+        build_memory_sampler=lambda: _capped,
     )
     return SimpleNamespace(daemon_client=client)
 
@@ -114,6 +121,7 @@ async def test_the_peer_samples_itself_when_its_monitor_cannot_serve(tmp_path: P
     assert client.samples[0].meminfo is not None
     assert client.samples[0].disk is not None
     assert client.samples[0].disk.floor_bytes == FLOOR, "the controller must learn the peer's min-free"
+    assert client.samples[0].build_memory == CAPPED, "the controller must learn the room under the peer's cap"
     assert local.daemon_client.sample_listeners == set()
 
 

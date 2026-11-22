@@ -24,19 +24,20 @@ from pynixd_store.temp_roots import RootWriter
 
 from ..agent import local_monitor
 from ..config import LocalSocketStoreSpec, PynixdSettings
-from ..monitor import DummyResourceMonitor
+from ..monitor import DummyResourceMonitor, local_build_memory
 from ..session_options import DaemonHeader
 from ..trust import TrustPolicy
 from .base import get_current_system
 from .scheduled import ScheduledStore
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from pynixd_store.drv_parser import Derivation
     from pynixd_store.store_layout import StoreLayout
 
     from ..monitor import ResourceMonitor
+    from ..psi import CgroupMemory
 
 __all__ = ["BuildCapacity", "LocalHost", "disk_floor_from_nix_config", "feature_matrix_from_nix_config"]
 
@@ -138,10 +139,17 @@ class LocalHost(ScheduledStore):
             else DummyResourceMonitor(self.pressure_settings, self.on_pressure_sample)
         )
         monitor.disk_fn = self.disk_sampler()
+        monitor.build_memory_fn = self.build_memory_sampler()
         self.monitor = monitor
+
+    def build_memory_sampler(self) -> Callable[[], Awaitable[CgroupMemory | None]] | None:
+        """A sampler of the cgroup this store's builds run in, when the settings name one."""
+        cgroup = self.pressure_settings.build_cgroup
+        return None if cgroup is None else local_build_memory(cgroup)
 
     def _replace_monitor(self, monitor: ResourceMonitor) -> None:
         monitor.disk_fn = self.disk_sampler()
+        monitor.build_memory_fn = self.build_memory_sampler()
         self.monitor = monitor
         monitor.start(self._background)
 

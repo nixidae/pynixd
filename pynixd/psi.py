@@ -170,6 +170,23 @@ class ReclaimSample:
 
 
 @dataclass
+class CgroupMemory:
+    """The memory the store's builds may use: the cgroup they run in, under its own and its ancestors' limits.
+
+    sg1 caps `nix-daemon.service` at `MemoryHigh=20G` with 57 of 125 GB free on the host. Builds thrashed in the cap,
+    and the host's figures read as plenty of room (nixidae/nixidae#1568).
+    """
+
+    limit_bytes: int
+    """The `memory.high` or `memory.max` that leaves the least room, over the cgroup and its ancestors."""
+    available_bytes: int
+    """That limit less what its cgroup holds and cannot reclaim. Page cache counts as free, so a cgroup full of
+    cache is not full; `shmem` counts as held, because with no swap it stays."""
+    pressure: PsiMetric | None = None
+    """The build cgroup's own `memory.pressure`."""
+
+
+@dataclass
 class SystemHealth:
     """One sample of a host: pressure, memory, CPU, load, and the store's free disk."""
 
@@ -181,12 +198,43 @@ class SystemHealth:
     """The 1-minute load average."""
     disk: DiskSpace | None = None
     """The store's filesystem, when the monitor can see it. nixidae/nixidae#1013."""
+    build_memory: CgroupMemory | None = None
+    """The cgroup the store's builds run in, when it has a memory limit and the monitor knows it."""
     timestamp: float = field(default_factory=time.monotonic)
 
     @property
     def has_signal(self) -> bool:
         """Whether the sample says anything a build limit can act on."""
-        return self.psi is not None or bool(self.meminfo and self.meminfo.mem_total) or self.load1 is not None
+        return (
+            self.psi is not None
+            or bool(self.meminfo and self.meminfo.mem_total)
+            or self.load1 is not None
+            or self.build_memory is not None
+        )
+
+    @property
+    def room(self) -> MemInfo | None:
+        """The memory the store's builds may use, in kB: the host's, bounded by their cgroup's limit."""
+        host = self.meminfo if self.meminfo and self.meminfo.mem_total else None
+        cgroup = self.build_memory
+        if cgroup is None:
+            return host
+        total, available = cgroup.limit_bytes // 1024, max(0, cgroup.available_bytes) // 1024
+        if host is None:
+            return MemInfo(mem_total=total, mem_available=available)
+        return MemInfo(
+            mem_total=min(host.mem_total, total),
+            mem_available=min(host.mem_available, available),
+            swap_total=host.swap_total,
+            swap_free=host.swap_free,
+        )
+
+    @property
+    def memory_full(self) -> float | None:
+        """PSI `memory` `full` `avg10` where the builds run: their cgroup's, else the host's."""
+        if self.build_memory is not None and self.build_memory.pressure is not None:
+            return self.build_memory.pressure.full_avg10
+        return self.psi.memory.full_avg10 if self.psi is not None else None
 
 
 def parse_loadavg(text: str) -> float:
@@ -305,6 +353,42 @@ def parse_psi_line(line: str) -> tuple[str, dict[str, float]]:
             if k != "total":
                 values[k] = float(v)
     return kind, values
+
+
+def parse_psi_resource(text: str) -> PsiMetric:
+    """One resource's pressure file: a `some` line and a `full` line."""
+    metric = PsiMetric()
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        kind, values = parse_psi_line(line)
+        if kind in ("some", "full"):
+            for name, value in values.items():
+                if name in ("avg10", "avg60", "avg300"):
+                    setattr(metric, f"{kind}_{name}", value)
+    return metric
+
+
+def parse_memory_limit(text: str) -> int | None:
+    """A cgroup's `memory.high` or `memory.max`: bytes, or `None` for `max`."""
+    value = text.strip()
+    return None if value == "max" else int(value)
+
+
+def parse_memory_stat(text: str) -> dict[str, int]:
+    """A cgroup's `memory.stat`, by name, in bytes."""
+    fields: dict[str, int] = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) == 2:
+            with contextlib.suppress(ValueError):
+                fields[parts[0]] = int(parts[1])
+    return fields
+
+
+def reclaimable_bytes(stat: dict[str, int]) -> int:
+    """What a cgroup's memory reclaim can free without swap: page cache other than `shmem`, and reclaimable slab."""
+    return stat.get("file", 0) - stat.get("shmem", 0) + stat.get("slab_reclaimable", 0)
 
 
 def parse_psi_output(text: str) -> PsiSnapshot:

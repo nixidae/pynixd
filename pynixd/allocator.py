@@ -467,10 +467,11 @@ def disk_wait(
 
 
 def memory_room(store: Candidate, reserved_bytes: int) -> int | None:
-    """The store's available memory less what its running builds are expected to peak at; `None` when unmeasured."""
+    """The memory the store's builds may use less what its running builds are expected to peak at; `None` when
+    unmeasured. The builds' cgroup bounds it (`SystemHealth.room`)."""
     monitor = store.monitor
-    meminfo = monitor.health.meminfo if monitor is not None else None
-    if meminfo is None or not meminfo.mem_total:
+    meminfo = monitor.health.room if monitor is not None else None
+    if meminfo is None:
         return None
     return meminfo.mem_available * 1024 - reserved_bytes
 
