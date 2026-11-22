@@ -251,6 +251,30 @@ let
   vivariumLib = vivarium.lib;
   krun = pkgs.callPackage ./nix/krun/package.nix { inherit (vivarium.packages) libkrun; };
   buildbarn = pkgs.callPackages ./nix/buildbarn { };
+  remoteCompile = pkgs.callPackage ./nix/buildbarn/remote-compile.nix { };
+  sisoChromium = pkgs.callPackage ./nix/buildbarn/chromium.nix {
+    inherit (buildbarn) siso;
+    inherit remoteCompile;
+  };
+  # Chromium's //base through sg1's Buildbarn: the first step before a full
+  # build (nixidae/nixidae#1574). Its output is Siso's logs and metrics.
+  chromiumBase = (sisoChromium { chromium = pkgs.chromium.browser; }).overrideAttrs {
+    pname = "chromium-base-siso";
+    outputs = [ "out" ];
+    buildPhase = ''
+      runHook preBuild
+      ninja -C out/Release base
+      runHook postBuild
+    '';
+    installPhase = ''
+      mkdir -p $out
+      cp out/Release/siso_metrics.json out/Release/siso_compile_summary.json out/Release/siso_output $out/
+    '';
+    dontFixup = true;
+    postFixup = "";
+    doCheck = false;
+    doInstallCheck = false;
+  };
 
   # The Nix pynixd runs against unless a test names another: the newest
   # release, not `pkgs.nix`, which nixpkgs keeps a minor behind. Patched: its
@@ -1105,7 +1129,8 @@ in
     inherit (buildbarn) bb-storage bb-remote-execution siso;
   };
   lib.buildbarn = import ./nix/buildbarn/lib.nix { inherit lib; } // {
-    remoteCompile = pkgs.callPackage ./nix/buildbarn/remote-compile.nix { };
+    inherit remoteCompile;
+    chromium = sisoChromium;
   };
   nixosModules = {
     default = ./nix/nixos;
@@ -1140,6 +1165,7 @@ in
       venv
       krunDarwinVariables
       krunDarwinEnv
+      chromiumBase
       ;
     installer = installerTarball;
   };
