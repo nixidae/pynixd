@@ -16,6 +16,7 @@ from collections.abc import Mapping
 
 from vivarium_runner import Machine, Machines
 
+FRONTEND_SOCKET = "/run/buildbarn/frontend.sock"
 SUMMARY = re.compile(r"noexec:\d+ local:(\d+) remote:(\d+) cache:(\d+)")
 
 
@@ -36,6 +37,19 @@ def expression(settings: Mapping[str, str], job: str) -> str:
         f" args = [ ({path('script')}) ];"
         f" siso = {path('siso')}; cc = {path('cc')}; coreutils = {path('coreutils')};"
         ' requiredSystemFeatures = [ "reapi" ];'
+        " }"
+    )
+
+
+def plain(settings: Mapping[str, str]) -> str:
+    """A derivation that needs no `reapi`, sandboxed like every build on the machine."""
+    bash = f'builtins.storePath "{settings["bash"]}"'
+    return (
+        "derivation {"
+        ' name = "plain";'
+        f' system = "{settings["system"]}";'
+        f' builder = "${{{bash}}}/bin/bash";'
+        ' args = [ "-c" "echo plain > $out" ];'
         " }"
     )
 
@@ -81,3 +95,10 @@ async def test(vms: Machines) -> None:
     if rc == 0:
         raise AssertionError("a build succeeded with the frontend stopped: the step ran somewhere else")
     print("[test] with the frontend stopped, the build fails")
+
+    # A socket missing at boot must not take ordinary builds down with it.
+    await vm.succeed(f"rm -f {FRONTEND_SOCKET}")
+    rc, _, err = await as_tester(vm, f"nix-build --no-out-link --expr {shlex.quote(plain(vms.settings))}")
+    if rc != 0:
+        raise AssertionError(f"an ordinary build failed with the frontend socket missing:\n{err}")
+    print("[test] with the frontend socket missing, an ordinary build still succeeds")

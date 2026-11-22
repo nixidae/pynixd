@@ -164,7 +164,8 @@ in
     ];
 
     nix.settings = lib.mkIf cfg.nixSandbox {
-      extra-sandbox-paths = [ "/run/reapi.sock=${run}/frontend.sock" ];
+      # Optional (`?`): without it, a missing socket fails every sandboxed build here, not only reapi ones.
+      extra-sandbox-paths = [ "/run/reapi.sock=${run}/frontend.sock?" ];
       # `extra-`: `system-features` alone would replace NixOS's default list.
       extra-system-features = [ "reapi" ];
     };
