@@ -24,6 +24,7 @@ from ..build_grant import BuildGrant
 from ..build_job import JOB_NAME, KEY_NAME, Job, decode_response, encode
 from ..build_result import failure, result_succeeded
 from ..exceptions import InfrastructureError
+from ..provisioning.kubernetes import PodEndSeen
 from ..provisioning.provider import ProviderError
 from .scheduled import ProbeState, ScheduledStore
 
@@ -160,6 +161,15 @@ class BuildPodStore(ScheduledStore):
     def transfer_conn(self, options: SetOptionsRequest | None = None) -> AbstractAsyncContextManager[Connection]:
         raise InfrastructureError(f"{self.store_id}: a build pod store has no connection")
 
+    async def _watch_end(self, name: str, seen: PodEndSeen) -> None:
+        if self.kubernetes is None:
+            return
+        try:
+            await self.kubernetes.watch_build_pod_end(name, seen)
+        except ProviderError as error:
+            # Only the reason for an end is lost: `build_pod_ended` still reads the pod itself.
+            log.warning("build_pod_watch_ended", pod=name, error=str(error))
+
     async def build(
         self, request: BuildDerivationRequest, on_line: Callable[[str], Awaitable[None]]
     ) -> BuildDerivationResponse:
@@ -183,15 +193,19 @@ class BuildPodStore(ScheduledStore):
             secret = {JOB_NAME: job.model_dump_json(), KEY_NAME: key.export_private_key().decode()}
             await self.kubernetes.start_build_pod(self.spec.template, name, secret)
             log.info("build_pod_started", pod=name, drv=str(request.drv_path))
-            try:
-                async for line in self.kubernetes.follow_build_pod(name, self.spec.container):
-                    await on_line(line)
-            except ProviderError as error:
-                # The log of a pod that is preempted or deleted breaks off: how the pod ended says why.
-                log.warning("build_pod_log_ended", pod=name, error=str(error))
+            seen = PodEndSeen()
             ended: BuildPodEnd | None = None
-            with anyio.move_on_after(_ENDED_SECONDS):
-                ended = await self.kubernetes.build_pod_ended(name, self.spec.container)
+            async with anyio.create_task_group() as watching:
+                watching.start_soon(self._watch_end, name, seen)
+                try:
+                    async for line in self.kubernetes.follow_build_pod(name, self.spec.container):
+                        await on_line(line)
+                except ProviderError as error:
+                    # The log of a pod that is preempted or deleted breaks off: how the pod ended says why.
+                    log.warning("build_pod_log_ended", pod=name, error=str(error))
+                with anyio.move_on_after(_ENDED_SECONDS):
+                    ended = await self.kubernetes.build_pod_ended(name, self.spec.container, seen)
+                watching.cancel_scope.cancel()
             if ended is None:
                 raise InfrastructureError(f"build pod {name}: its log ended while its container ran")
             if ended.exit_code != 0 or not ended.message:

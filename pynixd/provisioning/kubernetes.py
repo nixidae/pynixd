@@ -311,18 +311,38 @@ class KubernetesProvider:
             async for line in pod.logs(container=container, follow=True):
                 yield line
 
-    async def build_pod_ended(self, name: str, container: str) -> BuildPodEnd:
+    async def watch_build_pod_end(self, name: str, seen: PodEndSeen) -> None:
+        """Keep in *seen* why build pod *name* ends, as each change of it shows, until it is deleted.
+
+        A pod gone before `build_pod_ended` reads it says nothing of why. Measured: the scheduler
+        preempted a build pod at 23:05:10, the kubelet killed it at 23:05:11, and central read it at
+        23:05:23, as gone.
+        """
+        api = await self._client()
+        with failing(f"watching build pod {name}", seconds=math.inf):
+            try:
+                pod = await Pod.get(name, namespace=self._settings.namespace, api=api)
+            except kr8s.NotFoundError:
+                return
+            seen.cause = pod_end(pod.raw) or seen.cause
+            async for event, changed in pod.watch():
+                seen.cause = pod_end(changed.raw) or seen.cause
+                if event == "DELETED":
+                    return
+
+    async def build_pod_ended(self, name: str, container: str, seen: PodEndSeen | None = None) -> BuildPodEnd:
         """How the container ended, once the kubelet has written it, or how the pod ended without it.
 
         The log ends when the container exits, and the kubelet writes the state after that (measured: a
-        crash read as still running).
+        crash read as still running). For a pod already gone, *seen* says why it went.
         """
         try:
             pod = await self._build_pod_until(
                 name, lambda raw: _terminated(raw, container) is not None or pod_end(raw) is not None
             )
         except BuildPodDeleted as deleted:
-            return BuildPodEnd(exit_code=None, message="", cause=deleted.cause)
+            cause = seen.cause if seen is not None and seen.cause is not None else deleted.cause
+            return BuildPodEnd(exit_code=None, message="", cause=cause)
         terminated = _terminated(pod.raw, container) or {}
         exit_code = terminated.get("exitCode")
         return BuildPodEnd(
@@ -384,6 +404,13 @@ DISRUPTIONS: Final = frozenset(
 )
 """Why Kubernetes takes a pod for its own reasons: the `DisruptionTarget` reasons, and the kubelet's
 node-pressure `Evicted`. A build pod ended so did nothing wrong."""
+
+
+@dataclass(slots=True)
+class PodEndSeen:
+    """The last reason a watch saw for a build pod's end (`pod_end`); None while it saw none."""
+
+    cause: str | None = None
 
 
 class BuildPodDeleted(ProviderError):
