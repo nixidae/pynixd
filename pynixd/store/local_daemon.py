@@ -38,6 +38,9 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+# systemd's socket activation variables, which name the process they are for (`sd_listen_fds(3)`).
+SOCKET_ACTIVATION = frozenset({"LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES"})
+
 # How many lines of daemon output to keep for a start-up error message. Enough
 # to carry a Nix error and the lines around it, and bounded because a daemon
 # that runs for a week must not grow a list for a week.
@@ -211,7 +214,9 @@ class LocalStore(LocalHost, DaemonStore):
             builder_frontend="NIX_CONFIG" in self.extra_env,
             cmd=shlex.join(cmd),
         )
-        env = os.environ.copy()
+        # Not pynixd's socket activation: a `nix daemon` that finds LISTEN_FDS for another pid exits with
+        # "unexpected systemd environment variables" (measured, a second managed store under systemd).
+        env = {name: value for name, value in os.environ.items() if name not in SOCKET_ACTIVATION}
         env.update(self.extra_env)
         env["NIX_DAEMON_SOCKET_PATH"] = str(self.socket_path)
         # A chroot store gets no name here, and Nix reads none. `--store
