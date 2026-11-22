@@ -924,6 +924,14 @@ let
       }
     );
 
+    # A sandboxed build runs its compile steps on Buildbarn, through the socket in its sandbox.
+    buildbarn = withDefaultNix (
+      pkgs.callPackage ./tests/derivations/buildbarn {
+        inherit package;
+        inherit vivariumLib;
+      }
+    );
+
     # A running machine switched to pynixd and back, in each mode.
     switch = pkgs.callPackage ./tests/derivations/switch {
       inherit package;
