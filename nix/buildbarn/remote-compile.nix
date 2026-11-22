@@ -15,6 +15,9 @@
   differs per derivation may be in it. It refuses a store path that `exec`'s
   closure lacks, since a worker could not read it.
 
+  `check FILE...` applies the same refusal to other text a remote compile
+  reads, such as the flags lines of a ninja file.
+
   # Inputs
 
   `closure`
@@ -56,6 +59,18 @@ let
   comm = lib.getExe' coreutils "comm";
   grep = lib.getExe gnugrep;
   sed = lib.getExe gnused;
+  # cc-wrapper's `-fmacro-prefix-map=PATH=SCRUBBED` names a path that never exists.
+  scrubbed = "${builtins.storeDir}/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-";
+  check = writeShellScript "${name}-check" ''
+    set -euo pipefail
+    missing=$(${grep} -ohE '${builtins.storeDir}/[a-z0-9]{32}-[^/ "'"'"'=:\\]+' "$@" | ${grep} -vF '${scrubbed}' \
+      | LC_ALL=C ${sort} -u | LC_ALL=C ${comm} -23 - <(LC_ALL=C ${sort} -u ${info}/store-paths) || true)
+    if [[ -n $missing ]]; then
+      echo "${name}: $* name store paths outside the closure of ${exec}:" >&2
+      echo "$missing" >&2
+      exit 1
+    fi
+  '';
   writeEnv = writeShellScript "${name}-write-env" ''
     set -euo pipefail
     file=$1
@@ -76,15 +91,9 @@ let
       fi
       printf '%s=%q\n' "$var" "$value" >> "$file"
     done
-    missing=$(${grep} -oE '${builtins.storeDir}/[a-z0-9]{32}-[^/ "'"'"'=:\\]+' "$file" | LC_ALL=C ${sort} -u \
-      | LC_ALL=C ${comm} -23 - <(LC_ALL=C ${sort} -u ${info}/store-paths) || true)
-    if [[ -n $missing ]]; then
-      echo "${name}: nix-remote.env names store paths outside the closure of ${exec}:" >&2
-      echo "$missing" >&2
-      exit 1
-    fi
+    ${check} "$file"
   '';
 in
 {
-  inherit exec writeEnv;
+  inherit exec writeEnv check;
 }

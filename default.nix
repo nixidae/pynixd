@@ -782,8 +782,9 @@ let
           touch $out
         '';
     # `remoteCompile.writeEnv`: a store path in the compile flags that the
-    # worker's closure lacks fails the build; the seed is pinned; link
-    # variables stay out.
+    # worker's closure lacks fails the build, cc-wrapper's scrubbed
+    # macro-prefix-map path does not; `check` refuses the same in a ninja
+    # flags line; the seed is pinned; link variables stay out.
     buildbarnRemoteCompile =
       let
         rc = pkgs.callPackage ./nix/buildbarn/remote-compile.nix { } { closure = [ pkgs.hello ]; };
@@ -791,8 +792,16 @@ let
       in
       pkgs.runCommand "pynixd-check-buildbarn-remote-compile" { } ''
         export ${salted}=1 NIX_LDFLAGS="-rpath $out/lib"
-        export NIX_CFLAGS_COMPILE="-isystem ${pkgs.hello}/include -frandom-seed=abc"
+        scrubbed=${builtins.storeDir}/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-hello
+        export NIX_CFLAGS_COMPILE="-isystem ${pkgs.hello}/include -fmacro-prefix-map=${pkgs.hello}=$scrubbed -frandom-seed=abc"
         ${rc.writeEnv} inside.env
+        grep -qF "$scrubbed" inside.env
+        echo "include_dirs = -I${pkgs.cowsay}/include" > flags.ninja
+        if ${rc.check} flags.ninja 2> err; then
+          echo "check accepted a flags line outside its closure" >&2
+          exit 1
+        fi
+        grep -q '${pkgs.cowsay}' err
         grep -q 'frandom-seed=nixremote' inside.env
         ! grep -q 'frandom-seed=abc' inside.env
         ! grep -q NIX_LDFLAGS inside.env
