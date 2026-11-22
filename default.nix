@@ -781,6 +781,30 @@ let
           jq -e '.scheduler.tls.serverCertificateAuthorities == "test-ca"' worker.json
           touch $out
         '';
+    # `remoteCompile.writeEnv`: a store path in the compile flags that the
+    # worker's closure lacks fails the build; the seed is pinned; link
+    # variables stay out.
+    buildbarnRemoteCompile =
+      let
+        rc = pkgs.callPackage ./nix/buildbarn/remote-compile.nix { } { closure = [ pkgs.hello ]; };
+        salted = "NIX_CC_WRAPPER_TARGET_HOST_${pkgs.stdenv.cc.suffixSalt}";
+      in
+      pkgs.runCommand "pynixd-check-buildbarn-remote-compile" { } ''
+        export ${salted}=1 NIX_LDFLAGS="-rpath $out/lib"
+        export NIX_CFLAGS_COMPILE="-isystem ${pkgs.hello}/include -frandom-seed=abc"
+        ${rc.writeEnv} inside.env
+        grep -q 'frandom-seed=nixremote' inside.env
+        ! grep -q 'frandom-seed=abc' inside.env
+        ! grep -q NIX_LDFLAGS inside.env
+        grep -q '^${salted}=1$' inside.env
+        export NIX_CFLAGS_COMPILE="-isystem ${pkgs.cowsay}/include"
+        if ${rc.writeEnv} outside.env 2> err; then
+          echo "writeEnv accepted a store path outside its closure" >&2
+          exit 1
+        fi
+        grep -q '${pkgs.cowsay}' err
+        touch $out
+      '';
     format = mkCheck "format" [ pkgs.ruff ] "ruff format --check .";
     lint = mkCheck "lint" [ pkgs.ruff ] "ruff check .";
     types = mkCheck "types" [ pkgs.zuban ] typeCheck;
@@ -1071,7 +1095,9 @@ in
     pynixd-store = store;
     inherit (buildbarn) bb-storage bb-remote-execution siso;
   };
-  lib.buildbarn = import ./nix/buildbarn/lib.nix { inherit lib; };
+  lib.buildbarn = import ./nix/buildbarn/lib.nix { inherit lib; } // {
+    remoteCompile = pkgs.callPackage ./nix/buildbarn/remote-compile.nix { };
+  };
   nixosModules = {
     default = ./nix/nixos;
     buildbarn = ./nix/buildbarn/module.nix;

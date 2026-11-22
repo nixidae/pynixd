@@ -10,13 +10,17 @@ fails: "fork/exec .../bin/cc: no such file or directory".
    never runs the compiler.
 2. With nix-serve started, the compile runs on worker, and the compiler is
    valid there afterwards.
-3. builder drops its client certificate, and a build fails: the hub
+3. A C++ compile through `remote_wrapper` (lib.buildbarn.remoteCompile)
+   gets the cc-wrapper's environment on worker. A second derivation with
+   another random seed hits the cache. Without the define in the
+   environment, the compile fails on its `#error`.
+4. builder drops its client certificate, and a build fails: the hub
    refuses a client its CA did not sign.
 """
 
 from __future__ import annotations
 
-from remote import build, counts
+from remote import build, build_cxx, counts
 from vivarium_runner import Machine, Machines
 
 
@@ -59,6 +63,29 @@ async def test(vms: Machines) -> None:
     if not await valid(worker, cc):
         raise AssertionError(f"{cc} is not valid on worker after the compile ran there")
     print("[test] worker fetched the compiler before the compile")
+
+    rc, out, err = await build_cxx(builder, vms.settings, "cxx-env", "-DNIX_REMOTE_ENV_OK")
+    if rc != 0:
+        raise AssertionError(f"the C++ compile with the environment failed:\n{err}")
+    cxx = await counts(builder, out.strip())
+    print(f"[test] C++ through remote_wrapper: local, remote, cache = {cxx}")
+    if cxx != (0, 1, 0):
+        raise AssertionError(f"the C++ compile did not run on Buildbarn: {cxx}")
+
+    rc, out, err = await build_cxx(builder, vms.settings, "cxx-env-again", "-DNIX_REMOTE_ENV_OK")
+    if rc != 0:
+        raise AssertionError(f"the second C++ derivation failed:\n{err}")
+    again = await counts(builder, out.strip())
+    print(f"[test] another derivation, another seed: local, remote, cache = {again}")
+    if again != (0, 0, 1):
+        raise AssertionError(f"the second derivation missed the cache: the environment differs per derivation: {again}")
+
+    rc, _, err = await build_cxx(builder, vms.settings, "cxx-no-env", "-DUNRELATED")
+    if rc == 0:
+        raise AssertionError("a compile without NIX_REMOTE_ENV_OK succeeded: the source's #error never ran")
+    if "NIX_REMOTE_ENV_OK is not defined" not in err:
+        raise AssertionError(f"the compile without the define failed, but not on its #error:\n{err[-4000:]}")
+    print("[test] without the define in the environment, the compile fails on its #error")
 
     await builder.switch_to("anonymous")
     rc, _, err = await build(builder, vms.settings, "anonymous")

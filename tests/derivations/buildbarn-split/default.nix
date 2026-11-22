@@ -14,6 +14,9 @@
 
 let
   buildbarn = pkgs.callPackages ../../../nix/buildbarn { };
+  remoteCompile = pkgs.callPackage ../../../nix/buildbarn/remote-compile.nix { } {
+    closure = [ pkgs.stdenv.cc ];
+  };
   hubAddress = "10.9.0.1";
   ports = {
     storage = 8981;
@@ -69,6 +72,10 @@ vivariumLib.mkTest {
     cc = "${pkgs.stdenv.cc}";
     inherit (buildbarn) siso;
     script = "${../../buildbarn/siso-build.sh}";
+    cxxScript = "${../../buildbarn/siso-remote-cxx.sh}";
+    writeEnv = "${remoteCompile.writeEnv}";
+    remoteExec = "${remoteCompile.exec}";
+    salt = pkgs.stdenv.cc.suffixSalt;
   };
 
   segments.lab = { };

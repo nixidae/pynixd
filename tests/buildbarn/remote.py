@@ -54,6 +54,35 @@ def plain(settings: Mapping[str, str]) -> str:
     )
 
 
+def cxx_expression(settings: Mapping[str, str], job: str, cflags: str) -> str:
+    """A C++ compile through `remote_wrapper` (siso-remote-cxx.sh), with the cc-wrapper's environment.
+
+    `-frandom-seed` differs per job, as reproducible-builds.sh makes it differ per derivation.
+    """
+
+    def path(name: str) -> str:
+        return f'builtins.storePath "{settings[name]}"'
+
+    return (
+        "derivation {"
+        f' name = "buildbarn-{job}";'
+        f' system = "{settings["system"]}";'
+        f' builder = "${{{path("bash")}}}/bin/bash";'
+        f" args = [ ({path('cxxScript')}) ];"
+        f" siso = {path('siso')}; cc = {path('cc')}; coreutils = {path('coreutils')};"
+        f" writeEnv = {path('writeEnv')}; remoteExec = {path('remoteExec')};"
+        f' NIX_CC_WRAPPER_TARGET_HOST_{settings["salt"]} = "1";'
+        f' NIX_CFLAGS_COMPILE = "{cflags} -frandom-seed={job}";'
+        ' requiredSystemFeatures = [ "reapi" ];'
+        " }"
+    )
+
+
+async def build_cxx(vm: Machine, settings: Mapping[str, str], job: str, cflags: str) -> tuple[int, str, str]:
+    command = f"nix-build --no-out-link --expr {shlex.quote(cxx_expression(settings, job, cflags))}"
+    return await as_tester(vm, command)
+
+
 async def build(vm: Machine, settings: Mapping[str, str], job: str) -> tuple[int, str, str]:
     command = f"nix-build --no-out-link --expr {shlex.quote(expression(settings, job))}"
     return await as_tester(vm, command)
