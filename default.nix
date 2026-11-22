@@ -250,6 +250,7 @@ let
   vivarium = import sources.vivarium { inherit pkgs sources; };
   vivariumLib = vivarium.lib;
   krun = pkgs.callPackage ./nix/krun/package.nix { inherit (vivarium.packages) libkrun; };
+  buildbarn = pkgs.callPackages ./nix/buildbarn { };
 
   # The Nix pynixd runs against unless a test names another: the newest
   # release, not `pkgs.nix`, which nixpkgs keeps a minor behind. Patched: its
@@ -1036,6 +1037,7 @@ in
     inherit
       pkgs
       krun
+      buildbarn
       specifictest
       fix
       check
