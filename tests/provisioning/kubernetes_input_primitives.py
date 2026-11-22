@@ -17,8 +17,8 @@ from typing import Any, cast
 
 import anyio
 import kr8s
-from k8s_api import cluster
-from kr8s.asyncio.objects import ConfigMap, Namespace, Pod
+from k8s_api import cluster, level_namespace
+from kr8s.asyncio.objects import ConfigMap, Pod
 from vivarium_runner import Machine, Machines
 
 REPEATS = 3
@@ -106,13 +106,7 @@ async def admitted(api: kr8s.asyncio.Api, templates: Mapping[str, Manifest]) -> 
     """For each template, Pod Security level and store volume: admitted, or the API server's reason."""
     found: dict[str, str] = {}
     for level in LEVELS:
-        name = f"pynixd-{level}"
-        labels = {"pod-security.kubernetes.io/enforce": level}
-        try:
-            await Namespace({"metadata": {"name": name, "labels": labels}}, api=api).create()
-        except kr8s.ServerError as error:
-            if "already exists" not in str(error):
-                raise
+        name = await level_namespace(api, level)
         for template_name, template in templates.items():
             for kind in ("hostPath", "csi"):
                 spec = template["spec"]

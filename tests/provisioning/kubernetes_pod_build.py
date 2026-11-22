@@ -16,8 +16,8 @@ import anyio
 import kr8s
 from cloud_helpers import feature_drv, rows
 from daemon_helpers import as_tester
-from k8s_api import cluster
-from kr8s.asyncio.objects import Namespace, Pod
+from k8s_api import cluster, level_namespace
+from kr8s.asyncio.objects import Pod
 from vivarium_runner import Machine, Machines
 
 BUILD_PODS = "pynixd.nixidae.org/build=true"
@@ -74,8 +74,7 @@ async def admitted_by_level(cp: Machine, api: kr8s.asyncio.Api) -> None:
         (RESTRICTED, {"buildpod": True, "buildpod-userns": False, "nested": False}),
         (BASELINE, {"buildpod-userns": True, "nested": False}),
     ):
-        labels = {"pod-security.kubernetes.io/enforce": level.removeprefix("pynixd-")}
-        await Namespace({"metadata": {"name": level, "labels": labels}}, api=api).create()
+        await level_namespace(api, level.removeprefix("pynixd-"))
         for template, wanted in admitted.items():
             pod = Pod(level_copy(templates[template]["pod"], template, level), api=api)
             try:
