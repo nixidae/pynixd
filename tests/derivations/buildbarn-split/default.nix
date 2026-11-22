@@ -1,8 +1,9 @@
-# Buildbarn split over two machines, the roles joined by mTLS over TCP.
+# Buildbarn split over three machines, the roles joined by mTLS over TCP.
 #
 # `nix run --file . internal.tests.buildbarn-split.driver -- --out ./out`
-# boots `hub` (storage and scheduler) and `builder` (pynixd, frontend and
-# worker). A build on builder compiles through all three remote endpoints.
+# boots `hub` (storage and scheduler), `builder` (pynixd, the frontend, and
+# nix-serve) and `worker` (bb_worker behind `pynixd reapi-runner`). A build
+# on builder compiles on worker, which fetches the compiler from builder.
 # See tests/buildbarn/split.py.
 {
   pkgs,
@@ -61,7 +62,6 @@ vivariumLib.mkTest {
 
   pythonPath = [ ../../buildbarn ];
 
-  defaults = vivariumLib.settingsClosure;
   settings = {
     system = pkgs.stdenv.hostPlatform.system;
     bash = "${pkgs.bash}";
@@ -76,7 +76,7 @@ vivariumLib.mkTest {
   phases.split = {
     script = ../../buildbarn/split.py;
     after = [ "boot" ];
-    description = "A compile runs on a worker whose storage and scheduler are on another machine";
+    description = "A compile runs on another machine, which fetches the compiler first";
   };
 
   nodes.hub = {
@@ -105,6 +105,7 @@ vivariumLib.mkTest {
     imports = [
       ../../../nix/nixos/default.nix
       ../../../nix/buildbarn/module.nix
+      vivariumLib.settingsClosure
     ];
     vivarium.memory = "2048M";
     services.pynixd = {
@@ -115,20 +116,18 @@ vivariumLib.mkTest {
     };
     services.buildbarn = {
       frontend.enable = true;
-      worker = {
-        enable = true;
-        concurrency = 2;
-        cacheSizeBytes = 256 * 1024 * 1024;
-      };
       storage.endpoint = endpoint ports.storage;
       scheduler.clientEndpoint = endpoint ports.schedulerClient;
-      scheduler.workerEndpoint = endpoint ports.schedulerWorker;
     };
     # The hub refuses a client without a certificate its CA signed.
     vivarium.configurations.anonymous.services.buildbarn = {
       storage.endpoint.tls.keyPair = lib.mkForce null;
       scheduler.clientEndpoint.tls.keyPair = lib.mkForce null;
-      scheduler.workerEndpoint.tls.keyPair = lib.mkForce null;
+    };
+    # The worker's substituter. Unsigned: worker sets require-sigs false.
+    services.nix-serve = {
+      enable = true;
+      openFirewall = true;
     };
     users.users.tester = {
       isNormalUser = true;
@@ -141,6 +140,32 @@ vivariumLib.mkTest {
     vivarium.interfaces.eth1 = {
       segment = "lab";
       addresses = [ "10.9.0.2/24" ];
+    };
+  };
+
+  nodes.worker = {
+    imports = [ ../../../nix/buildbarn/module.nix ];
+    vivarium.memory = "1024M";
+    services.buildbarn = {
+      worker = {
+        enable = true;
+        concurrency = 2;
+        cacheSizeBytes = 256 * 1024 * 1024;
+        closures = {
+          enable = true;
+          inherit package;
+        };
+      };
+      storage.endpoint = endpoint ports.storage;
+      scheduler.workerEndpoint = endpoint ports.schedulerWorker;
+    };
+    nix.settings = {
+      substituters = lib.mkForce [ "http://10.9.0.2:5000" ];
+      require-sigs = false;
+    };
+    vivarium.interfaces.eth1 = {
+      segment = "lab";
+      addresses = [ "10.9.0.3/24" ];
     };
   };
 }

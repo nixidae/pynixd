@@ -297,7 +297,7 @@ let
       global = { };
       grpcServers = [
         {
-          listenPaths = [ sockets.runner ];
+          listenPaths = [ (if cfg.worker.closures.enable then sockets.bbRunner else sockets.runner) ];
           authenticationPolicy = allow;
         }
       ];

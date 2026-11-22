@@ -206,6 +206,26 @@ in
         example.hostname = "builder-1";
         description = "Labels that name this worker to the scheduler. The NixOS module sets `hostname`.";
       };
+      closures = {
+        enable = lib.mkEnableOption ''
+          `pynixd reapi-runner` between bb_worker and bb_runner. Before an
+          action runs, it makes the closure of the action's program valid
+          through the local Nix daemon, and roots it, when the program is in
+          the store. A client with a relative compiler path puts a store path
+          in front of it (Siso: `remote_wrapper`). The daemon needs a
+          substituter that holds the closure
+        '';
+        package = mkOption {
+          type = types.nullOr types.package;
+          default = null;
+          description = "The pynixd package that provides `pynixd reapi-runner`.";
+        };
+        daemonSocket = mkOption {
+          type = types.str;
+          default = "/nix/var/nix/daemon-socket/socket";
+          description = "The Nix daemon that makes the closures valid.";
+        };
+      };
     };
 
     settings =

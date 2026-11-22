@@ -5,4 +5,6 @@ run: {
   schedulerClient = "${run}/scheduler-client.sock";
   schedulerWorker = "${run}/scheduler-worker.sock";
   runner = "${run}/runner.sock";
+  # bb_runner, when `worker.closures` puts pynixd in front of it.
+  bbRunner = "${run}/bb-runner.sock";
 }

@@ -33,6 +33,7 @@ let
   packages = pkgs.callPackages ./. { };
   rendered = import ./render.nix { inherit lib; } cfg;
   run = cfg.runtimeDirectory;
+  sockets = import ./sockets.nix run;
   state = cfg.stateDirectory;
   anyRole = lib.any (role: cfg.${role}.enable) [
     "storage"
@@ -81,6 +82,10 @@ in
         assertion = !cfg.nixSandbox || cfg.frontend.enable;
         message = "services.buildbarn.nixSandbox binds the frontend's socket: enable services.buildbarn.frontend.";
       }
+      {
+        assertion = !cfg.worker.closures.enable || cfg.worker.closures.package != null;
+        message = "services.buildbarn.worker.closures runs `pynixd reapi-runner`: set services.buildbarn.worker.closures.package.";
+      }
     ];
 
     users.users.buildbarn = {
@@ -126,8 +131,35 @@ in
             "storage"
             "scheduler"
           ]
-          ++ [ "buildbarn-runner.service" ]
+          ++ [
+            (if cfg.worker.closures.enable then "buildbarn-closures.service" else "buildbarn-runner.service")
+          ]
         );
+      })
+      (lib.mkIf (cfg.worker.enable && cfg.worker.closures.enable) {
+        buildbarn-closures = {
+          description = "Buildbarn runner that makes Nix closures valid";
+          wantedBy = [ "multi-user.target" ];
+          after = [ "buildbarn-runner.service" ];
+          requires = [ "buildbarn-runner.service" ];
+          serviceConfig = {
+            ExecStart = lib.escapeShellArgs [
+              (lib.getExe cfg.worker.closures.package)
+              "reapi-runner"
+              "--listen"
+              sockets.runner
+              "--upstream"
+              sockets.bbRunner
+              "--daemon"
+              cfg.worker.closures.daemonSocket
+            ];
+            User = "buildbarn";
+            Group = "buildbarn";
+            Restart = "on-failure";
+            RestartSec = "2s";
+            UMask = "0077";
+          };
+        };
       })
     ];
 
