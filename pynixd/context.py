@@ -17,6 +17,7 @@ from .exceptions import BackendError, InfrastructureError, NoDaemonError
 from .serde import QueryValidPathsRequest
 from .session_options import DaemonHeader
 from .sessions import ClientSessions
+from .tracing import NO_TRACING, Tracing
 from .trust import TrustPolicy
 
 if TYPE_CHECKING:
@@ -80,6 +81,8 @@ class PynixdContext:
     """
     daemon_header: DaemonHeader = field(default_factory=DaemonHeader)
     """The header settings the local store's Nix has, under a remote client's `SetOptions`; `Server.start` reads it."""
+    tracing: Tracing = NO_TRACING
+    """The spans of client operations; `Server.start` sets it when `tracing.endpoint` is set."""
     sessions: ClientSessions = field(default_factory=ClientSessions)
     """Established client sessions, for the shutdown path.
 

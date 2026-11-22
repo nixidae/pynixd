@@ -2,8 +2,8 @@
 
 `op_loop` is called unbound (`DaemonProxy.op_loop(proxy)`), so this needs
 every attribute the loop touches: `r`, `w`, `client`, `dispatch`,
-`send_error`, `version`, `standard_features`, `write_context`, `_op_timing`, `_op_metrics`
-and `_metrics_enabled`. When the
+`send_error`, `version`, `standard_features`, `write_context`, `_op_timing`, `_op_metrics`,
+`_metrics_enabled`, `ctx.tracing`, `identity` and `_client_traceparent`. When the
 loop grows a new attribute, this is the one place to add it, and every
 loop test fails together instead of one fake drifting silently.
 """
@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 from pynixd.proxy import DaemonProxy
+from pynixd.tracing import NO_TRACING, SessionIdentity
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -45,7 +46,10 @@ class LoopProxy:
         self.standard_features: frozenset[str] = frozenset()
         self.write_context = SimpleNamespace(writer=self.w, version=self.version, features=self.standard_features)
         self._response = response
-        self.client = SimpleNamespace(flush=self._nothing)
+        self.client = SimpleNamespace(flush=self._nothing, traceparent="")
+        self.ctx = SimpleNamespace(tracing=NO_TRACING)
+        self.identity = SessionIdentity(session="loop", user="tester", role="user", transport="unix", pid=None)
+        self._client_traceparent = ""
         self.errors: list[str] = []
         self.dispatched: list[int] = []
         self._op_timing: dict[int, tuple[int, float]] = {}

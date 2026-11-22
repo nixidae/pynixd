@@ -693,6 +693,9 @@ class BuildQueue:
             # Check for duplicate — dedup with queued or in-progress builds
             if existing is not None and not existing.is_done:
                 log.debug("build_deduped", id=existing.build_id)
+                for asker in askers:
+                    if asker.traceparent:
+                        existing.trace.joined(asker.traceparent)
                 existing.from_goal_path = existing.from_goal_path or from_goal_path
                 # Under the same lock as the dedup. A hold taken after
                 # `enqueue` returned could find the build cancelled between

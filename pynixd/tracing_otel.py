@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import threading
+import time
 from typing import TYPE_CHECKING
 
 import structlog
@@ -26,7 +27,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter
 from opentelemetry.trace import Status, StatusCode
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
-from .tracing import BuildTrace, Ending, Phase, Tracing
+from .tracing import BuildTrace, Ending, OpTrace, Phase, Tracing
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -38,7 +39,7 @@ if TYPE_CHECKING:
 
     from .build_queue import QueuedBuild
     from .config import TracingSettings
-    from .tracing import AttributeValue
+    from .tracing import AttributeValue, SessionIdentity
 
 log = structlog.get_logger(__name__)
 
@@ -48,6 +49,56 @@ _PROPAGATOR = TraceContextTextMapPropagator()
 # The processor logs a warning for each span it drops, on the thread that ends
 # the span: the event loop. A full queue would write one line per span there.
 logging.getLogger("opentelemetry.sdk._shared_internal").setLevel(logging.ERROR)
+
+
+def _context(traceparent: str) -> Context | None:
+    return _PROPAGATOR.extract({"traceparent": traceparent}) if traceparent else None
+
+
+def _traceparent(context: Context) -> str:
+    carrier: dict[str, str] = {}
+    _PROPAGATOR.inject(carrier, context=context)
+    return carrier.get("traceparent", "")
+
+
+class OtelOpTrace(OpTrace):
+    """An operation traced from its start."""
+
+    def __init__(self, tracer: Tracer, name: str, identity: SessionIdentity, parent: str) -> None:
+        self._span = tracer.start_span(name, _context(parent), attributes=identity.attributes())
+        self._traceparent = _traceparent(trace.set_span_in_context(self._span))
+
+    def traceparent(self) -> str:
+        return self._traceparent
+
+    def ended(self, error: str | None = None) -> None:
+        if error is not None:
+            self._span.set_status(Status(StatusCode.ERROR, error))
+        self._span.end()
+
+
+class SlowOpTrace(OpTrace):
+    """An operation that becomes a span only when it ends slow or failed, with the time it started."""
+
+    __slots__ = ("_identity", "_monotonic", "_name", "_parent", "_started_ns", "_tracing")
+
+    def __init__(self, tracing: OtelTracing, name: str, identity: SessionIdentity, parent: str) -> None:
+        self._tracing = tracing
+        self._name = name
+        self._identity = identity
+        self._parent = parent
+        self._started_ns = time.time_ns()
+        self._monotonic = time.monotonic()
+
+    def ended(self, error: str | None = None) -> None:
+        if error is None and time.monotonic() - self._monotonic < self._tracing.slow_op_seconds:
+            return
+        span = self._tracing.tracer.start_span(
+            self._name, _context(self._parent), attributes=self._identity.attributes(), start_time=self._started_ns
+        )
+        if error is not None:
+            span.set_status(Status(StatusCode.ERROR, error))
+        span.end()
 
 
 class OtelBuildTrace(BuildTrace):
@@ -61,7 +112,7 @@ class OtelBuildTrace(BuildTrace):
                 "pynixd.drv_path": str(build.request.drv_path),
                 "pynixd.system": build.request.derivation.platform,
             },
-            context=_PROPAGATOR.extract({"traceparent": parent}) if parent else None,
+            context=_context(parent),
         )
         self._root_context = trace.set_span_in_context(self._root)
         self._phase_context: Context | None = None
@@ -115,9 +166,13 @@ class OtelBuildTrace(BuildTrace):
         (self._attempt or self._root).add_event(name, dict(attributes))
 
     def traceparent(self) -> str:
-        carrier: dict[str, str] = {}
-        _PROPAGATOR.inject(carrier, context=self._phase_context or self._attempt_context)
-        return carrier.get("traceparent", "")
+        return _traceparent(self._phase_context or self._attempt_context)
+
+    def joined(self, parent: str) -> None:
+        context = _context(parent)
+        if context is None or not self._root.is_recording():
+            return
+        self._root.add_link(trace.get_current_span(context).get_span_context(), {"pynixd.joined": True})
 
     def attempt_ended(self, ending: Ending, reason: str | None = None) -> None:
         if self._attempt is None:
@@ -169,10 +224,11 @@ class OtelBuildTrace(BuildTrace):
 
 
 class OtelTracing(Tracing):
-    def __init__(self, provider: TracerProvider, shutdown_timeout: float) -> None:
+    def __init__(self, provider: TracerProvider, shutdown_timeout: float, slow_op_seconds: float) -> None:
         self.provider = provider
         self.tracer: Tracer = provider.get_tracer("pynixd")
         self.shutdown_timeout = shutdown_timeout
+        self.slow_op_seconds = slow_op_seconds
         self.open: set[OtelBuildTrace] = set()
 
     @classmethod
@@ -195,7 +251,7 @@ class OtelTracing(Tracing):
                 export_timeout_millis=settings.export_timeout * 1000,
             )
         )
-        tracing = cls(provider, settings.shutdown_timeout)
+        tracing = cls(provider, settings.shutdown_timeout, settings.slow_op_seconds)
         # The SDK's first span imports and compiles what the loop must not. A provider with no processor sends
         # nothing.
         warmup = TracerProvider(shutdown_on_exit=False).get_tracer("pynixd").start_span("warmup")
@@ -208,6 +264,11 @@ class OtelTracing(Tracing):
         trace_ = OtelBuildTrace(self, build, parent)
         self.open.add(trace_)
         return trace_
+
+    def op(self, name: str, identity: SessionIdentity, parent: str = "", *, always: bool = False) -> OpTrace:
+        if always:
+            return OtelOpTrace(self.tracer, name, identity, parent)
+        return SlowOpTrace(self, name, identity, parent)
 
     def close(self) -> None:
         for open_trace in list(self.open):

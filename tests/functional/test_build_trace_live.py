@@ -45,7 +45,10 @@ async def traces(tmp_path: Path) -> AsyncIterator[str]:
 
 
 async def _trace_of(url: str, service: str, roots: int = 1) -> list[dict[str, Any]]:  # Any: Jaeger's JSON
-    """The spans of the traces of *service*, once *roots* spans named `build NAME` arrived."""
+    """The spans of the traces of *service* that hold a build, once *roots* spans named `build NAME` arrived.
+
+    The evaluation that writes the `.drv` is a trace of its own: an `AddToStore` operation.
+    """
     # A search without a time range returned nothing on sg1's VictoriaTraces, with the trace in the store.
     now_us = time.time_ns() // 1000
     window: dict[str, str | int] = {"service": service, "start": now_us - 3600 * 10**6, "end": now_us + 3600 * 10**6}
@@ -56,7 +59,8 @@ async def _trace_of(url: str, service: str, roots: int = 1) -> list[dict[str, An
                 response = await client.get("/select/jaeger/api/traces", params=window)
                 response.raise_for_status()
                 found: list[dict[str, Any]] = response.json()["data"] or []
-                spans = [span for trace in found for span in trace["spans"]]
+                builds = [t for t in found if any(s["operationName"] == f"build {NAME}" for s in t["spans"])]
+                spans = [span for trace in builds for span in trace["spans"]]
                 if sum(span["operationName"] == f"build {NAME}" for span in spans) >= roots:
                     return spans
                 await anyio.sleep(0.2)
@@ -130,8 +134,13 @@ async def test_a_build_reaches_victoriatraces_as_one_trace(tmp_path: Path, trace
     spans = await _trace_of(traces, service)
 
     by_name = {span["operationName"]: span for span in spans}
-    build, attempt, phase = by_name[f"build {NAME}"], by_name["attempt"], by_name["build"]
+    op, build = by_name["BuildPathsWithResults"], by_name[f"build {NAME}"]
+    attempt, phase = by_name["attempt"], by_name["build"]
     assert len({span["traceID"] for span in spans}) == 1
+    assert _parent(build) == op["spanID"], "the build nests under the operation that asked for it"
+    assert _tags(op)["pynixd.transport"] == "unix"
+    assert _tags(op)["pynixd.session"]
+    assert _tags(op)["pynixd.user"]
     assert _parent(attempt) == build["spanID"]
     assert _parent(phase) == attempt["spanID"]
     assert _tags(build)["pynixd.ending"] == "built"
@@ -140,7 +149,7 @@ async def test_a_build_reaches_victoriatraces_as_one_trace(tmp_path: Path, trace
 
 
 async def test_a_build_on_a_pynixd_builder_is_part_of_the_controller_s_trace(tmp_path: Path, traces: str) -> None:
-    """A sends the build to B over SSH, with its build phase's `traceparent`; B's trace of the build nests under it."""
+    """A sends the build to B over SSH, with its build phase's `traceparent`; B's operation nests under it."""
     key = asyncssh.generate_private_key("ssh-ed25519")
     admin_keys = anyio.Path(tmp_path / "admin_keys")
     await admin_keys.write_bytes(key.export_public_key())
@@ -184,7 +193,12 @@ async def test_a_build_on_a_pynixd_builder_is_part_of_the_controller_s_trace(tmp
 
     roots = [s for s in spans if s["operationName"] == f"build {NAME}"]
     phases = {s["spanID"] for s in spans if s["operationName"] == "build"}
-    root_b = next(s for s in roots if _parent(s) is not None)
+    [op_b] = [s for s in spans if s["operationName"] == "BuildDerivation"]
+    [op_a] = [s for s in spans if s["operationName"] == "BuildPathsWithResults"]
+    build_a = next(s for s in roots if _parent(s) == op_a["spanID"])
+    build_b = next(s for s in roots if s is not build_a)
     assert len({span["traceID"] for span in spans}) == 1
-    assert _parent(root_b) in phases, "B's trace of the build nests under A's build phase"
-    assert sum(_parent(s) is None for s in roots) == 1
+    assert _parent(op_b) in phases, "B's operation nests under A's build phase"
+    assert _parent(build_b) == op_b["spanID"]
+    assert _tags(op_b)["pynixd.transport"] == "ssh"
+    assert _parent(op_a) is None

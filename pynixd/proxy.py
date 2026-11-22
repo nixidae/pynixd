@@ -8,6 +8,7 @@ and dispatches them to request type handle() classmethods.
 from __future__ import annotations
 
 import time
+import uuid
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, cast
 
@@ -37,6 +38,11 @@ from .exceptions import (
 from .goals import GoalEngine
 from .goals.substitute_paths import ensure_path, pynixd_substitutes, substitute_paths
 from .handlers._base import HANDLER_REGISTRY
+from .handlers.add_multiple_to_store import AddMultipleToStoreHandler
+from .handlers.add_to_store import AddToStoreHandler
+from .handlers.add_to_store_nar import AddToStoreNarHandler
+from .handlers.build_derivation import BuildDerivationHandler
+from .handlers.nar_from_path import NarFromPathHandler
 from .protocol import DELEGATION_FEATURE, get_extension_features
 from .serde import (
     AddTempRootRequest,
@@ -54,6 +60,7 @@ from .serde import (
 from .serde.auth import Role
 from .serde.context import ReadContext, RequestContext as RequestContext, WriteContext
 from .serde.protocol import OptTrusted, Verbosity
+from .tracing import SessionIdentity
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
@@ -74,6 +81,18 @@ BUILDER_ONLY_OPS = frozenset({SubmitOutputRequest.op, AddToStoreScanningRequest.
 """The operations of `builder-rpc-v0`, which only a builder's own daemon serves."""
 _THIS_MACHINE = frozenset({"unix", "recursive"})
 """The transports whose client runs on this machine."""
+_TRACED_OPS = frozenset(
+    {
+        BuildPathsRequest.op,
+        BuildPathsWithResultsRequest.op,
+        BuildDerivationHandler.op,
+        AddToStoreHandler.op,
+        AddToStoreNarHandler.op,
+        AddMultipleToStoreHandler.op,
+        NarFromPathHandler.op,
+    }
+)
+"""The operations that always get a span: builds and transfers. Any other gets one when slow or failed."""
 
 
 NIX_VERSION: str = "pynixd-0.1.0"
@@ -115,6 +134,17 @@ class DaemonProxy:
         """What a handler of this client's operations reads, built once after the handshake."""
         return RequestContext(proxy=self, role=self.role, version=self.version, username=self.username)
 
+    @cached_property
+    def identity(self) -> SessionIdentity:
+        """Who this session is, for its operation spans. Built at the first operation, after the handshake."""
+        return SessionIdentity(
+            session=uuid.uuid4().hex[:16],
+            user=self.username,
+            role=self.role.name.lower(),
+            transport=self.transport,
+            pid=self.pid,
+        )
+
     @property
     def repairs_adds(self) -> bool:
         """Whether each add op of the session repairs its path, whatever the client asks."""
@@ -146,6 +176,8 @@ class DaemonProxy:
         state` reads it to say what each client waits on. Issue #92."""
         self.w = client_w
         self.client = ClientConn(w=self.w)
+        self._client_traceparent = ""
+        """What the client sent under `open-telemetry`. `client.traceparent` is the operation span's, when it has one."""
         self.ctx = ctx
         self.version: int = wire.PROTOCOL_VERSION
         self.standard_features: frozenset[str] = frozenset()
@@ -461,7 +493,7 @@ class DaemonProxy:
             await self.w.drain()
             if wire.FEATURE_OPEN_TELEMETRY in self.standard_features:
                 # `processConnection` (`daemon.cc:1175` of Determinate v3.24.0), before the CPU affinity.
-                self.client.traceparent = await self.r.read_string()
+                self._client_traceparent = await self.r.read_string()
 
         if await self.r.read_uint64():  # sendCpu
             await self.r.read_uint64()  # cpuAffinity (ignored)
@@ -498,7 +530,7 @@ class DaemonProxy:
                 op_num = await self.r.read_uint64()
                 if wire.FEATURE_OPEN_TELEMETRY in self.standard_features:
                     # Before the op is known (`daemon.cc:1225` of Determinate v3.24.0): an unknown op reads it too.
-                    self.client.traceparent = await self.r.read_string()
+                    self._client_traceparent = await self.r.read_string()
             except (EOFError, *ssh_connection_lost()):
                 break
 
@@ -513,7 +545,13 @@ class DaemonProxy:
 
             t0 = time.monotonic()
             self.current_op = (op_name, t0)
+            op_trace = self.ctx.tracing.op(
+                op_name, self.identity, self._client_traceparent, always=op_num in _TRACED_OPS
+            )
+            # The builds the operation enqueues and the backend it calls nest under its span.
+            self.client.traceparent = op_trace.traceparent() or self._client_traceparent
             result = "ok"
+            error: str | None = None
             responding = False
             try:
                 response = await self.dispatch(op_num)
@@ -529,12 +567,14 @@ class DaemonProxy:
 
             except ClosingError as ex:
                 result = "error"
+                error = str(ex)
                 log.info("handle_op_closing", name=op_name, reason=str(ex))
                 await self.client.flush()
                 await self.send_error(str(ex))
                 break
             except Exception as ex:
                 result = "error"
+                error = error_text(ex)
                 log.exception("handle_op_error", name=op_name)
                 await self.client.flush()
                 await self.send_error(error_text(ex), traces=error_traces(ex))
@@ -543,6 +583,7 @@ class DaemonProxy:
                     # session (`daemon.cc:1218`, `:1232`). nixidae/nixidae#1212.
                     break
             finally:
+                op_trace.ended(error)
                 self.current_op = None
                 elapsed = time.monotonic() - t0
                 count, acc = self._op_timing.get(op_num, (0, 0.0))

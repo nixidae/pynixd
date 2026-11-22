@@ -9,11 +9,18 @@ One build is one trace: a root span from enqueue to its answer, a `wait` span fo
 each reason it waits, an `attempt` span for each store it runs on, and the phases
 of an attempt under it. OpenTelemetry sends a span only when it ends, so a build
 that hangs shows its last finished wait or phase, not the root.
+
+A client operation is a span too, with the session's `SessionIdentity`. A build or
+transfer operation always gets one, started with the operation, and the builds it
+enqueues are its children. Any other operation gets one only when it ends slower
+than `tracing.slow_op_seconds` or with an error: a session sends thousands of
+queries, and each span costs the loop about 35 us.
 """
 
 from __future__ import annotations
 
 import contextlib
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -45,6 +52,46 @@ class Ending(StrEnum):
     """pynixd stopped with the build still open."""
 
 
+@dataclass(frozen=True, slots=True)
+class SessionIdentity:
+    """Who a client session is. Each operation span of the session carries it."""
+
+    session: str
+    """Unique to the session, across restarts and hosts."""
+    user: str
+    role: str
+    transport: str
+    pid: int | None
+    """The client's process, where the transport knows it."""
+
+    def attributes(self) -> dict[str, AttributeValue]:
+        attributes: dict[str, AttributeValue] = {
+            "pynixd.session": self.session,
+            "pynixd.user": self.user,
+            "pynixd.role": self.role,
+            "pynixd.transport": self.transport,
+        }
+        if self.pid is not None:
+            attributes["pynixd.client_pid"] = self.pid
+        return attributes
+
+
+class OpTrace:
+    """One client operation. This one records nothing."""
+
+    __slots__ = ()
+
+    def traceparent(self) -> str:
+        """The W3C `traceparent` of the operation's span, for what it starts; empty when it has none yet."""
+        return ""
+
+    def ended(self, error: str | None = None) -> None:
+        """The operation answered, with *error* when it failed."""
+
+
+NO_OP_TRACE = OpTrace()
+
+
 class BuildTrace:
     """What happens to one build. This one records nothing."""
 
@@ -74,6 +121,9 @@ class BuildTrace:
         """The W3C `traceparent` of the innermost open span, for the store that builds; empty when none."""
         return ""
 
+    def joined(self, parent: str) -> None:
+        """Another request joined the build; *parent* is the `traceparent` of the client that sent it."""
+
     def attempt_ended(self, ending: Ending, reason: str | None = None) -> None:
         """The running attempt ended; the build itself goes on or ends next."""
 
@@ -99,6 +149,14 @@ class Tracing:
         """The trace of *build*, under *parent*, the `traceparent` of the client that asked for it."""
         del build, parent
         return NO_TRACE
+
+    def op(self, name: str, identity: SessionIdentity, parent: str = "", *, always: bool = False) -> OpTrace:
+        """The trace of operation *name* of *identity*'s session, under the client's *parent*.
+
+        *always* traces it from its start; otherwise only an operation that ends slow or failed is traced.
+        """
+        del name, identity, parent, always
+        return NO_OP_TRACE
 
     def close(self) -> None:
         """End the open traces and send what is left. Blocks: run it in a thread."""

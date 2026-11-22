@@ -27,7 +27,7 @@ from pynixd.serde import (
     BuildResultStatus,
     StorePath,
 )
-from pynixd.tracing import NO_TRACE, NO_TRACING, Ending, Phase
+from pynixd.tracing import NO_OP_TRACE, NO_TRACE, NO_TRACING, Ending, Phase, SessionIdentity
 from pynixd.tracing_otel import OtelTracing
 from tests._conftest.placement import FakeStore, FixedRanking, Spawned, fake_placer
 
@@ -244,3 +244,67 @@ async def test_tracing_is_off_by_default() -> None:
     build_id, _ = await queue.enqueue(_request("1"))
     assert queue.tracing is NO_TRACING
     assert queue.by_id[build_id].trace is NO_TRACE
+    assert NO_TRACING.op("BuildPaths", IDENTITY, always=True) is NO_OP_TRACE
+
+
+IDENTITY = SessionIdentity(session="5e5510n", user="alice", role="user", transport="ssh", pid=None)
+
+
+async def _ops(settings: TracingSettings) -> tuple[OtelTracing, InMemorySpanExporter]:
+    exporter = InMemorySpanExporter()
+    tracing = await anyio.to_thread.run_sync(lambda: OtelTracing.start(settings, exporter))
+    return tracing, exporter
+
+
+async def test_a_build_operation_is_a_span_of_the_session_under_the_client_s_trace() -> None:
+    tracing, exporter = await _ops(TracingSettings())
+    op = tracing.op("BuildPathsWithResults", IDENTITY, CLIENT_TRACEPARENT, always=True)
+    sent = op.traceparent()
+    op.ended()
+    await anyio.to_thread.run_sync(tracing.close)
+
+    [span] = exporter.get_finished_spans()
+    assert span.name == "BuildPathsWithResults"
+    assert span.attributes == {
+        "pynixd.session": "5e5510n",
+        "pynixd.user": "alice",
+        "pynixd.role": "user",
+        "pynixd.transport": "ssh",
+    }
+    assert span.parent is not None
+    assert f"{span.parent.span_id:016x}" == "b7ad6b7169203331"
+    assert span.context is not None
+    assert sent.split("-")[2] == f"{span.context.span_id:016x}", "what the operation starts nests under its span"
+
+
+async def test_another_operation_is_a_span_only_when_slow_or_failed() -> None:
+    tracing, exporter = await _ops(TracingSettings(slow_op_seconds=0.05))
+    fast = tracing.op("IsValidPath", IDENTITY, CLIENT_TRACEPARENT)
+    assert fast.traceparent() == "", "the builds it starts nest under the client's own span"
+    fast.ended()
+    tracing.op("QueryPathInfo", IDENTITY).ended("path is not valid")
+    slow = tracing.op("QueryMissing", IDENTITY, CLIENT_TRACEPARENT)
+    started = time.time_ns()
+    await anyio.sleep(0.06)
+    slow.ended()
+    await anyio.to_thread.run_sync(tracing.close)
+
+    by_name = {span.name: span for span in exporter.get_finished_spans()}
+    assert set(by_name) == {"QueryPathInfo", "QueryMissing"}
+    assert by_name["QueryPathInfo"].status.status_code == StatusCode.ERROR
+    missing = by_name["QueryMissing"]
+    assert missing.start_time is not None
+    assert missing.start_time <= started, "the span starts with the operation, not when it turned slow"
+    assert missing.parent is not None
+    assert f"{missing.parent.span_id:016x}" == "b7ad6b7169203331"
+
+
+async def test_a_request_that_joins_a_build_links_to_it(traced: Traced) -> None:
+    joiner = cast("ClientConn", Asker())
+    build_id, _ = await traced.queue.enqueue(_request("1"))
+    await traced.queue.enqueue(_request("1"), askers=[joiner])
+    await traced.queue.fail(build_id, "x")
+
+    root = _one(await traced.spans(), "build 1")
+    [link] = root.links
+    assert f"{link.context.span_id:016x}" == "b7ad6b7169203331"

@@ -262,6 +262,9 @@ class TracingSettings(BaseModel):
     shutdown_timeout: float = Field(default=5.0, ge=0)
     """Seconds pynixd waits at exit for the last spans to go out. A dead endpoint delays exit by no more."""
 
+    slow_op_seconds: float = Field(default=1.0, ge=0)
+    """A client operation other than a build or a transfer becomes a span when it takes this long, or fails."""
+
 
 class PressureSettings(BaseModel):
     """How the pressure of a builder moves its build limit. Issue #98.

@@ -1010,9 +1010,11 @@ class Server:
             )
 
         await anyio.to_thread.run_sync(preload)
-        if s.tracing.endpoint is not None and self.ctx.scheduler:
+        if s.tracing.endpoint is not None:
             self._tracing = await anyio.to_thread.run_sync(lambda: _optional.tracing_otel.OtelTracing.start(s.tracing))
-            self.ctx.scheduler.queue.tracing = self._tracing
+            self.ctx.tracing = self._tracing
+            if self.ctx.scheduler:
+                self.ctx.scheduler.queue.tracing = self._tracing
 
         await self._background.start(self._host_store, local_store, False, None, True)
 
