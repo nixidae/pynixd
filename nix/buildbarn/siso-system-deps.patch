@@ -1,0 +1,25 @@
+A remote step whose rule sets use_system_input reads files outside the
+workspace that the worker holds itself (Nix store paths). Its depfile names
+them with absolute paths: Chromium compiles with -MD, which lists system
+headers and clang's resource files. checkDeps refused every such dep for a
+relocatable request, so the first remote compile of Chromium's //base failed
+("absolute path in deps .../resource-root/share/cfi_ignorelist.txt").
+Treat an absolute dep outside the workspace as a system dep for such a rule,
+as checkDeps already does for a step that is not relocatable.
+
+--- a/build/deps.go
++++ b/build/deps.go
+@@ -300,7 +300,12 @@
+ 		relDep := dep
+ 		// remote relocatableReq should not have absolute path dep.
+ 		if filepath.IsAbs(dep) {
+-			if relocatableReq {
++			// A use_system_input rule reads files outside the workspace
++			// that the worker holds: such a dep is a system dep, as it is
++			// for a step that is not relocatable.
++			wsRel, wsErr := filepath.Rel(b.path.WorkspaceRoot, dep)
++			system := step.cmd.UseSystemInput && (wsErr != nil || !filepath.IsLocal(wsRel))
++			if relocatableReq && !system {
+ 				clog.Warningf(ctx, "check deps: abs path in deps %s: platform=%v", dep, platform)
+ 				if platform != nil {
+ 					return fmt.Errorf("absolute path in deps %q of %q: use input_root_absolute_path=true for %q (siso config: %s): %w", dep, step, step.cmd.Outputs[0], step.def.RuleName(), errNotRelocatable)

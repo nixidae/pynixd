@@ -4,6 +4,8 @@
 # nix-remote.env (lib.buildbarn.remoteCompile), and Siso's `remote_wrapper`
 # loads it. The source compiles only with a define that exists nowhere but in
 # that environment, and includes a system header and a two-step header chain.
+# `-MD`, as Chromium: the depfile names the system headers by absolute store
+# path, which Siso accepts only with siso-system-deps.patch.
 set -euo pipefail
 export PATH="$coreutils/bin"
 export HOME="$TMPDIR"
@@ -53,7 +55,7 @@ EOF
 
 cat > "$root/out/x/build.ninja" <<EOF
 rule cxx
-  command = $cc/bin/c++ -MMD -MF \${out}.d -c \${in} -o \${out}
+  command = $cc/bin/c++ -MD -MF \${out}.d -c \${in} -o \${out}
   deps = gcc
   depfile = \${out}.d
 build obj/hello.o: cxx ../../src/hello.cc

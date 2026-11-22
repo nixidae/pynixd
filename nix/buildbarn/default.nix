@@ -119,6 +119,7 @@ in
       sparseCheckout = [ "siso" ];
     };
     sourceRoot = "chromium-build/siso";
+    patches = [ ./siso-system-deps.patch ];
     vendorHash = "sha256-Usuf6Fy7iegHergmOwIOQx7YrDvWJEzQWsKshJePNaM=";
     subPackages = [ "." ];
     meta = {
