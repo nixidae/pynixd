@@ -47,7 +47,7 @@ async def _trace_of(url: str, service: str) -> list[dict[str, Any]]:  # Any: Jae
     """The spans of the one trace of *service*, once its root span arrived."""
     # A search without a time range returned nothing on sg1's VictoriaTraces, with the trace in the store.
     now_us = time.time_ns() // 1000
-    window = {"service": service, "start": now_us - 3600 * 10**6, "end": now_us + 3600 * 10**6}
+    window: dict[str, str | int] = {"service": service, "start": now_us - 3600 * 10**6, "end": now_us + 3600 * 10**6}
     async with httpx.AsyncClient(base_url=url, timeout=5) as client:
         # Nothing tells a reader that a span is searchable, so this asks until it is.
         with anyio.fail_after(30):
