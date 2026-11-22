@@ -62,6 +62,7 @@ async def test_session_uses_configured_schedule_mode(monkeypatch: pytest.MonkeyP
     await initiator._handle_request(process)  # type: ignore[arg-type] # noqa: SLF001
 
     assert seen["schedule_mode"] is mode
+    assert seen["transport"] == "reverse", "the sessions metric and each operation span name the listener"
     assert process.exit_code == 0
 
 

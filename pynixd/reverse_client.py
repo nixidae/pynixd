@@ -257,6 +257,7 @@ class ReverseInitiator:
                 role=Role.ADMIN,
                 username="reverse-initiator",
                 schedule_mode=self._settings.schedule_mode,
+                transport="reverse",
                 hangup=ssh_hangup(process),
             )
             await proxy.run()
