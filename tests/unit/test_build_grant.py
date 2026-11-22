@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -12,7 +13,10 @@ from nix_daemon_protocol.add_multiple_to_store import path_info_version
 from nix_daemon_protocol.add_to_store_nar import AddToStoreNarRequest
 from nix_daemon_protocol.build_derivation import BuildDerivationRequest
 from nix_daemon_protocol.constants import PROTOCOL_VERSION
+from nix_daemon_protocol.content_address import ContentAddress
 from nix_daemon_protocol.ids import StoreId
+from nix_daemon_protocol.store_path import StorePath
+from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from pynixd.build_grant import BuildGrant
 from pynixd.config import PynixdSettings
 from pynixd.connection import Connection
@@ -24,6 +28,8 @@ from pynixd.serde.auth import Role
 from pynixd.serde.context import ReadContext, WriteContext
 from pynixd.ssh_server import start_ssh_server
 from pynixd.wire import BytesReader, BytesWriter, FramedReader, SSHNixReader, SSHNixWriter
+from pynixd_store.content_address import ContentAddress as StoreContentAddress, content_addressed_path
+from pynixd_store.utils import nix32_encode
 from tests.functional.mock_store import MockStore
 from tests.unit.test_untrusted_repair import PATH, Upstream, _info
 
@@ -89,6 +95,29 @@ async def test_a_stream_with_another_path_is_refused_before_its_nar() -> None:
             yielded.append(path)
 
     assert yielded == []
+
+
+def _text_addressed(name: str, references: frozenset[str] = frozenset()) -> ValidPathInfo:
+    """A text-addressed path, as `nix-store --add` in a recursive build makes one, and its info."""
+    ca = f"text:sha256:{nix32_encode(hashlib.sha256(name.encode()).digest())}"
+    path = content_addressed_path(StoreContentAddress.parse(ca), name, references, "/nix/store")
+    info = _info().info.model_copy(update={"ca": ContentAddress(ca), "references": set(map(StorePath, references))})
+    return ValidPathInfo(path=StorePath(path), info=info)
+
+
+def test_a_grant_admits_a_path_its_content_address_names() -> None:
+    GRANT.check_add(_text_addressed("added"))
+    GRANT.check_add(_text_addressed("refers", frozenset({OUTPUT})))
+
+
+def test_a_grant_refuses_an_address_that_names_another_path() -> None:
+    # The files may match the address, and the name still claims a path the address does not give.
+    claimed = _text_addressed("added").model_copy(update={"path": PATH})
+    with pytest.raises(ClosingError, match="not content-addressed"):
+        GRANT.check_add(claimed)
+    malformed = claimed.model_copy(update={"info": claimed.info.model_copy(update={"ca": ContentAddress("x:y")})})
+    with pytest.raises(ClosingError, match="not content-addressed"):
+        GRANT.check_add(malformed)
 
 
 @pytest.mark.anyio

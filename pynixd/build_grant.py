@@ -21,6 +21,9 @@ from nix_daemon_protocol.query_path_info import QueryPathInfoRequest
 from nix_daemon_protocol.query_path_infos import QueryPathInfosRequest
 from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest
 from nix_daemon_protocol.set_options import SetOptionsRequest
+from nix_daemon_protocol.store_dir import store_dir
+from nix_daemon_protocol.valid_path_info import ValidPathInfo
+from pynixd_store.content_address import is_content_addressed
 
 from .daemon_extensions.query_closure import QueryClosureRequest
 from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
@@ -56,9 +59,24 @@ class BuildGrant:
             # Before `startWork`: the pod's session ends, as Nix ends one for an op it refuses.
             raise ClosingError(f"a build pod for {self.drv_path} may not run operation {op_num}")
 
-    def check_add(self, path: str) -> None:
-        if path not in self.outputs:
-            raise ClosingError(f"a build pod for {self.drv_path} may not add {path}: it is not an output")
+    def check_add(self, info: ValidPathInfo) -> None:
+        """An output, or a path its content address names: what a recursive build added, which an output refers to.
+
+        A content-addressed path vouches for itself, as for any untrusted client (`pathInfoIsUntrusted`,
+        `local-store.cc:1048`). The check is here because the session skips signatures for the whole add: the
+        store then checks the files against the address, and this checks the address against the name.
+        """
+        path = str(info.path)
+        if path in self.outputs:
+            return
+        try:
+            named = is_content_addressed(path, str(info.info.ca or ""), map(str, info.info.references), store_dir())
+        except ValueError:
+            named = False
+        if not named:
+            raise ClosingError(
+                f"a build pod for {self.drv_path} may not add {path}: it is not an output, and not content-addressed"
+            )
 
 
 @dataclass(slots=True)

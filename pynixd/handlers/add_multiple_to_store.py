@@ -100,7 +100,7 @@ async def _paths(
     features: frozenset[str],
     seen: dict[str, UnkeyedValidPathInfo] | None = None,
     pull: Callable[[Iterable[StorePath], Container[str]], Awaitable[None]] | None = None,
-    permit: Callable[[str], None] | None = None,
+    permit: Callable[[ValidPathInfo], None] | None = None,
 ) -> AsyncGenerator[tuple[ValidPathInfo, Source]]:
     """The paths of a client's AddMultipleToStore stream, each NAR `Bounded`.
 
@@ -114,7 +114,7 @@ async def _paths(
     for _ in range(count):
         info = await ValidPathInfo.from_reader(ReadContext(reader=frames, version=version, features=features))
         if permit is not None:
-            permit(str(info.path))
+            permit(info)
         done.add(str(info.path))
         if pull is not None:
             await pull(info.info.references, done)

@@ -42,8 +42,8 @@ class AddToStoreNarHandler(Handler):
         # `daemon.cc:938-941`. The connection is root's, so this is pynixd's to do.
         grant = ctx.proxy.grant
         if grant is not None:
-            grant.check_add(str(req.info.path))
-            # The output of the build central asked for: nobody signed it, and central trusts it as built.
+            grant.check_add(req.info)
+            # An output of the build central asked for, which central trusts as built, or a content-addressed path.
             req = req.model_copy(update={"dont_check_sigs": 1})
         elif ctx.role < Role.ADMIN:
             req = req.model_copy(
