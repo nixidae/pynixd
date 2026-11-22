@@ -231,10 +231,19 @@ class SystemHealth:
 
     @property
     def memory_full(self) -> float | None:
-        """PSI `memory` `full` `avg10` where the builds run: their cgroup's, else the host's."""
-        if self.build_memory is not None and self.build_memory.pressure is not None:
-            return self.build_memory.pressure.full_avg10
-        return self.psi.memory.full_avg10 if self.psi is not None else None
+        """PSI `memory` `full` `avg10`: the larger of the builds' cgroup's and the host's.
+
+        Builds stall in their cap while the host is calm, and they stall too when other cgroups starve the host.
+        """
+        figures = [
+            metric.full_avg10
+            for metric in (
+                self.build_memory.pressure if self.build_memory is not None else None,
+                self.psi.memory if self.psi is not None else None,
+            )
+            if metric is not None
+        ]
+        return max(figures, default=None)
 
 
 def parse_loadavg(text: str) -> float:

@@ -13,8 +13,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from nix_daemon_protocol.ids import LOCAL_STORE_ID
 from pynixd.allocator import memory_room
-from pynixd.config import PressureSettings
+from pynixd.config import PressureSettings, PynixdSettings
 from pynixd.daemon_extensions.pynixd_host_health import HEALTH_JSON
 from pynixd.monitor import GenericResourcePoller, cgroup_memory
 from pynixd.pressure import BuildLimit, LimitReason
@@ -128,12 +129,42 @@ def test_a_cap_full_of_cache_lets_the_limit_rise() -> None:
     assert (limit.limit, limit.reason) == (32, LimitReason.slow_start)
 
 
+def test_a_thrashing_host_lowers_the_limit_of_an_idle_cap() -> None:
+    """Pods outside the build cgroup can starve the host; the builds stall all the same."""
+    limit = _limit()
+    limit.observe(_sg1(None), running=0, now=0.0)
+
+    idle = CgroupMemory(limit_bytes=20 * GIB, available_bytes=18 * GIB, pressure=PsiMetric())
+    starved = SystemHealth(
+        psi=PsiSnapshot(memory=PsiMetric(full_avg10=30.0)),
+        meminfo=MemInfo(mem_total=125 * 1024 * 1024, mem_available=2 * 1024 * 1024),
+        cores=48.0,
+        build_memory=idle,
+    )
+    limit.observe(starved, running=8, now=10.0)
+
+    assert (limit.limit, limit.reason) == (4, LimitReason.memory_pressure)
+
+
 def test_placement_sizes_builds_to_the_cap() -> None:
     """`choose_cores` reads this room: the host's 57 GB would give a build far more cores than the cap holds."""
     capped = CgroupMemory(limit_bytes=20 * GIB, available_bytes=3 * GIB)
     store = SimpleNamespace(monitor=SimpleNamespace(health=_sg1(capped)))
 
     assert memory_room(store, reserved_bytes=1 * GIB) == 2 * GIB  # type: ignore[arg-type]  # reads the monitor alone
+
+
+@pytest.mark.parametrize("declared", [True, False], ids=["declared-local", "implicit-local"])
+def test_the_module_s_setting_reaches_the_local_store(declared: bool) -> None:
+    """sg1's settings as its NixOS module renders them: a top-level `pressure`, and `stores.local` without one."""
+    rendered: dict[str, object] = {"unix_path": None, "pressure": {"build_cgroup": str(UNIT)}}
+    if declared:
+        rendered["stores"] = {"local": {"type": "local-socket", "monitor": False, "gc_target_usage": 0.5}}
+
+    client = PynixdSettings.model_validate(rendered).to_stores()[LOCAL_STORE_ID].daemon_client
+
+    assert client is not None
+    assert client.build_memory_sampler() is not None
 
 
 def test_a_peer_sends_the_build_cgroup() -> None:
