@@ -52,6 +52,10 @@ dependencies = [
     "httpx",
     # Imported for its load, which httpx defers to the event loop (`provisioning/kubernetes.py`).
     "httpcore",
+    # Build-life spans over OTLP/HTTP, when `tracing.endpoint` is set (nixidae/nixidae#1570).
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp-proto-http",
 ]
 
 [project.optional-dependencies]

@@ -23,6 +23,9 @@
   kr8s,
   httpx,
   httpcore,
+  opentelemetry-api,
+  opentelemetry-sdk,
+  opentelemetry-exporter-otlp-proto-http,
   structlog,
   pydantic,
   pydantic-settings,
@@ -91,6 +94,9 @@ pythonBuilder (finalAttrs: {
     kr8s
     httpx
     httpcore
+    opentelemetry-api
+    opentelemetry-sdk
+    opentelemetry-exporter-otlp-proto-http
     nix-daemon-protocol
     pynixd-store
   ];

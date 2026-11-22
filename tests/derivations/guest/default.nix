@@ -220,6 +220,8 @@ vivariumLib.mkTest (
         # The server of the PostgreSQL store tests (`tests/_conftest/postgres.py`). Not on the
         # system PATH: `initdb` finds `share/postgresql` beside its own binary, and the profile links no `share/postgresql`.
         POSTGRES_BIN = "${pkgs.postgresql}/bin";
+        # The trace backend of `tests/_conftest/victoriatraces.py` (nixidae/nixidae#1570).
+        VICTORIATRACES_BIN = lib.getExe pkgs.victoriatraces;
         # Without it a failure names `/tmp/pynixd-logs/...`, which dies
         # with the guest.
         PYNIXD_TEST_LOG_DIR = "/artifacts/${name}-logs";

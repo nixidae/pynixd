@@ -238,6 +238,31 @@ class PlacementTraceSettings(BaseModel):
     """Decisions held for the next flush. Past it, new decisions are dropped and counted."""
 
 
+class TracingSettings(BaseModel):
+    """OpenTelemetry spans of each build's life, sent over OTLP/HTTP. nixidae/nixidae#1570."""
+
+    endpoint: str | None = None
+    """The OTLP/HTTP traces URL, such as VictoriaTraces' `http://host:10428/insert/opentelemetry/v1/traces`.
+    `None` sends nothing and starts no exporter."""
+
+    bearer_token_file: Path | None = None
+    """A file that holds a bearer token, sent as `Authorization: Bearer <token>`. Read once, at start."""
+
+    service_name: str = "pynixd"
+
+    queue_size: int = Field(default=2048, ge=1)
+    """Ended spans the exporter's thread holds. Past it, new spans are dropped."""
+
+    schedule_delay: float = Field(default=5.0, gt=0)
+    """Seconds between two exports, unless a full batch goes first."""
+
+    export_timeout: float = Field(default=10.0, gt=0)
+    """Seconds one export request may take."""
+
+    shutdown_timeout: float = Field(default=5.0, ge=0)
+    """Seconds pynixd waits at exit for the last spans to go out. A dead endpoint delays exit by no more."""
+
+
 class PressureSettings(BaseModel):
     """How the pressure of a builder moves its build limit. Issue #98.
 
@@ -1887,6 +1912,7 @@ class PynixdSettings(BaseSettings):
     schedule_mode: ScheduleMode = ScheduleMode.auto
     ranking: StoreRankingSettings = Field(default_factory=StoreRankingSettings)
     placement_trace: PlacementTraceSettings = Field(default_factory=PlacementTraceSettings)
+    tracing: TracingSettings = Field(default_factory=TracingSettings)
 
     # Substitution scheduling
     substitution_cache_maxsize: int = 100_000

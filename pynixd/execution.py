@@ -47,6 +47,7 @@ from .serde import (
 )
 from .store.base import get_current_system
 from .system_features import effective_required_features
+from .tracing import Phase
 from .trust import warning_text
 from .wire import FEATURE_ADD_TEMP_ROOTS
 
@@ -627,7 +628,8 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
                 settings = capped(settings, build.cores_cap)
                 roots = other.engine.temp_roots()
                 try:
-                    await self.send_inputs(build, other, roots)
+                    with build.trace.phase(Phase.INPUTS):
+                        await self.send_inputs(build, other, roots)
                     await self.build_in_sandbox(build, store, other, settings, roots)
                 finally:
                     with anyio.CancelScope(shield=True), anyio.move_on_after(_ROOTS_CLOSE_SECONDS):
@@ -644,10 +646,12 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
                         cores=ran_with(build, store),
                     )
                     inputs_started = time.monotonic()
-                    observation.inputs_bytes = await self.prepare_build(build, store, conn)
+                    with build.trace.phase(Phase.INPUTS):
+                        observation.inputs_bytes = await self.prepare_build(build, store, conn)
                     observation.inputs_ms = ms_since(inputs_started)
                     await say_where_it_builds(build, store)
-                    build_resp = await self._execute(build, store, conn)
+                    with build.trace.phase(Phase.BUILD):
+                        build_resp = await self._execute(build, store, conn)
                     await self._record_kill(build, build_resp)
                     if build.started_at is not None:
                         observation.build_ms = ms_since(build.started_at)
@@ -680,7 +684,8 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
                     # The error it got named the missing path, never the copy
                     # that failed. Issue #12.
                     try:
-                        await self.collect_outputs(build, store, build_resp)
+                        with build.trace.phase(Phase.OUTPUTS):
+                            await self.collect_outputs(build, store, build_resp)
                     except Exception as e:
                         log.exception("output_pull_failed", build_id=build.build_id, store_id=store.store_id)
                         reason = f"built on {store.store_id}, but pynixd could not collect the outputs: {e}"
@@ -755,7 +760,8 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
 
         verbosity = build.options.verbosity if build.options is not None else Verbosity.INFO
         try:
-            resp = without_error_prefix(await local.build_here(build.request, settings, keep, verbosity))
+            with build.trace.phase(Phase.BUILD):
+                resp = without_error_prefix(await local.build_here(build.request, settings, keep, verbosity))
         except Exception as e:
             # pynixd's own builder raised: a bug, or this machine (a full disk). Either way not a
             # lost connection, so the same store gets no second try; another store may.
@@ -769,9 +775,10 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
             try:
                 # Until the pull ends, as `_hold_outputs` holds them on a builder.
                 await _hold(roots, output_paths(build, resp), local.store_id)
-                await self.stream(
-                    local, self.local, output_paths(build, resp), peer_store_id=store.store_id, direction="in"
-                )
+                with build.trace.phase(Phase.OUTPUTS):
+                    await self.stream(
+                        local, self.local, output_paths(build, resp), peer_store_id=store.store_id, direction="in"
+                    )
             except Exception as e:
                 log.exception("output_pull_failed", build_id=build.build_id, store_id=store.store_id)
                 reason = f"built on {store.store_id}, but pynixd could not collect the outputs: {e}"
@@ -1018,6 +1025,10 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         were too many.
         """
         used = resp.result.resources
+        if used.killed_cores:
+            build.trace.event(
+                "oom_kill", {"pynixd.cores": used.killed_cores, "pynixd.peak_memory_bytes": used.killed_peak_bytes}
+            )
         here, observation = self.here, build.observation
         if not used.killed_cores or here is None or observation is None:
             return

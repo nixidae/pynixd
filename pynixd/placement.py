@@ -500,6 +500,8 @@ class Placer[S: PlacedStore]:
         try:
             return await self._place(build, running_builds, assigned_this_pass, reserved, notes)
         finally:
+            if notes.outcome is Outcome.WAITING:
+                build.trace.waiting(notes.reason or "waiting")
             if notes.outcome is not None:
                 self._trace_decision(build, notes, running_builds, assigned_this_pass)
 
@@ -689,6 +691,13 @@ class Placer[S: PlacedStore]:
                 min((c for c in (build.cores_ceiling, rs.store.build_cores) if c), default=None),
             )
             build.cores_cap, build.expected_peak_bytes = choice.cores, choice.peak_bytes
+            build.trace.assigned(
+                str(rs.store_id),
+                attempt=build.retries,
+                cores=choice.cores,
+                expected_peak_bytes=choice.peak_bytes,
+                reason=notes.reason,
+            )
             self.spawn(build, rs.store)
             assigned_this_pass[rs.store_id] = assigned_this_pass.get(rs.store_id, 0) + 1
             if build.expected_peak_bytes:

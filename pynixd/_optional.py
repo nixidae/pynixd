@@ -28,9 +28,10 @@ if TYPE_CHECKING:
         reverse_client as reverse_client,
         reverse_server as reverse_server,
         ssh_server as ssh_server,
+        tracing_otel as tracing_otel,
     )
 
-MODULES = frozenset({"http_server", "reverse_client", "reverse_server", "ssh_server"})
+MODULES = frozenset({"http_server", "reverse_client", "reverse_server", "ssh_server", "tracing_otel"})
 """The submodules of `pynixd` that this module resolves. Nothing else."""
 
 

@@ -21,6 +21,7 @@ from .exceptions import DelegationLoopError
 from .serde import BuildDerivationResponse, BuildMode, BuildResult, BuildResultStatus, LogNext
 from .serde.context import WriteContext
 from .state_models import QueueCounts
+from .tracing import NO_TRACE, NO_TRACING, BuildTrace, Ending, Tracing
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -155,6 +156,8 @@ class QueuedBuild:
         that is not the owner reads it for its own `max-silent-time`."""
         self.finished_at: float | None = None
         self.retries = 0
+        self.trace: BuildTrace = NO_TRACE
+        """What happens to the build, as trace spans; `BuildQueue.tracing` makes it."""
         self.cores_cap: int | None = None
         """The most cores this attempt may use, as placement chose them (nixidae/nixidae#1558). `None` leaves the
         cores to the client's options and the store."""
@@ -272,6 +275,7 @@ class QueuedBuild:
         self.retries += 1
         self.started_at = None
         self.worker = None
+        self.trace.attempt_ended(Ending.RETRIED, reason)
 
         failures = self.store_failures.get(failed_store_id, 0) + 1
         self.store_failures[failed_store_id] = max(failures, MAX_STORE_RETRIES) if elsewhere else failures
@@ -283,6 +287,7 @@ class QueuedBuild:
         self.started_at = None
         self.worker = None
         self.cores_cap = self.cores_ceiling = cores
+        self.trace.attempt_ended(Ending.RETRIED, f"again on at most {cores} cores")
 
     @property
     def wait_time(self) -> float | None:
@@ -567,6 +572,7 @@ class BuildQueue:
         # The builds each goal request holds, so one release finds them all.
         self._held: dict[RequestId, set[BuildId]] = {}
         self.lock: anyio.Lock = anyio.Lock()
+        self.tracing: Tracing = NO_TRACING
 
     def counts(self) -> QueueCounts:
         """Builds by state, from a walk of the queue.
@@ -724,6 +730,7 @@ class BuildQueue:
             build.builders = builders
             build.pools = pools
             build.askers.update(askers)
+            build.trace = self.tracing.build(build)
             if from_goal_path and goal_request_id is not None:
                 self._hold_locked(build, goal_request_id)
             if goal_request_id is None:
@@ -857,6 +864,13 @@ class BuildQueue:
                     b.answer.set(response)
                     self._note_a_request_that_gave_up(b, response.result.status)
                     log.info("build_completed", build_id=build_id)
+                    b.trace.ended(
+                        Ending.BUILT if BuildResultStatus(response.result.status).is_success else Ending.FAILED,
+                        status=int(response.result.status),
+                        error=response.result.error_msg or None,
+                        observation=b.observation,
+                        decision_id=b.placement.row_id if b.placement is not None else None,
+                    )
 
                     # Every success: a builder that held the outputs answers
                     # `ALREADY_VALID`, and nixidae/nixidae#998 counted it a failure.
@@ -911,6 +925,7 @@ class BuildQueue:
                     b.answer.set(response)
                     self._note_a_request_that_gave_up(b, response.result.status)
                     log.info("build_failed", build_id=build_id, error_msg=error_msg)
+                    b.trace.ended(Ending.FAILED, status=int(status), error=error_msg)
 
                     metrics.BUILDS_COMPLETED.labels(status="failure").inc()
 
@@ -1020,6 +1035,7 @@ class BuildQueue:
         # The reason belongs in the line, because two roads reach this
         # method: a client that disconnected, and a goal system that let go.
         log.info("build_cancelled", build_id=build.build_id, reason=log_reason or error_msg)
+        build.trace.ended(Ending.CANCELLED, error=log_reason or error_msg or None)
 
         metrics.BUILDS_COMPLETED.labels(status="failure").inc()
 

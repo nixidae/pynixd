@@ -54,6 +54,7 @@ from .state import upstream_in_flight
 from .store import LocalDBStore, LocalStore, Store, preload as preload_stores
 from .store_url import reference_key, substituter_spec
 from .tcp_listen import adopt_tcp
+from .tracing import NO_TRACING
 from .unix_server import UnixServer, bind_unix_server, serve_unix_clients
 
 if TYPE_CHECKING:
@@ -70,6 +71,7 @@ if TYPE_CHECKING:
     from .http_server import PynixdHttpServer
     from .provisioning.provider import Provider
     from .serde import BuildDerivationResponse
+    from .tracing import Tracing
 
 log = structlog.get_logger(__name__)
 
@@ -279,6 +281,7 @@ class Server:
         self.https_server: web.AppRunner | None = None
         self.https_bound_port: int | None = None
         self._http_cache: PynixdHttpServer | None = None
+        self._tracing: Tracing = NO_TRACING
         self._started = False
         self._done_event = anyio.Event()
         self._background = Background("Server")
@@ -1007,6 +1010,9 @@ class Server:
             )
 
         await anyio.to_thread.run_sync(preload)
+        if s.tracing.endpoint is not None and self.ctx.scheduler:
+            self._tracing = await anyio.to_thread.run_sync(lambda: _optional.tracing_otel.OtelTracing.start(s.tracing))
+            self.ctx.scheduler.queue.tracing = self._tracing
 
         await self._background.start(self._host_store, local_store, False, None, True)
 
@@ -1258,4 +1264,6 @@ class Server:
         # The stores' hosts are background tasks: this closes the stores too.
         await self._background.aclose()
         self.ctx._stores.clear()
+        # After the scheduler: the builds it cancelled end their spans first. `close` bounds its own wait.
+        await anyio.to_thread.run_sync(self._tracing.close)
         self._done_event.set()
