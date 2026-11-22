@@ -1163,6 +1163,8 @@ in
     pynixd-agent = agent;
     nix-daemon-protocol = daemon-protocol;
     pynixd-store = store;
+    # The seccomp profile of a build pod's sandbox container; nixkube's node DaemonSet installs it.
+    builder-seccomp = import ./nix/builder-seccomp.nix { inherit pkgs; };
     inherit (buildbarn) bb-storage bb-remote-execution siso;
   };
   lib.buildbarn = import ./nix/buildbarn/lib.nix { inherit lib; } // {
