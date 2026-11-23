@@ -457,11 +457,13 @@ class RestrictedProxy(DaemonProxy):
         results = await self.builds_at.execute(request)
         if not isinstance(results, BuildPathsWithResultsResponse):
             raise TypeError(f"BuildPathsWithResults answered {type(results).__name__}")
-        built: set[StorePath] = set()
-        for keyed in results.results:
-            if result_succeeded(keyed.result):
-                built.update(unkeyed.out_path for unkeyed in (keyed.result.built_outputs_by_name or {}).values())
-                built.update(r.out_path for r in (keyed.result.built_outputs or {}).values() if r.out_path is not None)
+        built = {
+            StorePath(str(realised.out_path)).with_store_prefix()
+            for keyed in results.results
+            if result_succeeded(keyed.result)
+            for realised in keyed.result.realised_outputs().values()
+            if realised.out_path is not None
+        }
         await stream_paths_store_to_store(self.builds_at, self.local_store, built)
         return results
 
