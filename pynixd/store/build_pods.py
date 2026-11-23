@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import contextlib
 import secrets
+import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
 import anyio
@@ -22,7 +24,19 @@ from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest, QueryV
 from nix_daemon_protocol.store_path import StorePath
 
 from ..build_grant import BuildGrant
-from ..build_job import JOB_NAME, KEY_NAME, Job, decode_response, encode
+from ..build_job import (
+    CENTRAL_SECONDS,
+    JOB_NAME,
+    KEY_NAME,
+    POD_SECONDS,
+    CentralPart,
+    Job,
+    PodPart,
+    decode_response,
+    encode,
+    read_seconds,
+    seconds_line,
+)
 from ..build_result import failure, result_succeeded
 from ..exceptions import InfrastructureError
 from ..provisioning.kubernetes import BuildPodOwner, BuildPodWatch, FarmVolume, farm_volume, template_store_paths
@@ -48,6 +62,8 @@ log = structlog.get_logger(__name__)
 
 _DELETE_SECONDS: Final = 30.0
 _SWEEP_RETRY_SECONDS: Final = 10.0
+_FIXED_WEIGHT: Final = 0.3
+"""How far one pod moves the store's fixed cost: the mean follows a cluster whose load changes."""
 _ENDED_SECONDS: Final = 60.0
 """How long the kubelet may take to write a container's end after its log ended."""
 
@@ -65,6 +81,45 @@ def farm_references(request: BuildDerivationRequest, template_paths: frozenset[s
 def farm_text(references: frozenset[str]) -> str:
     """The farm root's text: its references, one a line, so the same inputs make the same path."""
     return "".join(f"{path}\n" for path in sorted(references))
+
+
+@dataclass(slots=True)
+class PodTimes:
+    """When central saw each step of one build pod, on `time.monotonic`'s clock."""
+
+    asked: float
+    created: float | None = None
+    ran: float | None = None
+    first_line: float | None = None
+    last_line: float | None = None
+    ended: float | None = None
+    pod: dict[str, float] | None = None
+    """The pod's own seconds of each `PodPart`, from its log."""
+
+    def saw(self, line: str) -> None:
+        now = time.monotonic()
+        if self.first_line is None:
+            self.first_line = now
+        self.last_line = now
+        if (pod := read_seconds(POD_SECONDS, line)) is not None:
+            self.pod = pod
+
+    def parts(self) -> dict[CentralPart, float]:
+        """The seconds of each part central saw end."""
+        spans = {
+            CentralPart.CREATE: (self.asked, self.created),
+            CentralPart.START: (self.created, self.ran),
+            CentralPart.FIRST_LINE: (self.ran, self.first_line),
+            CentralPart.END: (self.last_line, self.ended),
+            CentralPart.TOTAL: (self.asked, self.ended),
+        }
+        return {part: end - start for part, (start, end) in spans.items() if start is not None and end is not None}
+
+    def fixed(self) -> float | None:
+        """What the pod cost beyond its build, or `None` without the pod's own seconds."""
+        if self.pod is None or self.ended is None or PodPart.BUILD.value not in self.pod:
+            return None
+        return self.ended - self.asked - self.pod[PodPart.BUILD.value]
 
 
 class PodDisrupted(InfrastructureError):
@@ -114,6 +169,15 @@ class BuildPodStore(ScheduledStore):
         self.owner = BuildPodOwner(store=str(self.store_id), run=secrets.token_hex(4))
         self.template_paths: frozenset[str] = frozenset()
         """The store paths the template names, which each farm holds; `Server` reads them when it arms the store."""
+
+    def _learn_fixed(self, times: PodTimes) -> None:
+        """Move the store's fixed cost, which the placement adds to each build here, toward this pod's."""
+        fixed = times.fixed()
+        if fixed is None:
+            return
+        old = self.setup_seconds
+        self.setup_seconds = fixed if old is None else old + _FIXED_WEIGHT * (fixed - old)
+        log.info("build_pod_fixed_seconds", store_id=self.store_id, pod=fixed, store=self.setup_seconds)
 
     async def sweep(self) -> None:
         """Delete the store's pods an earlier process left, once the API server answers.
@@ -249,8 +313,9 @@ class BuildPodStore(ScheduledStore):
         on_line: Callable[[str], Awaitable[None]],
         farm_root: str | None = None,
         depth: int = 0,
-    ) -> BuildDerivationResponse:
-        """Build *request* in a pod; `InfrastructureError` when the pod, not the build, failed.
+    ) -> tuple[BuildDerivationResponse, PodTimes]:
+        """Build *request* in a pod, and say when each step of the pod ended; `InfrastructureError` when the pod,
+        not the build, failed.
 
         *farm_root*, with the spec's `farm`, is the path the pod's `/nix` is a farm of: central holds it valid.
         *depth* is the build's in recursive Nix, which picks the pod's PriorityClass.
@@ -278,17 +343,21 @@ class BuildPodStore(ScheduledStore):
                 else None
             )
             priority = self.spec.priority_class(depth)
+            times = PodTimes(asked=time.monotonic())
             await self.kubernetes.start_build_pod(
                 self.spec.template, name, self.owner, secret, farm, priority_class=priority
             )
+            times.created = time.monotonic()
             log.info("build_pod_started", pod=name, drv=str(request.drv_path), depth=depth, priority_class=priority)
             watch = BuildPodWatch(self.spec.container)
             async with anyio.create_task_group() as watching:
                 watching.start_soon(self._watch, self.kubernetes, name, watch)
                 await watch.settled.wait()
+                times.ran = time.monotonic()
                 if watch.ran:
                     try:
                         async for line in self.kubernetes.follow_build_pod(name, self.spec.container):
+                            times.saw(line)
                             await on_line(line)
                     except ProviderError as error:
                         # The log of a pod that is preempted or deleted breaks off: how the pod ended says why.
@@ -296,6 +365,7 @@ class BuildPodStore(ScheduledStore):
                 with anyio.move_on_after(_ENDED_SECONDS):
                     await watch.ended.wait()
                 watching.cancel_scope.cancel()
+            times.ended = time.monotonic()
             ended = watch.end
             if ended is None:
                 raise InfrastructureError(f"build pod {name}: its log ended while its container ran")
@@ -303,9 +373,12 @@ class BuildPodStore(ScheduledStore):
                 fault = PodDisrupted if ended.disrupted else InfrastructureError
                 raise fault(f"build pod {name}: {ended.cause} with exit {ended.exit_code} and no result")
             try:
-                return checked_result(request, await decode_response(ended.message))
+                response = checked_result(request, await decode_response(ended.message))
             except (ValueError, EOFError) as error:
                 raise InfrastructureError(f"build pod {name}: its result does not read: {error}") from error
+            await on_line(seconds_line(CENTRAL_SECONDS, times.parts()))
+            self._learn_fixed(times)
+            return response, times
         except ProviderError as error:
             raise InfrastructureError(str(error)) from error
         finally:

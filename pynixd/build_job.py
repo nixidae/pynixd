@@ -8,6 +8,7 @@ termination message.
 from __future__ import annotations
 
 import base64
+from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
 from pydantic import BaseModel, ConfigDict
@@ -19,6 +20,8 @@ from .serde.context import ReadContext, WriteContext
 from .wire import BytesReader, BytesWriter
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from nix_daemon_protocol.wire_message import WireModel
 
 JOB_NAME: Final = "job.json"
@@ -64,6 +67,50 @@ async def decode_response(text: str) -> BuildDerivationResponse:
     return await BuildDerivationResponse.from_reader(
         ReadContext(reader=reader, version=PROTOCOL_VERSION, features=JOB_FEATURES)
     )
+
+
+class PodPart(StrEnum):
+    """A part of a build pod's fixed cost, as the pod measures it."""
+
+    PYTHON = "python"
+    """From the process's start to `build-one`'s first line: the interpreter and the imports."""
+    SERVER = "server"
+    """pynixd's server start, until its stores opened."""
+    INPUTS = "inputs"
+    """The inputs from central, with the SSH connection."""
+    BUILD = "build"
+    OUTPUTS = "outputs"
+    SHUTDOWN = "shutdown"
+
+
+class CentralPart(StrEnum):
+    """A part of a build pod's fixed cost, as central sees it."""
+
+    CREATE = "create"
+    """The pod and its Secret, until the API server took both."""
+    START = "start"
+    """Until the container ran: scheduling, the volumes, the image, the container start."""
+    FIRST_LINE = "first-line"
+    """From the container's start to its first log line."""
+    END = "end"
+    """From the last log line until central read the result: the process's end, and the kubelet's report."""
+    TOTAL = "total"
+
+
+POD_SECONDS: Final = "pynixd build-one: seconds:"
+CENTRAL_SECONDS: Final = "pynixd: build pod seconds:"
+
+
+def seconds_line[Part: StrEnum](prefix: str, parts: Mapping[Part, float]) -> str:
+    """One log line of each part's seconds, which `read_seconds` reads back."""
+    return " ".join([prefix, *(f"{part.value}={seconds:.3f}" for part, seconds in parts.items())])
+
+
+def read_seconds(prefix: str, line: str) -> dict[str, float] | None:
+    """The parts of a `seconds_line` with *prefix*, or `None` for any other line."""
+    if not line.startswith(prefix):
+        return None
+    return {name: float(seconds) for name, _, seconds in (word.partition("=") for word in line[len(prefix) :].split())}
 
 
 async def result_message(resp: BuildDerivationResponse) -> str:

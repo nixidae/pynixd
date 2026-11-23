@@ -14,6 +14,7 @@ import argparse
 import getpass
 import os
 import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -27,7 +28,7 @@ from nix_daemon_protocol.logs import LogNext
 from nix_daemon_protocol.store_path import StorePath
 from pynixd_store.builder.settings import NotBuiltHere
 
-from .build_job import JOB_NAME, KEY_NAME, Job, decode_request, result_message
+from .build_job import JOB_NAME, KEY_NAME, POD_SECONDS, Job, PodPart, decode_request, result_message, seconds_line
 from .build_result import failure, result_succeeded
 from .cli.base import load_settings, setup_logging
 from .config import LocalSocketStoreSpec, SSHSubprocessStoreSpec
@@ -58,7 +59,32 @@ async def _show(message: LogMessage) -> None:
     sys.stdout.flush()
 
 
-async def build_one(job_dir: Path, result_path: Path) -> int:
+class PodClock:
+    """The seconds of each part of the pod's work, in order (nixidae/nixidae#1560: the fixed cost, part by part)."""
+
+    def __init__(self, started: float) -> None:
+        self._last = started
+        self.parts: dict[PodPart, float] = {}
+
+    def mark(self, part: PodPart) -> None:
+        """*part* ends now."""
+        now = time.monotonic()
+        self.parts[part] = now - self._last
+        self._last = now
+
+
+def process_started() -> float:
+    """When this process started, on `time.monotonic`'s clock: Python's own clocks start after the imports.
+
+    The kernel counts a process's start in clock ticks since boot (`/proc/self/stat`, field 22), which
+    `CLOCK_BOOTTIME` also counts from.
+    """
+    after_comm = Path("/proc/self/stat").read_text().rpartition(")")[2].split()
+    started = int(after_comm[19]) / os.sysconf("SC_CLK_TCK")
+    return time.monotonic() - (time.clock_gettime(time.CLOCK_BOOTTIME) - started)
+
+
+async def build_one(job_dir: Path, result_path: Path, clock: PodClock) -> int:
     """Build the job in *job_dir*; 0 when the pod did its part, whatever the build's outcome."""
     job = Job.model_validate_json(await anyio.Path(job_dir / JOB_NAME).read_text())
     request = await decode_request(job.request)
@@ -78,6 +104,7 @@ async def build_one(job_dir: Path, result_path: Path) -> int:
         scheduler = server.ctx.scheduler
         if scheduler is not None and scheduler.stores_opened is not None:
             await scheduler.stores_opened.wait()
+        clock.mark(PodPart.SERVER)
         local = server.ctx.stores[LOCAL_STORE_ID]
         central = server.ctx.stores[CENTRAL]
         if not isinstance(local, LocalDBStore):
@@ -89,11 +116,13 @@ async def build_one(job_dir: Path, result_path: Path) -> int:
         inputs = {StorePath(path=str(p)) for p in request.derivation.input_srcs}
         moved = await stream_paths_store_to_store(central, local, inputs)
         log.info("build_one_inputs", paths=len(inputs), bytes=moved)
+        clock.mark(PodPart.INPUTS)
         build_settings = await local.local_build_settings(request, None)
         if isinstance(build_settings, NotBuiltHere):
             resp = BuildDerivationResponse(result=failure(f"pynixd build-one: {build_settings}"))
         else:
             resp = without_error_prefix(await local.build_here(request, build_settings, _show, Verbosity.INFO))
+        clock.mark(PodPart.BUILD)
         if result_succeeded(resp.result):
             outputs = {p for p in request.derivation.output_paths().values() if p != StorePath("")}
             # A floating output's path is known from the result alone.
@@ -104,6 +133,10 @@ async def build_one(job_dir: Path, result_path: Path) -> int:
             }
             moved = await stream_paths_store_to_store(local, central, outputs)
             log.info("build_one_outputs", paths=len(outputs), bytes=moved)
+        clock.mark(PodPart.OUTPUTS)
+    clock.mark(PodPart.SHUTDOWN)
+    # Central reads it from the log and tells the client; the result has no room for it.
+    await _show(LogNext(text=seconds_line(POD_SECONDS, clock.parts)))
     await anyio.Path(result_path).write_text(await result_message(resp))
     return 0
 
@@ -139,6 +172,8 @@ def _own_home(settings: PynixdSettings) -> None:
 
 
 def build_one_main(args: argparse.Namespace) -> None:
+    clock = PodClock(process_started())
+    clock.mark(PodPart.PYTHON)
     settings = load_settings()
     _own_name()
     _own_home(settings)
@@ -147,6 +182,7 @@ def build_one_main(args: argparse.Namespace) -> None:
         build_one,
         Path(args.job),
         Path(args.result),
+        clock,
         backend="asyncio",
         backend_options={"loop_factory": uvloop.new_event_loop},
     )

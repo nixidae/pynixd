@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from nix_daemon_protocol.build_derivation import BuildDerivationRequest, BuildDerivationResponse
@@ -10,7 +12,19 @@ from nix_daemon_protocol.derivation_output import DerivationOutput
 from nix_daemon_protocol.is_valid_path import IsValidPathRequest
 from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
-from pynixd.build_job import RESULT_BYTES, decode_request, decode_response, encode, result_message
+from pynixd.build_job import (
+    CENTRAL_SECONDS,
+    POD_SECONDS,
+    RESULT_BYTES,
+    CentralPart,
+    PodPart,
+    decode_request,
+    decode_response,
+    encode,
+    read_seconds,
+    result_message,
+    seconds_line,
+)
 from pynixd.build_result import failure
 from pynixd.config import BuildPodFarmSpec, BuildPodStoreSpec, KubernetesTemplateSettings
 from pynixd.exceptions import InfrastructureError
@@ -27,7 +41,8 @@ from pynixd.provisioning.kubernetes import (
     template_store_paths,
 )
 from pynixd.serde import BasicDerivation
-from pynixd.store.build_pods import BuildPodStore, checked_result, farm_references, farm_text
+from pynixd.pod_build import process_started
+from pynixd.store.build_pods import BuildPodStore, PodTimes, checked_result, farm_references, farm_text
 from pynixd.store.scheduled import ProbeState
 
 
@@ -136,6 +151,44 @@ def test_a_farm_pod_asks_nixkube_for_the_builds_path_on_each_system() -> None:
         build_pod_manifest(
             FARM_TEMPLATE, "pynixd-build-x", OWNER, FarmVolume(volume="store", root=root, systems=farm.systems)
         )
+
+
+def test_a_build_pod_says_what_each_part_of_its_fixed_cost_took() -> None:
+    pod_line = seconds_line(POD_SECONDS, {PodPart.PYTHON: 2.4, PodPart.BUILD: 1.25, PodPart.SHUTDOWN: 0.2})
+    times = PodTimes(asked=100.0, created=100.1, ran=101.5)
+
+    times.saw("building...")
+    times.first_line = 103.0
+    times.saw(pod_line)
+    times.last_line, times.ended = 107.0, 107.5
+
+    assert read_seconds(POD_SECONDS, pod_line) == {"python": 2.4, "build": 1.25, "shutdown": 0.2}
+    assert read_seconds(CENTRAL_SECONDS, pod_line) is None
+    assert times.parts() == pytest.approx(
+        {
+            CentralPart.CREATE: 0.1,
+            CentralPart.START: 1.4,
+            CentralPart.FIRST_LINE: 1.5,
+            CentralPart.END: 0.5,
+            CentralPart.TOTAL: 7.5,
+        }
+    )
+    # The cost beyond the build is what the placement adds for the store.
+    assert times.fixed() == pytest.approx(6.25)
+    assert PodTimes(asked=0.0, ended=1.0).fixed() is None
+    # The process started before this test did, and not before the machine booted.
+    assert 0 < time.monotonic() - process_started() < time.clock_gettime(time.CLOCK_BOOTTIME)
+
+
+def test_a_build_pod_store_learns_its_fixed_cost() -> None:
+    store = BuildPodStoreSpec(template="buildpod", central_host="10.0.0.1").to_store("pods")
+    times = PodTimes(asked=0.0, ended=6.0, pod={"build": 1.0})
+
+    assert store.setup_seconds is None
+    store._learn_fixed(times)  # noqa: SLF001 -- the update rule is the unit under test
+    assert store.setup_seconds == 5.0
+    store._learn_fixed(PodTimes(asked=0.0, ended=16.0, pod={"build": 1.0}))  # noqa: SLF001 -- as above
+    assert store.setup_seconds == pytest.approx(8.0)
 
 
 def test_a_build_pod_takes_the_priority_class_of_its_depth() -> None:

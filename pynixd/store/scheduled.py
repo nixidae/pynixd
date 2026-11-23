@@ -125,6 +125,9 @@ class ScheduledStore(Store):
         self.build_limit = BuildLimit(str(self.store_id), build_slots, self.pressure_settings)
         self.on_capacity: Callable[[], None] | None = None
         """Called when the build limit rises; the scheduler sets it to its trigger."""
+        self.setup_seconds: float | None = None
+        """What a build here costs beyond its own run and transfers, as measured; `None` takes
+        `ranking.remote_setup_seconds`. A build pod store learns its pods' fixed cost (`BuildPodStore`)."""
         metrics.STORE_PRESSURE.register(self)
         self.monitor: ResourceMonitor | None = None
         self.consecutive_failures: int = 0

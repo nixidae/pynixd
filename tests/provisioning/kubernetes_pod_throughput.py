@@ -32,6 +32,8 @@ REPEATS = 3
 AT_ONCE = 5
 POLL = 0.1
 POD_TIMEOUT = 300
+PARTS_LINES = {"pynixd build-one: seconds:": "pod", "pynixd: build pod seconds:": "central"}
+"""`POD_SECONDS` and `CENTRAL_SECONDS` of `pynixd/build_job.py`, which the phase cannot import."""
 
 type Pending = dict[str, Any]
 """A pod spec, as the API server takes it."""
@@ -115,18 +117,31 @@ async def closure_bytes(cp: Machine, path: str) -> int:
     return sum(int(n) for n in out.split())
 
 
+def parts(log: str) -> dict[str, float]:
+    """The seconds of each part of a pod's fixed cost, from the pod's and central's lines in the build log."""
+    found: dict[str, float] = {}
+    for line in log.splitlines():
+        for prefix, side in PARTS_LINES.items():
+            if prefix in line:
+                words = line.partition(prefix)[2].split()
+                found |= {f"{side} {name}": float(value) for name, _, value in (w.partition("=") for w in words)}
+    return found
+
+
 async def inputs(cp: Machine, settings: Mapping[str, str], run: str) -> dict[str, dict[str, Any]]:
     sizes = {"busybox": settings["busybox"], "python3": settings["probePython"], "pynixd": settings["benchLarge"]}
     found: dict[str, dict[str, Any]] = {}
     for label, closure in sizes.items():
         seconds = []
+        split: list[dict[str, float]] = []
         for i in range(REPEATS):
             text = expression(settings, f"{run}-{label}-{i}", closure)
             drv = store_path(await as_tester(cp, f"nix-instantiate --expr {shlex.quote(text)}"))
             started = time.monotonic()
-            await as_tester(cp, f"nix-store --realise {drv}", timeout=900)
+            log = await as_tester(cp, f"nix-store --realise {drv} 2>&1", timeout=900)
             seconds.append(time.monotonic() - started)
-        found[label] = {"bytes": await closure_bytes(cp, closure), "seconds": seconds}
+            split.append(parts(log))
+        found[label] = {"bytes": await closure_bytes(cp, closure), "seconds": seconds, "parts": split}
     return found
 
 
@@ -152,6 +167,12 @@ async def test(vms: Machines) -> None:
         print(
             f"[test] a build pod with the {label} closure ({row['bytes'] / 2**20:.0f} MiB): {summary(row['seconds'])}"
         )
+        names = sorted({name for split in row["parts"] for name in split})
+        for name in names:
+            print(f"[test]   {label}, {name}: {summary([split[name] for split in row['parts'] if name in split])}")
+    # The pod and central each say what their parts took (nixidae/nixidae#1560: the fixed cost, measured).
+    if not all({"pod build", "central total"} <= split.keys() for row in builds.values() for split in row["parts"]):
+        raise AssertionError(f"a build log lacks the pod's or central's seconds: {builds}")
 
     report = {"load before": load, "floor": floors, "inputs": builds}
     await (anyio.Path(vms.artifacts) / "pod-throughput.json").write_text(json.dumps(report, indent=2) + "\n")

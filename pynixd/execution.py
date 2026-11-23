@@ -32,6 +32,7 @@ from pynixd_store.store_path import StorePath
 from . import metrics
 from ._lazy import ssh_errors
 from .allocator import outside_the_session
+from .build_job import PodPart
 from .build_result import failure, result_succeeded
 from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from .exceptions import BackendError, BuilderGone, InfrastructureError, error_text, leaves
@@ -841,7 +842,8 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         try:
             async with contextlib.AsyncExitStack() as held:
                 farm_root = await self._farm_root(build, store, held)
-                resp = without_error_prefix(await store.build(build.request, line, farm_root, build.depth))
+                built, times = await store.build(build.request, line, farm_root, build.depth)
+                resp = without_error_prefix(built)
         except PodDisrupted as e:
             # What a Job's `podFailurePolicy` calls Ignore: a low-priority pod gives way, and no store failed.
             log.info("build_pod_disrupted", build_id=build.build_id, error=str(e))
@@ -849,7 +851,9 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
             build.reset_for_disruption()
             self.trigger()
             return
-        observation.build_ms = ms_since(build.started_at)
+        # The build alone: the store's `setup_seconds` holds the pod's fixed cost, and the ranking adds both.
+        pod_build = (times.pod or {}).get(PodPart.BUILD.value)
+        observation.build_ms = ms_since(build.started_at) if pod_build is None else int(pod_build * 1000)
         if result_succeeded(resp.result):
             outputs = output_paths(build, resp)
             valid = await self.local.execute(QueryValidPathsRequest(paths=outputs, substitute=0), client=None)
