@@ -304,9 +304,7 @@ class Provisioner:
 
     def _held(self, row: InstanceRow, now: float, machine: Machine | None) -> Held:
         store_id = store_id_of(row.id)
-        builds = sum(
-            1 for build in self._scheduler.queue.queue if build.is_building and build.assigned_store_id == store_id
-        )
+        builds = sum(1 for build in self._scheduler.queue.building if build.assigned_store_id == store_id)
         pending = row.state == PENDING
         if pending or builds:
             self._idle_since.pop(row.id, None)

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import anyio
 import pytest
 
-from nix_daemon_protocol.ids import BuildId, RequestId
+from nix_daemon_protocol.ids import BuildId, RequestId, StoreId
 from pynixd.build_queue import BuildQueue
 from pynixd.serde import (
     BasicDerivation,
@@ -358,3 +359,30 @@ async def test_a_build_is_described_by_its_derivation_name(env: dict[str, str], 
     )
     build_id, _ = await queue.enqueue(request)
     assert queue.by_id[build_id].description == described
+
+
+@pytest.mark.anyio
+async def test_the_running_builds_follow_each_worker() -> None:
+    """Placement reads `building`, not the whole queue: a scan of 9,000 queued builds per candidate held the event
+    loop for about 3 s per pass. nixidae/nixidae#1582."""
+    queue = BuildQueue()
+    ids = [
+        (await queue.enqueue(_build_request(StorePath(f"/nix/store/0000000000000000000000000000000{n}-t{n}.drv"))))[0]
+        for n in range(3)
+    ]
+    first, second, third = (queue.by_id[build_id] for build_id in ids)
+    assert not queue.building
+
+    scope = anyio.CancelScope()
+    first.worker = scope
+    second.worker = anyio.CancelScope()
+    assert queue.building == {first, second}
+
+    second.reset_for_retry(StoreId("remote"), "the builder went away")
+    assert queue.building == {first}
+    third.worker = anyio.CancelScope()
+    third.reset_for_fewer_cores(1)
+    first.worker_ended(anyio.CancelScope())
+    assert queue.building == {first}, "a stale scope ends nothing"
+    first.worker_ended(scope)
+    assert not queue.building

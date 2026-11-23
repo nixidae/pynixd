@@ -24,7 +24,7 @@ from .state_models import QueueCounts
 from .tracing import NO_TRACE, NO_TRACING, BuildTrace, Ending, Tracing
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence, Set as AbstractSet
 
     from nix_daemon_protocol.logs import LogMessage
     from pynixd_store.build_stats import BuildObservation, StoreEstimate
@@ -94,6 +94,7 @@ class QueuedBuild:
         expected_duration: int | None = None,
         scheduler_request_ids: set[RequestId] | None = None,
         options: SetOptionsRequest | None = None,
+        building: set[QueuedBuild] | None = None,
     ) -> None:
         """Track a single derivation build through its lifecycle.
 
@@ -104,6 +105,7 @@ class QueuedBuild:
             expected_duration: Hint from the scheduler for store assignment.
             scheduler_request_ids: Request IDs this build belongs to (dedup).
             options: The option set of the client that asked for the build.
+            building: The queue's set of builds that a worker runs; `worker` keeps this build's membership.
         """
         self.build_id = build_id
         self.request = request
@@ -166,7 +168,8 @@ class QueuedBuild:
         self.store_failures: dict[StoreId, int] = {}
         self.store_errors: dict[StoreId, str] = {}
         """The last failure of each store, which the final error names."""
-        self.worker: anyio.CancelScope | None = None
+        self._building = building
+        self._worker: anyio.CancelScope | None = None
         """The scope of the worker that runs this build, from assignment until it ends.
 
         `Scheduler._assign_to_stores` makes it before the worker starts, so a
@@ -225,6 +228,20 @@ class QueuedBuild:
         # Guards add_subscriber replay vs post_log_bytes fanout so that a
         # joining client never misses bytes that arrive during catch-up.
         self._sub_lock = anyio.Lock()
+
+    @property
+    def worker(self) -> anyio.CancelScope | None:
+        return self._worker
+
+    @worker.setter
+    def worker(self, scope: anyio.CancelScope | None) -> None:
+        self._worker = scope
+        if self._building is None:
+            return
+        if scope is None:
+            self._building.discard(self)
+        else:
+            self._building.add(self)
 
     @property
     def is_building(self) -> bool:
@@ -552,6 +569,9 @@ class BuildQueue:
         self._by_path: dict[tuple[str, int], QueuedBuild] = {}
         """Dedup: `_dedup_key` -> the build of that derivation and mode."""
         self._by_id: dict[BuildId, QueuedBuild] = {}  # For DAG lookups
+        self._building: set[QueuedBuild] = set()
+        """The builds a worker runs. Placement reads it once per candidate of each build: a scan of the whole queue
+        there holds the event loop for about 3 s per pass at 9,000 queued builds (nixidae/nixidae#1582)."""
         self._requests: dict[RequestId, SchedulerBuildRequest] = {}
         self.next_id = 1
         self.next_request_id = 1
@@ -604,6 +624,11 @@ class BuildQueue:
     def queue(self) -> Sequence[QueuedBuild]:
         """Read-only view of the current build queue."""
         return self._queue
+
+    @property
+    def building(self) -> AbstractSet[QueuedBuild]:
+        """The builds a worker runs, on any store."""
+        return self._building
 
     @property
     def by_id(self) -> Mapping[BuildId, QueuedBuild]:
@@ -728,6 +753,7 @@ class BuildQueue:
                 expected_duration=expected_duration,
                 scheduler_request_ids=scheduler_request_ids,
                 options=options,
+                building=self._building,
             )
             build.from_goal_path = from_goal_path
             build.builders = builders
@@ -1067,6 +1093,7 @@ class BuildQueue:
             for build_id, build in list(self._by_id.items()):
                 if id(build) in doomed:
                     del self._by_id[build_id]
+                    self._building.discard(build)
                     if self._by_path.get(_dedup_key(build.request)) is build:
                         del self._by_path[_dedup_key(build.request)]
         log.debug("builds_pruned", count=len(doomed))

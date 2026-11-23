@@ -77,9 +77,7 @@ _MISSING_BYTES_TIMEOUT = 5.0
 def slot_wait(queue: BuildQueue, store_id: StoreId) -> float | None:
     """When the soonest running build on *store_id* is expected to end, or `None` when no estimate says."""
     running = [
-        (build.expected_duration, build.started_at)
-        for build in queue.by_id.values()
-        if build.is_building and build.assigned_store_id == store_id
+        (build.expected_duration, build.started_at) for build in queue.building if build.assigned_store_id == store_id
     ]
     return slot_wait_seconds(running, time.monotonic())
 
@@ -89,14 +87,12 @@ def request_has_a_local_slot(queue: BuildQueue, local_id: StoreId, request_id: R
 
     Counted from the queue on each call, not from the pass: a build that
     this pass assigned already has its task, so it counts as building.
-    A walk of the queue per check is cheap at the queue sizes pynixd sees.
+    The walk covers the running builds only, not the whole queue.
     """
     jobs = queue.max_jobs_of(request_id)
     if jobs is None:
         return True
-    running = sum(
-        1 for b in queue.by_id.values() if b.is_building and b.assigned_store_id == local_id and request_id in b.holders
-    )
+    running = sum(1 for b in queue.building if b.assigned_store_id == local_id and request_id in b.holders)
     if running < max(1, jobs):
         return True
     log.debug("request_waits_for_a_local_slot", request_id=int(request_id), running=running, max_build_jobs=jobs)
