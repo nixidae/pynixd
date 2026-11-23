@@ -16,10 +16,13 @@ from pynixd.config import BuildPodFarmSpec, BuildPodStoreSpec, KubernetesTemplat
 from pynixd.exceptions import InfrastructureError
 from pynixd.placement import missing_input_bytes
 from pynixd.provisioning.kubernetes import (
+    BUILD_STORE_LABEL,
     BuildPodEnd,
+    BuildPodOwner,
     BuildPodWatch,
     FarmVolume,
     build_pod_manifest,
+    build_store_label,
     pod_end,
     template_store_paths,
 )
@@ -92,6 +95,7 @@ def test_central_takes_a_pods_realisation_of_its_own_outputs_alone() -> None:
     assert f"not {OUT}" in _realising({"out": DerivationOutput(path=OUT)}, {"out": REALISED}).result.error_msg
 
 
+OWNER = BuildPodOwner(store="pods", run="r0")
 RUNS = "/nix/store/00000000000000000000000000000006-pynixd"
 INPUT = "/nix/store/00000000000000000000000000000007-busybox"
 FARM_TEMPLATE = KubernetesTemplateSettings(
@@ -123,13 +127,32 @@ def test_a_farm_pod_asks_nixkube_for_the_builds_path_on_each_system() -> None:
     root = "/nix/store/00000000000000000000000000000008-pynixd-build-inputs"
     farm = FarmVolume(volume="nix", root=root, systems=frozenset({"x86_64-linux", "i686-linux"}))
 
-    pod = build_pod_manifest(FARM_TEMPLATE, "pynixd-build-x", farm)
+    pod = build_pod_manifest(FARM_TEMPLATE, "pynixd-build-x", OWNER, farm)
 
     (volume,) = (v for v in pod["spec"]["volumes"] if v["name"] == "nix")
     assert volume["csi"]["volumeAttributes"] == {"x86_64-linux": root, "i686-linux": root, "presentation": "farm"}
     assert "volumeAttributes" not in FARM_TEMPLATE.pod["spec"]["volumes"][0]["csi"]
     with pytest.raises(ValueError, match="no CSI volume 'store'"):
-        build_pod_manifest(FARM_TEMPLATE, "pynixd-build-x", FarmVolume(volume="store", root=root, systems=farm.systems))
+        build_pod_manifest(
+            FARM_TEMPLATE, "pynixd-build-x", OWNER, FarmVolume(volume="store", root=root, systems=farm.systems)
+        )
+
+
+def test_a_build_pod_names_its_store_in_a_label() -> None:
+    owner = BuildPodOwner(store="buildpods-farm", run="r1")
+    pod = build_pod_manifest(FARM_TEMPLATE, "pynixd-build-x", owner)
+
+    assert pod["metadata"]["labels"][BUILD_STORE_LABEL] == "buildpods-farm"
+    # The sweep takes the store's pods of every other run, and a pod with no run label.
+    assert owner.others() == (
+        "app.kubernetes.io/managed-by=pynixd,pynixd.nixidae.org/build=true,"
+        "pynixd.nixidae.org/build-store=buildpods-farm,pynixd.nixidae.org/build-run!=r1"
+    )
+    assert pod["metadata"]["labels"]["pynixd.nixidae.org/build-run"] == "r1"
+    # A label value holds 63 characters of [A-Za-z0-9._-], starting and ending alphanumeric.
+    assert build_store_label("pods/x") == build_store_label("pods/x") != build_store_label("pods/y")
+    assert build_store_label("-pods").isalnum()
+    assert len(build_store_label("p" * 64)) <= 63
 
 
 def test_a_pod_says_why_it_ended() -> None:

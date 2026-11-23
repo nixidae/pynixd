@@ -25,7 +25,7 @@ from ..build_grant import BuildGrant
 from ..build_job import JOB_NAME, KEY_NAME, Job, decode_response, encode
 from ..build_result import failure, result_succeeded
 from ..exceptions import InfrastructureError
-from ..provisioning.kubernetes import BuildPodWatch, FarmVolume, farm_volume, template_store_paths
+from ..provisioning.kubernetes import BuildPodOwner, BuildPodWatch, FarmVolume, farm_volume, template_store_paths
 from ..provisioning.provider import ProviderError
 from .scheduled import ProbeState, ScheduledStore
 
@@ -47,6 +47,7 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 _DELETE_SECONDS: Final = 30.0
+_SWEEP_RETRY_SECONDS: Final = 10.0
 _ENDED_SECONDS: Final = 60.0
 """How long the kubelet may take to write a container's end after its log ended."""
 
@@ -110,8 +111,30 @@ class BuildPodStore(ScheduledStore):
         self.central_host_key: str | None = None
         """Central's SSH host key, which the pod pins; `Server` sets it when the SSH listener starts."""
         self.kubernetes: KubernetesProvider | None = None
+        self.owner = BuildPodOwner(store=str(self.store_id), run=secrets.token_hex(4))
         self.template_paths: frozenset[str] = frozenset()
         """The store paths the template names, which each farm holds; `Server` reads them when it arms the store."""
+
+    async def sweep(self) -> None:
+        """Delete the store's pods an earlier process left, once the API server answers.
+
+        Their keys died with that process, so none can report. A server that a hand-over started never sweeps,
+        as the old process still drains its builds. Pods of this run carry its own label, so a late sweep
+        keeps them.
+        """
+        if self.kubernetes is None:
+            return
+        while True:
+            try:
+                left = await self.kubernetes.delete_left_build_pods(self.owner)
+            except ProviderError as error:
+                # The API server may come up after central (a cluster that runs central), and says nothing when.
+                log.info("build_pods_sweep_waits", store_id=self.store_id, error=str(error))
+                await anyio.sleep(_SWEEP_RETRY_SECONDS)
+                continue
+            if left:
+                log.info("build_pods_left_deleted", store_id=self.store_id, pods=left)
+            return
 
     async def arm(self, grants: Grants, host_key: str, kubernetes: KubernetesProvider, local: Store) -> None:
         """Take what the server has only once it runs: the grants, central's SSH host key, the provider.
@@ -252,7 +275,7 @@ class BuildPodStore(ScheduledStore):
                 if self.spec.farm is not None and farm_root is not None
                 else None
             )
-            await self.kubernetes.start_build_pod(self.spec.template, name, secret, farm)
+            await self.kubernetes.start_build_pod(self.spec.template, name, self.owner, secret, farm)
             log.info("build_pod_started", pod=name, drv=str(request.drv_path))
             watch = BuildPodWatch(self.spec.container)
             async with anyio.create_task_group() as watching:

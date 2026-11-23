@@ -662,6 +662,19 @@ vivariumLib.mkTest {
           script = ../../provisioning/kubernetes_input_primitives.py;
           after = [ "cluster" ];
         };
+        # Restarts pynixd, so after every phase that builds.
+        pod-left = {
+          script = ../../provisioning/kubernetes_pod_left.py;
+          after = [
+            "broken"
+            "sibling"
+            "pod-build"
+            "pod-refused"
+            "pod-farm"
+            "pod-throughput"
+            "input-primitives"
+          ];
+        };
       }
   );
 }

@@ -477,6 +477,9 @@ class Server:
                 await store.arm(
                     self.ctx.grants, host_key, KubernetesProvider(kubernetes), self.ctx.stores[LOCAL_STORE_ID]
                 )
+                # A successor of a hand-over sweeps nothing: the old process still drains its builds.
+                if self._inherited is None:
+                    self._spawn(store.sweep)
 
     def _provisioner(self, controller_key: str) -> Provisioner | None:
         """The provisioner `provisioning.pools` asks for, or None for no pools."""

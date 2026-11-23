@@ -279,15 +279,20 @@ class KubernetesProvider:
         return self._template(template)
 
     async def start_build_pod(
-        self, template: str, name: str, job: Mapping[str, str], farm: FarmVolume | None = None
+        self,
+        template: str,
+        name: str,
+        owner: BuildPodOwner,
+        job: Mapping[str, str],
+        farm: FarmVolume | None = None,
     ) -> None:
-        """A pod for one build, with *job* in a Secret it owns (nixidae/nixidae#1560, spike).
+        """A pod for one build of *owner*, with *job* in a Secret it owns (nixidae/nixidae#1560, spike).
 
         The pod has no tags, so `machines` and the provisioner never see it.
         """
         spec = self._template(template)
         api = await self._client()
-        pod = Pod(build_pod_manifest(spec, name, farm), api=api)
+        pod = Pod(build_pod_manifest(spec, name, owner, farm), api=api)
         with failing(f"creating build pod {name}"):
             try:
                 await pod.create()
@@ -302,6 +307,20 @@ class KubernetesProvider:
             with contextlib.suppress(ProviderError):
                 await self.terminate(name)
             raise
+
+    async def delete_left_build_pods(self, owner: BuildPodOwner) -> list[str]:
+        """Delete the build pods of *owner*'s store that another run made, and name them. Their Secrets go
+        with them."""
+        api = await self._client()
+        with failing(f"deleting the build pods earlier runs of store {owner.store} left"):
+            names: list[str] = []
+            async for pod in api.get(Pod, namespace=self._settings.namespace, label_selector=owner.others()):
+                if not isinstance(pod, Pod):
+                    raise ProviderError(f"kubernetes: listing pods answered {type(pod).__name__}")
+                names.append(pod.name)
+        for name in names:
+            await self.terminate(name)
+        return names
 
     async def watch_build_pod(self, name: str, watch: BuildPodWatch) -> None:
         """Keep *watch* up to date with build pod *name* from its creation, until the pod ended or is gone.
@@ -338,8 +357,41 @@ class KubernetesProvider:
 
 
 BUILD_LABEL: Final = "pynixd.nixidae.org/build"
+BUILD_STORE_LABEL: Final = "pynixd.nixidae.org/build-store"
+BUILD_RUN_LABEL: Final = "pynixd.nixidae.org/build-run"
+_LABEL_VALUE: Final = re.compile(r"[A-Za-z0-9]([A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?")
 JOB_VOLUME: Final = "pynixd-job"
 JOB_DIR: Final = "/run/pynixd-job"
+
+
+def build_store_label(store_id: str) -> str:
+    """The label value that marks a store's build pods: the store's id, or a digest of an id no label can hold."""
+    if _LABEL_VALUE.fullmatch(store_id):
+        return store_id
+    return hashlib.sha256(store_id.encode()).hexdigest()[:_HASH_CHARS]
+
+
+@dataclass(frozen=True, slots=True)
+class BuildPodOwner:
+    """Who made a build pod: a store of one central, in one run of its process. A label holds each."""
+
+    store: str
+    run: str
+    """New in each process: a pod of another run can never report, as its key died with that process."""
+
+    def labels(self) -> dict[str, str]:
+        return {
+            MANAGED_LABEL: MANAGED_VALUE,
+            BUILD_LABEL: "true",
+            BUILD_STORE_LABEL: build_store_label(self.store),
+            BUILD_RUN_LABEL: self.run,
+        }
+
+    def others(self) -> str:
+        """The selector of the store's pods that another run made."""
+        mine = self.labels()
+        run = mine.pop(BUILD_RUN_LABEL)
+        return ",".join([*(f"{key}={value}" for key, value in mine.items()), f"{BUILD_RUN_LABEL}!={run}"])
 
 
 @dataclass(frozen=True, slots=True)
@@ -489,8 +541,14 @@ class FarmVolume:
     systems: frozenset[str]
 
 
-def build_pod_manifest(template: KubernetesTemplateSettings, name: str, farm: FarmVolume | None = None) -> Manifest:
-    """The template's pod for one build: no tags, a build label, and the job Secret at `JOB_DIR` in its container.
+def build_pod_manifest(
+    template: KubernetesTemplateSettings,
+    name: str,
+    owner: BuildPodOwner,
+    farm: FarmVolume | None = None,
+) -> Manifest:
+    """The template's pod for one build of *owner*: no tags, *owner*'s labels, and the job Secret at `JOB_DIR`
+    in its container.
 
     With *farm*, its CSI volume asks nixkube for a farm of the build's root path. nixkube keys the path by the
     node's system, not the derivation's: an i686 build on an x86_64 node reads the x86_64 key.
@@ -508,9 +566,7 @@ def build_pod_manifest(template: KubernetesTemplateSettings, name: str, farm: Fa
     metadata = pod.setdefault("metadata", {})
     metadata["name"] = name
     metadata.pop("generateName", None)
-    labels = metadata.setdefault("labels", {})
-    labels[MANAGED_LABEL] = MANAGED_VALUE
-    labels[BUILD_LABEL] = "true"
+    metadata.setdefault("labels", {}).update(owner.labels())
     spec = pod.setdefault("spec", {})
     spec["restartPolicy"] = "Never"
     spec.setdefault("volumes", []).append({"name": JOB_VOLUME, "secret": {"secretName": name, "defaultMode": 0o400}})
