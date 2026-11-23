@@ -433,8 +433,15 @@ Answered 2026-11-23. Every item is decided.
    - The controller reads the log and the exit status through the API, with
      RBAC on its own pod. A cancel deletes the pod, and `max-silent-time`
      acts on the log stream.
-   Not measured yet: the host name hook, an empty image's root, and NRI on a
-   pod with a native sidecar.
+   Measured (2026-11-23, same node, `nriprobe`'s second pod): a controller
+   as a native sidecar with a startup probe, and a builder on the empty
+   `scratch` image as uid 30001. The builder starts only after the
+   controller fills the shared directory. The plugin's createContainer hook
+   (the node's `hostname localhost`) sets the host name, and the runtime
+   runs it before it drops capabilities. The namespaces and the seccomp
+   filter apply as in the first pod. The builder's root holds `dev etc nix
+   proc run sys tmp` and its volumes; the guest binds all of `/nix/store`
+   into every container, so the store part of its view is not measured.
 7. **Pods left behind. Decided: ownership, and a sweep at start.** A pod
    outlives a central that dies; it ends at `activeDeadlineSeconds`.
    - Ownership: central in the cluster makes its own Pod the owner of each
