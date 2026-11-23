@@ -33,6 +33,7 @@ Designs: options weighed against measurements, and the one recommended.
 :caption: Design
 
 design/builder
+design/build-pods
 design/daemonless
 design/store-engine
 design/store-model
