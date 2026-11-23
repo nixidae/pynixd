@@ -339,6 +339,15 @@ Answered 2026-11-23. Every item is decided.
    Its process is not a build pod's container, so the label can be wrong at
    the edges. A build pod that still fails is an infrastructure error, and
    central builds elsewhere. The NetworkPolicy applies to every build pod.
+   Measured (QEMU node, kernel 7.2.9, AppArmor built in and off): the
+   kubelet rejects a pod that names an AppArmor profile on a node without
+   AppArmor ("Cannot enforce AppArmor: AppArmor is not enabled on the host").
+   NRI cannot set the profile either: its container adjustment has no field
+   for it. So one template cannot serve both kinds of node. The plan: a label
+   per node (`userns`, `apparmor` or `none`), and one template per kind with
+   a node selector on it. Decided (User): one store, not one per kind. The
+   store holds the templates by kind, and central picks one for each pod from
+   the labels of the Ready nodes. Central then needs to list nodes.
 7. **Pods left behind. Decided: ownership, and a sweep at start.** A pod
    outlives a central that dies; it ends at `activeDeadlineSeconds`.
    - Ownership: central in the cluster makes its own Pod the owner of each
