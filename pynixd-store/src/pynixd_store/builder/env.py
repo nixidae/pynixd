@@ -28,6 +28,25 @@ SANDBOX_BUILD_DIR = "/build"
 HOME_DIR = "/homeless-shelter"
 """`DerivationBuilderImpl::homeDir`; it must not exist."""
 
+SANDBOX_HOSTS = "127.0.0.1 localhost\n::1 localhost\n"
+"""The sandbox's `/etc/hosts` (`chroot-derivation-builder.cc`) when the build has no network."""
+NETWORK_NSSWITCH = "hosts: files dns\nservices: files\n"
+"""The sandbox's `/etc/nsswitch.conf` when the build has the network."""
+
+
+def sandbox_passwd(uid: int, gid: int) -> str:
+    """`setupBuildChroot`'s `/etc/passwd` (`chroot.cc`)."""
+    return (
+        f"root:x:0:0:Nix build user:{SANDBOX_BUILD_DIR}:/noshell\n"
+        f"nixbld:x:{uid}:{gid}:Nix build user:{SANDBOX_BUILD_DIR}:/noshell\n"
+        "nobody:x:65534:65534:Nobody:/:/noshell\n"
+    )
+
+
+def sandbox_group(gid: int) -> str:
+    """`setupBuildChroot`'s `/etc/group` (`chroot.cc`)."""
+    return f"root:x:0:\nnixbld:!:{gid}:\nnogroup:x:65534:\n"
+
 
 def hash_placeholder(output_name: str) -> str:
     """`hashPlaceholder` (`derivations.cc`): what `builtins.placeholder` returns."""

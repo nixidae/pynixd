@@ -19,7 +19,15 @@ from typing import TYPE_CHECKING, Any, Final
 from nix_daemon_protocol.derivation_output import OutputKind
 
 from ..drv_parser import BUILDER_RPC
-from .env import SANDBOX_BUILD_DIR, build_env, rewrite_strings
+from .env import (
+    NETWORK_NSSWITCH,
+    SANDBOX_BUILD_DIR,
+    SANDBOX_HOSTS,
+    build_env,
+    rewrite_strings,
+    sandbox_group,
+    sandbox_passwd,
+)
 from .outputs import known_paths, output_rewrites, scratch_paths
 
 if TYPE_CHECKING:
@@ -49,6 +57,22 @@ class RunnerSandbox:
     top: Path
     ready: Path
     container: str
+
+
+ETC_NAME: Final = "etc"
+"""The runner's `/etc` files, in the top directory: the template mounts each of `etc_files` by subPath."""
+
+
+def etc_files(*, uid: int, gid: int, network: bool, pod_hosts: str) -> dict[str, str]:
+    """The sandbox's `/etc` for the runner. A build with the network gets the pod's `/etc/hosts`, as Nix binds
+    the host's. The template mounts the same names for every build, so a build without the network gets an
+    empty `nsswitch.conf`: glibc reads it as no file at all."""
+    return {
+        "passwd": sandbox_passwd(uid, gid),
+        "group": sandbox_group(gid),
+        "hosts": pod_hosts if network else SANDBOX_HOSTS,
+        "nsswitch.conf": NETWORK_NSSWITCH if network else "",
+    }
 
 
 def _escape(value: str) -> str:

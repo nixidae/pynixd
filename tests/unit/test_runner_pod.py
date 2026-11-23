@@ -31,6 +31,7 @@ from pynixd_store.builder.runner import (
     NETWORK_ANNOTATION,
     SANDBOX_ANNOTATION,
     drv_refusal,
+    etc_files,
     planned_invocation,
 )
 
@@ -149,6 +150,19 @@ def test_central_fills_the_runner_and_gives_a_fixed_output_build_the_network() -
     assert pod["metadata"]["annotations"][NETWORK_ANNOTATION] == "true"
     closed = build_pod_manifest(template, "b", OWNER, runner=RunnerFill("runner", planned, network=False))
     assert NETWORK_ANNOTATION not in closed["metadata"]["annotations"]
+
+
+def test_the_runner_s_etc_is_the_sandbox_s() -> None:
+    closed = etc_files(uid=1000, gid=100, network=False, pod_hosts="10.0.0.5 pod\n")
+    opened = etc_files(uid=1000, gid=100, network=True, pod_hosts="10.0.0.5 pod\n")
+
+    assert closed.keys() == opened.keys()
+    assert "nixbld:x:1000:100:Nix build user:/build:/noshell\n" in closed["passwd"]
+    assert closed["group"] == "root:x:0:\nnixbld:!:100:\nnogroup:x:65534:\n"
+    assert closed["hosts"] == "127.0.0.1 localhost\n::1 localhost\n"
+    assert closed["nsswitch.conf"] == ""
+    assert opened["hosts"] == "10.0.0.5 pod\n"
+    assert opened["nsswitch.conf"] == "hosts: files dns\nservices: files\n"
 
 
 def test_a_runner_that_failed_leaves_the_controller_s_result() -> None:

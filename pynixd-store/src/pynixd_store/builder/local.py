@@ -46,10 +46,14 @@ from . import buildenv, cgroup as build_cgroup, darwin, hooks, users as build_us
 from .buildlog import BuildLog
 from .env import (
     HOME_DIR,
+    NETWORK_NSSWITCH,
     SANDBOX_BUILD_DIR,
+    SANDBOX_HOSTS,
     build_env,
     export_requests,
     rewrite_strings,
+    sandbox_group,
+    sandbox_passwd,
     structured_attrs_reason,
 )
 from .helpers import HelperProcess, Helpers
@@ -533,12 +537,8 @@ def _prepare(
     if id_range:
         build_users.chown_to(user, etc)
     uid, gid = (0, 0) if id_range else (SANDBOX_UID, SANDBOX_GID)
-    (etc / "passwd").write_text(
-        f"root:x:0:0:Nix build user:{SANDBOX_BUILD_DIR}:/noshell\n"
-        f"nixbld:x:{uid}:{gid}:Nix build user:{SANDBOX_BUILD_DIR}:/noshell\n"
-        "nobody:x:65534:65534:Nobody:/:/noshell\n"
-    )
-    (etc / "group").write_text(f"root:x:0:\nnixbld:!:{gid}:\nnogroup:x:65534:\n")
+    (etc / "passwd").write_text(sandbox_passwd(uid, gid))
+    (etc / "group").write_text(sandbox_group(gid))
     dev = root / "dev"
     dev.mkdir()
     (dev / "fd").symlink_to("/proc/self/fd")
@@ -587,9 +587,9 @@ def _binds(
         for name in DEV_FILES:
             binds.setdefault(name, (name, False))
     if not sandboxed:
-        (root / "etc/nsswitch.conf").write_text("hosts: files dns\nservices: files\n")
+        (root / "etc/nsswitch.conf").write_text(NETWORK_NSSWITCH)
     else:
-        (root / "etc/hosts").write_text("127.0.0.1 localhost\n::1 localhost\n")
+        (root / "etc/hosts").write_text(SANDBOX_HOSTS)
     (root / "etc").chmod(0o555)
     return [(target, source, optional) for target, (source, optional) in sorted(binds.items())]
 

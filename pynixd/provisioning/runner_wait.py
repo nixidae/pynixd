@@ -15,18 +15,20 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import anyio
 import kr8s.asyncio
 from kr8s.asyncio.objects import Pod
 
 from pynixd_store.builder.runner import (
+    ETC_NAME,
     EXIT_NAME,
     POD_NAME_VARIABLE,
     POD_NAMESPACE_VARIABLE,
     STATUS_NAME,
     RunnerState,
+    etc_files,
     exit_status,
     from_container,
     invocation,
@@ -36,6 +38,9 @@ from pynixd_store.builder.runner import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+POD_HOSTS: Final = "/etc/hosts"
+"""The controller's `/etc/hosts`, which the kubelet writes for the pod."""
 
 
 class SetupError(Exception):
@@ -86,6 +91,18 @@ async def wait(top: Path, spec_file: Path, container: str, ready: Path) -> None:
         raise SetupError(f"the pod has no container named {container!r}")
     if (differs := mismatch(expected, from_container(runner))) is not None:
         raise SetupError(f"the runner container does not run this build: {differs}")
+    files = etc_files(
+        uid=spec["sandbox_uid"],
+        gid=spec["sandbox_gid"],
+        network=not spec["private_network"],
+        pod_hosts=await anyio.Path(POD_HOSTS).read_text(),
+    )
+    etc = anyio.Path(top / ETC_NAME)
+    await etc.mkdir()
+    for name, text in files.items():
+        await (etc / name).write_text(text)
+        await (etc / name).chmod(0o644)
+    # The kubelet mounts each of them in the runner when it creates it, after the controller's postStart hook.
     await anyio.Path(ready).touch()
     await _until(pod, container, lambda state: state.started)
     await _follow(pod, container)
