@@ -20,7 +20,6 @@ import structlog
 from nix_daemon_protocol.add_multiple_to_store import UNVERSIONED_PATH_INFO
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
 from nix_daemon_protocol.store_dir import set_real_store_dir, set_store_dir
-from nix_daemon_protocol.store_path import StorePath
 from pynixd_store.background import Background
 from pynixd_store.builder.cgroup import default_cores
 from pynixd_store.db_migrations import TARGET_VERSION
@@ -43,13 +42,12 @@ from .health import HealthReport, LoopLagMonitor, StallWatchdog
 from .liveness_watch import DirtyFlag, StableRootsWatch
 from .provisioning.ec2 import Ec2Provider
 from .provisioning.gha import GhaProvider
-from .provisioning.kubernetes import KubernetesProvider, farm_volume, template_store_paths
+from .provisioning.kubernetes import KubernetesProvider
 from .provisioning.nomac import NomacProvider
 from .provisioning.provisioner import Provisioner
 from .provisioning.vivarium import VivariumProvider
 from .recursive import restricted_server
 from .scheduler import Scheduler
-from .serde import QueryValidPathsRequest
 from .serde.protocol import PynixdGCAction
 from .session_builders import SessionBuilders
 from .state import upstream_in_flight
@@ -470,32 +468,15 @@ class Server:
         return [] if scheduler is None else [build.builders for build in await scheduler.queue.get_pending()]
 
     async def _arm_build_pods(self, host_key: str) -> None:
-        """Give each build pod store what it reaches only once the server runs (nixidae/nixidae#1560, spike).
-
-        A store whose pods take a farm refuses to start here, not at its first build: a template without the
-        farm's volume, or a store path the template names that central cannot give a node, fails every build.
-        """
+        """Give each build pod store what it reaches only once the server runs (nixidae/nixidae#1560, spike)."""
         kubernetes = self.settings.provisioning.kubernetes
+        if kubernetes is None:
+            return
         for store in self.ctx.stores.values():
-            if isinstance(store, BuildPodStore) and kubernetes is not None:
-                store.grants = self.ctx.grants
-                store.central_host_key = host_key
-                store.kubernetes = KubernetesProvider(kubernetes)
-                if store.spec.farm is not None:
-                    template = store.kubernetes.build_pod_template(store.spec.template)
-                    farm_volume(template.pod, store.spec.farm.volume)
-                    paths = template_store_paths(template)
-                    # `substitute`: central fetches what its caches hold, as a node asks central for it next.
-                    valid = await self.ctx.stores[LOCAL_STORE_ID].execute(
-                        QueryValidPathsRequest(paths={StorePath(path) for path in paths}, substitute=1), client=None
-                    )
-                    held = {str(StorePath(str(path)).with_store_prefix()) for path in valid.paths}
-                    if missing := sorted(paths - held):
-                        raise RuntimeError(
-                            f"store {store.store_id}: its template names {', '.join(missing)}, which a farm needs"
-                            " and central's store and caches lack"
-                        )
-                    store.template_paths = paths
+            if isinstance(store, BuildPodStore):
+                await store.arm(
+                    self.ctx.grants, host_key, KubernetesProvider(kubernetes), self.ctx.stores[LOCAL_STORE_ID]
+                )
 
     def _provisioner(self, controller_key: str) -> Provisioner | None:
         """The provisioner `provisioning.pools` asks for, or None for no pools."""

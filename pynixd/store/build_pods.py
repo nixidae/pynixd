@@ -18,13 +18,14 @@ import anyio
 import asyncssh
 import structlog
 
+from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest
 from nix_daemon_protocol.store_path import StorePath
 
 from ..build_grant import BuildGrant
 from ..build_job import JOB_NAME, KEY_NAME, Job, decode_response, encode
 from ..build_result import failure, result_succeeded
 from ..exceptions import InfrastructureError
-from ..provisioning.kubernetes import FarmVolume, PodEndSeen
+from ..provisioning.kubernetes import FarmVolume, PodEndSeen, farm_volume, template_store_paths
 from ..provisioning.provider import ProviderError
 from .scheduled import ProbeState, ScheduledStore
 
@@ -41,6 +42,7 @@ if TYPE_CHECKING:
     from ..config import BuildPodStoreSpec
     from ..connection import ClientConn, Connection
     from ..provisioning.kubernetes import BuildPodEnd, KubernetesProvider
+    from .base import Store
 
 log = structlog.get_logger(__name__)
 
@@ -110,6 +112,32 @@ class BuildPodStore(ScheduledStore):
         self.kubernetes: KubernetesProvider | None = None
         self.template_paths: frozenset[str] = frozenset()
         """The store paths the template names, which each farm holds; `Server` reads them when it arms the store."""
+
+    async def arm(self, grants: Grants, host_key: str, kubernetes: KubernetesProvider, local: Store) -> None:
+        """Take what the server has only once it runs: the grants, central's SSH host key, the provider.
+
+        A store whose pods take a farm refuses to start here, not at its first build: a template without the
+        farm's volume, or a store path the template names that *local* cannot give a node, fails every build.
+        """
+        self.grants = grants
+        self.central_host_key = host_key
+        self.kubernetes = kubernetes
+        if self.spec.farm is None:
+            return
+        template = kubernetes.build_pod_template(self.spec.template)
+        farm_volume(template.pod, self.spec.farm.volume)
+        paths = template_store_paths(template)
+        # `substitute`: central fetches what its caches hold, as a node asks central for it next.
+        valid = await local.execute(
+            QueryValidPathsRequest(paths={StorePath(path) for path in paths}, substitute=1), client=None
+        )
+        held = {str(StorePath(str(path)).with_store_prefix()) for path in valid.paths}
+        if missing := sorted(paths - held):
+            raise RuntimeError(
+                f"store {self.store_id}: its template names {', '.join(missing)}, which a farm needs"
+                " and central's store and caches lack"
+            )
+        self.template_paths = paths
 
     @property
     def daemon_client(self) -> BuildPodStore:
