@@ -116,7 +116,8 @@ then passes.
 
 Trap: a pod can be gone before central reads it. **Measured**: preempted at
 23:05:10, killed at 23:05:11, read by central at 23:05:23 as "deleted". So
-central watches each pod from its creation.
+central watches each pod from its creation, and keeps the reason from each
+change it sees.
 
 ## The sandbox
 
@@ -241,23 +242,24 @@ pod.
   it in containerd (`contrib/seccomp/seccomp.go:40`, read). The profile is
   plain OCI.
 
-## Planned changes
+## Simplified after the spike
 
-Agreed 2026-11-23, before landing:
+Agreed 2026-11-23, done before landing:
 
-1. One watch per pod. Today the provider watches each pod three times: for
-   its end reason, for its container's start, and for its end. One task that
-   keeps the pod's state serves all three and closes the preemption race by
-   design.
-2. `inputs` as a map from store path to real path, made once in
-   `builder/local.py`, in place of the `files_of` parameter of every build
-   site.
-3. `BuildPodStore.arm(...)` holds the farm checks that `Server._arm_build_pods`
-   does inline.
+1. One watch per pod (`BuildPodWatch`). The spike watched each pod three
+   times: for its end reason, for its container's start, and for its end. One
+   task now keeps what it saw. The store reads the log once the container
+   ran, and the end once it is known. A watch that fails ends the build as
+   the pod's fault, so a build never waits on a dead watch.
+2. `files_of` takes the place of the store directory in `RestrictionContext`
+   and in each build site's `endpoint`. A map of the inputs was the first
+   plan, and it is wrong: a path the builder adds during the build may be in
+   the lower store, so the restriction resolves it when it arrives.
+3. `BuildPodStore.arm(...)` holds the farm checks.
 4. The recursive proxy's nested build reads outputs through
    `realised_outputs()`.
-5. nixkube's standalone farm pod check goes; the test through central covers
-   it.
+5. nixkube's standalone farm pod check is gone; the test through central
+   covers it.
 
 ## Open decisions
 
