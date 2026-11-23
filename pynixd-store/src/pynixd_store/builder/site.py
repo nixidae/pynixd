@@ -32,6 +32,7 @@ from . import cgroup as build_cgroup, users as build_users
 from .darwin_vm import DarwinBuildVm
 from .outputs import BuildFailure
 from .restriction import SOCKET_NAME, RestrictionContext
+from .runner import EXIT_NAME as RUNNER_EXIT_NAME, STATUS_NAME as RUNNER_STATUS_NAME, RunnerSandbox
 from .sibling import (
     CONTROL_SOCKET_NAME as SIBLING_CONTROL_SOCKET_NAME,
     STATUS_NAME as SIBLING_STATUS_NAME,
@@ -72,6 +73,7 @@ __all__ = [
     "Endpoint",
     "HostSite",
     "Launch",
+    "RunnerSite",
     "SiblingSite",
     "VmSite",
     "builder_ended",
@@ -556,10 +558,89 @@ class SiblingSite(BuildSite):
         return await anyio.to_thread.run_sync(read_usage, paths.top / USAGE_NAME)
 
 
+@dataclass
+class RunnerSite(BuildSite):
+    """The builder is the pod's runner container (`runner.py`, nixidae/nixidae#1560, spike).
+
+    The helper on the host starts no builder: it lets the runner start and copies its log. The runner has no
+    socket of pynixd's and no other program, so a build that needs either is refused here.
+    """
+
+    sandbox: RunnerSandbox
+    refused: str | None = None
+    waits_for_exit: bool = True
+    samples_on_host: bool = False
+
+    async def endpoint(
+        self,
+        stack: contextlib.AsyncExitStack,
+        paths: BuildPaths,
+        inputs: set[StorePath],
+        files_of: Callable[[StorePath], Path],
+        *,
+        submitting: bool,
+        repairing: bool,
+        user: build_users.BuildUser | None,
+    ) -> Endpoint:
+        """A socket that nothing reaches: `refusal` refuses a recursive build, and `build()` asks it afterwards."""
+        restriction = RestrictionContext(inputs, None, files_of, submitting=submitting, repairing=repairing)
+        return Endpoint(await anyio.to_thread.run_sync(listen, paths.tmp / SOCKET_NAME), restriction)
+
+    def refusal(self) -> str | None:
+        return self.refused
+
+    def configure(self, spec: ChildSpec, sample_seconds: float) -> None:
+        """The runner's own process is the builder: the job only tells the helper what the runner must run."""
+
+    async def launch(self, paths: BuildPaths, spec_file: Path, cgroup: Path | None, *, recursive: bool) -> Launch:
+        argv = [sys.executable, "-I", "-m", "pynixd.provisioning.runner_wait", str(paths.top), str(spec_file)]
+        return Launch([*argv, self.sandbox.container, str(self.sandbox.ready)])
+
+    def setup_error(self, paths: BuildPaths, launch: Launch) -> str:
+        try:
+            return (paths.top / RUNNER_STATUS_NAME).read_bytes().decode(errors="surrogateescape")
+        except FileNotFoundError:
+            return ""
+
+    def ended(
+        self, paths: BuildPaths, drv_path: StorePath, returncode: int | None
+    ) -> BuildFailure | BuilderFailed | None:
+        try:
+            code = int((paths.top / RUNNER_EXIT_NAME).read_text())
+        except FileNotFoundError:
+            return BuildFailure(
+                BuildResultStatus.MISC_FAILURE,
+                f"the runner of '{magenta(drv_path)}' did not report how it ended (its helper exited with {returncode})",
+            )
+        return builder_ended(code)
+
+    async def usage(
+        self, paths: BuildPaths, cgroup: Path | None, samples: tuple[UsageSample, ...]
+    ) -> BuildUsage | None:
+        """The runner's cgroup is not the controller's to read."""
+        return None
+
+
+def _runner_refusal(drv: BasicDerivation, settings: BuildSettings, user: build_users.BuildUser | None) -> str | None:
+    """Why the runner container cannot run *drv*: what Nix's sandbox gives a build and the runner does not."""
+    if drv.builder.startswith("builtin:"):
+        return f"the runner container cannot run the builtin builder '{drv.builder}'"
+    if settings.external_builders:
+        return "the runner container runs no external builder"
+    if "recursive-nix" in drv.required_system_features or "builder-rpc-v0" in drv.required_system_features:
+        return "the runner container has no socket for a recursive build"
+    if "uid-range" in drv.required_system_features or user is not None:
+        return "the runner container runs the build as the controller's uid, not as a build user"
+    if settings.sandbox_paths:
+        targets = ", ".join(sorted(p.target for p in settings.sandbox_paths))
+        return f"the runner container binds no sandbox-paths ({targets})"
+    return None
+
+
 def choose_site(
     drv: BasicDerivation,
     settings: BuildSettings,
-    vm: BuildVm | DarwinBuildVm | SiblingSandbox | None,
+    vm: BuildVm | DarwinBuildVm | SiblingSandbox | RunnerSandbox | None,
     *,
     chroot: bool,
     sandboxed: bool,
@@ -576,6 +657,8 @@ def choose_site(
     host = HostSite(chroot=chroot)
     if vm is None:
         return host, None
+    if isinstance(vm, RunnerSandbox):
+        return RunnerSite(vm, _runner_refusal(drv, settings, user)), None
     if isinstance(vm, SiblingSandbox):
         # A build without the chroot as well: the sandbox container keeps it from the daemon's key and files.
         return SiblingSite(vm), None

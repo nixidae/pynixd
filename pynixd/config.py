@@ -550,6 +550,16 @@ class DarwinBuildVmSpec(BaseModel):
     """A directory `darwin_builder.py save` made with `PYNIXD=1` (`vivarium/docs/design/macos-guest-spike`)."""
 
 
+class RunnerSandboxSpec(BaseModel):
+    """A build pod's runner container (`pynixd_store.builder.runner`, nixidae/nixidae#1560)."""
+
+    top: Path = Path("/build/runner")
+    """The build's top directory; the runner mounts its `build` directory at `/build` by subPath."""
+    ready: Path = Path("/build/runner-ready")
+    """The file the controller's postStart hook waits for: the runner starts once it exists."""
+    container: str = "runner"
+
+
 class OverlaySpec(BaseModel):
     """A `local-overlay://` store: `store_path` is the merged directory, an OverlayFS mount that pynixd does not make.
 
@@ -774,6 +784,16 @@ class LocalSocketStoreSpec(StoreSpecBase):
     ] = None
     """Run pynixd's sandboxed builds in a pod's sandbox container, which serves `sibling run` in this directory;
     `None` runs them here. Takes the place of `build_vm`."""
+    runner_sandbox: Annotated[
+        RunnerSandboxSpec | None,
+        Experiment(
+            replaces="a build's builder is a process of pynixd's helper",
+            issue=1560,
+            tests=("tests/unit/test_runner_site.py",),
+        ),
+    ] = None
+    """Run each build in the pod's runner container, which nixkube's NRI plugin makes Nix's sandbox, and whose
+    spec central wrote. `None` runs it here. Takes the place of `build_vm` and `sibling_sandbox`."""
     postgres: Annotated[
         PostgresSpec | None,
         Experiment(

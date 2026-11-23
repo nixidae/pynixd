@@ -51,7 +51,7 @@ def test_active_lists_a_switch_off_its_default_and_its_details() -> None:
     ]
 
 
-def test_the_store_spec_declares_the_nine_experiments() -> None:
+def test_the_store_spec_declares_the_ten_experiments() -> None:
     assert list(declared(LocalSocketStoreSpec)) == [
         "lower_store",
         "op_routes",
@@ -61,6 +61,7 @@ def test_the_store_spec_declares_the_nine_experiments() -> None:
         "build_vm",
         "darwin_build_vm",
         "sibling_sandbox",
+        "runner_sandbox",
         "postgres",
     ]
 

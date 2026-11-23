@@ -107,6 +107,7 @@ this table to the declarations.
 | `build_vm` | sandboxed builds in a libkrun microVM |
 | `darwin_build_vm` | sandboxed darwin builds in a macOS guest |
 | `sibling_sandbox` | sandboxed builds in a Kubernetes pod's sandbox container |
+| `runner_sandbox` | each build in a Kubernetes pod's runner container, which nixkube's NRI plugin makes the sandbox |
 | `postgres` | the store database on a PostgreSQL server; no daemon |
 
 Nix's `external-builders` is a Nix setting that pynixd's builder follows, not an experiment of pynixd.

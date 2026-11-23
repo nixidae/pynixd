@@ -68,6 +68,7 @@ from .outputs import (
     random_path,
 )
 from .restriction import SOCKET_NAME, RestrictionContext
+from .runner import RunnerSandbox
 from .settings import SandboxPath
 from .sibling import SiblingSandbox
 from .site import BuilderFailed, BuildPaths, BuildSite, builder_ended, choose_site
@@ -129,7 +130,9 @@ def _reaches_network(drv: BasicDerivation) -> bool:
 
 
 def in_linux_guest(
-    drv: BasicDerivation, settings: BuildSettings, vm: BuildVm | DarwinBuildVm | SiblingSandbox | None
+    drv: BasicDerivation,
+    settings: BuildSettings,
+    vm: BuildVm | DarwinBuildVm | SiblingSandbox | RunnerSandbox | None,
 ) -> bool:
     """Whether a Mac builds *drv* in its Linux build VM: the helper's job is then Linux's, not darwin's."""
     return isinstance(vm, BuildVm) and vm.builds(drv.platform) and external_builder(drv, settings) is None
@@ -475,10 +478,12 @@ def _prepare(
     user: build_users.BuildUser | None = None,
     *,
     chroot: bool = True,
+    top: Path | None = None,
 ) -> BuildPaths:
     """`startBuild` up to the environment, and `setupBuildChroot` (`unix/build/chroot.cc:12`) with *chroot*.
 
-    With *user*, the build directory is the build user's, and the chroot's root and store its group's.
+    With *user*, the build directory is the build user's, and the chroot's root and store its group's. *top* is
+    a fixed top directory in place of a new one: a runner container mounts its `build` directory by its path.
 
     NIX-DEVIATION (#27): without the chroot, `setBuildTmpDir`
     (`unix/build/derivation-builder-impl.hh:215`) gives the builder the top
@@ -492,7 +497,12 @@ def _prepare(
     build_dir.mkdir(parents=True, exist_ok=True)
     if user is not None:
         build_users.check_not_world_writable(build_dir)
-    top = Path(tempfile.mkdtemp(prefix="nix-", dir=build_dir))
+    if top is None:
+        top = Path(tempfile.mkdtemp(prefix="nix-", dir=build_dir))
+    else:
+        delete_path(top)
+        top.parent.mkdir(parents=True, exist_ok=True)
+        top.mkdir(0o700)
     tmp = top / "build"
     tmp.mkdir(0o700)
     build_users.chown_to(user, tmp)
@@ -697,7 +707,7 @@ async def build(
     check: bool = False,
     repair: bool = False,
     recursive: RecursiveServer | None = None,
-    vm: BuildVm | DarwinBuildVm | SiblingSandbox | None = None,
+    vm: BuildVm | DarwinBuildVm | SiblingSandbox | RunnerSandbox | None = None,
     on_usage: Callable[[BuildUsage], None] | None = None,
     sample_seconds: float = 0,
     aws_credentials: Callable[[str | None], AwsCredentials | None] | None = None,
@@ -734,8 +744,10 @@ async def build(
     # nix.conf, whose default is the sandbox. The build VM runs a sandboxed build only, so a Linux build always
     # gets the sandbox. Measure how many Linux builds on a Mac need `__noChroot` to reverse it.
     use_sandbox = linux_guest or uses_sandbox(drv, settings, relocated=relocated)
+    # The runner container is the sandbox, and its builder writes to this store: no chroot, and `/build`.
+    runner = vm if isinstance(vm, RunnerSandbox) else None
     # `ExternalDerivationBuilder` is a `DerivationBuilderImpl`: no chroot, whatever `sandbox` says.
-    chroot = external is None and use_sandbox and not darwin_host
+    chroot = external is None and use_sandbox and not darwin_host and runner is None
     impure = any(o.kind is OutputKind.IMPURE for o in drv.outputs.values())
     known = _known(drv, realised, drv_name)
     held = {path: PathLock(layout.real_path(path)) for path in known.values()}
@@ -834,7 +846,15 @@ async def build(
             return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(str(e)))
         try:
             paths = await anyio.to_thread.run_sync(
-                functools.partial(_prepare, engine, drv_path, settings, user, chroot=chroot)
+                functools.partial(
+                    _prepare,
+                    engine,
+                    drv_path,
+                    settings,
+                    user,
+                    chroot=chroot,
+                    top=None if runner is None else runner.top,
+                )
             )
         except build_users.BuildUserError as e:
             return LocalBuildResult(BuildResultStatus.MISC_FAILURE, show_error(str(e)))
@@ -875,7 +895,7 @@ async def build(
             path.hash_part(): fallback.hash_part() for path, fallback in redirected.items()
         }
         # `tmpDirInSandbox` (`external-derivation-builder.cc:22`): an external builder's environment names `/build`.
-        build_dir = SANDBOX_BUILD_DIR if chroot or external is not None else str(paths.tmp)
+        build_dir = SANDBOX_BUILD_DIR if chroot or external is not None or runner is not None else str(paths.tmp)
         env = build_env(
             drv.env,
             outputs=drv.outputs,
@@ -884,7 +904,10 @@ async def build(
             rewrites=rewrites,
             fixed_output=fixed,
             sandboxed=sandboxed,
-            impure_source={**os.environ, **settings.impure_env},
+            # NIX-DEVIATION (#27): `initEnv` (`unix/build/derivation-builder.cc:692`) takes an impure variable from the
+            # daemon's environment. Central writes the runner's environment before the controller runs, so a
+            # runner build gets `impure-env` alone. Measure which fetchers read a variable from the environment.
+            impure_source=dict(settings.impure_env) if runner is not None else {**os.environ, **settings.impure_env},
             exported=exported,
             build_dir=build_dir,
         )
