@@ -337,8 +337,14 @@ Answered 2026-11-23. Every item is decided.
    of every other run. It runs in the background until the API server
    answers: in server start it failed while the cluster came up (run
    `provk-left1`). A server that a hand-over started sweeps nothing, as the
-   old process still drains its builds. Phase `pod-left`. Not done yet: the
-   owner reference.
+   old process still drains its builds. Phase `pod-left`.
+   Done: the owner reference. Central reads its Pod's name, UID and namespace
+   from the downward API (`PYNIXD_POD_NAME`, `PYNIXD_POD_UID`,
+   `PYNIXD_POD_NAMESPACE`; nixkube's central sets them). Settings refuse a
+   namespace other than the build pods': Kubernetes counts an owner in
+   another namespace as absent, and deletes what it owns. Phase `pod-owner`
+   deletes a Pod that stands in for central's, and the garbage collector
+   deletes its build pod.
 8. **The fixed cost. Decided: measure each part, and state the cost.** About
    5.4 s of a build pod is not the build. At least 1 to 2 s of that is
    Kubernetes itself (a `true` pod starts in 1.4 s). The other gaps are

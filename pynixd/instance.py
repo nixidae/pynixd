@@ -42,7 +42,7 @@ from .health import HealthReport, LoopLagMonitor, StallWatchdog
 from .liveness_watch import DirtyFlag, StableRootsWatch
 from .provisioning.ec2 import Ec2Provider
 from .provisioning.gha import GhaProvider
-from .provisioning.kubernetes import KubernetesProvider
+from .provisioning.kubernetes import KubernetesProvider, OwnerPod
 from .provisioning.nomac import NomacProvider
 from .provisioning.provisioner import Provisioner
 from .provisioning.vivarium import VivariumProvider
@@ -472,10 +472,18 @@ class Server:
         kubernetes = self.settings.provisioning.kubernetes
         if kubernetes is None:
             return
+        settings = self.settings
+        owner_pod = None
+        if settings.pod_name is not None and settings.pod_uid is not None:
+            owner_pod = OwnerPod(name=settings.pod_name, uid=settings.pod_uid)
         for store in self.ctx.stores.values():
             if isinstance(store, BuildPodStore):
                 await store.arm(
-                    self.ctx.grants, host_key, KubernetesProvider(kubernetes), self.ctx.stores[LOCAL_STORE_ID]
+                    self.ctx.grants,
+                    host_key,
+                    KubernetesProvider(kubernetes),
+                    self.ctx.stores[LOCAL_STORE_ID],
+                    owner_pod,
                 )
                 # A successor of a hand-over sweeps nothing: the old process still drains its builds.
                 if self._inherited is None:

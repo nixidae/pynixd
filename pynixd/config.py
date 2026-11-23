@@ -1931,6 +1931,13 @@ class PynixdSettings(BaseSettings):
     reverse_initiator: ReverseInitiatorSettings = Field(default_factory=ReverseInitiatorSettings)
     provisioning: ProvisioningSettings = Field(default_factory=ProvisioningSettings)
     """Off while `pools` is empty. A pool needs the reverse acceptor and the store database."""
+    pod_name: str | None = None
+    """The pod pynixd runs in, from the downward API. With `pod_uid` and `pod_namespace`, each build pod
+    names it as its owner, and the garbage collector deletes the build pods when that pod is gone."""
+    pod_uid: str | None = None
+    pod_namespace: str | None = None
+    """Must be the build pods' namespace: Kubernetes counts an owner in another namespace as absent, and
+    deletes the pods it owns."""
 
     admin_users: set[str] = Field(default_factory=set)
     """Deprecated: list the key in `ssh_admin_keys` instead.
@@ -2094,6 +2101,23 @@ class PynixdSettings(BaseSettings):
         )
         if len(cold) > 1:
             raise ValueError(f"one gc_cold store at most, and {', '.join(cold)} set it")
+        return self
+
+    @model_validator(mode="after")
+    def _one_owner_pod(self) -> Self:
+        given = [self.pod_name, self.pod_uid, self.pod_namespace]
+        if not any(given):
+            return self
+        if not all(given):
+            raise ValueError("pod_name, pod_uid and pod_namespace: set all three, or none")
+        kubernetes = self.provisioning.kubernetes
+        # Only build pods name this pod: reverse-builder pools may live in any namespace.
+        builds_in_pods = any(isinstance(spec, BuildPodStoreSpec) for spec in self.stores.values())
+        if builds_in_pods and kubernetes is not None and kubernetes.namespace != self.pod_namespace:
+            raise ValueError(
+                f"pod_namespace {self.pod_namespace} is not provisioning.kubernetes.namespace {kubernetes.namespace}:"
+                " a build pod's owner in another namespace counts as absent, and Kubernetes deletes the pod"
+            )
         return self
 
     def to_stores(self) -> dict[StoreId, Store]:

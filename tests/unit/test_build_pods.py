@@ -26,22 +26,31 @@ from pynixd.build_job import (
     seconds_line,
 )
 from pynixd.build_result import failure
-from pynixd.config import BuildPodFarmSpec, BuildPodStoreSpec, KubernetesTemplateSettings
+from pynixd.config import (
+    BuildPodFarmSpec,
+    BuildPodStoreSpec,
+    KubernetesSettings,
+    KubernetesTemplateSettings,
+    ProvisioningSettings,
+    PynixdSettings,
+    StoreSpec,
+)
 from pynixd.exceptions import InfrastructureError
 from pynixd.placement import missing_input_bytes
+from pynixd.pod_build import process_started
 from pynixd.provisioning.kubernetes import (
     BUILD_STORE_LABEL,
     BuildPodEnd,
     BuildPodOwner,
     BuildPodWatch,
     FarmVolume,
+    OwnerPod,
     build_pod_manifest,
     build_store_label,
     pod_end,
     template_store_paths,
 )
 from pynixd.serde import BasicDerivation
-from pynixd.pod_build import process_started
 from pynixd.store.build_pods import BuildPodStore, PodTimes, checked_result, farm_references, farm_text
 from pynixd.store.scheduled import ProbeState
 
@@ -226,6 +235,35 @@ def test_a_build_pod_names_its_store_in_a_label() -> None:
     assert build_store_label("pods/x") == build_store_label("pods/x") != build_store_label("pods/y")
     assert build_store_label("-pods").isalnum()
     assert len(build_store_label("p" * 64)) <= 63
+
+
+def test_central_s_pod_owns_each_build_pod() -> None:
+    central = OwnerPod(name="pynixd-0", uid="5f0c")
+    template = KubernetesTemplateSettings(
+        pod={**FARM_TEMPLATE.pod, "metadata": {"ownerReferences": [{"kind": "Pod", "name": "kept", "uid": "1"}]}}
+    )
+
+    owned = build_pod_manifest(template, "pynixd-build-x", BuildPodOwner(store="pods", run="r0", pod=central))
+
+    assert owned["metadata"]["ownerReferences"] == [
+        {"kind": "Pod", "name": "kept", "uid": "1"},
+        {"apiVersion": "v1", "kind": "Pod", "name": "pynixd-0", "uid": "5f0c"},
+    ]
+    assert "ownerReferences" not in build_pod_manifest(FARM_TEMPLATE, "pynixd-build-x", OWNER)["metadata"]
+
+
+def test_central_s_pod_is_in_the_build_pods_namespace() -> None:
+    kubernetes = ProvisioningSettings(kubernetes=KubernetesSettings(namespace="builds", templates={}))
+    pods: dict[str, StoreSpec] = {"pods": BuildPodStoreSpec(template="buildpod", central_host="10.0.0.1")}
+    PynixdSettings(provisioning=kubernetes, stores=pods, pod_name="pynixd-0", pod_uid="5f0c", pod_namespace="builds")
+    with pytest.raises(ValueError, match="counts as absent"):
+        PynixdSettings(
+            provisioning=kubernetes, stores=pods, pod_name="pynixd-0", pod_uid="5f0c", pod_namespace="nixkube"
+        )
+    # Without a build pod store nothing names the pod: reverse-builder pools may live in another namespace.
+    PynixdSettings(provisioning=kubernetes, pod_name="pynixd-0", pod_uid="5f0c", pod_namespace="nixkube")
+    with pytest.raises(ValueError, match="set all three"):
+        PynixdSettings(provisioning=kubernetes, pod_name="pynixd-0")
 
 
 def test_a_pod_says_why_it_ended() -> None:

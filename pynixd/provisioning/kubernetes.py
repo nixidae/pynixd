@@ -375,12 +375,26 @@ def build_store_label(store_id: str) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class OwnerPod:
+    """Central's own pod. The garbage collector deletes the build pods that name it once it is gone."""
+
+    name: str
+    uid: str
+
+    def reference(self) -> Manifest:
+        # No `controller`: a pod's controller is its ReplicaSet or Job, and central is neither.
+        return {"apiVersion": "v1", "kind": "Pod", "name": self.name, "uid": self.uid}
+
+
+@dataclass(frozen=True, slots=True)
 class BuildPodOwner:
     """Who made a build pod: a store of one central, in one run of its process. A label holds each."""
 
     store: str
     run: str
     """New in each process: a pod of another run can never report, as its key died with that process."""
+    pod: OwnerPod | None = None
+    """Central's pod, when central runs in one. A restart in the same pod keeps it, so the sweep stays."""
 
     def labels(self) -> dict[str, str]:
         return {
@@ -572,6 +586,8 @@ def build_pod_manifest(
     metadata["name"] = name
     metadata.pop("generateName", None)
     metadata.setdefault("labels", {}).update(owner.labels())
+    if owner.pod is not None:
+        metadata["ownerReferences"] = [*(metadata.get("ownerReferences") or []), owner.pod.reference()]
     spec = pod.setdefault("spec", {})
     spec["restartPolicy"] = "Never"
     if priority_class is not None:

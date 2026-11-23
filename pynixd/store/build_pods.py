@@ -11,6 +11,7 @@ outputs to central's store by then.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import secrets
 import time
 from dataclasses import dataclass
@@ -39,7 +40,14 @@ from ..build_job import (
 )
 from ..build_result import failure, result_succeeded
 from ..exceptions import InfrastructureError
-from ..provisioning.kubernetes import BuildPodOwner, BuildPodWatch, FarmVolume, farm_volume, template_store_paths
+from ..provisioning.kubernetes import (
+    BuildPodOwner,
+    BuildPodWatch,
+    FarmVolume,
+    OwnerPod,
+    farm_volume,
+    template_store_paths,
+)
 from ..provisioning.provider import ProviderError
 from .scheduled import ProbeState, ScheduledStore
 
@@ -200,8 +208,16 @@ class BuildPodStore(ScheduledStore):
                 log.info("build_pods_left_deleted", store_id=self.store_id, pods=left)
             return
 
-    async def arm(self, grants: Grants, host_key: str, kubernetes: KubernetesProvider, local: Store) -> None:
-        """Take what the server has only once it runs: the grants, central's SSH host key, the provider.
+    async def arm(
+        self,
+        grants: Grants,
+        host_key: str,
+        kubernetes: KubernetesProvider,
+        local: Store,
+        owner_pod: OwnerPod | None = None,
+    ) -> None:
+        """Take what the server has only once it runs: the grants, central's SSH host key, the provider, and
+        central's own pod, which owns each build pod.
 
         A store whose pods take a farm refuses to start here, not at its first build: a template without the
         farm's volume, or a store path the template names that *local* cannot give a node, fails every build.
@@ -209,6 +225,7 @@ class BuildPodStore(ScheduledStore):
         self.grants = grants
         self.central_host_key = host_key
         self.kubernetes = kubernetes
+        self.owner = dataclasses.replace(self.owner, pod=owner_pod)
         if self.spec.farm is None:
             return
         template = kubernetes.build_pod_template(self.spec.template)

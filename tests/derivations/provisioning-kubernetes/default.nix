@@ -708,6 +708,11 @@ vivariumLib.mkTest {
             "input-primitives"
           ];
         };
+        # Restarts pynixd, as pod-left does.
+        pod-owner = {
+          script = ../../provisioning/kubernetes_pod_owner.py;
+          after = [ "pod-left" ];
+        };
       }
   );
 }
