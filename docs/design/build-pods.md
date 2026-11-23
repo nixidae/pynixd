@@ -414,6 +414,27 @@ Answered 2026-11-23. Every item is decided.
      sets `reject_namespace_adjustment` or `reject_custom_seccomp_adjustment`
      refuses this route, and `required_plugins` can refuse a pod that the
      plugin did not see.
+   Decided (User, 2026-11-23): build this sandbox for nodes labelled
+   `false`, in this shape. The pod has two containers. The controller talks
+   to central. The runner runs the build, and its own process is the
+   builder: no runner process and no chroot. The design:
+   - Central writes the builder, its arguments and its environment into the
+     runner container's spec. One pod runs one build, so central knows them
+     when it writes the pod.
+   - The runner's image is empty. Its root holds the farm at `/nix` and what
+     the runtime supplies (`/proc`, `/dev`, `/dev/shm`). The build sees no
+     store path it did not declare.
+   - The NRI plugin adds new network, IPC, UTS and cgroup namespaces and
+     Nix's seccomp filter. It removes the kubelet mounts, and an OCI hook
+     sets the host name to `localhost`.
+   - The runner runs as a build uid with no capabilities.
+   - The controller is a native sidecar that starts first and fills the
+     build directory. The runner waits for its startup probe.
+   - The controller reads the log and the exit status through the API, with
+     RBAC on its own pod. A cancel deletes the pod, and `max-silent-time`
+     acts on the log stream.
+   Not measured yet: the host name hook, an empty image's root, and NRI on a
+   pod with a native sidecar.
 7. **Pods left behind. Decided: ownership, and a sweep at start.** A pod
    outlives a central that dies; it ends at `activeDeadlineSeconds`.
    - Ownership: central in the cluster makes its own Pod the owner of each
