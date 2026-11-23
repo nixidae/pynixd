@@ -77,6 +77,42 @@ def fresh_proc_allowed(scratch: Path) -> bool:
         return os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]) == 0
 
 
+def leftovers(parents: dict[int, int], keep: int) -> set[int]:
+    """The processes of *parents* (pid to parent pid) that are not *keep* or one of its ancestors."""
+    spared = {0}
+    pid = keep
+    while pid not in spared:
+        spared.add(pid)
+        pid = parents.get(pid, 0)
+    return set(parents) - spared
+
+
+def _parents() -> dict[int, int]:
+    found: dict[int, int] = {}
+    for entry in Path("/proc").iterdir():
+        if entry.name.isdigit():
+            with contextlib.suppress(FileNotFoundError, ProcessLookupError):
+                # The field after the command, which may hold spaces and parentheses.
+                found[int(entry.name)] = int((entry / "stat").read_text().rpartition(")")[2].split()[1])
+    return found
+
+
+def kill_leftovers() -> None:
+    """`killUser` for a build without a chroot: the container runs one build, so every other process is its.
+
+    A process the builder left holds the terminal open, and the runner then never sees the log end. Nix's own
+    sandbox gets this from its pid namespace; a build without one has a build user to kill, or hangs.
+    """
+    while targets := leftovers(_parents(), os.getpid()):
+        for pid in targets:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGKILL)
+        # Orphans come back to the runner, as pid 1 of the container: reap them, or each stays as a zombie.
+        with contextlib.suppress(ChildProcessError):
+            while os.waitpid(-1, os.WNOHANG) != (0, 0):
+                pass
+
+
 def own_pid_namespace(spec_file: Path) -> None:
     """Ask the helper for a pid namespace of its own in *spec_file*, the job's `ChildSpec`."""
     spec = json.loads(spec_file.read_text())
@@ -182,9 +218,11 @@ def _serve(conn: socket.socket, *, fresh_proc: bool) -> None:
         os.close(status)
         if control is not None:
             control.close()
+        exited = os.pidfd_open(helper.pid)
         with selectors.DefaultSelector() as selector:
             selector.register(master, selectors.EVENT_READ)
             selector.register(conn, selectors.EVENT_READ)
+            selector.register(exited, selectors.EVENT_READ)
             open_log = True
             while open_log:
                 for key, _ in selector.select():
@@ -192,6 +230,11 @@ def _serve(conn: socket.socket, *, fresh_proc: bool) -> None:
                         # The waiter sends nothing after the job: readable means it went away.
                         helper.kill()
                         selector.unregister(conn)
+                        continue
+                    if key.fileobj == exited:
+                        selector.unregister(exited)
+                        code = helper.wait()
+                        kill_leftovers()
                         continue
                     try:
                         piece = os.read(master, 64 * 1024)
@@ -203,6 +246,7 @@ def _serve(conn: socket.socket, *, fresh_proc: bool) -> None:
                     with contextlib.suppress(BrokenPipeError):
                         _send(conn, LOG, piece)
         os.close(master)
+        os.close(exited)
         code = helper.wait()
     with contextlib.suppress(BrokenPipeError):
         _send(conn, EXIT, str(code).encode())

@@ -537,8 +537,6 @@ class SiblingSite(BuildSite):
         spec["cgroup"] = None
 
     async def launch(self, paths: BuildPaths, spec_file: Path, cgroup: Path | None, *, recursive: bool) -> Launch:
-        if paths.chroot_parent is None:
-            raise ValueError("a sibling sandbox runs the sandbox only")
         argv = [sys.executable, "-I", "-m", "pynixd_store.builder.sibling", "wait"]
         argv += [str(self.sandbox.rendezvous), str(spec_file), str(paths.top), *(["recursive"] if recursive else [])]
         return Launch(argv)
@@ -579,7 +577,8 @@ def choose_site(
     if vm is None:
         return host, None
     if isinstance(vm, SiblingSandbox):
-        return (SiblingSite(vm), None) if chroot else (host, "the build has no sandbox")
+        # A build without the chroot as well: the sandbox container keeps it from the daemon's key and files.
+        return SiblingSite(vm), None
     if isinstance(vm, DarwinBuildVm):
         return _choose_darwin(drv, settings, vm, host, darwin_sandbox, real_store_dir, visible, outputs or [])
     if not chroot:

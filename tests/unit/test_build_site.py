@@ -19,7 +19,16 @@ from pynixd_store.builder.darwin_vm import DarwinBuildVm
 from pynixd_store.builder.local import unsupported
 from pynixd_store.builder.outputs import BuildFailure
 from pynixd_store.builder.settings import BuildSettings
-from pynixd_store.builder.site import BuilderFailed, BuildPaths, DarwinVmSite, HostSite, VmSite, choose_site
+from pynixd_store.builder.sibling import SiblingSandbox, leftovers
+from pynixd_store.builder.site import (
+    BuilderFailed,
+    BuildPaths,
+    DarwinVmSite,
+    HostSite,
+    SiblingSite,
+    VmSite,
+    choose_site,
+)
 from pynixd_store.builder.users import BuildUser
 from pynixd_store.builder.vm import BuildVm
 
@@ -84,7 +93,7 @@ def _drv(platform: str = "x86_64-linux") -> BasicDerivation:
 
 def _choose(
     *,
-    vm: BuildVm | None = VM,
+    vm: BuildVm | SiblingSandbox | None = VM,
     platform: str = "x86_64-linux",
     chroot: bool = True,
     sandboxed: bool = True,
@@ -107,6 +116,29 @@ def _choose(
 def test_a_store_without_a_vm_builds_on_the_host_and_names_no_reason() -> None:
     assert _choose(vm=None) == (HostSite(chroot=True), None)
     assert _choose(vm=None, chroot=False) == (HostSite(chroot=False), None)
+
+
+@pytest.mark.parametrize("chroot", [True, False])
+def test_a_pods_sandbox_container_runs_every_build(chroot: bool) -> None:
+    """A build without the chroot too: in the daemon's container it could read the pod's job key."""
+    sibling = SiblingSandbox(Path("/build/sibling"))
+    assert _choose(vm=sibling, chroot=chroot) == (SiblingSite(sibling), None)
+
+
+@pytest.mark.parametrize(
+    ("parents", "keep", "left"),
+    [
+        # The runner as pid 1: the helper's builder left a daemon, reparented to the runner.
+        ({1: 0, 7: 1, 9: 7, 12: 1}, 1, {7, 9, 12}),
+        # The runner under an init: neither is a leftover.
+        ({1: 0, 5: 1, 8: 5, 11: 5}, 5, {8, 11}),
+        ({1: 0}, 1, set()),
+    ],
+)
+def test_the_sandbox_container_kills_all_but_the_runner_and_its_ancestors(
+    parents: dict[int, int], keep: int, left: set[int]
+) -> None:
+    assert leftovers(parents, keep) == left
 
 
 @pytest.mark.parametrize("platform", ["x86_64-linux", "builtin"])
