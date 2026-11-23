@@ -454,7 +454,10 @@ vivariumLib.mkTest {
           central_host = address;
           central_port = sshPort;
           systems = [ system ];
-          system_features = [ podFarmFeature ];
+          system_features = [
+            podFarmFeature
+            "recursive-nix"
+          ];
           mandatory_features = [ podFarmFeature ];
         };
         stores.helper = {
