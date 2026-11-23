@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import time
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -38,7 +40,7 @@ from pynixd.config import (
 )
 from pynixd.exceptions import InfrastructureError
 from pynixd.placement import missing_input_bytes
-from pynixd.pod_build import process_started
+from pynixd.pod_build import _own_home, process_started
 from pynixd.provisioning.kubernetes import (
     BUILD_STORE_LABEL,
     BuildPodEnd,
@@ -191,6 +193,19 @@ def test_a_build_pod_says_what_each_part_of_its_fixed_cost_took() -> None:
     assert PodTimes(asked=0.0, ended=1.0).fixed() is None
     # The process started before this test did, and not before the machine booted.
     assert 0 < time.monotonic() - process_started() < time.clock_gettime(time.CLOCK_BOOTTIME)
+
+
+def test_build_one_makes_a_home_the_pod_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pod whose store is `/` names its home, and Nix takes it only when this user owns it."""
+    home = tmp_path / "build" / "home"
+    monkeypatch.setenv("HOME", str(home))
+    settings = PynixdSettings.model_validate(
+        {"stores": {"local": {"type": "local-socket", "store_path": "/", "managed": True}}}
+    )
+    _own_home(settings)
+    assert home.is_dir()
+    assert home.stat().st_uid == os.geteuid()
+    assert os.environ["HOME"] == str(home)
 
 
 def test_a_build_pod_store_learns_its_fixed_cost() -> None:

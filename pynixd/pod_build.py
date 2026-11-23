@@ -156,10 +156,13 @@ def _own_name() -> None:
 def _own_home(settings: PynixdSettings) -> None:
     """Nix takes HOME only when this user owns it, and asks passwd else; a pod's image may have no entry for its uid.
 
-    Measured in a farm pod as uid 1000 with no passwd: "cannot determine user's home directory". The home goes
-    under the local store's root, which the pod writes: a build pod may have no writable `/tmp` (measured).
+    Measured in a farm pod as uid 1000 with no passwd: "cannot determine user's home directory". A `HOME` that
+    is not there yet is made, so this user owns it. Else the home goes under the local store's root, which the
+    pod writes: a build pod may have no writable `/tmp` (measured).
     """
     home = os.environ.get("HOME")
+    if home and not os.path.lexists(home):
+        Path(home).mkdir(parents=True)
     if home and Path(home).is_dir() and Path(home).stat().st_uid == os.geteuid():
         return
     local = settings.stores.get(str(LOCAL_STORE_ID))
