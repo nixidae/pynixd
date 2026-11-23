@@ -49,7 +49,7 @@ from .store.transfer import stream_paths_store_to_store
 from .substitution_queue import SubstitutionQueue
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Sequence
+    from collections.abc import AsyncIterator, Callable, Iterable, Sequence
 
     from anyio.abc import TaskGroup
 
@@ -67,6 +67,25 @@ if TYPE_CHECKING:
     from .store.local_daemon import LocalStore
 
 log = structlog.get_logger(__name__)
+
+
+def nest(build: QueuedBuild, builds: Iterable[QueuedBuild], askers: Sequence[ClientConn]) -> None:
+    """Mark *build* nested in each running build whose build pod session among *askers* asked for it."""
+    served = {asker.serves_build for asker in askers if asker.serves_build is not None}
+    if not served:
+        return
+    for outer in builds:
+        if outer.is_building and str(outer.request.drv_path) in served and outer is not build:
+            build.nested_in.add(outer.build_id)
+            build.depth = max(build.depth, outer.depth + 1)
+
+
+def waits_on_nested(builds: Iterable[QueuedBuild]) -> set[BuildId]:
+    """The running builds that wait on a nested build not yet done: their slot is free (nixidae/nixidae#1576).
+
+    The outer build's pod still runs, so the cluster, not the slot count, limits how many pods run.
+    """
+    return {outer for build in builds if not build.is_done for outer in build.nested_in}
 
 
 class Scheduler:
@@ -299,6 +318,8 @@ class Scheduler:
             pools=pools,
         )
         queued = self.queue.by_id.get(res[0])
+        if queued is not None:
+            nest(queued, self.queue.by_id.values(), askers)
         if queued is not None and queued.memory_model is None:
             queued.memory_model = memory
         if queued is not None and isinstance(self.local_store, LocalDBStore):
@@ -453,8 +474,9 @@ class Scheduler:
         schedulable: list[QueuedBuild] = []
 
         assigned_count: dict[StoreId, int] = {s.store_id: 0 for s in self.stores.values()}
+        waiting = waits_on_nested(pending)
         for build in pending:
-            if build.is_building and build.assigned_store_id:
+            if build.is_building and build.assigned_store_id and build.build_id not in waiting:
                 assigned_count[build.assigned_store_id] += 1
 
         for build in pending:

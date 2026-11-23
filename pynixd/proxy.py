@@ -182,6 +182,8 @@ class DaemonProxy:
         self.client = ClientConn(w=self.w)
         self._client_traceparent = ""
         """What the client sent under `open-telemetry`. `client.traceparent` is the operation span's, when it has one."""
+        if grant is not None:
+            self.client.serves_build = grant.drv_path
         self.ctx = ctx
         self.version: int = wire.PROTOCOL_VERSION
         self.standard_features: frozenset[str] = frozenset()

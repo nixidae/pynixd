@@ -154,6 +154,10 @@ class QueuedBuild:
         self.pools: frozenset[str] = frozenset()
         """The provisioning pools the client's `builders` names: their builders take this build, and lack of one
         launches one, whatever the pool's `mandatory_features`. The first client to ask decides."""
+        self.nested_in: set[BuildId] = set()
+        """The running builds whose recursive Nix asked for this one (nixidae/nixidae#1576)."""
+        self.depth = 0
+        """How deep in recursive Nix: 0 for a client's build, one more than the deepest build it is nested in."""
         self.told_wait: str | None = None
         """What the clients last read of why this build waits; `tell_wait` repeats nothing."""
         self.last_traced: tuple[tuple[object, ...], float] | None = None
@@ -552,11 +556,12 @@ async def _send_and_record_failed(
         failed.append(failed_client)
 
 
-def _the_order_nix_takes(build: QueuedBuild) -> tuple[str, str, int]:
-    """The sort key of `get_pending`: the name of the derivation, then the path."""
+def _the_order_nix_takes(build: QueuedBuild) -> tuple[int, str, str, int]:
+    """The sort key of `get_pending`: the deepest nested build first, then the name of the derivation, then the
+    path. A build an outer one waits on goes first, or the outer one waits on a slot it holds itself."""
     path = str(build.request.drv_path)
     name = path.rpartition("/")[2].partition("-")[2]
-    return (name, path, int(build.build_id))
+    return (-build.depth, name, path, int(build.build_id))
 
 
 def _dedup_key(request: BuildDerivationRequest) -> tuple[str, int]:

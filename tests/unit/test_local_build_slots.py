@@ -59,8 +59,11 @@ class FakeBuild:
         self.options = options
         self.build_id = "build-1"
         self.is_building = False
+        self.is_done = False
         self.assigned_store_id: StoreId | None = None
         self.holders: set[RequestId] = set()
+        # The count frees the slot of a build that waits on a nested one (nixidae/nixidae#1576).
+        self.nested_in: set[BuildId] = set()
 
 
 def _running_build(store_id: StoreId) -> FakeBuild:

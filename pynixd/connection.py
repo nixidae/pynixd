@@ -98,6 +98,9 @@ class ClientConn:
         self.on_this_machine = False
         """Whether the client runs on this machine: a Unix socket session, or recursive Nix from a local build.
         `DaemonProxy` sets it from its transport."""
+        self.serves_build: str | None = None
+        """The derivation a build pod's session builds (its grant's). A build this client asks for is nested in
+        that one: the scheduler places it ahead, and frees the outer build's slot while it waits."""
         self.pynixd_options: dict[PynixdOption, str] = {}
         """pynixd's own settings for the session, from the SSH command (`command_options`). Never sent upstream."""
         self.options: SetOptionsRequest | None = None
