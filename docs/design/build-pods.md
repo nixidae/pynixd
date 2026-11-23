@@ -327,6 +327,18 @@ Answered 2026-11-23. Every item is decided.
    it. The profile must be on each node (nixkube installs it). Ubuntu 23.10
    and later with the AppArmor restriction, or `max_user_namespaces=0`, forbid
    unprivileged user namespaces.
+   Revised (User, 2026-11-23): keep the sandbox where AppArmor is the only
+   obstacle. The restriction lifts for a process whose AppArmor profile grants
+   `userns`. So nixkube loads such a profile on each node that restricts, and
+   the build pod names it. That is Ubuntu's default, so most nodes keep
+   Nix's sandbox and build alike. The template without the sandbox is opt-in
+   and off by default, for a node with user namespaces off entirely. The node
+   DaemonSet probes: it reads `max_user_namespaces`,
+   `apparmor_restrict_unprivileged_userns` and `unprivileged_userns_clone`,
+   tries `unshare(CLONE_NEWUSER)` as an unprivileged uid, and labels the node.
+   Its process is not a build pod's container, so the label can be wrong at
+   the edges. A build pod that still fails is an infrastructure error, and
+   central builds elsewhere. The NetworkPolicy applies to every build pod.
 7. **Pods left behind. Decided: ownership, and a sweep at start.** A pod
    outlives a central that dies; it ends at `activeDeadlineSeconds`.
    - Ownership: central in the cluster makes its own Pod the owner of each
