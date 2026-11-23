@@ -348,6 +348,21 @@ Answered 2026-11-23. Every item is decided.
    a node selector on it. Decided (User): one store, not one per kind. The
    store holds the templates by kind, and central picks one for each pod from
    the labels of the Ready nodes. Central then needs to list nodes.
+   Revised again (User, 2026-11-23): no AppArmor profile of nixkube's own.
+   Upstream AppArmor lets a confined process make a user namespace unless its
+   profile mediates them (`security/apparmor/task.c`, `aa_profile_ns_perm`).
+   containerd's default container profile is written to ABI 3.0, which has no
+   `userns` rule (`contrib/apparmor/template.go`). Ubuntu's restriction is an
+   Ubuntu kernel patch, and it acts on unconfined processes. So a pod that
+   names no AppArmor profile is likely to keep the sandbox on Ubuntu. This is
+   not measured on an Ubuntu kernel. The probe settles it per node: the
+   DaemonSet's `userns-probe` container (`nixkube-userns-probe`) runs with
+   the sandbox container's security context (one option,
+   `buildPods.sandboxSecurityContext`). It makes the helper's namespaces,
+   maps its uid, mounts and sets a host name inside, and labels the node
+   `nixkube/userns` `true` or `false` (the error in `nixkube/userns-error`).
+   The template selects `nixkube/userns=true`. Two kinds remain: the sandbox
+   template, and the opt-in template without it for nodes labelled `false`.
 7. **Pods left behind. Decided: ownership, and a sweep at start.** A pod
    outlives a central that dies; it ends at `activeDeadlineSeconds`.
    - Ownership: central in the cluster makes its own Pod the owner of each
