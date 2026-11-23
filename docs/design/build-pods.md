@@ -38,7 +38,7 @@ a kubernetes-build-pods store
   |- makes a key, grants it the
   |  derivation's outputs
   |- creates the Pod, then the  -------> container "pynixd": pynixd build-one
-  |  Secret (job + key) it owns            store /build, lower store /
+  |  Secret (job + key) it owns            store /nix, on the pod's emptyDir
   |                                        dials central over SSH
   |<-------- SSH, per-build key ---------  reads nothing it lacks
   |                                        builds through the sibling sandbox
@@ -121,7 +121,8 @@ change it sees.
 
 ## The sandbox
 
-The pod has two containers on one `emptyDir` at `/build`:
+The pod has two containers on one `emptyDir` at `/build`, and its store on
+another (see the farm, below):
 
 - **pynixd** runs `pynixd build-one`. It holds the pod's store and its
   database, talks to central, and runs `build()` of pynixd's own builder
@@ -183,21 +184,34 @@ With `farm.volume`, central gives each pod a farm:
 2. The pod's CSI volume asks nixkube for that path, with
    `presentation: farm`, under each of the store's systems.
 3. The node realises the path from central, its substituter
-   (`ssh-ng://nix@pynixd`). nixkube mounts a tmpfs at the volume's
-   `nix/store`, binds each closure path read-only into it, and writes the
-   closure's database. The pod mounts the volume as its whole `/nix`.
-4. The pod's pynixd opens the farm as the **lower store** of its own store in
-   `/build` (`lower_store = "/"`, `LowerStoreEngine`). The farm's paths are
-   valid in the pod's store, their files stay in the farm, and writes go to
-   `/build`. No OverlayFS takes part.
+   (`ssh-ng://nix@pynixd`). The volume names the pod's emptyDir `store`
+   (`storeVolume`). nixkube binds that emptyDir as the volume's `nix`,
+   private, binds each closure path read-only into its `store`, and writes
+   the closure's database. The pod mounts the volume as its whole `/nix`.
+4. The pod's pynixd uses `/nix` as its own store (`store_path = "/"`). The
+   farm's paths are valid in nixkube's database, their files stay the node's,
+   and outputs go to the emptyDir. No OverlayFS takes part.
 5. The helper binds each input from the farm into the build
    (`StoreEngine.files_of`).
 
-**Measured** (run `nkcentral3`, nixkube's cluster test on QEMU): central built
-a busybox derivation in a farm pod. The pod's lower store held 174 paths, the
-closure of the farm root, and it copied 0 bytes of input from central. On the
-pynixd test's stand-in farm the same build copied 39,552,408 bytes on the
-copy-in pod and 0 on the farm pod (run `provk-qfull4`).
+The outputs count against the pod's ephemeral storage, and the inputs do not.
+The kubelet's disk walk crosses no other `st_dev`, and a bind keeps its
+source's, so an input bind at the emptyDir's own path would count. nixkube's
+binds attach at the volume's path in its own namespace, and its bind of the
+emptyDir is private, so none propagates there. A read-only farm on a tmpfs
+(`lower_store = "/"`) is the alternative, and it puts the pod's writes in
+`/build`, which forces the sandbox: a relocated store always sandboxes.
+
+**Measured** (run `nkdisk4`, nixkube's cluster test on QEMU): central built a
+busybox derivation in a farm pod. The farm held 174 paths, the closure of the
+farm root, and the pod copied 0 bytes of input from central. On a probe pod
+with a 4 MiB output the kubelet counted 8,548,352 bytes on the emptyDir; the
+closure is 39,499,458 bytes. The rest is Nix's database, with its `reserved`
+file (8 MiB apparent size), a fixed cost per pod. The kubelet counts only an emptyDir that a
+container mounts (0 bytes unmounted, measured), so the template mounts it
+read-only as well. On the pynixd test's stand-in farm the same build copied
+39,552,408 bytes on the copy-in pod and 0 on the farm pod (run
+`provk-qfull4`).
 
 What the farm costs instead: one realisation of each path on each node, and
 one bind per path. Binding pynixd's closure (132 paths) took 4.3 ms

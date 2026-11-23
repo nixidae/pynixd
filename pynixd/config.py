@@ -962,8 +962,10 @@ class BuildPodFarmSpec(BaseModel):
 
     The path is a text file whose references are the build's inputs and every store path the template names,
     so its closure is what the pod runs and builds from. A nixkube node realises it from central, its
-    substituter, and binds each closure path read-only (`presentation: farm`). The pod's pynixd reads the
-    farm as its lower store (`LocalSocketStoreSpec.lower_store`) and copies no input in.
+    substituter, and binds each closure path read-only (`presentation: farm`). With nixkube's `storeVolume`
+    the farm's store is writable, on the pod's own emptyDir, and nixkube's database holds every closure path
+    valid: the pod's pynixd uses `/nix` as its store and copies no input in. A read-only farm instead takes
+    `LocalSocketStoreSpec.lower_store`.
     """
 
     volume: str
