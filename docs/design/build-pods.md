@@ -389,6 +389,31 @@ Answered 2026-11-23. Every item is decided.
    waits for the pod's deadline. Next (User): measure whether NRI can make
    the builder container itself Nix's sandbox. The runtime then makes the
    namespaces, and a node labelled `false` keeps the sandbox.
+   Measured (2026-11-23, QEMU node, containerd 2.4.1, NRI v0.12.3, runc;
+   nixkube's `nriprobe` phase). A second plugin changes one container of a
+   pod, and a control container in the same pod keeps each result apart:
+   - New network, IPC, UTS and cgroup namespaces: applied. The network
+     namespace holds `lo` alone, up, with 127.0.0.1, and a bind works. That
+     is Nix's network.
+   - A seccomp policy of the plugin's own: applied. It refuses a setuid
+     chmod with EPERM and lets a plain chmod through, as Nix's filter does.
+   - Mount removal: `/etc/hosts`, `/etc/hostname`, `/etc/resolv.conf`, the
+     termination log and the service account token are all gone.
+   - Env removal: not applied. NRI v0.12.3 drops the removal of a variable
+     that no plugin set, so all eight `KUBERNETES_*` stayed. containerd/nri
+     193a7fdfa4 fixes it, after v0.12.5. NRI's `args` replace the process,
+     so the runner can start the builder with an empty environment anyway.
+   - Host name: the new UTS namespace keeps the node's name (`cp`). NRI has
+     no field for it, and Nix sets `localhost`. Setting it needs
+     CAP_SYS_ADMIN over that namespace: an OCI hook can, the container
+     cannot. Not measured.
+   - No user namespace: NRI has no field for uid maps. On a node labelled
+     `false` the build then runs as a build user in the host's user
+     namespace, as Nix does without `auto-allocate-uids`.
+   - containerd's `default_validator` is off unless set. An operator who
+     sets `reject_namespace_adjustment` or `reject_custom_seccomp_adjustment`
+     refuses this route, and `required_plugins` can refuse a pod that the
+     plugin did not see.
 7. **Pods left behind. Decided: ownership, and a sweep at start.** A pod
    outlives a central that dies; it ends at `activeDeadlineSeconds`.
    - Ownership: central in the cluster makes its own Pod the owner of each
