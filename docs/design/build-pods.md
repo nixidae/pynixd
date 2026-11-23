@@ -377,6 +377,18 @@ Answered 2026-11-23. Every item is decided.
    `nixkube/userns` `true` or `false` (the error in `nixkube/userns-error`).
    The template selects `nixkube/userns=true`. Two kinds remain: the sandbox
    template, and the opt-in template without it for nodes labelled `false`.
+   Built (2026-11-23): `buildPods.unsandboxed`, off by default, adds
+   `buildpods-<system>-unsandboxed` second in each store's list. It selects
+   `nixkube/userns=false`, sets `sandbox = false`, and keeps the sandbox
+   container with the pod's RuntimeDefault seccomp profile. The build runs
+   there, not beside pynixd (User): it cannot read the job's key, write the
+   termination message or reach pynixd's process. It shares the pod's
+   network and host name. The sandbox container runs one build, so the
+   runner kills every other process in it once the helper exits. Without
+   that, a process the builder leaves holds the terminal open and the build
+   waits for the pod's deadline. Next (User): measure whether NRI can make
+   the builder container itself Nix's sandbox. The runtime then makes the
+   namespaces, and a node labelled `false` keeps the sandbox.
 7. **Pods left behind. Decided: ownership, and a sweep at start.** A pod
    outlives a central that dies; it ends at `activeDeadlineSeconds`.
    - Ownership: central in the cluster makes its own Pod the owner of each
