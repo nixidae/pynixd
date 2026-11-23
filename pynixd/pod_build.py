@@ -11,6 +11,7 @@ pod.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -28,7 +29,7 @@ from pynixd_store.builder.settings import NotBuiltHere
 from .build_job import JOB_NAME, KEY_NAME, Job, decode_request, result_message
 from .build_result import failure, result_succeeded
 from .cli.base import load_settings, setup_logging
-from .config import SSHSubprocessStoreSpec
+from .config import LocalSocketStoreSpec, SSHSubprocessStoreSpec
 from .execution import without_error_prefix
 from .instance import Server
 from .recursive import restricted_server
@@ -39,6 +40,8 @@ from .store.transfer import stream_paths_store_to_store
 
 if TYPE_CHECKING:
     from nix_daemon_protocol.logs import LogMessage
+
+    from .config import PynixdSettings
 
 log = structlog.get_logger(__name__)
 
@@ -102,8 +105,27 @@ async def build_one(job_dir: Path, result_path: Path) -> int:
     return 0
 
 
+def _own_home(settings: PynixdSettings) -> None:
+    """Nix takes HOME only when this user owns it, and asks passwd else; a pod's image may have no entry for its uid.
+
+    Measured in a farm pod as uid 1000 with no passwd: "cannot determine user's home directory". The home goes
+    under the local store's root, which the pod writes: a build pod may have no writable `/tmp` (measured).
+    """
+    home = os.environ.get("HOME")
+    if home and Path(home).is_dir() and Path(home).stat().st_uid == os.geteuid():
+        return
+    local = settings.stores.get(str(LOCAL_STORE_ID))
+    # A store at `/` is the machine's, whose root is no place for a home.
+    if not isinstance(local, LocalSocketStoreSpec) or local.store_path == Path("/"):
+        return
+    own = Path(local.store_path) / "home"
+    own.mkdir(exist_ok=True)
+    os.environ["HOME"] = str(own)
+
+
 def build_one_main(args: argparse.Namespace) -> None:
     settings = load_settings()
+    _own_home(settings)
     setup_logging(settings)
     code = anyio.run(
         build_one,
