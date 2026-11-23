@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import os
+import sqlite3
+from contextlib import closing
 from typing import TYPE_CHECKING
 
+import anyio
 import pytest
 
 from pynixd_store.create_store import open_local_store
@@ -31,6 +34,21 @@ async def tables(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncIterato
     assert db.schema.usable, db.schema.reason
     async with db:
         yield db.provisioned
+
+
+async def test_reads_answer_while_another_writer_holds_the_lock(tmp_path: Path) -> None:
+    """The provisioner reads its rows on every step. A read that takes the write lock waits behind every writer of
+    `db.sqlite`, and under a burst of builds it fails at the busy timeout. nixidae/nixidae#1582."""
+    layout = StoreLayout.chroot(tmp_path)
+    os.close(open_local_store(layout, {}, "2.35.0"))
+    async with await LocalStoreDB.open(layout) as db:
+        await db.provisioned.record_launch("p-1", "arm", "vivarium", "aa" * 32, at_ms=10)
+        with closing(sqlite3.connect(layout.db_path, timeout=0, isolation_level=None)) as writer:
+            writer.execute("BEGIN IMMEDIATE")
+            with anyio.fail_after(5):
+                assert [row.id for row in await db.provisioned.live()] == ["p-1"]
+                assert await db.provisioned.by_token("aa" * 32) is not None
+            writer.execute("ROLLBACK")
 
 
 async def test_a_launch_is_live_until_it_ends(tables: ProvisioningTables) -> None:

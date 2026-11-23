@@ -78,13 +78,18 @@ class ProvisioningTables:
             await session.execute(session.sql.provisioning.set_ended, (ENDED, at_ms, reason, id_))
 
     async def live(self) -> list[InstanceRow]:
-        """Every instance not ended, oldest first."""
-        async with self._db.transaction() as session:
+        """Every instance not ended, oldest first.
+
+        A plain read, not a write transaction: the write lock waits behind
+        every writer of `db.sqlite`, and under a burst of builds it fails at
+        the 30 s busy timeout (nixidae/nixidae#1582).
+        """
+        async with self._db.connection() as session:
             rows = await session.fetchall(session.sql.provisioning.live)
         return [InstanceRow.from_row(row) for row in rows]
 
     async def by_token(self, token_sha256: str) -> InstanceRow | None:
         """The live instance whose join token hashes to *token_sha256*."""
-        async with self._db.transaction() as session:
+        async with self._db.connection() as session:
             row = await session.fetchone(session.sql.provisioning.live_by_token, (token_sha256,))
         return None if row is None else InstanceRow.from_row(row)
