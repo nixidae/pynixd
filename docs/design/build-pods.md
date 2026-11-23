@@ -442,6 +442,23 @@ Answered 2026-11-23. Every item is decided.
    filter apply as in the first pod. The builder's root holds `dev etc nix
    proc run sys tmp` and its volumes; the guest binds all of `/nix/store`
    into every container, so the store part of its view is not measured.
+   Measured (2026-11-23, run `nrip5`, a builder that exits 7):
+   - The kubelet sends SIGTERM to the sidecar 1 s after the builder exits.
+     The sidecar then had the pod's grace period (30 s): it ran 10 s more,
+     and its exit code and termination message reach
+     `initContainerStatuses`. The pod is `Failed`.
+   - The sidecar cannot read the builder's output. As uid 1000 with no
+     capabilities, it fails to list a 0700 directory, read a 0600 file and
+     chmod either. The builder (uid 30001) cannot write a 0644 file of
+     uid 1000.
+   - Kubernetes expands `$(name)` in `command`, `args` and each `env` value
+     when `name` is a variable of the container. `$$` gives `$`, and an
+     unknown name stays as written. Central escapes each `$` as `$$`.
+   - The runtime adds `HOME=/` and `HOSTNAME=<pod>` (the spec overrides
+     both) and the eight `KUBERNETES_*`. A variable named `a-b.c` is
+     accepted.
+   - The other order works too: a plain controller container whose
+     postStart hook waits for its own file holds back the next container.
 7. **Pods left behind. Decided: ownership, and a sweep at start.** A pod
    outlives a central that dies; it ends at `activeDeadlineSeconds`.
    - Ownership: central in the cluster makes its own Pod the owner of each
