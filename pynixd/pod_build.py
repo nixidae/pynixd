@@ -15,6 +15,7 @@ import getpass
 import os
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -121,6 +122,10 @@ async def build_one(job_dir: Path, result_path: Path, clock: PodClock) -> int:
         if isinstance(build_settings, NotBuiltHere):
             resp = BuildDerivationResponse(result=failure(f"pynixd build-one: {build_settings}"))
         else:
+            if job.runner is not None:
+                build_settings = replace(
+                    build_settings, build_cores=job.runner.build_cores, impure_env=job.runner.impure_env
+                )
             resp = without_error_prefix(await local.build_here(request, build_settings, _show, Verbosity.INFO))
         clock.mark(PodPart.BUILD)
         if result_succeeded(resp.result):

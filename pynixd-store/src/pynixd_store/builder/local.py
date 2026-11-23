@@ -49,7 +49,6 @@ from .env import (
     SANDBOX_BUILD_DIR,
     build_env,
     export_requests,
-    hash_placeholder,
     rewrite_strings,
     structured_attrs_reason,
 )
@@ -62,10 +61,10 @@ from .outputs import (
     collect_outputs,
     compare_outputs,
     discarded_references,
-    fallback_path,
-    fallback_path_of,
+    known_paths,
     output_checks,
-    random_path,
+    output_rewrites,
+    scratch_paths,
 )
 from .restriction import SOCKET_NAME, RestrictionContext
 from .runner import RunnerSandbox
@@ -683,19 +682,6 @@ def _sign(infos: Iterable[ValidPathInfo], secret_key_files: Sequence[str]) -> No
             info.info.sigs.add(Signature(key.sign_fingerprint(fp)))
 
 
-def _known(drv: BasicDerivation, realised: Mapping[str, StorePath], drv_name: str) -> dict[str, StorePath]:
-    """The path of each output known before the build; an output with none is absent."""
-    if any(o.kind is OutputKind.IMPURE for o in drv.outputs.values()):
-        return {name: random_path(name, drv_name) for name in drv.outputs}
-    known: dict[str, StorePath] = {}
-    for name, output in drv.outputs.items():
-        if name in realised:
-            known[name] = realised[name]
-        elif output.path:
-            known[name] = StorePath(output.path)
-    return known
-
-
 async def build(
     engine: StoreEngine,
     drv_path: StorePath,
@@ -749,7 +735,7 @@ async def build(
     # `ExternalDerivationBuilder` is a `DerivationBuilderImpl`: no chroot, whatever `sandbox` says.
     chroot = external is None and use_sandbox and not darwin_host and runner is None
     impure = any(o.kind is OutputKind.IMPURE for o in drv.outputs.values())
-    known = _known(drv, realised, drv_name)
+    known = known_paths(drv, realised, drv_name)
     held = {path: PathLock(layout.real_path(path)) for path in known.values()}
     locks = list(held.values())
     for lock in locks:
@@ -822,16 +808,7 @@ async def build(
         for path in known.values():
             if path not in valid:
                 await anyio.to_thread.run_sync(delete_path, layout.real_path(path))
-        # `derivation-builder.cc:417`: the sandbox builds a known path in place. Without it, a present path builds
-        # at its fallback path, and the builder sees the fallback's hash for its own.
-        scratch: dict[str, StorePath] = {}
-        for name in drv.outputs:
-            if (own := known.get(name)) is None:
-                scratch[name] = fallback_path(drv_path, name, drv_name, store_dir)
-            elif not chroot and own in present:
-                scratch[name] = fallback_path_of(drv_path, own, store_dir)
-            else:
-                scratch[name] = own
+        scratch = scratch_paths(drv_path, drv, known, present, chroot=chroot, store_dir=store_dir)
         redirected = {path: scratch[name] for name, path in known.items() if path != scratch[name]}
         for path in redirected.values():
             await anyio.to_thread.run_sync(delete_path, layout.real_path(path))
@@ -890,10 +867,7 @@ async def build(
                 "allow_local_networking": darwin.allow_local_networking(drv.env),
                 "platform": drv.platform,
             }
-        # `inputRewrites` (`derivation-builder.cc:435`): each output builds at its scratch path.
-        rewrites = {hash_placeholder(name): str(path) for name, path in scratch.items()} | {
-            path.hash_part(): fallback.hash_part() for path, fallback in redirected.items()
-        }
+        rewrites = output_rewrites(scratch, redirected)
         # `tmpDirInSandbox` (`external-derivation-builder.cc:22`): an external builder's environment names `/build`.
         build_dir = SANDBOX_BUILD_DIR if chroot or external is not None or runner is not None else str(paths.tmp)
         env = build_env(

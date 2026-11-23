@@ -35,8 +35,20 @@ JOB_FEATURES: Final = frozenset[str]()
 way, with no handshake between the two to agree on one."""
 
 
+class RunnerJob(BaseModel):
+    """The settings central computed the runner container's invocation with: the controller builds with them, so
+    its invocation is the same (`pynixd_store.builder.runner.planned_invocation`)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    build_cores: int
+    impure_env: dict[str, str] = {}
+
+
 class Job(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+    runner: RunnerJob | None = None
 
     central_host: str
     central_port: int

@@ -32,7 +32,7 @@ from . import cgroup as build_cgroup, users as build_users
 from .darwin_vm import DarwinBuildVm
 from .outputs import BuildFailure
 from .restriction import SOCKET_NAME, RestrictionContext
-from .runner import EXIT_NAME as RUNNER_EXIT_NAME, STATUS_NAME as RUNNER_STATUS_NAME, RunnerSandbox
+from .runner import EXIT_NAME as RUNNER_EXIT_NAME, STATUS_NAME as RUNNER_STATUS_NAME, RunnerSandbox, drv_refusal
 from .sibling import (
     CONTROL_SOCKET_NAME as SIBLING_CONTROL_SOCKET_NAME,
     STATUS_NAME as SIBLING_STATUS_NAME,
@@ -623,13 +623,11 @@ class RunnerSite(BuildSite):
 
 def _runner_refusal(drv: BasicDerivation, settings: BuildSettings, user: build_users.BuildUser | None) -> str | None:
     """Why the runner container cannot run *drv*: what Nix's sandbox gives a build and the runner does not."""
-    if drv.builder.startswith("builtin:"):
-        return f"the runner container cannot run the builtin builder '{drv.builder}'"
+    if (refused := drv_refusal(drv)) is not None:
+        return refused
     if settings.external_builders:
         return "the runner container runs no external builder"
-    if "recursive-nix" in drv.required_system_features or "builder-rpc-v0" in drv.required_system_features:
-        return "the runner container has no socket for a recursive build"
-    if "uid-range" in drv.required_system_features or user is not None:
+    if user is not None:
         return "the runner container runs the build as the controller's uid, not as a build user"
     if settings.sandbox_paths:
         targets = ", ".join(sorted(p.target for p in settings.sandbox_paths))

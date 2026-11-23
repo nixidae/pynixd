@@ -35,6 +35,8 @@ import kr8s
 import kr8s.asyncio
 from kr8s.asyncio.objects import Pod, Secret
 
+from pynixd_store.builder.runner import NETWORK_ANNOTATION, SANDBOX_ANNOTATION, RunnerInvocation
+
 from .provider import Machine, MachineState, NoCapacity, ProviderError
 
 if TYPE_CHECKING:
@@ -294,15 +296,17 @@ class KubernetesProvider:
         farm: FarmVolume | None = None,
         *,
         priority_class: str | None = None,
+        runner: RunnerFill | None = None,
     ) -> None:
         """A pod for one build of *owner*, with *job* in a Secret it owns (nixidae/nixidae#1560, spike).
 
-        *priority_class* replaces the template's. The pod has no tags, so `machines` and the provisioner never
-        see it.
+        *priority_class* replaces the template's. *runner* fills the template's runner container. The pod has no
+        tags, so `machines` and the provisioner never see it.
         """
         spec = self._template(template)
         api = await self._client()
-        pod = Pod(build_pod_manifest(spec, name, owner, farm, priority_class=priority_class), api=api)
+        manifest = build_pod_manifest(spec, name, owner, farm, priority_class=priority_class, runner=runner)
+        pod = Pod(manifest, api=api)
         with failing(f"creating build pod {name}"):
             try:
                 await pod.create()
@@ -594,6 +598,51 @@ class FarmVolume:
     systems: frozenset[str]
 
 
+@dataclass(frozen=True, slots=True)
+class RunnerPod:
+    """A template's runner container, which its annotation names, and the cores its builder gets."""
+
+    container: str
+    cores: int
+
+
+def _cores(quantity: str | int | float) -> int:
+    """A CPU quantity in whole cores, rounded up: `NIX_BUILD_CORES` is a count."""
+    text = str(quantity)
+    value = int(text[:-1]) / 1000 if text.endswith("m") else float(text)
+    return max(1, math.ceil(value))
+
+
+def runner_pod(template: KubernetesTemplateSettings) -> RunnerPod | None:
+    """The template's runner, or `None` for a template without one; `ValueError` for a runner that cannot be.
+
+    The cores are the runner's CPU limit, else its request: central writes `NIX_BUILD_CORES` into the runner
+    before a node is known.
+    """
+    pod = template.pod
+    container = ((pod.get("metadata") or {}).get("annotations") or {}).get(SANDBOX_ANNOTATION)
+    if not container:
+        return None
+    runner = next((c for c in (pod.get("spec") or {}).get("containers") or [] if c.get("name") == container), None)
+    if runner is None:
+        raise ValueError(f"kubernetes: the template's {SANDBOX_ANNOTATION} names no container {container!r}")
+    resources: Manifest = runner.get("resources") or {}
+    cpu = (resources.get("limits") or {}).get("cpu") or (resources.get("requests") or {}).get("cpu")
+    if cpu is None:
+        raise ValueError(f"kubernetes: the template's runner {container!r} has no CPU limit or request")
+    return RunnerPod(container=container, cores=_cores(cpu))
+
+
+@dataclass(frozen=True, slots=True)
+class RunnerFill:
+    """What central writes into a build pod's runner container."""
+
+    container: str
+    invocation: RunnerInvocation
+    network: bool
+    """A fixed-output build: the runner keeps the pod's network."""
+
+
 def build_pod_manifest(
     template: KubernetesTemplateSettings,
     name: str,
@@ -601,6 +650,7 @@ def build_pod_manifest(
     farm: FarmVolume | None = None,
     *,
     priority_class: str | None = None,
+    runner: RunnerFill | None = None,
 ) -> Manifest:
     """The template's pod for one build of *owner*: no tags, *owner*'s labels, and the job Secret at `JOB_DIR`
     in its container.
@@ -638,6 +688,19 @@ def build_pod_manifest(
     if target is None:
         raise ValueError(f"kubernetes: the template has no container {template.container!r}")
     target.setdefault("volumeMounts", []).append({"name": JOB_VOLUME, "mountPath": JOB_DIR, "readOnly": True})
+    if runner is not None:
+        builder = next((c for c in containers if c.get("name") == runner.container), None)
+        if builder is None:
+            raise ValueError(f"kubernetes: the template has no runner container {runner.container!r}")
+        # The template's own fields go: the builder gets Nix's environment and nothing besides.
+        builder.update(runner.invocation.container_fields())
+        builder.pop("envFrom", None)
+        annotations = metadata.setdefault("annotations", {})
+        annotations[SANDBOX_ANNOTATION] = runner.container
+        if runner.network:
+            annotations[NETWORK_ANNOTATION] = "true"
+        else:
+            annotations.pop(NETWORK_ANNOTATION, None)
     return pod
 
 

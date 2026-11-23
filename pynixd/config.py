@@ -1015,6 +1015,9 @@ class BuildPodStoreSpec(StoreSpecBase):
     for a build nested in it, the last for every deeper one. Empty keeps the template's. Each deeper class
     takes a higher value, all below 0, and `PreemptLowerPriority`: a nested pod on a full cluster then evicts a
     shallower build pod and no ordinary pod (nixidae/nixidae#1576)."""
+    runner_impure_env: dict[str, str] = {}
+    """Nix's `impure-env` for a template with a runner container: what a fixed-output build's `impureEnvVars`
+    take there. Central writes it into the pod spec, which anyone who reads the pod sees."""
 
     def priority_class(self, depth: int) -> str | None:
         """The PriorityClass of a build pod at *depth*, or `None` for the template's."""

@@ -21,8 +21,13 @@ import anyio
 import asyncssh
 import structlog
 
+from nix_daemon_protocol.build_derivation import BuildDerivationResponse
+from nix_daemon_protocol.build_result import BuildMode
+from nix_daemon_protocol.derivation_output import OutputKind
 from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest, QueryValidPathsResponse
+from nix_daemon_protocol.store_dir import DEFAULT_STORE_DIR
 from nix_daemon_protocol.store_path import StorePath
+from pynixd_store.builder.runner import drv_refusal, planned_invocation
 
 from ..build_grant import BuildGrant
 from ..build_job import (
@@ -33,6 +38,7 @@ from ..build_job import (
     CentralPart,
     Job,
     PodPart,
+    RunnerJob,
     decode_response,
     encode,
     read_seconds,
@@ -45,9 +51,12 @@ from ..provisioning.kubernetes import (
     BuildPodWatch,
     FarmVolume,
     OwnerPod,
+    RunnerFill,
+    RunnerPod,
     farm_volume,
     first_placeable,
     node_selector,
+    runner_pod,
     template_store_paths,
 )
 from ..provisioning.provider import ProviderError
@@ -57,7 +66,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from contextlib import AbstractAsyncContextManager
 
-    from nix_daemon_protocol.build_derivation import BuildDerivationRequest, BuildDerivationResponse
+    from nix_daemon_protocol.build_derivation import BuildDerivationRequest
     from nix_daemon_protocol.set_options import SetOptionsRequest
     from nix_daemon_protocol.wire_ops import WireRequest
     from pynixd_store.drv_parser import Derivation
@@ -132,6 +141,15 @@ class PodTimes:
         return self.ended - self.asked - self.pod[PodPart.BUILD.value]
 
 
+def runner_refusal(request: BuildDerivationRequest) -> str | None:
+    """Why a runner pod cannot build *request*: central writes the runner before the controller runs, so it
+    refuses what the controller would. A repair or a check needs the outputs in the pod's store, which a farm
+    does not give."""
+    if request.build_mode != BuildMode.NORMAL:
+        return "the runner container builds no repair or check"
+    return drv_refusal(request.derivation)
+
+
 class PodDisrupted(InfrastructureError):
     """Kubernetes took the pod for another, by preemption or eviction: the build goes back, and no store failed."""
 
@@ -179,6 +197,8 @@ class BuildPodStore(ScheduledStore):
         self.owner = BuildPodOwner(store=str(self.store_id), run=secrets.token_hex(4))
         self.template_paths: dict[str, frozenset[str]] = {}
         """By template, the store paths it names, which the farm of its pod holds; `arm` reads them."""
+        self.runners: dict[str, RunnerPod | None] = {}
+        """By template, its runner container; `arm` reads them."""
 
     def _learn_fixed(self, times: PodTimes) -> None:
         """Move the store's fixed cost, which the placement adds to each build here, toward this pod's."""
@@ -229,6 +249,10 @@ class BuildPodStore(ScheduledStore):
         self.kubernetes = kubernetes
         self.owner = dataclasses.replace(self.owner, pod=owner_pod)
         templates = {name: kubernetes.build_pod_template(name) for name in self.spec.templates}
+        try:
+            self.runners = {name: runner_pod(template) for name, template in templates.items()}
+        except ValueError as error:
+            raise RuntimeError(f"store {self.store_id}: {error}") from error
         if self.spec.farm is None:
             return
         for template in templates.values():
@@ -365,6 +389,24 @@ class BuildPodStore(ScheduledStore):
         template = template or self.spec.templates[0]
         if self.grants is None or self.central_host_key is None or self.kubernetes is None:
             raise InfrastructureError(f"{self.store_id}: no SSH listener or no Kubernetes settings for build pods")
+        fill: RunnerFill | None = None
+        runner_job: RunnerJob | None = None
+        if (runner := self.runners.get(template)) is not None:
+            if (refused := runner_refusal(request)) is not None:
+                return BuildDerivationResponse(result=failure(refused)), PodTimes(asked=time.monotonic())
+            runner_job = RunnerJob(build_cores=runner.cores, impure_env=self.spec.runner_impure_env)
+            drv = request.derivation
+            fill = RunnerFill(
+                container=runner.container,
+                invocation=planned_invocation(
+                    StorePath(str(request.drv_path)),
+                    drv,
+                    store_dir=DEFAULT_STORE_DIR,
+                    build_cores=runner_job.build_cores,
+                    impure_env=runner_job.impure_env,
+                ),
+                network=any(o.kind is OutputKind.CA_FIXED for o in drv.outputs.values()),
+            )
         # A floating output has no path yet: the grant takes it as a content-addressed path.
         paths = request.derivation.output_paths()
         outputs = frozenset(str(path) for path in paths.values() if path != StorePath(""))
@@ -376,6 +418,7 @@ class BuildPodStore(ScheduledStore):
             central_port=self.spec.central_port,
             central_host_key=self.central_host_key,
             request=await encode(request),
+            runner=runner_job,
         )
         self.grants.grant(public, BuildGrant(drv_path=str(request.drv_path), outputs=outputs))
         try:
@@ -387,7 +430,9 @@ class BuildPodStore(ScheduledStore):
             )
             priority = self.spec.priority_class(depth)
             times = PodTimes(asked=time.monotonic())
-            await self.kubernetes.start_build_pod(template, name, self.owner, secret, farm, priority_class=priority)
+            await self.kubernetes.start_build_pod(
+                template, name, self.owner, secret, farm, priority_class=priority, runner=fill
+            )
             times.created = time.monotonic()
             log.info(
                 "build_pod_started",

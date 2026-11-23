@@ -50,13 +50,14 @@ from ..drv_hash import output_path_name
 from ..hintfmt import magenta
 from ..nar_fs import copy_path, dump_path, restore_path
 from ..utils import nix32_encode
-from .env import is_store_path, parse_structured_attrs
+from .env import hash_placeholder, is_store_path, parse_structured_attrs
 from .refscan import scan_for_references
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator, Mapping
+    from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
     from pathlib import Path
 
+    from nix_daemon_protocol.basic_derivation import BasicDerivation
     from nix_daemon_protocol.derivation_output import DerivationOutput
 
 
@@ -108,6 +109,49 @@ def fallback_path_of(drv_path: StorePath, path: StorePath, store_dir: str) -> St
 def random_path(output: str, drv_name: str) -> StorePath:
     """`StorePath::random(outputPathName(...))`: the known path of an impure output (`derivation-building-goal.cc:383`)."""
     return StorePath(f"{nix32_encode(os.urandom(20))}-{_output_path_name(drv_name, output)}")
+
+
+def known_paths(drv: BasicDerivation, realised: Mapping[str, StorePath], drv_name: str) -> dict[str, StorePath]:
+    """The path of each output known before the build; an output with none is absent."""
+    if any(o.kind is OutputKind.IMPURE for o in drv.outputs.values()):
+        return {name: random_path(name, drv_name) for name in drv.outputs}
+    known: dict[str, StorePath] = {}
+    for name, output in drv.outputs.items():
+        if name in realised:
+            known[name] = realised[name]
+        elif output.path:
+            known[name] = StorePath(output.path)
+    return known
+
+
+def scratch_paths(
+    drv_path: StorePath,
+    drv: BasicDerivation,
+    known: Mapping[str, StorePath],
+    present: Collection[StorePath],
+    *,
+    chroot: bool,
+    store_dir: str,
+) -> dict[str, StorePath]:
+    """Where each output builds. `derivation-builder.cc:417`: the sandbox builds a known path in place. Without
+    it, a *present* path builds at its fallback path, and the builder sees the fallback's hash for its own."""
+    drv_name = drv_path.base_name().removesuffix(".drv")
+    scratch: dict[str, StorePath] = {}
+    for name in drv.outputs:
+        if (own := known.get(name)) is None:
+            scratch[name] = fallback_path(drv_path, name, drv_name, store_dir)
+        elif not chroot and own in present:
+            scratch[name] = fallback_path_of(drv_path, own, store_dir)
+        else:
+            scratch[name] = own
+    return scratch
+
+
+def output_rewrites(scratch: Mapping[str, StorePath], redirected: Mapping[StorePath, StorePath]) -> dict[str, str]:
+    """`inputRewrites` (`derivation-builder.cc:435`): each output builds at its scratch path."""
+    return {hash_placeholder(name): str(path) for name, path in scratch.items()} | {
+        path.hash_part(): fallback.hash_part() for path, fallback in redirected.items()
+    }
 
 
 def _sri(algo: str, digest: bytes) -> str:

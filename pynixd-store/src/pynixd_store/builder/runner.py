@@ -16,11 +16,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
-from .env import SANDBOX_BUILD_DIR
+from nix_daemon_protocol.derivation_output import OutputKind
+
+from ..drv_parser import BUILDER_RPC
+from .env import SANDBOX_BUILD_DIR, build_env, rewrite_strings
+from .outputs import known_paths, output_rewrites, scratch_paths
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+    from nix_daemon_protocol.basic_derivation import BasicDerivation
+    from nix_daemon_protocol.store_path import StorePath
+
+SANDBOX_ANNOTATION: Final = "nixkube.nixidae.org/build-sandbox"
+"""The pod's annotation that names its runner container, which nixkube makes the sandbox
+(`nixkube/pkgs/nixkube/src/nri/sandbox.py`)."""
+NETWORK_ANNOTATION: Final = "nixkube.nixidae.org/build-network"
+"""`"true"`: the runner keeps the pod's network, as a fixed-output build does."""
 STATUS_NAME: Final = "runner-status"
 """The helper's set-up error, in the top directory."""
 EXIT_NAME: Final = "runner-exit"
@@ -70,6 +82,70 @@ def invocation(builder: str, args: Sequence[str], env: Mapping[str, str]) -> Run
         env=tuple((name, _escape(value)) for name, value in sorted(env.items())),
         working_dir=SANDBOX_BUILD_DIR,
     )
+
+
+def drv_refusal(drv: BasicDerivation) -> str | None:
+    """Why the runner container cannot run *drv*, from the derivation alone: central and the controller both ask."""
+    if drv.builder.startswith("builtin:"):
+        return f"the runner container cannot run the builtin builder '{drv.builder}'"
+    if "recursive-nix" in drv.required_system_features or BUILDER_RPC in drv.required_system_features:
+        return "the runner container has no socket for a recursive build"
+    if "uid-range" in drv.required_system_features:
+        return "the runner container runs the build as the controller's uid, not as a build user"
+    if any(o.kind is OutputKind.IMPURE for o in drv.outputs.values()):
+        # `known_paths` gives an impure output a random path, which central cannot write before the controller.
+        return "the runner container cannot build an impure derivation"
+    words = [drv.builder, *drv.args, *drv.env, *drv.env.values()]
+    if not all(_utf8(word) for word in words):
+        return "the runner container takes only UTF-8 in the builder, its arguments and its environment"
+    if bad := sorted(name for name in drv.env if not _env_name(name)):
+        return f"Kubernetes refuses the variable names {', '.join(map(repr, bad))}"
+    if sum(len(word.encode()) for word in words) > INVOCATION_BYTES:
+        return f"the builder's arguments and environment exceed the {INVOCATION_BYTES} bytes a pod holds"
+    return None
+
+
+INVOCATION_BYTES: Final = 1 << 20
+"""What the runner's command, arguments and environment may take: etcd keeps an object of 1.5 MiB at most, and the
+pod's other fields need the rest."""
+
+
+def _utf8(word: str) -> bool:
+    """A string of the wire decodes with `surrogateescape`: a byte that is not UTF-8 does not encode back."""
+    try:
+        word.encode()
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _env_name(name: str) -> bool:
+    """`RelaxedEnvironmentVariableValidation` (GA in Kubernetes 1.34): printable ASCII with no `=`."""
+    return bool(name) and all(" " <= c <= "~" for c in name) and "=" not in name
+
+
+def planned_invocation(
+    drv_path: StorePath, drv: BasicDerivation, *, store_dir: str, build_cores: int, impure_env: Mapping[str, str]
+) -> RunnerInvocation:
+    """The invocation `build()` gives *drv* in a runner pod whose store holds none of its outputs and no
+    realisation: what central writes before the controller runs. The helper compares the two (`mismatch`)."""
+    drv_name = drv_path.base_name().removesuffix(".drv")
+    scratch = scratch_paths(drv_path, drv, known_paths(drv, {}, drv_name), (), chroot=False, store_dir=store_dir)
+    rewrites = output_rewrites(scratch, {})
+    fixed = any(o.kind is OutputKind.CA_FIXED for o in drv.outputs.values())
+    env = build_env(
+        drv.env,
+        outputs=drv.outputs,
+        store_dir=store_dir,
+        build_cores=build_cores,
+        rewrites=rewrites,
+        fixed_output=fixed,
+        sandboxed=not fixed,
+        impure_source=impure_env,
+        # `exportReferencesGraph` fills files of the build directory, never a variable.
+        exported={},
+    )
+    return invocation(drv.builder, [rewrite_strings(arg, rewrites) for arg in drv.args], env.variables)
 
 
 def from_container(container: Mapping[str, Any]) -> RunnerInvocation:  # Any: a container of the API's JSON
