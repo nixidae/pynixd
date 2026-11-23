@@ -263,8 +263,7 @@ Agreed 2026-11-23, done before landing:
 
 ## Open decisions
 
-Answered 2026-11-23. **Decided** items are settled. **Proposed** items wait
-for a yes.
+Answered 2026-11-23. Every item is decided.
 
 1. **Which ways to build in Kubernetes stay. Decided: build pods, eventually.**
    Three exist: nixkube's `BuilderManager` (long-lived builder Jobs), pynixd's
@@ -272,7 +271,9 @@ for a yes.
    acceptor; kinds nested and krun), and these build pods. Build pods replace
    `BuilderManager` once nixkube renders their template. The krun pool stays
    for builds that need a VM until a build pod can run one.
-2. **Copy-in for clusters without nixkube. Proposed: keep it.** Copy-in is the
+2. **Copy-in for clusters without nixkube. Decided: keep it, priced as a
+   store that holds no paths.** The scheduler counts the whole input closure
+   as bytes to send to a copy-in store. Copy-in is the
    mode with the farm off: central sends each input over SSH into the pod's
    empty store. It needs no CSI driver, so it is the only mode on a cluster
    without nixkube. It is the same code as the farm mode, less the farm
@@ -283,7 +284,7 @@ for a yes.
    renders the pod (image, containers, seccomp profile, PriorityClass, CSI
    volume) and central's store spec, so an operator writes neither. Today the
    only farm template is the test's (`nixkube/nix/uml/build-pod-store.nix`).
-4. **Where nested builds wait. Proposed: priority by depth, at both layers.**
+4. **Where nested builds wait. Decided: priority by depth, at both layers.**
    A nested build can wait for the slot its own parent holds
    (nixidae/nixidae#1576). Two layers can make it wait:
    - Central's slots. A nested build goes ahead of every waiting build of a
@@ -303,9 +304,10 @@ for a yes.
    the stand-in farm pod. The cases are a path the builder adds, a nested
    build, and a floating output. Not tested: recursive Nix in a pod on
    nixkube's real farm, and the builder-rpc-v0 protocol, which needs a Nix
-   client in the builder that speaks it.
+   client in the builder that speaks it. Decided: the recursive test probes
+   enough of builder-rpc-v0 for now.
 6. **Node requirements. Decided: nixkube probes and labels each node.**
-   Proposed fallback for a node without the label: a second template with no
+   Decided fallback for a node without the label: a second template with no
    sandbox container and Nix's sandbox off. The pod is then the only boundary.
    In farm mode the pod already sees only the input closure and the template's
    paths, and its build directory is its own. A NetworkPolicy limits its
@@ -314,7 +316,7 @@ for a yes.
    it. The profile must be on each node (nixkube installs it). Ubuntu 23.10
    and later with the AppArmor restriction, or `max_user_namespaces=0`, forbid
    unprivileged user namespaces.
-7. **Pods left behind. Proposed: ownership, and a sweep at start.** A pod
+7. **Pods left behind. Decided: ownership, and a sweep at start.** A pod
    outlives a central that dies; it ends at `activeDeadlineSeconds`.
    - Ownership: central in the cluster makes its own Pod the owner of each
      build pod. When central's Pod goes, Kubernetes deletes the build pods,
