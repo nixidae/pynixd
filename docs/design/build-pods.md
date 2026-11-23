@@ -282,8 +282,14 @@ Answered 2026-11-23. Every item is decided.
    nixkube-only.
 3. **nixkube renders the template. Decided.** A `nixkube.buildPods` option
    renders the pod (image, containers, seccomp profile, PriorityClass, CSI
-   volume) and central's store spec, so an operator writes neither. Today the
-   only farm template is the test's (`nixkube/nix/uml/build-pod-store.nix`).
+   volume) and central's store spec, so an operator writes neither.
+   Done (`nixkube/kubenix/build-pods.nix`): one store and one template per
+   system of `nixkube.systems`, `buildpods-<system>`, with a node selector
+   for that architecture and that system's pynixd. `buildPods.builds` turns
+   the stores off and keeps the classes and the profile. The settings merge
+   at option-default priority, so an operator's settings win key by key. The
+   pods run nixkube's scratch image: `/nix` is the farm. The test sets only
+   features, the deadline and the log level (`nix/uml/build-pod-store.nix`).
 4. **Where nested builds wait. Decided: priority by depth, at both layers.**
    A nested build can wait for the slot its own parent holds
    (nixidae/nixidae#1576). Two layers can make it wait:
