@@ -67,8 +67,12 @@ async def decode_response(text: str) -> BuildDerivationResponse:
 
 
 async def result_message(resp: BuildDerivationResponse) -> str:
-    """*resp* as a termination message, its error text cut to fit."""
-    result = resp.result
+    """*resp* as a termination message, its error text cut to fit.
+
+    A pod's store that keys realisations by path (Nix 2.35) fills only `built_outputs_by_name`, which the job's
+    empty feature set does not write: `for_the_wire` fills the map it does. Measured in a nixkube farm pod.
+    """
+    result = resp.result.for_the_wire(JOB_FEATURES)
     if len(result.error_msg) > _ERROR_ROOM:
         result = result.model_copy(update={"error_msg": "..." + result.error_msg[-_ERROR_ROOM:]})
     return await encode(BuildDerivationResponse(result=result))

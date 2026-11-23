@@ -35,6 +35,23 @@ async def test_the_job_and_the_result_read_back_as_written() -> None:
     assert (await decode_response(message)).result.error_msg.endswith("x" * 100)
 
 
+@pytest.mark.anyio
+async def test_a_result_keyed_by_output_name_reads_back() -> None:
+    result = BuildResult(
+        status=BuildResultStatus.BUILT,
+        times_built=1,
+        is_non_deterministic=0,
+        start_time=0,
+        stop_time=0,
+        built_outputs_by_name={"out": UnkeyedRealisation(out_path=StorePath(OUT))},
+    )
+
+    read = await decode_response(await result_message(BuildDerivationResponse(result=result)))
+
+    realised = read.result.realised_outputs()["out"].out_path
+    assert StorePath(str(realised)).with_store_prefix() == StorePath(OUT)
+
+
 OUT = "/nix/store/00000000000000000000000000000004-x"
 REALISED = "/nix/store/00000000000000000000000000000005-x"
 
