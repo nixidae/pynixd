@@ -11,6 +11,7 @@ pod.
 from __future__ import annotations
 
 import argparse
+import getpass
 import os
 import sys
 from pathlib import Path
@@ -46,6 +47,8 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 CENTRAL: Final = StoreId("central")
+BUILD_USER: Final = "pynixd-build"
+"""The local name of a build pod's uid that has none: central's SSH server reads the username `pod`, not this."""
 
 
 async def _show(message: LogMessage) -> None:
@@ -105,6 +108,18 @@ async def build_one(job_dir: Path, result_path: Path) -> int:
     return 0
 
 
+def _own_name() -> None:
+    """asyncssh asks `getpass.getuser()` on each connection, which fails for a uid with no passwd entry and no USER.
+
+    Measured in a nixkube farm pod as uid 1000: Python 3.14 raises `OSError` there, which asyncssh's
+    `SSHClientConnectionOptions.prepare` does not catch, so the dial to central fails before it starts.
+    """
+    try:
+        getpass.getuser()
+    except (OSError, KeyError):
+        os.environ["USER"] = BUILD_USER
+
+
 def _own_home(settings: PynixdSettings) -> None:
     """Nix takes HOME only when this user owns it, and asks passwd else; a pod's image may have no entry for its uid.
 
@@ -125,6 +140,7 @@ def _own_home(settings: PynixdSettings) -> None:
 
 def build_one_main(args: argparse.Namespace) -> None:
     settings = load_settings()
+    _own_name()
     _own_home(settings)
     setup_logging(settings)
     code = anyio.run(
