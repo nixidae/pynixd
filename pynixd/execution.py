@@ -46,7 +46,8 @@ from .serde import (
     SetOptionsRequest,
 )
 from .store.base import get_current_system
-from .store.build_pods import BuildPodStore, PodDisrupted
+from .store.build_pods import FARM_ROOT_NAME, BuildPodStore, PodDisrupted, farm_references, farm_text
+from .store.local_db import LocalDBStore
 from .system_features import effective_required_features
 from .tracing import Phase
 from .trust import warning_text
@@ -800,6 +801,28 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         await self.queue.complete(build.build_id, resp)
         self.trigger()
 
+    async def _farm_root(self, build: QueuedBuild, store: BuildPodStore, held: contextlib.AsyncExitStack) -> str | None:
+        """The path a build pod's `/nix` is a farm of (`BuildPodFarmSpec`), rooted until *held* closes.
+
+        A node realises it from this store while the pod waits for its volume, so it must outlive the build.
+        """
+        if store.spec.farm is None:
+            return None
+        if not isinstance(self.local, LocalDBStore):
+            raise InfrastructureError(f"{store.store_id}: a build pod's farm needs a local store pynixd runs")
+        references = farm_references(build.request, store.template_paths)
+        root = await self.local.add_text_to_store(FARM_ROOT_NAME, farm_text(references), references)
+        roots = self.local.engine.temp_roots()
+
+        async def release() -> None:
+            with anyio.CancelScope(shield=True), anyio.move_on_after(_ROOTS_CLOSE_SECONDS):
+                await roots.close()
+
+        held.push_async_callback(release)
+        await roots.add(StorePath(root))
+        log.info("build_pod_farm", build_id=build.build_id, root=root, paths=len(references))
+        return root
+
     async def build_in_pod(self, build: QueuedBuild, store: BuildPodStore) -> None:
         """A pod of its own builds it, and adds the outputs to the local store itself (`store/build_pods.py`).
 
@@ -816,7 +839,9 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
             await build.post_log_and_fanout(LogNext(text=text if text.endswith("\n") else text + "\n"))
 
         try:
-            resp = without_error_prefix(await store.build(build.request, line))
+            async with contextlib.AsyncExitStack() as held:
+                farm_root = await self._farm_root(build, store, held)
+                resp = without_error_prefix(await store.build(build.request, line, farm_root))
         except PodDisrupted as e:
             # What a Job's `podFailurePolicy` calls Ignore: a low-priority pod gives way, and no store failed.
             log.info("build_pod_disrupted", build_id=build.build_id, error=str(e))

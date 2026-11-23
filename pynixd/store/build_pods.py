@@ -24,7 +24,7 @@ from ..build_grant import BuildGrant
 from ..build_job import JOB_NAME, KEY_NAME, Job, decode_response, encode
 from ..build_result import failure, result_succeeded
 from ..exceptions import InfrastructureError
-from ..provisioning.kubernetes import PodEndSeen
+from ..provisioning.kubernetes import FarmVolume, PodEndSeen
 from ..provisioning.provider import ProviderError
 from .scheduled import ProbeState, ScheduledStore
 
@@ -47,6 +47,21 @@ log = structlog.get_logger(__name__)
 _DELETE_SECONDS: Final = 30.0
 _ENDED_SECONDS: Final = 60.0
 """How long the kubelet may take to write a container's end after its log ended."""
+
+
+FARM_ROOT_NAME: Final = "pynixd-build-inputs"
+"""The name of the text path whose closure is a build pod's farm (`BuildPodFarmSpec`)."""
+
+
+def farm_references(request: BuildDerivationRequest, template_paths: frozenset[str]) -> frozenset[str]:
+    """What a build pod's farm must hold: the build's inputs, and every store path its template names."""
+    inputs = {str(StorePath(str(path)).with_store_prefix()) for path in request.derivation.input_srcs}
+    return frozenset(inputs) | template_paths
+
+
+def farm_text(references: frozenset[str]) -> str:
+    """The farm root's text: its references, one a line, so the same inputs make the same path."""
+    return "".join(f"{path}\n" for path in sorted(references))
 
 
 class PodDisrupted(InfrastructureError):
@@ -93,6 +108,8 @@ class BuildPodStore(ScheduledStore):
         self.central_host_key: str | None = None
         """Central's SSH host key, which the pod pins; `Server` sets it when the SSH listener starts."""
         self.kubernetes: KubernetesProvider | None = None
+        self.template_paths: frozenset[str] = frozenset()
+        """The store paths the template names, which each farm holds; `Server` reads them when it arms the store."""
 
     @property
     def daemon_client(self) -> BuildPodStore:
@@ -171,9 +188,15 @@ class BuildPodStore(ScheduledStore):
             log.warning("build_pod_watch_ended", pod=name, error=str(error))
 
     async def build(
-        self, request: BuildDerivationRequest, on_line: Callable[[str], Awaitable[None]]
+        self,
+        request: BuildDerivationRequest,
+        on_line: Callable[[str], Awaitable[None]],
+        farm_root: str | None = None,
     ) -> BuildDerivationResponse:
-        """Build *request* in a pod; `InfrastructureError` when the pod, not the build, failed."""
+        """Build *request* in a pod; `InfrastructureError` when the pod, not the build, failed.
+
+        *farm_root*, with the spec's `farm`, is the path the pod's `/nix` is a farm of: central holds it valid.
+        """
         if self.grants is None or self.central_host_key is None or self.kubernetes is None:
             raise InfrastructureError(f"{self.store_id}: no SSH listener or no Kubernetes settings for build pods")
         # A floating output has no path yet: the grant takes it as a content-addressed path.
@@ -191,7 +214,12 @@ class BuildPodStore(ScheduledStore):
         self.grants.grant(public, BuildGrant(drv_path=str(request.drv_path), outputs=outputs))
         try:
             secret = {JOB_NAME: job.model_dump_json(), KEY_NAME: key.export_private_key().decode()}
-            await self.kubernetes.start_build_pod(self.spec.template, name, secret)
+            farm = (
+                FarmVolume(volume=self.spec.farm.volume, root=farm_root, systems=frozenset(self.spec.systems or ()))
+                if self.spec.farm is not None and farm_root is not None
+                else None
+            )
+            await self.kubernetes.start_build_pod(self.spec.template, name, secret, farm)
             log.info("build_pod_started", pod=name, drv=str(request.drv_path))
             seen = PodEndSeen()
             ended: BuildPodEnd | None = None

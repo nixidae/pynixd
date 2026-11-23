@@ -957,6 +957,19 @@ class ReverseStoreSpec(StoreSpecBase):
         raise NotImplementedError("Reverse stores are created dynamically, not from config")
 
 
+class BuildPodFarmSpec(BaseModel):
+    """Each build pod's `/nix` is a farm of one store path central makes for the build (spike, nixidae/nixidae#1560).
+
+    The path is a text file whose references are the build's inputs and every store path the template names,
+    so its closure is what the pod runs and builds from. A nixkube node realises it from central, its
+    substituter, and binds each closure path read-only (`presentation: farm`). The pod's pynixd reads the
+    farm as its lower store (`LocalSocketStoreSpec.lower_store`) and copies no input in.
+    """
+
+    volume: str
+    """The template's CSI volume that central points at the build's path."""
+
+
 class BuildPodStoreSpec(StoreSpecBase):
     """Each build a pod of its own from `provisioning.kubernetes.templates`, which dials central (spike).
 
@@ -970,6 +983,8 @@ class BuildPodStoreSpec(StoreSpecBase):
     central_host: str
     central_port: int = 2234
     gc_enabled: bool = False
+    farm: BuildPodFarmSpec | None = None
+    """Give each pod a nixkube farm of its build's inputs as its `/nix`; `None` copies the inputs in."""
 
     def to_store(self, store_id: str) -> BuildPodStore:
         from .store.build_pods import BuildPodStore

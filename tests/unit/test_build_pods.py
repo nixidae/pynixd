@@ -12,11 +12,11 @@ from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
 from pynixd.build_job import RESULT_BYTES, decode_request, decode_response, encode, result_message
 from pynixd.build_result import failure
-from pynixd.config import BuildPodStoreSpec
+from pynixd.config import BuildPodStoreSpec, KubernetesTemplateSettings
 from pynixd.exceptions import InfrastructureError
-from pynixd.provisioning.kubernetes import pod_end
+from pynixd.provisioning.kubernetes import FarmVolume, build_pod_manifest, pod_end, template_store_paths
 from pynixd.serde import BasicDerivation
-from pynixd.store.build_pods import BuildPodStore, checked_result
+from pynixd.store.build_pods import BuildPodStore, checked_result, farm_references, farm_text
 from pynixd.store.scheduled import ProbeState
 
 
@@ -65,6 +65,46 @@ def test_central_takes_a_pods_realisation_of_its_own_outputs_alone() -> None:
         in _realising(floating_two, {"out": REALISED, "dev": REALISED, "doc": REALISED}).result.error_msg
     )
     assert f"not {OUT}" in _realising({"out": DerivationOutput(path=OUT)}, {"out": REALISED}).result.error_msg
+
+
+RUNS = "/nix/store/00000000000000000000000000000006-pynixd"
+INPUT = "/nix/store/00000000000000000000000000000007-busybox"
+FARM_TEMPLATE = KubernetesTemplateSettings(
+    pod={
+        "spec": {
+            "containers": [{"name": "pynixd", "command": [f"{RUNS}/bin/pynixd", "build-one"]}],
+            "volumes": [{"name": "nix", "csi": {"driver": "nixkube", "readOnly": True}}],
+        }
+    }
+)
+
+
+def test_a_farm_holds_the_inputs_and_what_the_template_runs() -> None:
+    request = BuildDerivationRequest(
+        drv_path=StorePath("/nix/store/00000000000000000000000000000003-x.drv"),
+        derivation=BasicDerivation(input_srcs={StorePath(INPUT)}, platform="x86_64-linux", builder="/bin/sh"),
+        build_mode=0,
+    )
+    template_paths = template_store_paths(FARM_TEMPLATE)
+
+    assert template_paths == {RUNS}
+    references = farm_references(request, template_paths)
+    assert references == {RUNS, INPUT}
+    # The same inputs give the same text, so the same path.
+    assert farm_text(references) == f"{RUNS}\n{INPUT}\n" == farm_text(frozenset(reversed(sorted(references))))
+
+
+def test_a_farm_pod_asks_nixkube_for_the_builds_path_on_each_system() -> None:
+    root = "/nix/store/00000000000000000000000000000008-pynixd-build-inputs"
+    farm = FarmVolume(volume="nix", root=root, systems=frozenset({"x86_64-linux", "i686-linux"}))
+
+    pod = build_pod_manifest(FARM_TEMPLATE, "pynixd-build-x", farm)
+
+    (volume,) = (v for v in pod["spec"]["volumes"] if v["name"] == "nix")
+    assert volume["csi"]["volumeAttributes"] == {"x86_64-linux": root, "i686-linux": root, "presentation": "farm"}
+    assert "volumeAttributes" not in FARM_TEMPLATE.pod["spec"]["volumes"][0]["csi"]
+    with pytest.raises(ValueError, match="no CSI volume 'store'"):
+        build_pod_manifest(FARM_TEMPLATE, "pynixd-build-x", FarmVolume(volume="store", root=root, systems=farm.systems))
 
 
 def test_a_pod_says_why_it_ended() -> None:

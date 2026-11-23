@@ -274,14 +274,20 @@ class KubernetesProvider:
         # kr8s keeps one client per argument set for the thread and has no close.
         self._api = None
 
-    async def start_build_pod(self, template: str, name: str, job: Mapping[str, str]) -> None:
+    def build_pod_template(self, template: str) -> KubernetesTemplateSettings:
+        """The template build pods of a store start from; `ProviderError` for a name the settings lack."""
+        return self._template(template)
+
+    async def start_build_pod(
+        self, template: str, name: str, job: Mapping[str, str], farm: FarmVolume | None = None
+    ) -> None:
         """A pod for one build, with *job* in a Secret it owns (nixidae/nixidae#1560, spike).
 
         The pod has no tags, so `machines` and the provisioner never see it.
         """
         spec = self._template(template)
         api = await self._client()
-        pod = Pod(build_pod_manifest(spec, name), api=api)
+        pod = Pod(build_pod_manifest(spec, name, farm), api=api)
         with failing(f"creating build pod {name}"):
             try:
                 await pod.create()
@@ -452,9 +458,51 @@ def pod_end(pod: Manifest) -> str | None:
     return None
 
 
-def build_pod_manifest(template: KubernetesTemplateSettings, name: str) -> Manifest:
-    """The template's pod for one build: no tags, a build label, and the job Secret at `JOB_DIR` in its container."""
+_STORE_PATH: Final = re.compile(r"/nix/store/[0-9a-df-np-sv-z]{32}-[A-Za-z0-9+\-._?=]+")
+FARM_PRESENTATION: Final = {"presentation": "farm"}
+"""nixkube's CSI attribute for one read-only bind per closure path (`nixkube/pkgs/nixkube/src/presentation.py`)."""
+
+
+def template_store_paths(template: KubernetesTemplateSettings) -> frozenset[str]:
+    """Every store path the template's pod names: what its containers run, and what a farm `/nix` must hold.
+
+    nixkube reads a pod the same way (`extract_store_paths`). A path inside another names that one.
+    """
+    return frozenset(_STORE_PATH.findall(json.dumps(template.pod)))
+
+
+def farm_volume(pod: Manifest, volume: str) -> Manifest:
+    """The pod's CSI volume *volume*; `ValueError` when it has none of that name."""
+    for entry in (pod.get("spec") or {}).get("volumes") or []:
+        if entry.get("name") == volume and "csi" in entry:
+            found: Manifest = entry
+            return found
+    raise ValueError(f"kubernetes: the template has no CSI volume {volume!r} for a build's farm")
+
+
+@dataclass(frozen=True, slots=True)
+class FarmVolume:
+    """A build's farm: the template's CSI volume *volume* points at *root* for each node system of *systems*."""
+
+    volume: str
+    root: str
+    systems: frozenset[str]
+
+
+def build_pod_manifest(template: KubernetesTemplateSettings, name: str, farm: FarmVolume | None = None) -> Manifest:
+    """The template's pod for one build: no tags, a build label, and the job Secret at `JOB_DIR` in its container.
+
+    With *farm*, its CSI volume asks nixkube for a farm of the build's root path. nixkube keys the path by the
+    node's system, not the derivation's: an i686 build on an x86_64 node reads the x86_64 key.
+    """
     pod: Manifest = copy.deepcopy(template.pod)
+    if farm is not None:
+        csi = farm_volume(pod, farm.volume)["csi"]
+        csi["volumeAttributes"] = {
+            **(csi.get("volumeAttributes") or {}),
+            **dict.fromkeys(sorted(farm.systems), farm.root),
+            **FARM_PRESENTATION,
+        }
     pod["apiVersion"] = "v1"
     pod["kind"] = "Pod"
     metadata = pod.setdefault("metadata", {})
