@@ -38,7 +38,8 @@ class RestrictionContext:
     """The input closure, and the paths and outputs the builder added or built since (`isAllowed`, `:239`).
 
     *submitting* is a `builder-rpc-v0` build: the builder submits its outputs (`RecursiveSubmitted`). *control*
-    is the helper's control socket; without one, `attach` gives it once the helper connects. *reveal* runs for
+    is the helper's control socket; without one, `attach` gives it once the helper connects. *files_of* names
+    the directory that holds a path's files, which the helper binds from. *reveal* runs for
     each path the builder adds, before the helper binds it. Without *binds* (no chroot) the helper binds nothing.
     With *repairing*, the build repairs its outputs, and each path the builder adds replaces what the store holds.
     """
@@ -47,13 +48,12 @@ class RestrictionContext:
         self,
         inputs: set[StorePath],
         control: SocketStream | None,
-        real_store_dir: Path,
+        files_of: Callable[[StorePath], Path],
         *,
         submitting: bool,
         repairing: bool = False,
         reveal: Callable[[StorePath], None] | None = None,
         binds: bool = True,
-        files_of: Callable[[StorePath], Path] | None = None,
     ) -> None:
         self.inputs = frozenset(inputs)
         self.submitting = submitting
@@ -66,8 +66,9 @@ class RestrictionContext:
         self._control: SocketStream | None = None
         self._replies: BufferedByteReceiveStream | None = None
         self._attached = anyio.Event()
-        # A store over a lower store has a path's files in one of two directories (`StoreEngine.files_of`).
-        self._files_of = files_of if files_of is not None else (lambda path: real_store_dir / path.name)
+        # Not the store directory joined with the name: a store over a lower store has a path's files in one of
+        # two directories (`StoreEngine.files_of`), and a path the builder adds may be in either.
+        self._files_of = files_of
         self._reveal = reveal
         self._binds = binds
         self._lock = anyio.Lock()

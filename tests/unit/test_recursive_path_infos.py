@@ -53,7 +53,9 @@ class _Proxy(RestrictedProxy):
 
 
 async def test_op_50_answers_only_the_allowed_valid_paths_censored() -> None:
-    restriction = RestrictionContext({ALLOWED, MISSING}, None, Path("/nix/store"), submitting=False)
+    restriction = RestrictionContext(
+        {ALLOWED, MISSING}, None, lambda path: Path("/nix/store") / path.name, submitting=False
+    )
 
     response = await _Proxy(restriction).execute(QueryPathInfosRequest(paths={ALLOWED, HIDDEN, MISSING}))
 

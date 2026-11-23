@@ -1020,11 +1020,10 @@ async def build(
                     stack,
                     paths,
                     inputs,
-                    layout.real_store_dir,
+                    engine.files_of,
                     submitting=submitting,
                     repairing=repairing,
                     user=user,
-                    files_of=engine.files_of,
                 )
                 restriction, control = endpoint.restriction, endpoint.control
                 await stack.enter_async_context(recursive(endpoint.listener, restriction))

@@ -160,12 +160,11 @@ class BuildSite(ABC):
         stack: contextlib.AsyncExitStack,
         paths: BuildPaths,
         inputs: set[StorePath],
-        real_store_dir: Path,
+        files_of: Callable[[StorePath], Path],
         *,
         submitting: bool,
         repairing: bool,
         user: build_users.BuildUser | None,
-        files_of: Callable[[StorePath], Path],
     ) -> Endpoint:
         """`startDaemon` (`derivation-builder.cc:1171`): the socket is up before the builder starts."""
 
@@ -220,17 +219,16 @@ class HostSite(BuildSite):
         stack: contextlib.AsyncExitStack,
         paths: BuildPaths,
         inputs: set[StorePath],
-        real_store_dir: Path,
+        files_of: Callable[[StorePath], Path],
         *,
         submitting: bool,
         repairing: bool,
         user: build_users.BuildUser | None,
-        files_of: Callable[[StorePath], Path],
     ) -> Endpoint:
         if not self.chroot:
             # `addDependencyImpl` (`derivation-builder.cc:901`) binds nothing: the builder sees the store.
             restriction = RestrictionContext(
-                inputs, None, real_store_dir, submitting=submitting, repairing=repairing, files_of=files_of, binds=False
+                inputs, None, files_of, submitting=submitting, repairing=repairing, binds=False
             )
             listener = await anyio.to_thread.run_sync(listen, paths.tmp / SOCKET_NAME)
             await anyio.to_thread.run_sync(build_users.chown_to, user, paths.tmp / SOCKET_NAME)
@@ -238,9 +236,7 @@ class HostSite(BuildSite):
         ours, control = socket.socketpair()
         stack.callback(control.close)
         stream = await stack.enter_async_context(await SocketStream.from_socket(ours))
-        restriction = RestrictionContext(
-            inputs, stream, real_store_dir, submitting=submitting, repairing=repairing, files_of=files_of
-        )
+        restriction = RestrictionContext(inputs, stream, files_of, submitting=submitting, repairing=repairing)
         listener = await anyio.to_thread.run_sync(listen, paths.tmp / SOCKET_NAME)
         await anyio.to_thread.run_sync(build_users.chown_to, user, paths.tmp / SOCKET_NAME)
         return Endpoint(listener, restriction, control)
@@ -300,22 +296,20 @@ class VmSite(BuildSite):
         stack: contextlib.AsyncExitStack,
         paths: BuildPaths,
         inputs: set[StorePath],
-        real_store_dir: Path,
+        files_of: Callable[[StorePath], Path],
         *,
         submitting: bool,
         repairing: bool,
         user: build_users.BuildUser | None,
-        files_of: Callable[[StorePath], Path],
     ) -> Endpoint:
         # The guest's init listens in the build directory, and the image holds no host socket.
         restriction = RestrictionContext(
             inputs,
             None,
-            real_store_dir,
+            files_of,
             submitting=submitting,
             repairing=repairing,
-            files_of=files_of,
-            reveal=functools.partial(vm_allow, paths.top, real_store_dir),
+            reveal=functools.partial(vm_allow, paths.top, self.real_store_dir),
         )
         controls = await anyio.to_thread.run_sync(listen, paths.top / VM_CONTROL_SOCKET_NAME)
         listener = await anyio.to_thread.run_sync(listen, paths.top / VM_BUILDER_SOCKET_NAME)
@@ -444,23 +438,21 @@ class DarwinVmSite(BuildSite):
         stack: contextlib.AsyncExitStack,
         paths: BuildPaths,
         inputs: set[StorePath],
-        real_store_dir: Path,
+        files_of: Callable[[StorePath], Path],
         *,
         submitting: bool,
         repairing: bool,
         user: build_users.BuildUser | None,
-        files_of: Callable[[StorePath], Path],
     ) -> Endpoint:
         """The host's socket, as for a build on the host; the guest relays its own to it. A path the builder adds
         joins the store share's allowlist."""
         restriction = RestrictionContext(
             inputs,
             None,
-            real_store_dir,
+            files_of,
             submitting=submitting,
             repairing=repairing,
-            files_of=files_of,
-            reveal=functools.partial(vm_allow, paths.top, real_store_dir),
+            reveal=functools.partial(vm_allow, paths.top, self.real_store_dir),
             binds=False,
         )
         listener = await anyio.to_thread.run_sync(listen, paths.tmp / SOCKET_NAME)
@@ -525,16 +517,13 @@ class SiblingSite(BuildSite):
         stack: contextlib.AsyncExitStack,
         paths: BuildPaths,
         inputs: set[StorePath],
-        real_store_dir: Path,
+        files_of: Callable[[StorePath], Path],
         *,
         submitting: bool,
         repairing: bool,
         user: build_users.BuildUser | None,
-        files_of: Callable[[StorePath], Path],
     ) -> Endpoint:
-        restriction = RestrictionContext(
-            inputs, None, real_store_dir, submitting=submitting, repairing=repairing, files_of=files_of
-        )
+        restriction = RestrictionContext(inputs, None, files_of, submitting=submitting, repairing=repairing)
         controls = await anyio.to_thread.run_sync(listen, paths.top / SIBLING_CONTROL_SOCKET_NAME)
         listener = await anyio.to_thread.run_sync(listen, paths.tmp / SOCKET_NAME)
         await anyio.to_thread.run_sync(build_users.chown_to, user, paths.tmp / SOCKET_NAME)

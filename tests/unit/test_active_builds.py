@@ -114,7 +114,7 @@ class _Restricted(RestrictedProxy):
 
 async def test_a_build_that_sends_op_48_gets_the_error_of_require() -> None:
     """`require<QueryActiveBuildsStore>` (`store-cast.hh:20`) throws after `startWork`; the session goes on."""
-    restriction = RestrictionContext(set(), None, Path("/nix/store"), submitting=False)
+    restriction = RestrictionContext(set(), None, lambda path: Path("/nix/store") / path.name, submitting=False)
 
     with pytest.raises(RestrictedError, match="Querying active builds not supported by store"):
         await _Restricted(restriction).execute(QueryActiveBuildsRequest())
