@@ -248,10 +248,12 @@ class BuildPodStore(ScheduledStore):
         request: BuildDerivationRequest,
         on_line: Callable[[str], Awaitable[None]],
         farm_root: str | None = None,
+        depth: int = 0,
     ) -> BuildDerivationResponse:
         """Build *request* in a pod; `InfrastructureError` when the pod, not the build, failed.
 
         *farm_root*, with the spec's `farm`, is the path the pod's `/nix` is a farm of: central holds it valid.
+        *depth* is the build's in recursive Nix, which picks the pod's PriorityClass.
         """
         if self.grants is None or self.central_host_key is None or self.kubernetes is None:
             raise InfrastructureError(f"{self.store_id}: no SSH listener or no Kubernetes settings for build pods")
@@ -275,8 +277,11 @@ class BuildPodStore(ScheduledStore):
                 if self.spec.farm is not None and farm_root is not None
                 else None
             )
-            await self.kubernetes.start_build_pod(self.spec.template, name, self.owner, secret, farm)
-            log.info("build_pod_started", pod=name, drv=str(request.drv_path))
+            priority = self.spec.priority_class(depth)
+            await self.kubernetes.start_build_pod(
+                self.spec.template, name, self.owner, secret, farm, priority_class=priority
+            )
+            log.info("build_pod_started", pod=name, drv=str(request.drv_path), depth=depth, priority_class=priority)
             watch = BuildPodWatch(self.spec.container)
             async with anyio.create_task_group() as watching:
                 watching.start_soon(self._watch, self.kubernetes, name, watch)

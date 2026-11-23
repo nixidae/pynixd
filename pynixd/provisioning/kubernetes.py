@@ -285,14 +285,17 @@ class KubernetesProvider:
         owner: BuildPodOwner,
         job: Mapping[str, str],
         farm: FarmVolume | None = None,
+        *,
+        priority_class: str | None = None,
     ) -> None:
         """A pod for one build of *owner*, with *job* in a Secret it owns (nixidae/nixidae#1560, spike).
 
-        The pod has no tags, so `machines` and the provisioner never see it.
+        *priority_class* replaces the template's. The pod has no tags, so `machines` and the provisioner never
+        see it.
         """
         spec = self._template(template)
         api = await self._client()
-        pod = Pod(build_pod_manifest(spec, name, owner, farm), api=api)
+        pod = Pod(build_pod_manifest(spec, name, owner, farm, priority_class=priority_class), api=api)
         with failing(f"creating build pod {name}"):
             try:
                 await pod.create()
@@ -546,6 +549,8 @@ def build_pod_manifest(
     name: str,
     owner: BuildPodOwner,
     farm: FarmVolume | None = None,
+    *,
+    priority_class: str | None = None,
 ) -> Manifest:
     """The template's pod for one build of *owner*: no tags, *owner*'s labels, and the job Secret at `JOB_DIR`
     in its container.
@@ -569,6 +574,10 @@ def build_pod_manifest(
     metadata.setdefault("labels", {}).update(owner.labels())
     spec = pod.setdefault("spec", {})
     spec["restartPolicy"] = "Never"
+    if priority_class is not None:
+        # The admission controller fills `priority` from the class name, and refuses a pod that sets both.
+        spec["priorityClassName"] = priority_class
+        spec.pop("priority", None)
     spec.setdefault("volumes", []).append({"name": JOB_VOLUME, "secret": {"secretName": name, "defaultMode": 0o400}})
     containers: list[Manifest] = spec.get("containers") or []
     target = next((c for c in containers if c.get("name") == template.container), None)

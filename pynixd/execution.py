@@ -841,7 +841,7 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         try:
             async with contextlib.AsyncExitStack() as held:
                 farm_root = await self._farm_root(build, store, held)
-                resp = without_error_prefix(await store.build(build.request, line, farm_root))
+                resp = without_error_prefix(await store.build(build.request, line, farm_root, build.depth))
         except PodDisrupted as e:
             # What a Job's `podFailurePolicy` calls Ignore: a low-priority pod gives way, and no store failed.
             log.info("build_pod_disrupted", build_id=build.build_id, error=str(e))

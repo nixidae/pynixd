@@ -17,8 +17,18 @@ async def test(vms: Machines) -> None:
     # pod's place, and a build pod takes no one's.
     build_priority = {
         "metadata": {"name": BUILD_PRIORITY},
-        "value": -1,
+        "value": -2,
         "preemptionPolicy": "Never",
         "description": "pynixd's build pods: the first to go when another pod needs the room.",
     }
-    await PriorityClass(build_priority, api=await cluster(vms)).create()
+    # A nested build's pod, one higher: on a full node it evicts a shallower build pod, and no ordinary pod,
+    # which all sit above it (nixidae/nixidae#1576).
+    nested_priority = {
+        "metadata": {"name": f"{BUILD_PRIORITY}-nested"},
+        "value": -1,
+        "preemptionPolicy": "PreemptLowerPriority",
+        "description": "pynixd's nested build pods: ahead of the build pods they are nested in.",
+    }
+    api = await cluster(vms)
+    await PriorityClass(build_priority, api=api).create()
+    await PriorityClass(nested_priority, api=api).create()

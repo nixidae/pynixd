@@ -138,6 +138,26 @@ def test_a_farm_pod_asks_nixkube_for_the_builds_path_on_each_system() -> None:
         )
 
 
+def test_a_build_pod_takes_the_priority_class_of_its_depth() -> None:
+    """A nested build's pod goes one class higher than the pod it is nested in (nixidae/nixidae#1576)."""
+    spec = BuildPodStoreSpec(
+        template="buildpod", central_host="10.0.0.1", priority_classes=["pynixd-build", "pynixd-build-nested"]
+    )
+    template = KubernetesTemplateSettings(
+        pod={"spec": {"priorityClassName": "pynixd-build", "containers": [{"name": "pynixd"}]}}
+    )
+
+    assert [spec.priority_class(depth) for depth in (0, 1, 5)] == [
+        "pynixd-build",
+        "pynixd-build-nested",
+        "pynixd-build-nested",
+    ]
+    assert BuildPodStoreSpec(template="buildpod", central_host="10.0.0.1").priority_class(3) is None
+    pod = build_pod_manifest(template, "pynixd-build-x", OWNER, priority_class="pynixd-build-nested")
+    assert pod["spec"]["priorityClassName"] == "pynixd-build-nested"
+    assert build_pod_manifest(template, "pynixd-build-x", OWNER)["spec"]["priorityClassName"] == "pynixd-build"
+
+
 def test_a_build_pod_names_its_store_in_a_label() -> None:
     owner = BuildPodOwner(store="buildpods-farm", run="r1")
     pod = build_pod_manifest(FARM_TEMPLATE, "pynixd-build-x", owner)

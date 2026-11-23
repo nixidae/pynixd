@@ -985,6 +985,17 @@ class BuildPodStoreSpec(StoreSpecBase):
     gc_enabled: bool = False
     farm: BuildPodFarmSpec | None = None
     """Give each pod a nixkube farm of its build's inputs as its `/nix`; `None` copies the inputs in."""
+    priority_classes: list[str] = []
+    """The PriorityClass of a pod by its build's depth in recursive Nix: the first for a client's build, the next
+    for a build nested in it, the last for every deeper one. Empty keeps the template's. Each deeper class
+    takes a higher value, all below 0, and `PreemptLowerPriority`: a nested pod on a full cluster then evicts a
+    shallower build pod and no ordinary pod (nixidae/nixidae#1576)."""
+
+    def priority_class(self, depth: int) -> str | None:
+        """The PriorityClass of a build pod at *depth*, or `None` for the template's."""
+        if not self.priority_classes:
+            return None
+        return self.priority_classes[min(depth, len(self.priority_classes) - 1)]
 
     def to_store(self, store_id: str) -> BuildPodStore:
         from .store.build_pods import BuildPodStore
