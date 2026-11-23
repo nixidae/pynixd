@@ -459,6 +459,18 @@ Answered 2026-11-23. Every item is decided.
      accepted.
    - The other order works too: a plain controller container whose
      postStart hook waits for its own file holds back the next container.
+   Decided (User, 2026-11-23), from these measurements:
+   - The environment: nixkube's containerd carries the NRI fix, and the
+     plugin removes the `KUBERNETES_*` and `HOSTNAME`. Central writes the
+     builder's argv and environment with each `$` escaped. On a containerd
+     without the fix the build sees those nine variables.
+   - The builder runs as the controller's uid, in its own container. The
+     controller then reads and canonicalises each output. The runner does
+     not mount the database.
+   - The controller is the first plain container, not a sidecar. Its
+     postStart hook waits until it has filled the build directory. It ends
+     when its work is done, and it reads the builder's exit code through
+     the API.
 7. **Pods left behind. Decided: ownership, and a sweep at start.** A pod
    outlives a central that dies; it ends at `activeDeadlineSeconds`.
    - Ownership: central in the cluster makes its own Pod the owner of each
