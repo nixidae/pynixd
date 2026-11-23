@@ -39,6 +39,7 @@ import anyio
 import structlog
 
 from nix_daemon_protocol.ids import StoreId
+from pynixd_store.database import DatabaseError
 from pynixd_store.provisioning_tables import PENDING
 
 from ..reverse_server import Admitted
@@ -161,7 +162,7 @@ class Provisioner:
         try:
             async with self.tasks():
                 while True:
-                    with anyio.move_on_after(await self.step()):
+                    with anyio.move_on_after(await self._step()):
                         await self._wake.wait()
                     self._wake = anyio.Event()
         finally:
@@ -198,6 +199,20 @@ class Provisioner:
                 if machine.state is not MachineState.ENDED:
                     log.info("provisioning_orphan_terminated", provider=provider.name, provider_id=machine.provider_id)
                     await self._terminate(provider, machine.provider_id)
+
+    async def _step(self) -> float:
+        """`step`, or a heartbeat's wait when the store database refuses.
+
+        Contention on `db.sqlite` is expected under a burst of builds, and a
+        loop that raises ends the daemon (nixidae/nixidae#1582). A step that
+        stops part way leaves what a crash leaves: each row is written before
+        its provider call, and the next step reads every row again.
+        """
+        try:
+            return await self.step()
+        except DatabaseError:
+            log.warning("provisioning_step_failed", exc_info=True)
+            return self._settings.heartbeat
 
     async def step(self) -> float:
         """Launch and end what `decide` says; answer how long until a timer could change the answer."""

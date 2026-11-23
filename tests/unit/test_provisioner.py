@@ -6,6 +6,7 @@ import itertools
 import os
 from typing import TYPE_CHECKING
 
+import anyio
 import pytest
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, RequestId, StoreId
@@ -30,6 +31,7 @@ from pynixd.provisioning.ticket import JoinTicket, Lease
 from pynixd.scheduler import Scheduler
 from pynixd.serde import BasicDerivation, BuildDerivationRequest, BuildMode, StorePath
 from pynixd_store.create_store import open_local_store
+from pynixd_store.database import DatabaseError
 from pynixd_store.local_store_db import LocalStoreDB
 from pynixd_store.store_layout import StoreLayout
 from tests.functional.mock_store import MockStore
@@ -177,6 +179,28 @@ async def test_a_waiting_build_launches_a_builder_whose_ticket_joins_once(world:
     assert joined.mandatory_features == frozenset(), "a pool with no mandatory features sets none"
     assert await world.provisioner.join(ticket.token) is None, "a token joined twice"
     assert await world.provisioner.join("not-a-token") is None
+
+
+async def test_a_step_the_database_refuses_is_tried_again(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A locked `db.sqlite` under a burst of builds must not end the daemon through this loop. nixidae/nixidae#1582."""
+    failed = anyio.Event()
+    stepped_again = anyio.Event()
+
+    async def step() -> float:
+        if not failed.is_set():
+            failed.set()
+            raise DatabaseError("database is locked")
+        stepped_again.set()
+        return 60.0
+
+    monkeypatch.setattr(world.provisioner, "step", step)
+    with anyio.fail_after(10):
+        async with anyio.create_task_group() as group:
+            group.start_soon(world.provisioner.run)
+            await failed.wait()
+            world.provisioner.wake()
+            await stepped_again.wait()
+            group.cancel_scope.cancel()
 
 
 async def test_an_idle_builder_ends_after_its_idle_time(world: _World) -> None:
