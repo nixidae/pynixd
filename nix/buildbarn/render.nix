@@ -101,7 +101,7 @@ let
               tlsClientCertificate = {
                 clientCertificateAuthorities = clientCAs;
                 # bb-storage requires both expressions (pkg/x509/configuration.go).
-                validationJmespathExpression.expression = "`true`";
+                validationJmespathExpression.expression = listen.tls.clientCertificateValidation;
                 metadataExtractionJmespathExpression.expression = "`{}`";
               };
             }

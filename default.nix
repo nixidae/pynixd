@@ -774,6 +774,7 @@ let
     '';
     # `lib.buildbarn.render`'s markers through real Jsonnet: `env` becomes the
     # value of the environment variable, a `*File` option the file's text.
+    # The frontend's client-certificate check carries its expression.
     buildbarnRender =
       let
         ca = pkgs.writeText "buildbarn-render-ca.pem" "test-ca";
@@ -783,7 +784,22 @@ let
             enable = true;
             id.hostname = bb.env "NODE_NAME";
           };
+          frontend = {
+            enable = true;
+            listen = {
+              addresses = [ ":8980" ];
+              tls = {
+                keyPair = {
+                  certificateFile = "/tls/tls.crt";
+                  keyFile = "/tls/tls.key";
+                };
+                clientCertificateAuthoritiesFile = "${ca}";
+                clientCertificateValidation = "contains(uris, 'spiffe://test/ci')";
+              };
+            };
+          };
           storage.endpoint.address = "storage:8981";
+          scheduler.clientEndpoint.address = "scheduler:8982";
           scheduler.workerEndpoint = {
             address = "scheduler:8983";
             tls.certificateAuthoritiesFile = "${ca}";
@@ -796,13 +812,18 @@ let
             pkgs.go-jsonnet
             pkgs.jq
           ];
-          inherit (rendered) worker;
-          passAsFile = [ "worker" ];
+          inherit (rendered) worker frontend;
+          passAsFile = [
+            "worker"
+            "frontend"
+          ];
         }
         ''
           jsonnet --ext-str NODE_NAME=n1 "$workerPath" > worker.json
           jq -e '.buildDirectories[0].runners[0].workerId.hostname == "n1"' worker.json
           jq -e '.scheduler.tls.serverCertificateAuthorities == "test-ca"' worker.json
+          jsonnet "$frontendPath" > frontend.json
+          jq -e '.grpcServers[1].authenticationPolicy.tlsClientCertificate | .clientCertificateAuthorities == "test-ca" and .validationJmespathExpression.expression == "contains(uris, '"'"'spiffe://test/ci'"'"')"' frontend.json
           touch $out
         '';
     # `remoteCompile.writeEnv`: a store path in the compile flags that the

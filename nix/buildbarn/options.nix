@@ -105,6 +105,18 @@ let
                     default = null;
                     description = "As `clientCertificateAuthorities`, read from this file when the service starts.";
                   };
+                  clientCertificateValidation = mkOption {
+                    type = types.str;
+                    default = "`true`";
+                    example = "contains(uris, 'spiffe://example.org/buildbarn/ci')";
+                    description = ''
+                      JMESPath expression over the client certificate, which a
+                      client must make true. bb-storage gives it the
+                      certificate's `dnsNames`, `emailAddresses` and `uris`,
+                      never the subject. The default admits every certificate
+                      the CAs signed.
+                    '';
+                  };
                 };
               }
             );
