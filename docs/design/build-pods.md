@@ -297,8 +297,13 @@ Answered 2026-11-23. Every item is decided.
      below it, so no ordinary pod is at risk. The evicted build requeues
      (`PodDisrupted`). If the evicted pod is the nested pod's own parent, the
      parent runs again and finds the nested output at central.
-   Not measured: the recursive test's nested derivation asks for no feature,
-   so central builds it itself.
+   Done, both layers. Phase `pod-nested` gives a one-slot store an outer
+   build whose nested build needs that store. It passes (run `provk-nest2`):
+   the outer pod ran as `pynixd-build`, the nested pod as
+   `pynixd-build-nested`. Negative control (run `provk-negnest1`): with the
+   slot release off, the outer build waits until the phase's 420 s
+   deadline, and no nested pod starts. Not tested: the eviction itself, as
+   the QEMU node has room for both pods.
 5. **builder-rpc-v0.** Recursive Nix is tested: run `provk-clean1`, phase
    `pod-recursive` (`kubernetes_pod_recursive.py`), on the copy-in pod and on
    the stand-in farm pod. The cases are a path the builder adds, a nested
@@ -327,12 +332,41 @@ Answered 2026-11-23. Every item is decided.
      which has no object to own anything. In both cases the old pods cannot
      report: their keys were in the old process. So central also deletes pods
      with its build label at start.
+   Done: the sweep (`BuildPodStore.sweep`). Each pod carries its store's id
+   and its process's run id as labels, and the sweep deletes the store's pods
+   of every other run. It runs in the background until the API server
+   answers: in server start it failed while the cluster came up (run
+   `provk-left1`). A server that a hand-over started sweeps nothing, as the
+   old process still drains its builds. Phase `pod-left`. Not done yet: the
+   owner reference.
 8. **The fixed cost. Decided: measure each part, and state the cost.** About
    5.4 s of a build pod is not the build. At least 1 to 2 s of that is
    Kubernetes itself (a `true` pod starts in 1.4 s). The other gaps are
    pod creation to pynixd's first log line, the managed Nix daemon start
    (about 0.9 s; a farm pod runs none), SSH (0.6 s), and pod shutdown to the
-   result. None is measured alone yet. The store gives the fixed cost to the
+   result. The store gives the fixed cost to the
    scheduler's time-aware ranking (`placement.py`), so a small build goes to
    central or to a long-lived builder. The operator documentation states the
    cost and says to send small builds elsewhere.
+
+   **Measured** (run `provk-secs1`, QEMU, three builds each). The pod and
+   central each write one line of seconds to the build log. For the busybox
+   input (37 MiB), 5.8 s in all:
+
+   | part | seconds | who pays it |
+   | --- | --- | --- |
+   | create to container running | 1.6 | Kubernetes: scheduling, volumes, container start |
+   | container start to first log line | 1.1 | Python's start in the pod (1.5 s from the process start) |
+   | server start | 1.0 | pynixd in the pod |
+   | inputs, with the SSH connection | 0.26 | central to the pod |
+   | build | 0.68 | the build |
+   | last log line to result | 1.00 | the kubelet |
+
+   The inputs grow with the closure: 1.5 s for 210 MiB, 3.3 s for 378 MiB.
+   The last part is 1.00 s in every run: the kubelet checks a followed log
+   for the container's end once a second, and reports the pod's status on a
+   one-second relist (read, not measured alone). The levers, largest first:
+   the result over the pod's SSH session in place of the termination
+   message (1 s); a pod without a server start (1 s); a faster Python start.
+   The store learns its fixed cost from each pod (`BuildPodStore.setup_seconds`),
+   and the build history records the pod's build alone.
