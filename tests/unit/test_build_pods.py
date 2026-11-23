@@ -14,7 +14,14 @@ from pynixd.build_job import RESULT_BYTES, decode_request, decode_response, enco
 from pynixd.build_result import failure
 from pynixd.config import BuildPodStoreSpec, KubernetesTemplateSettings
 from pynixd.exceptions import InfrastructureError
-from pynixd.provisioning.kubernetes import FarmVolume, build_pod_manifest, pod_end, template_store_paths
+from pynixd.provisioning.kubernetes import (
+    BuildPodEnd,
+    BuildPodWatch,
+    FarmVolume,
+    build_pod_manifest,
+    pod_end,
+    template_store_paths,
+)
 from pynixd.serde import BasicDerivation
 from pynixd.store.build_pods import BuildPodStore, checked_result, farm_references, farm_text
 from pynixd.store.scheduled import ProbeState
@@ -138,6 +145,39 @@ def test_a_pod_says_why_it_ended() -> None:
     assert pod_end(late) == "DeadlineExceeded"
     assert pod_end(running) is None
     assert pod_end({}) is None
+
+
+def _pod(state: dict[str, object], **status: object) -> dict[str, object]:
+    return {"status": {"phase": "Running", "containerStatuses": [{"name": "pynixd", "state": state}], **status}}
+
+
+@pytest.mark.anyio
+async def test_one_watch_says_when_to_read_the_log_and_how_the_pod_ended() -> None:
+    watch = BuildPodWatch("pynixd")
+    watch.saw(_pod({"waiting": {"reason": "ContainerCreating"}}))
+    assert not watch.settled.is_set()
+
+    watch.saw(_pod({"running": {}}))
+    assert watch.ran and watch.settled.is_set() and not watch.ended.is_set()
+    watch.saw(_pod({"terminated": {"exitCode": 0, "message": "result"}}))
+
+    assert watch.end == BuildPodEnd(exit_code=0, message="result", cause="exited")
+
+
+@pytest.mark.anyio
+async def test_a_watch_keeps_why_a_pod_went_after_it_is_gone() -> None:
+    preempted = BuildPodWatch("pynixd")
+    preempted.cause = "PreemptionByScheduler"
+    preempted.gone()
+    never = BuildPodWatch("pynixd")
+    never.saw({"status": {"phase": "Failed", "reason": "DeadlineExceeded"}})
+    deleted = BuildPodWatch("pynixd")
+    deleted.gone()
+
+    assert preempted.end is not None and preempted.end.disrupted
+    assert never.end is not None and never.end.cause == "DeadlineExceeded" and not never.ran
+    assert never.settled.is_set()
+    assert deleted.end is not None and deleted.end.cause == "deleted" and not deleted.end.disrupted
 
 
 @pytest.mark.anyio

@@ -21,7 +21,7 @@ import hashlib
 import json
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Final
 
@@ -38,7 +38,7 @@ from kr8s.asyncio.objects import Pod, Secret
 from .provider import Machine, MachineState, NoCapacity, ProviderError
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+    from collections.abc import AsyncIterator, Iterator, Mapping
 
     from ..config import KubernetesSettings, KubernetesTemplateSettings
 
@@ -303,80 +303,38 @@ class KubernetesProvider:
                 await self.terminate(name)
             raise
 
-    async def follow_build_pod(self, name: str, container: str) -> AsyncIterator[str]:
-        """The container's log lines, until the container ends; none for a pod that ends before it starts.
+    async def watch_build_pod(self, name: str, watch: BuildPodWatch) -> None:
+        """Keep *watch* up to date with build pod *name* from its creation, until the pod ended or is gone.
 
-        A pod that waits for room, as a low-priority pod does on a full cluster, answers a log request
-        with 400 until its container starts: the watch waits for the start instead.
-        """
-        pod = await self._build_pod_until(name, lambda raw: _started(raw, container) or pod_end(raw) is not None)
-        if not _started(pod.raw, container):
-            return
-        # As long as the build: the pod's `activeDeadlineSeconds` bounds it.
-        with failing(f"reading the log of build pod {name}", seconds=math.inf):
-            async for line in pod.logs(container=container, follow=True):
-                yield line
-
-    async def watch_build_pod_end(self, name: str, seen: PodEndSeen) -> None:
-        """Keep in *seen* why build pod *name* ends, as each change of it shows, until it is deleted.
-
-        A pod gone before `build_pod_ended` reads it says nothing of why. Measured: the scheduler
-        preempted a build pod at 23:05:10, the kubelet killed it at 23:05:11, and central read it at
-        23:05:23, as gone.
+        No limit of its own: a pod waits for room and builds for as long as its deadline lets it. A watch the
+        API server closes starts again from a new read.
         """
         api = await self._client()
         with failing(f"watching build pod {name}", seconds=math.inf):
-            try:
-                pod = await Pod.get(name, namespace=self._settings.namespace, api=api)
-            except kr8s.NotFoundError:
-                return
-            seen.cause = pod_end(pod.raw) or seen.cause
-            async for event, changed in pod.watch():
-                seen.cause = pod_end(changed.raw) or seen.cause
-                if event == "DELETED":
+            while not watch.ended.is_set():
+                try:
+                    pod = await Pod.get(name, namespace=self._settings.namespace, api=api)
+                except kr8s.NotFoundError:
+                    watch.gone()
                     return
+                watch.saw(pod.raw)
+                # From the read's resourceVersion: no change between the read and the watch is lost.
+                async for event, changed in pod.watch():
+                    watch.saw(changed.raw)
+                    if event == "DELETED":
+                        watch.gone()
+                    if watch.ended.is_set():
+                        return
 
-    async def build_pod_ended(self, name: str, container: str, seen: PodEndSeen | None = None) -> BuildPodEnd:
-        """How the container ended, once the kubelet has written it, or how the pod ended without it.
-
-        The log ends when the container exits, and the kubelet writes the state after that (measured: a
-        crash read as still running). For a pod already gone, *seen* says why it went.
-        """
-        try:
-            pod = await self._build_pod_until(
-                name, lambda raw: _terminated(raw, container) is not None or pod_end(raw) is not None
-            )
-        except BuildPodDeleted as deleted:
-            cause = seen.cause if seen is not None and seen.cause is not None else deleted.cause
-            return BuildPodEnd(exit_code=None, message="", cause=cause)
-        terminated = _terminated(pod.raw, container) or {}
-        exit_code = terminated.get("exitCode")
-        return BuildPodEnd(
-            exit_code=exit_code if isinstance(exit_code, int) else None,
-            message=str(terminated.get("message") or ""),
-            cause=pod_end(pod.raw) or str(terminated.get("reason") or "exited"),
-        )
-
-    async def _build_pod_until(self, name: str, done: Callable[[Manifest], bool]) -> Pod:
-        """Build pod *name*, once *done* holds for it; `BuildPodDeleted` when it is deleted first.
-
-        No limit of its own: a pod waits for room and builds for as long as its deadline lets it.
-        """
+    async def follow_build_pod(self, name: str, container: str) -> AsyncIterator[str]:
+        """The container's log lines, until the container ends. Only for a container that started: a pod that
+        waits for room, as a low-priority pod does on a full cluster, answers a log request with 400."""
         api = await self._client()
-        with failing(f"reading build pod {name}", seconds=math.inf):
-            try:
-                pod = await Pod.get(name, namespace=self._settings.namespace, api=api)
-            except kr8s.NotFoundError as error:
-                raise BuildPodDeleted(name, "deleted") from error
-            if done(pod.raw):
-                return pod
-            # From the read's resourceVersion: no change between the read and the watch is lost.
-            async for event, changed in pod.watch():
-                if event == "DELETED":
-                    raise BuildPodDeleted(name, pod_end(changed.raw) or "deleted")
-                if done(changed.raw):
-                    return changed
-        raise ProviderError(f"kubernetes: the watch of build pod {name} ended")
+        # As long as the build: the pod's `activeDeadlineSeconds` bounds it.
+        with failing(f"reading the log of build pod {name}", seconds=math.inf):
+            pod = await Pod.get(name, namespace=self._settings.namespace, api=api)
+            async for line in pod.logs(container=container, follow=True):
+                yield line
 
 
 BUILD_LABEL: Final = "pynixd.nixidae.org/build"
@@ -413,16 +371,58 @@ node-pressure `Evicted`. A build pod ended so did nothing wrong."""
 
 
 @dataclass(slots=True)
-class PodEndSeen:
-    """The last reason a watch saw for a build pod's end (`pod_end`); None while it saw none."""
+class BuildPodWatch:
+    """What one watch of a build pod has seen (`KubernetesProvider.watch_build_pod`).
 
+    The reason for an end is kept from each change, not read at the end: a pod can be gone by then. Measured:
+    the scheduler preempted a build pod at 23:05:10, the kubelet killed it at 23:05:11, and a read at 23:05:23
+    found nothing.
+    """
+
+    container: str
+    settled: anyio.Event = field(default_factory=anyio.Event)
+    """The container started, or the pod ended without it: its log can be read, or never will be."""
+    ended: anyio.Event = field(default_factory=anyio.Event)
+    ran: bool = False
+    end: BuildPodEnd | None = None
     cause: str | None = None
+    """The last reason seen for the pod's end (`pod_end`)."""
 
+    def saw(self, pod: Manifest) -> None:
+        """One state of the pod. The log ends when the container exits, and the kubelet writes the container's
+        end after that (measured: a crash read as still running), so the end waits for that state."""
+        if self.ended.is_set():
+            return
+        ending = pod_end(pod)
+        self.cause = ending or self.cause
+        if _started(pod, self.container):
+            self.ran = True
+            self.settled.set()
+        terminated = _terminated(pod, self.container)
+        if terminated is None and ending is None:
+            return
+        exit_code = (terminated or {}).get("exitCode")
+        self._end(
+            BuildPodEnd(
+                exit_code=exit_code if isinstance(exit_code, int) else None,
+                message=str((terminated or {}).get("message") or ""),
+                cause=ending or str((terminated or {}).get("reason") or "exited"),
+            )
+        )
 
-class BuildPodDeleted(ProviderError):
-    def __init__(self, name: str, cause: str) -> None:
-        super().__init__(f"kubernetes: build pod {name} was deleted: {cause}")
-        self.cause = cause
+    def gone(self) -> None:
+        self._end(BuildPodEnd(exit_code=None, message="", cause=self.cause or "deleted"))
+
+    def lost(self, error: str) -> None:
+        """The watch failed: nothing more will be known of the pod."""
+        self._end(BuildPodEnd(exit_code=None, message="", cause=self.cause or f"watch failed: {error}"))
+
+    def _end(self, end: BuildPodEnd) -> None:
+        if self.ended.is_set():
+            return
+        self.end = end
+        self.settled.set()
+        self.ended.set()
 
 
 def _container_state(pod: Manifest, container: str) -> Manifest:
