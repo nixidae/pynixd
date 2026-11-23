@@ -12,8 +12,9 @@ from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
 from pynixd.build_job import RESULT_BYTES, decode_request, decode_response, encode, result_message
 from pynixd.build_result import failure
-from pynixd.config import BuildPodStoreSpec, KubernetesTemplateSettings
+from pynixd.config import BuildPodFarmSpec, BuildPodStoreSpec, KubernetesTemplateSettings
 from pynixd.exceptions import InfrastructureError
+from pynixd.placement import missing_input_bytes
 from pynixd.provisioning.kubernetes import (
     BuildPodEnd,
     BuildPodWatch,
@@ -191,3 +192,14 @@ async def test_the_spec_makes_a_store_that_holds_nothing() -> None:
     assert store.probe_state == ProbeState.PROBED
     with pytest.raises(InfrastructureError, match="holds no paths"):
         await store.is_valid_path(IsValidPathRequest(path=StorePath("/nix/store/00000000000000000000000000000001-x")))
+
+
+@pytest.mark.anyio
+async def test_the_placement_prices_a_copy_in_pod_at_its_whole_input_closure() -> None:
+    sizes = {StorePath(INPUT): 1000, StorePath(RUNS): 24}
+    copy_in = BuildPodStoreSpec(template="buildpod", central_host="10.0.0.1", systems={"x86_64-linux"})
+    farm = copy_in.model_copy(update={"farm": BuildPodFarmSpec(volume="nix")})
+
+    assert await missing_input_bytes(copy_in.to_store("pods"), {}, sizes) == 1024
+    # Central cannot see what a farm pod's node holds.
+    assert await missing_input_bytes(farm.to_store("farm"), {}, sizes) is None

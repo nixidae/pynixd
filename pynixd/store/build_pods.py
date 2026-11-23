@@ -18,7 +18,7 @@ import anyio
 import asyncssh
 import structlog
 
-from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest
+from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest, QueryValidPathsResponse
 from nix_daemon_protocol.store_path import StorePath
 
 from ..build_grant import BuildGrant
@@ -176,6 +176,8 @@ class BuildPodStore(ScheduledStore):
         suppress_last: bool = False,
         skip_probe: bool = False,
     ) -> Any:  # noqa: ANN401 -- the base class's signature
+        if isinstance(request, QueryValidPathsRequest):
+            return await self.query_valid_paths(request)
         raise self._holds_nothing()
 
     async def read_derivation(self, drv_store_path: StorePath | str) -> Derivation | None:
@@ -191,6 +193,10 @@ class BuildPodStore(ScheduledStore):
         raise self._holds_nothing()
 
     async def query_valid_paths(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:  # noqa: ANN401 -- the base class's
+        # A copy-in pod starts empty and central sends it every input, so the placement prices the whole
+        # closure. A farm pod reads its inputs from the node, which central does not see: its price stays unknown.
+        if self.spec.farm is None:
+            return QueryValidPathsResponse(paths=set())
         raise self._holds_nothing()
 
     async def nar_from_path(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:  # noqa: ANN401 -- the base class's
