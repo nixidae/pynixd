@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import pytest
 
@@ -44,10 +45,13 @@ from pynixd.provisioning.kubernetes import (
     BuildPodOwner,
     BuildPodWatch,
     FarmVolume,
+    KubernetesProvider,
     OwnerPod,
     build_pod_manifest,
     build_store_label,
+    first_placeable,
     pod_end,
+    ready_labels,
     template_store_paths,
 )
 from pynixd.serde import BasicDerivation
@@ -190,7 +194,7 @@ def test_a_build_pod_says_what_each_part_of_its_fixed_cost_took() -> None:
 
 
 def test_a_build_pod_store_learns_its_fixed_cost() -> None:
-    store = BuildPodStoreSpec(template="buildpod", central_host="10.0.0.1").to_store("pods")
+    store = BuildPodStoreSpec(templates=["buildpod"], central_host="10.0.0.1").to_store("pods")
     times = PodTimes(asked=0.0, ended=6.0, pod={"build": 1.0})
 
     assert store.setup_seconds is None
@@ -203,7 +207,7 @@ def test_a_build_pod_store_learns_its_fixed_cost() -> None:
 def test_a_build_pod_takes_the_priority_class_of_its_depth() -> None:
     """A nested build's pod goes one class higher than the pod it is nested in (nixidae/nixidae#1576)."""
     spec = BuildPodStoreSpec(
-        template="buildpod", central_host="10.0.0.1", priority_classes=["pynixd-build", "pynixd-build-nested"]
+        templates=["buildpod"], central_host="10.0.0.1", priority_classes=["pynixd-build", "pynixd-build-nested"]
     )
     template = KubernetesTemplateSettings(
         pod={"spec": {"priorityClassName": "pynixd-build", "containers": [{"name": "pynixd"}]}}
@@ -214,7 +218,7 @@ def test_a_build_pod_takes_the_priority_class_of_its_depth() -> None:
         "pynixd-build-nested",
         "pynixd-build-nested",
     ]
-    assert BuildPodStoreSpec(template="buildpod", central_host="10.0.0.1").priority_class(3) is None
+    assert BuildPodStoreSpec(templates=["buildpod"], central_host="10.0.0.1").priority_class(3) is None
     pod = build_pod_manifest(template, "pynixd-build-x", OWNER, priority_class="pynixd-build-nested")
     assert pod["spec"]["priorityClassName"] == "pynixd-build-nested"
     assert build_pod_manifest(template, "pynixd-build-x", OWNER)["spec"]["priorityClassName"] == "pynixd-build"
@@ -254,7 +258,7 @@ def test_central_s_pod_owns_each_build_pod() -> None:
 
 def test_central_s_pod_is_in_the_build_pods_namespace() -> None:
     kubernetes = ProvisioningSettings(kubernetes=KubernetesSettings(namespace="builds", templates={}))
-    pods: dict[str, StoreSpec] = {"pods": BuildPodStoreSpec(template="buildpod", central_host="10.0.0.1")}
+    pods: dict[str, StoreSpec] = {"pods": BuildPodStoreSpec(templates=["buildpod"], central_host="10.0.0.1")}
     PynixdSettings(provisioning=kubernetes, stores=pods, pod_name="pynixd-0", pod_uid="5f0c", pod_namespace="builds")
     with pytest.raises(ValueError, match="counts as absent"):
         PynixdSettings(
@@ -317,7 +321,9 @@ async def test_a_watch_keeps_why_a_pod_went_after_it_is_gone() -> None:
 
 @pytest.mark.anyio
 async def test_the_spec_makes_a_store_that_holds_nothing() -> None:
-    store = BuildPodStoreSpec(template="buildpod", central_host="10.0.0.1", systems={"x86_64-linux"}).to_store("pods")
+    store = BuildPodStoreSpec(templates=["buildpod"], central_host="10.0.0.1", systems={"x86_64-linux"}).to_store(
+        "pods"
+    )
 
     assert isinstance(store, BuildPodStore)
     # The scheduler places only on a store with a daemon client.
@@ -331,9 +337,77 @@ async def test_the_spec_makes_a_store_that_holds_nothing() -> None:
 @pytest.mark.anyio
 async def test_the_placement_prices_a_copy_in_pod_at_its_whole_input_closure() -> None:
     sizes = {StorePath(INPUT): 1000, StorePath(RUNS): 24}
-    copy_in = BuildPodStoreSpec(template="buildpod", central_host="10.0.0.1", systems={"x86_64-linux"})
+    copy_in = BuildPodStoreSpec(templates=["buildpod"], central_host="10.0.0.1", systems={"x86_64-linux"})
     farm = copy_in.model_copy(update={"farm": BuildPodFarmSpec(volume="nix")})
 
     assert await missing_input_bytes(copy_in.to_store("pods"), {}, sizes) == 1024
     # Central cannot see what a farm pod's node holds.
     assert await missing_input_bytes(farm.to_store("farm"), {}, sizes) is None
+
+
+def _node(labels: dict[str, str], *, ready: str = "True", cordoned: bool = False) -> dict[str, Any]:
+    return {
+        "metadata": {"labels": labels},
+        "spec": {"unschedulable": cordoned},
+        "status": {"conditions": [{"type": "Ready", "status": ready}]},
+    }
+
+
+def test_only_a_ready_uncordoned_node_takes_a_build_pod() -> None:
+    assert ready_labels(_node({"a": "1"})) == {"a": "1"}
+    assert ready_labels(_node({"a": "1"}, ready="False")) is None
+    assert ready_labels(_node({"a": "1"}, cordoned=True)) is None
+    assert ready_labels({"metadata": {}}) is None
+
+
+def test_a_pod_takes_the_first_template_a_node_can_take() -> None:
+    sandbox = ("sandbox", {"nixkube/userns": "true", "kubernetes.io/arch": "amd64"})
+    bare = ("bare", {"nixkube/userns": "false"})
+    amd64_bare = {"nixkube/userns": "false", "kubernetes.io/arch": "amd64"}
+    amd64_userns = {"nixkube/userns": "true", "kubernetes.io/arch": "amd64"}
+
+    assert first_placeable([sandbox, bare], [amd64_bare, amd64_userns]) == "sandbox"
+    assert first_placeable([sandbox, bare], [amd64_bare]) == "bare"
+    # Every label of the selector counts, not one.
+    assert first_placeable([sandbox], [{"nixkube/userns": "true", "kubernetes.io/arch": "arm64"}]) is None
+    assert first_placeable([sandbox, bare], []) is None
+    assert first_placeable([("any", {})], [{}]) == "any"
+
+
+class _Nodes(KubernetesProvider):
+    def __init__(self, settings: KubernetesSettings, nodes: list[dict[str, str]]) -> None:
+        super().__init__(settings)
+        self.nodes = nodes
+        self.listed = 0
+
+    async def ready_node_labels(self) -> list[dict[str, str]]:
+        self.listed += 1
+        return self.nodes
+
+
+def _selecting(selector: dict[str, str]) -> KubernetesTemplateSettings:
+    return KubernetesTemplateSettings(pod={"spec": {"nodeSelector": selector, "containers": []}})
+
+
+@pytest.mark.anyio
+async def test_a_store_picks_each_pod_s_template_from_the_ready_nodes() -> None:
+    settings = KubernetesSettings(
+        templates={"sandbox": _selecting({"nixkube/userns": "true"}), "bare": _selecting({"nixkube/userns": "false"})}
+    )
+    store = BuildPodStoreSpec(templates=["sandbox", "bare"], central_host="10.0.0.1").to_store("pods")
+    kubernetes = _Nodes(settings, [{"nixkube/userns": "false"}])
+    store.kubernetes = kubernetes
+
+    assert await store.pick_template() == "bare"
+    kubernetes.nodes = [{"nixkube/userns": "false"}, {"nixkube/userns": "true"}]
+    assert await store.pick_template() == "sandbox"
+    kubernetes.nodes = [{}]
+    with pytest.raises(InfrastructureError, match="no Ready node"):
+        await store.pick_template()
+
+    one = BuildPodStoreSpec(templates=["sandbox"], central_host="10.0.0.1").to_store("one")
+    one.kubernetes = kubernetes
+    listed = kubernetes.listed
+    # One template needs no node list, and no right to list nodes.
+    assert await one.pick_template() == "sandbox"
+    assert kubernetes.listed == listed

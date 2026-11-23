@@ -977,7 +977,10 @@ class BuildPodStoreSpec(StoreSpecBase):
     """
 
     type: Literal["kubernetes-build-pods"] = "kubernetes-build-pods"
-    template: str
+    templates: list[str] = Field(min_length=1)
+    """The templates of the store's pods, in order of preference. With more than one, each pod takes the first
+    whose `nodeSelector` a Ready node satisfies, so central lists nodes (cluster-wide `list` on nodes). One
+    store with a template per kind of node, not a store per kind: each store keeps its own queue and slots."""
     container: str = "pynixd"
     """The template's container that runs `pynixd build-one`: its termination message is the result."""
     central_host: str

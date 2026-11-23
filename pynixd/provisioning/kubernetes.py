@@ -38,7 +38,7 @@ from kr8s.asyncio.objects import Pod, Secret
 from .provider import Machine, MachineState, NoCapacity, ProviderError
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator, Mapping
+    from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 
     from ..config import KubernetesSettings, KubernetesTemplateSettings
 
@@ -273,6 +273,13 @@ class KubernetesProvider:
     async def close(self) -> None:
         # kr8s keeps one client per argument set for the thread and has no close.
         self._api = None
+
+    async def ready_node_labels(self) -> list[dict[str, str]]:
+        """The labels of each node that takes new pods. Needs `list` on nodes, cluster-wide."""
+        api = await self._client()
+        with failing("listing nodes"):
+            nodes = [node async for node in api.get("nodes", raw=True)]
+        return [labels for node in nodes if isinstance(node, dict) and (labels := ready_labels(node)) is not None]
 
     def build_pod_template(self, template: str) -> KubernetesTemplateSettings:
         """The template build pods of a store start from; `ProviderError` for a name the settings lack."""
@@ -538,6 +545,35 @@ def template_store_paths(template: KubernetesTemplateSettings) -> frozenset[str]
     nixkube reads a pod the same way (`extract_store_paths`). A path inside another names that one.
     """
     return frozenset(_STORE_PATH.findall(json.dumps(template.pod)))
+
+
+def node_selector(template: KubernetesTemplateSettings) -> dict[str, str]:
+    """The labels a node needs for the template's pod: its `nodeSelector`."""
+    return dict((template.pod.get("spec") or {}).get("nodeSelector") or {})
+
+
+def ready_labels(node: Manifest) -> dict[str, str] | None:
+    """The labels of a node that takes new pods, or `None` for one that is not Ready or is cordoned."""
+    if (node.get("spec") or {}).get("unschedulable"):
+        return None
+    conditions: list[Manifest] = (node.get("status") or {}).get("conditions") or []
+    if not any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions):
+        return None
+    return dict((node.get("metadata") or {}).get("labels") or {})
+
+
+def first_placeable(
+    selectors: Sequence[tuple[str, Mapping[str, str]]], nodes: Sequence[Mapping[str, str]]
+) -> str | None:
+    """The first template whose selector a node's labels satisfy, or `None`.
+
+    Only `nodeSelector` counts: a template's affinity and the nodes' taints wait for the scheduler, so a pod
+    can still pend on the node this picked.
+    """
+    for name, selector in selectors:
+        if any(all(labels.get(key) == value for key, value in selector.items()) for labels in nodes):
+            return name
+    return None
 
 
 def farm_volume(pod: Manifest, volume: str) -> Manifest:

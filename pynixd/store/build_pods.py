@@ -46,6 +46,8 @@ from ..provisioning.kubernetes import (
     FarmVolume,
     OwnerPod,
     farm_volume,
+    first_placeable,
+    node_selector,
     template_store_paths,
 )
 from ..provisioning.provider import ProviderError
@@ -175,8 +177,8 @@ class BuildPodStore(ScheduledStore):
         """Central's SSH host key, which the pod pins; `Server` sets it when the SSH listener starts."""
         self.kubernetes: KubernetesProvider | None = None
         self.owner = BuildPodOwner(store=str(self.store_id), run=secrets.token_hex(4))
-        self.template_paths: frozenset[str] = frozenset()
-        """The store paths the template names, which each farm holds; `Server` reads them when it arms the store."""
+        self.template_paths: dict[str, frozenset[str]] = {}
+        """By template, the store paths it names, which the farm of its pod holds; `arm` reads them."""
 
     def _learn_fixed(self, times: PodTimes) -> None:
         """Move the store's fixed cost, which the placement adds to each build here, toward this pod's."""
@@ -220,28 +222,49 @@ class BuildPodStore(ScheduledStore):
         central's own pod, which owns each build pod.
 
         A store whose pods take a farm refuses to start here, not at its first build: a template without the
-        farm's volume, or a store path the template names that *local* cannot give a node, fails every build.
+        farm's volume, or a store path a template names that *local* cannot give a node, fails every build.
         """
         self.grants = grants
         self.central_host_key = host_key
         self.kubernetes = kubernetes
         self.owner = dataclasses.replace(self.owner, pod=owner_pod)
+        templates = {name: kubernetes.build_pod_template(name) for name in self.spec.templates}
         if self.spec.farm is None:
             return
-        template = kubernetes.build_pod_template(self.spec.template)
-        farm_volume(template.pod, self.spec.farm.volume)
-        paths = template_store_paths(template)
+        for template in templates.values():
+            farm_volume(template.pod, self.spec.farm.volume)
+        paths = {name: template_store_paths(template) for name, template in templates.items()}
+        wanted = frozenset().union(*paths.values())
         # `substitute`: central fetches what its caches hold, as a node asks central for it next.
         valid = await local.execute(
-            QueryValidPathsRequest(paths={StorePath(path) for path in paths}, substitute=1), client=None
+            QueryValidPathsRequest(paths={StorePath(path) for path in wanted}, substitute=1), client=None
         )
         held = {str(StorePath(str(path)).with_store_prefix()) for path in valid.paths}
-        if missing := sorted(paths - held):
+        if missing := sorted(wanted - held):
             raise RuntimeError(
-                f"store {self.store_id}: its template names {', '.join(missing)}, which a farm needs"
+                f"store {self.store_id}: its templates name {', '.join(missing)}, which a farm needs"
                 " and central's store and caches lack"
             )
         self.template_paths = paths
+
+    async def pick_template(self) -> str:
+        """The template of the next pod: the first a Ready node can take. One template is taken unasked.
+
+        `InfrastructureError` when no node can take any, so the build goes to another store.
+        """
+        if len(self.spec.templates) == 1:
+            return self.spec.templates[0]
+        if self.kubernetes is None:
+            raise InfrastructureError(f"{self.store_id}: no Kubernetes settings for build pods")
+        selectors = [(name, node_selector(self.kubernetes.build_pod_template(name))) for name in self.spec.templates]
+        try:
+            nodes = await self.kubernetes.ready_node_labels()
+        except ProviderError as error:
+            raise InfrastructureError(f"{self.store_id}: {error}") from error
+        picked = first_placeable(selectors, nodes)
+        if picked is None:
+            raise InfrastructureError(f"{self.store_id}: no Ready node matches a template of {self.spec.templates}")
+        return picked
 
     @property
     def daemon_client(self) -> BuildPodStore:
@@ -330,13 +353,16 @@ class BuildPodStore(ScheduledStore):
         on_line: Callable[[str], Awaitable[None]],
         farm_root: str | None = None,
         depth: int = 0,
+        template: str | None = None,
     ) -> tuple[BuildDerivationResponse, PodTimes]:
         """Build *request* in a pod, and say when each step of the pod ended; `InfrastructureError` when the pod,
         not the build, failed.
 
         *farm_root*, with the spec's `farm`, is the path the pod's `/nix` is a farm of: central holds it valid.
-        *depth* is the build's in recursive Nix, which picks the pod's PriorityClass.
+        *depth* is the build's in recursive Nix, which picks the pod's PriorityClass. *template* is what
+        `pick_template` gave for the farm root; `None`: the first.
         """
+        template = template or self.spec.templates[0]
         if self.grants is None or self.central_host_key is None or self.kubernetes is None:
             raise InfrastructureError(f"{self.store_id}: no SSH listener or no Kubernetes settings for build pods")
         # A floating output has no path yet: the grant takes it as a content-addressed path.
@@ -361,11 +387,16 @@ class BuildPodStore(ScheduledStore):
             )
             priority = self.spec.priority_class(depth)
             times = PodTimes(asked=time.monotonic())
-            await self.kubernetes.start_build_pod(
-                self.spec.template, name, self.owner, secret, farm, priority_class=priority
-            )
+            await self.kubernetes.start_build_pod(template, name, self.owner, secret, farm, priority_class=priority)
             times.created = time.monotonic()
-            log.info("build_pod_started", pod=name, drv=str(request.drv_path), depth=depth, priority_class=priority)
+            log.info(
+                "build_pod_started",
+                pod=name,
+                drv=str(request.drv_path),
+                depth=depth,
+                priority_class=priority,
+                template=template,
+            )
             watch = BuildPodWatch(self.spec.container)
             async with anyio.create_task_group() as watching:
                 watching.start_soon(self._watch, self.kubernetes, name, watch)

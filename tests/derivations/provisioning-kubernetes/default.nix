@@ -437,7 +437,7 @@ vivariumLib.mkTest {
         ssh_port = sshPort;
         stores.buildpods = {
           type = "kubernetes-build-pods";
-          template = "buildpod";
+          templates = [ "buildpod" ];
           central_host = address;
           central_port = sshPort;
           systems = [ system ];
@@ -449,7 +449,7 @@ vivariumLib.mkTest {
         };
         stores.buildpods-userns = {
           type = "kubernetes-build-pods";
-          template = "buildpod-userns";
+          templates = [ "buildpod-userns" ];
           central_host = address;
           central_port = sshPort;
           systems = [ system ];
@@ -458,7 +458,7 @@ vivariumLib.mkTest {
         };
         stores.buildpods-farm = {
           type = "kubernetes-build-pods";
-          template = "buildpod-farm";
+          templates = [ "buildpod-farm" ];
           central_host = address;
           central_port = sshPort;
           systems = [ system ];
@@ -470,7 +470,7 @@ vivariumLib.mkTest {
         };
         stores.buildpods-nested = {
           type = "kubernetes-build-pods";
-          template = "buildpod-nested";
+          templates = [ "buildpod-nested" ];
           central_host = address;
           central_port = sshPort;
           systems = [ system ];
@@ -501,7 +501,7 @@ vivariumLib.mkTest {
         };
         stores.roguepods = {
           type = "kubernetes-build-pods";
-          template = "rogue";
+          templates = [ "rogue" ];
           central_host = address;
           central_port = sshPort;
           systems = [ system ];

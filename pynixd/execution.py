@@ -802,8 +802,10 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         await self.queue.complete(build.build_id, resp)
         self.trigger()
 
-    async def _farm_root(self, build: QueuedBuild, store: BuildPodStore, held: contextlib.AsyncExitStack) -> str | None:
-        """The path a build pod's `/nix` is a farm of (`BuildPodFarmSpec`), rooted until *held* closes.
+    async def _farm_root(
+        self, build: QueuedBuild, store: BuildPodStore, template: str, held: contextlib.AsyncExitStack
+    ) -> str | None:
+        """The path the `/nix` of *template*'s pod is a farm of (`BuildPodFarmSpec`), rooted until *held* closes.
 
         A node realises it from this store while the pod waits for its volume, so it must outlive the build.
         """
@@ -811,7 +813,7 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
             return None
         if not isinstance(self.local, LocalDBStore):
             raise InfrastructureError(f"{store.store_id}: a build pod's farm needs a local store pynixd runs")
-        references = farm_references(build.request, store.template_paths)
+        references = farm_references(build.request, store.template_paths[template])
         root = await self.local.add_text_to_store(FARM_ROOT_NAME, farm_text(references), references)
         roots = self.local.engine.temp_roots()
 
@@ -841,8 +843,9 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
 
         try:
             async with contextlib.AsyncExitStack() as held:
-                farm_root = await self._farm_root(build, store, held)
-                built, times = await store.build(build.request, line, farm_root, build.depth)
+                template = await store.pick_template()
+                farm_root = await self._farm_root(build, store, template, held)
+                built, times = await store.build(build.request, line, farm_root, build.depth, template)
                 resp = without_error_prefix(built)
         except PodDisrupted as e:
             # What a Job's `podFailurePolicy` calls Ignore: a low-priority pod gives way, and no store failed.
