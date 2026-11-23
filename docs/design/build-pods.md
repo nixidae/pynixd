@@ -263,34 +263,74 @@ Agreed 2026-11-23, done before landing:
 
 ## Open decisions
 
-1. **Which ways to build in Kubernetes stay.** Three exist: nixkube's
-   `BuilderManager` (long-lived builder Jobs), pynixd's provisioning pools
-   (long-lived pods that register through the reverse acceptor; kinds nested
-   and krun), and these build pods. Recommendation: build pods replace
-   `BuilderManager` once nixkube renders their template. Keep the krun pool
+Answered 2026-11-23. **Decided** items are settled. **Proposed** items wait
+for a yes.
+
+1. **Which ways to build in Kubernetes stay. Decided: build pods, eventually.**
+   Three exist: nixkube's `BuilderManager` (long-lived builder Jobs), pynixd's
+   provisioning pools (long-lived pods that register through the reverse
+   acceptor; kinds nested and krun), and these build pods. Build pods replace
+   `BuilderManager` once nixkube renders their template. The krun pool stays
    for builds that need a VM until a build pod can run one.
-2. **Copy-in stays for clusters without nixkube.** Recommendation: yes. It is
-   the same code with the farm off, and the only path on a cluster without the
-   CSI driver.
-3. **nixkube renders the template.** Today the only farm template is the
-   test's (`nixkube/nix/uml/build-pod-store.nix`). Recommendation: a
-   `nixkube.buildPods` option renders the pod (image, containers, seccomp
-   profile, PriorityClass, CSI volume) and central's store spec, so an operator
-   writes neither.
-4. **Where nested builds wait.** A nested build can wait for the slot its own
-   parent holds (nixidae/nixidae#1576). It needs a rule before build pods take
-   recursive builds in production.
-5. **builder-rpc-v0.** The pod serves the restricted proxy. The protocol itself
-   needs a Nix client in the builder that speaks it. Untested.
-6. **Node requirements.** The profile must be on each node (nixkube installs
-   it). A node that forbids unprivileged user namespaces (Ubuntu 23.10 and
-   later with the AppArmor restriction, or `max_user_namespaces=0`) cannot run
-   the sandbox container. Recommendation: nixkube probes this per node and
-   labels the node, and the template selects on the label.
-7. **Pods left behind.** A pod outlives a central that dies; it ends at
-   `activeDeadlineSeconds`. Recommendation: central deletes pods with its build
-   label at start, as nothing it did not start in this run can report to it.
-8. **The fixed cost.** About 5.4 s of a build pod is not the build. The gaps
-   are pod creation to pynixd's first log line, the managed Nix daemon start
+2. **Copy-in for clusters without nixkube. Proposed: keep it.** Copy-in is the
+   mode with the farm off: central sends each input over SSH into the pod's
+   empty store. It needs no CSI driver, so it is the only mode on a cluster
+   without nixkube. It is the same code as the farm mode, less the farm
+   volume. The cost: each build copies its whole input closure (39.5 MB for
+   the test's input, run `provk-qfull4`). Removing it makes build pods
+   nixkube-only.
+3. **nixkube renders the template. Decided.** A `nixkube.buildPods` option
+   renders the pod (image, containers, seccomp profile, PriorityClass, CSI
+   volume) and central's store spec, so an operator writes neither. Today the
+   only farm template is the test's (`nixkube/nix/uml/build-pod-store.nix`).
+4. **Where nested builds wait. Proposed: priority by depth, at both layers.**
+   A nested build can wait for the slot its own parent holds
+   (nixidae/nixidae#1576). Two layers can make it wait:
+   - Central's slots. A nested build goes ahead of every waiting build of a
+     smaller depth. A parent that waits on a nested build gives its slot back.
+     The cluster, not the slot count, limits how many pods run.
+   - The cluster. One PriorityClass per depth, all of them below 0, so every
+     ordinary pod stays ahead. A deeper build pod is scheduled before a
+     shallower one. With `preemptionPolicy: PreemptLowerPriority`, a nested
+     pod can evict a shallower build pod on a full cluster. Only build pods are
+     below it, so no ordinary pod is at risk. The evicted build requeues
+     (`PodDisrupted`). If the evicted pod is the nested pod's own parent, the
+     parent runs again and finds the nested output at central.
+   Not measured: the recursive test's nested derivation asks for no feature,
+   so central builds it itself.
+5. **builder-rpc-v0.** Recursive Nix is tested: run `provk-clean1`, phase
+   `pod-recursive` (`kubernetes_pod_recursive.py`), on the copy-in pod and on
+   the stand-in farm pod. The cases are a path the builder adds, a nested
+   build, and a floating output. Not tested: recursive Nix in a pod on
+   nixkube's real farm, and the builder-rpc-v0 protocol, which needs a Nix
+   client in the builder that speaks it.
+6. **Node requirements. Decided: nixkube probes and labels each node.**
+   Proposed fallback for a node without the label: a second template with no
+   sandbox container and Nix's sandbox off. The pod is then the only boundary.
+   In farm mode the pod already sees only the input closure and the template's
+   paths, and its build directory is its own. A NetworkPolicy limits its
+   egress to central's SSH port. The cost: the builder sees the template's
+   paths and the pod's `/proc`, and the NetworkPolicy needs a CNI that enforces
+   it. The profile must be on each node (nixkube installs it). Ubuntu 23.10
+   and later with the AppArmor restriction, or `max_user_namespaces=0`, forbid
+   unprivileged user namespaces.
+7. **Pods left behind. Proposed: ownership, and a sweep at start.** A pod
+   outlives a central that dies; it ends at `activeDeadlineSeconds`.
+   - Ownership: central in the cluster makes its own Pod the owner of each
+     build pod. When central's Pod goes, Kubernetes deletes the build pods,
+     even if central never comes back. A new Pod with the same name has a new
+     UID, so it owns none of the old ones.
+   - Ownership does not cover a central process that restarts in the same Pod
+     (a container restart keeps the UID), or a central outside the cluster,
+     which has no object to own anything. In both cases the old pods cannot
+     report: their keys were in the old process. So central also deletes pods
+     with its build label at start.
+8. **The fixed cost. Decided: measure each part, and state the cost.** About
+   5.4 s of a build pod is not the build. At least 1 to 2 s of that is
+   Kubernetes itself (a `true` pod starts in 1.4 s). The other gaps are
+   pod creation to pynixd's first log line, the managed Nix daemon start
    (about 0.9 s; a farm pod runs none), SSH (0.6 s), and pod shutdown to the
-   result. Each is a lever; none is measured alone.
+   result. None is measured alone yet. The store gives the fixed cost to the
+   scheduler's time-aware ranking (`placement.py`), so a small build goes to
+   central or to a long-lived builder. The operator documentation states the
+   cost and says to send small builds elsewhere.
