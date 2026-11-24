@@ -25,7 +25,8 @@ import uvloop
 
 from nix_daemon_protocol.build_derivation import BuildDerivationResponse
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
-from nix_daemon_protocol.logs import LogNext
+from nix_daemon_protocol.logs import LogNext, LogResult
+from nix_daemon_protocol.protocol import ResultType
 from nix_daemon_protocol.store_path import StorePath
 from pynixd_store.builder.settings import NotBuiltHere
 
@@ -53,9 +54,22 @@ BUILD_USER: Final = "pynixd-build"
 """The local name of a build pod's uid that has none: central's SSH server reads the username `pod`, not this."""
 
 
+BUILDER_LINES: Final = frozenset({ResultType.BUILD_LOG_LINE, ResultType.POST_BUILD_LOG_LINE})
+
+
+def shown(message: LogMessage) -> str:
+    """The line of the pod's log for *message*: the text of a log line or of a line the builder wrote, else the
+    message's kind. A builder's line is a result, as `buildWithHook` reads it (`derivation-building-goal.cc:671`)."""
+    if isinstance(message, LogNext):
+        return message.text
+    if isinstance(message, LogResult) and message.result_type in BUILDER_LINES:
+        return next((field.valstr for field in message.fields if field.valstr is not None), "")
+    return type(message).__name__
+
+
 async def _show(message: LogMessage) -> None:
     # Central follows the container's log for liveness (`last_output_at`); the text is for a person.
-    text = message.text if isinstance(message, LogNext) else type(message).__name__
+    text = shown(message)
     sys.stdout.write(text if text.endswith("\n") else text + "\n")
     sys.stdout.flush()
 
