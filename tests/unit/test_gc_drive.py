@@ -17,6 +17,7 @@ class FakeDrive:
 
     def __init__(self, *, pressured: list[bool], freed: list[int], cap: int = 20) -> None:
         self.ctx = SimpleNamespace(settings=SimpleNamespace(gc_watermark_max_passes=cap))
+        self.cold_uploader = None
         self._pressured = pressured
         self._freed = freed
         self.passes = 0

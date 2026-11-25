@@ -38,6 +38,7 @@ from nix_daemon_protocol import (
     StorePath,
 )
 from nix_daemon_protocol.query_path_infos import QueryPathInfosRequest
+from pynixd_store.db_migrations import HELD_BY_TABLE
 from pynixd_store.gc import (
     GarbagePlanner,
     by_weight,
@@ -390,6 +391,18 @@ class Collector:
             covered=len(covered),
         )
         return head
+
+    async def store_state(self) -> tuple[int, ...] | None:
+        """What a pressed plan reads that one cheap query sees change: the newest valid row, the valid count,
+        and the record's size. `None` without pynixd's tables.
+
+        A root that goes away changes none of them: the scheduled pass takes what it frees.
+        """
+        db = self.planner().plan_database()
+        if db is None:
+            return None
+        row = await db.fetchone(f"SELECT max(id), count(*), (SELECT count(*) FROM {HELD_BY_TABLE}) FROM ValidPaths")
+        return None if row is None else tuple(int(value or 0) for value in row)
 
     @asynccontextmanager
     async def _open_plan(

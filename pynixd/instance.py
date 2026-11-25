@@ -84,16 +84,6 @@ class _StoreHost:
     done: anyio.Event = dataclasses.field(default_factory=anyio.Event)
 
 
-def _trigger_due(now: float, last_trigger: float, cooldown: float) -> bool:
-    """Whether an automatic trigger may fire: the cooldown since the last one passed.
-
-    Watermark drives and scheduled full passes share the window, so a
-    hovering disk triggers at most once per cooldown no matter which rule
-    fires. Zero disables it.
-    """
-    return now - last_trigger >= cooldown
-
-
 # The size of `sun_path` in `struct sockaddr_un`, per platform. The kernel
 # copies the path into that array, so a longer one cannot be bound at all.
 # `sys.platform` and not a `uname` call, because the value is a property of
@@ -685,10 +675,9 @@ class Server:
     async def _gc_tick(self) -> None:
         """Watch the disk on a short cadence, collect on pressure or schedule.
 
-        The high watermark starts a drive. The store's target ends it.
-        Each drive runs bounded passes while collection makes progress.
-        Triggers share a cooldown window; scheduled passes also collect below
-        the watermark at `gc_interval`.
+        Over the high watermark a drive starts at once, and the store's target ends it. A drive that freed
+        nothing starts no other until the store changes (`Collector.store_state`). The scheduled pass
+        collects below the watermark at `gc_interval`.
         """
         settings = self.ctx.settings
         log.info(
@@ -698,33 +687,33 @@ class Server:
             watermark=settings.gc_high_watermark,
         )
         last_full = time.monotonic()
-        last_trigger = 0.0
+        idle_at: tuple[int, ...] | None = None
         # The store opens its database in `start`, after this loop begins, so
         # the first checkpoint retries each poll until it finds the database.
         checkpoint_due = True
         while True:
+            # Polled: free disk space sends no event, and a `statvfs` costs nothing. Sleeping first keeps a
+            # hand-over successor's first pass off the old process's last.
             await anyio.sleep(settings.gc_poll_interval)
             if checkpoint_due:
                 checkpoint_due = not await self._checkpoint_wal()
-            now = time.monotonic()
             if await anyio.to_thread.run_sync(self._over_watermark):
-                if not _trigger_due(now, last_trigger, settings.gc_cooldown):
-                    metrics.GC_TRIGGER_SKIPPED.labels(reason="watermark").inc()
-                    log.debug("gc_trigger_cooldown", reason="watermark")
+                collector = Collector(self.ctx)
+                state = await collector.store_state()
+                if idle_at is None or state != idle_at:
+                    async with self._singleton_pass():
+                        freed = await self._drive_to_target()
+                    # The state from before the drive: what the drive's own uploads change starts the next one.
+                    idle_at = None if freed else state
                     continue
-                async with self._singleton_pass():
-                    await self._drive_to_target()
-                last_trigger = time.monotonic()
-                continue
-            if now - last_full >= settings.gc_interval:
-                last_full = now
-                if not _trigger_due(now, last_trigger, settings.gc_cooldown):
-                    metrics.GC_TRIGGER_SKIPPED.labels(reason="scheduled").inc()
-                    log.debug("gc_trigger_cooldown", reason="scheduled")
-                    continue
+                metrics.GC_TRIGGER_SKIPPED.labels(reason="unchanged").inc()
+            else:
+                idle_at = None
+            # A path ages past `gc_max_age` with no event to say so: the interval is the age rule's resolution.
+            if time.monotonic() - last_full >= settings.gc_interval:
+                last_full = time.monotonic()
                 async with self._singleton_pass():
                     await self._gc_pass("scheduled")
-                last_trigger = time.monotonic()
 
     async def _stores_opened(self) -> None:
         """Wait for the stores that open in the background: the bucket among them."""
@@ -736,52 +725,64 @@ class Server:
         await self._stores_opened()
         await uploader.run()
 
-    async def _cold_tick(self, tier: ColdTier, uploader: ColdUploader) -> None:
-        """Put the paths a pressed pass would delete first at the head of the upload queue.
-
-        A busy database skips one round.
-        """
-        settings = self.ctx.settings
-        local = self.ctx.local_store
-        target = local.gc_target_usage
-        watermark = settings.gc_high_watermark
-        ahead = settings.gc_cold_ahead
-        if ahead is None:
-            ahead = watermark - target if watermark is not None and target is not None else 0.05
-        log.info("gc_cold_loop_started", store_id=tier.cold.store_id, interval=settings.gc_cold_interval, ahead=ahead)
-        await self._stores_opened()
-        while True:
-            usage = await anyio.to_thread.run_sync(Collector._disk_usage, local)
-            if usage is not None and usage[1] > 0:
-                used, total = usage
-                pressure = max(used / total, watermark or 0.0)
-                try:
-                    async with self._singleton_pass():
-                        await uploader.urge(await Collector(self.ctx).cold_window(tier, int(total * ahead), pressure))
-                except DatabaseError:
-                    log.warning("gc_cold_round_failed", store_id=tier.cold.store_id, exc_info=True)
-            # A round reads the whole plan. The uploader works through what it urged in the meantime.
-            await anyio.sleep(settings.gc_cold_interval)
-
-    async def _drive_to_target(self) -> None:
-        """Bounded passes back to back until pressure drops or progress stops.
+    async def _drive_to_target(self) -> bool:
+        """Bounded passes back to back until pressure drops or progress stops; whether any pass deleted.
 
         One watermark pass relieves a little; a flood needs many, and a
         poll interval between each turns minutes of deleting into hours of
         waiting. So the drive re-checks pressure right after each pass and
-        runs the next while still over the store's target: up to
-        `gc_watermark_max_passes` passes, stopping early when a pass frees
-        nothing -- refused everything or planned nothing -- because more
-        passes change nothing until the world does. Issue #71.
+        runs the next while still over the store's target, up to
+        `gc_watermark_max_passes` passes. Issue #71.
+
+        A pass that frees nothing waits for the cold tier to cover what the next one would delete
+        (`_wait_for_cover`). Without a tier, more passes change nothing until the world does, so the
+        drive ends. nixidae/nixidae#1600.
         """
         cap = self.ctx.settings.gc_watermark_max_passes
+        freed = False
         for _ in range(cap):
             if not await anyio.to_thread.run_sync(self._over_gc_target):
-                return
+                return freed
             resp = await self._gc_pass("watermark")
-            if resp is None or not resp.store_paths:
-                return
+            if resp is not None and resp.store_paths:
+                freed = True
+                continue
+            if self.cold_uploader is None or not await self._wait_for_cover(self.cold_uploader):
+                return freed
         log.info("gc_drive_capped", cap=cap)
+        return freed
+
+    async def _wait_for_cover(self, uploader: ColdUploader) -> bool:
+        """Put the uncovered paths the next pass would delete first in the upload queue, and wait for half.
+
+        Each pass plans the whole store, so the drive waits for half the window rather than pass after each
+        path. Answers `False` when there is nothing to wait for: no uncovered window, or the tier stopped.
+        """
+        settings = self.ctx.settings
+        local = self.ctx.local_store
+        usage = await anyio.to_thread.run_sync(Collector._disk_usage, local)
+        if usage is None or usage[1] <= 0:
+            return False
+        used, total = usage
+        watermark = settings.gc_high_watermark
+        target = local.gc_target_usage
+        ahead = settings.gc_cold_ahead
+        if ahead is None:
+            ahead = watermark - target if watermark is not None and target is not None else 0.05
+        pressure = max(used / total, watermark or 0.0)
+        try:
+            # At least what the next pass must free to reach the target.
+            budget = max(int(total * ahead), used - int(total * (target or 0.0)))
+            window = await Collector(self.ctx).cold_window(uploader.tier, budget, pressure)
+            pending = await uploader.urge(window)
+        except DatabaseError:
+            log.warning("gc_cold_window_failed", exc_info=True)
+            return False
+        goal = len(pending) // 2
+        log.info("gc_waits_for_cover", window=len(window), pending=len(pending))
+        while len(uploader.queue.pending(pending)) > goal and not uploader.stopped:
+            await uploader.progress()
+        return bool(pending) and not uploader.stopped
 
     def _over_gc_target(self) -> bool:
         """Continue an active drive until the local store reaches its target. A `statvfs`: call it in a thread."""
@@ -1103,7 +1104,6 @@ class Server:
                 uploader = ColdUploader(tier, workers=settings.gc_cold_workers, poll=settings.gc_poll_interval)
                 self.cold_uploader = uploader
                 self._spawn_singleton(self._cold_upload, uploader)
-                self._spawn_singleton(self._cold_tick, tier, uploader)
             liveness_interval = self.ctx.settings.gc_liveness_interval
             if liveness_interval is not None:
                 watch = LivenessWatch.of(self.ctx.local_store.layout, self.ctx.db)

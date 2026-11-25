@@ -1537,11 +1537,12 @@ class S3BinaryCacheSpec(BinaryCacheSpecBase):
 
     Needs `secret_key`. One store at most carries it. nixidae/nixidae#1417.
     """
-    gc_cold_verify: bool = True
+    gc_cold_verify: bool = False
     """Ask the bucket for each recorded path before a pass deletes it locally: one HEAD a path.
 
     Off, the record alone admits a delete. That holds while nothing removes objects from the bucket: no
-    lifecycle rule, no hand.
+    lifecycle rule, no hand. Give the bucket no lifecycle rule that expires objects. A rule that aborts
+    incomplete multipart uploads removes no object and is safe. nixidae/nixidae#1600.
     """
 
     @model_validator(mode="after")
@@ -1876,32 +1877,18 @@ class PynixdSettings(BaseSettings):
     unbounded, like the scheduled one.
     """
     gc_watermark_max_passes: int = 20
-    """Bounded passes per watermark trigger before the watch sleeps again.
+    """Bounded passes per watermark drive before the watch reads the disk again.
 
     One pass relieves a little; a flood that lands all at once needs many,
     and a poll interval between each turns minutes of deleting into hours
     of waiting. The drive runs back to back while pressure stays over the
-    store's target, stopping early when a pass frees nothing -- refused everything
-    or planned nothing -- because more passes change nothing until the world
-    does. Twenty covered a 95%-to-70% relief with room; raise it for a
-    faster full drain, lower it to spread big reliefs across polls.
+    store's target. A pass that frees nothing waits for the cold tier to
+    cover what the next one would delete; without a cold tier the drive
+    ends, and no new one starts until the store changes. Twenty covered a
+    95%-to-70% relief with room.
     """
-    gc_cooldown: float = 900.0
-    """Seconds between automatic GC triggers, watermark and scheduled alike.
-
-    Reading usage is free, so the watch checks every poll -- but a hovering
-    disk must not fire passes back to back forever. A watermark drive and a
-    scheduled full pass each start a quiet window of this length during
-    which further triggers stand down; the poll loop keeps watching, and the
-    next trigger fires when the window lapses with pressure still over. Set
-    it to a fraction of `gc_interval`: long enough that a covered hour is
-    not re-collected, short enough that a fresh flood waits minutes, not an
-    hour. Zero disables it, and every due trigger fires.
-    """
-    gc_cold_interval: float = 900.0
-    """Seconds between the cold tier's uploads ahead of eviction (`gc_cold` on an `s3://` store)."""
     gc_cold_ahead: float | None = None
-    """The disk fraction of the next eviction to keep uploaded.
+    """The disk fraction a stalled drive puts first in the cold tier's upload queue.
 
     `None` is the gap between `gc_high_watermark` and the store's `gc_target_usage`, one watermark
     drive, or 0.05 when either is unset. nixidae/nixidae#1417.

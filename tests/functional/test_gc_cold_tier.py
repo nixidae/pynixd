@@ -62,9 +62,10 @@ async def _pynixd(
     endpoint: str,
     target: float | None = None,
     nix_config: NixConfig | None = None,
-    cold_interval: float = 900.0,
     verify: bool = True,
     workers: int = 0,
+    watermark: float | None = None,
+    poll: float = 60.0,
 ) -> AsyncIterator[tuple[Server, ColdTier]]:
     """A pynixd over the lab and a bucket. With no *workers* nothing uploads unless the test does."""
     key = tmp_path / "cold.sec"
@@ -88,8 +89,9 @@ async def _pynixd(
         unix_path=_socket(tmp_path),
         ssh_port=None,
         http_port=None,
-        gc_cold_interval=cold_interval,
         gc_cold_workers=workers,
+        gc_high_watermark=watermark,
+        gc_poll_interval=poll,
     ) as server:
         _freeze_tracker(server)
         scheduler = server.ctx.scheduler
@@ -179,6 +181,44 @@ async def test_over_the_target_it_stops_short_of_what_the_bucket_lacks(
     assert {str(path) for path in deleted.store_paths} == {lab.stale}
     assert counted == 1
     assert await _valid(lab.store_path) == {lab.parent, lab.child, lab.fresh, lab.rooted}
+
+
+async def test_a_drive_waits_for_the_uploader_and_then_deletes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Over the watermark the server's loop drives at once. Its first pass finds nothing covered and frees nothing;
+    the drive then puts the window first in the upload queue, waits, and its next pass deletes every dead path.
+
+    Uploads wait for that first pass, so the drive must wait for them: no cooldown, no upload round.
+    """
+    lab = await _lab(tmp_path)
+    dead = {lab.stale, lab.parent, lab.child, lab.fresh}
+    deleted: set[str] = set()
+    nothing_freed = anyio.Event()
+    done = anyio.Event()
+    run = Collector.run
+    stage = S3BinaryCacheStore.stage
+
+    async def spy(self: Collector, action: PynixdGCAction, *args: object, **kwargs: object) -> object:
+        resp = await run(self, action, *args, **kwargs)  # type: ignore[arg-type]  # the spy passes them through
+        if action == PynixdGCAction.EXECUTE:
+            if not resp.store_paths:
+                nothing_freed.set()
+            deleted.update(str(path) for path in resp.store_paths)
+            if dead <= deleted:
+                done.set()
+        return resp
+
+    async def after_the_first_pass(self: S3BinaryCacheStore, local: Store, path: StorePath) -> object:
+        await nothing_freed.wait()
+        return await stage(self, local, path)
+
+    monkeypatch.setattr(Collector, "run", spy)
+    monkeypatch.setattr(S3BinaryCacheStore, "stage", after_the_first_pass)
+    with s3_bucket(monkeypatch, tmp_path / "xdg-cache") as bucket:
+        async with _pynixd(lab, tmp_path, bucket.endpoint, target=1e-9, workers=4, watermark=1e-9, poll=0.2):
+            with anyio.fail_after(60):
+                await done.wait()
+    assert deleted == dead
+    assert await _valid(lab.store_path) == {lab.rooted}
 
 
 async def test_the_cold_window_names_what_the_pressed_pass_takes(

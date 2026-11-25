@@ -559,8 +559,8 @@ GC_STOPPED_SHORT = Counter(
 
 GC_TRIGGER_SKIPPED = Counter(
     "pynixd_gc_trigger_skipped_total",
-    "Automatic GC triggers stood down by the cooldown",
-    ["reason"],  # watermark, scheduled
+    "Watermark triggers stood down because the store is unchanged since a drive freed nothing",
+    ["reason"],  # unchanged
 )
 
 # --- The cold tier's upload queue (nixidae/nixidae#1600) ---
