@@ -47,7 +47,15 @@ from .serde import (
     SetOptionsRequest,
 )
 from .store.base import get_current_system
-from .store.build_pods import FARM_ROOT_NAME, BuildPodStore, PodDisrupted, farm_references, farm_text
+from .store.build_pods import (
+    FARM_ROOT_NAME,
+    RUNNER_ROOT_NAME,
+    BuildPodStore,
+    PodDisrupted,
+    farm_references,
+    farm_text,
+    runner_references,
+)
 from .store.local_db import LocalDBStore
 from .system_features import effective_required_features
 from .tracing import Phase
@@ -804,16 +812,23 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
 
     async def _farm_root(
         self, build: QueuedBuild, store: BuildPodStore, template: str, held: contextlib.AsyncExitStack
-    ) -> str | None:
-        """The path the `/nix` of *template*'s pod is a farm of (`BuildPodFarmSpec`), rooted until *held* closes.
+    ) -> tuple[str | None, str | None]:
+        """The path the `/nix` of *template*'s pod is a farm of (`BuildPodFarmSpec`), and for a runner template
+        the path its runner's store is made of; both rooted until *held* closes.
 
-        A node realises it from this store while the pod waits for its volume, so it must outlive the build.
+        A node realises them from this store while the pod waits for its volume, so they must outlive the build.
         """
         if store.spec.farm is None:
-            return None
+            return None, None
         if not isinstance(self.local, LocalDBStore):
             raise InfrastructureError(f"{store.store_id}: a build pod's farm needs a local store pynixd runs")
         references = farm_references(build.request, store.template_paths[template])
+        runner_root = None
+        if (runner := store.runners.get(template)) is not None:
+            wanted = runner_references(build.request, runner.shell)
+            runner_root = await self.local.add_text_to_store(RUNNER_ROOT_NAME, farm_text(wanted), wanted)
+            # The farm holds it, so the node realises it with the farm, and it is a store path of the volume.
+            references |= {runner_root}
         root = await self.local.add_text_to_store(FARM_ROOT_NAME, farm_text(references), references)
         roots = self.local.engine.temp_roots()
 
@@ -823,8 +838,8 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
 
         held.push_async_callback(release)
         await roots.add(StorePath(root))
-        log.info("build_pod_farm", build_id=build.build_id, root=root, paths=len(references))
-        return root
+        log.info("build_pod_farm", build_id=build.build_id, root=root, paths=len(references), runner_root=runner_root)
+        return root, runner_root
 
     async def build_in_pod(self, build: QueuedBuild, store: BuildPodStore) -> None:
         """A pod of its own builds it, and adds the outputs to the local store itself (`store/build_pods.py`).
@@ -844,8 +859,10 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         try:
             async with contextlib.AsyncExitStack() as held:
                 template = await store.pick_template()
-                farm_root = await self._farm_root(build, store, template, held)
-                built, times = await store.build(build.request, line, farm_root, build.depth, template)
+                farm_root, runner_root = await self._farm_root(build, store, template, held)
+                built, times = await store.build(
+                    build.request, line, farm_root, build.depth, template, runner_root=runner_root
+                )
                 resp = without_error_prefix(built)
         except PodDisrupted as e:
             # What a Job's `podFailurePolicy` calls Ignore: a low-priority pod gives way, and no store failed.

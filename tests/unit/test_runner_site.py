@@ -28,7 +28,7 @@ from pynixd_store.builder.settings import BuildSettings
 from pynixd_store.builder.site import BuilderFailed, BuildPaths, Launch, RunnerSite, choose_site
 from pynixd_store.builder.users import BuildUser
 
-SANDBOX = RunnerSandbox(Path("/build/runner"), Path("/build/runner-ready"), "runner")
+SANDBOX = RunnerSandbox(Path("/build/runner"), Path("/build/runner-ready"), "runner", Path("/nix/runner"))
 DRV = StorePath("/nix/store/cccccccccccccccccccccccccccccccc-x.drv")
 PLAIN = DerivationOutput(path="/nix/store/00000000000000000000000000000000-x")
 

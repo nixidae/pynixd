@@ -35,7 +35,7 @@ import kr8s
 import kr8s.asyncio
 from kr8s.asyncio.objects import Pod, Secret
 
-from pynixd_store.builder.runner import NETWORK_ANNOTATION, SANDBOX_ANNOTATION, RunnerInvocation
+from pynixd_store.builder.runner import NETWORK_ANNOTATION, SANDBOX_ANNOTATION, SHELL_ANNOTATION, RunnerInvocation
 
 from .provider import Machine, MachineState, NoCapacity, ProviderError
 
@@ -541,6 +541,9 @@ def pod_end(pod: Manifest) -> str | None:
 _STORE_PATH: Final = re.compile(r"/nix/store/[0-9a-df-np-sv-z]{32}-[A-Za-z0-9+\-._?=]+")
 FARM_PRESENTATION: Final = {"presentation": "farm"}
 """nixkube's CSI attribute for one read-only bind per closure path (`nixkube/pkgs/nixkube/src/presentation.py`)."""
+RUNNER_STORE_ATTRIBUTE: Final = "runnerStore"
+"""nixkube's CSI attribute for the runner's own store in the farm: the closure of this path's references, at the
+runner's chroot (`RunnerSandboxSpec.root`)."""
 
 
 def template_store_paths(template: KubernetesTemplateSettings) -> frozenset[str]:
@@ -591,19 +594,23 @@ def farm_volume(pod: Manifest, volume: str) -> Manifest:
 
 @dataclass(frozen=True, slots=True)
 class FarmVolume:
-    """A build's farm: the template's CSI volume *volume* points at *root* for each node system of *systems*."""
+    """A build's farm: the template's CSI volume *volume* points at *root* for each node system of *systems*.
+    *runner_root*, for a runner pod, is the path whose references make the runner's store."""
 
     volume: str
     root: str
     systems: frozenset[str]
+    runner_root: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class RunnerPod:
-    """A template's runner container, which its annotation names, and the cores its builder gets."""
+    """A template's runner container, which its annotation names, the cores its builder gets, and the store path
+    of its build shell, which Nix's sandbox holds as a `sandbox-paths` entry's."""
 
     container: str
     cores: int
+    shell: str | None = None
 
 
 def _cores(quantity: str | int | float) -> int:
@@ -620,9 +627,15 @@ def runner_pod(template: KubernetesTemplateSettings) -> RunnerPod | None:
     before a node is known.
     """
     pod = template.pod
-    container = ((pod.get("metadata") or {}).get("annotations") or {}).get(SANDBOX_ANNOTATION)
+    annotations: Manifest = (pod.get("metadata") or {}).get("annotations") or {}
+    container = annotations.get(SANDBOX_ANNOTATION)
     if not container:
         return None
+    shell = None
+    if (file := annotations.get(SHELL_ANNOTATION)) is not None:
+        if (found := _STORE_PATH.match(str(file))) is None:
+            raise ValueError(f"kubernetes: the template's {SHELL_ANNOTATION} {file!r} is not in the store")
+        shell = found.group()
     runner = next((c for c in (pod.get("spec") or {}).get("containers") or [] if c.get("name") == container), None)
     if runner is None:
         raise ValueError(f"kubernetes: the template's {SANDBOX_ANNOTATION} names no container {container!r}")
@@ -630,7 +643,7 @@ def runner_pod(template: KubernetesTemplateSettings) -> RunnerPod | None:
     cpu = (resources.get("limits") or {}).get("cpu") or (resources.get("requests") or {}).get("cpu")
     if cpu is None:
         raise ValueError(f"kubernetes: the template's runner {container!r} has no CPU limit or request")
-    return RunnerPod(container=container, cores=_cores(cpu))
+    return RunnerPod(container=container, cores=_cores(cpu), shell=shell)
 
 
 @dataclass(frozen=True, slots=True)
@@ -665,6 +678,7 @@ def build_pod_manifest(
             **(csi.get("volumeAttributes") or {}),
             **dict.fromkeys(sorted(farm.systems), farm.root),
             **FARM_PRESENTATION,
+            **({} if farm.runner_root is None else {RUNNER_STORE_ATTRIBUTE: farm.runner_root}),
         }
     pod["apiVersion"] = "v1"
     pod["kind"] = "Pod"

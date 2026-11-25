@@ -478,6 +478,18 @@ Answered 2026-11-23. Every item is decided.
      postStart hook waits until it has filled the build directory. It ends
      when its work is done, and it reads the builder's exit code through
      the API.
+   Decided (User, 2026-11-25): the runner's store is as close to Nix's
+   sandbox as possible. Nix's chroot store holds the input closure
+   (`chroot-derivation-builder.cc:52`), the closure of each `sandbox-paths`
+   store path (`derivation-building-goal.cc:951`) and the outputs. The farm
+   also holds the controller's closure, so the runner gets a store of its
+   own: central writes a second root (`runner_references`: the inputs and
+   the shell), nixkube binds its closure at `nix/runner/nix/store` on the
+   pod's disk (`runnerStore`), and the NRI plugin mounts that as the
+   runner's `/nix/store`, or refuses the container. The controller sees
+   `/nix/runner` as the build's chroot and renames each output into its
+   store, on the same mount. Run `nkfarmonly0`: the runner saw 169 paths
+   beyond Nix's; run `nkfarmonly1`: 6 paths, Nix's own.
 7. **Pods left behind. Decided: ownership, and a sweep at start.** A pod
    outlives a central that dies; it ends at `activeDeadlineSeconds`.
    - Ownership: central in the cluster makes its own Pod the owner of each

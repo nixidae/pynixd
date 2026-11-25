@@ -383,7 +383,9 @@ class LocalDBStore(Store):
         )
         self.sibling_sandbox = SiblingSandbox(spec.sibling_sandbox) if spec.sibling_sandbox is not None else None
         runner = spec.runner_sandbox
-        self.runner_sandbox = RunnerSandbox(runner.top, runner.ready, runner.container) if runner is not None else None
+        self.runner_sandbox = (
+            RunnerSandbox(runner.top, runner.ready, runner.container, runner.root) if runner is not None else None
+        )
         self.configured_routes = {_OP_CODES[name]: route for name, route in spec.op_routes.items()}
         for op, route in self.configured_routes.items():
             if route is OpRoute.daemon:

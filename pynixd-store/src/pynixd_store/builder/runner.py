@@ -39,6 +39,8 @@ if TYPE_CHECKING:
 SANDBOX_ANNOTATION: Final = "nixkube.nixidae.org/build-sandbox"
 """The pod's annotation that names its runner container, which nixkube makes the sandbox
 (`nixkube/pkgs/nixkube/src/nri/sandbox.py`)."""
+SHELL_ANNOTATION: Final = "nixkube.nixidae.org/build-shell"
+"""The file nixkube binds at the runner's `/bin/sh`: Nix's `sandbox-paths` entry for it."""
 NETWORK_ANNOTATION: Final = "nixkube.nixidae.org/build-network"
 """`"true"`: the runner keeps the pod's network, as a fixed-output build does."""
 STATUS_NAME: Final = "runner-status"
@@ -52,11 +54,16 @@ POD_NAMESPACE_VARIABLE: Final = "PYNIXD_POD_NAMESPACE"
 
 @dataclass(frozen=True, slots=True)
 class RunnerSandbox:
-    """Where the controller prepares the build, the file that lets the runner start, and the runner's name."""
+    """Where the controller prepares the build, the file that lets the runner start, and the runner's name.
+
+    *root* is the runner's chroot as the controller sees it: the runner's `/nix/store` is `root/nix/store`, which
+    holds what Nix's sandbox holds and the outputs, and the controller moves each output into its own store.
+    """
 
     top: Path
     ready: Path
     container: str
+    root: Path
 
 
 ETC_NAME: Final = "etc"
@@ -154,7 +161,7 @@ def planned_invocation(
     """The invocation `build()` gives *drv* in a runner pod whose store holds none of its outputs and no
     realisation: what central writes before the controller runs. The helper compares the two (`mismatch`)."""
     drv_name = drv_path.base_name().removesuffix(".drv")
-    scratch = scratch_paths(drv_path, drv, known_paths(drv, {}, drv_name), (), chroot=False, store_dir=store_dir)
+    scratch = scratch_paths(drv_path, drv, known_paths(drv, {}, drv_name), (), chroot=True, store_dir=store_dir)
     rewrites = output_rewrites(scratch, {})
     fixed = any(o.kind is OutputKind.CA_FIXED for o in drv.outputs.values())
     env = build_env(

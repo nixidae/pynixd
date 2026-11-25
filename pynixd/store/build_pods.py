@@ -97,6 +97,17 @@ def farm_references(request: BuildDerivationRequest, template_paths: frozenset[s
     return frozenset(inputs) | template_paths
 
 
+RUNNER_ROOT_NAME: Final = "pynixd-runner-inputs"
+"""The name of the text path whose references' closure is a runner pod's own store."""
+
+
+def runner_references(request: BuildDerivationRequest, shell: str | None) -> frozenset[str]:
+    """What the runner's store holds the closure of, as Nix's sandbox does: the build's inputs, and the store path
+    of its shell (`chroot-derivation-builder.cc:52`, `derivation-building-goal.cc:951`)."""
+    inputs = {str(StorePath(str(path)).with_store_prefix()) for path in request.derivation.input_srcs}
+    return frozenset(inputs | ({shell} if shell is not None else set()))
+
+
 def farm_text(references: frozenset[str]) -> str:
     """The farm root's text: its references, one a line, so the same inputs make the same path."""
     return "".join(f"{path}\n" for path in sorted(references))
@@ -383,18 +394,22 @@ class BuildPodStore(ScheduledStore):
         farm_root: str | None = None,
         depth: int = 0,
         template: str | None = None,
+        runner_root: str | None = None,
     ) -> tuple[BuildDerivationResponse, PodTimes]:
         """Build *request* in a pod, and say when each step of the pod ended; `InfrastructureError` when the pod,
         not the build, failed.
 
         *farm_root*, with the spec's `farm`, is the path the pod's `/nix` is a farm of: central holds it valid.
         *depth* is the build's in recursive Nix, which picks the pod's PriorityClass. *template* is what
-        `pick_template` gave for the farm root; `None`: the first.
+        `pick_template` gave for the farm root; `None`: the first. *runner_root*, for a runner template, makes the
+        runner's own store in the farm (`runner_references`); the farm root refers to it.
         """
         template = template or self.spec.templates[0]
         runner = self.runners.get(template)
         if runner is not None and (refused := runner_refusal(request)) is not None:
             raise StoreRefuses(f"{self.store_id}: {refused}")
+        if runner is not None and self.spec.farm is not None and runner_root is None:
+            raise InfrastructureError(f"{self.store_id}: a runner pod's farm needs the runner's own store")
         if self.grants is None or self.central_host_key is None or self.kubernetes is None:
             raise InfrastructureError(f"{self.store_id}: no SSH listener or no Kubernetes settings for build pods")
         fill: RunnerFill | None = None
@@ -430,7 +445,12 @@ class BuildPodStore(ScheduledStore):
         try:
             secret = {JOB_NAME: job.model_dump_json(), KEY_NAME: key.export_private_key().decode()}
             farm = (
-                FarmVolume(volume=self.spec.farm.volume, root=farm_root, systems=frozenset(self.spec.systems or ()))
+                FarmVolume(
+                    volume=self.spec.farm.volume,
+                    root=farm_root,
+                    systems=frozenset(self.spec.systems or ()),
+                    runner_root=runner_root,
+                )
                 if self.spec.farm is not None and farm_root is not None
                 else None
             )

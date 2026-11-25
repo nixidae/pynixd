@@ -44,6 +44,7 @@ from pynixd.placement import missing_input_bytes, store_setup_seconds
 from pynixd.pod_build import _own_home, process_started
 from pynixd.provisioning.kubernetes import (
     BUILD_STORE_LABEL,
+    RUNNER_STORE_ATTRIBUTE,
     BuildPodEnd,
     BuildPodOwner,
     BuildPodWatch,
@@ -58,7 +59,14 @@ from pynixd.provisioning.kubernetes import (
     template_store_paths,
 )
 from pynixd.serde import BasicDerivation
-from pynixd.store.build_pods import BuildPodStore, PodTimes, checked_result, farm_references, farm_text
+from pynixd.store.build_pods import (
+    BuildPodStore,
+    PodTimes,
+    checked_result,
+    farm_references,
+    farm_text,
+    runner_references,
+)
 from pynixd.store.scheduled import ProbeState
 
 
@@ -167,6 +175,30 @@ def test_a_farm_pod_asks_nixkube_for_the_builds_path_on_each_system() -> None:
         build_pod_manifest(
             FARM_TEMPLATE, "pynixd-build-x", OWNER, FarmVolume(volume="store", root=root, systems=farm.systems)
         )
+
+
+def test_a_runner_s_store_holds_the_inputs_and_the_shell_alone() -> None:
+    """As Nix's sandbox: the input closure, and the closure of the `sandbox-paths` shell; not the template's paths."""
+    request = BuildDerivationRequest(
+        drv_path=StorePath("/nix/store/00000000000000000000000000000003-x.drv"),
+        derivation=BasicDerivation(input_srcs={StorePath(INPUT)}, platform="x86_64-linux", builder="/bin/sh"),
+        build_mode=0,
+    )
+    shell = "/nix/store/00000000000000000000000000000009-busybox"
+
+    assert runner_references(request, shell) == {INPUT, shell}
+    assert runner_references(request, None) == {INPUT}
+
+
+def test_a_runner_pod_names_its_own_store_beside_the_farm() -> None:
+    root = "/nix/store/00000000000000000000000000000008-pynixd-build-inputs"
+    runner = "/nix/store/0000000000000000000000000000000a-pynixd-runner-inputs"
+    farm = FarmVolume(volume="nix", root=root, systems=frozenset({"x86_64-linux"}), runner_root=runner)
+
+    pod = build_pod_manifest(FARM_TEMPLATE, "pynixd-build-x", OWNER, farm)
+
+    (volume,) = (v for v in pod["spec"]["volumes"] if v["name"] == "nix")
+    assert volume["csi"]["volumeAttributes"][RUNNER_STORE_ATTRIBUTE] == runner
 
 
 def test_a_build_pod_says_what_each_part_of_its_fixed_cost_took() -> None:

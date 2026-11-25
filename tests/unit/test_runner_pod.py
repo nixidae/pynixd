@@ -31,6 +31,7 @@ from pynixd_store.builder.runner import (
     INVOCATION_BYTES,
     NETWORK_ANNOTATION,
     SANDBOX_ANNOTATION,
+    SHELL_ANNOTATION,
     drv_refusal,
     etc_files,
     planned_invocation,
@@ -152,6 +153,17 @@ def test_the_runner_s_cores_are_its_cpu_limit_else_its_request() -> None:
         runner_pod(_template({}))
     with pytest.raises(ValueError, match="names no container 'other'"):
         runner_pod(_template({"limits": {"cpu": 1}}, container="other"))
+
+
+def test_the_runner_s_shell_is_the_store_path_of_its_annotation() -> None:
+    template = _template({"limits": {"cpu": 1}})
+    shell = "/nix/store/00000000000000000000000000000009-busybox"
+    template.pod["metadata"]["annotations"][SHELL_ANNOTATION] = f"{shell}/bin/busybox"
+
+    assert runner_pod(template) == RunnerPod("runner", 1, shell)
+    template.pod["metadata"]["annotations"][SHELL_ANNOTATION] = "/bin/busybox"
+    with pytest.raises(ValueError, match="not in the store"):
+        runner_pod(template)
 
 
 def test_central_fills_the_runner_and_gives_a_fixed_output_build_the_network() -> None:

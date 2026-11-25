@@ -730,7 +730,8 @@ async def build(
     # nix.conf, whose default is the sandbox. The build VM runs a sandboxed build only, so a Linux build always
     # gets the sandbox. Measure how many Linux builds on a Mac need `__noChroot` to reverse it.
     use_sandbox = linux_guest or uses_sandbox(drv, settings, relocated=relocated)
-    # The runner container is the sandbox, and its builder writes to this store: no chroot, and `/build`.
+    # The runner container is the sandbox: no chroot here, and `/build`. Its builder writes into a store of its own,
+    # the chroot `runner.root`, from which the outputs move into this one, as Nix's chroot builder moves them.
     runner = vm if isinstance(vm, RunnerSandbox) else None
     # `ExternalDerivationBuilder` is a `DerivationBuilderImpl`: no chroot, whatever `sandbox` says.
     chroot = external is None and use_sandbox and not darwin_host and runner is None
@@ -808,7 +809,7 @@ async def build(
         for path in known.values():
             if path not in valid:
                 await anyio.to_thread.run_sync(delete_path, layout.real_path(path))
-        scratch = scratch_paths(drv_path, drv, known, present, chroot=chroot, store_dir=store_dir)
+        scratch = scratch_paths(drv_path, drv, known, present, chroot=chroot or runner is not None, store_dir=store_dir)
         redirected = {path: scratch[name] for name, path in known.items() if path != scratch[name]}
         for path in redirected.values():
             await anyio.to_thread.run_sync(delete_path, layout.real_path(path))
@@ -1110,7 +1111,7 @@ async def build(
                     scratch=scratch,
                     known=known,
                     drv_name=drv_name,
-                    chroot_root=Path("/") if paths.root is None else paths.root,
+                    chroot_root=runner.root if runner is not None else Path("/") if paths.root is None else paths.root,
                     real_store_dir=layout.real_store_dir,
                     store_dir=store_dir,
                     input_paths=inputs,

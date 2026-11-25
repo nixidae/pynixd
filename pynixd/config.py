@@ -558,6 +558,8 @@ class RunnerSandboxSpec(BaseModel):
     ready: Path = Path("/build/runner-ready")
     """The file the controller's postStart hook waits for: the runner starts once it exists."""
     container: str = "runner"
+    root: Path = Path("/nix/runner")
+    """The runner's chroot in the controller's farm: nixkube binds the runner's store at `root/nix/store`."""
 
 
 class OverlaySpec(BaseModel):
