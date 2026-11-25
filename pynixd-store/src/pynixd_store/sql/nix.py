@@ -44,6 +44,8 @@ class NixSql:
     add_reference: str
     add_derivation_output: str
     valid_path_id: str
+    valid_path_ids: str
+    """The path and the id of each valid path of a `path_set`."""
 
 
 _SQLITE_PATH_INFO_WITH_REFS = """
@@ -172,6 +174,7 @@ WHERE vp_drv.path IN (SELECT value FROM json_each(?))
         add_reference="insert or replace into Refs (referrer, reference) values (?, ?);",
         add_derivation_output="insert or replace into DerivationOutputs (drv, id, path) values (?, ?, ?);",
         valid_path_id="select id from ValidPaths where path = ?;",
+        valid_path_ids="select path, id from ValidPaths where path in (select value from json_each(?));",
     )
 
 
@@ -281,4 +284,5 @@ WHERE vp_drv.path = ANY(%s)
         "on conflict (drv, id) do update set path = excluded.path"
     ),
     valid_path_id="select id from ValidPaths where path = %s",
+    valid_path_ids="select path, id from ValidPaths where path = any(%s)",
 )

@@ -257,6 +257,12 @@ async def _path_id(session: Session, path: str) -> int | None:
     return None if row is None else int(row[0])
 
 
+async def _path_ids(session: Session, paths: Iterable[str]) -> dict[str, int]:
+    """The id of each valid path of *paths*."""
+    found = await session.fetchall(session.sql.nix.valid_path_ids, (session.sql.codec.path_set(paths),))
+    return {str(path): int(row_id) for path, row_id in found}
+
+
 def _cycle(rows: Mapping[str, Registration]) -> tuple[str, str] | None:
     """`topoSort` (`topo-sort.hh`): the first `(path, parent)` that closes a cycle, in Nix's order."""
     visited: set[str] = set()
@@ -322,13 +328,18 @@ async def register_valid_paths(session: Session, registrations: Iterable[Registr
         drv_id = await session.insert(session.sql.nix.register_valid_path, values)
         for name, output in sorted(row.derivation_outputs.items()):
             await session.execute(session.sql.nix.add_derivation_output, (drv_id, name, output))
+    # One statement for every id, and one for every row: a statement per reference costs a thread hop each, and a
+    # derivation with 2000 inputs then took 0.33 s to register (nixidae/nixidae#1594).
+    named = {path for row in rows.values() for path in (row.path, *row.references)}
+    ids = await _path_ids(session, named)
+    references: list[tuple[int, int]] = []
     for path in order:
-        referrer = await _path_id(session, path)
         for reference in sorted(rows[path].references, key=_base_name):
-            target = await _path_id(session, reference)
-            if target is None:
+            if reference not in ids:
                 raise RegistrationError(f"path '{magenta(reference)}' is not valid")
-            await session.execute(session.sql.nix.add_reference, (referrer, target))
+            references.append((ids[path], ids[reference]))
+    if references:
+        await session.executemany(session.sql.nix.add_reference, references)
     cycle = _cycle(rows)
     if cycle is not None:
         raise RegistrationError(f"cycle detected in the references of '{magenta(cycle[0])}' from '{magenta(cycle[1])}'")
