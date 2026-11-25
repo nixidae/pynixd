@@ -356,8 +356,10 @@ class Collector:
         """Upload the closures of the paths a pressed pass would delete first, up to *budget* bytes of them.
 
         The plan is the pressed one, every dead path in weight order at *pressure*: the pass the
-        watermark starts. Covered paths count toward the budget and cost nothing. The plan's
-        transaction closes before the first upload. Answers how many seeds went up.
+        watermark starts. Covered paths count toward the budget and cost nothing. The window then
+        takes its planned referrers, whatever their weight: a pass keeps a covered path while an
+        uncovered referrer stays. The plan's transaction closes before the first upload. Answers
+        how many seeds went up.
         """
         local = self.ctx.local_store
         db = self.planner().plan_database()
@@ -369,15 +371,16 @@ class Collector:
         async with SqlPlan.open(db) as plan:
             await plan.plan(live=live, vetoed=vetoed, cutoff=None)
             rows = await plan.weighed(pressure=pressure, now=int(time.time()), bound=None, limit=None)
-        covered = await tier.covered([path for path, _, _ in rows])
-        head: list[str] = []
-        total = 0
-        for path, size, _ in rows:
-            if total >= budget:
-                break
-            total += size
-            if path not in covered:
-                head.append(path)
+            window: list[str] = []
+            total = 0
+            for path, size, _ in rows:
+                if total >= budget:
+                    break
+                total += size
+                window.append(path)
+            closed = await plan.close_batch(window) if window else []
+        covered = await tier.covered(closed)
+        head = [path for path in closed if path not in covered]
         uploaded = 0
         for path in head:
             try:
@@ -386,7 +389,15 @@ class Collector:
                 log.info("gc_cold_ahead_gone", path=path)
                 continue
             uploaded += 1
-        log.info("gc_cold_ahead", seeds=uploaded, budget=budget, planned=len(rows), covered=len(covered))
+        log.info(
+            "gc_cold_ahead",
+            seeds=uploaded,
+            budget=budget,
+            planned=len(rows),
+            window=len(window),
+            closed=len(closed),
+            covered=len(covered),
+        )
         return uploaded
 
     @asynccontextmanager

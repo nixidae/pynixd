@@ -27,6 +27,7 @@ from pynixd.gc import Collector
 from pynixd.store import LocalDBStore, Store
 from pynixd.unix_socket import open_unix_connection
 from pynixd.wire import UnixNixReader, UnixNixWriter
+from pynixd_store.gc_sql import Bound, SqlPlan
 from pynixd_store.signing import SecretKey
 from tests._conftest.client_options import set_options
 from tests._conftest.nix_config import for_test_store
@@ -167,6 +168,32 @@ async def test_upload_ahead_covers_what_the_pressed_pass_takes(tmp_path: Path, m
             assert await tier.covered(dead | {lab.rooted}) == dead
             deleted = await Collector(server.ctx).run(PynixdGCAction.EXECUTE)
     assert {str(path) for path in deleted.store_paths} == dead
+
+
+async def test_upload_ahead_takes_the_referrers_a_covered_window_waits_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The budget reaches only `child`, already up; `parent` names it, so the round uploads `parent`.
+
+    Without it a pass keeps both, and every later round finds its window covered and uploads nothing:
+    sg1, 2026-11-25, 688 covered paths filled the budget while 101,940 planned paths stayed.
+    """
+    lab = await _lab(tmp_path)
+    weighed = SqlPlan.weighed
+
+    async def child_first(
+        self: SqlPlan, *, pressure: float, now: int, bound: Bound | None, limit: int | None
+    ) -> list[tuple[str, int, int]]:
+        rows = await weighed(self, pressure=pressure, now=now, bound=bound, limit=limit)
+        return sorted(rows, key=lambda row: row[0] != lab.child)
+
+    monkeypatch.setattr(SqlPlan, "weighed", child_first)
+    with s3_bucket(monkeypatch, tmp_path / "xdg-cache") as bucket:
+        async with _pynixd(lab, tmp_path, bucket.endpoint, target=1e-9) as (server, tier):
+            await tier.upload_closure({StorePath(lab.child)})
+            assert await Collector(server.ctx).upload_ahead(tier, 1, 1.0) == 1
+            assert await tier.covered({lab.parent, lab.child}) == {lab.parent, lab.child}
+            assert {lab.parent, lab.child} <= await _plan(server)
 
 
 @pytest.mark.parametrize("signer", ["trusted-key", "own-key", "foreign-key"])
