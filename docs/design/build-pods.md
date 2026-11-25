@@ -554,8 +554,17 @@ Answered 2026-11-23. Every item is decided.
    server start 2.19 s, last log line to result 1.00 s. Of the server start,
    1.59 s is `probe_own_builder` in the pod: a probe build for each of the six
    systems of nix.conf, after central picked the store for one known system.
-   With that probe and the kubelet's second gone, about 4 s stays, most of it
-   Kubernetes.
+   Both are gone: the pod's store sends no probe builds (`without_probe`), and
+   central reads the result from a log line that carries the job's
+   `result_token` (`result_line`). Runs `nkfast1` and `nkfast2`: 5.95 s and
+   5.92 s, server start 0.76 s, last line to result 0.002 s. The host's load
+   average was 8 to 16, and Python's start and the build each took about 40 %
+   longer than in `nkunsb1`. A control at the revision before both changes
+   (run `nkctrl1`, load average up to 34) took 11.6 s, with server start
+   3.58 s and 2.0 s to the result, so totals from a loaded host do not
+   compare; the parts do. In a runner pod the controller's `postStart` hook
+   holds the container's start until pynixd prepared the build, so `start`
+   includes the pod's own Python and server start.
 9. **Where builds run, by size. Decided (User, 2026-11-25): tiers, and no
    cluster option.** A build pod never pays for a build under a few seconds.
    Central's own slots take `preferLocalBuild` derivations, long-lived
