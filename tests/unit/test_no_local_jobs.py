@@ -21,7 +21,12 @@ REMOTE = StoreId("sg1-n1")
 
 
 async def _assign(
-    mode: NoLocalJobs, *, jobs: int = 0, remote: bool = True, configured: bool = True
+    mode: NoLocalJobs,
+    *,
+    jobs: int = 0,
+    remote: bool = True,
+    configured: bool = True,
+    build_mode: BuildMode = BuildMode.NORMAL,
 ) -> tuple[Spawned, str]:
     """The ranker puts the local store first, so only the rule under test keeps a build off it.
 
@@ -32,7 +37,7 @@ async def _assign(
         BuildDerivationRequest(
             drv_path=StorePath(path="/nix/store/00000000000000000000000000000001-trivial.drv"),
             derivation=BasicDerivation(platform="x86_64-linux", builder="/bin/sh"),
-            build_mode=BuildMode.NORMAL,
+            build_mode=build_mode,
         ),
         from_goal_path=True,
         goal_request_id=RequestId(1),
@@ -94,6 +99,28 @@ class TestTheOtherReadings:
     @pytest.mark.anyio
     async def test_one_slot_reads_zero_as_one(self) -> None:
         spawned, _ = await _assign(NoLocalJobs.one_slot)
+
+        assert spawned.stores == [LOCAL_STORE_ID]
+
+
+class TestACheck:
+    """A check builds on the local store alone (`derivation-building-goal.cc:599`), so a remote never takes it.
+
+    Nix 2.35 refuses `--rebuild` under `-j0` with the max-jobs reason, although a builder offers every feature.
+    nixidae/nixidae#1617.
+    """
+
+    @pytest.mark.anyio
+    async def test_remote_only_refuses_it_with_nix_message(self) -> None:
+        spawned, error = await _assign(NoLocalJobs.remote_only, build_mode=BuildMode.CHECK)
+
+        assert spawned.stores == []
+        assert "Reason: local builds are disabled (max-jobs = 0)" in error
+        assert "missing system features" not in error
+
+    @pytest.mark.anyio
+    async def test_remote_first_builds_it_locally(self) -> None:
+        spawned, _ = await _assign(NoLocalJobs.remote_first, build_mode=BuildMode.CHECK)
 
         assert spawned.stores == [LOCAL_STORE_ID]
 

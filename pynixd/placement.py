@@ -555,9 +555,12 @@ class Placer[S: PlacedStore]:
                 or local_store.supports_derivation(build.request.derivation.platform, build_features)
             )
         )
+        # `derivation-building-goal.cc:599`: a check acts on this store, so it builds here or nowhere.
+        here_only = build.request.build_mode != BuildMode.NORMAL
         no_local_jobs = self.settings.no_local_jobs
         if no_local_jobs is not NoLocalJobs.one_slot and client_forbids_local(self.queue, build):
-            has_remote = self._has_compatible_store(build, build_features)
+            # No remote takes a check, so `-j0` refuses it with Nix's max-jobs reason. nixidae/nixidae#1617.
+            has_remote = not here_only and self._has_compatible_store(build, build_features)
             if not has_remote and no_local_jobs is NoLocalJobs.remote_only:
                 notes.end(Outcome.FAILED, "the client forbids local builds, and no remote store can build it")
                 await self._fail_with_no_local_jobs(build)
@@ -566,8 +569,6 @@ class Placer[S: PlacedStore]:
                 local_can_build = False
                 ranked = RankedStores([c for c in ranked if c.store_id != local_store.store_id])
                 notes.excluded.append(ExcludedStore(local_store.store_id, "the client forbids local builds"))
-        # `derivation-building-goal.cc:599`: a check acts on this store, so it builds here or nowhere.
-        here_only = build.request.build_mode != BuildMode.NORMAL
         if here_only:
             ranked = RankedStores([c for c in ranked if c.store_id == local_store.store_id])
         # Short of disk, the local store is no place for any build: a `preferLocalBuild` one goes elsewhere.
@@ -608,7 +609,7 @@ class Placer[S: PlacedStore]:
                 await self._fail_all_compatible_blacklisted(build, build_features, used_up)
                 return False
             notes.end(Outcome.FAILED, "no store can build it")
-            await self._fail_no_compatible_store(build, build_features)
+            await self._fail_no_compatible_store(build, build_features, here_only=here_only)
             return False
 
         if ranked:
@@ -852,6 +853,8 @@ class Placer[S: PlacedStore]:
         self,
         build: QueuedBuild,
         build_features: set[str],
+        *,
+        here_only: bool = False,
     ) -> None:
         """Permanently fail a build with no compatible store, as `reject` (`derivation-building-goal.cc:289`) does.
 
@@ -862,10 +865,13 @@ class Placer[S: PlacedStore]:
         stores of the derivation's system offer, or every store's features when no store has that system.
         One machine's values would hide the stores that could take the build with a change. Reverse it if a
         client parses these lines as one machine's. nixidae/nixidae#1216.
+
+        A *here_only* build (a check or a repair) can use the local store alone, so the values are its own,
+        as in Nix. nixidae/nixidae#1617.
         """
         platform = build.request.derivation.platform
         offered: dict[str, set[str]] = {}
-        for store in self._stores_of(build):
+        for store in [self.local] if here_only else self._stores_of(build):
             for system, features in store.feature_matrix.items():
                 offered.setdefault(system, set()).update(features)
         required = build_features or set()

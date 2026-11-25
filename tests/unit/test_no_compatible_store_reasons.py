@@ -68,6 +68,35 @@ async def test_a_foreign_build_with_features_a_store_has_names_the_platform_alon
 
 
 @pytest.mark.anyio
+async def test_a_check_names_the_local_store_alone() -> None:
+    """A check builds only on the local store, so a remote's system is no answer. nixidae/nixidae#1617."""
+    queue = BuildQueue()
+    build_id, answer = await queue.enqueue(
+        BuildDerivationRequest(
+            drv_path=DRV,
+            derivation=BasicDerivation(platform="x86_64-linux", builder="/bin/sh"),
+            build_mode=BuildMode.CHECK,
+        )
+    )
+    local = _store("local", {"aarch64-linux": {"kvm"}})
+    local.systems = {"aarch64-linux"}
+    remote = _store("remote", {"x86_64-linux": {"kvm", "uid-range"}})
+    stores = {local.store_id: local, remote.store_id: remote}
+    spawned = Spawned()
+    placer = fake_placer(queue, FixedRanking.of(remote), spawned, local=local, stores=stores)
+
+    await placer.assign([queue.by_id[build_id]], {})
+
+    assert spawned.stores == []
+    lines = ANSI.sub("", str(answer.result().result.error_msg)).splitlines()
+    assert lines[1:] == [
+        "Reason: platform mismatch",
+        "Required system: 'x86_64-linux'",
+        "Current system: 'aarch64-linux'",
+    ]
+
+
+@pytest.mark.anyio
 async def test_a_native_build_that_lacks_features_names_the_features_of_its_system() -> None:
     lines = await _refusal("x86_64-linux", {"big-parallel"})
 
