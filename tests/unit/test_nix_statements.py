@@ -69,6 +69,10 @@ async def test_the_reads_answer_what_the_registration_wrote(store_db: LocalStore
     assert {str(p) for p in await store_db.nix.referrers(LIBC)} == {HELLO}
     assert {str(p) for p in await store_db.nix.valid_derivers(HELLO)} == {DRV}
     assert {str(p) for p in await store_db.nix.closure([HELLO])} == {LIBC, HELLO}
+    sizes = await store_db.nix.closure_sizes([HELLO])
+    assert {str(p): size for p, size in sizes.items()}.keys() == {LIBC, HELLO}
+    assert {str(p): size for p, size in sizes.items()}[HELLO] == 1 << 33
+    assert await store_db.nix.closure_sizes([ABSENT]) == {}
     closure = await store_db.nix.closure_with_info([HELLO])
     assert [str(i.path) for i in closure] == [LIBC, HELLO]
     assert {str(r) for r in closure[1].info.references} == {LIBC, HELLO}

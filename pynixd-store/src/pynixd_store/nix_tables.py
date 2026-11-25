@@ -80,6 +80,13 @@ class NixTables:
         row = await self._db.fetchone(self._db.sql.nix.closure, (self._db.sql.codec.path_set(paths),))
         return set() if row is None else {StorePath(path=path) for path in self._db.sql.codec.strings(row[0])}
 
+    async def closure_sizes(self, paths: Iterable[str]) -> dict[StorePath, int]:
+        row = await self._db.fetchone(self._db.sql.nix.closure_sizes, (self._db.sql.codec.path_set(paths),))
+        if row is None:
+            return {}
+        pairs = (text.rpartition(":") for text in self._db.sql.codec.strings(row[0]))
+        return {StorePath(path=path): int(size) for path, _, size in pairs}
+
     async def path_in_range(self, lower: str, upper: str) -> StorePath | None:
         """The first valid path *p* with `lower <= p < upper`: the lookup of a hash part."""
         row = await self._db.fetchone(self._db.sql.nix.path_from_hash_part, (lower, upper))

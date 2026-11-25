@@ -35,6 +35,8 @@ class NixSql:
     closure: str
     """One row: Python's `sqlite3` takes the GIL again for each row it steps to, and in a busy process a closure of
     2000 paths then takes 255 ms, where the query alone takes 4 ms (nixidae/nixidae#1594)."""
+    closure_sizes: str
+    """One row, as `closure`: each path, a colon and its NAR size."""
     closure_with_info: str
     path_infos_batch: str
     references_batch: str
@@ -149,6 +151,17 @@ WITH RECURSIVE closure(id) AS (
 SELECT group_concat(vp.path, ' ') FROM closure c
 JOIN ValidPaths vp ON c.id = vp.id
 """,
+        closure_sizes="""
+WITH RECURSIVE closure(id) AS (
+    SELECT id FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
+    UNION
+    SELECT r.reference
+    FROM closure c
+    JOIN Refs r ON c.id = r.referrer
+)
+SELECT group_concat(vp.path || ':' || coalesce(vp.narSize, 0), ' ') FROM closure c
+JOIN ValidPaths vp ON c.id = vp.id
+""",
         closure_with_info=_SQLITE_CLOSURE_WITH_INFO.format(provenance=column.format(table="vp")),
         path_infos_batch=_SQLITE_PATH_INFOS_BATCH.format(provenance=column.format(table="vp")),
         references_batch="""
@@ -238,6 +251,10 @@ SELECT path FROM ValidPaths WHERE path >= %s AND path < %s LIMIT 1
     path_from_nar_hash="SELECT path FROM ValidPaths WHERE hash = %s LIMIT 1",
     closure=_POSTGRES_CLOSURE
     + """SELECT array_agg(vp.path) FROM closure c
+JOIN ValidPaths vp ON c.id = vp.id
+""",
+    closure_sizes=_POSTGRES_CLOSURE
+    + """SELECT array_agg(vp.path || ':' || coalesce(vp.narSize, 0)) FROM closure c
 JOIN ValidPaths vp ON c.id = vp.id
 """,
     # `array_agg` in no order, as SQLite's `group_concat`: the reader takes the references as a set.

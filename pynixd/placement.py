@@ -45,7 +45,6 @@ from .allocator import (
     steered_features,
 )
 from .config import NoLocalJobs
-from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from .exceptions import BackendError, InfrastructureError, error_text
 from .placement_trace import CandidateTrace, Outcome, PlacementDecision
 from .serde import BuildMode, BuildResultStatus, LogNext
@@ -258,7 +257,7 @@ class TransferEstimator:
         estimate_local = self._wants_estimates and local_id not in build.estimates
         if not todo and not estimate_local:
             return self._known_transfer_seconds(build)
-        sizes = await self._input_closure_sizes(build) if todo else {}
+        sizes = await self._input_closure(build, self.local_store) if todo else {}
 
         async def build_ms(store_id: StoreId) -> tuple[int | None, BuildEstimateSource | None]:
             # Only the trace and a time-aware ranking read a build estimate per
@@ -311,13 +310,13 @@ class TransferEstimator:
     def _known_transfer_seconds(build: QueuedBuild) -> dict[StoreId, float]:
         return {store_id: seconds for store_id, seconds in build.transfer_seconds.items() if seconds is not None}
 
-    async def _input_closure_sizes(self, build: QueuedBuild) -> dict[StorePath, int]:
+    @staticmethod
+    async def _input_closure(build: QueuedBuild, local: LocalDBStore) -> dict[StorePath, int]:
         """The NAR size of each path in the closure of the build's inputs."""
-        inputs = {StorePath(path=str(path)) for path in build.request.derivation.input_srcs}
-        if not inputs:
-            return {}
-        closure = await self.local_store.execute(QueryClosureWithInfoRequest(paths=inputs), client=None)
-        return {info.path: info.info.nar_size for info in closure.infos}
+        if build.input_closure is None:
+            inputs = [str(path) for path in build.request.derivation.input_srcs]
+            build.input_closure = await local.engine.query_closure_sizes(inputs) if inputs else {}
+        return build.input_closure
 
     async def _link(self, store_id: StoreId) -> StoreLink:
         if not isinstance(self.local_store, LocalDBStore):

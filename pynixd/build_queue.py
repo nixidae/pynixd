@@ -135,6 +135,11 @@ class QueuedBuild:
         """What this build cost, by phase, filled while `Executor.run` runs."""
         self.transfer_seconds: dict[StoreId, float | None] = {}
         """Each remote store's expected delegation seconds, `None` where unmeasured."""
+        self.input_closure: dict[StorePath, int] | None = None
+        """The closure of the inputs in the local store, with NAR sizes, once an estimate read it.
+
+        Kept for the build: a read for each use took 40 % of the GIL in a storm of small builds.
+        """
         self.inputs_measured: set[StoreId] = set()
         """The remote stores this build's identity has sent inputs to before."""
         self.estimates: dict[StoreId, StoreEstimate] = {}

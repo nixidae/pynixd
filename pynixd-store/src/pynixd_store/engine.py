@@ -212,6 +212,10 @@ class StoreEngine:
         """`computeFSClosure` of *paths* over the references."""
         return await self.db.nix.closure(paths)
 
+    async def query_closure_sizes(self, paths: Iterable[str]) -> dict[StorePath, int]:
+        """The closure of *paths*, each with its NAR size, 0 where Nix knows none."""
+        return await self.db.nix.closure_sizes(paths)
+
     async def query_closure_with_info(self, paths: Iterable[str]) -> list[ValidPathInfo]:
         """The closure of *paths*, each with its info."""
         return await self.db.nix.closure_with_info(paths)

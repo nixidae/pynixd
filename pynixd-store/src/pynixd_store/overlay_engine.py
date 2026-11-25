@@ -205,6 +205,10 @@ class OverlayEngine(StoreEngine):
         upper, rest = await self._split(paths)
         return await super().query_closure(upper) | await self.lower.query_closure(rest)
 
+    async def query_closure_sizes(self, paths: Iterable[str]) -> dict[StorePath, int]:
+        upper, rest = await self._split(paths)
+        return await self.lower.query_closure_sizes(rest) | await super().query_closure_sizes(upper)
+
     async def query_closure_with_info(self, paths: Iterable[str]) -> list[ValidPathInfo]:
         """The upper closure, then the rest of the lower closure, each part in registration order.
 

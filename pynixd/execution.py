@@ -1186,7 +1186,7 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         substitute = True
         if input_srcs:
             paths_to_check = {StorePath(path=str(p)) for p in input_srcs}
-            await self.hold_inputs_on(conn, paths_to_check)
+            await self.hold_inputs_on(conn, paths_to_check, build.input_closure)
             try:
                 check = await store.execute(QueryValidPathsRequest(paths=paths_to_check, substitute=1))
                 valid_paths = [str(cp) for cp in check.paths]
@@ -1207,8 +1207,10 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
             self.local, store, missing_paths, peer_store_id=store.store_id, direction="out", substitute=substitute
         )
 
-    async def hold_inputs_on(self, conn: BuildConn, inputs: set[StorePath]) -> None:
-        """Root the closure of *inputs* on the builder, for the build connection's life.
+    async def hold_inputs_on(
+        self, conn: BuildConn, inputs: set[StorePath], known: Mapping[StorePath, int] | None = None
+    ) -> None:
+        """Root the closure of *inputs* on the builder, for the build connection's life; *known* is that closure, if read.
 
         Before the validity check, as `copyPaths` in `src/libstore/store-api.cc`
         does: a path the builder holds and its collector deletes between the
@@ -1217,8 +1219,10 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         alive only the closure of a path that is valid, and an input the
         builder lacks protects none of its references there. Issue #887.
         """
-        closure = await self.local.execute(QueryClosureWithInfoRequest(paths=inputs), client=None)
-        await add_temp_roots(conn, inputs | {info.path for info in closure.infos})
+        if known is None:
+            closure = await self.local.execute(QueryClosureWithInfoRequest(paths=inputs), client=None)
+            known = {info.path: info.info.nar_size for info in closure.infos}
+        await add_temp_roots(conn, inputs | known.keys())
 
     async def _pull_outputs(self, store: S, paths: StorePathSet) -> int:
         """Bring the outputs of a backend build into the local store, answering the NAR bytes moved.
