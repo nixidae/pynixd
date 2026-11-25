@@ -36,10 +36,11 @@ from pynixd.config import (
     KubernetesTemplateSettings,
     ProvisioningSettings,
     PynixdSettings,
+    StoreRankingSettings,
     StoreSpec,
 )
 from pynixd.exceptions import InfrastructureError
-from pynixd.placement import missing_input_bytes
+from pynixd.placement import missing_input_bytes, store_setup_seconds
 from pynixd.pod_build import _own_home, process_started
 from pynixd.provisioning.kubernetes import (
     BUILD_STORE_LABEL,
@@ -217,6 +218,16 @@ def test_a_build_pod_store_learns_its_fixed_cost() -> None:
     assert store.setup_seconds == 5.0
     store._learn_fixed(PodTimes(asked=0.0, ended=16.0, pod={"build": 1.0}))  # noqa: SLF001 -- as above
     assert store.setup_seconds == pytest.approx(8.0)
+
+
+def test_the_ranking_takes_the_fixed_cost_a_store_learned() -> None:
+    """Until a pod ends the store has no figure, and the ranking takes `remote_setup_seconds`."""
+    store = BuildPodStoreSpec(templates=["buildpod"], central_host="10.0.0.1").to_store("pods")
+    ranking = StoreRankingSettings(remote_setup_seconds=1.0)
+
+    assert store_setup_seconds(store, ranking) == 1.0
+    store._learn_fixed(PodTimes(asked=0.0, ended=6.0, pod={"build": 1.0}))  # noqa: SLF001 -- a pod's end sets it
+    assert store_setup_seconds(store, ranking) == 5.0
 
 
 def test_a_build_pod_takes_the_priority_class_of_its_depth() -> None:

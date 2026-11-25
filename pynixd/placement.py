@@ -177,6 +177,11 @@ def client_forbids_local(queue: BuildQueue, build: QueuedBuild) -> bool:
     return build.options is not None and int(build.options.max_build_jobs) == 0
 
 
+def store_setup_seconds(store: ScheduledStore, settings: StoreRankingSettings) -> float:
+    """What a build on *store* costs beyond its run and transfers: the store's measured figure, else the setting."""
+    return settings.remote_setup_seconds if store.setup_seconds is None else store.setup_seconds
+
+
 class AnswersValidity(Protocol):
     """A store that says which of some paths it holds."""
 
@@ -270,7 +275,7 @@ class TransferEstimator:
             expected = await db.expected_bytes(identity, str(store.store_id), local_id=str(local_id))
             link = await self._link(store.store_id)
             missing = await missing_input_bytes(store, self.answers, sizes)
-            setup = self.settings.remote_setup_seconds
+            setup = store_setup_seconds(store, self.settings)
             build.transfer_seconds[store.store_id] = transfer_seconds(
                 ExpectedBytes(inputs=missing, pull=expected.pull), link, setup
             )
