@@ -45,3 +45,24 @@ class HeldByTables:
                 {"paths": codec.path_set(sorted(paths)), "stores": codec.path_set(sorted(stores))},
             )
         return {str(row[0]) for row in rows}
+
+    async def uncovered(self, stores: Collection[str], after: int = 0) -> list[tuple[int, str]]:
+        """`(id, path)` of each valid path above row *after* that none of *stores* holds, oldest first."""
+        async with self._db.transaction() as session:
+            rows = await session.fetchall(
+                session.sql.held_by.uncovered,
+                {"after": after, "stores": session.sql.codec.path_set(sorted(stores))},
+            )
+        return [(int(row[0]), str(row[1])) for row in rows]
+
+    async def uncovered_of(self, stores: Collection[str], paths: Collection[str]) -> list[str]:
+        """The valid paths of *paths* that none of *stores* holds, oldest first."""
+        if not paths:
+            return []
+        async with self._db.transaction() as session:
+            codec = session.sql.codec
+            rows = await session.fetchall(
+                session.sql.held_by.uncovered_of,
+                {"paths": codec.path_set(sorted(paths)), "stores": codec.path_set(sorted(stores))},
+            )
+        return [str(row[0]) for row in rows]

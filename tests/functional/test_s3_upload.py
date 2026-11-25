@@ -127,7 +127,10 @@ async def _stores(
     cold = spec.to_store("cold")
     stores: dict[StoreId, Store] = {StoreId("local"): local, StoreId("cold"): cold}
     stores.update({StoreId(name): store for name, store in extra.items()})
-    async with Server(stores=stores, unix_path=lab.tmp / "pynixd.sock", ssh_port=None, http_port=None) as server:
+    # No uploader: each test uploads what it names, and nothing else does.
+    async with Server(
+        stores=stores, unix_path=lab.tmp / "pynixd.sock", ssh_port=None, http_port=None, gc_cold_workers=0
+    ) as server:
         # The listeners do not wait for the stores; the upload does.
         scheduler = server.ctx.scheduler
         assert scheduler is not None

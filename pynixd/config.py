@@ -1906,6 +1906,12 @@ class PynixdSettings(BaseSettings):
     `None` is the gap between `gc_high_watermark` and the store's `gc_target_usage`, one watermark
     drive, or 0.05 when either is unset. nixidae/nixidae#1417.
     """
+    gc_cold_workers: int = Field(default=16, ge=0)
+    """Paths the cold tier uploads at once. Most paths are small, so one path's fixed cost, a few round trips,
+    weighs more than its bytes: on sg1, 370 of 486 uploads were under 1 MB and took half the time. nixidae/nixidae#1600.
+
+    Zero starts no uploader: the collector then deletes only what something else recorded as covered.
+    """
     gc_liveness_interval: float | None = None
     """Seconds between Python liveness refreshes. `None` disables the background watch.
 

@@ -17,14 +17,14 @@ import pytest
 from nix_daemon_protocol.ensure_path import EnsurePathRequest
 from nix_daemon_protocol.ids import StoreId
 from nix_daemon_protocol.store_path import StorePath
-from pynixd import Server, metrics
-from pynixd.cold_tier import ColdTier
+from pynixd import Server, cold_tier, metrics
+from pynixd.cold_tier import ColdTier, ColdUploader
 from pynixd.config import S3BinaryCacheSpec
 from pynixd.connection import Connection
 from pynixd.daemon_extensions import PynixdGCAction
 from pynixd.exceptions import BackendError, CacheFault
 from pynixd.gc import Collector
-from pynixd.store import LocalDBStore, Store
+from pynixd.store import LocalDBStore, S3BinaryCacheStore, Store
 from pynixd.unix_socket import open_unix_connection
 from pynixd.wire import UnixNixReader, UnixNixWriter
 from pynixd_store.gc_sql import Bound, SqlPlan
@@ -64,7 +64,9 @@ async def _pynixd(
     nix_config: NixConfig | None = None,
     cold_interval: float = 900.0,
     verify: bool = True,
+    workers: int = 0,
 ) -> AsyncIterator[tuple[Server, ColdTier]]:
+    """A pynixd over the lab and a bucket. With no *workers* nothing uploads unless the test does."""
     key = tmp_path / "cold.sec"
     await _key(tmp_path)
     spec = make_test_spec(
@@ -82,7 +84,12 @@ async def _pynixd(
     )
     stores: dict[StoreId, Store] = {StoreId("local"): LocalDBStore(spec), StoreId("cold"): cold.to_store("cold")}
     async with Server(
-        stores=stores, unix_path=_socket(tmp_path), ssh_port=None, http_port=None, gc_cold_interval=cold_interval
+        stores=stores,
+        unix_path=_socket(tmp_path),
+        ssh_port=None,
+        http_port=None,
+        gc_cold_interval=cold_interval,
+        gc_cold_workers=workers,
     ) as server:
         _freeze_tracker(server)
         scheduler = server.ctx.scheduler
@@ -98,6 +105,24 @@ async def _pynixd(
 
 def _socket(tmp_path: Path) -> Path:
     return tmp_path / "pynixd.sock"
+
+
+@asynccontextmanager
+async def _uploading(tier: ColdTier, workers: int = 4) -> AsyncIterator[ColdUploader]:
+    """An uploader over *tier*, run by the test rather than the server."""
+    uploader = ColdUploader(tier, workers=workers, poll=3600)
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(uploader.run)
+        yield uploader
+        tg.cancel_scope.cancel()
+
+
+async def _cover(uploader: ColdUploader, paths: set[str]) -> None:
+    """Urge *paths* and wait until none is left to cover."""
+    pending = await uploader.urge(paths)
+    with anyio.fail_after(60):
+        while uploader.queue.pending(pending) and not uploader.stopped:
+            await uploader.progress()
 
 
 @asynccontextmanager
@@ -156,24 +181,28 @@ async def test_over_the_target_it_stops_short_of_what_the_bucket_lacks(
     assert await _valid(lab.store_path) == {lab.parent, lab.child, lab.fresh, lab.rooted}
 
 
-async def test_upload_ahead_covers_what_the_pressed_pass_takes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """No budget uploads nothing; a budget over the plan covers it, and the pressed pass then takes all of it."""
+async def test_the_cold_window_names_what_the_pressed_pass_takes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No budget names nothing; a budget over the plan names all of it, and once it is up the pass takes it."""
     lab = await _lab(tmp_path)
     dead = {lab.stale, lab.parent, lab.child, lab.fresh}
     with s3_bucket(monkeypatch, tmp_path / "xdg-cache") as bucket:
         async with _pynixd(lab, tmp_path, bucket.endpoint, target=1e-9) as (server, tier):
-            assert await Collector(server.ctx).upload_ahead(tier, 0, 1.0) == 0
-            assert await tier.covered(dead) == set()
-            assert await Collector(server.ctx).upload_ahead(tier, 2**62, 1.0) == len(dead)
-            assert await tier.covered(dead | {lab.rooted}) == dead
+            assert await Collector(server.ctx).cold_window(tier, 0, 1.0) == []
+            window = await Collector(server.ctx).cold_window(tier, 2**62, 1.0)
+            assert set(window) == dead
+            async with _uploading(tier) as uploader:
+                await _cover(uploader, set(window))
+            assert dead <= await tier.covered(dead | {lab.rooted})
             deleted = await Collector(server.ctx).run(PynixdGCAction.EXECUTE)
     assert {str(path) for path in deleted.store_paths} == dead
 
 
-async def test_upload_ahead_takes_the_referrers_a_covered_window_waits_on(
+async def test_the_cold_window_takes_the_referrers_a_covered_window_waits_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The budget reaches only `child`, already up; `parent` names it, so the round uploads `parent`.
+    """The budget reaches only `child`, already up; `parent` names it, so the window names `parent`.
 
     Without it a pass keeps both, and every later round finds its window covered and uploads nothing:
     sg1, 2026-11-25, 688 covered paths filled the budget while 101,940 planned paths stayed.
@@ -191,9 +220,7 @@ async def test_upload_ahead_takes_the_referrers_a_covered_window_waits_on(
     with s3_bucket(monkeypatch, tmp_path / "xdg-cache") as bucket:
         async with _pynixd(lab, tmp_path, bucket.endpoint, target=1e-9) as (server, tier):
             await tier.upload_closure({StorePath(lab.child)})
-            assert await Collector(server.ctx).upload_ahead(tier, 1, 1.0) == 1
-            assert await tier.covered({lab.parent, lab.child}) == {lab.parent, lab.child}
-            assert {lab.parent, lab.child} <= await _plan(server)
+            assert await Collector(server.ctx).cold_window(tier, 1, 1.0) == [lab.parent]
 
 
 @pytest.mark.parametrize("signer", ["trusted-key", "own-key", "foreign-key"])
@@ -257,22 +284,21 @@ async def test_a_client_with_its_own_list_still_gets_an_evicted_path(
 
 
 async def test_a_path_gone_before_its_upload_skips_only_itself(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The plan closes before the uploads start, so another delete can take a planned path first.
-
-    The round goes on with the rest: one gone path must not end the cold loop, nor the daemon with it.
-    """
+    """Another delete takes a queued path before its upload: the uploader goes on with the rest."""
     lab = await _lab(tmp_path)
     with s3_bucket(monkeypatch, tmp_path / "xdg-cache") as bucket:
-        async with _pynixd(lab, tmp_path, bucket.endpoint, target=1e-9) as (server, tier):
-            upload = tier.upload_closure
+        async with _pynixd(lab, tmp_path, bucket.endpoint, target=1e-9) as (_server, tier):
+            stage = tier.cold.stage
 
-            async def racing(paths: set[StorePath]) -> object:
-                if StorePath(lab.stale) in paths:
+            async def racing(local: Store, path: StorePath) -> object:
+                if str(path) == lab.stale:
                     await _nix("store", "delete", "--store", str(lab.store_path), lab.stale)
-                return await upload(paths)
+                return await stage(local, path)
 
-            monkeypatch.setattr(tier, "upload_closure", racing)
-            await Collector(server.ctx).upload_ahead(tier, 2**62, 1.0)
+            monkeypatch.setattr(tier.cold, "stage", racing)
+            async with _uploading(tier) as uploader:
+                await _cover(uploader, {lab.stale, lab.parent, lab.child, lab.fresh})
+                assert lab.stale not in uploader.queue
             assert await tier.covered({lab.stale, lab.parent, lab.child, lab.fresh}) == {
                 lab.parent,
                 lab.child,
@@ -280,30 +306,109 @@ async def test_a_path_gone_before_its_upload_skips_only_itself(tmp_path: Path, m
             }
 
 
-async def test_the_cold_loop_outlives_a_failed_round(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The loop the server starts: a round the bucket refuses is skipped, and the next one uploads."""
+async def test_the_uploader_retries_a_transient_fault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The uploader the server starts: a NAR the bucket fails goes up on the next try."""
     lab = await _lab(tmp_path)
-    rounds: list[str] = []
-    second = anyio.Event()
-    upload_ahead = Collector.upload_ahead
+    faults: list[str] = []
+    stage = S3BinaryCacheStore.stage
 
-    async def flaky(collector: Collector, tier: ColdTier, budget: int, pressure: float) -> int:
-        if not rounds:
-            rounds.append("refused")
-            raise CacheFault("refused by the test")
-        uploaded = await upload_ahead(collector, tier, budget, pressure)
-        rounds.append("uploaded")
-        second.set()
-        return uploaded
+    async def flaky(self: S3BinaryCacheStore, local: Store, path: StorePath) -> object:
+        if not faults:
+            faults.append(str(path))
+            raise CacheFault("failed by the test", status=503)
+        return await stage(self, local, path)
 
-    monkeypatch.setattr(Collector, "upload_ahead", flaky)
+    monkeypatch.setattr(S3BinaryCacheStore, "stage", flaky)
     dead = {lab.stale, lab.parent, lab.child}
     with s3_bucket(monkeypatch, tmp_path / "xdg-cache") as bucket:
-        async with _pynixd(lab, tmp_path, bucket.endpoint, cold_interval=0.5) as (_server, tier):
-            with anyio.fail_after(30):
-                await second.wait()
-            assert rounds == ["refused", "uploaded"]
+        async with _pynixd(lab, tmp_path, bucket.endpoint, workers=2) as (server, tier):
+            uploader = server.cold_uploader
+            assert uploader is not None
+            await _cover(uploader, dead)
+            assert len(faults) == 1
             assert dead <= await tier.covered(dead | {lab.rooted})
+
+
+async def test_a_narinfo_waits_for_its_references(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`child`'s NAR is held back while `parent`'s goes up: `parent` gets no narinfo and no record until then.
+
+    Otherwise a client could fetch `parent` from the bucket and find no `child` to go with it.
+    """
+    lab = await _lab(tmp_path)
+    with s3_bucket(monkeypatch, tmp_path / "xdg-cache") as bucket:
+        async with _pynixd(lab, tmp_path, bucket.endpoint) as (_server, tier):
+            stage = tier.cold.stage
+            release = anyio.Event()
+
+            async def hold_child(local: Store, path: StorePath) -> object:
+                if str(path) == lab.child:
+                    await release.wait()
+                return await stage(local, path)
+
+            monkeypatch.setattr(tier.cold, "stage", hold_child)
+            async with _uploading(tier) as uploader:
+                gated = anyio.Event()
+                staged = uploader.queue.staged
+
+                def spy(path: str, uncovered: set[str]) -> list[str]:
+                    parked = staged(path, uncovered)
+                    if path == lab.parent:
+                        gated.set()
+                    return parked
+
+                monkeypatch.setattr(uploader.queue, "staged", spy)
+                await uploader.urge({lab.parent})
+                with anyio.fail_after(60):
+                    await gated.wait()
+                # Gated, not publishable: a worker would otherwise put its narinfo before `child`'s NAR is up.
+                assert uploader.queue.depth()["gated"] == 1
+                assert uploader.queue.depth()["publishable"] == 0
+                s3 = botocore.session.get_session().create_client(
+                    "s3", endpoint_url=bucket.endpoint, region_name="us-east-1"
+                )
+                narinfos = {
+                    o["Key"] for o in s3.list_objects_v2(Bucket="cache").get("Contents", []) if ".narinfo" in o["Key"]
+                }
+                assert f"{StorePath(lab.parent).hash_part()}.narinfo" not in narinfos
+                assert await tier.covered({lab.parent, lab.child}) == set()
+                release.set()
+                await _cover(uploader, {lab.parent})
+            assert await tier.covered({lab.parent, lab.child}) == {lab.parent, lab.child}
+
+
+async def test_a_restart_rebuilds_the_queue_from_the_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A new uploader queues every valid path the record does not cover, and only those."""
+    lab = await _lab(tmp_path)
+    with s3_bucket(monkeypatch, tmp_path / "xdg-cache") as bucket:
+        async with _pynixd(lab, tmp_path, bucket.endpoint) as (_server, tier):
+            await tier.upload_closure({StorePath(lab.child)})
+            uploader = ColdUploader(tier, workers=1, poll=3600)
+            assert await uploader.refill() > 0
+            assert lab.child not in uploader.queue
+            assert {lab.parent, lab.stale, lab.fresh, lab.rooted} == uploader.queue.pending(
+                {lab.parent, lab.stale, lab.fresh, lab.rooted, lab.child}
+            )
+            assert await uploader.refill() == 0
+
+
+async def test_refusals_across_paths_stop_the_tier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bucket that refuses every write: the uploader parks each path, then stops, and covers nothing."""
+    lab = await _lab(tmp_path)
+    monkeypatch.setattr(cold_tier, "STOP_AFTER_REFUSALS", 2)
+    with s3_bucket(monkeypatch, tmp_path / "xdg-cache") as bucket:
+        s3 = botocore.session.get_session().create_client("s3", endpoint_url=bucket.endpoint, region_name="us-east-1")
+        s3.put_object(Bucket="cache", Key="nix-cache-info", Body=b"StoreDir: /nix/store\n")
+        access, secret = bucket.read_only
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", access)
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", secret)
+        async with _pynixd(lab, tmp_path, bucket.endpoint) as (_server, tier):
+            async with _uploading(tier, workers=1) as uploader:
+                with anyio.fail_after(60):
+                    while not uploader.stopped:
+                        await uploader.progress()
+                assert uploader.queue.depth()["parked"] >= 2
+            assert metrics.COLD_STOPPED._value.get() == 1
+            assert await tier.covered({lab.parent, lab.child, lab.stale}) == set()
 
 
 @pytest.mark.parametrize("verify", [True, False], ids=["verify", "trust-the-record"])

@@ -55,7 +55,7 @@ from .daemon_extensions import (
     PynixdGCAction,
     QueryClosureRequest,
 )
-from .exceptions import BackendError, CacheFault, GCNotPermittedError, PathGone, PynixdError
+from .exceptions import BackendError, CacheFault, GCNotPermittedError, PynixdError
 from .psi import ReclaimSample
 from .store.local_db import LocalDBStore
 
@@ -352,19 +352,18 @@ class Collector:
             await client.send(line)
         return False
 
-    async def upload_ahead(self, tier: ColdTier, budget: int, pressure: float) -> int:
-        """Upload the closures of the paths a pressed pass would delete first, up to *budget* bytes of them.
+    async def cold_window(self, tier: ColdTier, budget: int, pressure: float) -> list[str]:
+        """The uncovered paths a pressed pass would delete first, up to *budget* bytes: what to upload first.
 
         The plan is the pressed one, every dead path in weight order at *pressure*: the pass the
         watermark starts. Covered paths count toward the budget and cost nothing. The window then
         takes its planned referrers, whatever their weight: a pass keeps a covered path while an
-        uncovered referrer stays. The plan's transaction closes before the first upload. Answers
-        how many seeds went up.
+        uncovered referrer stays.
         """
         local = self.ctx.local_store
         db = self.planner().plan_database()
         if db is None:
-            return 0
+            return []
         volatile = await run_sync(self.planner().volatile_roots)
         vetoed = await self._veto_closure(volatile)
         live = await self._live_paths(local)
@@ -381,24 +380,16 @@ class Collector:
             closed = await plan.close_batch(window) if window else []
         covered = await tier.covered(closed)
         head = [path for path in closed if path not in covered]
-        uploaded = 0
-        for path in head:
-            try:
-                await tier.upload_closure({StorePath(path)})
-            except PathGone:
-                log.info("gc_cold_ahead_gone", path=path)
-                continue
-            uploaded += 1
         log.info(
             "gc_cold_ahead",
-            seeds=uploaded,
+            uncovered=len(head),
             budget=budget,
             planned=len(rows),
             window=len(window),
             closed=len(closed),
             covered=len(covered),
         )
-        return uploaded
+        return head
 
     @asynccontextmanager
     async def _open_plan(

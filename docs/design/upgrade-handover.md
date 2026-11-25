@@ -310,10 +310,13 @@ Mechanics, as measured above:
 GC and the cold tier across a hand-over:
 
 - A drain stops a singleton loop between two passes, never inside one. A GC pass cut short leaves its deletes
-  half recorded, and a cut cold-tier round leaves a NAR without its narinfo. A pass in flight runs to its end.
-- The successor's loops sleep first (`gc_poll_interval`, `gc_cold_interval`), so its first pass seldom meets the
-  old one's last. If they meet, nix-daemon's GC lock orders two collectors, and the bucket keys a NAR by its
-  hash, so a second upload of a path writes the same objects.
+  half recorded. A pass in flight runs to its end.
+- A drain cancels the cold tier's uploader at once, inside an upload too. A cut upload leaves a NAR without its
+  narinfo, which no client sees, and no `PynixdHeldBy` row, so the successor queues the path again.
+- The successor's GC loop sleeps first (`gc_poll_interval`), so its first pass seldom meets the old one's last.
+  If they meet, nix-daemon's GC lock orders two collectors. Its uploader starts at once and may upload a path
+  the old process is uploading: the bucket keys a NAR by its NAR hash, so a second upload writes the same
+  objects.
 - The old process's sessions keep their temporary roots: flock'd files under `temproots`. The successor's veto
   reads them fresh before each pass (`volatile_roots`), so it spares what the old process's clients hold.
 - A build that outlives its client has no temporary root, in either process. That is so without a hand-over too.

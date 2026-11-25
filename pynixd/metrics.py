@@ -563,6 +563,38 @@ GC_TRIGGER_SKIPPED = Counter(
     ["reason"],  # watermark, scheduled
 )
 
+# --- The cold tier's upload queue (nixidae/nixidae#1600) ---
+
+COLD_QUEUE_PATHS = Gauge(
+    "pynixd_cold_queue_paths",
+    "Uncovered local paths in the cold tier's upload queue, by state",
+    ["state"],  # urgent, background, busy, gated, publishable, parked
+)
+
+COLD_UPLOADED = Counter(
+    "pynixd_cold_uploaded_total",
+    "Paths the cold tier covered: a narinfo it put, or a stable store's answer",
+    ["by"],  # bucket, stable
+)
+
+COLD_UPLOADED_BYTES = Counter(
+    "pynixd_cold_uploaded_bytes_total",
+    "Compressed NAR bytes the cold tier put in the bucket",
+)
+
+COLD_UPLOAD_FAULTS = Counter(
+    "pynixd_cold_upload_faults_total",
+    "Bucket refusals and transport faults while uploading",
+    ["kind"],  # transient, permanent
+)
+
+# One while the tier has stopped uploading: refusals across many paths, so the bucket or its credentials
+# are wrong. The collector then deletes only what is already covered.
+COLD_STOPPED = Gauge(
+    "pynixd_cold_stopped",
+    "Whether the cold tier stopped uploading after permanent refusals",
+)
+
 # Zero until the first pass finishes, so an alert reads it as
 # `== 0 or time() - it > N`. A timestamp that stops advancing is what says the
 # collector is stuck; no size gauge says that on its own.

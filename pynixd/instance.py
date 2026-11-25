@@ -28,13 +28,13 @@ from pynixd_store.local_store_db import DatabaseError
 from pynixd_store.store_layout import DEFAULT_STORE_DIR
 
 from . import _optional, metrics, wire
-from .cold_tier import ColdTier
+from .cold_tier import ColdTier, ColdUploader
 from .config import (
     LocalSocketStoreSpec,
     PynixdSettings,
 )
 from .context import PynixdContext
-from .exceptions import CacheFault, GCNotPermittedError
+from .exceptions import GCNotPermittedError
 from .execution import output_paths
 from .gc import Collector
 from .handover import HandoverControl, ListenerName, local_store_key, raw_socket
@@ -295,6 +295,7 @@ class Server:
         self._singletons: list[anyio.CancelScope] = []
         """Loops one process runs for the whole machine. A drain stops them; the successor runs its own."""
         self._passes = 0
+        self.cold_uploader: ColdUploader | None = None
         self._tcp: dict[ListenerName, list[socket.socket]] = {}
         """The TCP listening sockets, by listener, for a hand-over."""
         self._more_acceptors: list[asyncssh.SSHAcceptor] = []
@@ -725,11 +726,20 @@ class Server:
                     await self._gc_pass("scheduled")
                 last_trigger = time.monotonic()
 
-    async def _cold_tick(self, tier: ColdTier) -> None:
-        """Upload ahead of eviction, so a pressed pass finds its paths covered.
+    async def _stores_opened(self) -> None:
+        """Wait for the stores that open in the background: the bucket among them."""
+        if self.ctx.scheduler is not None and self.ctx.scheduler.stores_opened is not None:
+            await self.ctx.scheduler.stores_opened.wait()
 
-        A refusing bucket or a busy database skips one round: the collector then deletes only
-        what is covered, or counts what it deletes over its target.
+    async def _cold_upload(self, uploader: ColdUploader) -> None:
+        """Run the cold tier's uploader. A drain cancels it anywhere: a cut NAR has no narinfo, so no client sees it."""
+        await self._stores_opened()
+        await uploader.run()
+
+    async def _cold_tick(self, tier: ColdTier, uploader: ColdUploader) -> None:
+        """Put the paths a pressed pass would delete first at the head of the upload queue.
+
+        A busy database skips one round.
         """
         settings = self.ctx.settings
         local = self.ctx.local_store
@@ -739,21 +749,19 @@ class Server:
         if ahead is None:
             ahead = watermark - target if watermark is not None and target is not None else 0.05
         log.info("gc_cold_loop_started", store_id=tier.cold.store_id, interval=settings.gc_cold_interval, ahead=ahead)
-        # The bucket opens in the background, after this loop starts.
-        if self.ctx.scheduler is not None and self.ctx.scheduler.stores_opened is not None:
-            await self.ctx.scheduler.stores_opened.wait()
+        await self._stores_opened()
         while True:
-            # A round reads the whole plan: a restart must not start one at once.
-            await anyio.sleep(settings.gc_cold_interval)
             usage = await anyio.to_thread.run_sync(Collector._disk_usage, local)
             if usage is not None and usage[1] > 0:
                 used, total = usage
                 pressure = max(used / total, watermark or 0.0)
                 try:
                     async with self._singleton_pass():
-                        await Collector(self.ctx).upload_ahead(tier, int(total * ahead), pressure)
-                except (CacheFault, DatabaseError):
+                        await uploader.urge(await Collector(self.ctx).cold_window(tier, int(total * ahead), pressure))
+                except DatabaseError:
                     log.warning("gc_cold_round_failed", store_id=tier.cold.store_id, exc_info=True)
+            # A round reads the whole plan. The uploader works through what it urged in the meantime.
+            await anyio.sleep(settings.gc_cold_interval)
 
     async def _drive_to_target(self) -> None:
         """Bounded passes back to back until pressure drops or progress stops.
@@ -1090,8 +1098,12 @@ class Server:
 
         if self.ctx.db and self.ctx.settings.gc_enabled:
             self._spawn_singleton(self._gc_tick)
-            if (tier := ColdTier.of(self.ctx)) is not None:
-                self._spawn_singleton(self._cold_tick, tier)
+            settings = self.ctx.settings
+            if (tier := ColdTier.of(self.ctx)) is not None and settings.gc_cold_workers:
+                uploader = ColdUploader(tier, workers=settings.gc_cold_workers, poll=settings.gc_poll_interval)
+                self.cold_uploader = uploader
+                self._spawn_singleton(self._cold_upload, uploader)
+                self._spawn_singleton(self._cold_tick, tier, uploader)
             liveness_interval = self.ctx.settings.gc_liveness_interval
             if liveness_interval is not None:
                 watch = LivenessWatch.of(self.ctx.local_store.layout, self.ctx.db)
