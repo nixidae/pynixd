@@ -56,6 +56,16 @@ def hashes_self_reference_positions(nix_version: str) -> bool:
     return nix_at_least(nix_version, 2, 35)
 
 
+async def _release_gc_lock(gc_lock: int) -> None:
+    """Release the collector's lock, whatever cancelled the caller.
+
+    A cancelled caller that skips it leaves the lock held for the life of this process, and every later collection
+    waits for it (nixidae/nixidae#1593).
+    """
+    with anyio.CancelScope(shield=True):
+        await anyio.to_thread.run_sync(verify.release_gc_lock, gc_lock)
+
+
 class StoreEngine:
     """The operations of a local store that pynixd runs itself, with Nix's names."""
 
@@ -525,7 +535,7 @@ class StoreEngine:
                 errors = await self._check_store_hashes(real_store_dir, valid, report, repair) or errors
             return errors
         finally:
-            await anyio.to_thread.run_sync(verify.release_gc_lock, gc_lock)
+            await _release_gc_lock(gc_lock)
 
     async def collect_garbage(
         self, options: collect.GCOptions, *, settings: collect.GCSettings, report: Report
@@ -565,7 +575,7 @@ class StoreEngine:
                 raise outcome
             return outcome
         finally:
-            await anyio.to_thread.run_sync(verify.release_gc_lock, gc_lock)
+            await _release_gc_lock(gc_lock)
 
     async def _verify_path(
         self,

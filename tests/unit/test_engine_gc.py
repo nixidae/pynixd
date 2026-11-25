@@ -19,7 +19,14 @@ import pytest
 
 from nix_daemon_protocol.protocol import GCAction, Verbosity
 from pynixd_store import verify
-from pynixd_store.collect import SYNC_AFTER_LOCK, SYNC_AFTER_ROOTS, GCOptions, GCSettings, path_fmt
+from pynixd_store.collect import (
+    SYNC_AFTER_LOCK,
+    SYNC_AFTER_ROOTS,
+    GCOptions,
+    GCSettings,
+    path_fmt,
+    try_gc_lock_exclusive,
+)
 from pynixd_store.engine import StoreEngine
 from pynixd_store.errors import PynixdError
 from pynixd_store.hintfmt import magenta
@@ -540,3 +547,35 @@ async def test_a_failed_delete_carries_nix_s_trace(tmp_path: Path) -> None:
     real = store.real(A)
     assert str(error.value) == f"cannot unlink {path_fmt(real)}: {magenta('Permission denied')}"
     assert error.value.traces == (f"While deleting store path {path_fmt(real)}",)
+
+
+@pytest.mark.parametrize("operation", ["collect", "verify"])
+async def test_a_cancelled_operation_releases_the_gc_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    """A delete that timed out left the lock held, and the next one waited for it forever (nixidae/nixidae#1593)."""
+    store = _Store(tmp_path)
+    store.add(A)
+    holding = anyio.Event()
+
+    async def hold(*_args: object, **_kwargs: object) -> None:
+        holding.set()
+        await anyio.sleep_forever()
+
+    monkeypatch.setattr("pynixd_store.collector.Collection.run", hold)
+    monkeypatch.setattr(StoreEngine, "query_all_valid_paths", hold)
+    lines = _Lines()
+    async with _engine(store) as engine:
+        async with anyio.create_task_group() as tg:
+            if operation == "collect":
+                options = GCOptions(GCAction.DELETE_DEAD)
+                tg.start_soon(partial(engine.collect_garbage, options, settings=GCSettings(), report=lines.report))
+            else:
+                tg.start_soon(partial(engine.verify_store, check_contents=False, report=lines.report))
+            await holding.wait()
+            tg.cancel_scope.cancel()
+        fd = verify.open_gc_lock(store.layout.state_dir)
+        try:
+            assert try_gc_lock_exclusive(fd), "the cancelled operation still holds the lock"
+        finally:
+            os.close(fd)
