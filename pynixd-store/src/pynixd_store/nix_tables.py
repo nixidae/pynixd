@@ -77,7 +77,8 @@ class NixTables:
         return await self._paths(self._db.sql.nix.valid_derivers, (path,), column=1)
 
     async def closure(self, paths: Iterable[str]) -> set[StorePath]:
-        return await self._paths(self._db.sql.nix.closure, (self._db.sql.codec.path_set(paths),))
+        row = await self._db.fetchone(self._db.sql.nix.closure, (self._db.sql.codec.path_set(paths),))
+        return set() if row is None else {StorePath(path=path) for path in self._db.sql.codec.strings(row[0])}
 
     async def path_in_range(self, lower: str, upper: str) -> StorePath | None:
         """The first valid path *p* with `lower <= p < upper`: the lookup of a hash part."""

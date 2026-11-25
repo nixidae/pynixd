@@ -33,6 +33,8 @@ class NixSql:
     path_from_hash_part: str
     path_from_nar_hash: str
     closure: str
+    """One row: Python's `sqlite3` takes the GIL again for each row it steps to, and in a busy process a closure of
+    2000 paths then takes 255 ms, where the query alone takes 4 ms (nixidae/nixidae#1594)."""
     closure_with_info: str
     path_infos_batch: str
     references_batch: str
@@ -144,7 +146,7 @@ WITH RECURSIVE closure(id) AS (
     FROM closure c
     JOIN Refs r ON c.id = r.referrer
 )
-SELECT vp.path FROM closure c
+SELECT group_concat(vp.path, ' ') FROM closure c
 JOIN ValidPaths vp ON c.id = vp.id
 """,
         closure_with_info=_SQLITE_CLOSURE_WITH_INFO.format(provenance=column.format(table="vp")),
@@ -235,7 +237,7 @@ SELECT path FROM ValidPaths WHERE path >= %s AND path < %s LIMIT 1
 """,
     path_from_nar_hash="SELECT path FROM ValidPaths WHERE hash = %s LIMIT 1",
     closure=_POSTGRES_CLOSURE
-    + """SELECT vp.path FROM closure c
+    + """SELECT array_agg(vp.path) FROM closure c
 JOIN ValidPaths vp ON c.id = vp.id
 """,
     # `array_agg` in no order, as SQLite's `group_concat`: the reader takes the references as a set.
