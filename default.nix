@@ -968,6 +968,18 @@ let
       }
     );
 
+    # Storms of trivial derivations through pynixd with no daemon and through
+    # `nix daemon`, in a QEMU guest. Not a gate on speed.
+    # `nix run --file . internal.tests.drv-storm.driver -- --out <abs>`.
+    drv-storm = withDefaultNix (
+      pkgs.callPackage ./tests/derivations/drv-storm {
+        inherit package vivariumLib;
+        src = testSrc;
+        devEnv = guestEnv;
+        nix = defaultNix;
+      }
+    );
+
     # A store path's files copied as a NAR stream or by the kernel, on btrfs,
     # XFS and ext4, in a QEMU guest. Not a gate on speed.
     # `nix run --file . internal.tests.copy-offload.driver -- --out <abs>`.
