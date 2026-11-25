@@ -135,10 +135,15 @@ class PodTimes:
         return {part: end - start for part, (start, end) in spans.items() if start is not None and end is not None}
 
     def fixed(self) -> float | None:
-        """What the pod cost beyond its build, or `None` without the pod's own seconds."""
+        """What the pod cost beyond its build and its copies, or `None` without the pod's own seconds.
+
+        Not the copies: the ranking prices the inputs and the outputs from their bytes (`transfer_seconds`), and
+        adds this beside them.
+        """
         if self.pod is None or self.ended is None or PodPart.BUILD.value not in self.pod:
             return None
-        return self.ended - self.asked - self.pod[PodPart.BUILD.value]
+        copies = self.pod.get(PodPart.INPUTS.value, 0.0) + self.pod.get(PodPart.OUTPUTS.value, 0.0)
+        return self.ended - self.asked - self.pod[PodPart.BUILD.value] - copies
 
 
 def runner_refusal(request: BuildDerivationRequest) -> str | None:

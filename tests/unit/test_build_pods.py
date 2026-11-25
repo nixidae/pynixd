@@ -220,6 +220,12 @@ def test_a_build_pod_store_learns_its_fixed_cost() -> None:
     assert store.setup_seconds == pytest.approx(8.0)
 
 
+def test_a_build_pod_s_fixed_cost_leaves_out_its_copies() -> None:
+    """The ranking prices the input and output copies by their bytes; counted here too, a large closure counts twice."""
+    times = PodTimes(asked=0.0, ended=10.0, pod={"build": 1.0, "inputs": 3.0, "outputs": 0.5})
+    assert times.fixed() == pytest.approx(5.5)
+
+
 def test_the_ranking_takes_the_fixed_cost_a_store_learned() -> None:
     """Until a pod ends the store has no figure, and the ranking takes `remote_setup_seconds`."""
     store = BuildPodStoreSpec(templates=["buildpod"], central_host="10.0.0.1").to_store("pods")
