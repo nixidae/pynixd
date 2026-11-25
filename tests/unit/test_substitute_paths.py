@@ -25,7 +25,7 @@ from pynixd.goals.results import goal_failure, goal_success
 from pynixd.goals.substitute import SubstituteAttempt
 from pynixd.goals.substitute_paths import ensure_path, no_substituter, pynixd_substitutes, substitute_paths
 from pynixd.op_routes import OpRoute
-from pynixd.serde import IsValidPathResponse, StorePath as WirePath
+from pynixd.serde import QueryValidPathsResponse, StorePath as WirePath
 from pynixd.store.local_db import LocalDBStore
 from pynixd_store.hintfmt import magenta
 from pynixd_store.store_path import StorePath
@@ -224,8 +224,12 @@ class TestWhoSubstitutes:
 class _ValidStore:
     """Holds `HELD` alone."""
 
-    async def execute(self, request: Any, mark: bool = True) -> IsValidPathResponse:
-        return IsValidPathResponse(valid=str(request.path) == str(HELD))
+    def __init__(self) -> None:
+        self.requests: list[Any] = []
+
+    async def execute(self, request: Any, mark: bool = True) -> QueryValidPathsResponse:
+        self.requests.append(request)
+        return QueryValidPathsResponse(paths={path for path in request.paths if str(path) == str(HELD)})
 
 
 @pytest.mark.anyio
@@ -246,3 +250,21 @@ class TestWithoutSubstitutes:
         # Rooted before the check, both: a root on a path that is not there holds nothing.
         assert holds.paths == [HELD, MISSING]
         assert holds.calls == 1, "one write for the set: sg1 held its event loop with one write a root"
+
+
+@pytest.mark.anyio
+class TestHeldPaths:
+    async def test_valid_paths_take_one_query_and_no_goal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A builder answers QueryValidPaths of some 600 valid paths before each build (nixidae/nixidae#1602)."""
+
+        async def no_goal(*args: object, **kwargs: object) -> None:
+            raise AssertionError("a goal for a valid path")
+
+        monkeypatch.setattr(GoalEngine, "get_substitute_path_goal", no_goal)
+        store = _ValidStore()
+        engine = GoalEngine(SimpleNamespace(local_store=store, scheduler=None))  # type: ignore[arg-type]  # the store is all this reads
+        holds = _Holds()
+        attempts = await engine.substitute_paths([HELD], hold=holds, ids=())
+        assert attempts[HELD].result.produced_paths == {HELD}
+        assert holds.paths == [HELD]
+        assert len(store.requests) == 1

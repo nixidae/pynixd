@@ -68,7 +68,8 @@ class NixTables:
         return await self._paths(self._db.sql.nix.all_valid_paths)
 
     async def valid_paths(self, paths: Iterable[str]) -> set[StorePath]:
-        return await self._paths(self._db.sql.nix.valid_paths, (self._db.sql.codec.path_set(paths),))
+        row = await self._db.fetchone(self._db.sql.nix.valid_paths, (self._db.sql.codec.path_set(paths),))
+        return set() if row is None else {StorePath(path=path) for path in self._db.sql.codec.strings(row[0])}
 
     async def referrers(self, path: str) -> set[StorePath]:
         return await self._paths(self._db.sql.nix.referrers, (path,))

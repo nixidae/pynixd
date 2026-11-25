@@ -30,6 +30,7 @@ class NixSql:
     register_realisation_by_hash: str
     update_realisation_by_hash: str
     valid_paths: str
+    """One row, as `closure`."""
     path_from_hash_part: str
     path_from_nar_hash: str
     closure: str
@@ -134,7 +135,7 @@ def sqlite(*, provenance: bool) -> NixSql:
         ),
         update_realisation_by_hash="update Realisations set signatures = ? where drvPath = ? and outputName = ?",
         valid_paths="""
-SELECT path FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
+SELECT group_concat(path, ' ') FROM ValidPaths WHERE path IN (SELECT value FROM json_each(?))
 """,
         path_from_hash_part="""
 SELECT path FROM ValidPaths WHERE path >= ? AND path < ? LIMIT 1
@@ -243,7 +244,7 @@ WHERE v.path = %s
     ),
     update_realisation_by_hash="update Realisations set signatures = %s where drvPath = %s and outputName = %s",
     valid_paths="""
-SELECT path FROM ValidPaths WHERE path = ANY(%s)
+SELECT array_agg(path) FROM ValidPaths WHERE path = ANY(%s)
 """,
     path_from_hash_part="""
 SELECT path FROM ValidPaths WHERE path >= %s AND path < %s LIMIT 1

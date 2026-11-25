@@ -28,9 +28,9 @@ from ..serde import (
     BuildPathsRequest,
     BuildPathsResponse,
     BuildPathsWithResultsRequest,
-    IsValidPathRequest,
     QueryMissingRequest,
     QueryMissingResponse,
+    QueryValidPathsRequest,
 )
 from ..store.local_db import LocalDBStore
 from .build_derivation import BuildDerivationGoal
@@ -458,11 +458,16 @@ class GoalEngine:
             return await self._valid_or_missed(paths, hold)
         if ids is None:
             ids = self.substituter_ids()
+        # One query, and no goal for a path the store holds: a builder is asked for hundreds of valid paths per build.
+        paths = list(paths)
+        attempts = await self._valid(paths, hold)
+        missing = [path for path in paths if path not in attempts]
+        if not missing:
+            return attempts
         async with self.running():
             try:
                 keys = keys_for(client)
-                goals = {path: await self.get_substitute_path_goal(path, ids, keys=keys) for path in paths}
-                attempts: dict[StorePath, SubstituteAttempt] = {}
+                goals = {path: await self.get_substitute_path_goal(path, ids, keys=keys) for path in missing}
 
                 async def run_one(path: StorePath, goal: SubstitutePathGoal) -> None:
                     await goal.subscribe(client)
@@ -476,9 +481,7 @@ class GoalEngine:
                     for path, goal in goals.items():
                         tg.start_soon(run_one, path, goal)
                 if hold is not None:
-                    await hold(
-                        [produced for attempt in attempts.values() for produced in attempt.result.produced_paths]
-                    )
+                    await hold([produced for path in missing for produced in attempts[path].result.produced_paths])
                 return attempts
             finally:
                 self.reap()
@@ -486,21 +489,31 @@ class GoalEngine:
     async def _valid_or_missed(
         self, paths: Iterable[StorePath], hold: Hold | None
     ) -> dict[StorePath, SubstituteAttempt]:
-        attempts: dict[StorePath, SubstituteAttempt] = {}
         paths = list(paths)
-        # Rooted before the check, as one write: a root on a path that turns out invalid holds nothing.
-        if hold is not None:
-            await hold(paths)
+        attempts = await self._valid(paths, hold)
         for path in paths:
-            response = await self.ctx.local_store.execute(IsValidPathRequest(path=StorePath(str(path))), mark=False)
-            if response.valid:
-                result = goal_success()
-                result.produced_paths.add(path)
-                attempts[path] = SubstituteAttempt(found=True, result=result)
-            else:
+            if path not in attempts:
                 attempts[path] = SubstituteAttempt(
                     found=False, result=goal_failure(f"pynixd: substitution is off for {path}")
                 )
+        return attempts
+
+    async def _valid(self, paths: list[StorePath], hold: Hold | None) -> dict[StorePath, SubstituteAttempt]:
+        """The success of each of *paths* the store holds (`substitution-goal.cc:36`)."""
+        if not paths:
+            return {}
+        # Rooted before the check, as one write: a root on a path that turns out invalid holds nothing.
+        if hold is not None:
+            await hold(paths)
+        request = QueryValidPathsRequest(paths=set(paths), substitute=0)
+        response = await self.ctx.local_store.execute(request, mark=False)
+        held = {str(path) for path in response.paths}
+        attempts: dict[StorePath, SubstituteAttempt] = {}
+        for path in paths:
+            if str(path) in held:
+                result = goal_success()
+                result.produced_paths.add(path)
+                attempts[path] = SubstituteAttempt(found=True, result=result)
         return attempts
 
     async def substituter_ids_for(self, client: ClientConn | None) -> tuple[str, ...]:
