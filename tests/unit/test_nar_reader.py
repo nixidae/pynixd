@@ -7,6 +7,7 @@ another size must fail and name the path, not end short or run long.
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING
 
 import pytest
@@ -19,8 +20,10 @@ from pynixd.op_routes import OpRoute
 from pynixd.serde import StorePath
 from pynixd.store.local_db import LocalDBStore
 from pynixd.store.nar_reader import NarReader
+from pynixd_store.source import Pieces
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from pathlib import Path
 
 NAME = "00000000000000000000000000000001-hello"
@@ -57,6 +60,46 @@ async def test_the_dump_is_the_nar(tmp_path: Path) -> None:
 async def test_a_dump_of_another_size_fails_naming_the_path(tmp_path: Path, size: int) -> None:
     with pytest.raises(BackendError, match=f"the NAR of '{PATH}' broke off"):
         await _read(_store(tmp_path), size)
+
+
+class _Reader:
+    async def drain_stderr(self) -> None:
+        pass
+
+    async def readexactly(self, n: int) -> bytes:
+        return NAR[:n]
+
+
+class _Writer:
+    async def drain(self) -> None:
+        pass
+
+
+class _Conn:
+    def __init__(self) -> None:
+        self.r, self.w, self.dirty = _Reader(), _Writer(), False
+
+    async def send_request(self, request: object) -> None:
+        pass
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("size", "dirty"), [(len(NAR), False), (len(NAR) + 1, True)], ids=["whole", "short"])
+async def test_a_daemon_connection_is_dirty_only_after_an_unfinished_read(
+    tmp_path: Path, size: int, *, dirty: bool
+) -> None:
+    """The consumer stops at the last byte and closes the generator, as `Pieces` does."""
+    store = LocalDBStore(LocalSocketStoreSpec(store_id=StoreId("nar-reader"), store_path=tmp_path))
+    conn = _Conn()
+
+    @contextlib.asynccontextmanager
+    async def _transfer_conn() -> AsyncIterator[_Conn]:
+        yield conn
+
+    store.transfer_conn = _transfer_conn  # type: ignore[method-assign,assignment]  # a fake connection
+    async with NarReader(store) as nars, Pieces(nars.read(PATH, size)) as pieces:
+        assert await pieces.read(len(NAR)) == NAR
+    assert conn.dirty is dirty
 
 
 @pytest.mark.anyio

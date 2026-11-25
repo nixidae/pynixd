@@ -9,6 +9,7 @@ gets the daemon's bytes whatever the comparison says. A store that is not a
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 from typing import TYPE_CHECKING, Self
 
@@ -24,7 +25,7 @@ from ..wire import _CHUNK_SIZE
 from .local_db import LocalDBStore
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncGenerator
     from contextlib import AbstractAsyncContextManager
     from types import TracebackType
 
@@ -121,17 +122,16 @@ class NarReader:
         if self._conn_cm is not None:
             await self._conn_cm.__aexit__(exc_type, exc, tb)
 
-    async def read(self, path: StorePath, nar_size: int) -> AsyncIterator[bytes]:
+    async def read(self, path: StorePath, nar_size: int) -> AsyncGenerator[bytes]:
         if nar_size <= 0:
             raise BackendError(f"pynixd: no NAR size for '{path}', so its NAR has no known end")
-        if self.route is OpRoute.pynixd:
-            async for piece in self._dump(path, nar_size):
+        # Closed with this generator: `_daemon` marks an abandoned connection before the pool has it back.
+        pieces = self._dump(path, nar_size) if self.route is OpRoute.pynixd else self._daemon(path, nar_size)
+        async with contextlib.aclosing(pieces):
+            async for piece in pieces:
                 yield piece
-            return
-        async for piece in self._daemon(path, nar_size):
-            yield piece
 
-    async def _dump(self, path: StorePath, nar_size: int) -> AsyncIterator[bytes]:
+    async def _dump(self, path: StorePath, nar_size: int) -> AsyncGenerator[bytes]:
         if not isinstance(self.store, LocalDBStore):
             raise TypeError(f"store {self.store.store_id} has no files to dump")
         size = 0
@@ -146,7 +146,7 @@ class NarReader:
                 f"and its path info says {nar_size}"
             )
 
-    async def _daemon(self, path: StorePath, nar_size: int) -> AsyncIterator[bytes]:
+    async def _daemon(self, path: StorePath, nar_size: int) -> AsyncGenerator[bytes]:
         conn = self._conn
         if conn is None:
             raise RuntimeError("NarReader.read outside `async with`")
@@ -162,10 +162,11 @@ class NarReader:
             while remaining > 0:
                 chunk = await conn.r.readexactly(min(remaining, _CHUNK_SIZE))
                 remaining -= len(chunk)
+                # Before the yield: a consumer that has its bytes closes this generator there.
+                finished = remaining == 0
                 if shadow is not None:
                     shadow.theirs.update(chunk)
                 yield chunk
-            finished = True
         finally:
             if not finished:
                 conn.dirty = True
