@@ -8,6 +8,7 @@ With a `secret_key` the store also uploads (`upload`): the cold tier of nixidae/
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
@@ -79,6 +80,16 @@ def _canonical(url: str) -> str:
     return urlunsplit(parts._replace(path=quote(parts.path, safe="/~%")))
 
 
+@dataclass(frozen=True, slots=True)
+class StagedNar:
+    """A path whose NAR is in the bucket and whose narinfo is not: `stage` made it, `publish` commits it."""
+
+    info: ValidPathInfo
+    """Signed by the store's key."""
+    url: str
+    digest: FileDigest
+
+
 def resolve_aws_credentials(profile: str | None) -> AwsCredentials | None:
     """`getCredentials` (`aws-creds.cc`) for a `builtin:fetchurl` of `s3://`: botocore's chain for *profile*.
 
@@ -105,6 +116,8 @@ class S3BinaryCacheStore(HTTPBinaryCacheStore):
         self.secret_key_file = spec.secret_key
         self.compression = spec.compression
         self.chunk_size = spec.multipart_chunk_size
+        self.parts_in_flight = spec.parts_in_flight
+        self._part_slots: anyio.CapacityLimiter | None = None
         self.gc_cold = spec.gc_cold
         self.gc_cold_verify = spec.gc_cold_verify
         self._secret_key: SecretKey | None = None
@@ -173,14 +186,19 @@ class S3BinaryCacheStore(HTTPBinaryCacheStore):
         unsigned unless told (`S3SigV4Auth._should_sha256_sign_payload`), so moto over `http` and R2 over
         `https` would take different branches; this way both take one.
         """
-        if self._credentials is None:
+        credentials = self._credentials
+        if credentials is None:
             raise CacheFault(f"{self.store_id} has no AWS credentials")
-        # A refreshable credential refreshes here, over the network.
-        frozen = await anyio.to_thread.run_sync(self._credentials.get_frozen_credentials)
-        request = AWSRequest(method=method, url=_canonical(url), data=body, headers=dict(headers or {}))
-        request.context["payload_signing_enabled"] = True
-        S3SigV4Auth(frozen, "s3", self.region).add_auth(request)
-        return dict(request.headers.items())
+
+        def sign() -> dict[str, str]:
+            # In a thread: a refreshable credential refreshes over the network, and the signature hashes
+            # the whole body, a part of up to `multipart_chunk_size` bytes or more.
+            request = AWSRequest(method=method, url=_canonical(url), data=body, headers=dict(headers or {}))
+            request.context["payload_signing_enabled"] = True
+            S3SigV4Auth(credentials.get_frozen_credentials(), "s3", self.region).add_auth(request)
+            return dict(request.headers.items())
+
+        return await anyio.to_thread.run_sync(sign)
 
     async def _send(
         self, method: str, name: str, body: bytes = b"", *, query: str = "", content_type: str | None = None
@@ -213,7 +231,12 @@ class S3BinaryCacheStore(HTTPBinaryCacheStore):
         status, answer = await self._send(method, name, body, query=query, content_type=content_type)
         error = error_of(answer)
         if not 200 <= status < 300 or error is not None:
-            raise CacheFault(f"{method} {name} in '{self.store_id}': HTTP {status} {error or answer[:200]!r}")
+            raise CacheFault(
+                f"{method} {name} in '{self.store_id}': HTTP {status} {error or answer[:200]!r}",
+                # A 200 with an `<Error>` body is how `CompleteMultipartUpload` reports an internal error,
+                # which S3 documents as one to retry.
+                status=status if not 200 <= status < 300 else 500,
+            )
         return answer
 
     async def _load_cache_info(self) -> dict[str, str]:
@@ -234,21 +257,28 @@ class S3BinaryCacheStore(HTTPBinaryCacheStore):
         return parse_cache_info(body.decode(), self.priority, self.store_dir)
 
     async def upload(self, local: Store, path: StorePath) -> Uploaded:
-        """Put *path* of *local* into the bucket, signed: the NAR first, the narinfo last.
+        """Put *path* of *local* into the bucket, signed: the NAR first, the narinfo last, unless it is there.
 
         The narinfo is the commit: a client sees the path only once its NAR is whole. `UPLOADED` comes from the
-        narinfo PUT's own answer, `PRESENT` from a read of the bucket, never from the narinfo cache. Its
+        narinfo PUT's own answer, `PRESENT` from a HEAD of the bucket, never from the narinfo cache. Its
         references are the caller's to upload first. Raises `CacheFault` when the bucket refuses.
         """
-        key = self._secret_key
-        if key is None:
-            raise CacheFault(f"{self.store_id} has no secret_key, so it does not upload")
-        if not isinstance(local, (DaemonStore, LocalDBStore)):
-            raise TypeError(f"{local.store_id} serves no NARs to upload")
-        name = f"{path.hash_part()}.narinfo"
         if await self.holds(path):
             log.debug("s3_upload_present", store_id=self.store_id, path=str(path))
             return Uploaded.PRESENT
+        await self.publish(await self.stage(local, path))
+        return Uploaded.UPLOADED
+
+    async def stage(self, local: Store, path: StorePath) -> StagedNar:
+        """Sign *path* of *local* and put its NAR in the bucket; no client sees it until `publish`.
+
+        Raises `PathGone` when *local* no longer holds it, `CacheFault` when the bucket refuses.
+        """
+        key = self._secret_key
+        if key is None:
+            raise CacheFault(f"{self.store_id} has no secret_key, so it does not upload", status=403)
+        if not isinstance(local, (DaemonStore, LocalDBStore)):
+            raise TypeError(f"{local.store_id} serves no NARs to upload")
         request = QueryPathInfoRequest(path=path)
         # An upload reads a GC candidate: marking it would make it fresh again.
         resp = await (local.execute(request, mark=False) if isinstance(local, LocalDBStore) else local.execute(request))
@@ -259,11 +289,19 @@ class S3BinaryCacheStore(HTTPBinaryCacheStore):
         info = ValidPathInfo(path=path, info=info.info.model_copy(update={"sigs": {*info.info.sigs, signature}}))
         url = nar_object(info, self.compression)
         digest = await self._put_nar(local, info, url)
-        text = narinfo_text(info, url=url, compression=self.compression, file_hash=digest.nix32, file_size=digest.size)
-        await self._expect("PUT", name, text.encode(), content_type=NARINFO_TYPE)
+        return StagedNar(info=info, url=url, digest=digest)
+
+    async def publish(self, staged: StagedNar) -> None:
+        """Put the narinfo of *staged*: the commit. Its references are the caller's to publish first."""
+        info, digest = staged.info, staged.digest
+        text = narinfo_text(
+            info, url=staged.url, compression=self.compression, file_hash=digest.nix32, file_size=digest.size
+        )
+        await self._expect("PUT", f"{info.path.hash_part()}.narinfo", text.encode(), content_type=NARINFO_TYPE)
         self.add_path_info(info)
-        log.info("s3_uploaded", store_id=self.store_id, path=str(path), nar_size=info.info.nar_size, size=digest.size)
-        return Uploaded.UPLOADED
+        log.info(
+            "s3_uploaded", store_id=self.store_id, path=str(info.path), nar_size=info.info.nar_size, size=digest.size
+        )
 
     async def holds(self, path: StorePath) -> bool:
         """Whether the bucket has *path*'s narinfo now, asked with a HEAD; `CacheFault` when it cannot say."""
@@ -271,22 +309,26 @@ class S3BinaryCacheStore(HTTPBinaryCacheStore):
         status, _ = await self._send("HEAD", name)
         if status in (200, 404):
             return status == 200
-        raise CacheFault(f"HEAD {name} in '{self.store_id}': HTTP {status}")
+        raise CacheFault(f"HEAD {name} in '{self.store_id}': HTTP {status}", status=status)
+
+    def _slots(self) -> anyio.CapacityLimiter:
+        if self._part_slots is None:
+            self._part_slots = anyio.CapacityLimiter(self.parts_in_flight)
+        return self._part_slots
 
     async def _put_nar(self, local: DaemonStore | LocalDBStore, info: ValidPathInfo, name: str) -> FileDigest:
-        """The NAR of *info*, compressed, into object *name*: one PUT when it fits a part, else a multipart upload."""
+        """The NAR of *info*, compressed, into object *name*: one PUT when it fits a part, else a multipart upload.
+
+        Parts go up at once, up to `parts_in_flight` over the whole store; reading waits for a free slot.
+        """
         digest = FileDigest()
         squeeze = compressor(self.compression)
         parts = Parts(part_size(info.info.nar_size, self.chunk_size))
-        etags: list[str] = []
+        etags: dict[int, str] = {}
         multipart: str | None = None
-
-        async def send(part: bytes) -> None:
-            nonlocal multipart
-            if multipart is None:
-                created = await self._expect("POST", name, query="uploads", content_type=NAR_TYPE)
-                multipart = quote(upload_id(created), safe="")
-            etags.append(await self._put_part(name, multipart, len(etags) + 1, part))
+        failed: list[Exception] = []
+        slots = self._slots()
+        rest = b""
 
         def take(chunk: bytes | None) -> list[bytes]:
             data = squeeze.flush() if chunk is None else squeeze.compress(chunk)
@@ -294,19 +336,51 @@ class S3BinaryCacheStore(HTTPBinaryCacheStore):
             return parts.feed(data)
 
         try:
-            async with NarReader(local) as nars:
-                async for chunk in nars.read(info.path, info.info.nar_size):
-                    for part in await anyio.to_thread.run_sync(take, chunk):
+            async with anyio.create_task_group() as tg:
+                # A failure is kept, not raised: the group would wrap it, and callers match `CacheFault` and
+                # `PathGone` by class.
+                async def put(upload: str, number: int, part: bytes, slot: object) -> None:
+                    try:
+                        etags[number] = await self._put_part(name, upload, number, part)
+                    except Exception as e:
+                        failed.append(e)
+                        tg.cancel_scope.cancel()
+                    finally:
+                        slots.release_on_behalf_of(slot)
+
+                async def send(part: bytes) -> None:
+                    nonlocal multipart, sent
+                    upload = multipart
+                    if upload is None:
+                        created = await self._expect("POST", name, query="uploads", content_type=NAR_TYPE)
+                        upload = multipart = quote(upload_id(created), safe="")
+                    sent += 1
+                    slot = object()
+                    await slots.acquire_on_behalf_of(slot)
+                    tg.start_soon(put, upload, sent, part, slot)
+
+                sent = 0
+                try:
+                    async with NarReader(local) as nars:
+                        async for chunk in nars.read(info.path, info.info.nar_size):
+                            for part in await anyio.to_thread.run_sync(take, chunk):
+                                await send(part)
+                    for part in await anyio.to_thread.run_sync(take, None):
                         await send(part)
-            for part in await anyio.to_thread.run_sync(take, None):
-                await send(part)
-            rest = parts.rest()
+                    rest = parts.rest()
+                    if multipart is not None and rest:
+                        await send(rest)
+                except Exception as e:
+                    failed.append(e)
+                    tg.cancel_scope.cancel()
+            if failed:
+                raise failed[0]
             if multipart is None:
                 await self._expect("PUT", name, rest, content_type=NAR_TYPE)
                 return digest
-            if rest:
-                await send(rest)
-            await self._expect("POST", name, complete_body(etags), query=f"uploadId={multipart}")
+            await self._expect(
+                "POST", name, complete_body([etags[n] for n in sorted(etags)]), query=f"uploadId={multipart}"
+            )
         except BaseException:
             if multipart is not None:
                 with anyio.CancelScope(shield=True), anyio.move_on_after(_ABORT_TIMEOUT_S):
@@ -334,7 +408,8 @@ class S3BinaryCacheStore(HTTPBinaryCacheStore):
                 etag = response.headers.get("ETag")
                 if response.status != 200 or etag is None:
                     raise CacheFault(
-                        f"part {number} of {name} in '{self.store_id}': HTTP {response.status} {body[:200]!r}"
+                        f"part {number} of {name} in '{self.store_id}': HTTP {response.status} {body[:200]!r}",
+                        status=response.status if response.status != 200 else 500,
                     )
                 return etag
         except (TimeoutError, aiohttp.ClientError, OSError) as e:

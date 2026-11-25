@@ -63,7 +63,19 @@ class NarGone(PynixdError):
 
 
 class CacheFault(PynixdError):
-    """A binary cache file that exists but could not be read: a transport error, a bad status, a bad body."""
+    """A binary cache file that exists but could not be read: a transport error, a bad status, a bad body.
+
+    `status` is the HTTP status of a refusal, `None` when no answer came.
+    """
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
+    @property
+    def transient(self) -> bool:
+        """Whether asking again later can succeed: no answer, a server error, or a request to slow down."""
+        return self.status is None or self.status >= 500 or self.status in (408, 429)
 
 
 class PathGone(PynixdError):

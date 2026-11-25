@@ -312,7 +312,10 @@ def _left_behind(lab: _Lab) -> tuple[set[str], list[object]]:
 
 
 async def test_a_refused_part_aborts_the_upload(lab: _Lab, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Part 2 of 3 fails: the open upload is aborted, so the bucket keeps no parts, no NAR and no narinfo."""
+    """Part 2 of 3 fails: the open upload is aborted, so the bucket keeps no parts, no NAR and no narinfo.
+
+    Parts go up at once, so part 3 may be in flight when part 2 fails; the abort removes it too.
+    """
     async with _stores(lab) as (local, cold):
         put_part = cold._put_part
         sent: list[int] = []
@@ -320,15 +323,35 @@ async def test_a_refused_part_aborts_the_upload(lab: _Lab, monkeypatch: pytest.M
         async def refuse_second(name: str, multipart: str, number: int, part: bytes) -> str:
             sent.append(number)
             if number == 2:
-                raise CacheFault(f"part {number} of {name}: refused by the test")
+                raise CacheFault(f"part {number} of {name}: refused by the test", status=403)
             return await put_part(name, multipart, number, part)
 
         monkeypatch.setattr(cold, "_put_part", refuse_second)
         with pytest.raises(CacheFault, match="refused by the test"):
             await ColdTier(cold, [], local).upload_closure({StorePath(lab.big)})
-        assert sent == [1, 2]
+        assert 2 in sent
         assert await ColdTier(cold, [], local).covered({lab.big}) == set()
     assert _left_behind(lab) == (set(), [])
+
+
+async def test_parts_go_up_at_once(lab: _Lab, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Part 1 waits until part 2 has started: a store that sent parts one by one would hang here."""
+    async with _stores(lab) as (local, cold):
+        put_part = cold._put_part
+        second = anyio.Event()
+
+        async def hold_first(name: str, multipart: str, number: int, part: bytes) -> str:
+            if number == 1:
+                await second.wait()
+            else:
+                second.set()
+            return await put_part(name, multipart, number, part)
+
+        monkeypatch.setattr(cold, "_put_part", hold_first)
+        with anyio.fail_after(30):
+            assert await cold.upload(local, StorePath(lab.big)) is Uploaded.UPLOADED
+    target = lab.tmp / "target"
+    await _nix("copy", "--no-check-sigs", "--from", lab.url("cache"), "--to", str(target), lab.big)
 
 
 async def test_a_cancelled_upload_aborts_too(lab: _Lab, monkeypatch: pytest.MonkeyPatch) -> None:

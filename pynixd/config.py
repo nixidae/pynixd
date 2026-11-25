@@ -1530,6 +1530,8 @@ class S3BinaryCacheSpec(BinaryCacheSpecBase):
     compression: S3Compression = "zstd"
     multipart_chunk_size: int = 5 * 1024 * 1024
     """Nix's `multipart-chunk-size`: the smallest part; a large NAR takes larger parts."""
+    parts_in_flight: int = Field(default=8, ge=1)
+    """Upload parts in flight at once, over every NAR the store sends. Each holds one part in memory."""
     gc_cold: bool = False
     """The collector's cold tier: a path leaves the local store once its closure is here or in a `gc_stable` store.
 
