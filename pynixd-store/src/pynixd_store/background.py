@@ -6,6 +6,8 @@ nixidae/nixidae#1143.
 from __future__ import annotations
 
 import contextlib
+import functools
+import types
 from typing import TYPE_CHECKING
 
 import anyio
@@ -28,6 +30,13 @@ async def _logged(name: str, scope: anyio.CancelScope, fn: Callable[..., Awaitab
         except Exception:
             log.exception("background_task_failed", task=name)
             raise
+
+
+def _name(fn: Callable[..., object]) -> str:
+    """Never `repr`: a bound method's shows its whole object, 12% of a busy server's time."""
+    while isinstance(fn, functools.partial):
+        fn = fn.func
+    return fn.__qualname__ if isinstance(fn, types.FunctionType | types.MethodType) else type(fn).__qualname__
 
 
 class Background:
@@ -90,7 +99,7 @@ class Background:
         """Run *fn* until the owner closes, or until the answered scope is cancelled."""
         if self._tg is None:
             raise RuntimeError(f"{self.owner} runs its background loops only inside its `async with`")
-        name = repr(fn)
+        name = _name(fn)
         scope = anyio.CancelScope()
         self._tg.start_soon(_logged, name, scope, fn, *args, name=name)
         return scope
@@ -102,7 +111,7 @@ class Background:
         """
         if self._tg is None:
             raise RuntimeError(f"{self.owner} runs its background loops only inside its `async with`")
-        return await self._tg.start(fn, *args, name=repr(fn))
+        return await self._tg.start(fn, *args, name=_name(fn))
 
     async def aclose(self) -> None:
         """Cancel every loop and wait for them to end. Safe to call twice."""
