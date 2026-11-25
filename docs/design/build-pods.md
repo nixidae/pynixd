@@ -548,3 +548,23 @@ Answered 2026-11-23. Every item is decided.
    message (1 s); a pod without a server start (1 s); a faster Python start.
    The store learns its fixed cost from each pod (`BuildPodStore.setup_seconds`),
    and the build history records the pod's build alone.
+
+   **Measured** (run `nkunsb1`, the runner pod, 2026-11-25): 6.9 s for a
+   build of 0.30 s. Create to container running 2.88 s, Python 0.77 s,
+   server start 2.19 s, last log line to result 1.00 s. Of the server start,
+   1.59 s is `probe_own_builder` in the pod: a probe build for each of the six
+   systems of nix.conf, after central picked the store for one known system.
+   With that probe and the kubelet's second gone, about 4 s stays, most of it
+   Kubernetes.
+9. **Where builds run, by size. Decided (User, 2026-11-25): tiers, and no
+   cluster option.** A build pod never pays for a build under a few seconds.
+   Central's own slots take `preferLocalBuild` derivations, long-lived
+   builders take short builds, and build pods take long builds or builds that
+   need the pod's CPU and memory. The time-aware ranking already routes them
+   so, from each store's learned fixed cost. This revises item 1:
+   long-lived builders stay beside build pods. Central builds in Nix's sandbox
+   only with user namespaces and the build pods' seccomp profile. nixkube
+   declares no option for what a cluster supports: the node probe detects it
+   at run time (`nixkube/userns`), and pynixd's own probe fails closed. What
+   nixkube depends on, and what it does without each, goes in a
+   compatibility matrix in nixkube's documentation.
