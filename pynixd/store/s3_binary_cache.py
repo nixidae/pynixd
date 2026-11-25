@@ -9,7 +9,7 @@ With a `secret_key` the store also uploads (`upload`): the cold tier of nixidae/
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 import aiohttp
 import anyio
@@ -19,6 +19,7 @@ from botocore.auth import S3SigV4Auth
 from botocore.awsrequest import AWSRequest
 from botocore.exceptions import BotoCoreError
 from botocore.session import Session
+from yarl import URL
 
 from nix_daemon_protocol.signature import Signature
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
@@ -66,6 +67,16 @@ _UPLOAD_TIMEOUT: Final = aiohttp.ClientTimeout(total=None, sock_connect=30, sock
 """A stall, not a total. `CompleteMultipartUpload` answers only once the bucket joined the parts."""
 
 _ABORT_TIMEOUT_S: Final = 30
+
+
+def _canonical(url: str) -> str:
+    """*url* with its path encoded as SigV4 canonicalises it: every byte but `A-Za-z0-9-._~/`, an escape kept.
+
+    botocore signs the path as it is given, and a server signs its own encoding of it. R2 answered 403 for the build
+    trace of a derivation with `+` in its name (nixidae/nixidae#1589).
+    """
+    parts = urlsplit(url)
+    return urlunsplit(parts._replace(path=quote(parts.path, safe="/~%")))
 
 
 def resolve_aws_credentials(profile: str | None) -> AwsCredentials | None:
@@ -144,6 +155,10 @@ class S3BinaryCacheStore(HTTPBinaryCacheStore):
             log.warning("s3_no_credentials", store_id=self.store_id, profile=self.profile)
         return credentials
 
+    def _sent(self, url: str) -> URL:
+        # `encoded`: yarl decodes what it need not escape, and the signature covers the encoded path.
+        return URL(_canonical(url), encoded=True)
+
     async def _headers(self, url: str) -> Mapping[str, str]:
         if self._credentials is None:
             return {}
@@ -162,7 +177,7 @@ class S3BinaryCacheStore(HTTPBinaryCacheStore):
             raise CacheFault(f"{self.store_id} has no AWS credentials")
         # A refreshable credential refreshes here, over the network.
         frozen = await anyio.to_thread.run_sync(self._credentials.get_frozen_credentials)
-        request = AWSRequest(method=method, url=url, data=body, headers=dict(headers or {}))
+        request = AWSRequest(method=method, url=_canonical(url), data=body, headers=dict(headers or {}))
         request.context["payload_signing_enabled"] = True
         S3SigV4Auth(frozen, "s3", self.region).add_auth(request)
         return dict(request.headers.items())
@@ -181,7 +196,7 @@ class S3BinaryCacheStore(HTTPBinaryCacheStore):
         try:
             async with session.request(
                 method,
-                url,
+                self._sent(url),
                 data=body,
                 headers=signed,
                 raise_for_status=False,
@@ -313,7 +328,7 @@ class S3BinaryCacheStore(HTTPBinaryCacheStore):
         session = self._require_session()
         try:
             async with session.put(
-                url, data=part, headers=signed, raise_for_status=False, timeout=_UPLOAD_TIMEOUT
+                self._sent(url), data=part, headers=signed, raise_for_status=False, timeout=_UPLOAD_TIMEOUT
             ) as response:
                 body = await response.read()
                 etag = response.headers.get("ETag")

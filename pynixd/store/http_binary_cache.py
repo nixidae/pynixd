@@ -9,6 +9,7 @@ from urllib.parse import urljoin
 import aiohttp
 import anyio
 import structlog
+from yarl import URL
 
 from ..config import HTTPBinaryCacheSpec
 from ..cooldown import Cooldown
@@ -138,7 +139,7 @@ class HTTPBinaryCacheStore(BinaryCacheStore):
         session = self._require_session()
         nar_url = self.nar_url(narinfo)
         async with session.get(
-            nar_url,
+            self._sent(nar_url),
             headers=await self._headers(nar_url),
             raise_for_status=False,
             timeout=_TRANSFER_TIMEOUT,
@@ -167,7 +168,9 @@ class HTTPBinaryCacheStore(BinaryCacheStore):
         session = self._require_session()
         url = urljoin(self.url, "nix-cache-info")
         try:
-            async with session.get(url, headers=await self._headers(url), raise_for_status=False) as response:
+            async with session.get(
+                self._sent(url), headers=await self._headers(url), raise_for_status=False
+            ) as response:
                 if response.status == 404:
                     raise CacheUnopened(f"'{self.url}' does not appear to be a binary cache")
                 if response.status != 200:
@@ -183,7 +186,7 @@ class HTTPBinaryCacheStore(BinaryCacheStore):
         async with self._semaphore:
             try:
                 async with session.get(
-                    url,
+                    self._sent(url),
                     headers=await self._headers(url),
                     raise_for_status=False,
                     timeout=_TRANSFER_TIMEOUT,
@@ -195,6 +198,10 @@ class HTTPBinaryCacheStore(BinaryCacheStore):
                     return await response.text()
             except (TimeoutError, aiohttp.ClientError, OSError) as ex:
                 raise CacheFault(f"{url}: {ex!r}") from ex
+
+    def _sent(self, url: str) -> str | URL:
+        """*url* as the request line carries it."""
+        return url
 
     async def _headers(self, url: str) -> Mapping[str, str]:
         """The headers of a GET of *url*; a cache that signs its requests adds them here."""
