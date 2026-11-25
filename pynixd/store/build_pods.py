@@ -41,6 +41,7 @@ from ..build_job import (
     RunnerJob,
     decode_response,
     encode,
+    read_result_line,
     read_seconds,
     seconds_line,
 )
@@ -440,6 +441,7 @@ class BuildPodStore(ScheduledStore):
             central_host_key=self.central_host_key,
             request=await encode(request),
             runner=runner_job,
+            result_token=secrets.token_hex(16),
         )
         self.grants.grant(public, BuildGrant(drv_path=str(request.drv_path), outputs=outputs))
         try:
@@ -469,30 +471,40 @@ class BuildPodStore(ScheduledStore):
                 template=template,
             )
             watch = BuildPodWatch(self.spec.container)
+            message: str | None = None
             async with anyio.create_task_group() as watching:
                 watching.start_soon(self._watch, self.kubernetes, name, watch)
                 await watch.settled.wait()
                 times.ran = time.monotonic()
                 if watch.ran:
                     try:
-                        async for line in self.kubernetes.follow_build_pod(name, self.spec.container):
-                            times.saw(line)
-                            await on_line(line)
+                        async with contextlib.aclosing(
+                            self.kubernetes.follow_build_pod(name, self.spec.container)
+                        ) as lines:
+                            async for line in lines:
+                                if (message := read_result_line(job.result_token, line)) is not None:
+                                    break
+                                times.saw(line)
+                                await on_line(line)
                     except ProviderError as error:
                         # The log of a pod that is preempted or deleted breaks off: how the pod ended says why.
                         log.warning("build_pod_log_ended", pod=name, error=str(error))
-                with anyio.move_on_after(_ENDED_SECONDS):
-                    await watch.ended.wait()
+                if message is None:
+                    with anyio.move_on_after(_ENDED_SECONDS):
+                        await watch.ended.wait()
                 watching.cancel_scope.cancel()
             times.ended = time.monotonic()
-            ended = watch.end
-            if ended is None:
-                raise InfrastructureError(f"build pod {name}: its log ended while its container ran")
-            if ended.exit_code != 0 or not ended.message:
-                fault = PodDisrupted if ended.disrupted else InfrastructureError
-                raise fault(f"build pod {name}: {ended.cause} with exit {ended.exit_code} and no result")
+            if message is None:
+                # No result line: the termination message, which a pod that dies after writing it still has.
+                ended = watch.end
+                if ended is None:
+                    raise InfrastructureError(f"build pod {name}: its log ended while its container ran")
+                if ended.exit_code != 0 or not ended.message:
+                    fault = PodDisrupted if ended.disrupted else InfrastructureError
+                    raise fault(f"build pod {name}: {ended.cause} with exit {ended.exit_code} and no result")
+                message = ended.message
             try:
-                response = checked_result(request, await decode_response(ended.message))
+                response = checked_result(request, await decode_response(message))
             except (ValueError, EOFError) as error:
                 raise InfrastructureError(f"build pod {name}: its result does not read: {error}") from error
             await on_line(seconds_line(CENTRAL_SECONDS, times.parts()))

@@ -40,7 +40,7 @@ from pynixd_store.builder.runner import NETWORK_ANNOTATION, SANDBOX_ANNOTATION, 
 from .provider import Machine, MachineState, NoCapacity, ProviderError
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+    from collections.abc import AsyncGenerator, Iterator, Mapping, Sequence
 
     from ..config import KubernetesSettings, KubernetesTemplateSettings
 
@@ -359,7 +359,7 @@ class KubernetesProvider:
                     if watch.ended.is_set():
                         return
 
-    async def follow_build_pod(self, name: str, container: str) -> AsyncIterator[str]:
+    async def follow_build_pod(self, name: str, container: str) -> AsyncGenerator[str]:
         """The container's log lines, until the container ends. Only for a container that started: a pod that
         waits for room, as a low-priority pod does on a full cluster, answers a log request with 400."""
         api = await self._client()

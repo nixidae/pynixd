@@ -30,7 +30,17 @@ from nix_daemon_protocol.protocol import ResultType
 from nix_daemon_protocol.store_path import StorePath
 from pynixd_store.builder.settings import NotBuiltHere
 
-from .build_job import JOB_NAME, KEY_NAME, POD_SECONDS, Job, PodPart, decode_request, result_message, seconds_line
+from .build_job import (
+    JOB_NAME,
+    KEY_NAME,
+    POD_SECONDS,
+    Job,
+    PodPart,
+    decode_request,
+    result_line,
+    result_message,
+    seconds_line,
+)
 from .build_result import failure, result_succeeded
 from .cli.base import load_settings, setup_logging
 from .config import LocalSocketStoreSpec, SSHSubprocessStoreSpec
@@ -157,7 +167,9 @@ async def build_one(job_dir: Path, result_path: Path, clock: PodClock) -> int:
     clock.mark(PodPart.SHUTDOWN)
     # Central reads it from the log and tells the client; the result has no room for it.
     await _show(LogNext(text=seconds_line(POD_SECONDS, clock.parts)))
-    await anyio.Path(result_path).write_text(await result_message(resp))
+    message = await result_message(resp)
+    await _show(LogNext(text=result_line(job.result_token, message)))
+    await anyio.Path(result_path).write_text(message)
     return 0
 
 

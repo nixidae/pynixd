@@ -24,7 +24,9 @@ from pynixd.build_job import (
     decode_request,
     decode_response,
     encode,
+    read_result_line,
     read_seconds,
+    result_line,
     result_message,
     seconds_line,
 )
@@ -475,3 +477,15 @@ async def test_a_store_picks_each_pod_s_template_from_the_ready_nodes() -> None:
     # One template needs no node list, and no right to list nodes.
     assert await one.pick_template() == "sandbox"
     assert kubernetes.listed == listed
+
+
+@pytest.mark.anyio
+async def test_central_reads_the_result_only_from_a_line_with_the_jobs_token() -> None:
+    message = await result_message(BuildDerivationResponse(result=failure("no")))
+    line = result_line("token", message)
+
+    assert read_result_line("token", line + "\n") == message
+    assert (await decode_response(message)).result.error_msg == "no"
+    # A builder's line that copies the shape but not the token is not a result.
+    assert read_result_line("token", result_line("guess", message)) is None
+    assert read_result_line("token", "building") is None

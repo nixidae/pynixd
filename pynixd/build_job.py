@@ -56,6 +56,9 @@ class Job(BaseModel):
     """Central's SSH host key, an OpenSSH public key line: the pod accepts no other."""
     request: str
     """The `BuildDerivation` request in base64 wire form: the derivation need not be valid in central's store."""
+    result_token: str
+    """Marks the pod's result line (`result_line`). The builder's lines reach the same log, and only pynixd's
+    container mounts the job, so a builder cannot write the line."""
 
 
 async def encode(model: WireModel) -> str:
@@ -105,12 +108,31 @@ class CentralPart(StrEnum):
     FIRST_LINE = "first-line"
     """From the container's start to its first log line."""
     END = "end"
-    """From the last log line until central read the result: the process's end, and the kubelet's report."""
+    """From the last log line until central read the result. With a `result_line`, near 0; from the termination
+    message, the process's end and the kubelet's report."""
     TOTAL = "total"
 
 
 POD_SECONDS: Final = "pynixd build-one: seconds:"
 CENTRAL_SECONDS: Final = "pynixd: build pod seconds:"
+RESULT_LINE: Final = "pynixd build-one: result:"
+
+
+def result_line(token: str, message: str) -> str:
+    """The log line that carries the pod's `result_message`.
+
+    Central reads the result from the log, not from the termination message: the log ends and the pod's status
+    changes only after the kubelet's next check of the container, measured 1.00 s after the last line.
+    """
+    return f"{RESULT_LINE} {token} {message}"
+
+
+def read_result_line(token: str, line: str) -> str | None:
+    """The `result_message` in a `result_line` with *token*, or `None` for any other line."""
+    prefix = f"{RESULT_LINE} {token} "
+    if not line.startswith(prefix):
+        return None
+    return line[len(prefix) :].strip()
 
 
 def seconds_line[Part: StrEnum](prefix: str, parts: Mapping[Part, float]) -> str:
