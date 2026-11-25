@@ -20,7 +20,6 @@ import hashlib
 import itertools
 import os
 import random
-import shutil
 import stat
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -222,13 +221,54 @@ def delete_path(path: Path) -> None:
     if os.path.islink(path) or not os.path.isdir(path):
         os.unlink(path)
         return
-    for root, dirs, _ in os.walk(path):
-        os.chmod(root, 0o700)
-        for name in dirs:
-            child = os.path.join(root, name)
-            if not os.path.islink(child):
-                os.chmod(child, 0o700)
-    shutil.rmtree(path)
+    _delete_tree(path)
+
+
+def _open_to_delete(name: str | Path, dir_fd: int | None) -> int:
+    """A directory, made writable, opened without following a link."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        fd = os.open(name, flags, dir_fd=dir_fd)
+    except PermissionError:
+        os.chmod(name, 0o700, dir_fd=dir_fd)
+        fd = os.open(name, flags, dir_fd=dir_fd)
+    os.fchmod(fd, 0o700)
+    return fd
+
+
+def _delete_tree(path: Path) -> None:
+    """Delete the directory *path* in one pass, through descriptors, so a link swapped in is never followed.
+
+    `shutil.rmtree` after an `os.walk` that makes each directory writable reads every directory twice and stats each
+    entry: for a chroot of 2000 inputs, 1.4 s of CPU over 50 builds (nixidae/nixidae#1594).
+    """
+    # (descriptor, the parent's descriptor, name, names of subdirectories left)
+    open_dirs: list[tuple[int, int | None, str | Path, list[str]]] = []
+
+    def enter(name: str | Path, parent: int | None) -> None:
+        fd = _open_to_delete(name, parent)
+        subdirectories: list[str] = []
+        open_dirs.append((fd, parent, name, subdirectories))
+        with os.scandir(fd) as entries:
+            files: list[str] = []
+            for entry in entries:
+                (subdirectories if entry.is_dir(follow_symlinks=False) else files).append(entry.name)
+        for file in files:
+            os.unlink(file, dir_fd=fd)
+
+    try:
+        enter(path, None)
+        while open_dirs:
+            fd, parent, name, subdirectories = open_dirs[-1]
+            if subdirectories:
+                enter(subdirectories.pop(), fd)
+                continue
+            open_dirs.pop()
+            os.close(fd)
+            os.rmdir(name, dir_fd=parent)
+    finally:
+        for fd, _parent, _name, _subdirectories in open_dirs:
+            os.close(fd)
 
 
 class HashingReader:
