@@ -104,6 +104,7 @@ async def build_one(job_dir: Path, result_path: Path, clock: PodClock) -> int:
     job = Job.model_validate_json(await anyio.Path(job_dir / JOB_NAME).read_text())
     request = await decode_request(job.request)
     settings = load_settings()
+    without_probe(settings)
     settings.stores[str(CENTRAL)] = SSHSubprocessStoreSpec(
         host=job.central_host,
         port=job.central_port,
@@ -158,6 +159,17 @@ async def build_one(job_dir: Path, result_path: Path, clock: PodClock) -> int:
     await _show(LogNext(text=seconds_line(POD_SECONDS, clock.parts)))
     await anyio.Path(result_path).write_text(await result_message(resp))
     return 0
+
+
+def without_probe(settings: PynixdSettings) -> None:
+    """The pod's store builds the one derivation central placed here, so it proves nothing by probe builds.
+
+    `probe_own_builder` builds a probe for each system of nix.conf: 1.59 s of the pod's 2.19 s server start (run
+    `nkunsb1`). It guards nothing here: a pod whose probe fails answers MISC_FAILURE, as a failed build does.
+    """
+    local = settings.stores.get(str(LOCAL_STORE_ID))
+    if local is not None:
+        settings.stores[str(LOCAL_STORE_ID)] = local.model_copy(update={"probe": False})
 
 
 def _own_name() -> None:
