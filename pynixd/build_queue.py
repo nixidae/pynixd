@@ -817,9 +817,39 @@ class BuildQueue:
             if build is None:
                 return False
             removed = await build.remove_subscriber(client)
-            if removed and build.cancel_when_unsubscribed and not build.subscribers and not build.is_done:
+            if (
+                removed
+                and build.cancel_when_unsubscribed
+                and not build.subscribers
+                and not build.is_done
+                and not self._parent_lives_locked(build)
+            ):
                 self._cancel_locked(build, "pynixd: build cancelled because all clients disconnected")
             return removed
+
+    def _parent_lives_locked(self, build: QueuedBuild) -> bool:
+        """Whether a build that *build* is nested in has not ended.
+
+        **The outer build holds its nested builds, not only its pod's session.**
+        Kubernetes can take the outer pod, and a nested pod that preempts it does.
+        The session's requests then let go, and a cancel here would make the outer
+        build's next pod ask again and be preempted again (run `provk-evict2`).
+        `_release_nested_locked` ends the nested build when its last parent ends.
+        """
+        return any((outer := self._by_id.get(i)) is not None and not outer.is_done for i in build.nested_in)
+
+    def _release_nested_locked(self, parent: QueuedBuild) -> None:
+        """End each build nested in *parent* that nothing else wants, now that *parent* has ended."""
+        for build in list(self._queue):
+            if (
+                parent.build_id in build.nested_in
+                and not build.is_done
+                and not build.holders
+                and not build.standalone
+                and not build.subscribers
+                and not self._parent_lives_locked(build)
+            ):
+                self._cancel_locked(build, "pynixd: build cancelled because the build it is nested in ended")
 
     def _hold_locked(self, build: QueuedBuild, request_id: RequestId) -> None:
         build.holders.add(request_id)
@@ -862,7 +892,12 @@ class BuildQueue:
                     continue
                 build.holders.discard(request_id)
                 build.scheduler_request_ids.discard(request_id)
-                if not build.holders and not build.standalone and not build.is_done:
+                if (
+                    not build.holders
+                    and not build.standalone
+                    and not build.is_done
+                    and not self._parent_lives_locked(build)
+                ):
                     self._cancel_locked(build, "pynixd: build cancelled because no goal waits for it")
             self._given_up.discard(request_id)
             self._max_jobs.pop(request_id, None)
@@ -916,6 +951,7 @@ class BuildQueue:
                         observation=b.observation,
                         decision_id=b.placement.row_id if b.placement is not None else None,
                     )
+                    self._release_nested_locked(b)
 
                     # Every success: a builder that held the outputs answers
                     # `ALREADY_VALID`, and nixidae/nixidae#998 counted it a failure.
@@ -971,6 +1007,7 @@ class BuildQueue:
                     self._note_a_request_that_gave_up(b, response.result.status)
                     log.info("build_failed", build_id=build_id, error_msg=error_msg)
                     b.trace.ended(Ending.FAILED, status=int(status), error=error_msg)
+                    self._release_nested_locked(b)
 
                     metrics.BUILDS_COMPLETED.labels(status="failure").inc()
 
@@ -1083,6 +1120,7 @@ class BuildQueue:
         build.trace.ended(Ending.CANCELLED, error=log_reason or error_msg or None)
 
         metrics.BUILDS_COMPLETED.labels(status="failure").inc()
+        self._release_nested_locked(build)
 
     async def prune(self) -> None:
         """Drop finished builds nobody waits for and nobody streams.

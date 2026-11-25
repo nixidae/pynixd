@@ -10,7 +10,7 @@ from __future__ import annotations
 import anyio
 import pytest
 
-from nix_daemon_protocol.ids import BuildId
+from nix_daemon_protocol.ids import BuildId, RequestId
 from pynixd.answer import Answer
 from pynixd.build_queue import BuildQueue, QueuedBuild
 from pynixd.build_result import failure
@@ -65,3 +65,29 @@ async def test_a_nested_build_goes_first_and_frees_its_outer_builds_slot() -> No
     queue._queue.extend([_build(6, "aardvark"), deep])
     # Nix's order is by name; depth comes before it.
     assert [b.build_id for b in await queue.get_pending()] == [deep.build_id, BuildId(6)]
+
+
+@pytest.mark.anyio
+async def test_the_outer_build_holds_its_nested_build_until_it_ends() -> None:
+    """A preempted outer pod's session lets go, and the nested build runs on.
+
+    A nested pod preempts its own outer pod on a full node. Cancelled there, the
+    nested build was asked again by the outer build's next pod, which the next
+    nested pod preempted again, every 12 s (run `provk-evict2`).
+    """
+    queue = BuildQueue()
+    outer_id, outer_answer = await queue.enqueue(
+        _build(0, "outer").request, from_goal_path=True, goal_request_id=RequestId(1)
+    )
+    nested_id, nested_answer = await queue.enqueue(
+        _build(0, "inner").request, from_goal_path=True, goal_request_id=RequestId(2)
+    )
+    queue.by_id[nested_id].nested_in.add(outer_id)
+
+    await queue.release_request(RequestId(2))
+    assert not nested_answer.done()
+
+    await queue.complete(outer_id, BuildDerivationResponse(result=failure("the outer build failed")))
+    assert outer_answer.done()
+    assert nested_answer.done()
+    assert "nested in ended" in str(nested_answer.result().result.error_msg)
