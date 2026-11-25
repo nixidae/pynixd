@@ -396,6 +396,9 @@ Answered 2026-11-23. Every item is decided.
    waits for the pod's deadline. Next (User): measure whether NRI can make
    the builder container itself Nix's sandbox. The runtime then makes the
    namespaces, and a node labelled `false` keeps the sandbox.
+   Removed (User, 2026-11-25): the template without the sandbox. The runner
+   template below gives a node labelled `false` Nix's sandbox and Nix's
+   store, and fails closed, so the one without the sandbox was strictly weaker.
    Measured (2026-11-23, QEMU node, containerd 2.4.1, NRI v0.12.3, runc;
    nixkube's `nriprobe` phase). A second plugin changes one container of a
    pod, and a control container in the same pod keeps each result apart:
