@@ -683,17 +683,28 @@ def _exit_like(status: int) -> None:
     os._exit(os.waitstatus_to_exitcode(status) if os.WIFEXITED(status) else 1)
 
 
+def die_with(parent: int | None) -> None:
+    """SIGKILL this process when its parent dies, and now when *parent* is dead already."""
+    # darwin has no parent death signal, and neither has Nix's child there.
+    if not LINUX:
+        return
+    _prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+    if parent is not None and os.getppid() != parent:
+        os.kill(os.getpid(), signal.SIGKILL)
+
+
 def main() -> None:
     spec_path, status_arg, *control_arg = sys.argv[1:4]
-    status_fd = int(status_arg)
+    run(spec_path, int(status_arg), socket.socket(fileno=int(control_arg[0])) if control_arg else None)
+
+
+def run(spec_path: str, status_fd: int, control: socket.socket | None, *, parent: int | None = None) -> None:
+    """Run the job in *spec_path*, and end this process as the builder ended. *parent* is the zygote that forked it."""
     os.set_inheritable(status_fd, False)
-    control = socket.socket(fileno=int(control_arg[0])) if control_arg else None
     if control is not None:
         control.set_inheritable(False)
     try:
-        # darwin has no parent death signal, and neither has Nix's child there.
-        if LINUX:
-            _prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+        die_with(parent)
         spec: ChildSpec = json.loads(Path(spec_path).read_text())
         # Before the fork, so that the builder starts in it. The interpreter's own pages stay charged to pynixd.
         if spec["cgroup"] is not None:

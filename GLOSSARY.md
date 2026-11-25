@@ -44,6 +44,9 @@ A program in Nix's `external-builders` setting that runs the builds of the syste
 ### Build Site
 Where the sandbox helper of a local build runs: `HostSite` on the host's kernel, or `VmSite` in a libkrun microVM. The local builder prepares each build the same way and asks its site for what differs: the recursive builder's socket, the helper's command, how the helper reports its end, and how the build's use of the machine is measured. `choose_site` in `pynixd_store/builder/site.py` picks the site, and says why a build stays on the host.
 
+### Zygote
+The process that forks the sandbox helper of each build on a Linux host (`pynixd_store/builder/zygote.py`). One per store, started by the store's first build. It holds the helper's imports and runs no thread and no event loop, so its fork is safe; pynixd has threads and never forks itself. It dies with pynixd, and each helper dies with it.
+
 ### Experiment
 A store spec field that turns on what pynixd does beyond its default, such as `daemon = false` or `build_vm`. Its annotation carries an `Experiment` (`pynixd/experiments.py`), which names the default it replaces, its issue and its tests. `pynixd state` lists the experiments each store has turned on.
 

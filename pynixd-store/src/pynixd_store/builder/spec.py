@@ -93,6 +93,13 @@ class DarwinSpec(TypedDict):
     """The derivation's system, which picks the slice of a universal builder (`execBuilder`)."""
 
 
+class ForkRequest(TypedDict):
+    """What pynixd asks of the zygote (`zygote.py`), beside the descriptors that come with it."""
+
+    spec: str
+    """The file that holds the helper's `ChildSpec`."""
+
+
 class ChildSpec(TypedDict):
     builder: str
     args: list[str]

@@ -131,6 +131,8 @@ class Launch:
     """The parent's end of the pipe the helper writes a set-up error to; -1 when the site reports in a file."""
     status_write: int = -1
     """The helper's end. The parent closes it once the helper runs, or the read never sees its end."""
+    forks: bool = False
+    """A zygote may fork this helper in place of *argv*: `child.run` of the job, with the status pipe."""
 
 
 class BuildSite(ABC):
@@ -234,7 +236,8 @@ class HostSite(BuildSite):
     async def launch(self, paths: BuildPaths, spec_file: Path, cgroup: Path | None, *, recursive: bool) -> Launch:
         status_read, status_write = os.pipe()
         argv = [sys.executable, "-m", "pynixd_store.builder.child", str(spec_file), str(status_write)]
-        return Launch(argv, [status_write], None, status_read, status_write)
+        # darwin's frameworks refuse a fork with no exec.
+        return Launch(argv, [status_write], None, status_read, status_write, forks=sys.platform == "linux")
 
     def setup_error(self, paths: BuildPaths, launch: Launch) -> str:
         with os.fdopen(launch.status_read, "rb") as status_file:

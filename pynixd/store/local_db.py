@@ -1097,6 +1097,7 @@ class LocalDBStore(Store):
                     on_usage=used.append,
                     sample_seconds=self.usage_sample_seconds,
                     aws_credentials=_aws_credentials,
+                    helpers=self._daemon.helpers,
                 )
                 if (cores := fewer_cores_here(built.status, used, settings.build_cores)) is None:
                     break

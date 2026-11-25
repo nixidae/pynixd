@@ -18,6 +18,7 @@ import structlog
 
 from nix_daemon_protocol.store_dir import on_disk
 from pynixd_store.autogc import AutoGCSettings
+from pynixd_store.builder.helpers import Helpers
 from pynixd_store.nix_config import nix_environment, read_nix_config
 from pynixd_store.store_path import StorePath
 from pynixd_store.temp_roots import RootWriter
@@ -125,6 +126,8 @@ class LocalHost(ScheduledStore):
         self.extra_env = spec.extra_env or {}
         #: Every temporary root of this store goes through it: the sessions' and the engine's.
         self.root_writer = RootWriter(self.layout.state_dir)
+        #: The process that forks this store's sandbox helpers.
+        self.helpers = Helpers()
         self._trust_policy: TrustPolicy | None = None
         self._daemon_header: DaemonHeader | None = None
         self.extra_args = spec.extra_args or []
@@ -156,7 +159,7 @@ class LocalHost(ScheduledStore):
     @contextlib.asynccontextmanager
     async def _run(self) -> AsyncIterator[None]:
         """The root writer outlives the store's start and close: a session's roots close after its last operation."""
-        async with self.root_writer, super()._run():
+        async with self.root_writer, self.helpers, super()._run():
             yield
 
     async def start(self, sync_paths: bool = True) -> None:

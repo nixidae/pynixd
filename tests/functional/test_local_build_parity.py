@@ -1683,6 +1683,14 @@ def _epoll_waits(pid: int) -> list[int]:
     return waiting
 
 
+def _command(pid: int) -> bytes:
+    """The command line of *pid*, empty once it has ended."""
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return b""
+
+
 async def test_the_daemon_forks_an_s3_fetch_from_a_worker_with_no_aws_threads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1692,7 +1700,7 @@ async def test_the_daemon_forks_an_s3_fetch_from_a_worker_with_no_aws_threads(
     chain in a process of its own (`nix/nix-aws-credentials-in-a-child.patch`). Unpatched, the worker holds
     8 threads in `epoll_wait` while its builder fetches."""
     _aws_environment(tmp_path, monkeypatch)
-    async with _http(tmp_path) as (base, seen), _serve(tmp_path, OpRoute.daemon) as (url, _root):
+    async with _http(tmp_path) as (base, seen), _serve(tmp_path, OpRoute.daemon) as (url, root):
         expr = _fetchurl(
             "parity-fetch-s3-held",
             f"s3://bucket/held?endpoint={base}&region=eu-north-1",
@@ -1709,9 +1717,15 @@ async def test_the_daemon_forks_an_s3_fetch_from_a_worker_with_no_aws_threads(
             with anyio.fail_after(60):
                 await seen["arrived"].wait()
             ours = set(descendants(os.getpid())) - lane_processes()
+            # A zygote of another store waits in epoll (`builder/zygote.py`).
+            ours = {pid for pid in ours if b"pynixd_store.builder.zygote" not in _command(pid)}
             waiting = {pid: threads for pid in sorted(ours) if (threads := _epoll_waits(pid))}
+            # The worker and its builder, below this store's daemon: without them the scan saw nothing it guards.
+            workers = {worker for pid in ours if str(root).encode() in _command(pid) for worker in descendants(pid)}
+            watched = workers & ours
             seen["release"].set()
     assert waiting == {}, waiting
+    assert watched, "the scan saw no worker of the daemon"
     assert rc == [0], rc
 
 

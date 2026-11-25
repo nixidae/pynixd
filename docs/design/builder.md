@@ -217,6 +217,19 @@ builder.
 The helper takes its whole job from one file that pynixd writes, as Nix's
 `build.json` does, and nothing in the store side assumes namespaces.
 
+On a Linux host, each store has a zygote (`zygote.py`, pynixd's end is
+`helpers.py`), and the zygote forks the helper. Its imports cost 564 ms of CPU
+per build in a test guest, and the fork costs 5 ms (nixidae/nixidae#1590). The
+zygote is single-threaded and runs no event loop, so its fork is safe. pynixd
+itself has threads and never forks.
+
+- The first build of a store starts the zygote. A dead zygote is replaced at
+  the next build.
+- The helper is the zygote's child. The zygote reaps it and sends its status
+  on the build's own socket. pynixd signals it through a pidfd.
+- The zygote dies with pynixd, and each helper dies with the zygote.
+- A build in a VM, and a darwin build, start an interpreter for the helper.
+
 ## What a build used
 
 Each build gets a record: CPU time, peak memory, bytes read and written, and

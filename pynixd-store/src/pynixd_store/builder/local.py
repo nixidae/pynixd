@@ -53,6 +53,7 @@ from .env import (
     rewrite_strings,
     structured_attrs_reason,
 )
+from .helpers import HelperProcess, Helpers
 from .jsonlog import Message
 from .outputs import (
     BuildFailure,
@@ -697,6 +698,7 @@ async def build(
     on_usage: Callable[[BuildUsage], None] | None = None,
     sample_seconds: float = 0,
     aws_credentials: Callable[[str | None], AwsCredentials | None] | None = None,
+    helpers: Helpers | None = None,
 ) -> LocalBuildResult:
     """Build *drv*, whose inputs are valid, and register its outputs. `unsupported(drv)` must be `None`.
 
@@ -710,6 +712,7 @@ async def build(
     *recursive* serves the builder of a `recursive-nix` or `builder-rpc-v0` derivation; it must be given for one.
     With *vm*, a sandboxed build for the store's own system runs in a microVM, and the helper inside it.
     *aws_credentials* resolves the credentials of an AWS profile for a `builtin:fetchurl` of `s3://`; it may block.
+    *helpers* forks the sandbox helper of a build on the host; without it each build starts an interpreter.
     """
     layout = engine.layout
     store_dir = str(layout.store_dir)
@@ -1064,6 +1067,7 @@ async def build(
                 running,
                 handshake=handshake,
                 recursive=restriction is not None,
+                helpers=helpers,
             )
             # Not `sampler.cancel_scope.cancel()` here: this body runs in that scope, and the read below would be
             # cancelled too. The stack's callback stops the sampler on the way out.
@@ -1423,6 +1427,7 @@ async def _run(
     *,
     handshake: bool = False,
     recursive: bool = False,
+    helpers: Helpers | None = None,
 ) -> BuildFailure | BuilderFailed | None:
     """Run the helper on a pseudoterminal, as `startBuild` does, and wait under the two timeouts.
 
@@ -1447,8 +1452,15 @@ async def _run(
     if control is not None:
         argv.append(str(control.fileno()))
         fds.append(control.fileno())
+    process: HelperProcess
     try:
-        process = await anyio.open_process(argv, stdin=None, stdout=slave, stderr=slave, pass_fds=fds, cwd=launch.cwd)
+        if helpers is not None and launch.forks:
+            control_fd = None if control is None else control.fileno()
+            process = await helpers.start(spec_file, slave, launch.status_write, control_fd)
+        else:
+            process = await anyio.open_process(
+                argv, stdin=None, stdout=slave, stderr=slave, pass_fds=fds, cwd=launch.cwd
+            )
     finally:
         os.close(slave)
         if launch.status_write >= 0:
