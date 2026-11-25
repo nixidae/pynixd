@@ -16,6 +16,7 @@ import structlog
 from anyio.abc import UNIXSocketStream
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
     from types import TracebackType
 
@@ -112,13 +113,29 @@ class Helpers:
         """Fork a helper for the job in *spec_file*, on *terminal*. The descriptors stay the caller's to close."""
         # A cancelled start would leave a helper that nothing waits for.
         with anyio.CancelScope(shield=True):
-            helper = await self._start_in_time(spec_file, terminal, status_fd, control)
+            helper = await self._start_in_time(
+                {"spec": str(spec_file)}, terminal, status_fd, *(() if control is None else (control,))
+            )
         return helper
 
-    async def _start_in_time(self, spec_file: Path, terminal: int, status_fd: int, control: int | None) -> ForkedHelper:
+    async def remove(self, paths: Sequence[Path]) -> bool:
+        """Delete *paths* in a process of its own; False when that failed and the caller has to.
+
+        A chroot of 600 mount points is 1200 short system calls. On threads of pynixd each one gives up the GIL and
+        waits for it again: 138 ms of CPU per build at 16 builds at once, against 42 ms at one (nixidae/nixidae#1599).
+        """
+        try:
+            with anyio.CancelScope(shield=True):
+                helper = await self._start_in_time({"remove": [str(path) for path in paths]})
+                status = await helper.wait()
+        except HelperStartError:
+            return False
+        return status == 0
+
+    async def _start_in_time(self, request: ForkRequest, *fds: int) -> ForkedHelper:
         try:
             with anyio.fail_after(START_SECONDS):
-                return await self._start(spec_file, terminal, status_fd, control)
+                return await self._start(request, fds)
         except TimeoutError:
             async with self._lock:
                 await self._stop()
@@ -126,13 +143,12 @@ class Helpers:
         except (anyio.EndOfStream, anyio.BrokenResourceError):
             raise HelperStartError("starting the sandbox helper: the zygote died") from None
 
-    async def _start(self, spec_file: Path, terminal: int, status_fd: int, control: int | None) -> ForkedHelper:
+    async def _start(self, request: ForkRequest, fds: Sequence[int]) -> ForkedHelper:
         ours, theirs = socket.socketpair()
         answers = await UNIXSocketStream.from_socket(ours)
         try:
             with theirs:
-                fds = [theirs.fileno(), terminal, status_fd, *(() if control is None else (control,))]
-                await self._send({"spec": str(spec_file)}, fds)
+                await self._send(request, [theirs.fileno(), *fds])
             answer, pidfds = await answers.receive_fds(ANSWER_LIMIT, 1)
             started = json.loads(answer)
             if "error" in started:

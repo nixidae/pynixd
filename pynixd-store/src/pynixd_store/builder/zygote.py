@@ -24,10 +24,14 @@ import socket
 import sys
 import traceback
 from dataclasses import dataclass
-from typing import Final, NoReturn
+from pathlib import Path
+from typing import TYPE_CHECKING, Final, NoReturn
 
+from ..add import delete_path
 from . import child
-from .spec import ForkRequest
+
+if TYPE_CHECKING:
+    from .spec import ForkRequest
 
 REQUEST_LIMIT: Final = 1 << 16
 FDS_LIMIT: Final = 4
@@ -50,9 +54,7 @@ def _close_all_but(keep: set[int]) -> None:
                 os.close(fd)
 
 
-def _become_helper(
-    request: ForkRequest, zygote: int, terminal: int, status_fd: int, control_fd: int | None
-) -> NoReturn:
+def _become_helper(spec_file: str, zygote: int, terminal: int, status_fd: int, control_fd: int | None) -> NoReturn:
     """Run the helper in this forked process, as `python -m pynixd_store.builder.child` does, and never return."""
     try:
         # An ignored signal stays ignored across the builder's exec.
@@ -62,21 +64,36 @@ def _become_helper(
         # The other builds' descriptors are the zygote's alone.
         _close_all_but({0, 1, 2, status_fd} | ({control_fd} if control_fd is not None else set()))
         control = None if control_fd is None else socket.socket(fileno=control_fd)
-        child.run(request["spec"], status_fd, control, parent=zygote)
+        child.run(spec_file, status_fd, control, parent=zygote)
     except BaseException:  # noqa: BLE001 -- nothing above this frame may run in the fork, SystemExit included
         os.write(2, traceback.format_exc().encode(errors="surrogateescape"))
     os._exit(1)
 
 
+def _remove(paths: list[str], zygote: int) -> NoReturn:
+    """Delete *paths* in this forked process, and never return."""
+    try:
+        child.die_with(zygote)
+        for path in paths:
+            delete_path(Path(path))
+    except BaseException:  # noqa: BLE001 -- nothing above this frame may run in the fork, SystemExit included
+        os.write(2, traceback.format_exc().encode(errors="surrogateescape"))
+        os._exit(1)
+    os._exit(0)
+
+
 def _start(request: ForkRequest, fds: list[int]) -> _Running | None:
     """Fork a helper for *request*; `None` when the kernel refuses, which the build's socket is told."""
-    answers_fd, terminal, status_fd, *control = fds
+    answers_fd, *others = fds
     answers = socket.socket(fileno=answers_fd)
     zygote = os.getpid()
     try:
         pid = os.fork()
         if pid == 0:
-            _become_helper(request, zygote, terminal, status_fd, control[0] if control else None)
+            if "remove" in request:
+                _remove(request["remove"], zygote)
+            terminal, status_fd, *control = others
+            _become_helper(request["spec"], zygote, terminal, status_fd, control[0] if control else None)
     except OSError as e:
         with contextlib.suppress(OSError):
             answers.sendall(json.dumps({"error": f"starting the sandbox helper: {e.strerror}"}).encode() + b"\n")
@@ -84,7 +101,7 @@ def _start(request: ForkRequest, fds: list[int]) -> _Running | None:
         return None
     finally:
         # Held here, they keep the build's log and status pipe from ending.
-        for fd in (terminal, status_fd, *control):
+        for fd in others:
             os.close(fd)
     pidfd = os.pidfd_open(pid)
     with contextlib.suppress(OSError):

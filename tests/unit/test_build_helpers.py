@@ -122,6 +122,31 @@ async def test_builds_share_one_zygote_and_run_at_once(tmp_path: Path) -> None:
         await first.process.wait()
 
 
+async def test_a_removal_deletes_trees_the_builder_made_read_only(tmp_path: Path) -> None:
+    trees = [tmp_path / "chroot", tmp_path / "top"]
+    for tree in trees:
+        (tree / "a/b").mkdir(parents=True)
+        (tree / "a/b/file").write_text("x")
+        (tree / "a/link").symlink_to(tmp_path)
+        (tree / "a/b").chmod(0o500)
+    async with Helpers() as helpers:
+        assert await helpers.remove([*trees, tmp_path / "absent"])
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root deletes it")
+async def test_a_removal_that_fails_is_left_to_the_caller(tmp_path: Path) -> None:
+    tree = tmp_path / "locked/tree"
+    tree.mkdir(parents=True)
+    tree.parent.chmod(0o500)
+    try:
+        async with Helpers() as helpers:
+            assert not await helpers.remove([tree])
+    finally:
+        tree.parent.chmod(0o700)
+    assert tree.exists()
+
+
 async def test_a_killed_helper_ends_its_builder(tmp_path: Path) -> None:
     async with Helpers() as helpers, _started(helpers, tmp_path, "while :; do :; done") as helper:
         helper.process.kill()

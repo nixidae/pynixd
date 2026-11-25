@@ -5,7 +5,7 @@ Its own module so the daemon names the type without importing the helper and its
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import TypedDict, final
 
 
 class AwsCredentials(TypedDict):
@@ -93,11 +93,23 @@ class DarwinSpec(TypedDict):
     """The derivation's system, which picks the slice of a universal builder (`execBuilder`)."""
 
 
-class ForkRequest(TypedDict):
-    """What pynixd asks of the zygote (`zygote.py`), beside the descriptors that come with it."""
+@final
+class RunRequest(TypedDict):
+    """Run a build."""
 
     spec: str
     """The file that holds the helper's `ChildSpec`."""
+
+
+@final
+class RemoveRequest(TypedDict):
+    """Delete the trees of a build that ended."""
+
+    remove: list[str]
+
+
+type ForkRequest = RunRequest | RemoveRequest
+"""What pynixd asks of the zygote (`zygote.py`), beside the descriptors that come with it."""
 
 
 class ChildSpec(TypedDict):

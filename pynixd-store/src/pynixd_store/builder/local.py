@@ -1194,7 +1194,7 @@ async def build(
                     await anyio.to_thread.run_sync(paths.keep)
                     await on_lines([Message(Verbosity.ERROR, f'note: keeping build directory "{paths.tmp}"')])
                 else:
-                    await anyio.to_thread.run_sync(paths.remove)
+                    await paths.remove(helpers)
             # NIX-DEFECT (#23): `cleanupBuild` (`derivation-builder.cc:1678`) deletes the scratch path of a valid
             # output only with `force`, which a build that succeeded passes, so a failed rebuild without the
             # sandbox leaves its scratch outputs in the store, unregistered, until a garbage collection. pynixd

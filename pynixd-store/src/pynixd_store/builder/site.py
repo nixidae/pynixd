@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from nix_daemon_protocol.basic_derivation import BasicDerivation
     from nix_daemon_protocol.store_path import StorePath
 
+    from .helpers import Helpers
     from .settings import BuildSettings
     from .spec import ChildSpec
     from .usage import BuildUsage, UsageSample
@@ -81,10 +82,12 @@ class BuildPaths:
     root: Path | None
     """The chroot's root; `None` for a build without the chroot."""
 
-    def remove(self) -> None:
-        for path in (self.chroot_parent, self.top):
-            if path is not None:
-                delete_path(path)
+    async def remove(self, helpers: Helpers | None) -> None:
+        paths = [path for path in (self.chroot_parent, self.top) if path is not None]
+        if helpers is not None and self.chroot_parent is not None and await helpers.remove(paths):
+            return
+        for path in paths:
+            await anyio.to_thread.run_sync(delete_path, path)
 
     def keep(self) -> None:
         """`cleanupBuild(false)` with `keep-failed` (`derivation-builder.cc:1697`): the chroot goes, the build
