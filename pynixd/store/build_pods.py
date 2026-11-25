@@ -45,7 +45,7 @@ from ..build_job import (
     seconds_line,
 )
 from ..build_result import failure, result_succeeded
-from ..exceptions import InfrastructureError
+from ..exceptions import InfrastructureError, StoreRefuses
 from ..provisioning.kubernetes import (
     BuildPodOwner,
     BuildPodWatch,
@@ -387,13 +387,14 @@ class BuildPodStore(ScheduledStore):
         `pick_template` gave for the farm root; `None`: the first.
         """
         template = template or self.spec.templates[0]
+        runner = self.runners.get(template)
+        if runner is not None and (refused := runner_refusal(request)) is not None:
+            raise StoreRefuses(f"{self.store_id}: {refused}")
         if self.grants is None or self.central_host_key is None or self.kubernetes is None:
             raise InfrastructureError(f"{self.store_id}: no SSH listener or no Kubernetes settings for build pods")
         fill: RunnerFill | None = None
         runner_job: RunnerJob | None = None
-        if (runner := self.runners.get(template)) is not None:
-            if (refused := runner_refusal(request)) is not None:
-                return BuildDerivationResponse(result=failure(refused)), PodTimes(asked=time.monotonic())
+        if runner is not None:
             runner_job = RunnerJob(build_cores=runner.cores, impure_env=self.spec.runner_impure_env)
             drv = request.derivation
             fill = RunnerFill(

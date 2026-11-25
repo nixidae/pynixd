@@ -13,7 +13,8 @@ from nix_daemon_protocol.build_derivation import BuildDerivationRequest
 from nix_daemon_protocol.build_result import BuildMode
 from nix_daemon_protocol.derivation_output import DerivationOutput
 from nix_daemon_protocol.store_path import StorePath
-from pynixd.config import KubernetesTemplateSettings
+from pynixd.config import BuildPodStoreSpec, KubernetesTemplateSettings
+from pynixd.exceptions import InfrastructureError, StoreRefuses
 from pynixd.provisioning.kubernetes import (
     BuildPodEnd,
     BuildPodOwner,
@@ -112,6 +113,21 @@ def test_a_runner_pod_builds_no_check_or_repair() -> None:
         request = BuildDerivationRequest(drv_path=DRV, derivation=_drv(), build_mode=mode)
         assert runner_refusal(request) == "the runner container builds no repair or check"
     assert runner_refusal(BuildDerivationRequest(drv_path=DRV, derivation=_drv(), build_mode=BuildMode.NORMAL)) is None
+
+
+@pytest.mark.anyio
+async def test_a_runner_pod_store_sends_a_build_it_refuses_elsewhere() -> None:
+    """Not a failed build: `StoreRefuses` takes the store out for the build, and placement tries the next one."""
+    store = BuildPodStoreSpec(templates=["nri"], central_host="10.0.0.1").to_store("pods")
+    store.runners = {"nri": RunnerPod("runner", 1)}
+    request = BuildDerivationRequest(drv_path=DRV, derivation=_drv(), build_mode=BuildMode.CHECK)
+
+    async def ignored(_line: str) -> None:
+        pass
+
+    with pytest.raises(StoreRefuses, match="pods: the runner container builds no repair or check"):
+        await store.build(request, ignored, template="nri")
+    assert issubclass(StoreRefuses, InfrastructureError)
 
 
 def _template(resources: dict[str, object], container: str = "runner") -> KubernetesTemplateSettings:

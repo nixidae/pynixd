@@ -98,6 +98,10 @@ class BuilderGone(InfrastructureError):
     """A build on a store was silent, and the store's daemon did not answer a fresh handshake."""
 
 
+class StoreRefuses(InfrastructureError):
+    """The store cannot build this derivation, and no retry there changes that: the build goes to another store."""
+
+
 class BackendError(PynixdError):
     """Raised when the backend sends STDERR_ERROR.
 

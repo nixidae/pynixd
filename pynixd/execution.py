@@ -35,7 +35,7 @@ from .allocator import outside_the_session
 from .build_job import PodPart
 from .build_result import failure, result_succeeded
 from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
-from .exceptions import BackendError, BuilderGone, InfrastructureError, error_text, leaves
+from .exceptions import BackendError, BuilderGone, InfrastructureError, StoreRefuses, error_text, leaves
 from .placement import client_forbids_local, ms_since
 from .serde import (
     AddTempRootRequest,
@@ -718,7 +718,7 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
                 await build.post_log_and_fanout(
                     LogNext(text=f"pynixd: build failed on {store.store_id}, retrying: {reason}\n")
                 )
-                gone = any(isinstance(leaf, BuilderGone) for leaf in leaves(e))
+                gone = any(isinstance(leaf, (BuilderGone, StoreRefuses)) for leaf in leaves(e))
                 build.reset_for_retry(store.store_id, reason, elsewhere=gone)
             else:
                 log.exception("build_crashed", build_id=build.build_id)
