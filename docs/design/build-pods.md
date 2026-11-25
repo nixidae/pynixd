@@ -502,8 +502,8 @@ Answered 2026-11-23. Every item is decided.
    (about 0.9 s; a farm pod runs none), SSH (0.6 s), and pod shutdown to the
    result. The store gives the fixed cost to the
    scheduler's time-aware ranking (`placement.py`), so a small build goes to
-   central or to a long-lived builder. The operator documentation states the
-   cost and says to send small builds elsewhere.
+   central or to a long-lived builder. The operator documentation (nixkube's
+   `docs/build-pods.md`) states the cost and says to send small builds elsewhere.
 
    **Measured** (run `provk-secs1`, QEMU, three builds each). The pod and
    central each write one line of seconds to the build log. For the busybox
