@@ -43,12 +43,17 @@ let
   # A build pod store with one slot, whose builds start nested builds on the same store
   # (`kubernetes_pod_nested.py`, nixidae/nixidae#1576).
   podNestedFeature = "k8s-podnested";
+  # The same on a store whose pods each request `evictMemory`: the node has room for one, so the nested pod
+  # preempts its own outer pod (`kubernetes_pod_evicted.py`).
+  podEvictFeature = "k8s-podevict";
+  evictMemory = "1400Mi";
   # A pod that runs `pynixd build-one`.
   buildsOne =
     feature:
     feature == podBuildFeature
     || feature == podBuildUsernsFeature
     || feature == podNestedFeature
+    || feature == podEvictFeature
     || farm feature;
   # A pod central makes for one build: nothing in it ends the pod, so central deletes it.
   buildPod = feature: buildsOne feature || feature == rogueFeature;
@@ -153,7 +158,12 @@ let
         inherit image;
         imagePullPolicy = "Never";
         # The scheduler preempts by requests: a pod that requests nothing is never in another's way.
-        resources = lib.optionalAttrs (buildPod feature) { requests.cpu = buildPodCpu; };
+        resources = lib.optionalAttrs (buildPod feature) {
+          requests = {
+            cpu = buildPodCpu;
+          }
+          // lib.optionalAttrs (feature == podEvictFeature) { memory = evictMemory; };
+        };
         command =
           if feature == brokenFeature then
             [ "${pkgs.coreutils}/bin/false" ]
@@ -387,6 +397,8 @@ vivariumLib.mkTest {
       podBuildUsernsFeature
       podFarmFeature
       podNestedFeature
+      podEvictFeature
+      evictMemory
       rogueFeature
       helperFeature
       buildPodCpu
@@ -487,6 +499,24 @@ vivariumLib.mkTest {
             "pynixd-build-nested"
           ];
         };
+        stores.buildpods-evict = {
+          type = "kubernetes-build-pods";
+          templates = [ "buildpod-evict" ];
+          central_host = address;
+          central_port = sshPort;
+          systems = [ system ];
+          system_features = [
+            podEvictFeature
+            "recursive-nix"
+          ];
+          mandatory_features = [ podEvictFeature ];
+          max_connections = 2;
+          transfer_connections = 1;
+          priority_classes = [
+            "pynixd-build"
+            "pynixd-build-nested"
+          ];
+        };
         stores.helper = {
           type = "local-socket";
           store_path = "/var/lib/pynixd-helper";
@@ -528,6 +558,7 @@ vivariumLib.mkTest {
               buildpod-userns.pod = pod config.services.vivarium-k8s.workloadImage podBuildUsernsFeature;
               buildpod-farm.pod = pod config.services.vivarium-k8s.workloadImage podFarmFeature;
               buildpod-nested.pod = pod config.services.vivarium-k8s.workloadImage podNestedFeature;
+              buildpod-evict.pod = pod config.services.vivarium-k8s.workloadImage podEvictFeature;
               rogue.pod = pod config.services.vivarium-k8s.workloadImage rogueFeature;
             }
             // lib.optionalAttrs krun {
@@ -695,6 +726,10 @@ vivariumLib.mkTest {
           script = ../../provisioning/kubernetes_pod_nested.py;
           after = [ "pod-farm" ];
         };
+        pod-evicted = {
+          script = ../../provisioning/kubernetes_pod_evicted.py;
+          after = [ "pod-nested" ];
+        };
         # Restarts pynixd, so after every phase that builds.
         pod-left = {
           script = ../../provisioning/kubernetes_pod_left.py;
@@ -703,7 +738,7 @@ vivariumLib.mkTest {
             "sibling"
             "pod-build"
             "pod-refused"
-            "pod-nested"
+            "pod-evicted"
             "pod-throughput"
             "input-primitives"
           ];

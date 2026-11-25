@@ -322,8 +322,15 @@ Answered 2026-11-23. Every item is decided.
    the outer pod ran as `pynixd-build`, the nested pod as
    `pynixd-build-nested`. Negative control (run `provk-negnest1`): with the
    slot release off, the outer build waits until the phase's 420 s
-   deadline, and no nested pod starts. Not tested: the eviction itself, as
-   the QEMU node has room for both pods.
+   deadline, and no nested pod starts.
+   The eviction: phase `pod-evicted` gives a store pods that request 1400Mi,
+   so the node has room for one. The nested pod preempts its own outer pod.
+   The outer pod's session then lets go of the nested build, and central
+   cancelled it: the outer build's next pod asked again and was preempted
+   again, every 12 s until the deadline (run `provk-evict2`). Now the outer
+   build holds its nested builds until it ends (`BuildQueue`,
+   `_parent_lives_locked`). Run `provk-evict3`: one preemption, then the
+   outer build passes in 31 s.
 5. **builder-rpc-v0.** Recursive Nix is tested: run `provk-clean1`, phase
    `pod-recursive` (`kubernetes_pod_recursive.py`), on the copy-in pod and on
    the stand-in farm pod. The cases are a path the builder adds, a nested

@@ -28,8 +28,9 @@ CLASSES = ["pynixd-build", "pynixd-build-nested"]
 """The store's `priority_classes`: the outer pod's, then the nested pod's."""
 
 
-def _expression(settings: Mapping[str, str]) -> str:
-    feature = nix_string(settings["podNestedFeature"])
+def nested_expression(settings: Mapping[str, str], feature_setting: str) -> str:
+    """An outer build whose recursive Nix builds an inner one; both need the feature *feature_setting* names."""
+    feature = nix_string(settings[feature_setting])
     nested = (
         'let b = builtins.storePath "${bb}"; in derivation { name = "podnested-inner"; system = builtins.currentSystem;'
         f' builder = b + "/bin/sh"; args = [ "-c" "echo inner > $out" ]; requiredSystemFeatures = [ {feature} ]; }}'
@@ -61,9 +62,8 @@ async def test(vms: Machines) -> None:
     seen: dict[str, str] = {}
     async with anyio.create_task_group() as watching:
         watching.start_soon(_classes, api, seen)
-        out = (
-            await as_tester(cp, f"nix-build --no-out-link --expr {shlex.quote(_expression(settings))}", timeout=420)
-        ).strip()
+        expression = nested_expression(settings, "podNestedFeature")
+        out = (await as_tester(cp, f"nix-build --no-out-link --expr {shlex.quote(expression)}", timeout=420)).strip()
         watching.cancel_scope.cancel()
     said = (await cp.succeed(f"cat {out}")).stdout.strip()
     if said != "inner":
