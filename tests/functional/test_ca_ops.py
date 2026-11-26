@@ -997,23 +997,22 @@ async def test_deep_dynamic_drv_chain_via_pynixd(
 
 
 @pytest.mark.ca_derivations
-async def test_a_ca_build_after_its_resolved_drv_is_deleted(ca_env: tuple[Server, str]) -> None:
-    """The store keeps the realisation of a resolved `.drv` that a collection, or the cold tier, removed.
+@pytest.mark.parametrize("with_output", [False, True], ids=["drv", "drv-and-output"])
+async def test_a_ca_build_after_its_resolved_drv_is_deleted(ca_env: tuple[Server, str], with_output: bool) -> None:
+    """The store keeps the realisation of a resolved `.drv` that a collection removed.
 
-    dynhetz's GC moved `...-dynatron.drv`, the resolved form of a content-addressed derivation, to its cold tier.
-    Every later `ekn kubeapply` read the output through the evaluator and failed with "store path
-    '...-dynatron.drv' does not exist" until a hand `nix-store -r` fetched it back (nixidae/nixidae#1636).
+    The client resolves from the unresolved `.drv` and reads no resolved one, so the read and the build go
+    through. With the output gone too, pynixd writes the resolved `.drv` again and builds it.
     """
     _server, uri = ca_env
     store = ["--option", "builders", "", "--store", uri]
     by_attr = ["--impure", "--file", str(TEST_NIX), "ca.depends_on_ca"]
     build = [str(CLIENT_BIN), "build", *store, "--no-link", "--print-out-paths"]
-    _, _, _, first = await run_subproc([*build, *by_attr], nix_config=CA_NIX_CONFIG, expected_retcode=0)
+    _, out, _, first = await run_subproc([*build, *by_attr], nix_config=CA_NIX_CONFIG, expected_retcode=0)
     resolved = re.findall(r"resolved derivation: '[^']+' -> '([^']+)'", first)
     assert resolved, f"pynixd named no resolved derivation:\n{first}"
-    rc, _, _, deleted = await run_subproc(
-        [str(CLIENT_BIN), "store", "delete", *store, resolved[-1]], nix_config=CA_NIX_CONFIG
-    )
+    gone = [resolved[-1], *(out.split() if with_output else [])]
+    rc, _, _, deleted = await run_subproc([str(CLIENT_BIN), "store", "delete", *store, *gone], nix_config=CA_NIX_CONFIG)
     assert rc == 0, f"could not delete {resolved[-1]}:\n{deleted}"
 
     # The evaluator's road, as ekn's `realise_string`: `realiseContext` builds, then reads the output.
