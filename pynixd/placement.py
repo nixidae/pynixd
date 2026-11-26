@@ -409,6 +409,14 @@ class _Notes[S: Candidate]:
         self.reason = reason
 
 
+@dataclass(frozen=True, slots=True)
+class StartFailure[S]:
+    """A configured store whose start failed: it takes no build, and a build only it could take names *error*."""
+
+    store: S
+    error: str
+
+
 class Placer[S: PlacedStore]:
     """Places each schedulable build on a store, or fails it; `Scheduler.schedule` runs one pass through `assign`."""
 
@@ -426,8 +434,11 @@ class Placer[S: PlacedStore]:
         dynamic: Mapping[str, set[str]],
         spawn: Callable[[QueuedBuild, S], None],
         launchable: Callable[[QueuedBuild], bool] = lambda _build: False,
+        start_failures: Callable[[], Mapping[StoreId, StartFailure[S]]] = dict,
     ) -> None:
         self.queue = queue
+        self.start_failures = start_failures
+        """The configured stores whose start failed, read when a build fails for want of a store."""
         self.local = local
         """The local store's builder."""
         self.stores = stores
@@ -893,6 +904,10 @@ class Placer[S: PlacedStore]:
                 f"\nRequired features: {{{', '.join(sorted(required))}}}"
                 f"\nAvailable features: {{{', '.join(sorted(available))}}}"
             )
+        if not here_only:
+            for store_id, failure in sorted(self.start_failures().items()):
+                if failure.store.supports_derivation(platform, steered_features(failure.store, build, required)):
+                    reasons += f"\nStore '{store_id}' can build it, but failed to start: {failure.error}"
         error_msg = f"Cannot build '{magenta(build.request.drv_path)}'.{reasons}"
         await self.queue.fail(build.build_id, error_msg, BuildResultStatus.INPUT_REJECTED)
         for line in error_msg.split("\n"):

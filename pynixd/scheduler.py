@@ -36,6 +36,7 @@ from .exceptions import error_text
 from .execution import Executor
 from .placement import (
     Placer,
+    StartFailure,
     TransferEstimator,
     request_has_a_local_slot,
 )
@@ -137,6 +138,7 @@ class Scheduler:
             dynamic=self._dynamic_feature_matrix,
             launchable=lambda build: self.launchable(build),
             spawn=self._spawn_worker,
+            start_failures=self._start_failures,
         )
         local = self.local_store
         self.executor: Executor[ScheduledStore, LocalStore | LocalDBStore, LocalDBStore] = Executor(
@@ -160,6 +162,13 @@ class Scheduler:
         for client in [*self.stores.values(), self.local_builder]:
             client.on_capacity = self.trigger
             client.sample_listeners.add(self.on_sample)
+
+    def _start_failures(self) -> dict[StoreId, StartFailure[ScheduledStore]]:
+        return {
+            store_id: StartFailure(client, failure.error)
+            for store_id, failure in self.ctx.failed_starts.items()
+            if (client := failure.store.daemon_client) is not None and not client.no_schedule
+        }
 
     def _sandbox_at(self, store_id: StoreId) -> LocalDBStore | None:
         """A local store other than this one that pynixd's builder builds into, as it runs no daemon."""

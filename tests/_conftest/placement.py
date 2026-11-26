@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from nix_daemon_protocol.wire_ops import WireRequest
     from pynixd.build_queue import BuildQueue, QueuedBuild
     from pynixd.connection import ClientConn
-    from pynixd.placement import Estimates, PlacedStore, Ranks
+    from pynixd.placement import Estimates, PlacedStore, Ranks, StartFailure
     from pynixd_store.build_stats import StoreEstimate
 
 
@@ -256,9 +256,11 @@ def fake_placer(
     settings: StoreRankingSettings | None = None,
     estimator: Estimates | None = None,
     rng: random.Random | None = None,
+    start_failures: Mapping[StoreId, StartFailure[FakeStore]] | None = None,
 ) -> Placer[FakeStore]:
     """A placer over fake stores: a trace with no database, and no platform a builder may still register for."""
     return Placer(
+        start_failures=lambda: start_failures or {},
         queue=queue,
         local=local or FakeStore(LOCAL_STORE_ID),
         stores=lambda: stores or {},

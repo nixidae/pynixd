@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
     from .config import PynixdSettings
     from .connection import ClientConn
+    from .placement import StartFailure
     from .provisioning.provisioner import Provisioner
     from .scheduler import Scheduler
     from .session_builders import SessionBuilders
@@ -69,6 +70,9 @@ class PynixdContext:
 
     settings: PynixdSettings
     _stores: dict[StoreId, Store]
+    failed_starts: dict[StoreId, StartFailure[Store]] = field(default_factory=dict)
+    """Configured stores whose start failed, out of `_stores`; a build that only one of them could take names its
+    error (nixidae/nixidae#1572)."""
     db: LocalStoreDB | None = None
     scheduler: Scheduler | None = None
     session_builders: SessionBuilders | None = None

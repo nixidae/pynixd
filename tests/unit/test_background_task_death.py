@@ -9,6 +9,8 @@ nixidae/nixidae#1143.
 
 from __future__ import annotations
 
+from typing import Self
+
 import anyio
 import pytest
 import structlog.testing
@@ -33,6 +35,33 @@ def _server() -> Server:
         unix_path=None,
         stall_traceback_seconds=0,
     )
+
+
+class _RefusesStart(MockStore):
+    async def __aenter__(self) -> Self:
+        raise RuntimeError("managed nix daemon exited")
+
+
+@pytest.mark.anyio
+async def test_a_store_that_fails_to_start_leaves_the_stores() -> None:
+    """Left in the stores, it was priced and sent builds that failed on its unopened task group. nixidae/nixidae#1572."""
+    broken = _RefusesStart("broken", feature_matrix={"x86_64-linux": {"pod"}})
+    server = Server(
+        stores={
+            StoreId("local"): MockStore("local", feature_matrix={"x86_64-linux": set()}),
+            StoreId("broken"): broken,
+        },
+        ssh_port=None,
+        unix_path=None,
+        stall_traceback_seconds=0,
+    )
+    async with server:
+        await server._stores_opened()
+        assert StoreId("broken") not in server.ctx.stores
+        assert server.scheduler is not None
+        assert StoreId("broken") not in server.scheduler.stores
+        failure = server.scheduler.placer.start_failures()[StoreId("broken")]
+        assert "managed nix daemon exited" in failure.error
 
 
 @pytest.mark.anyio

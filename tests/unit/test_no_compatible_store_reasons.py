@@ -13,6 +13,7 @@ import pytest
 
 from nix_daemon_protocol.ids import StoreId
 from pynixd.build_queue import BuildQueue
+from pynixd.placement import StartFailure
 from pynixd.serde import BasicDerivation, BuildDerivationRequest, BuildMode, BuildResultStatus
 from pynixd_store.store_path import StorePath
 from tests._conftest.placement import FakeStore, FixedRanking, Spawned, fake_placer
@@ -94,6 +95,34 @@ async def test_a_check_names_the_local_store_alone() -> None:
         "Required system: 'x86_64-linux'",
         "Current system: 'aarch64-linux'",
     ]
+
+
+@pytest.mark.anyio
+async def test_a_build_only_a_failed_store_could_take_names_its_start_error() -> None:
+    """A store whose start failed takes no build; the refusal says why that store is gone. nixidae/nixidae#1572."""
+    queue = BuildQueue()
+    build_id, answer = await queue.enqueue(
+        BuildDerivationRequest(
+            drv_path=DRV,
+            derivation=BasicDerivation(platform="x86_64-linux", builder="/bin/sh"),
+            build_mode=BuildMode.NORMAL,
+        )
+    )
+    local = _store("local", {"aarch64-linux": set()})
+    local.systems = {"aarch64-linux"}
+    pods = FakeStore(StoreId("pods"), mandatory_features=frozenset({"pod"}))
+    other = FakeStore(StoreId("other"), mandatory_features=frozenset({"kvm"}))
+    failures = {
+        pods.store_id: StartFailure(pods, "managed nix daemon exited"),
+        other.store_id: StartFailure(other, "not this one"),
+    }
+    placer = fake_placer(queue, FixedRanking.of(), Spawned(), local=local, start_failures=failures)
+
+    await placer._fail_no_compatible_store(queue.by_id[build_id], {"pod"})  # noqa: SLF001 -- the refusal is the unit
+
+    lines = ANSI.sub("", str(answer.result().result.error_msg)).splitlines()
+    assert lines[-1] == "Store 'pods' can build it, but failed to start: managed nix daemon exited"
+    assert not [line for line in lines if "not this one" in line]
 
 
 @pytest.mark.anyio

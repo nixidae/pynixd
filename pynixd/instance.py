@@ -34,12 +34,13 @@ from .config import (
     PynixdSettings,
 )
 from .context import PynixdContext
-from .exceptions import GCNotPermittedError
+from .exceptions import GCNotPermittedError, error_text
 from .execution import output_paths
 from .gc import Collector
 from .handover import HandoverControl, ListenerName, local_store_key, raw_socket
 from .health import HealthReport, LoopLagMonitor, StallWatchdog
 from .liveness_watch import DirtyFlag, StableRootsWatch
+from .placement import StartFailure
 from .provisioning.ec2 import Ec2Provider
 from .provisioning.gha import GhaProvider
 from .provisioning.kubernetes import KubernetesProvider, OwnerPod
@@ -376,14 +377,17 @@ class Server:
 
         try:
             host = await self._background.start(self._host_store, store, dynamic, admit, False)
-        except Exception:
+        except Exception as exc:
             log.warning(
                 "store_start_failed",
                 store_id=store.store_id,
                 exc_info=True,
             )
-            # Store is already in ctx._stores from construction.
-            # Don't register with scheduler — it's unavailable.
+            # A configured store sits in `_stores` from construction. Left there, placement priced it and sent it
+            # builds, which failed on its unopened task group and hid this error (nixidae/nixidae#1572).
+            if self.ctx._stores.get(store.store_id) is store:
+                del self.ctx._stores[store.store_id]
+            self.ctx.failed_starts[store.store_id] = StartFailure(store, error_text(exc))
             return False
         return host is not None
 
@@ -432,6 +436,7 @@ class Server:
     def _register_store(self, store: Store, dynamic: bool) -> None:
         # Server is the primary owner and mutator of the stores collection
         self.ctx._stores[store.store_id] = store
+        self.ctx.failed_starts.pop(store.store_id, None)
 
         client = store.daemon_client
         if self.scheduler and client is not None and not client.no_schedule:
