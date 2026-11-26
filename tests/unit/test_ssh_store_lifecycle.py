@@ -279,3 +279,28 @@ async def test_a_silent_builder_is_probed_with_keepalives(monkeypatch: pytest.Mo
 
     assert seen["keepalive_interval"] == SSH_KEEPALIVE_INTERVAL
     assert seen["keepalive_count_max"] == SSH_KEEPALIVE_COUNT_MAX
+
+
+class _Process:
+    """The one method of `SSHClientProcess` that `track_process` reads."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def is_closing(self) -> bool:
+        return self.closed
+
+
+def test_a_closed_process_is_not_kept() -> None:
+    """A store kept every process it opened: 16,586 after a Chromium build, which a full collection walked."""
+    store = SSHSubprocessStore(
+        SSHSubprocessStoreSpec(store_id=StoreId("builder"), host="builder", monitor=False, known_hosts=None)
+    )
+    first, second, third = _Process(), _Process(), _Process()
+    store.track_process(cast("asyncssh.SSHClientProcess[bytes]", first))
+    store.track_process(cast("asyncssh.SSHClientProcess[bytes]", second))
+    first.closed = True
+
+    store.track_process(cast("asyncssh.SSHClientProcess[bytes]", third))
+
+    assert [id(kept) for kept in store.ssh_processes] == [id(second), id(third)]

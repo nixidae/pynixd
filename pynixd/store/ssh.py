@@ -444,7 +444,7 @@ class SSHSubprocessStore(SSHStore):
         except (asyncssh.misc.Error, OSError):
             self.invalidate_ssh()
             raise
-        self.ssh_processes.append(proc)
+        self.track_process(proc)
         proc.channel.set_write_buffer_limits(
             high=wire._SSH_WINDOW_SIZE,
             low=wire._SSH_WINDOW_SIZE // 4,
@@ -458,6 +458,15 @@ class SSHSubprocessStore(SSHStore):
         )
         await conn.connect()
         return conn
+
+    def track_process(self, proc: asyncssh.SSHClientProcess[bytes]) -> None:
+        """Keep *proc* for `close`, and drop each process whose channel has closed.
+
+        A pool connection has a process, and a pool closes connections all the time: a store kept all 16,586 of a
+        Chromium build's, each with its channel, streams and logger, and the garbage collector walked every one.
+        """
+        self.ssh_processes = [kept for kept in self.ssh_processes if not kept.is_closing()]
+        self.ssh_processes.append(proc)
 
     async def close(self) -> None:
         """Close daemon store, terminate subprocess channels, and close SSH connection."""
