@@ -323,10 +323,13 @@ def dying_links(path: Path) -> list[DyingLink]:
     Deleting the store name leaves the entry with one link, and the data stays
     on disk. Nix finds those entries by listing all of `.links` after every
     collection (`gc.cc:846`): 21-25 s for 4.4M entries on dynhetz. Hashing
-    only these files costs the bytes the delete frees. A file with three links
-    keeps another store name, and a later delete of that name sees two.
+    only these files costs the bytes the delete frees. The names are counted
+    per inode, because one path often holds a file twice: 128 of 3000 paths on
+    dynhetz. A file with a name outside the path keeps that store name, and a
+    later delete of that name finds the entry alone.
     """
-    found: list[DyingLink] = []
+    names: dict[tuple[int, int], int] = {}
+    first: dict[tuple[int, int], tuple[Path, int]] = {}
     pending = [path]
     while pending:
         current = pending.pop()
@@ -337,9 +340,11 @@ def dying_links(path: Path) -> list[DyingLink]:
             continue
         if stat.S_ISDIR(st.st_mode):
             pending.extend(current / name for name in os.listdir(current))
-        elif (stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode)) and st.st_nlink == 2:
-            found.append(DyingLink(link_name(current), st.st_dev, st.st_ino))
-    return found
+        elif (stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode)) and st.st_nlink >= 2:
+            key = (st.st_dev, st.st_ino)
+            names[key] = names.get(key, 0) + 1
+            first.setdefault(key, (current, st.st_nlink))
+    return [DyingLink(link_name(current), *key) for key, (current, nlink) in first.items() if nlink - names[key] == 1]
 
 
 def unlink_dead_links(links_dir: Path, dying: Iterable[DyingLink]) -> list[Path]:
