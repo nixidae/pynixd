@@ -12,7 +12,7 @@ from __future__ import annotations
 import shlex
 from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
 
-from daemon_helpers import as_tester, instantiate, store_path
+from daemon_helpers import as_tester, attempt, instantiate, store_path
 from vivarium_runner import Machine, Machines
 
 if TYPE_CHECKING:
@@ -21,6 +21,10 @@ if TYPE_CHECKING:
 DEFAULT = "/nix/var/nix/daemon-socket/socket"
 UPSTREAM = "/nix/var/nix/daemon-socket/upstream"
 BESIDE = "/run/pynixd/pynixd.sock"
+FALLBACK = "fallback"
+"""A step's `to` for the daemonless system's specialisation with nix-daemon alone (`services.pynixd.fallback`)."""
+FALLBACK_NAME = "nix-daemon"
+PYNIXD_HOLDS_DEFAULT = frozenset({"replace", "daemonless"})
 
 
 class Step(TypedDict):
@@ -30,6 +34,11 @@ class Step(TypedDict):
     mode: str
     to: str | Literal[False]
     nix: NotRequired[str]
+
+
+async def probes(vm: Machine) -> list[str]:
+    """The outputs of probe builds: `<hash>-probe-system-<system>` and `-probe-feature-<feature>`."""
+    return (await vm.succeed("ls /nix/store | grep -- '-probe-' || true")).stdout.split()
 
 
 async def holder(vm: Machine, socket: str) -> str:
@@ -54,9 +63,17 @@ async def test(vms: Machines) -> None:
     step = next(each for each in steps if each["name"] == name)
     mode = step["mode"]
     problems: list[str] = []
+    probes_before = set(await probes(vm))
 
     if step["to"] is False:
         await vm.wait_for_unit("multi-user.target")
+    elif step["to"] == FALLBACK:
+        # As an operator would with a broken pynixd: no build, and the boot entry stays.
+        target = (await vm.succeed(f"readlink -f /run/current-system/specialisation/{FALLBACK_NAME}")).stdout.strip()
+        done = await vm.switch_to(target, "test", check=False)
+        print(f"[test] switch to the fallback {target}: exit {done.returncode}")
+        if done.returncode != 0:
+            problems.append(f"switch-to-configuration exited {done.returncode}:\n{done.stdout}\n{done.stderr}")
     else:
         done = await vm.switch_to(step["to"], check=False)
         print(f"[test] switch to {step['to'] or 'the booted system'}: exit {done.returncode}")
@@ -71,7 +88,7 @@ async def test(vms: Machines) -> None:
     upstream = await holder(vm, UPSTREAM)
     print(f"[test] {DEFAULT}: {default or 'nobody'}")
     print(f"[test] {UPSTREAM}: {upstream or 'nobody'}")
-    if mode == "replace":
+    if mode in PYNIXD_HOLDS_DEFAULT:
         if not is_pynixd(default):
             problems.append(f"pynixd does not hold {DEFAULT}: {default!r}")
         if "systemd" not in upstream:
@@ -101,10 +118,16 @@ async def test(vms: Machines) -> None:
         if not is_pynixd(beside):
             problems.append(f"pynixd does not hold {BESIDE}: {beside!r}")
 
+    if mode == "daemonless":
+        # An earlier mode's client left it running; its socket starts it again only for a client.
+        await vm.succeed("systemctl stop nix-daemon-upstream.service")
+
     # A user's build through the default socket, whoever holds it. Root
     # would open the store directly and reach no daemon at all.
     try:
-        print(f"[test] tester built {await build(vm, settings, name)}")
+        built = await build(vm, settings, name)
+        print(f"[test] tester built {built}")
+        vms.shared.setdefault("built", []).append((name, mode, built))
         if mode == "beside":
             out = await build(vm, settings, f"{name}-beside", f"unix://{BESIDE}")
             print(f"[test] tester built {out} through {BESIDE}")
@@ -112,16 +135,35 @@ async def test(vms: Machines) -> None:
         problems.append(f"a user's build failed: {error}")
 
     # The machine's own daemon is described by its nix.conf: probe builds
-    # before READY=1 wait for build slots on a busy machine (#58).
-    # Each probe leaves its output, `<hash>-probe-system-<system>` and
-    # `-probe-feature-<feature>`. pynixd's journal holds warnings only.
-    probes = (await vm.succeed("ls /nix/store | grep -- '-probe-' || true")).stdout.split()
-    if probes:
-        problems.append(f"pynixd probed the machine's own daemon with {len(probes)} builds: {probes[:3]}")
+    # before READY=1 wait for build slots on a busy machine (#58). A
+    # daemonless pynixd proves its own sandbox with them (nixidae/nixidae#1541).
+    # pynixd's journal holds warnings only.
+    new_probes = sorted(set(await probes(vm)) - probes_before)
+    if new_probes and mode != "daemonless":
+        problems.append(f"pynixd probed the machine's own daemon with {len(new_probes)} builds: {new_probes[:3]}")
+
+    if mode == "daemonless":
+        # No client came to the upstream socket, so pynixd built alone.
+        upstream_daemon = await vm.unit_state("nix-daemon-upstream.service")
+        if upstream_daemon != "inactive":
+            problems.append(f"nix-daemon-upstream.service is {upstream_daemon} under a daemonless pynixd")
+
+    # Whoever serves the store now reads what each earlier mode built, and its files are intact.
+    for earlier, by, path in vms.shared.get("built", []):
+        if by == mode or earlier == name:
+            continue
+        # As tester, so the daemon of this mode answers; root would open the store itself.
+        invalid, why = await attempt(vm, f"nix-store --check-validity {path}")
+        intact = await vm.execute(f"nix-store --verify-path {path}")
+        if invalid or intact.returncode:
+            problems.append(
+                f"{path}, built in {earlier} ({by}), is not valid and intact in {mode}: {why}{intact.stderr}"
+            )
+    print(f"[test] {mode} reads every path the other modes built")
 
     # A client that comes while pynixd is down waits for it rather than
     # failing: the socket stays bound and starts pynixd (#59).
-    if mode == "replace" and not problems:
+    if mode in PYNIXD_HOLDS_DEFAULT and not problems:
         await vm.succeed("systemctl stop pynixd.service")
         try:
             out = await build(vm, settings, f"{name}-early")

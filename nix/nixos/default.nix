@@ -28,7 +28,27 @@ let
   '';
 in
 {
-  options.services.pynixd = common.options;
+  options.services.pynixd = common.options // {
+    fallback = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Add the specialisation `nix-daemon`: this system with pynixd off, and
+        Nix's own daemon on the machine's socket. It is in the system's
+        closure, so it needs no build and no daemon to switch to:
+
+            /run/current-system/specialisation/nix-daemon/bin/switch-to-configuration test
+
+        `test` keeps the boot entry; the next boot is the system with
+        pynixd again. The boot menu lists it too. Nix reads a store that
+        pynixd wrote, daemonless too: pynixd keeps Nix's tables as Nix
+        writes them, and adds only its own `Pynixd*` tables, which Nix never
+        reads (`pynixd_store/db_migrations.py`).
+
+        Off by default: a specialisation evaluates the system a second time.
+      '';
+    };
+  };
 
   # One `mkIf`, and not a `mkMerge` with a branch outside it.
   # `environment.systemPackages` sat in a second element of that merge, so
@@ -109,6 +129,10 @@ in
     ];
 
     environment.etc."pynixd/pynixd.json".source = configFile;
+
+    specialisation = lib.mkIf cfg.fallback {
+      nix-daemon.configuration.services.pynixd.enable = lib.mkForce false;
+    };
 
     systemd.services.pynixd = {
       description = "pynixd - Python Nix daemon protocol proxy";

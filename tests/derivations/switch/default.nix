@@ -74,6 +74,22 @@ let
       to = "replace";
       mode = "replace";
     }
+    # Daemonless, then its fallback and back: each reads what the other built.
+    {
+      name = "replace-to-daemonless";
+      to = "daemonless";
+      mode = "daemonless";
+    }
+    {
+      name = "daemonless-to-fallback";
+      to = "fallback";
+      mode = "stock";
+    }
+    {
+      name = "fallback-to-daemonless";
+      to = "daemonless";
+      mode = "daemonless";
+    }
   ];
 in
 vivariumLib.mkTest {
@@ -124,6 +140,20 @@ vivariumLib.mkTest {
     vivarium.configurations = {
       beside = pynixd "beside";
       replace = pynixd "replace";
+      daemonless = {
+        imports = [ (pynixd "replace") ];
+        services.pynixd = {
+          fallback = true;
+          settings = {
+            pressure.build_cgroup = "/sys/fs/cgroup/system.slice/pynixd.service";
+            stores.local = {
+              daemon = false;
+              managed = true;
+              pynixd_writes = true;
+            };
+          };
+        };
+      };
     }
     // lib.mapAttrs' (
       version: nix:
