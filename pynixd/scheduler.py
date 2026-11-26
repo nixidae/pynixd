@@ -338,8 +338,8 @@ class Scheduler:
 
     @contextlib.asynccontextmanager
     async def workers(self) -> AsyncIterator[None]:
-        """The task group every build runs in. Leaving it cancels them all."""
-        async with anyio.create_task_group() as tg:
+        """The task group every build runs in, and the queue's log senders. Leaving it cancels them all."""
+        async with self.queue.sending(), anyio.create_task_group() as tg:
             self._workers = tg
             try:
                 yield

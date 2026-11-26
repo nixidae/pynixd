@@ -18,10 +18,12 @@ activity added here carries no `error:` line, and the count has to stay one.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import time
 from typing import TYPE_CHECKING, cast
 
+import anyio
 import pytest
 
 from nix_daemon_protocol.constants import STDERR_START_ACTIVITY, STDERR_STOP_ACTIVITY
@@ -31,8 +33,11 @@ from pynixd.activity import next_activity_id
 from pynixd.answer import Answer
 from pynixd.build_queue import QueuedBuild
 from pynixd_store.store_path import StorePath
+from tests._conftest.execution import starts_in
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from pynixd.connection import ClientConn
     from pynixd.serde import BuildDerivationRequest
 
@@ -68,12 +73,16 @@ class FakeClient:
         self.blocks.append(raw)
 
 
-def _build(outputs: dict[str, StorePath] | None = None) -> QueuedBuild:
-    return QueuedBuild(
-        build_id=BuildId(1),
-        request=cast("BuildDerivationRequest", FakeRequest(outputs or {"out": StorePath(OUT)})),
-        answer=Answer(),
-    )
+@contextlib.asynccontextmanager
+async def _build(outputs: dict[str, StorePath] | None = None) -> AsyncIterator[QueuedBuild]:
+    async with anyio.create_task_group() as tg:
+        yield QueuedBuild(
+            build_id=BuildId(1),
+            request=cast("BuildDerivationRequest", FakeRequest(outputs or {"out": StorePath(OUT)})),
+            answer=Answer(),
+            start_sender=starts_in(tg),
+        )
+        tg.cancel_scope.cancel()
 
 
 def _codes(client: FakeClient) -> list[int]:
@@ -84,58 +93,62 @@ def _codes(client: FakeClient) -> list[int]:
     return [_read_int(block, 0) for block in client.blocks if block]
 
 
-async def _two_clients(outputs: dict[str, StorePath] | None = None) -> tuple[FakeClient, FakeClient, QueuedBuild]:
-    build = _build(outputs)
-    first, second = FakeClient(), FakeClient()
-    await build.add_subscriber(cast("ClientConn", first))
-    await build.add_subscriber(cast("ClientConn", second))
-    return first, second, build
+@contextlib.asynccontextmanager
+async def _two_clients(
+    outputs: dict[str, StorePath] | None = None,
+) -> AsyncIterator[tuple[FakeClient, FakeClient, QueuedBuild]]:
+    async with _build(outputs) as build:
+        first, second = FakeClient(), FakeClient()
+        await build.add_subscriber(cast("ClientConn", first))
+        await build.add_subscriber(cast("ClientConn", second))
+        await build.log_sent(cast("ClientConn", first))
+        await build.log_sent(cast("ClientConn", second))
+        yield first, second, build
 
 
 class TestTheSecondClient:
     @pytest.mark.anyio
     async def test_reads_a_build_waiting_activity(self) -> None:
-        _, second, _ = await _two_clients()
-
-        assert STDERR_START_ACTIVITY in _codes(second)
+        async with _two_clients() as (_, second, _):
+            assert STDERR_START_ACTIVITY in _codes(second)
 
     @pytest.mark.anyio
     async def test_reads_it_before_the_replay(self) -> None:
-        build = _build()
-        build._log_writer.write(b"a line of the first builder\n")  # noqa: SLF001 -- the order against the replay is the unit under test
-        first, second = FakeClient(), FakeClient()
+        async with _build() as build:
+            build.post_log_bytes(b"a line of the first builder\n")
+            first, second = FakeClient(), FakeClient()
 
-        await build.add_subscriber(cast("ClientConn", first))
-        await build.add_subscriber(cast("ClientConn", second))
+            await build.add_subscriber(cast("ClientConn", first))
+            await build.add_subscriber(cast("ClientConn", second))
+            await build.log_sent(cast("ClientConn", second))
 
-        assert _codes(second)[0] == STDERR_START_ACTIVITY
-        assert len(second.blocks) == 2, "the activity, then the replay"
+            assert _codes(second)[0] == STDERR_START_ACTIVITY
+            assert len(second.blocks) == 2, "the activity, then the replay"
 
     @pytest.mark.anyio
     async def test_the_activity_carries_nixs_type_and_level(self) -> None:
-        _, second, _ = await _two_clients()
-
-        block = second.blocks[0]
-        assert _read_int(block, LEVEL) == Verbosity.WARN
-        assert _read_int(block, TYPE) == ActivityType.BUILD_WAITING
+        async with _two_clients() as (_, second, _):
+            block = second.blocks[0]
+            assert _read_int(block, LEVEL) == Verbosity.WARN
+            assert _read_int(block, TYPE) == ActivityType.BUILD_WAITING
 
     @pytest.mark.anyio
     async def test_it_stops_when_the_build_ends(self) -> None:
-        _, second, build = await _two_clients()
-        before = len(second.blocks)
+        async with _two_clients() as (_, second, build):
+            before = len(second.blocks)
 
-        await build.stop_waiting_activities()
+            await build.stop_waiting_activities()
 
-        assert _codes(second)[before:] == [STDERR_STOP_ACTIVITY]
+            assert _codes(second)[before:] == [STDERR_STOP_ACTIVITY]
 
     @pytest.mark.anyio
     async def test_the_stop_names_the_activity_that_started(self) -> None:
-        _, second, build = await _two_clients()
-        started = _read_int(second.blocks[0], ACT_ID)
+        async with _two_clients() as (_, second, build):
+            started = _read_int(second.blocks[0], ACT_ID)
 
-        await build.stop_waiting_activities()
+            await build.stop_waiting_activities()
 
-        assert _read_int(second.blocks[-1], ACT_ID) == started
+            assert _read_int(second.blocks[-1], ACT_ID) == started
 
 
 class TestTheFirstClient:
@@ -143,9 +156,8 @@ class TestTheFirstClient:
     async def test_reads_no_such_activity(self) -> None:
         """It asked for the build. Nix tells nobody they are waiting for a
         lock they already hold."""
-        first, _, _ = await _two_clients()
-
-        assert STDERR_START_ACTIVITY not in _codes(first)
+        async with _two_clients() as (first, _, _):
+            assert STDERR_START_ACTIVITY not in _codes(first)
 
     @pytest.mark.anyio
     async def test_reads_none_when_its_build_started_before_it_subscribed(self) -> None:
@@ -154,48 +166,46 @@ class TestTheFirstClient:
         Nix's `cli-characterisation/nix-env-install-bad-oti-elem.err.exp` and
         `gc-concurrent.sh:19` read no `waiting for lock` there. nixidae/nixidae#1233.
         """
-        build = _build()
-        first, second = FakeClient(), FakeClient()
-        build.askers.add(cast("ClientConn", first))
-        build.started_at = time.monotonic()
-        build._log_writer.write(b"building\n")  # noqa: SLF001 -- the replay after the activity is the symptom
+        async with _build() as build:
+            first, second = FakeClient(), FakeClient()
+            build.askers.add(cast("ClientConn", first))
+            build.started_at = time.monotonic()
+            build.post_log_bytes(b"building\n")
 
-        await build.add_subscriber(cast("ClientConn", first))
-        await build.add_subscriber(cast("ClientConn", second))
+            await build.add_subscriber(cast("ClientConn", first))
+            await build.add_subscriber(cast("ClientConn", second))
+            await build.log_sent(cast("ClientConn", first))
+            await build.log_sent(cast("ClientConn", second))
 
-        assert STDERR_START_ACTIVITY not in _codes(first)
-        assert _codes(second)[0] == STDERR_START_ACTIVITY
+            assert STDERR_START_ACTIVITY not in _codes(first)
+            assert _codes(second)[0] == STDERR_START_ACTIVITY
 
     @pytest.mark.anyio
     async def test_gets_no_stop_either(self) -> None:
-        first, _, build = await _two_clients()
+        async with _two_clients() as (first, _, build):
+            await build.stop_waiting_activities()
 
-        await build.stop_waiting_activities()
-
-        assert STDERR_STOP_ACTIVITY not in _codes(first)
+            assert STDERR_STOP_ACTIVITY not in _codes(first)
 
 
 class TestTheMessage:
     @pytest.mark.anyio
     async def test_names_the_output_path(self) -> None:
-        _, second, _ = await _two_clients()
-
-        assert OUT.encode() in second.blocks[0]
+        async with _two_clients() as (_, second, _):
+            assert OUT.encode() in second.blocks[0]
 
     @pytest.mark.anyio
     async def test_falls_back_to_the_drv_and_the_output_name(self) -> None:
         """A floating content-addressed output has no path until it is built.
         `derivation-building-goal.cc:413-416` locks `<drv>.<outputName>`
         there, and this says the same."""
-        _, second, _ = await _two_clients({"out": StorePath("")})
-
-        assert f"{DRV}.out".encode() in second.blocks[0]
+        async with _two_clients({"out": StorePath("")}) as (_, second, _):
+            assert f"{DRV}.out".encode() in second.blocks[0]
 
     @pytest.mark.anyio
     async def test_reads_like_nixs_own(self) -> None:
-        _, second, _ = await _two_clients()
-
-        assert b"waiting for lock on" in second.blocks[0]
+        async with _two_clients() as (_, second, _):
+            assert b"waiting for lock on" in second.blocks[0]
 
 
 class TestTheActivityId:

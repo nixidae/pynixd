@@ -195,6 +195,12 @@ class GoalEngine:
             return False
         return await scheduler.queue.subscribe(build_id, client, cancel_on_unsubscribe=True)
 
+    async def log_sent(self, build_id: BuildId, client: ClientConn) -> None:
+        """Wait until *client* has the log of *build_id* so far: its answer comes after it."""
+        scheduler = self.ctx.scheduler
+        if scheduler is not None:
+            await scheduler.queue.log_sent(build_id, client)
+
     async def unsubscribe_build(self, build_id: BuildId, client: ClientConn) -> None:
         """Unsubscribe *client* from real-time log output for the given *build_id*."""
         scheduler = self.ctx.scheduler

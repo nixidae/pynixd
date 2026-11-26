@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -12,6 +13,7 @@ import structlog
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, BuildId, RequestId, StoreId
 from nix_daemon_protocol.logs import LogStartActivity, LogStopActivity
 from nix_daemon_protocol.protocol import ActivityType, Verbosity
+from pynixd_store.live_log import LiveLog
 from pynixd_store.store_path import StorePath
 
 from . import metrics, wire
@@ -24,7 +26,10 @@ from .state_models import QueueCounts
 from .tracing import NO_TRACE, NO_TRACING, BuildTrace, Ending, Tracing
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence, Set as AbstractSet
+    from collections.abc import AsyncIterator, Callable, Coroutine, Mapping, Sequence, Set as AbstractSet
+    from pathlib import Path
+
+    from anyio.abc import TaskGroup
 
     from nix_daemon_protocol.logs import LogMessage
     from pynixd_store.build_stats import BuildObservation, StoreEstimate
@@ -95,6 +100,8 @@ class QueuedBuild:
         scheduler_request_ids: set[RequestId] | None = None,
         options: SetOptionsRequest | None = None,
         building: set[QueuedBuild] | None = None,
+        start_sender: Callable[..., bool] | None = None,
+        spill_dir: Path | None = None,
     ) -> None:
         """Track a single derivation build through its lifecycle.
 
@@ -106,6 +113,9 @@ class QueuedBuild:
             scheduler_request_ids: Request IDs this build belongs to (dedup).
             options: The option set of the client that asked for the build.
             building: The queue's set of builds that a worker runs; `worker` keeps this build's membership.
+            start_sender: Starts each subscription's sender, as `TaskGroup.start_soon` does; False when it waits
+                for the queue's task group.
+            spill_dir: Where a large log goes to a file (`LiveLog`); `None` is the system's temporary directory.
         """
         self.build_id = build_id
         self.request = request
@@ -201,9 +211,13 @@ class QueuedBuild:
         # Empty set for standalone build_derivation() calls.
         self.scheduler_request_ids: set[RequestId] = scheduler_request_ids or set()
 
-        # Append-only byte buffer of all stderr messages (serialized via
-        # NixWriter interface). New subscribers get this replayed on join.
-        self._log_writer = wire.BytesWriter("build_log")
+        self._log = LiveLog(spill_dir)
+        """Every message of the build, serialized. Each subscription's sender reads it from its own offset, and a
+        late one starts at 0. Closed once the build has answered and no subscription is left."""
+        self._log_grew = anyio.Event()
+        """Set, and replaced, on each append: the senders that reached the end wait on it."""
+        self._senders: dict[ClientConn, _Sender] = {}
+        self._start_sender = start_sender
 
         # Client connections subscribed to this build's stderr stream.
         self.subscribers: list[ClientConn] = []
@@ -234,8 +248,6 @@ class QueuedBuild:
         each other's build (`derivation-building-goal.cc:421`).
         nixidae/nixidae#1012."""
 
-        # Guards add_subscriber replay vs post_log_bytes fanout so that a
-        # joining client never misses bytes that arrive during catch-up.
         self._sub_lock = anyio.Lock()
 
     @property
@@ -352,11 +364,65 @@ class QueuedBuild:
 
     # ── Log pub/sub methods ───────────────────────────────────────────
 
-    async def post_log(self, msg: LogMessage) -> bytes:
-        """Serialize and store a log entry. Returns the raw bytes."""
-        before = self._log_writer.tell()
-        await msg.to_writer(WriteContext(writer=self._log_writer, version=wire.PROTOCOL_VERSION))
-        return self._log_writer.get_bytes_since(before)
+    async def post_log(self, msg: LogMessage) -> None:
+        """Add a message to the log; each subscription's sender takes it from there.
+
+        It never waits for a client. A read of a builder's stream that waited for the slowest client would let one
+        client that stops reading stall the build for every other client.
+        """
+        writer = wire.BytesWriter("build_log")
+        await msg.to_writer(WriteContext(writer=writer, version=wire.PROTOCOL_VERSION))
+        self.post_log_bytes(writer.get_bytes())
+
+    def post_log_bytes(self, raw: bytes) -> None:
+        """Add whole serialized messages to the log. Serialized apart first, so a sender never reads half of one."""
+        if not raw:
+            return
+        if self._log.closed:
+            # Answered, and nobody subscribed: no client reads it, and the store's log file has the build's lines.
+            log.debug("build_log_after_close", build_id=self.build_id, bytes=len(raw))
+            return
+        self._log.append(raw)
+        self._log_grew.set()
+        self._log_grew = anyio.Event()
+
+    def log_bytes(self) -> bytes:
+        """The whole log so far, as a subscription that starts now receives it."""
+        return b"" if self._log.closed else self._log.get_bytes()
+
+    async def _send_log(self, client: ClientConn, sender: _Sender) -> None:
+        """Send *client* the log from its offset, as fast as it reads, until it unsubscribes or its send fails."""
+        sender.deferred = False
+        failed = False
+        with sender.scope:
+            while not self._log.closed:
+                if sender.offset < self._log.size:
+                    piece = self._log.piece(sender.offset)
+                    if await self._send_raw_safe(client, piece) is not None:
+                        failed = True
+                        break
+                    sender.offset += len(piece)
+                    sender.moved()
+                else:
+                    await self._log_grew.wait()
+        sender.gone = True
+        sender.moved()
+        if failed:
+            log.debug("subscriber_send_failed", build_id=self.build_id)
+            await self._drop_subscriber(client)
+
+    async def log_sent(self, client: ClientConn) -> None:
+        """Wait until *client* has received the log as far as it is now.
+
+        Call it before the client's answer goes out: `TunnelLogger::stopWork` (`daemon.cc:129`) writes
+        `STDERR_LAST` and the answer follows, and a message after that is read as part of the client's next
+        operation (`worker-protocol-connection.cc:100`). Returns at once for a client whose send failed, and for
+        one whose sender waits for the queue's task group, which a build cancelled while the stores open meets.
+        """
+        end = self._log.size
+        sender = self._senders.get(client)
+        while sender is not None and not sender.gone and not sender.deferred and sender.offset < end:
+            await sender.wait_moved()
 
     async def _send_raw_safe(self, sub: ClientConn, raw: bytes) -> ClientConn | None:
         """Send raw bytes to a subscriber, removing it on failure.
@@ -383,28 +449,9 @@ class QueuedBuild:
         else:
             return None
 
-    async def post_log_bytes(self, raw: bytes) -> None:
-        """Fan out raw log bytes to all subscribers via TaskGroup.
-
-        Dead subscribers (send failure) are removed automatically.
-        """
-        if not self.subscribers or not raw:
-            return
-        async with self._sub_lock:
-            subscribers = list(self.subscribers)
-        if not subscribers:
-            return
-        failed: list[ClientConn] = []
-        async with anyio.create_task_group() as tg:
-            for sub in subscribers:
-                tg.start_soon(_send_and_record_failed, self, sub, raw, failed)
-        for sub in failed:
-            await self.remove_subscriber(sub)
-
     async def post_log_and_fanout(self, msg: LogMessage) -> None:
-        """Store a log entry and fan out to all subscribers."""
-        raw = await self.post_log(msg)
-        await self.post_log_bytes(raw)
+        """`post_log`: the senders fan the message out."""
+        await self.post_log(msg)
 
     async def tell_wait(self, reason: str) -> None:
         """Tell the clients why the build waits, once for each reason; a pass runs every few seconds."""
@@ -415,9 +462,9 @@ class QueuedBuild:
     async def add_subscriber(self, client: ClientConn, *, cancel_on_unsubscribe: bool = False) -> None:
         """Register a client to receive this build's logs.
 
-        Replays the full logged history so far, then the client
-        receives new entries in real-time via post_log_bytes.
-        If replay fails (broken connection), the subscriber is not added.
+        Its sender starts at offset 0, so it replays the log so far, then sends each new message. A send that
+        fails ends the subscription. A build that has answered replays nothing once its log is closed, as Nix
+        shows nothing for outputs that are valid; `nix log` reads the store's log file.
 
         **One client subscribes many times to one build, and the replay runs
         once.** A build is shared: a client asks for it as a root goal, and it
@@ -455,18 +502,17 @@ class QueuedBuild:
                 return
             if client not in self.askers and self._waits_for_somebody_elses_build():
                 await self._say_it_is_waiting(client)
-            if self._log_writer.tell():
-                try:
-                    # One line for each replay, so a run can count them. A
-                    # client that reads one build message twice reads it once
-                    # live and once from here.
-                    log.debug("build_log_replayed", build_id=self.build_id, bytes=self._log_writer.tell())
-                    await client.send_raw(self._log_writer.get_bytes())
-                except (OSError, BrokenPipeError, ConnectionResetError):
-                    log.debug("subscriber_replay_failed", build_id=self.build_id)
-                    return
             self.subscribers.append(client)
             self._subscriber_refs[client] = 1
+            if self._log.closed:
+                return
+            if self._log.size:
+                # One line for each replay, so a run can count them.
+                log.debug("build_log_replayed", build_id=self.build_id, bytes=self._log.size)
+            if self._start_sender is None:
+                raise RuntimeError("this build has no task group to send its log in")
+            sender = self._senders[client] = _Sender()
+            sender.deferred = not self._start_sender(self._send_log, client, sender)
 
     def _waits_for_somebody_elses_build(self) -> bool:
         """Whether a client subscribing now joins a build it did not ask for.
@@ -540,20 +586,46 @@ class QueuedBuild:
             if count > 1:
                 self._subscriber_refs[client] = count - 1
                 return True
-            del self._subscriber_refs[client]
-            self.subscribers.remove(client)
+            self._forget_locked(client)
             return True
 
+    async def _drop_subscriber(self, client: ClientConn) -> None:
+        """End every subscription of a client whose send failed."""
+        async with self._sub_lock:
+            if client in self._subscriber_refs:
+                self._forget_locked(client)
 
-async def _send_and_record_failed(
-    build: QueuedBuild,
-    client: ClientConn,
-    raw: bytes,
-    failed: list[ClientConn],
-) -> None:
-    failed_client = await build._send_raw_safe(client, raw)
-    if failed_client is not None:
-        failed.append(failed_client)
+    def _forget_locked(self, client: ClientConn) -> None:
+        del self._subscriber_refs[client]
+        self.subscribers.remove(client)
+        if (sender := self._senders.pop(client, None)) is not None:
+            sender.scope.cancel()
+        self.close_log_if_unread()
+
+    def close_log_if_unread(self) -> None:
+        """Free the log of a build that has answered once no subscription is left to send it."""
+        if self.is_done and not self._subscriber_refs and not self._log.closed:
+            log.debug("build_log_closed", build_id=self.build_id, bytes=self._log.size)
+            self._log.close()
+            self._log_grew.set()
+
+
+class _Sender:
+    """Where one subscription's sender is in the log."""
+
+    def __init__(self) -> None:
+        self.offset = 0
+        self.gone = False
+        self.deferred = False
+        self.scope = anyio.CancelScope()
+        self._moved = anyio.Event()
+
+    def moved(self) -> None:
+        self._moved.set()
+        self._moved = anyio.Event()
+
+    async def wait_moved(self) -> None:
+        await self._moved.wait()
 
 
 def _the_order_nix_takes(build: QueuedBuild) -> tuple[int, str, str, int]:
@@ -579,8 +651,12 @@ def _dedup_key(request: BuildDerivationRequest) -> tuple[str, int]:
 class BuildQueue:
     """Global queue for build operations with deduplication."""
 
-    def __init__(self) -> None:
+    def __init__(self, spill_dir: Path | None = None) -> None:
         """Initialize an empty build queue with deduplication indices."""
+        self._spill_dir = spill_dir
+        self._senders: TaskGroup | None = None
+        self._waiting_senders: list[tuple[Callable[..., Coroutine[object, object, None]], tuple[object, ...]]] = []
+        """Senders of subscriptions made before `sending`: a client can ask for a build while the stores open."""
         self._queue: list[QueuedBuild] = []
         self._by_path: dict[tuple[str, int], QueuedBuild] = {}
         """Dedup: `_dedup_key` -> the build of that derivation and mode."""
@@ -609,6 +685,28 @@ class BuildQueue:
         self._held: dict[RequestId, set[BuildId]] = {}
         self.lock: anyio.Lock = anyio.Lock()
         self.tracing: Tracing = NO_TRACING
+
+    @contextlib.asynccontextmanager
+    async def sending(self) -> AsyncIterator[None]:
+        """The task group that sends each build's log to its subscribers. Leaving it stops every sender."""
+        async with anyio.create_task_group() as tg:
+            self._senders = tg
+            waiting, self._waiting_senders = self._waiting_senders, []
+            for sender, args in waiting:
+                tg.start_soon(sender, *args)
+            try:
+                yield
+            finally:
+                self._senders = None
+                tg.cancel_scope.cancel()
+
+    def _start_sender(self, sender: Callable[..., Coroutine[object, object, None]], *args: object) -> bool:
+        """Start *sender* now, or once `sending` begins; True when now."""
+        if self._senders is None:
+            self._waiting_senders.append((sender, args))
+            return False
+        self._senders.start_soon(sender, *args)
+        return True
 
     def counts(self) -> QueueCounts:
         """Builds by state, from a walk of the queue.
@@ -770,6 +868,8 @@ class BuildQueue:
                 scheduler_request_ids=scheduler_request_ids,
                 options=options,
                 building=self._building,
+                start_sender=self._start_sender,
+                spill_dir=self._spill_dir,
             )
             build.from_goal_path = from_goal_path
             build.builders = builders
@@ -809,6 +909,13 @@ class BuildQueue:
                 return False
             await build.add_subscriber(client, cancel_on_unsubscribe=cancel_on_unsubscribe)
             return True
+
+    async def log_sent(self, build_id: BuildId, client: ClientConn) -> None:
+        """`QueuedBuild.log_sent`: before *client*'s answer for the build goes out. Not under `self.lock`, so a
+        slow client holds up only itself."""
+        build = self._by_id.get(build_id)
+        if build is not None:
+            await build.log_sent(client)
 
     async def unsubscribe(self, build_id: BuildId, client: ClientConn) -> bool:
         """Remove a client subscription and cancel abandoned client-bound builds."""
@@ -942,6 +1049,7 @@ class BuildQueue:
                         return
                     b.finished_at = time.monotonic()
                     b.answer.set(response)
+                    b.close_log_if_unread()
                     self._note_a_request_that_gave_up(b, response.result.status)
                     log.info("build_completed", build_id=build_id)
                     b.trace.ended(
@@ -1004,6 +1112,7 @@ class BuildQueue:
                         ),
                     )
                     b.answer.set(response)
+                    b.close_log_if_unread()
                     self._note_a_request_that_gave_up(b, response.result.status)
                     log.info("build_failed", build_id=build_id, error_msg=error_msg)
                     b.trace.ended(Ending.FAILED, status=int(status), error=error_msg)
@@ -1114,6 +1223,7 @@ class BuildQueue:
         )
         if not build.answer.done():
             build.answer.set(response)
+        build.close_log_if_unread()
         # The reason belongs in the line, because two roads reach this
         # method: a client that disconnected, and a goal system that let go.
         log.info("build_cancelled", build_id=build.build_id, reason=log_reason or error_msg)

@@ -5,7 +5,7 @@ import pytest
 
 from nix_daemon_protocol.ids import BuildId, StoreId
 from pynixd.answer import Answer
-from pynixd.build_queue import BuildQueue
+from pynixd.build_queue import BuildQueue, QueuedBuild
 from pynixd.config import PynixdSettings
 from pynixd.connection import ClientConn
 from pynixd.context import PynixdContext
@@ -22,6 +22,7 @@ from pynixd.serde import (
 )
 from pynixd.wire import BytesWriter
 from pynixd_store.store_path import StorePath
+from tests._conftest.execution import starts_in
 from tests.conftest import serde_path
 from tests.functional.mock_store import MockStore
 
@@ -36,8 +37,8 @@ async def test_build_log_pubsub_two_clients() -> None:
     - Client 2 subscribes ~5s after the build starts (mid-flight).
     - Both clients receive the same complete log output.
 
-    The late subscriber gets the full buffer replayed via add_subscriber(),
-    plus any subsequent real-time messages via post_log_bytes().
+    The late subscriber's sender starts at offset 0 of the log, so it reads
+    what the early one read.
     """
     local_store = MockStore("local", feature_matrix={"x86_64-linux": set()})
     remote = MockStore("remote", feature_matrix={"x86_64-linux": set()})
@@ -84,13 +85,12 @@ async def test_build_log_pubsub_two_clients() -> None:
     buf2 = BytesWriter("client2")
     client2 = ClientConn(buf2)
 
-    # Subscribe client1 before the build starts.
-    subscribed = await scheduler.queue.subscribe(build_id, client1)
-    assert subscribed
-
     # Trigger scheduling — this assigns the build and spawns Executor.run.
     # The build will block on build_blocker inside MockStore.execute_mock().
     async with scheduler.workers():
+        # Subscribe client1 before the build starts.
+        subscribed = await scheduler.queue.subscribe(build_id, client1)
+        assert subscribed
         await scheduler.schedule()
         await anyio.sleep(0.05)
 
@@ -110,10 +110,11 @@ async def test_build_log_pubsub_two_clients() -> None:
             resp = await future.wait()
         assert resp.result.status == BuildResultStatus.BUILT
 
-    # Now subscribe client2 — the build is already done, so add_subscriber
-    # will replay the full _log_buf.
-    subscribed = await scheduler.queue.subscribe(build_id, client2)
-    assert subscribed
+        # Now subscribe client2: the build is done, and client1 still holds its log.
+        subscribed = await scheduler.queue.subscribe(build_id, client2)
+        assert subscribed
+        await scheduler.queue.log_sent(build_id, client1)
+        await scheduler.queue.log_sent(build_id, client2)
 
     # Both clients should have received identical log output.
     data1 = buf1.get_bytes()
@@ -135,8 +136,6 @@ async def test_build_log_pubsub_late_subscriber_gets_full_history() -> None:
     This test directly exercises QueuedBuild.add_subscriber() replay
     without going through the scheduler, to isolate the pub/sub mechanism.
     """
-    from pynixd.build_queue import QueuedBuild
-
     drv_path = StorePath("/nix/store/00000000000000000000000000000001-test.drv")
     request = BuildDerivationRequest(
         drv_path=serde_path(drv_path),
@@ -145,11 +144,13 @@ async def test_build_log_pubsub_late_subscriber_gets_full_history() -> None:
     )
 
     answer: Answer[BuildDerivationResponse] = Answer()
-    build = QueuedBuild(
-        build_id=BuildId(1),
-        request=request,
-        answer=answer,
-    )
+    async with anyio.create_task_group() as tg:
+        build = QueuedBuild(build_id=BuildId(1), request=request, answer=answer, start_sender=starts_in(tg))
+        await _late_subscriber(build)
+        tg.cancel_scope.cancel()
+
+
+async def _late_subscriber(build: QueuedBuild) -> None:
 
     # Create two client connections.
     buf1 = BytesWriter("early-client")
@@ -166,6 +167,8 @@ async def test_build_log_pubsub_late_subscriber_gets_full_history() -> None:
 
     # Subscribe client2 after all logs are posted.
     await build.add_subscriber(client2)
+    await build.log_sent(client1)
+    await build.log_sent(client2)
 
     # The late client reads everything the early one did, after a
     # BUILD_WAITING activity that says it joined a build it did not ask for.
@@ -176,6 +179,8 @@ async def test_build_log_pubsub_late_subscriber_gets_full_history() -> None:
     # Post one more message — only client1 should get it (client2 was added
     # after the last fan-out, but both are now subscribed).
     await build.post_log_and_fanout(LogNext(text="done\n"))
+    await build.log_sent(client1)
+    await build.log_sent(client2)
 
     # Both got "done\n", so the late client is still the early one plus its
     # activity.
@@ -193,13 +198,14 @@ async def test_client_bound_build_cancels_after_last_unsubscribe() -> None:
     build_id, future = await queue.enqueue(request)
     client = ClientConn(BytesWriter("client"))
 
-    assert await queue.subscribe(build_id, client, cancel_on_unsubscribe=True)
-    assert await queue.subscribe(build_id, client, cancel_on_unsubscribe=True)
+    async with queue.sending():
+        assert await queue.subscribe(build_id, client, cancel_on_unsubscribe=True)
+        assert await queue.subscribe(build_id, client, cancel_on_unsubscribe=True)
 
-    assert await queue.unsubscribe(build_id, client)
-    assert not future.done()
+        assert await queue.unsubscribe(build_id, client)
+        assert not future.done()
 
-    assert await queue.unsubscribe(build_id, client)
+        assert await queue.unsubscribe(build_id, client)
     assert future.done()
     assert future.result().result.status == BuildResultStatus.MISC_FAILURE
     assert "all clients disconnected" in future.result().result.error_msg
@@ -226,9 +232,9 @@ async def test_client_bound_active_build_task_cancels_after_last_unsubscribe() -
     )
     build_id, future = await scheduler.build_derivation(request)
     client = ClientConn(BytesWriter("client"))
-    assert await scheduler.queue.subscribe(build_id, client, cancel_on_unsubscribe=True)
 
     async with scheduler.workers():
+        assert await scheduler.queue.subscribe(build_id, client, cancel_on_unsubscribe=True)
         await scheduler.schedule()
         build = scheduler.queue.by_id[build_id]
         assert build.is_building

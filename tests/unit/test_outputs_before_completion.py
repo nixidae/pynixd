@@ -14,14 +14,18 @@ swallowed failure is the defect.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
 from nix_daemon_protocol.ids import StoreId
 from pynixd.build_queue import BuildQueue, QueuedBuild
 from pynixd.serde import BuildResultStatus
-from tests._conftest.execution import FakeLocal, Streamed, Triggers, answering, fake_executor, log_bytes, queued
+from tests._conftest.execution import FakeLocal, Streamed, Triggers, answering, fake_executor, queued
 from tests._conftest.placement import FakeStore
+
+if TYPE_CHECKING:
+    from pynixd.connection import ClientConn
 
 PULL_FAILED = "the builder hung up mid-copy"
 OUT = "/nix/store/00000000000000000000000000000001-out"
@@ -33,6 +37,16 @@ class Run:
     steps: list[str]
     """Every step that matters, in the order it ran. A test that checks
     only which steps happened passes against the old order too."""
+    received: bytes
+    """What a client subscribed to the build read."""
+
+
+class _Client:
+    def __init__(self) -> None:
+        self.received = b""
+
+    async def send_raw(self, raw: bytes) -> None:
+        self.received += raw
 
 
 async def _run(*, collection_fails: bool) -> Run:
@@ -44,8 +58,12 @@ async def _run(*, collection_fails: bool) -> Run:
     queue = BuildQueue()
     build = await queued(queue, outputs={"out": OUT})
     executor = fake_executor(queue, {store.store_id: store}, local=FakeLocal(), stream=stream, trigger=Triggers(steps))
-    await executor.run(build, store)
-    return Run(build, steps)
+    client = _Client()
+    async with queue.sending():
+        await queue.subscribe(build.build_id, cast("ClientConn", client))
+        await executor.run(build, store)
+        await queue.log_sent(build.build_id, cast("ClientConn", client))
+    return Run(build, steps, client.received)
 
 
 class TestACollectionFailure:
@@ -69,7 +87,7 @@ class TestACollectionFailure:
         client being told."""
         run = await _run(collection_fails=True)
 
-        assert PULL_FAILED.encode() in log_bytes(run.build)
+        assert PULL_FAILED.encode() in run.received
 
 
 class TestASuccessfulBuild:

@@ -98,6 +98,8 @@ class BuildDerivationHandler(Handler):
         )
         try:
             response = await answer.wait()
+            if subscribed and ctx.proxy.client is not None:
+                await ctx.proxy.scheduler.queue.log_sent(build_id, ctx.proxy.client)
             logger.debug("responded_op")
             # **The backend and this client negotiate their features apart.**
             # A backend that offers `realisation-with-path-not-hash` fills one

@@ -83,6 +83,9 @@ class FakeEngine:
         self.subscribed.append((build_id, client))
         return True
 
+    async def log_sent(self, build_id: BuildId, client: ClientConn) -> None:
+        del build_id, client
+
     async def unsubscribe_build(self, build_id: BuildId, client: ClientConn) -> None:
         self.unsubscribed.append((build_id, client))
 

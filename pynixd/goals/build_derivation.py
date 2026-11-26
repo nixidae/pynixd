@@ -217,6 +217,10 @@ class BuildDerivationGoal(ExecutionGoal[GoalResult]):
 
         try:
             response = await self._wait_within_my_limits(build_id, answer, options)
+            async with self._lock:
+                active_subscribers = list(self._active_subscribers)
+            for client in active_subscribers:
+                await self.engine.log_sent(build_id, client)
         finally:
             async with self._lock:
                 self._finished = True

@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping
 
     import anyio
+    from anyio.abc import TaskGroup
 
     from nix_daemon_protocol.ids import StoreId
     from nix_daemon_protocol.logs import LogMessage
@@ -211,9 +212,19 @@ def _conforms(
     return store, local, conn, streamed, sandbox
 
 
+def starts_in(tg: TaskGroup) -> Callable[..., bool]:
+    """A `QueuedBuild`'s `start_sender` for a build made outside a queue: its senders run in *tg*."""
+
+    def start(*args: Any) -> bool:
+        tg.start_soon(*args)
+        return True
+
+    return start
+
+
 def log_bytes(build: QueuedBuild) -> bytes:
     """Every log message *build* fanned out, as its subscribers receive them."""
-    return build._log_writer.get_bytes()  # noqa: SLF001 -- the log a late subscriber replays
+    return build.log_bytes()
 
 
 def sandbox_settings() -> BuildSettings:

@@ -116,4 +116,4 @@ async def test_the_placer_tells_a_waiting_build_once() -> None:
     assert waits
     assert spawned.stores == []
     assert told.startswith("waiting for disk space: local has 1024 MiB free")
-    assert build._log_writer.get_bytes().count(told.encode()) == 1
+    assert build.log_bytes().count(told.encode()) == 1

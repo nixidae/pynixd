@@ -131,4 +131,4 @@ async def test_a_machine_fault_says_why_in_the_log_and_to_the_client() -> None:
 
     [line] = [entry for entry in logs if entry["event"] == "build_failed_on_the_machine"]
     assert line["error"] == SANDBOX
-    assert SANDBOX.encode() in build._log_writer.get_bytes()
+    assert SANDBOX.encode() in build.log_bytes()
