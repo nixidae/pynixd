@@ -24,6 +24,7 @@ from pynixd.serde import (
     AddTempRootRequest,
     AddTempRootsRequest,
     BasicDerivation,
+    BuildDerivationRequest,
     SetOptionsRequest,
 )
 from tests._conftest.client_options import set_options
@@ -57,6 +58,8 @@ class FakeConn:
         self.calls: list[WireRequest] = []
         self.events = events
         self.answer: Callable[[WireRequest], Awaitable[Any]] | None = None
+        self.during: Callable[[ClientConn], Awaitable[None]] | None = None
+        """Runs with a `BuildDerivation` call's log sink before *answer*: a builder that prints as it builds."""
 
     async def call(
         self,
@@ -67,7 +70,7 @@ class FakeConn:
         options: SetOptionsRequest | None = None,
         keep_logs: bool | None = None,
     ) -> Any:
-        del client, suppress_last, options, keep_logs
+        del suppress_last, options, keep_logs
         self.calls.append(request)
         if isinstance(request, (AddTempRootRequest, AddTempRootsRequest)):
             assert raise_on_error, "a root that did not hold must fail the build"
@@ -76,6 +79,8 @@ class FakeConn:
             return None
         if self.answer is None:
             raise AssertionError(f"the connection was not asked to answer {type(request).__name__}")
+        if self.during is not None and client is not None and isinstance(request, BuildDerivationRequest):
+            await self.during(client)
         return await self.answer(request)
 
 

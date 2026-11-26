@@ -20,7 +20,7 @@ import anyio
 import structlog
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID
-from nix_daemon_protocol.logs import LogResult
+from nix_daemon_protocol.logs import LogResult, LogStartActivity, LogStopActivity
 from nix_daemon_protocol.protocol import ResultType, Verbosity
 from nix_daemon_protocol.wire_time import TimeSpan
 from pynixd_store.build_stats import BuildObservation, identity_of
@@ -253,7 +253,10 @@ class Streams[E](Protocol):
 
 
 class _OutputClock:
-    """The log sink of a running build: it notes when each message arrives."""
+    """The log sink of a build on a builder: each message goes to the build's log as it arrives.
+
+    A post never waits for a client, so a client that stops reading does not stall the read of the builder's stream.
+    """
 
     options = None
 
@@ -261,10 +264,27 @@ class _OutputClock:
         self._build = build
         self.traceparent = build.trace.traceparent()
         """The build's own span, so a pynixd builder's trace of it joins this one (nixidae/nixidae#1570)."""
+        self.log_file: bytearray | None = bytearray() if keeps_build_log(build) else None
+        """The text of the log the local store keeps, as bytes: as `LogResult` models a long build log was hundreds
+        of thousands of objects for the garbage collector to walk (nixidae/nixidae#1632)."""
+        self.open_activities: set[int] = set()
 
     async def send(self, msg: LogMessage) -> None:
-        del msg
         self._build.last_output_at = time.monotonic()
+        if isinstance(msg, LogStartActivity):
+            self.open_activities.add(msg.act_id)
+        elif isinstance(msg, LogStopActivity):
+            self.open_activities.discard(msg.act_id)
+        if self.log_file is not None and (line := log_file_line(msg)) is not None:
+            self.log_file += line
+        await self._build.post_log(msg)
+
+    async def stop_open_activities(self) -> None:
+        """Close the activities of an attempt that ended without the builder closing them, so no client shows a
+        progress bar that never ends. A retry opens its own."""
+        for act_id in sorted(self.open_activities):
+            await self._build.post_log(LogStopActivity(act_id=act_id))
+        self.open_activities.clear()
 
 
 def output_paths(build: QueuedBuild, resp: BuildDerivationResponse) -> StorePathSet:
@@ -275,28 +295,29 @@ def output_paths(build: QueuedBuild, resp: BuildDerivationResponse) -> StorePath
     return static_paths | ca_paths
 
 
-def builder_log(build: QueuedBuild, resp: BuildDerivationResponse) -> bytes | None:
-    """The log a build on another store leaves in the local store, or None under `keep-build-log = false`.
+def keeps_build_log(build: QueuedBuild) -> bool:
+    """Whether a build on another store leaves its log in the local store: not under `keep-build-log = false`."""
+    overrides = build.options.overrides if build.options is not None else {}
+    return overrides.get("keep-build-log") != "false"
+
+
+def log_file_line(message: LogMessage) -> bytes | None:
+    """What one message of a build on a builder adds to the log the local store keeps.
 
     `buildWithHook` (`derivation-building-goal.cc:619`) opens a local `LogFile` for a build on a
     builder too. From an `ssh-ng://` builder it writes each `BUILD_LOG_LINE` result with a
     newline, and each `SET_PHASE` result as the `@nix` line stdenv prints
     (`derivation-building-goal.cc:671`). `build-remote.sh:74` reads the log back with `nix log`.
     """
-    overrides = build.options.overrides if build.options is not None else {}
-    if overrides.get("keep-build-log") == "false":
+    if not isinstance(message, LogResult):
         return None
-    lines: list[str] = []
-    for message in resp.logs.messages:
-        if not isinstance(message, LogResult):
-            continue
-        first = message.fields[0].valstr if message.fields else None
-        if message.result_type == ResultType.BUILD_LOG_LINE:
-            lines.append(f"{first or ''}\n")
-        elif message.result_type == ResultType.SET_PHASE and first is not None:
-            phase = json.dumps({"action": "setPhase", "phase": first}, separators=(",", ":"), ensure_ascii=False)
-            lines.append(f"@nix {phase}\n")
-    return "".join(lines).encode(errors="surrogateescape")
+    first = message.fields[0].valstr if message.fields else None
+    if message.result_type == ResultType.BUILD_LOG_LINE:
+        return f"{first or ''}\n".encode(errors="surrogateescape")
+    if message.result_type == ResultType.SET_PHASE and first is not None:
+        phase = json.dumps({"action": "setPhase", "phase": first}, separators=(",", ":"), ensure_ascii=False)
+        return f"@nix {phase}\n".encode(errors="surrogateescape")
+    return None
 
 
 def kept_on_the_builder(build: QueuedBuild) -> str | None:
@@ -665,7 +686,7 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
                     observation.inputs_ms = ms_since(inputs_started)
                     await say_where_it_builds(build, store)
                     with build.trace.phase(Phase.BUILD):
-                        build_resp = await self._execute(build, store, conn)
+                        build_resp, log_file = await self._execute(build, store, conn)
                     await self._record_kill(build, build_resp)
                     if build.started_at is not None:
                         observation.build_ms = ms_since(build.started_at)
@@ -683,7 +704,7 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
                         await self.retry_elsewhere(build, store, build_resp, fault)
                         build_resp = None
                     if build_resp is not None and store is not self.local_builder:
-                        await self.keep_log(build, build_resp)
+                        await self.keep_log(build, log_file)
                         if not result_succeeded(build_resp.result) and (warning := kept_on_the_builder(build)):
                             await build.post_log_and_fanout(LogNext(text=warning))
                 # The build connection goes back before the pull, so the slot
@@ -898,13 +919,13 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         sent = await self.stream(self.local, to, inputs, peer_store_id=to.store_id, direction="out")
         log.debug("build_inputs_sent", build_id=build.build_id, store_id=to.store_id, bytes=sent)
 
-    async def _execute(self, build: QueuedBuild, store: S, conn: BuildConn) -> BuildDerivationResponse:
-        """Call the backend daemon and return the response.
+    async def _execute(
+        self, build: QueuedBuild, store: S, conn: BuildConn
+    ) -> tuple[BuildDerivationResponse, bytes | None]:
+        """Call the backend daemon; return the response and the text of the log the local store keeps.
 
-        Stderr is buffered in the response, then fanned out to the build's
-        subscribers. `_OutputClock` only notes when each message arrives:
-        a fan-out from inside the read would let a client that stops reading
-        stall the upstream build.
+        `_OutputClock` posts each message to the build's log as it arrives. The response keeps only the
+        terminating `LogError`, which is never streamed.
         """
         log.debug("build_executing", build_id=build.build_id, store_id=store.store_id)
         build.started_at = build.last_output_at = time.monotonic()
@@ -912,21 +933,22 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
             metrics.QUEUE_WAIT_DURATION.observe(build.wait_time)
 
         start = int(time.time())
+        clock = _OutputClock(build)
         call = functools.partial(
             conn.call,
             build.request,
-            client=cast("ClientConn", _OutputClock(build)),
+            client=cast("ClientConn", clock),
             options=builder_options(build.options, store, self.local_builder, build.cores_cap),
-            keep_logs=True,
         )
-        resp: BuildDerivationResponse = await self._while_the_builder_answers(build, store, call)
+        try:
+            resp: BuildDerivationResponse = await self._while_the_builder_answers(build, store, call)
+        except BaseException:
+            with anyio.CancelScope(shield=True):
+                await clock.stop_open_activities()
+            raise
         resp = marked_raised(without_error_prefix(with_build_times(resp, start, int(time.time()))))
-        if resp.logs.messages:
-            # The count, so a run can tell one fan-out of many messages from
-            # many fan-outs of one message.
-            log.debug("build_logs_fanned_out", build_id=build.build_id, count=len(resp.logs.messages))
-            for msg in resp.logs.messages:
-                await build.post_log_and_fanout(msg)
+        for msg in resp.logs.messages:
+            await build.post_log(msg)
         # **A failure of the build itself gets no log line here.** The message
         # travels in `BuildResult.error_msg`, and the goal that asked for the
         # build decides what a reader sees. `Goal::amDone` at `goal.cc:214`
@@ -939,7 +961,7 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         # does not send, and the client printed the same text twice. Issue
         # nixidae/nixidae#227.
         log.debug("build_executed", build_id=build.build_id, status=resp.result.status, error_msg=resp.result.error_msg)
-        return resp
+        return resp, None if clock.log_file is None else bytes(clock.log_file)
 
     async def _while_the_builder_answers[T](self, build: QueuedBuild, store: S, call: Callable[[], Awaitable[T]]) -> T:
         """*call*, or `BuilderGone` once *build* is silent and *store* does not answer a fresh handshake.
@@ -1012,9 +1034,8 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
             return resp
         return resp.model_copy(update={"result": failure(failed)})
 
-    async def keep_log(self, build: QueuedBuild, resp: BuildDerivationResponse) -> None:
-        """Write the log of a build on a builder to the local store, as Nix's build hook does."""
-        text = builder_log(build, resp)
+    async def keep_log(self, build: QueuedBuild, text: bytes | None) -> None:
+        """Write the log of a build on a builder to the local store, as Nix's build hook does; `None` writes none."""
         if text is None:
             return
         try:

@@ -9,8 +9,7 @@ from __future__ import annotations
 from nix_daemon_protocol.logs import ActivityField, LogNext, LogResult
 from nix_daemon_protocol.protocol import FieldType, ResultType
 from pynixd.build_queue import BuildQueue, QueuedBuild
-from pynixd.execution import builder_log, kept_on_the_builder
-from pynixd.serde import BuildDerivationResponse, BuildResult, BuildResultStatus
+from pynixd.execution import keeps_build_log, kept_on_the_builder, log_file_line
 from pynixd.store.base import get_current_system
 from tests._conftest.execution import Logs, fake_executor, queued
 from tests._conftest.placement import options
@@ -33,15 +32,13 @@ async def _build(
     )
 
 
-def _resp(*messages: LogNext | LogResult) -> BuildDerivationResponse:
-    resp = BuildDerivationResponse(result=BuildResult(status=int(BuildResultStatus.BUILT)))
-    for message in messages:
-        resp.logs.add(message)
-    return resp
+def _log_file(*messages: LogNext | LogResult) -> bytes:
+    """The text `_OutputClock` collects from a builder's stream, one message at a time."""
+    return b"".join(line for message in messages if (line := log_file_line(message)) is not None)
 
 
 async def test_the_builder_lines_make_the_log() -> None:
-    resp = _resp(
+    text = _log_file(
         LogNext(text="building '/nix/store/x.drv' on 'ssh-ng://localhost'\n"),
         _line("hi-input1"),
         _line(""),
@@ -49,7 +46,7 @@ async def test_the_builder_lines_make_the_log() -> None:
         _line("buildPhase", ResultType.SET_PHASE),
         _line("done"),
     )
-    assert builder_log(await _build(), resp) == b'hi-input1\n\n@nix {"action":"setPhase","phase":"buildPhase"}\ndone\n'
+    assert text == b'hi-input1\n\n@nix {"action":"setPhase","phase":"buildPhase"}\ndone\n'
 
 
 async def test_a_line_that_is_not_utf8_keeps_its_bytes() -> None:
@@ -58,15 +55,16 @@ async def test_a_line_that_is_not_utf8_keeps_its_bytes() -> None:
     A log field reads with `surrogateescape`, so the encode takes the same handler back to the builder's bytes.
     """
     line = b"\x1f\x8b\x08not-utf8".decode("utf-8", errors="surrogateescape")
-    assert builder_log(await _build(), _resp(_line(line))) == b"\x1f\x8b\x08not-utf8\n"
+    assert _log_file(_line(line)) == b"\x1f\x8b\x08not-utf8\n"
 
 
 async def test_a_silent_build_keeps_an_empty_log() -> None:
-    assert builder_log(await _build({}), _resp()) == b""
+    assert keeps_build_log(await _build({}))
+    assert _log_file() == b""
 
 
 async def test_keep_build_log_false_keeps_none() -> None:
-    assert builder_log(await _build({"keep-build-log": "false"}), _resp(_line("hi"))) is None
+    assert not keeps_build_log(await _build({"keep-build-log": "false"}))
 
 
 async def test_the_log_goes_to_the_local_store_under_the_base_name() -> None:
@@ -74,7 +72,7 @@ async def test_the_log_goes_to_the_local_store_under_the_base_name() -> None:
     logs = Logs()
     queue = BuildQueue()
     build = await queued(queue)
-    await fake_executor(queue, {}, logs=logs).keep_log(build, _resp(_line("hi-input1")))
+    await fake_executor(queue, {}, logs=logs).keep_log(build, _log_file(_line("hi-input1")))
     assert logs.written == [(DRV_NAME, b"hi-input1\n")]
 
 
@@ -82,7 +80,7 @@ async def test_a_log_the_store_refuses_keeps_the_build() -> None:
     """`LogFile` failing ends Nix's goal; pynixd keeps the build, which has its outputs."""
     queue = BuildQueue()
     build = await queued(queue)
-    await fake_executor(queue, {}, logs=Logs(fails=True)).keep_log(build, _resp(_line("hi-input1")))
+    await fake_executor(queue, {}, logs=Logs(fails=True)).keep_log(build, _log_file(_line("hi-input1")))
 
 
 async def test_keep_failed_warns_that_the_builder_kept_the_directory() -> None:
