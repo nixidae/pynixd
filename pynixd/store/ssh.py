@@ -356,9 +356,28 @@ class SSHStore(DaemonStore):
         present = [str(path) for path in paths if await anyio.Path(path).exists()]
         return present or asyncssh.import_known_hosts("")
 
-    def invalidate_ssh(self) -> None:
-        """Mark SSH connection as dead, triggering reconnect on next use."""
+    async def open_channel[T](self, open_on: Callable[[asyncssh.SSHClientConnection], Awaitable[T]]) -> T:
+        """*open_on* the SSH connection; once more on a fresh one when a reused connection turns out closed.
 
+        A cached connection the far end closed (its pynixd restarted, the link dropped) looks alive until a
+        channel fails on it. Failing the operation then failed a client's push for a connection pynixd
+        replaced a second later (nixidae/nixidae#1641). A failure on a connection just dialled still raises.
+        """
+        reused = self.conn is not None
+        try:
+            return await open_on(await self.ensure_ssh())
+        except (asyncssh.misc.Error, OSError) as e:
+            self.invalidate_ssh()
+            if not reused:
+                raise
+            log.info("ssh_reused_connection_closed", store_id=self.store_id, error=str(e))
+        try:
+            return await open_on(await self.ensure_ssh())
+        except (asyncssh.misc.Error, OSError):
+            self.invalidate_ssh()
+            raise
+
+    def invalidate_ssh(self) -> None:
         """Mark SSH connection as dead so next ensure_ssh reconnects."""
         if self.conn is not None:
             with contextlib.suppress(Exception):
@@ -424,7 +443,6 @@ class SSHSubprocessStore(SSHStore):
 
     async def create_conn(self) -> Connection:
         """Spawn a nix-daemon --stdio subprocess over the SSH connection."""
-        ssh_conn = await self.ensure_ssh()
         conn_id = f"{self.store_id}-{self.conn_counter}"
         if self.remote_command is not None:
             cmd = shlex.join(self.remote_command)
@@ -439,11 +457,7 @@ class SSHSubprocessStore(SSHStore):
             cmd=cmd,
             conn_id=conn_id,
         )
-        try:
-            proc = await ssh_conn.create_process(cmd, encoding=None)
-        except (asyncssh.misc.Error, OSError):
-            self.invalidate_ssh()
-            raise
+        proc = await self.open_channel(lambda ssh_conn: ssh_conn.create_process(cmd, encoding=None))
         self.track_process(proc)
         proc.channel.set_write_buffer_limits(
             high=wire._SSH_WINDOW_SIZE,
@@ -508,18 +522,13 @@ class SSHSocketStore(SSHStore):
 
     async def create_conn(self) -> Connection:
         """Open a Unix socket tunnel over the SSH connection."""
-        ssh_conn = await self.ensure_ssh()
         conn_id = f"{self.store_id}-{self.conn_counter}"
         log.debug(
             "tunneling_to_socket",
             socket_path=str(self.socket_path),
             conn_id=conn_id,
         )
-        try:
-            r, w = await ssh_conn.open_unix_connection(str(self.socket_path))
-        except (asyncssh.misc.Error, OSError):
-            self.invalidate_ssh()
-            raise
+        r, w = await self.open_channel(lambda ssh_conn: ssh_conn.open_unix_connection(str(self.socket_path)))
         conn = Connection(
             SSHNixReader(r, identifier=conn_id),
             SSHNixWriter(w, identifier=conn_id),
