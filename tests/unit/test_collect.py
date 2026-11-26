@@ -17,6 +17,7 @@ import pytest
 
 from nix_daemon_protocol.protocol import Verbosity
 from pynixd_store import collect
+from pynixd_store.optimise import link_name
 from pynixd_store.temp_roots import COLLECTOR_ACK
 
 if TYPE_CHECKING:
@@ -89,6 +90,56 @@ def test_the_sweep_unlinks_what_no_file_shares(tmp_path: Path) -> None:
     assert sweep.actual_size == 50
     assert sweep.unshared_size == 100
     assert sweep.saving == 50 - sweep.overhead
+
+
+def _linked(links: Path, path: Path) -> Path:
+    entry = links / link_name(path)
+    os.link(path, entry)
+    return entry
+
+
+def test_dying_links_names_only_files_a_delete_leaves_unshared(tmp_path: Path) -> None:
+    links = tmp_path / ".links"
+    links.mkdir()
+    tree = tmp_path / "tree"
+    (tree / "sub").mkdir(parents=True)
+    (tree / "alone").write_bytes(b"never optimised")
+    (tree / "sub" / "dying").write_bytes(b"only this path uses it")
+    _linked(links, tree / "sub" / "dying")
+    (tree / "shared").write_bytes(b"another store path uses it")
+    _linked(links, tree / "shared")
+    os.link(tree / "shared", tmp_path / "other-path-file")
+
+    st = os.lstat(tree / "sub" / "dying")
+    assert collect.dying_links(tree) == [collect.DyingLink(link_name(tree / "sub" / "dying"), st.st_dev, st.st_ino)]
+    assert collect.dying_links(tmp_path / "gone") == []
+
+
+def test_unlink_dead_links_spares_a_shared_or_remade_entry(tmp_path: Path) -> None:
+    links = tmp_path / ".links"
+    links.mkdir()
+    store = tmp_path / "store"
+    store.mkdir()
+    entries = {}
+    for name in ("dying", "remade"):
+        (store / name).write_bytes(name.encode())
+        entries[name] = _linked(links, store / name)
+    dying = collect.dying_links(store)
+    assert {link.name for link in dying} == {entry.name for entry in entries.values()}
+    for name in entries:
+        (store / name).unlink()
+    # After the walk, an optimiser makes the entry again as a new inode: one link, and still not this walk's.
+    entries["remade"].unlink()
+    entries["remade"].write_bytes(b"remade")
+
+    assert collect.unlink_dead_links(links, dying) == [entries["dying"]]
+    assert os.listdir(links) == [entries["remade"].name]
+    # The same inode, shared again, is spared too.
+    shared = links / "shared"
+    shared.write_bytes(b"shared")
+    os.link(shared, tmp_path / "user")
+    st = os.lstat(shared)
+    assert collect.unlink_dead_links(links, [collect.DyingLink("shared", st.st_dev, st.st_ino)]) == []
 
 
 def test_the_sweep_needs_the_links_directory(tmp_path: Path) -> None:

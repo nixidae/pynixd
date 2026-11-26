@@ -31,6 +31,7 @@ from .optimise import render_size
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
     from .collect import Report
     from .engine import StoreEngine
@@ -107,7 +108,7 @@ class Collection:
             self.results.paths = set(self.alive)
         elif self.options.action == GCAction.RETURN_DEAD:
             self.results.paths = set(self.dead)
-        else:
+        elif self.options.links is collect.LinksCleanup.SWEEP:
             await self._sweep_links()
         return self.results
 
@@ -351,6 +352,7 @@ class Collection:
         try:
             await self.report(Verbosity.INFO, f"deleting '{path}'")
             self.results.paths.add(path)
+            dying = await self._dying_links(real_path)
             try:
                 freed = await self.engine.delete_store_path(base_name)
             except collect.DeleteError as exc:
@@ -360,10 +362,27 @@ class Collection:
         finally:
             if held is not None:
                 os.close(held)
+        if dying:
+            unlinked = await anyio.to_thread.run_sync(collect.unlink_dead_links, layout.links_dir, dying)
+            for link in unlinked:
+                await self.report(Verbosity.TALKATIVE, f'deleting unused link "{link}"')
         self.results.bytes_freed += freed
         if self.results.bytes_freed > self.options.max_freed:
             await self.report(Verbosity.INFO, f"deleted more than {self.options.max_freed} bytes; stopping")
             raise _LimitReached
+
+    async def _dying_links(self, real_path: Path) -> list[collect.DyingLink]:
+        """The `.links` entries deleting *real_path* frees, when this collection frees them one by one.
+
+        A file the walk cannot read keeps its entry: the next full sweep frees it, so the delete goes on.
+        """
+        if self.options.links is not collect.LinksCleanup.DYING:
+            return []
+        try:
+            return await anyio.to_thread.run_sync(collect.dying_links, real_path)
+        except OSError as exc:
+            await self.report(Verbosity.ERROR, f"cannot name the links of {collect.path_fmt(real_path)}: {exc}")
+            return []
 
     async def _sweep_links(self) -> None:
         """The `.links` sweep (`gc.cc:896`): an entry with one link is no file's any more."""

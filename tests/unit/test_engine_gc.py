@@ -24,6 +24,7 @@ from pynixd_store.collect import (
     SYNC_AFTER_ROOTS,
     GCOptions,
     GCSettings,
+    LinksCleanup,
     path_fmt,
     try_gc_lock_exclusive,
 )
@@ -31,6 +32,7 @@ from pynixd_store.engine import StoreEngine
 from pynixd_store.errors import PynixdError
 from pynixd_store.hintfmt import magenta
 from pynixd_store.local_store_db import LocalStoreDB
+from pynixd_store.optimise import OptimiseStats, link_name, optimise_path
 from pynixd_store.store_layout import StoreLayout
 from pynixd_store.temp_roots import GC_SOCKET_PATH, RootWriter, TempRoots
 
@@ -173,6 +175,40 @@ async def test_the_whole_store_loses_what_no_root_keeps(tmp_path: Path) -> None:
     assert info[-1].startswith("note: hard linking is currently saving ")
     # A referrer goes before the path it references.
     assert info.index(f"deleting '{A}'") < info.index(f"deleting '{B}'")
+
+
+async def test_dying_links_free_only_what_the_deletes_leave_unshared(tmp_path: Path) -> None:
+    """`LinksCleanup.DYING` frees the entries of the deleted files, and lists no other entry."""
+    store = _Store(tmp_path)
+    store.add(A)
+    store.add(B, size=200)
+    store.add(C)
+    store.root(C)
+    stats = OptimiseStats()
+    for path in (A, B, C):
+        optimise_path(
+            store.real(path),
+            set(),
+            real_store_dir=store.layout.real_store_dir,
+            links_dir=store.layout.links_dir,
+            stats=stats,
+        )
+    shared = store.layout.links_dir / link_name(store.real(C) / "data")
+    dying = store.layout.links_dir / link_name(store.real(B) / "data")
+    unused = store.layout.links_dir / "unused"
+    unused.write_bytes(b"an entry no collection of these paths frees")
+
+    lines = _Lines()
+    paths, _ = await _collect(
+        store, GCOptions(GCAction.DELETE_SPECIFIC, paths=frozenset({A, B}), links=LinksCleanup.DYING), lines
+    )
+
+    assert paths == {A, B}
+    assert not dying.exists()
+    assert shared.stat().st_nlink == 2
+    assert unused.exists()
+    assert lines.at(Verbosity.TALKATIVE) == [f'deleting unused link "{dying}"']
+    assert "deleting unused links..." not in lines.at(Verbosity.INFO)
 
 
 @pytest.mark.parametrize("rooted", [False, True])

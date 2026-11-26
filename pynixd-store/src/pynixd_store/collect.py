@@ -11,6 +11,7 @@ import fcntl
 import os
 import stat
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING
 
 import anyio
@@ -20,11 +21,12 @@ from nix_daemon_protocol.protocol import GCAction, Verbosity
 
 from .errors import PynixdError
 from .hintfmt import magenta
+from .optimise import link_name
 from .temp_roots import COLLECTOR_ACK
 from .utils import NIX32_CHARS
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping
+    from collections.abc import Awaitable, Callable, Iterable, Mapping
     from pathlib import Path
     from typing import Any
 
@@ -43,6 +45,15 @@ class CycleError(PynixdError):
     """`topoSortPaths` found a cycle in the references, and the message is Nix's (`misc.cc:350`)."""
 
 
+class LinksCleanup(Enum):
+    """How a collection frees the `.links` entries its deletes leave unshared."""
+
+    #: Nix's: list every `.links` entry after the collection (`gc.cc:846`).
+    SWEEP = "sweep"
+    #: Hash each file a delete leaves unshared before it goes, and unlink only that entry (`dying_links`).
+    DYING = "dying"
+
+
 @dataclass(frozen=True)
 class GCOptions:
     """`GCOptions` (`gc-store.hh`): what to collect. `paths` is `None` for the whole store."""
@@ -55,6 +66,7 @@ class GCOptions:
     ignore_liveness: bool = False
     #: An untrusted client: a refusal names no runtime or temporary root (`daemon.cc:807` of Determinate v3.24.0).
     censor: bool = False
+    links: LinksCleanup = LinksCleanup.SWEEP
 
 
 CENSORED = "{censored}"
@@ -293,6 +305,61 @@ def topo_sort_paths(paths: set[str], references: Mapping[str, set[str]]) -> list
 
 def _base_name(path: str) -> str:
     return path.rsplit("/", 1)[-1]
+
+
+@dataclass(frozen=True, slots=True)
+class DyingLink:
+    """A `.links` entry that a delete leaves with no store file: its name, and the inode it must still be."""
+
+    name: str
+    device: int
+    inode: int
+
+
+def dying_links(path: Path) -> list[DyingLink]:
+    """The `.links` entries that deleting *path* leaves unshared, named while the files still exist.
+
+    A deduplicated file has two links: its store name and its `.links` entry.
+    Deleting the store name leaves the entry with one link, and the data stays
+    on disk. Nix finds those entries by listing all of `.links` after every
+    collection (`gc.cc:846`): 21-25 s for 4.4M entries on dynhetz. Hashing
+    only these files costs the bytes the delete frees. A file with three links
+    keeps another store name, and a later delete of that name sees two.
+    """
+    found: list[DyingLink] = []
+    pending = [path]
+    while pending:
+        current = pending.pop()
+        try:
+            st = os.lstat(current)
+        except FileNotFoundError:
+            # Gone already: nothing of it is left to free.
+            continue
+        if stat.S_ISDIR(st.st_mode):
+            pending.extend(current / name for name in os.listdir(current))
+        elif (stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode)) and st.st_nlink == 2:
+            found.append(DyingLink(link_name(current), st.st_dev, st.st_ino))
+    return found
+
+
+def unlink_dead_links(links_dir: Path, dying: Iterable[DyingLink]) -> list[Path]:
+    """Unlink each entry of *dying* that is still the same inode, and now has one link.
+
+    The inode check spares an entry that an optimiser made again under the
+    same name. A link count above one spares an entry a new file shares.
+    """
+    unlinked: list[Path] = []
+    for link in dying:
+        entry = links_dir / link.name
+        try:
+            st = os.lstat(entry)
+            if (st.st_dev, st.st_ino) != (link.device, link.inode) or st.st_nlink != 1:
+                continue
+            os.unlink(entry)
+        except FileNotFoundError:
+            continue
+        unlinked.append(entry)
+    return unlinked
 
 
 @dataclass

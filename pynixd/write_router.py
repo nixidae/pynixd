@@ -34,7 +34,7 @@ from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.verify_store import VerifyStoreResponse
 from pynixd_store.add import AddError, valid_dump
 from pynixd_store.autogc import AutoGCSettings
-from pynixd_store.collect import GCOptions
+from pynixd_store.collect import GCOptions, LinksCleanup
 from pynixd_store.content_address import Method, parse_method_algo, text_needs_sha256
 from pynixd_store.errors import PynixdError
 from pynixd_store.source import Metered
@@ -650,12 +650,18 @@ class WriteRouter:
         return VerifyStoreResponse.fast(value=int(errors))
 
     async def collect_garbage(
-        self, request: CollectGarbageRequest, *, conn: ClientConn | None = None, censor: bool = False
+        self,
+        request: CollectGarbageRequest,
+        *,
+        conn: ClientConn | None = None,
+        censor: bool = False,
+        links: LinksCleanup = LinksCleanup.SWEEP,
     ) -> CollectGarbageResponse:
         """CollectGarbage (op 20): `LocalStore::collectGarbage`. The handler has refused what Nix refuses.
 
         On the engine route pynixd sends the lines Nix prints, and the
         session's overrides reach `keep-outputs` and `keep-derivations`.
+        *links* reaches the engine route only: the daemon always sweeps.
         """
         engine = self._root_engine("CollectGarbage")
         if engine is None:
@@ -669,6 +675,7 @@ class WriteRouter:
             max_freed=request.max_freed,
             ignore_liveness=bool(request.ignore_liveness),
             censor=censor,
+            links=links,
         )
         overrides = conn.options.overrides if conn is not None and conn.options is not None else {}
         results = await engine.collect_garbage(

@@ -38,6 +38,7 @@ from nix_daemon_protocol import (
     StorePath,
 )
 from nix_daemon_protocol.query_path_infos import QueryPathInfosRequest
+from pynixd_store.collect import LinksCleanup
 from pynixd_store.db_migrations import HELD_BY_TABLE
 from pynixd_store.gc import (
     GarbagePlanner,
@@ -736,7 +737,8 @@ class Collector:
             request = _request(GCAction.DELETE_SPECIFIC, {StorePath(path) for path in group})
             with anyio.fail_after(_DELETE_TIMEOUT_S):
                 if collecting is not None:
-                    return await collecting.router.collect_garbage(request)
+                    # Each request is a whole collection: Nix's `.links` sweep would list every entry each time.
+                    return await collecting.router.collect_garbage(request, links=LinksCleanup.DYING)
                 response: CollectGarbageResponse = await _wire(conn).call(request, raise_on_error=True)
                 return response
 

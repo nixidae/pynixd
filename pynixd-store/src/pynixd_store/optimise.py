@@ -85,7 +85,7 @@ def _read_directory_ignoring_inodes(path: Path, inode_hash: set[int]) -> list[st
     return names
 
 
-def _nar_hash_32(path: Path) -> str:
+def link_name(path: Path) -> str:
     """The NAR hash of one file, in Nix32 without a prefix: the name of its `.links` entry."""
     return nix32_encode(nar_sha256(path).digest())
 
@@ -150,12 +150,12 @@ def optimise_path(
     if st.st_nlink > 1 and st.st_ino in inode_hash:
         return
 
-    name = _nar_hash_32(path)
+    name = link_name(path)
     link_path = links_dir / name
 
     st_link = _maybe_lstat(link_path)
     # A link of the wrong size is corrupt; drop it and re-create. `optimiseStore` repairs nothing (`NoRepair`).
-    if st_link is not None and (st.st_size != st_link.st_size or (repair and _nar_hash_32(link_path) != name)):
+    if st_link is not None and (st.st_size != st_link.st_size or (repair and link_name(link_path) != name)):
         log.warning("optimise_removing_corrupted_link", link=str(link_path))
         _unlink_if_exists(link_path)
         st_link = None
