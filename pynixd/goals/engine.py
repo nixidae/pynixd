@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from ..store import Store
     from ..substitution_queue import SubstitutionQueue
     from .goal import Goal
+    from .results import GoalResult
 
     Hold = Callable[[Collection[StorePath]], Awaitable[None]]
     """Roots paths for the client's session, at once: `DaemonProxy.add_temp_roots`."""
@@ -117,6 +118,8 @@ class GoalEngine:
         self.substitution_import_limiter = anyio.Semaphore(4)
         self._contents: dict[str, bool] = {}
         """`Worker::pathContentsGoodCache` (`worker.cc:556`): a path's contents are checked once per request."""
+        self.hold: Hold | None = None
+        """Roots what each goal makes, for the client of a build request."""
 
     def _local_db(self) -> LocalDBStore:
         store = self.ctx.local_store
@@ -225,6 +228,19 @@ class GoalEngine:
             log.debug("goals_reaped", request_id=int(self.request_id), count=0)
         return reaped
 
+    async def hold_what_it_made(self, result: GoalResult) -> None:
+        """Root the paths a goal made valid for the client, as the goal ends.
+
+        Nix's worker roots each path as its goal makes it (`derivation-goal.cc:67`, `substitution-goal.cc`).
+        A path rooted only with the answer is dead until then: a collection under pressure takes a `.drv` the
+        request fetched or built again, and the client's resolution through it fails (nixidae/nixidae#1636).
+        """
+        if self.hold is None or not result_succeeded(result.result):
+            return
+        made = result.produced_paths | set(result.resolved_outputs.values())
+        if made:
+            await self.hold(made)
+
     async def build_paths(
         self, request: BuildPathsRequest, client: ClientConn | None = None, hold: Hold | None = None
     ) -> BuildPathsResponse:
@@ -272,6 +288,7 @@ class GoalEngine:
             local = self.ctx.local_store
             if isinstance(local, LocalDBStore):
                 self.goal_group.spawn(local.router.auto_gc_while_building, client)
+            self.hold = hold
             try:
                 response = await BuildPathsWithResultsGoal(self, request, client).result()
                 if hold is not None:

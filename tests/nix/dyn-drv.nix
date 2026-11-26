@@ -249,10 +249,34 @@ let
     '';
   };
 
+  # dynatron's shape: the produced `.drv` has a dynamic input of its own, so the client resolves it too.
+  # A new `_timestamp` gives it a path of its own, which nothing references, as a generated `.drv`.
+  # nixidae/nixidae#1636.
+  producingCaWrapper = mkCADrv {
+    name = "use-dynamic-drv-ca.drv";
+    hashMode = "text";
+    buildCommand = ''
+      while IFS= read -r line || [ -n "$line" ]; do
+        printf '%s\n' "''${line//\"${ts}\"/\"${ts}-produced\"}"
+      done < "${builtins.unsafeDiscardOutputDependency caWrapper.drvPath}" > $out
+    '';
+  };
+
+  nestedCaUser = mkCADrv {
+    name = "use-nested-dynamic-drv-ca";
+    buildCommand = ''
+      while IFS= read -r line || [ -n "$line" ]; do
+        printf '%s\n' "$line"
+      done < "${builtins.outputOf producingCaWrapper.outPath "out"}" > $out
+    '';
+  };
+
 in
 {
   inherit
     hello
+    producingCaWrapper
+    nestedCaUser
     producingDrv
     wrapper
     caWrapper

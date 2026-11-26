@@ -261,6 +261,7 @@ class EnsureDerivedPathGoal(GoalHolder[GoalResult]):
         # cannot come. Issue nixidae/nixidae#246.
         try:
             result = self._name_what_really_failed(await self._produce())
+            await self.engine.hold_what_it_made(result)
             return await self._tell_the_client_it_failed(result)
         finally:
             self._note_that_it_decided()
