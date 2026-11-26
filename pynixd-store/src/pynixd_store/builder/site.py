@@ -506,8 +506,8 @@ class SiblingSite(BuildSite):
     """The helper runs in the pod's sandbox container (`sibling.py`, nixidae/nixidae#1560, spike).
 
     Both containers mount the build's volume at one path, so the builder's socket in the build directory needs no
-    relay. The helper reports in the top directory, and measures the builder with `wait4`: the daemon container's
-    cgroup does not hold it.
+    relay. The helper reports in the top directory. The daemon container's cgroup does not hold the builder: the
+    sandbox container measures it with its own cgroup (`sibling.measured_by_the_container`), else with `wait4`.
     """
 
     sandbox: SiblingSandbox

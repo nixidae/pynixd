@@ -36,6 +36,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from . import cgroup as build_cgroup
+from .usage import BuildUsage, write_usage
+
 SOCKET_NAME: Final = "sandbox.sock"
 STATUS_NAME: Final = "sibling-status"
 CONTROL_SOCKET_NAME: Final = "sibling-control.sock"
@@ -188,8 +191,41 @@ def _send(conn: socket.socket, kind: bytes, payload: bytes) -> None:
     conn.sendall(HEADER.pack(kind, len(payload)) + payload)
 
 
+def container_cgroup() -> Path | None:
+    """The sandbox container's own cgroup, or `None` when it names none."""
+    try:
+        path = build_cgroup.own_cgroup(Path("/proc/self/cgroup").read_text())
+    except OSError:
+        return None
+    return None if path is None else build_cgroup.ROOT / path.lstrip("/")
+
+
+def read_cgroup(path: Path) -> BuildUsage | None:
+    """*path*'s usage, or `None` for a cgroup that cannot be read: no `memory.peak` before Linux 5.19."""
+    try:
+        return build_cgroup.read(path)
+    except (OSError, KeyError, ValueError):
+        return None
+
+
+def measured_by_the_container(usage_file: Path, before: BuildUsage | None, cgroup: Path) -> None:
+    """Replace the helper's `wait4` record in *usage_file* with what the container's cgroup counted since *before*.
+
+    `wait4` gives the memory of the largest process alone, which does not grow with `NIX_BUILD_CORES`, and central
+    sizes a pod's memory by that growth. A build pod runs one build, so its sandbox container's cgroup holds the
+    build and the runner alone. The peak is the container's since it started. No record: the builder did not run.
+    """
+    if before is None or not usage_file.exists():
+        return
+    if (after := read_cgroup(cgroup)) is not None:
+        write_usage(usage_file, build_cgroup.since(before, after))
+
+
 def _serve(conn: socket.socket, *, fresh_proc: bool) -> None:
     job = json.loads(conn.makefile("rb").readline())
+    usage_file = Path(json.loads(Path(job["spec"]).read_text())["usage_file"])
+    cgroup = container_cgroup()
+    before = None if cgroup is None else read_cgroup(cgroup)
     if fresh_proc:
         own_pid_namespace(Path(job["spec"]))
     master, slave = pty.openpty()
@@ -248,6 +284,9 @@ def _serve(conn: socket.socket, *, fresh_proc: bool) -> None:
         os.close(master)
         os.close(exited)
         code = helper.wait()
+    # Before the exit record: the daemon reads the usage once the waiter exits.
+    if cgroup is not None:
+        measured_by_the_container(usage_file, before, cgroup)
     with contextlib.suppress(BrokenPipeError):
         _send(conn, EXIT, str(code).encode())
 

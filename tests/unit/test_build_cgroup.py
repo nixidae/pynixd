@@ -7,7 +7,17 @@ from typing import TYPE_CHECKING
 import anyio
 import pytest
 
-from pynixd_store.builder.cgroup import cgroup_cores, io_bytes, own_cgroup, quota_cores, sample_every, stall_us
+from pynixd_store.builder import sibling
+from pynixd_store.builder.cgroup import (
+    cgroup_cores,
+    io_bytes,
+    own_cgroup,
+    quota_cores,
+    sample_every,
+    since,
+    stall_us,
+)
+from pynixd_store.builder.usage import BuildUsage, UsageSource, read_usage, write_usage
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -65,3 +75,52 @@ def test_a_stall_is_the_some_total() -> None:
 def test_a_pressure_file_without_some_is_refused() -> None:
     with pytest.raises(ValueError, match="no 'some' line"):
         stall_us("full avg10=0.00 avg60=0.00 avg300=0.00 total=99\n")
+
+
+def _cgroup(path: Path, *, user: int, peak: int, oom: int = 0) -> Path:
+    path.mkdir(exist_ok=True)
+    (path / "cpu.stat").write_text(f"usage_usec {user + 1}\nuser_usec {user}\nsystem_usec 1\n")
+    (path / "memory.peak").write_text(f"{peak}\n")
+    (path / "memory.events").write_text(f"oom 0\noom_kill {oom}\n")
+    return path
+
+
+def test_a_cgroup_s_use_between_two_reads_is_its_counters_growth() -> None:
+    before = BuildUsage(UsageSource.CGROUP, 100, 10, 50, 1, 2, cpu_stall_us=5, oom_kills=1)
+    after = BuildUsage(UsageSource.CGROUP, 400, 30, 70, 11, 22, cpu_stall_us=None, oom_kills=3)
+
+    used = since(before, after)
+
+    assert (used.cpu_user_us, used.cpu_system_us, used.io_read_bytes, used.io_write_bytes) == (300, 20, 10, 20)
+    assert (used.peak_memory_bytes, used.oom_kills, used.cpu_stall_us) == (70, 2, None)
+
+
+def test_a_sibling_pod_records_its_container_s_cgroup_not_wait4(tmp_path: Path) -> None:
+    """`wait4` gives the largest process's memory, which does not grow with the cores a pod gets."""
+    cgroup = _cgroup(tmp_path / "container", user=1_000, peak=10)
+    before = sibling.read_cgroup(cgroup)
+    usage_file = tmp_path / "usage.json"
+    write_usage(usage_file, BuildUsage(UsageSource.RUSAGE, 7, 7, 7, 0, 0))
+    _cgroup(cgroup, user=9_000, peak=4 * 2**30, oom=1)
+
+    sibling.measured_by_the_container(usage_file, before, cgroup)
+
+    used = read_usage(usage_file)
+    assert used is not None
+    assert (used.source, used.cpu_user_us, used.peak_memory_bytes, used.oom_kills) == (
+        UsageSource.CGROUP,
+        8_000,
+        4 * 2**30,
+        1,
+    )
+
+
+def test_a_sibling_pod_keeps_wait4_without_a_readable_cgroup(tmp_path: Path) -> None:
+    usage_file = tmp_path / "usage.json"
+    write_usage(usage_file, BuildUsage(UsageSource.RUSAGE, 7, 7, 7, 0, 0))
+
+    assert sibling.read_cgroup(tmp_path / "none") is None
+    sibling.measured_by_the_container(usage_file, None, tmp_path / "none")
+
+    used = read_usage(usage_file)
+    assert used is not None and used.source == UsageSource.RUSAGE

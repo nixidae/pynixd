@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Final
 from pydantic import BaseModel, ConfigDict
 
 from nix_daemon_protocol.build_derivation import BuildDerivationRequest, BuildDerivationResponse
+from nix_daemon_protocol.build_resources import BuildResources
 from nix_daemon_protocol.constants import PROTOCOL_VERSION
 
 from .serde.context import ReadContext, WriteContext
@@ -116,6 +117,7 @@ class CentralPart(StrEnum):
 POD_SECONDS: Final = "pynixd build-one: seconds:"
 CENTRAL_SECONDS: Final = "pynixd: build pod seconds:"
 RESULT_LINE: Final = "pynixd build-one: result:"
+USAGE_LINE: Final = "pynixd build-one: usage:"
 
 
 def result_line(token: str, message: str) -> str:
@@ -133,6 +135,23 @@ def read_result_line(token: str, line: str) -> str | None:
     if not line.startswith(prefix):
         return None
     return line[len(prefix) :].strip()
+
+
+def usage_line(token: str, resources: BuildResources) -> str:
+    """The log line that carries what the pod's build used, which central records to size the next pod.
+
+    The result's wire form leaves the resources out (`JOB_FEATURES`). The token keeps a builder from writing a
+    pod's history; the samples stay in the pod.
+    """
+    return f"{USAGE_LINE} {token} {resources.model_dump_json(exclude={'samples'})}"
+
+
+def read_usage_line(token: str, line: str) -> BuildResources | None:
+    """The resources in a `usage_line` with *token*, or `None` for any other line."""
+    prefix = f"{USAGE_LINE} {token} "
+    if not line.startswith(prefix):
+        return None
+    return BuildResources.model_validate_json(line[len(prefix) :])
 
 
 def seconds_line[Part: StrEnum](prefix: str, parts: Mapping[Part, float]) -> str:

@@ -40,6 +40,7 @@ from .build_job import (
     result_line,
     result_message,
     seconds_line,
+    usage_line,
 )
 from .build_result import failure, result_succeeded
 from .cli.base import load_settings, setup_logging
@@ -167,6 +168,8 @@ async def build_one(job_dir: Path, result_path: Path, clock: PodClock) -> int:
     clock.mark(PodPart.SHUTDOWN)
     # Central reads it from the log and tells the client; the result has no room for it.
     await _show(LogNext(text=seconds_line(POD_SECONDS, clock.parts)))
+    if resp.result.resources.measured:
+        await _show(LogNext(text=usage_line(job.result_token, resp.result.resources)))
     message = await result_message(resp)
     await _show(LogNext(text=result_line(job.result_token, message)))
     await anyio.Path(result_path).write_text(message)

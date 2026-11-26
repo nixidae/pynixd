@@ -43,6 +43,7 @@ from ..build_job import (
     encode,
     read_result_line,
     read_seconds,
+    read_usage_line,
     seconds_line,
 )
 from ..build_result import failure, result_succeeded
@@ -70,6 +71,7 @@ if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
 
     from nix_daemon_protocol.build_derivation import BuildDerivationRequest
+    from nix_daemon_protocol.build_resources import BuildResources
     from nix_daemon_protocol.set_options import SetOptionsRequest
     from nix_daemon_protocol.wire_ops import WireRequest
     from pynixd_store.drv_parser import Derivation
@@ -477,6 +479,7 @@ class BuildPodStore(ScheduledStore):
             )
             watch = BuildPodWatch(self.spec.container)
             message: str | None = None
+            used: BuildResources | None = None
             async with anyio.create_task_group() as watching:
                 watching.start_soon(self._watch, self.kubernetes, name, watch)
                 with anyio.move_on_after(self.spec.schedule_seconds):
@@ -492,6 +495,9 @@ class BuildPodStore(ScheduledStore):
                             async for line in lines:
                                 if (message := read_result_line(job.result_token, line)) is not None:
                                     break
+                                if (measured := read_usage_line(job.result_token, line)) is not None:
+                                    used = measured
+                                    continue
                                 times.saw(line)
                                 await on_line(line)
                     except ProviderError as error:
@@ -513,6 +519,10 @@ class BuildPodStore(ScheduledStore):
                 message = ended.message
             try:
                 response = checked_result(request, await decode_response(message))
+                if used is not None:
+                    response = response.model_copy(
+                        update={"result": response.result.model_copy(update={"resources": used})}
+                    )
             except (ValueError, EOFError) as error:
                 raise InfrastructureError(f"build pod {name}: its result does not read: {error}") from error
             await on_line(seconds_line(CENTRAL_SECONDS, times.parts()))

@@ -10,6 +10,7 @@ from typing import Any, Final
 import pytest
 
 from nix_daemon_protocol.build_derivation import BuildDerivationRequest, BuildDerivationResponse
+from nix_daemon_protocol.build_resources import BuildResources, ResourceSample
 from nix_daemon_protocol.build_result import BuildResult, BuildResultStatus
 from nix_daemon_protocol.derivation_output import DerivationOutput
 from nix_daemon_protocol.is_valid_path import IsValidPathRequest
@@ -26,9 +27,11 @@ from pynixd.build_job import (
     encode,
     read_result_line,
     read_seconds,
+    read_usage_line,
     result_line,
     result_message,
     seconds_line,
+    usage_line,
 )
 from pynixd.build_result import failure
 from pynixd.config import (
@@ -571,3 +574,23 @@ async def test_central_reads_the_result_only_from_a_line_with_the_jobs_token() -
     # A builder's line that copies the shape but not the token is not a result.
     assert read_result_line("token", result_line("guess", message)) is None
     assert read_result_line("token", "building") is None
+
+
+def test_central_reads_what_a_pod_used_only_from_a_line_with_the_jobs_token() -> None:
+    """The result's wire form drops the resources, so central learned no pod's peak memory or cores (sg1: every
+    `buildpods-x86_64-linux` row had `peakMemoryBytes` and `cores` empty). A builder must not write the history."""
+    used = BuildResources(
+        measured=1,
+        source="cgroup",
+        cpu_user_us=12_000_000,
+        cpu_system_us=5_800_000,
+        peak_memory_bytes=900 * 2**20,
+        cores=4,
+        samples=[ResourceSample(at_ms=0, cpu_us=1, memory_bytes=1, io_read_bytes=0, io_write_bytes=0)],
+    )
+
+    read = read_usage_line("token", usage_line("token", used) + "\n")
+
+    assert read == used.model_copy(update={"samples": []})
+    assert read_usage_line("token", usage_line("guess", used)) is None
+    assert read_usage_line("token", "building") is None

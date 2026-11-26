@@ -14,6 +14,7 @@ import itertools
 import math
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -244,6 +245,26 @@ def read(path: Path) -> BuildUsage:
         memory_stall_us=_stall(path / "memory.pressure"),
         io_stall_us=_stall(path / "io.pressure"),
         oom_kills=_fields((path / "memory.events").read_text()).get("oom_kill", 0),
+    )
+
+
+def since(before: BuildUsage, after: BuildUsage) -> BuildUsage:
+    """What a cgroup used between two reads: the growth of each counter. The peak is the cgroup's own, which a
+    reader cannot reset."""
+
+    def grew(old: int | None, new: int | None) -> int | None:
+        return None if old is None or new is None else new - old
+
+    return replace(
+        after,
+        cpu_user_us=after.cpu_user_us - before.cpu_user_us,
+        cpu_system_us=after.cpu_system_us - before.cpu_system_us,
+        io_read_bytes=after.io_read_bytes - before.io_read_bytes,
+        io_write_bytes=after.io_write_bytes - before.io_write_bytes,
+        cpu_stall_us=grew(before.cpu_stall_us, after.cpu_stall_us),
+        memory_stall_us=grew(before.memory_stall_us, after.memory_stall_us),
+        io_stall_us=grew(before.io_stall_us, after.io_stall_us),
+        oom_kills=after.oom_kills - before.oom_kills,
     )
 
 
