@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
@@ -950,3 +951,32 @@ async def test_deep_dynamic_drv_chain_via_pynixd(
     )
     assert rc == 1, f"Deep dynamic chain past a plain output built via pynixd:\n{stdboth}"
     assert "is not a valid derivation path" in stdboth, stdboth
+
+
+@pytest.mark.ca_derivations
+async def test_a_ca_build_after_its_resolved_drv_is_deleted(ca_env: tuple[Server, str]) -> None:
+    """The store keeps the realisation of a resolved `.drv` that a collection, or the cold tier, removed.
+
+    dynhetz's GC moved `...-dynatron.drv`, the resolved form of a content-addressed derivation, to its cold tier.
+    Every later `ekn kubeapply` read the output through the evaluator and failed with "store path
+    '...-dynatron.drv' does not exist" until a hand `nix-store -r` fetched it back (nixidae/nixidae#1636).
+    """
+    _server, uri = ca_env
+    store = ["--option", "builders", "", "--store", uri]
+    by_attr = ["--impure", "--file", str(TEST_NIX), "ca.depends_on_ca"]
+    build = [str(CLIENT_BIN), "build", *store, "--no-link", "--print-out-paths"]
+    _, _, _, first = await run_subproc([*build, *by_attr], nix_config=CA_NIX_CONFIG, expected_retcode=0)
+    resolved = re.findall(r"resolved derivation: '[^']+' -> '([^']+)'", first)
+    assert resolved, f"pynixd named no resolved derivation:\n{first}"
+    rc, _, _, deleted = await run_subproc(
+        [str(CLIENT_BIN), "store", "delete", *store, resolved[-1]], nix_config=CA_NIX_CONFIG
+    )
+    assert rc == 0, f"could not delete {resolved[-1]}:\n{deleted}"
+
+    # The evaluator's road, as ekn's `realise_string`: `realiseContext` builds, then reads the output.
+    read = [str(CLIENT_BIN), "eval", *store, *by_attr, "--apply", "builtins.readFile", "--raw"]
+    rc, stdout, _, stdboth = await run_subproc(read, nix_config=CA_NIX_CONFIG)
+    assert rc == 0, f"the read after the delete failed:\n{stdboth}"
+    assert stdout.startswith("dep-on-"), stdout
+    rc, _, _, stdboth = await run_subproc([*build, *by_attr], nix_config=CA_NIX_CONFIG)
+    assert rc == 0, f"the build after the delete failed:\n{stdboth}"
