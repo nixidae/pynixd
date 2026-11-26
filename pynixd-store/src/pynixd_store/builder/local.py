@@ -475,6 +475,16 @@ class LocalBuildResult:
     """The path of each output, on success: built, or valid before."""
 
 
+def _mkdir(path: Path, mode: int) -> None:
+    """`mkdir` with exactly *mode*: Linux gives a directory made in a setgid one S_ISGID whatever the mode.
+
+    A Kubernetes `fsGroup` volume is setgid. Under it every directory of the build inherits the bit, and Nix's
+    seccomp filter refuses each chmod that keeps it: stdenv's unpack failed in a build pod (nixidae/nixidae#1642).
+    """
+    path.mkdir(mode)
+    path.chmod(mode)
+
+
 def _prepare(
     engine: StoreEngine,
     drv_path: StorePath,
@@ -503,12 +513,13 @@ def _prepare(
         build_users.check_not_world_writable(build_dir)
     if top is None:
         top = Path(tempfile.mkdtemp(prefix="nix-", dir=build_dir))
+        top.chmod(0o700)
     else:
         delete_path(top)
         top.parent.mkdir(parents=True, exist_ok=True)
-        top.mkdir(0o700)
+        _mkdir(top, 0o700)
     tmp = top / "build"
-    tmp.mkdir(0o700)
+    _mkdir(tmp, 0o700)
     build_users.chown_to(user, tmp)
     if not chroot:
         if user is not None:
@@ -519,11 +530,11 @@ def _prepare(
     real = layout.real_path(drv_path)
     chroot_parent = real.with_name(f"{real.name}.chroot")
     delete_path(chroot_parent)
-    chroot_parent.mkdir(0o700)
+    _mkdir(chroot_parent, 0o700)
     root = chroot_parent / "root"
     # `setupBuildChroot` (`chroot.cc:30`): the root of a build of many ids is its own.
     id_range = user is not None and user.count != 1
-    root.mkdir(0o755 if id_range else 0o750)
+    _mkdir(root, 0o755 if id_range else 0o750)
     if user is not None:
         os.chown(root, user.uid if id_range else 0, user.gid)
     (root / "tmp").mkdir()
@@ -534,14 +545,14 @@ def _prepare(
     if user is not None:
         os.chown(store, 0, user.gid)
     etc = root / "etc"
-    etc.mkdir()
+    _mkdir(etc, 0o755)
     if id_range:
         build_users.chown_to(user, etc)
     uid, gid = (0, 0) if id_range else (SANDBOX_UID, SANDBOX_GID)
     (etc / "passwd").write_text(sandbox_passwd(uid, gid))
     (etc / "group").write_text(sandbox_group(gid))
     dev = root / "dev"
-    dev.mkdir()
+    _mkdir(dev, 0o755)
     (dev / "fd").symlink_to("/proc/self/fd")
     for i, name in enumerate(("stdin", "stdout", "stderr")):
         (dev / name).symlink_to(f"/proc/self/fd/{i}")

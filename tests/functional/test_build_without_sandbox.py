@@ -727,3 +727,37 @@ async def test_a_check_or_repair_of_a_nested_path_builds_the_derivation_it_ends_
         assert repaired["modes"] == ["repairing nested-inner.drv"], here
         assert repaired["contents"] not in (None, "corrupt\n"), here
         assert there["--repair"]["contents"] == "corrupt\n", there
+
+
+# `[ -g ]` is the shell's own test, so the builder needs no PATH.
+SETGID_PROBE = """g=
+[ -g "$NIX_BUILD_TOP" ] && g="$g top"
+[ -g "$PWD" ] && g="$g cwd"
+echo "setgid:$g" > $out"""
+
+
+async def _setgid_probe(tmp_path: Path, route: OpRoute) -> str:
+    async with _serve(tmp_path, route, "false") as (nix, env, state):
+        builds = state / "builds"
+        builds.mkdir(parents=True, exist_ok=True)
+        builds.chmod(0o2755)
+        _rc, out, _err, _both = await run_subproc(
+            [
+                *nix[:1],
+                "build",
+                *nix[1:],
+                "--no-link",
+                "--print-out-paths",
+                "--expr",
+                _drv("setgid-probe", SETGID_PROBE),
+            ],
+            env=dict(env),
+            nix_config=ALONE,
+        )
+        return (state.parent.parent / "store" / out.strip().rsplit("/", 1)[-1]).read_text()
+
+
+async def test_a_setgid_build_directory_parent_leaves_the_build_directory_plain(tmp_path: Path) -> None:
+    """A Kubernetes `fsGroup` volume is setgid, and a directory made in it inherits the bit. Nix's seccomp filter
+    refuses a chmod that keeps S_ISGID, so every stdenv unpack failed in a build pod (nixidae/nixidae#1642)."""
+    assert await _setgid_probe(tmp_path, OpRoute.pynixd) == "setgid:\n"
