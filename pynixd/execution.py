@@ -756,8 +756,8 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
 
         Into the local store, nothing is pulled and no worker of the daemon
         holds a root. Into another local store, which has no daemon, *roots*
-        hold the outputs there, and they are pulled as from a builder. The
-        log is fanned out after the build, as `_execute` does.
+        hold the outputs there, and they are pulled as from a builder. Each
+        log message goes to the build's log as it arrives.
         """
         observation = build.observation = BuildObservation(
             store_id=str(store.store_id), status=-1, queued_ms=ms_since(build.enqueued_at), cores=settings.build_cores
@@ -766,11 +766,10 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
         build.started_at = build.last_output_at = time.monotonic()
         if build.wait_time is not None:
             metrics.QUEUE_WAIT_DURATION.observe(build.wait_time)
-        messages: list[LogMessage] = []
 
         async def keep(message: LogMessage) -> None:
             build.last_output_at = time.monotonic()
-            messages.append(message)
+            await build.post_log(message)
 
         verbosity = build.options.verbosity if build.options is not None else Verbosity.INFO
         try:
@@ -783,8 +782,6 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
             resp = BuildDerivationResponse(result=failure(f"pynixd's sandbox failed: {error_text(e)}"))
         observation.build_ms = ms_since(build.started_at)
         await self._record_kill(build, resp)
-        for message in messages:
-            await build.post_log_and_fanout(message)
         if result_succeeded(resp.result) and roots is not None:
             try:
                 # Until the pull ends, as `_hold_outputs` holds them on a builder.

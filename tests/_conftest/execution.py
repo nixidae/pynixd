@@ -100,6 +100,8 @@ class FakeSandbox:
 
     store_id: StoreId = LOCAL_STORE_ID
     build: Callable[[], Awaitable[BuildDerivationResponse]] | None = None
+    during: Callable[[Callable[[LogMessage], Awaitable[None]]], Awaitable[None]] | None = None
+    """Runs with the build's log sink before `build` answers: a build that prints as it runs."""
     settings: BuildSettings | None = None
     hook_failure: str | None = None
     db: FakeRecords = field(default_factory=FakeRecords)
@@ -128,9 +130,11 @@ class FakeSandbox:
         on_log: Callable[[LogMessage], Awaitable[None]],
         verbosity: int,
     ) -> BuildDerivationResponse:
-        del request, settings, on_log, verbosity
+        del request, settings, verbosity
         if self.build is None:
             raise AssertionError("the sandbox was not asked to build")
+        if self.during is not None:
+            await self.during(on_log)
         return await self.build()
 
     async def post_build_hook_after(
