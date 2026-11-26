@@ -52,11 +52,13 @@ from ..provisioning.kubernetes import (
     BuildPodWatch,
     FarmVolume,
     OwnerPod,
+    PodPlacement,
     RunnerFill,
     RunnerPod,
     farm_volume,
     first_placeable,
     node_selector,
+    pod_tolerations,
     runner_pod,
     template_store_paths,
 )
@@ -289,22 +291,28 @@ class BuildPodStore(ScheduledStore):
         self.template_paths = paths
 
     async def pick_template(self) -> str:
-        """The template of the next pod: the first a Ready node can take. One template is taken unasked.
+        """The template of the next pod: the first a Ready node can take, by its `nodeSelector` and taints.
 
-        `InfrastructureError` when no node can take any, so the build goes to another store.
+        `InfrastructureError` when no node can take any, so the build goes to another store. A pod made anyway
+        waits for a node for ever (nixidae/nixidae#1560: sg1's only arm64 nodes are tainted), so one template is
+        checked too.
         """
-        if len(self.spec.templates) == 1:
-            return self.spec.templates[0]
         if self.kubernetes is None:
             raise InfrastructureError(f"{self.store_id}: no Kubernetes settings for build pods")
-        selectors = [(name, node_selector(self.kubernetes.build_pod_template(name))) for name in self.spec.templates]
+        placements = []
+        for name in self.spec.templates:
+            template = self.kubernetes.build_pod_template(name)
+            placements.append(PodPlacement(name, node_selector(template), pod_tolerations(template)))
         try:
-            nodes = await self.kubernetes.ready_node_labels()
+            nodes = await self.kubernetes.ready_nodes()
         except ProviderError as error:
             raise InfrastructureError(f"{self.store_id}: {error}") from error
-        picked = first_placeable(selectors, nodes)
+        picked = first_placeable(placements, nodes)
         if picked is None:
-            raise InfrastructureError(f"{self.store_id}: no Ready node matches a template of {self.spec.templates}")
+            raise InfrastructureError(
+                f"{self.store_id}: no Ready node takes a pod of {self.spec.templates}: none matches the"
+                " nodeSelector and tolerates its taints"
+            )
         return picked
 
     @property
@@ -474,6 +482,9 @@ class BuildPodStore(ScheduledStore):
             message: str | None = None
             async with anyio.create_task_group() as watching:
                 watching.start_soon(self._watch, self.kubernetes, name, watch)
+                with anyio.move_on_after(self.spec.schedule_seconds):
+                    await watch.placed.wait()
+                watch.unplaced(self.spec.schedule_seconds)
                 await watch.settled.wait()
                 times.ran = time.monotonic()
                 if watch.ran:

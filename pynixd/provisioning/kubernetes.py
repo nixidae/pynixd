@@ -276,12 +276,12 @@ class KubernetesProvider:
         # kr8s keeps one client per argument set for the thread and has no close.
         self._api = None
 
-    async def ready_node_labels(self) -> list[dict[str, str]]:
-        """The labels of each node that takes new pods. Needs `list` on nodes, cluster-wide."""
+    async def ready_nodes(self) -> list[ReadyNode]:
+        """Each node that takes new pods. Needs `list` on nodes, cluster-wide."""
         api = await self._client()
         with failing("listing nodes"):
             nodes = [node async for node in api.get("nodes", raw=True)]
-        return [labels for node in nodes if isinstance(node, dict) and (labels := ready_labels(node)) is not None]
+        return [ready for node in nodes if isinstance(node, dict) and (ready := ready_node(node)) is not None]
 
     def build_pod_template(self, template: str) -> KubernetesTemplateSettings:
         """The template build pods of a store start from; `ProviderError` for a name the settings lack."""
@@ -460,6 +460,8 @@ class BuildPodWatch:
     """
 
     container: str
+    placed: anyio.Event = field(default_factory=anyio.Event)
+    """The scheduler put the pod on a node, or the pod ended."""
     settled: anyio.Event = field(default_factory=anyio.Event)
     """The container started, or the pod ended without it: its log can be read, or never will be."""
     ended: anyio.Event = field(default_factory=anyio.Event)
@@ -467,12 +469,19 @@ class BuildPodWatch:
     end: BuildPodEnd | None = None
     cause: str | None = None
     """The last reason seen for the pod's end (`pod_end`)."""
+    unschedulable: str | None = None
+    """The scheduler's last word on why no node takes the pod: its `PodScheduled` condition's message."""
 
     def saw(self, pod: Manifest) -> None:
         """One state of the pod. The log ends when the container exits, and the kubelet writes the container's
         end after that (measured: a crash read as still running), so the end waits for that state."""
         if self.ended.is_set():
             return
+        if (pod.get("spec") or {}).get("nodeName"):
+            self.placed.set()
+        for condition in (pod.get("status") or {}).get("conditions") or []:
+            if condition.get("type") == "PodScheduled" and condition.get("status") == "False":
+                self.unschedulable = str(condition.get("message") or condition.get("reason") or "")
         ending = pod_end(pod)
         self.cause = ending or self.cause
         if _started(pod, self.container):
@@ -497,10 +506,19 @@ class BuildPodWatch:
         """The watch failed: nothing more will be known of the pod."""
         self._end(BuildPodEnd(exit_code=None, message="", cause=self.cause or f"watch failed: {error}"))
 
+    def unplaced(self, seconds: float) -> None:
+        """No node took the pod in *seconds*: end it, unless the scheduler placed it. A pod that no node can take
+        waits for one for ever, and its `activeDeadlineSeconds` counts only from its start on a node."""
+        if self.placed.is_set():
+            return
+        why = self.unschedulable or "the scheduler gave no reason"
+        self._end(BuildPodEnd(exit_code=None, message="", cause=f"no node took it in {seconds:g} s ({why})"))
+
     def _end(self, end: BuildPodEnd) -> None:
         if self.ended.is_set():
             return
         self.end = end
+        self.placed.set()
         self.settled.set()
         self.ended.set()
 
@@ -559,27 +577,74 @@ def node_selector(template: KubernetesTemplateSettings) -> dict[str, str]:
     return dict((template.pod.get("spec") or {}).get("nodeSelector") or {})
 
 
-def ready_labels(node: Manifest) -> dict[str, str] | None:
-    """The labels of a node that takes new pods, or `None` for one that is not Ready or is cordoned."""
+def pod_tolerations(template: KubernetesTemplateSettings) -> list[Manifest]:
+    """The template pod's `tolerations`."""
+    return list((template.pod.get("spec") or {}).get("tolerations") or [])
+
+
+@dataclass(frozen=True, slots=True)
+class ReadyNode:
+    """A node that takes new pods: its labels, and the taints a pod must tolerate to land there."""
+
+    labels: Mapping[str, str]
+    taints: tuple[Manifest, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class PodPlacement:
+    """What of a template decides which nodes its pod can land on."""
+
+    template: str
+    selector: Mapping[str, str]
+    tolerations: Sequence[Manifest] = ()
+
+
+_REPELLING: Final = frozenset({"NoSchedule", "NoExecute"})
+"""The taint effects that keep a pod off a node. `PreferNoSchedule` only steers the scheduler."""
+
+
+def ready_node(node: Manifest) -> ReadyNode | None:
+    """A node that takes new pods, or `None` for one that is not Ready or is cordoned."""
     if (node.get("spec") or {}).get("unschedulable"):
         return None
     conditions: list[Manifest] = (node.get("status") or {}).get("conditions") or []
     if not any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions):
         return None
-    return dict((node.get("metadata") or {}).get("labels") or {})
+    taints = tuple(t for t in (node.get("spec") or {}).get("taints") or [] if t.get("effect") in _REPELLING)
+    return ReadyNode(labels=dict((node.get("metadata") or {}).get("labels") or {}), taints=taints)
 
 
-def first_placeable(
-    selectors: Sequence[tuple[str, Mapping[str, str]]], nodes: Sequence[Mapping[str, str]]
-) -> str | None:
-    """The first template whose selector a node's labels satisfy, or `None`.
+def tolerates(toleration: Manifest, taint: Manifest) -> bool:
+    """Whether *toleration* tolerates *taint*, as `ToleratesTaint` (k8s `pkg/apis/core/v1/helper/helpers.go`).
 
-    Only `nodeSelector` counts: a template's affinity and the nodes' taints wait for the scheduler, so a pod
-    can still pend on the node this picked.
+    An empty effect matches every effect; an empty key with `Exists` matches every taint.
     """
-    for name, selector in selectors:
-        if any(all(labels.get(key) == value for key, value in selector.items()) for labels in nodes):
-            return name
+    if (effect := toleration.get("effect")) and effect != taint.get("effect"):
+        return False
+    if (key := toleration.get("key")) and key != taint.get("key"):
+        return False
+    match toleration.get("operator") or "Equal":
+        case "Exists":
+            return True
+        case "Equal":
+            return bool(key) and (toleration.get("value") or "") == (taint.get("value") or "")
+        case _:
+            return False
+
+
+def takes(placement: PodPlacement, node: ReadyNode) -> bool:
+    """Whether the scheduler can put the pod on *node*: its labels satisfy the selector, and the pod tolerates
+    each of its taints. Affinity and room are the scheduler's: a pod can still wait on a node this takes."""
+    return all(node.labels.get(key) == value for key, value in placement.selector.items()) and all(
+        any(tolerates(toleration, taint) for toleration in placement.tolerations) for taint in node.taints
+    )
+
+
+def first_placeable(placements: Sequence[PodPlacement], nodes: Sequence[ReadyNode]) -> str | None:
+    """The first template some node takes a pod of, or `None`."""
+    for placement in placements:
+        if any(takes(placement, node) for node in nodes):
+            return placement.template
     return None
 
 

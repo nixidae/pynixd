@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
@@ -53,12 +53,15 @@ from pynixd.provisioning.kubernetes import (
     FarmVolume,
     KubernetesProvider,
     OwnerPod,
+    PodPlacement,
+    ReadyNode,
     build_pod_manifest,
     build_store_label,
     first_placeable,
     pod_end,
-    ready_labels,
+    ready_node,
     template_store_paths,
+    tolerates,
 )
 from pynixd.serde import BasicDerivation
 from pynixd.store.build_pods import (
@@ -411,42 +414,81 @@ async def test_the_placement_prices_a_copy_in_pod_at_its_whole_input_closure() -
     assert await missing_input_bytes(farm.to_store("farm"), {}, sizes) is None
 
 
-def _node(labels: dict[str, str], *, ready: str = "True", cordoned: bool = False) -> dict[str, Any]:
+GPU_TAINT: Final = {"key": "sg1.ch.se.eu.org/gpu", "effect": "NoSchedule"}
+
+
+def _node(
+    labels: dict[str, str], *, ready: str = "True", cordoned: bool = False, taints: list[dict[str, str]] | None = None
+) -> dict[str, Any]:
     return {
         "metadata": {"labels": labels},
-        "spec": {"unschedulable": cordoned},
+        "spec": {"unschedulable": cordoned, "taints": taints or []},
         "status": {"conditions": [{"type": "Ready", "status": ready}]},
     }
 
 
 def test_only_a_ready_uncordoned_node_takes_a_build_pod() -> None:
-    assert ready_labels(_node({"a": "1"})) == {"a": "1"}
-    assert ready_labels(_node({"a": "1"}, ready="False")) is None
-    assert ready_labels(_node({"a": "1"}, cordoned=True)) is None
-    assert ready_labels({"metadata": {}}) is None
+    assert ready_node(_node({"a": "1"})) == ReadyNode({"a": "1"})
+    assert ready_node(_node({"a": "1"}, ready="False")) is None
+    assert ready_node(_node({"a": "1"}, cordoned=True)) is None
+    assert ready_node({"metadata": {}}) is None
+
+
+def test_a_node_keeps_only_the_taints_that_repel_a_pod() -> None:
+    steer = {"key": "spot", "effect": "PreferNoSchedule"}
+    drain = {"key": "drain", "effect": "NoExecute"}
+
+    assert ready_node(_node({}, taints=[GPU_TAINT, steer, drain])) == ReadyNode({}, (GPU_TAINT, drain))
+
+
+@pytest.mark.parametrize(
+    ("toleration", "expected"),
+    [
+        ({"key": "sg1.ch.se.eu.org/gpu", "operator": "Exists", "effect": "NoSchedule"}, True),
+        ({"key": "sg1.ch.se.eu.org/gpu", "operator": "Exists"}, True),
+        ({"operator": "Exists"}, True),
+        ({"key": "sg1.ch.se.eu.org/gpu", "operator": "Exists", "effect": "NoExecute"}, False),
+        ({"key": "other", "operator": "Exists"}, False),
+        ({"key": "sg1.ch.se.eu.org/gpu", "value": ""}, True),
+        ({"key": "sg1.ch.se.eu.org/gpu", "operator": "Equal", "value": "a100"}, False),
+        # Equal needs a key: Kubernetes refuses one without.
+        ({"operator": "Equal"}, False),
+    ],
+)
+def test_a_toleration_matches_a_taint_as_kubernetes_does(toleration: dict[str, str], expected: bool) -> None:
+    assert tolerates(toleration, GPU_TAINT) is expected
 
 
 def test_a_pod_takes_the_first_template_a_node_can_take() -> None:
-    sandbox = ("sandbox", {"nixkube/userns": "true", "kubernetes.io/arch": "amd64"})
-    bare = ("bare", {"nixkube/userns": "false"})
-    amd64_bare = {"nixkube/userns": "false", "kubernetes.io/arch": "amd64"}
-    amd64_userns = {"nixkube/userns": "true", "kubernetes.io/arch": "amd64"}
+    sandbox = PodPlacement("sandbox", {"nixkube/userns": "true", "kubernetes.io/arch": "amd64"})
+    bare = PodPlacement("bare", {"nixkube/userns": "false"})
+    amd64_bare = ReadyNode({"nixkube/userns": "false", "kubernetes.io/arch": "amd64"})
+    amd64_userns = ReadyNode({"nixkube/userns": "true", "kubernetes.io/arch": "amd64"})
 
     assert first_placeable([sandbox, bare], [amd64_bare, amd64_userns]) == "sandbox"
     assert first_placeable([sandbox, bare], [amd64_bare]) == "bare"
     # Every label of the selector counts, not one.
-    assert first_placeable([sandbox], [{"nixkube/userns": "true", "kubernetes.io/arch": "arm64"}]) is None
+    assert first_placeable([sandbox], [ReadyNode({"nixkube/userns": "true", "kubernetes.io/arch": "arm64"})]) is None
     assert first_placeable([sandbox, bare], []) is None
-    assert first_placeable([("any", {})], [{}]) == "any"
+    assert first_placeable([PodPlacement("any", {})], [ReadyNode({})]) == "any"
+
+
+def test_a_pod_lands_on_a_tainted_node_only_with_a_toleration() -> None:
+    gx10 = ReadyNode({"kubernetes.io/arch": "arm64"}, (GPU_TAINT,))
+    plain = PodPlacement("arm", {"kubernetes.io/arch": "arm64"})
+    tolerating = PodPlacement("arm", {"kubernetes.io/arch": "arm64"}, [{"key": GPU_TAINT["key"], "operator": "Exists"}])
+
+    assert first_placeable([plain], [gx10]) is None
+    assert first_placeable([tolerating], [gx10]) == "arm"
 
 
 class _Nodes(KubernetesProvider):
-    def __init__(self, settings: KubernetesSettings, nodes: list[dict[str, str]]) -> None:
+    def __init__(self, settings: KubernetesSettings, nodes: list[ReadyNode]) -> None:
         super().__init__(settings)
         self.nodes = nodes
         self.listed = 0
 
-    async def ready_node_labels(self) -> list[dict[str, str]]:
+    async def ready_nodes(self) -> list[ReadyNode]:
         self.listed += 1
         return self.nodes
 
@@ -461,22 +503,62 @@ async def test_a_store_picks_each_pod_s_template_from_the_ready_nodes() -> None:
         templates={"sandbox": _selecting({"nixkube/userns": "true"}), "bare": _selecting({"nixkube/userns": "false"})}
     )
     store = BuildPodStoreSpec(templates=["sandbox", "bare"], central_host="10.0.0.1").to_store("pods")
-    kubernetes = _Nodes(settings, [{"nixkube/userns": "false"}])
+    kubernetes = _Nodes(settings, [ReadyNode({"nixkube/userns": "false"})])
     store.kubernetes = kubernetes
 
     assert await store.pick_template() == "bare"
-    kubernetes.nodes = [{"nixkube/userns": "false"}, {"nixkube/userns": "true"}]
+    kubernetes.nodes = [ReadyNode({"nixkube/userns": "false"}), ReadyNode({"nixkube/userns": "true"})]
     assert await store.pick_template() == "sandbox"
-    kubernetes.nodes = [{}]
+    kubernetes.nodes = [ReadyNode({})]
     with pytest.raises(InfrastructureError, match="no Ready node"):
         await store.pick_template()
 
-    one = BuildPodStoreSpec(templates=["sandbox"], central_host="10.0.0.1").to_store("one")
+
+@pytest.mark.anyio
+async def test_one_template_is_refused_when_no_node_takes_its_pod() -> None:
+    """A pod made anyway waits for ever: sg1's only arm64 nodes are tainted, and build pods did not tolerate it."""
+    settings = KubernetesSettings(templates={"arm": _selecting({"kubernetes.io/arch": "arm64"})})
+    one = BuildPodStoreSpec(templates=["arm"], central_host="10.0.0.1").to_store("one")
+    kubernetes = _Nodes(settings, [ReadyNode({"kubernetes.io/arch": "arm64"}, (GPU_TAINT,))])
     one.kubernetes = kubernetes
-    listed = kubernetes.listed
-    # One template needs no node list, and no right to list nodes.
-    assert await one.pick_template() == "sandbox"
-    assert kubernetes.listed == listed
+
+    with pytest.raises(InfrastructureError, match="no Ready node"):
+        await one.pick_template()
+    kubernetes.nodes = [ReadyNode({"kubernetes.io/arch": "arm64"})]
+    assert await one.pick_template() == "arm"
+
+
+@pytest.mark.anyio
+async def test_a_pod_no_node_took_ends_with_the_scheduler_s_reason() -> None:
+    watch = BuildPodWatch("pynixd")
+    pending = {
+        "status": {
+            "phase": "Pending",
+            "conditions": [
+                {
+                    "type": "PodScheduled",
+                    "status": "False",
+                    "reason": "Unschedulable",
+                    "message": "0/3 nodes are available: 1 node(s) had untolerated taint",
+                }
+            ],
+        }
+    }
+    watch.saw(pending)
+    watch.unplaced(1800)
+
+    assert watch.ended.is_set() and not watch.ran
+    assert watch.end is not None and not watch.end.disrupted
+    assert watch.end.cause == "no node took it in 1800 s (0/3 nodes are available: 1 node(s) had untolerated taint)"
+
+
+@pytest.mark.anyio
+async def test_a_placed_pod_is_not_ended_for_waiting() -> None:
+    watch = BuildPodWatch("pynixd")
+    watch.saw({"spec": {"nodeName": "n1"}, "status": {"phase": "Pending"}})
+    watch.unplaced(1800)
+
+    assert watch.placed.is_set() and not watch.ended.is_set()
 
 
 @pytest.mark.anyio
