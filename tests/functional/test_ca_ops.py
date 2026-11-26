@@ -613,6 +613,49 @@ async def _build_after_the_delete(uri: str, *, target: str, also_the_output: boo
     assert not stdout.strip().endswith(".drv"), stdout
 
 
+@pytest.mark.ca_derivations
+async def test_a_produced_drv_with_a_dynamic_input_after_its_delete(dyn_env: tuple[Server, str]) -> None:
+    """The produced `.drv` has a dynamic input of its own, and a collection removed it: the goal makes it again.
+
+    dynhetz's shape: `dynatron.drv.drv` produces `...-dynatron.drv`, which reads `*-editable.drv.drv` outputs, and
+    the client resolves through both. nixidae/nixidae#1636.
+    """
+    _server, uri = dyn_env
+    store = ["--option", "builders", "", "--store", uri]
+    by_attr = ["--impure", "--file", str(TEST_NIX), "dyn.nestedCaUser"]
+    build = [str(CLIENT_BIN), "build", *store, "--no-link", "--print-out-paths"]
+    _, producer, _, _ = await run_subproc(
+        [
+            str(CLIENT_BIN),
+            "eval",
+            *store,
+            "--impure",
+            "--file",
+            str(TEST_NIX),
+            "dyn.producingCaWrapper.drvPath",
+            "--raw",
+        ],
+        nix_config=DYN_NIX_CONFIG,
+        expected_retcode=0,
+    )
+    await run_subproc([*build, *by_attr], nix_config=DYN_NIX_CONFIG, expected_retcode=0)
+    _, produced, _, _ = await run_subproc(
+        [*build, f"{producer.strip()}^out"], nix_config=DYN_NIX_CONFIG, expected_retcode=0
+    )
+    produced = produced.strip()
+    assert produced.endswith("-use-dynamic-drv-ca.drv"), produced
+    rc, _, _, deleted = await run_subproc(
+        [str(CLIENT_BIN), "store", "delete", *store, produced], nix_config=DYN_NIX_CONFIG
+    )
+    assert rc == 0, f"could not delete {produced}:\n{deleted}"
+
+    # The evaluator's road, as ekn's `realise_string`: `realiseContext` builds, then resolves on the client.
+    read = [str(CLIENT_BIN), "eval", *store, *by_attr, "--apply", "builtins.readFile", "--raw"]
+    rc, stdout, _, stdboth = await run_subproc(read, nix_config=DYN_NIX_CONFIG)
+    assert rc == 0, f"the read after the delete failed:\n{stdboth}"
+    assert stdout.strip() == "hello", stdout
+
+
 DYN_NIX_CONFIG = for_dynamic_derivations(
     substituters=host_daemon_substituters(),
 )
