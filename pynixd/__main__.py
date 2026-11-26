@@ -10,12 +10,14 @@ from __future__ import annotations
 import argparse
 import os
 import signal
+import sys
 import tracemalloc
 
 import anyio
 import structlog
 import uvloop
 
+from pynixd_store.limits import bump_file_limit
 from pynixd_store.mount_namespace import enter_private as enter_private_mount_namespace
 
 from .cli.base import load_settings, setup_logging
@@ -75,6 +77,8 @@ async def async_daemon_main() -> None:
 
 def daemon_main(_args: argparse.Namespace) -> None:
     """CLI entry point for ``pynixd daemon`` — sets up logging and runs the async loop."""
+    if sys.platform == "linux":
+        bump_file_limit()
     # First, while the process has one thread: a store on a read-only mount is remounted in it.
     enter_private_mount_namespace()
     settings = load_settings()

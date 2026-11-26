@@ -44,6 +44,7 @@ from anyio.abc import SocketStream
 from anyio.streams.buffered import BufferedByteReceiveStream
 
 from ..hintfmt import magenta, show_error
+from ..limits import bump_file_limit
 from . import buildenv, cgroup as build_cgroup, darwin, fetchurl, unpack_channel
 from .spec import ChildSpec, DarwinSpec
 from .usage import UsageSample, from_rusage, write_usage
@@ -696,24 +697,9 @@ def die_with(parent: int | None) -> None:
         os.kill(os.getpid(), signal.SIGKILL)
 
 
-def _bump_file_limit() -> None:
-    """`bumpFileLimit` (`libmain/shared.cc:130`): the open files soft limit up to the hard one, best effort.
-
-    Every Nix process does it at start, so a build under nix-daemon inherits it. A container's soft limit is
-    containerd's 1024 (measured, a build pod), where a service's is often its hard limit already.
-    """
-    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    # Not `soft < hard`: RLIM_INFINITY is -1 here. The soft limit never exceeds the hard one.
-    if soft != hard:
-        with contextlib.suppress(ValueError, OSError):  # best effort, as Nix ignores setrlimit's error
-            resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
-
-
 def main() -> None:
-    # Linux only: on darwin Nix raises it to `kern.maxfilesperproc` instead, as a hard limit of infinity breaks
-    # programs that size buffers by it (`shared.cc:139`).
     if LINUX:
-        _bump_file_limit()
+        bump_file_limit()
     spec_path, status_arg, *control_arg = sys.argv[1:4]
     run(spec_path, int(status_arg), socket.socket(fileno=int(control_arg[0])) if control_arg else None)
 
