@@ -65,6 +65,12 @@ async def test(vms: Machines) -> None:
     problems: list[str] = []
     probes_before = set(await probes(vm))
 
+    if mode == "daemonless":
+        # As NixOS mounts it, which a vivarium guest does not: pynixd must remount it for itself.
+        await vm.succeed("findmnt --noheadings --options ro /nix/store || mount --bind -o ro /nix/store /nix/store")
+        if (await vm.execute("touch /nix/store/.writable")).returncode == 0:
+            problems.append("root can write /nix/store, so the step proves no remount")
+
     if step["to"] is False:
         await vm.wait_for_unit("multi-user.target")
     elif step["to"] == FALLBACK:

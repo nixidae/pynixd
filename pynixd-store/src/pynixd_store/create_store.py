@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from .errors import PynixdError
+from .mount_namespace import make_writable
 from .nix_config import nix_at_least
 
 if TYPE_CHECKING:
@@ -166,12 +167,12 @@ def _migrations(config: Mapping[str, Any], nix_version: str) -> list[tuple[str, 
 def _create_dirs(layout: StoreLayout, config: Mapping[str, Any]) -> None:
     real = layout.real_store_dir
     real.mkdir(parents=True, exist_ok=True)
-    # NIX-DEVIATION (#27): `makeStoreWritable` (`local-store.cc:645`) remounts
-    # a read-only store directory in a private mount namespace. pynixd shares
-    # one mount namespace with every task it runs, so it refuses the store. To
-    # reverse: a deployment with a read-only bind-mounted store.
+    # `LocalStore::makeStoreWritable`: root remounts a read-only store in the
+    # namespace `pynixd daemon` entered (`mount_namespace.enter_private`).
+    if os.geteuid() == 0:
+        make_writable(real)
     if not os.access(real, os.W_OK):
-        raise PynixdError(f"pynixd cannot write the store directory {real}, and it remounts no read-only store")
+        raise PynixdError(f"pynixd cannot write the store directory {real}")
     profiles, gcroots = layout.state_dir / "profiles", layout.state_dir / "gcroots"
     for directory in (layout.links_dir, profiles, layout.state_dir / "temproots", layout.db_path.parent, gcroots):
         directory.mkdir(parents=True, exist_ok=True)

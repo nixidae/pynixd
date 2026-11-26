@@ -16,6 +16,8 @@ import anyio
 import structlog
 import uvloop
 
+from pynixd_store.mount_namespace import enter_private as enter_private_mount_namespace
+
 from .cli.base import load_settings, setup_logging
 from .cli.gc import register as register_gc
 from .cli.gha_cache import register as register_gha_cache
@@ -73,6 +75,8 @@ async def async_daemon_main() -> None:
 
 def daemon_main(_args: argparse.Namespace) -> None:
     """CLI entry point for ``pynixd daemon`` — sets up logging and runs the async loop."""
+    # First, while the process has one thread: a store on a read-only mount is remounted in it.
+    enter_private_mount_namespace()
     settings = load_settings()
     setup_logging(settings)
 
