@@ -393,7 +393,7 @@ class Connection:
                 so a kept stream grows with the copy. Issues #507, #1383.
         """
         if not self.connected:
-            raise RuntimeError(f"Connection {self.id!r} not connected")
+            raise InfrastructureError(f"Connection {self.id!r} not connected")
 
         await self.apply_options(options if options is not None else (client.options if client else None))
 
@@ -428,7 +428,7 @@ class Connection:
         this sends frames that pynixd made.
         """
         if not self.connected:
-            raise RuntimeError(f"Connection {self.id!r} not connected")
+            raise InfrastructureError(f"Connection {self.id!r} not connected")
 
         await self.apply_options(client.options if client else None)
 
