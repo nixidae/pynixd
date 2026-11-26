@@ -166,12 +166,21 @@ def test_export_references_graph_names_store_paths_by_file_name() -> None:
     assert export_requests({}, "/nix/store") == {}
 
 
+def test_an_export_of_a_path_inside_a_store_path_names_that_store_path() -> None:
+    """`toStorePath` (`derivation-options.cc:174`). NixOS's closure-info names `.../coreutils-9.11/bin/cat`, and a
+    daemonless store refused it, so no NixOS system built there."""
+    assert export_requests({"exportReferencesGraph": f"a {A}/bin/cat"}, "/nix/store") == {"a": [StorePath(A)]}
+    raw = f'{{"exportReferencesGraph":{{"g":["{A}/bin","{A}"]}}}}'
+    assert export_requests({"__json": raw}, "/nix/store") == {"g": [StorePath(A)]}
+
+
 @pytest.mark.parametrize(
     "env",
     [
         {"exportReferencesGraph": f"a {A} b"},
         {"exportReferencesGraph": f".a {A}"},
-        {"exportReferencesGraph": f"a {A}/bin"},
+        {"exportReferencesGraph": "a /nix/store"},
+        {"exportReferencesGraph": "a /etc/passwd"},
         {"exportReferencesGraph": f"a {A}^out"},
         {"exportReferencesGraph": f"a\x0b{A}"},
         {"__json": '{"exportReferencesGraph":["x"]}'},

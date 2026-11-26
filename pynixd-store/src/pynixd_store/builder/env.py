@@ -137,6 +137,16 @@ def is_store_path(word: str, store_dir: str) -> bool:
     return name not in (".", "..") and not name.startswith((".-", "..-"))
 
 
+def to_store_path(word: str, store_dir: str) -> str | None:
+    """`StoreDirConfig::toStorePath`: the store path that holds *word*, a path in the store, or `None`."""
+    prefix = store_dir + "/"
+    if not word.startswith(prefix):
+        return None
+    slash = word.find("/", len(prefix))
+    path = word if slash == -1 else word[:slash]
+    return path if is_store_path(path, store_dir) else None
+
+
 def _refuse_number(text: str) -> Any:
     raise _Unreproduced(f"the number {text}")
 
@@ -277,10 +287,14 @@ def export_requests(env: Mapping[str, str], store_dir: str) -> dict[str, list[St
             if not _EXPORT_FILE_NAME.fullmatch(name):
                 raise _Unreproduced(f"the file name {name!r}")
             requests[name] = {path}
-    for paths in requests.values():
-        if bad := sorted(path for path in paths if not is_store_path(path, store_dir)):
+    # Nix takes the store path that holds each path (`toStorePath` at `derivation-options.cc:174`): NixOS's
+    # closure-info names `.../coreutils-9.11/bin/cat`.
+    resolved: dict[str, set[str]] = {}
+    for name, paths in requests.items():
+        if bad := sorted(path for path in paths if to_store_path(path, store_dir) is None):
             raise _Unreproduced(f"the path {bad[0]!r}")
-    return {name: sorted(StorePath(path) for path in paths) for name, paths in sorted(requests.items())}
+        resolved[name] = {held for path in paths if (held := to_store_path(path, store_dir)) is not None}
+    return {name: sorted(StorePath(path) for path in paths) for name, paths in sorted(resolved.items())}
 
 
 def validity_registration(infos: Sequence[ValidPathInfo]) -> str:

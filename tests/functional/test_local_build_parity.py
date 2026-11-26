@@ -676,6 +676,36 @@ async def test_export_references_graph_reaches_the_builder_as_the_daemon_writes_
     assert any("cannot export references of path" in line for line in here["rejected"]), here
 
 
+EXPORT_INSIDE = f"""let dep = {DEP}; in derivation {{
+  name = "parity-export-inside"; system = builtins.currentSystem; builder = "/bin/sh";
+  exportReferencesGraph = [ "graph" "${{dep}}/bin/cat" ];
+  args = [ "-c" ''{_COPY}
+    copy graph > $out'' ];
+}}"""
+
+
+async def _exported_inside(tmp_path: Path, route: OpRoute) -> tuple[int, list[str]]:
+    async with _serve(tmp_path, route) as (url, root):
+        rc, out, _err, _both = await run_subproc(
+            [NIX_BIN, "build", "--store", url, "--impure", "--no-link", "--print-out-paths", "--expr", EXPORT_INSIDE],
+            expected_retcode=None,
+        )
+        return rc, [(root / p.lstrip("/")).read_text() for p in out.split()]
+
+
+async def test_an_export_of_a_path_inside_a_store_path_builds_as_the_daemon_builds_it(tmp_path: Path) -> None:
+    """`toStorePath` (`derivation-options.cc:174`) takes the store path that holds it. NixOS's closure-info names
+    `.../coreutils-9.11/bin/cat`, and pynixd refused it, so no NixOS system built on a daemonless store."""
+    before = fallthroughs("BuildDerivation")
+    here = await _exported_inside(tmp_path, OpRoute.pynixd)
+    assert fallthroughs("BuildDerivation") == before, "pynixd's sandbox builds parity-export-inside"
+    there = await _exported_inside(tmp_path, OpRoute.daemon)
+
+    assert here == there
+    assert here[0] == 0, here
+    assert "-parity-dep\n" in here[1][0], here
+
+
 MID = (
     f"let dep = {DEP}; in "
     'derivation { name = "parity-mid"; system = builtins.currentSystem; builder = "/bin/sh"; '
