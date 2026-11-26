@@ -167,6 +167,20 @@ def _kill_user(uid: int) -> None:
         raise SetupError(f"cannot kill processes for uid '{uid}': {ended}")
 
 
+def uid_left_running(spec: ChildSpec) -> int | None:
+    """The uid whose processes the helper kills once the builder exited, in the helper's own namespace; `None`: none.
+
+    A sandbox with a pid namespace of its own ends with its pid 1. Without one, the build's processes outlive it.
+    The helper is then in the sandbox's user namespace, where the build user is the sandbox uid: its host uid is
+    unmapped there, and `setuid` to it fails (measured on sg1's static builders).
+    """
+    if spec["build_user"] is None:
+        return None
+    if not spec["chroot"]:
+        return spec["build_user"][0]
+    return None if spec["pid_namespace"] else spec["sandbox_uid"]
+
+
 def _kill_sandbox(spec: ChildSpec, uid: int) -> None:
     """`killSandbox`: the build user's processes, and on darwin its System V IPC objects
     (`darwin-derivation-builder.cc:304`)."""
@@ -768,10 +782,9 @@ def run(spec_path: str, status_fd: int, control: socket.socket | None, *, parent
     # The sandbox's pid 1 reaps its orphans, so its usage holds theirs too.
     _pid, status, rusage = os.wait4(pid, 0)
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    # Without a pid namespace of its own, the build's processes outlive its pid 1.
-    if (not spec["chroot"] or not spec["pid_namespace"]) and spec["build_user"] is not None:
+    if (leftover_uid := uid_left_running(spec)) is not None:
         try:
-            _kill_sandbox(spec, spec["build_user"][0])
+            _kill_sandbox(spec, leftover_uid)
         except SetupError as e:
             _report(status_fd, str(e))
     os.close(status_fd)

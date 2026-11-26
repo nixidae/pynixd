@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from pynixd_store.builder.child import uid_left_running
 from pynixd_store.builder.spec import ChildSpec
 
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="the chroot helper is Linux's")
@@ -103,6 +104,23 @@ def test_without_a_pid_namespace_the_sandbox_shows_the_helpers_proc(tmp_path: Pa
     code, out, status = _run(tmp_path, _spec(tmp_path / "root", script, pid_namespace=False))
     assert (code, status) == (0, ""), out
     assert out.splitlines() == ["own-pid", "proc", "localhost"]
+
+
+@pytest.mark.parametrize(
+    ("chroot", "pid_namespace", "build_user", "uid"),
+    [
+        (True, True, (30002, 30000), None),
+        # sg1's static builders: the helper is in the sandbox's user namespace, where 30002 is unmapped.
+        (True, False, (30002, 30000), 1000),
+        (False, True, (30002, 30000), 30002),
+        (True, False, None, None),
+    ],
+)
+def test_the_helper_ends_what_a_build_left_as_the_uid_it_sees(
+    chroot: bool, pid_namespace: bool, build_user: tuple[int, int] | None, uid: int | None
+) -> None:
+    spec = {"chroot": chroot, "pid_namespace": pid_namespace, "build_user": build_user, "sandbox_uid": 1000}
+    assert uid_left_running(spec) == uid  # type: ignore[arg-type]  # the keys it reads, not a whole ChildSpec
 
 
 def test_without_the_chroot_the_builder_runs_on_the_host_as_its_caller(tmp_path: Path) -> None:
