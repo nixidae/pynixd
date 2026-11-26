@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final, Literal
 
 import anyio
@@ -27,7 +29,7 @@ from .local_db import LocalDBStore
 from .nar_reader import NarReader
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterable
+    from collections.abc import AsyncIterator, Iterable, Iterator
 
     from nix_daemon_protocol.valid_path_info import ValidPathInfo
     from pynixd_store.source import Source
@@ -53,6 +55,50 @@ _ADD_MULTIPLE: Final = Write(op="AddMultipleToStore")
 
 _INVALID_PATH = re.compile(r"path '(?:\x1b\[[0-9;]*m)?([^'\x1b]+)(?:\x1b\[[0-9;]*m)?' is not valid")
 """`InvalidPath` of Nix (`src/libstore/store-api.cc`), coloured or not."""
+
+
+@dataclass(slots=True)
+class _Flight:
+    done: anyio.Event = field(default_factory=anyio.Event)
+    landed: bool = False
+
+
+class Flights:
+    """The paths that copies are sending to each store now, so two copies do not send one path at once.
+
+    sg1's central blocked a worker thread per concurrent import of one path in `flock`, and 38 imports
+    of one input took all of its threads (nixidae/nixidae#1643). A copy waits for every flight it
+    shares before it sends, because nix-daemon refuses a path whose reference it does not hold yet.
+    """
+
+    def __init__(self) -> None:
+        self._by: dict[tuple[str, StorePath], _Flight] = {}
+
+    async def others_land(self, dst: str, infos: list[ValidPathInfo]) -> list[ValidPathInfo]:
+        """Waits until no path of *infos* is in flight to *dst*; answers the paths no other copy landed."""
+        while waits := {info.path: f for info in infos if (f := self._by.get((dst, info.path))) is not None}:
+            for flight in waits.values():
+                await flight.done.wait()
+            infos = [info for info in infos if not (info.path in waits and waits[info.path].landed)]
+        return infos
+
+    @contextlib.contextmanager
+    def carrying(self, dst: str, infos: list[ValidPathInfo]) -> Iterator[None]:
+        """Marks *infos* in flight to *dst*; they land when the block ends without an error."""
+        flight = _Flight()
+        keys = [(dst, info.path) for info in infos]
+        taken = [key for key in keys if key in self._by]
+        if taken:
+            raise RuntimeError(f"already in flight: {', '.join(str(path) for _, path in taken)}")
+        for key in keys:
+            self._by[key] = flight
+        try:
+            yield
+            flight.landed = True
+        finally:
+            for key in keys:
+                del self._by[key]
+            flight.done.set()
 
 
 def _refused_as_invalid(e: BaseException) -> str | None:
@@ -105,6 +151,7 @@ async def stream_paths_store_to_store(
     peer_store_id: str | None = None,
     direction: Literal["in", "out"] | None = None,
     substitute: bool = False,
+    flights: Flights | None = None,
 ) -> int:
     """Copy paths from src store to dst via streaming, querying closure first.
 
@@ -120,6 +167,9 @@ async def stream_paths_store_to_store(
     tell which side is local on its own. The count sums the NAR sizes
     of the infos already walked, after the already-valid filter, so
     only moved bytes count and no byte loop is touched.
+
+    With `flights`, a path another copy sends to dst now is not sent
+    again: this copy waits for it, and sends it only if that copy failed.
 
     Answers the NAR bytes it moved.
     """
@@ -163,6 +213,10 @@ async def stream_paths_store_to_store(
     check_paths_set = set(check.paths)
     to_transfer: list[ValidPathInfo] = [info for info in closure if info.path not in check_paths_set]
     for _ in range(_SELF_HEAL_ROUNDS):
+        if flights is not None:
+            mine = await flights.others_land(dst.store_id, to_transfer)
+            check_paths_set |= {info.path for info in to_transfer} - {info.path for info in mine}
+            to_transfer = mine
         log.debug(
             "stream_paths_filtered",
             src=src.store_id,
@@ -171,7 +225,8 @@ async def stream_paths_store_to_store(
             to_transfer=len(to_transfer),
         )
         try:
-            moved = await _stream_checked(src, dst, to_transfer, cancel_event, peer_store_id, direction)
+            with flights.carrying(dst.store_id, to_transfer) if flights is not None else contextlib.nullcontext():
+                moved = await _stream_checked(src, dst, to_transfer, cancel_event, peer_store_id, direction)
         except Exception as e:
             refused = _refused_as_invalid(e)
             healed = [info for info in closure if str(info.path) == refused and info.path in check_paths_set]

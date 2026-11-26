@@ -14,6 +14,7 @@ they are pulled automatically.
 from __future__ import annotations
 
 import contextlib
+import functools
 import random
 import time
 from typing import TYPE_CHECKING
@@ -46,7 +47,7 @@ from .serde import (
 )
 from .store import LocalDBStore, ScheduledStore
 from .store.local_db import write_router
-from .store.transfer import stream_paths_store_to_store
+from .store.transfer import Flights, stream_paths_store_to_store
 from .substitution_queue import SubstitutionQueue
 
 if TYPE_CHECKING:
@@ -152,7 +153,7 @@ class Scheduler:
             settings=self.ranker.settings,
             trigger=self.trigger,
             strip_handled_features=self.allocator.strip_handled_features,
-            stream=stream_paths_store_to_store,  # type: ignore[arg-type]  # zuban-bug: a union type argument fails a callable Protocol; mypy accepts the call
+            stream=functools.partial(stream_paths_store_to_store, flights=Flights()),  # type: ignore[arg-type]  # zuban-bug: a union type argument fails a callable Protocol; mypy accepts the call
             marks=lambda: local.db,
             add_build_log=lambda name, text: write_router(local).add_build_log(name, text),
             output_locations=ctx.output_locations,
