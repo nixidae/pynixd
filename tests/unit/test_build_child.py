@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from pynixd_store.builder.child import uid_left_running
+from pynixd_store.builder.child import _drop_capabilities, uid_left_running
 from pynixd_store.builder.spec import ChildSpec
 
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="the chroot helper is Linux's")
@@ -121,6 +121,29 @@ def test_the_helper_ends_what_a_build_left_as_the_uid_it_sees(
 ) -> None:
     spec = {"chroot": chroot, "pid_namespace": pid_namespace, "build_user": build_user, "sandbox_uid": 1000}
     assert uid_left_running(spec) == uid  # type: ignore[arg-type]  # the keys it reads, not a whole ChildSpec
+
+
+def _effective_capabilities() -> int:
+    for line in Path("/proc/self/status").read_text().splitlines():
+        if line.startswith("CapEff:"):
+            return int(line.split()[1], 16)
+    raise AssertionError("no CapEff in /proc/self/status")
+
+
+def test_the_killer_keeps_no_capability_in_the_sandbox_s_namespace() -> None:
+    """The helper's user namespace gives it every capability, and `setuid` there keeps them: with `CAP_KILL`,
+    `kill(-1)` reached the helper itself, and every build on sg1's static builders failed with signal 9."""
+    pid = os.fork()
+    if pid == 0:
+        code = 3
+        try:
+            os.unshare(os.CLONE_NEWUSER)
+            code = 2 if _effective_capabilities() == 0 else 1
+            _drop_capabilities()
+            code = 0 if _effective_capabilities() == 0 else 1
+        finally:
+            os._exit(code)
+    assert os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]) == 0
 
 
 def test_without_the_chroot_the_builder_runs_on_the_host_as_its_caller(tmp_path: Path) -> None:

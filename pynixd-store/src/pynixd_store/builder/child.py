@@ -119,6 +119,28 @@ def _map_ids(spec: ChildSpec, uid: int, gid: int) -> None:
     Path("/proc/self/gid_map").write_text(f"{spec['sandbox_gid']} {gid} 1")
 
 
+_LINUX_CAPABILITY_VERSION_3 = 0x20080522
+
+
+class _CapHeader(ctypes.Structure):
+    _fields_ = (("version", ctypes.c_uint32), ("pid", ctypes.c_int))
+
+
+class _CapData(ctypes.Structure):
+    _fields_ = (("effective", ctypes.c_uint32), ("permitted", ctypes.c_uint32), ("inheritable", ctypes.c_uint32))
+
+
+def _drop_capabilities() -> None:
+    """Drop every capability of this process.
+
+    `setuid` from root drops them on its own (`capabilities(7)`), as in Nix's `killUser`. In the sandbox's user
+    namespace the helper is not root there but the overflow uid, so `setuid` keeps them, and a `kill(-1)` with
+    `CAP_KILL` reached the helper too: every build on sg1's static builders failed with signal 9.
+    """
+    data = (_CapData * 2)()
+    _check(_libc.capset(ctypes.byref(_CapHeader(_LINUX_CAPABILITY_VERSION_3, 0)), data), "dropping capabilities")
+
+
 def _kill_all() -> None:
     """`kill(-1, SIGKILL)`, the caller left out.
 
@@ -143,6 +165,8 @@ def _kill_user(uid: int) -> None:
     if pid == 0:
         try:
             os.setuid(uid)
+            if LINUX:
+                _drop_capabilities()
             while True:
                 try:
                     _kill_all()
@@ -152,7 +176,7 @@ def _kill_user(uid: int) -> None:
                         break
                     if e.errno != errno.EINTR:
                         raise
-        except OSError as e:
+        except (OSError, SetupError) as e:
             os.write(2, f"pynixd: killing the processes of uid {uid}: {e}\n".encode())
             os._exit(1)
         os._exit(0)
