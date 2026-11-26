@@ -47,6 +47,7 @@ from pynixd.config import (
 from pynixd.exceptions import InfrastructureError
 from pynixd.placement import missing_input_bytes, store_setup_seconds
 from pynixd.pod_build import _own_home, process_started
+from pynixd.pod_size import size_pod
 from pynixd.provisioning.kubernetes import (
     BUILD_STORE_LABEL,
     RUNNER_STORE_ATTRIBUTE,
@@ -76,6 +77,7 @@ from pynixd.store.build_pods import (
     runner_references,
 )
 from pynixd.store.scheduled import ProbeState
+from pynixd_store.memory_model import MemoryModel
 
 
 @pytest.mark.anyio
@@ -550,9 +552,39 @@ async def test_a_pod_no_node_took_ends_with_the_scheduler_s_reason() -> None:
     watch.saw(pending)
     watch.unplaced(1800)
 
-    assert watch.ended.is_set() and not watch.ran
+    assert watch.ended.is_set() and not watch.ran and watch.never_placed
     assert watch.end is not None and not watch.end.disrupted
     assert watch.end.cause == "no node took it in 1800 s (0/3 nodes are available: 1 node(s) had untolerated taint)"
+
+
+def test_a_sibling_pod_s_sandbox_container_takes_the_requests() -> None:
+    """The build runs in the sandbox container, so its cgroup's weight is the request's; the request replaces
+    the template's, which the scheduler would otherwise sum with it."""
+    template = KubernetesTemplateSettings(
+        pod={
+            "spec": {
+                "containers": [
+                    {"name": "pynixd", "resources": {"requests": {"cpu": "100m"}}},
+                    {"name": "sandbox", "resources": {"requests": {"cpu": "1", "memory": "1Gi"}}},
+                ]
+            }
+        },
+        container="pynixd",
+        build_container="sandbox",
+    )
+    sized = size_pod(cores=8, memory_bytes=None, model=MemoryModel(2**30, 2**29), cores_used=3.04)
+
+    pod = build_pod_manifest(template, "pynixd-build-x", OWNER, size=sized)
+
+    pynixd, sandbox = pod["spec"]["containers"]
+    assert sandbox["resources"]["requests"] == {"cpu": "3100m", "memory": str(5 * 2**30)}
+    assert pynixd["resources"]["requests"] == {"cpu": "100m"}
+    unknown = size_pod(cores=8, memory_bytes=None, model=None, cores_used=None)
+    kept = build_pod_manifest(template, "pynixd-build-x", OWNER, size=unknown)
+    assert kept["spec"]["containers"][1]["resources"]["requests"] == {"cpu": "1", "memory": "1Gi"}
+    missing = KubernetesTemplateSettings(pod=template.pod, container="pynixd", build_container="builder")
+    with pytest.raises(ValueError, match="no build container 'builder'"):
+        build_pod_manifest(missing, "pynixd-build-x", OWNER, size=sized)
 
 
 @pytest.mark.anyio

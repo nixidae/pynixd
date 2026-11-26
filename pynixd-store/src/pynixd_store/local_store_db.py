@@ -710,6 +710,30 @@ class LocalStoreDB:
             log.debug("memory_model_failed", name=identity.name, exc_info=True)
         return None
 
+    async def cores_used(self, identity: DerivationIdentity) -> float | None:
+        """The median cores the identity's recent `BUILT` builds kept busy: CPU time over build time, on any store.
+
+        Falls back to the name and system under any shape, as `expected_build_ms` does.
+        """
+        if not self.active or not self.schema.usable:
+            return None
+        try:
+            for query, params in (
+                (
+                    self.sql.observations.cpu_of_shape,
+                    (identity.name, identity.system, identity.shape, OBSERVATIONS_KEPT),
+                ),
+                (self.sql.observations.cpu_of_name, (identity.name, identity.system, OBSERVATIONS_KEPT)),
+            ):
+                rows = await self.fetchall(query, params)
+                if rows:
+                    return statistics.median(
+                        (int(user) + int(system or 0)) / (int(build_ms) * 1000) for user, system, build_ms in rows
+                    )
+        except DatabaseError:
+            log.debug("cores_used_failed", name=identity.name, exc_info=True)
+        return None
+
     async def expected_build_ms_on(
         self, identity: DerivationIdentity, store_id: str
     ) -> tuple[int | None, BuildEstimateSource | None]:

@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Iterator, Mapping, Sequence
 
     from ..config import KubernetesSettings, KubernetesTemplateSettings
+    from ..pod_size import PodSize
 
 MANAGED_LABEL: Final = "app.kubernetes.io/managed-by"
 MANAGED_VALUE: Final = "pynixd"
@@ -297,6 +298,7 @@ class KubernetesProvider:
         *,
         priority_class: str | None = None,
         runner: RunnerFill | None = None,
+        size: PodSize | None = None,
     ) -> None:
         """A pod for one build of *owner*, with *job* in a Secret it owns (nixidae/nixidae#1560, spike).
 
@@ -305,7 +307,7 @@ class KubernetesProvider:
         """
         spec = self._template(template)
         api = await self._client()
-        manifest = build_pod_manifest(spec, name, owner, farm, priority_class=priority_class, runner=runner)
+        manifest = build_pod_manifest(spec, name, owner, farm, priority_class=priority_class, runner=runner, size=size)
         pod = Pod(manifest, api=api)
         with failing(f"creating build pod {name}"):
             try:
@@ -471,6 +473,8 @@ class BuildPodWatch:
     """The last reason seen for the pod's end (`pod_end`)."""
     unschedulable: str | None = None
     """The scheduler's last word on why no node takes the pod: its `PodScheduled` condition's message."""
+    never_placed: bool = False
+    """`unplaced` ended the pod: no node took it in time."""
 
     def saw(self, pod: Manifest) -> None:
         """One state of the pod. The log ends when the container exits, and the kubelet writes the container's
@@ -512,6 +516,7 @@ class BuildPodWatch:
         if self.placed.is_set():
             return
         why = self.unschedulable or "the scheduler gave no reason"
+        self.never_placed = True
         self._end(BuildPodEnd(exit_code=None, message="", cause=f"no node took it in {seconds:g} s ({why})"))
 
     def _end(self, end: BuildPodEnd) -> None:
@@ -670,27 +675,15 @@ class FarmVolume:
 
 @dataclass(frozen=True, slots=True)
 class RunnerPod:
-    """A template's runner container, which its annotation names, the cores its builder gets, and the store path
-    of its build shell, which Nix's sandbox holds as a `sandbox-paths` entry's."""
+    """A template's runner container, which its annotation names, and the store path of its build shell, which
+    Nix's sandbox holds as a `sandbox-paths` entry's."""
 
     container: str
-    cores: int
     shell: str | None = None
 
 
-def _cores(quantity: str | int | float) -> int:
-    """A CPU quantity in whole cores, rounded up: `NIX_BUILD_CORES` is a count."""
-    text = str(quantity)
-    value = int(text[:-1]) / 1000 if text.endswith("m") else float(text)
-    return max(1, math.ceil(value))
-
-
 def runner_pod(template: KubernetesTemplateSettings) -> RunnerPod | None:
-    """The template's runner, or `None` for a template without one; `ValueError` for a runner that cannot be.
-
-    The cores are the runner's CPU limit, else its request: central writes `NIX_BUILD_CORES` into the runner
-    before a node is known.
-    """
+    """The template's runner, or `None` for a template without one; `ValueError` for a runner that cannot be."""
     pod = template.pod
     annotations: Manifest = (pod.get("metadata") or {}).get("annotations") or {}
     container = annotations.get(SANDBOX_ANNOTATION)
@@ -704,11 +697,7 @@ def runner_pod(template: KubernetesTemplateSettings) -> RunnerPod | None:
     runner = next((c for c in (pod.get("spec") or {}).get("containers") or [] if c.get("name") == container), None)
     if runner is None:
         raise ValueError(f"kubernetes: the template's {SANDBOX_ANNOTATION} names no container {container!r}")
-    resources: Manifest = runner.get("resources") or {}
-    cpu = (resources.get("limits") or {}).get("cpu") or (resources.get("requests") or {}).get("cpu")
-    if cpu is None:
-        raise ValueError(f"kubernetes: the template's runner {container!r} has no CPU limit or request")
-    return RunnerPod(container=container, cores=_cores(cpu), shell=shell)
+    return RunnerPod(container=container, shell=shell)
 
 
 @dataclass(frozen=True, slots=True)
@@ -729,9 +718,10 @@ def build_pod_manifest(
     *,
     priority_class: str | None = None,
     runner: RunnerFill | None = None,
+    size: PodSize | None = None,
 ) -> Manifest:
     """The template's pod for one build of *owner*: no tags, *owner*'s labels, and the job Secret at `JOB_DIR`
-    in its container.
+    in its container. *size*'s requests replace the template's on the container the build runs in.
 
     With *farm*, its CSI volume asks nixkube for a farm of the build's root path. nixkube keys the path by the
     node's system, not the derivation's: an i686 build on an x86_64 node reads the x86_64 key.
@@ -780,6 +770,16 @@ def build_pod_manifest(
             annotations[NETWORK_ANNOTATION] = "true"
         else:
             annotations.pop(NETWORK_ANNOTATION, None)
+    if size is not None:
+        building = runner.container if runner is not None else template.build_container
+        builder = target if building is None else next((c for c in containers if c.get("name") == building), None)
+        if builder is None:
+            raise ValueError(f"kubernetes: the template has no build container {building!r}")
+        requests = builder.setdefault("resources", {}).setdefault("requests", {})
+        if size.cpu_millis is not None:
+            requests["cpu"] = f"{size.cpu_millis}m"
+        if size.memory_bytes is not None:
+            requests["memory"] = str(size.memory_bytes)
     return pod
 
 

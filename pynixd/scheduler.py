@@ -290,10 +290,12 @@ class Scheduler:
         t0 = time.monotonic()
         hint = None
         memory = None
+        cores_used = None
         if isinstance(self.local_store, LocalDBStore):
             identity = identity_of(request.derivation)
             hint = await self.local_store.db.expected_build_ms(identity)
             memory = await self.local_store.db.memory_model(identity)
+            cores_used = await self.local_store.db.cores_used(identity)
         t_hint = time.monotonic()
 
         builders = None
@@ -331,6 +333,8 @@ class Scheduler:
             nest(queued, self.queue.by_id.values(), askers)
         if queued is not None and queued.memory_model is None:
             queued.memory_model = memory
+        if queued is not None and queued.cores_used is None:
+            queued.cores_used = cores_used
         if queued is not None and isinstance(self.local_store, LocalDBStore):
             queued.external_systems |= await self.local_store.external_builder_systems(options)
         t_enqueue = time.monotonic()

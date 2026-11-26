@@ -15,6 +15,7 @@ from nix_daemon_protocol.derivation_output import DerivationOutput
 from nix_daemon_protocol.store_path import StorePath
 from pynixd.config import BuildPodStoreSpec, KubernetesTemplateSettings
 from pynixd.exceptions import InfrastructureError, StoreRefuses
+from pynixd.pod_size import size_pod
 from pynixd.provisioning.kubernetes import (
     BuildPodEnd,
     BuildPodOwner,
@@ -36,6 +37,7 @@ from pynixd_store.builder.runner import (
     etc_files,
     planned_invocation,
 )
+from pynixd_store.memory_model import MemoryModel
 
 DRV = StorePath("/nix/store/cccccccccccccccccccccccccccccccc-x.drv")
 OUT = "/nix/store/00000000000000000000000000000000-x"
@@ -120,7 +122,7 @@ def test_a_runner_pod_builds_no_check_or_repair() -> None:
 async def test_a_runner_pod_store_sends_a_build_it_refuses_elsewhere() -> None:
     """Not a failed build: `StoreRefuses` takes the store out for the build, and placement tries the next one."""
     store = BuildPodStoreSpec(templates=["nri"], central_host="10.0.0.1").to_store("pods")
-    store.runners = {"nri": RunnerPod("runner", 1)}
+    store.runners = {"nri": RunnerPod("runner")}
     request = BuildDerivationRequest(drv_path=DRV, derivation=_drv(), build_mode=BuildMode.CHECK)
 
     async def ignored(_line: str) -> None:
@@ -145,14 +147,30 @@ def _template(resources: dict[str, object], container: str = "runner") -> Kubern
     )
 
 
-def test_the_runner_s_cores_are_its_cpu_limit_else_its_request() -> None:
-    assert runner_pod(_template({"limits": {"cpu": "1500m"}, "requests": {"cpu": 1}})) == RunnerPod("runner", 2)
-    assert runner_pod(_template({"requests": {"cpu": "250m"}})) == RunnerPod("runner", 1)
+def test_the_runner_is_the_container_its_annotation_names() -> None:
+    assert runner_pod(_template({})) == RunnerPod("runner")
     assert runner_pod(KubernetesTemplateSettings(pod={"spec": {"containers": []}})) is None
-    with pytest.raises(ValueError, match="no CPU"):
-        runner_pod(_template({}))
     with pytest.raises(ValueError, match="names no container 'other'"):
         runner_pod(_template({"limits": {"cpu": 1}}, container="other"))
+
+
+def test_the_runner_takes_the_pod_s_requests() -> None:
+    """The runner is the build. Its cores are central's choice, not its request rounded up: a 1200m request
+    from the history would otherwise give the build 2 cores, and its memory request belongs to 8."""
+    planned = planned_invocation(DRV, _drv(), store_dir="/nix/store", build_cores=8, impure_env={})
+    size = size_pod(cores=8, memory_bytes=None, model=MemoryModel(0.0, 2**30), cores_used=1.2)
+
+    pod = build_pod_manifest(
+        _template({"requests": {"cpu": "1"}}),
+        "b",
+        OWNER,
+        runner=RunnerFill("runner", planned, network=False),
+        size=size,
+    )
+
+    controller, runner = pod["spec"]["containers"]
+    assert runner["resources"]["requests"] == {"cpu": "1200m", "memory": str(8 * 2**30)}
+    assert "resources" not in controller
 
 
 def test_the_runner_s_shell_is_the_store_path_of_its_annotation() -> None:
@@ -160,7 +178,7 @@ def test_the_runner_s_shell_is_the_store_path_of_its_annotation() -> None:
     shell = "/nix/store/00000000000000000000000000000009-busybox"
     template.pod["metadata"]["annotations"][SHELL_ANNOTATION] = f"{shell}/bin/busybox"
 
-    assert runner_pod(template) == RunnerPod("runner", 1, shell)
+    assert runner_pod(template) == RunnerPod("runner", shell)
     template.pod["metadata"]["annotations"][SHELL_ANNOTATION] = "/bin/busybox"
     with pytest.raises(ValueError, match="not in the store"):
         runner_pod(template)

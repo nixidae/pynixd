@@ -1023,6 +1023,11 @@ class BuildPodStoreSpec(StoreSpecBase):
     runner_impure_env: dict[str, str] = {}
     """Nix's `impure-env` for a template with a runner container: what a fixed-output build's `impureEnvVars`
     take there. Central writes it into the pod spec, which anyone who reads the pod sees."""
+    pod_cores: int = Field(default=8, ge=1)
+    """The most cores a pod's build gets (`NIX_BUILD_CORES`), and the cores of a build with no memory history."""
+    pod_memory_bytes: int | None = Field(default=None, gt=0)
+    """The most memory a pod requests. A build whose history needs more at `pod_cores` gets fewer cores, as many
+    as fit. Keep it below a node's free memory, or the pod waits `schedule_seconds` for a node. `None`: no bound."""
 
     def priority_class(self, depth: int) -> str | None:
         """The PriorityClass of a build pod at *depth*, or `None` for the template's."""
@@ -1332,6 +1337,9 @@ class KubernetesTemplateSettings(BaseModel):
     is no `root`, and the controller's session to the builder is an untrusted user's."""
     container: str | None = None
     """The container the ticket is mounted in; `None`: the first."""
+    build_container: str | None = None
+    """The container the build runs in, which takes a build pod's requests; `None`: *container*. A runner
+    template's runner container takes them whatever this says."""
     ticket_dir: Path = Path("/run/pynixd-join")
 
 

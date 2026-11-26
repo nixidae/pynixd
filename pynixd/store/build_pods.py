@@ -48,6 +48,7 @@ from ..build_job import (
 )
 from ..build_result import failure, result_succeeded
 from ..exceptions import InfrastructureError, StoreRefuses
+from ..pod_size import PodSize, size_pod
 from ..provisioning.kubernetes import (
     BuildPodOwner,
     BuildPodWatch,
@@ -168,6 +169,10 @@ def runner_refusal(request: BuildDerivationRequest) -> str | None:
     if request.build_mode != BuildMode.NORMAL:
         return "the runner container builds no repair or check"
     return drv_refusal(request.derivation)
+
+
+class PodUnplaced(InfrastructureError):
+    """No node took the pod in `schedule_seconds`."""
 
 
 class PodDisrupted(InfrastructureError):
@@ -403,6 +408,7 @@ class BuildPodStore(ScheduledStore):
         depth: int = 0,
         template: str | None = None,
         runner_root: str | None = None,
+        size: PodSize | None = None,
     ) -> tuple[BuildDerivationResponse, PodTimes]:
         """Build *request* in a pod, and say when each step of the pod ended; `InfrastructureError` when the pod,
         not the build, failed.
@@ -410,8 +416,11 @@ class BuildPodStore(ScheduledStore):
         *farm_root*, with the spec's `farm`, is the path the pod's `/nix` is a farm of: central holds it valid.
         *depth* is the build's in recursive Nix, which picks the pod's PriorityClass. *template* is what
         `pick_template` gave for the farm root; `None`: the first. *runner_root*, for a runner template, makes the
-        runner's own store in the farm (`runner_references`); the farm root refers to it.
+        runner's own store in the farm (`runner_references`); the farm root refers to it. *size* gives the build's
+        cores and the pod's requests; `None`: the store's cores and the template's requests.
         """
+        if size is None:
+            size = size_pod(cores=self.spec.pod_cores, memory_bytes=None, model=None, cores_used=None)
         template = template or self.spec.templates[0]
         runner = self.runners.get(template)
         if runner is not None and (refused := runner_refusal(request)) is not None:
@@ -423,7 +432,7 @@ class BuildPodStore(ScheduledStore):
         fill: RunnerFill | None = None
         runner_job: RunnerJob | None = None
         if runner is not None:
-            runner_job = RunnerJob(build_cores=runner.cores, impure_env=self.spec.runner_impure_env)
+            runner_job = RunnerJob(build_cores=size.cores, impure_env=self.spec.runner_impure_env)
             drv = request.derivation
             fill = RunnerFill(
                 container=runner.container,
@@ -448,6 +457,7 @@ class BuildPodStore(ScheduledStore):
             central_host_key=self.central_host_key,
             request=await encode(request),
             runner=runner_job,
+            build_cores=size.cores,
             result_token=secrets.token_hex(16),
         )
         self.grants.grant(public, BuildGrant(drv_path=str(request.drv_path), outputs=outputs))
@@ -466,7 +476,7 @@ class BuildPodStore(ScheduledStore):
             priority = self.spec.priority_class(depth)
             times = PodTimes(asked=time.monotonic())
             await self.kubernetes.start_build_pod(
-                template, name, self.owner, secret, farm, priority_class=priority, runner=fill
+                template, name, self.owner, secret, farm, priority_class=priority, runner=fill, size=size
             )
             times.created = time.monotonic()
             log.info(
@@ -476,6 +486,11 @@ class BuildPodStore(ScheduledStore):
                 depth=depth,
                 priority_class=priority,
                 template=template,
+                cores=size.cores,
+                cpu_millis=size.cpu_millis,
+                memory_bytes=size.memory_bytes,
+                cpu_source=size.cpu_source,
+                memory_source=size.memory_source,
             )
             watch = BuildPodWatch(self.spec.container)
             message: str | None = None
@@ -513,6 +528,8 @@ class BuildPodStore(ScheduledStore):
                 ended = watch.end
                 if ended is None:
                     raise InfrastructureError(f"build pod {name}: its log ended while its container ran")
+                if watch.never_placed:
+                    raise PodUnplaced(f"build pod {name}: {ended.cause}")
                 if ended.exit_code != 0 or not ended.message:
                     fault = PodDisrupted if ended.disrupted else InfrastructureError
                     raise fault(f"build pod {name}: {ended.cause} with exit {ended.exit_code} and no result")

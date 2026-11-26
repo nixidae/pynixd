@@ -135,6 +135,10 @@ class QueuedBuild:
         self.expected_duration = expected_duration
         self.memory_model: MemoryModel | None = None
         """The derivation's peak memory as a function of its cores, from its history and its kills."""
+        self.cores_used: float | None = None
+        """The cores the derivation's history kept busy, which a build pod requests."""
+        self.pod_unplaced = False
+        """No node took a pod of this build at its history's size: the next pod asks for the template's."""
         self.expected_peak_bytes: int | None = None
         """The peak memory reserved on the chosen store, at the cores placement gave the build there."""
         self.external_systems: frozenset[str] = frozenset()

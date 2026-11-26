@@ -50,6 +50,8 @@ class Job(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     runner: RunnerJob | None = None
+    build_cores: int | None = None
+    """The build's `NIX_BUILD_CORES`, which central sized the pod's requests for; `None`: the pod's own."""
 
     central_host: str
     central_port: int

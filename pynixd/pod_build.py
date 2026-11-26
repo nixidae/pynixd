@@ -148,6 +148,8 @@ async def build_one(job_dir: Path, result_path: Path, clock: PodClock) -> int:
         if isinstance(build_settings, NotBuiltHere):
             resp = BuildDerivationResponse(result=failure(f"pynixd build-one: {build_settings}"))
         else:
+            if job.build_cores is not None:
+                build_settings = replace(build_settings, build_cores=job.build_cores)
             if job.runner is not None:
                 build_settings = replace(
                     build_settings, build_cores=job.runner.build_cores, impure_env=job.runner.impure_env

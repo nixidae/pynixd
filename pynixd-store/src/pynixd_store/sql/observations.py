@@ -23,6 +23,9 @@ class ObservationSql:
     memory_points_of_shape: str
     """The cores, peak and OOM kills of the identity's `BUILT` attempts and its killed ones, newest first."""
     memory_points_of_name: str
+    cpu_of_shape: str
+    """The CPU time and build time of the identity's `BUILT` builds, newest first."""
+    cpu_of_name: str
     store_link: str
     inputs_bytes: str
     pull_bytes: str
@@ -89,6 +92,16 @@ ORDER BY id DESC LIMIT ?
 SELECT cores, coalesce(hostPeakMemoryBytes, peakMemoryBytes), oomKills FROM {BUILD_OBSERVATION_TABLE}
 WHERE name = ? AND system = ? AND (status = 0 OR oomKills > 0)
 AND coalesce(hostPeakMemoryBytes, peakMemoryBytes) IS NOT NULL
+ORDER BY id DESC LIMIT ?
+""",
+    cpu_of_shape=f"""
+SELECT cpuUserUs, cpuSystemUs, buildMs FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = ? AND system = ? AND shape = ? AND status = 0 AND cpuUserUs IS NOT NULL AND buildMs > 0
+ORDER BY id DESC LIMIT ?
+""",
+    cpu_of_name=f"""
+SELECT cpuUserUs, cpuSystemUs, buildMs FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = ? AND system = ? AND status = 0 AND cpuUserUs IS NOT NULL AND buildMs > 0
 ORDER BY id DESC LIMIT ?
 """,
     store_link=f"""
@@ -170,6 +183,16 @@ ORDER BY id DESC LIMIT %s
 SELECT cores, coalesce(hostPeakMemoryBytes, peakMemoryBytes), oomKills FROM {BUILD_OBSERVATION_TABLE}
 WHERE name = %s AND system = %s AND (status = 0 OR oomKills > 0)
 AND coalesce(hostPeakMemoryBytes, peakMemoryBytes) IS NOT NULL
+ORDER BY id DESC LIMIT %s
+""",
+    cpu_of_shape=f"""
+SELECT cpuUserUs, cpuSystemUs, buildMs FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = %s AND system = %s AND shape = %s AND status = 0 AND cpuUserUs IS NOT NULL AND buildMs > 0
+ORDER BY id DESC LIMIT %s
+""",
+    cpu_of_name=f"""
+SELECT cpuUserUs, cpuSystemUs, buildMs FROM {BUILD_OBSERVATION_TABLE}
+WHERE name = %s AND system = %s AND status = 0 AND cpuUserUs IS NOT NULL AND buildMs > 0
 ORDER BY id DESC LIMIT %s
 """,
     store_link=f"""

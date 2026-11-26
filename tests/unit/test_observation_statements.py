@@ -91,3 +91,29 @@ async def test_the_history_keeps_its_newest_rows_and_its_newest_built_row(store_
         await store_db.record_build_observation(HELLO, BuildObservation(store_id="remote", status=FAILED))
     assert await _count(store_db, BUILD_OBSERVATION_TABLE) == OBSERVATIONS_KEPT + 1
     assert await store_db.expected_build_ms(HELLO) == 1
+
+
+async def test_the_cores_a_build_kept_busy_are_its_cpu_time_over_its_build_time(store_db: LocalStoreDB) -> None:
+    """sg1's hello in a build pod: 12 s user and 5.8 s system in a 15.3 s build, 1.2 cores."""
+    for user_s, build_s in ((12.0, 15.3), (40.0, 10.0), (2.0, 10.0)):
+        await store_db.record_build_observation(
+            HELLO,
+            BuildObservation(
+                store_id="pods",
+                status=BUILT,
+                build_ms=int(build_s * 1000),
+                cpu_user_us=int(user_s * 1e6),
+                cpu_system_us=5_800_000,
+            ),
+        )
+    await store_db.record_build_observation(
+        HELLO, BuildObservation(store_id="pods", status=FAILED, build_ms=1, cpu_user_us=10**9, cpu_system_us=0)
+    )
+    await store_db.record_build_observation(HELLO, BuildObservation(store_id="pods", status=BUILT, build_ms=0))
+
+    used = await store_db.cores_used(HELLO)
+    assert used is not None and round(used, 2) == 1.16
+    unseen = DerivationIdentity(name="hello", system="x86_64-linux", shape="s3", keys=(), features=())
+    assert await store_db.cores_used(unseen) == used
+    other = DerivationIdentity(name="other", system="x86_64-linux", shape="s1", keys=(), features=())
+    assert await store_db.cores_used(other) is None

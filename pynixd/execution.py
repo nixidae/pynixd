@@ -37,6 +37,7 @@ from .build_result import failure, result_succeeded
 from .daemon_extensions.query_closure_with_info import QueryClosureWithInfoRequest
 from .exceptions import BackendError, BuilderGone, InfrastructureError, StoreRefuses, error_text, leaves
 from .placement import client_forbids_local, ms_since
+from .pod_size import size_pod
 from .serde import (
     AddTempRootRequest,
     AddTempRootsRequest,
@@ -52,6 +53,7 @@ from .store.build_pods import (
     RUNNER_ROOT_NAME,
     BuildPodStore,
     PodDisrupted,
+    PodUnplaced,
     farm_references,
     farm_text,
     runner_references,
@@ -874,14 +876,26 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
             build.last_output_at = time.monotonic()
             await build.post_log_and_fanout(LogNext(text=text if text.endswith("\n") else text + "\n"))
 
+        size = size_pod(
+            cores=store.spec.pod_cores,
+            memory_bytes=store.spec.pod_memory_bytes,
+            model=build.memory_model,
+            cores_used=build.cores_used,
+            ceilings=(build.options.build_cores if build.options is not None else None, build.cores_ceiling),
+            unplaced=build.pod_unplaced,
+        )
+        build.cores_cap, build.expected_peak_bytes = size.cores, size.memory_bytes
         try:
             async with contextlib.AsyncExitStack() as held:
                 template = await store.pick_template()
                 farm_root, runner_root = await self._farm_root(build, store, template, held)
                 built, times = await store.build(
-                    build.request, line, farm_root, build.depth, template, runner_root=runner_root
+                    build.request, line, farm_root, build.depth, template, runner_root=runner_root, size=size
                 )
                 resp = without_error_prefix(built)
+        except PodUnplaced:
+            build.pod_unplaced = True
+            raise
         except PodDisrupted as e:
             # What a Job's `podFailurePolicy` calls Ignore: a low-priority pod gives way, and no store failed.
             log.info("build_pod_disrupted", build_id=build.build_id, error=str(e))
