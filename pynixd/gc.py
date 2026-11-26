@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import asynccontextmanager
 from itertools import batched
 from typing import TYPE_CHECKING
 
@@ -37,6 +37,7 @@ from nix_daemon_protocol import (
     QueryValidPathsRequest,
     StorePath,
 )
+from nix_daemon_protocol.collect_garbage import GCPaths
 from nix_daemon_protocol.query_path_infos import QueryPathInfosRequest
 from pynixd_store.collect import LinksCleanup
 from pynixd_store.db_migrations import HELD_BY_TABLE
@@ -62,8 +63,7 @@ from .psi import ReclaimSample
 from .store.local_db import LocalDBStore
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
-    from contextlib import AbstractAsyncContextManager
+    from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
     from nix_daemon_protocol.collect_garbage import CollectGarbageResponse
 
@@ -79,13 +79,6 @@ _MAX_FREED = 2**63 - 1
 _DELETE_BATCH_SIZE = 100
 _DELETE_TIMEOUT_S = 60
 """Bound each delete and recovery query; cancelled connections are discarded."""
-
-
-def _wire(conn: Connection | None) -> Connection:
-    """The connection of a pass that the daemon collects: only an engine pass runs with none."""
-    if conn is None:
-        raise RuntimeError("a pass that the daemon collects runs on a connection")
-    return conn
 
 
 def _request(action: GCAction, paths: set[StorePath]) -> CollectGarbageRequest:
@@ -680,8 +673,9 @@ class Collector:
     async def _delete(
         self, batch: list[str], weights: dict[str, tuple[int, int]], lines: list[LogNext], client: ClientConn | None
     ) -> PynixdCollectGarbageResponse:
-        """Delete groups of 100, isolating refusals without stopping the queue.
+        """Delete the batch: in one collection on the engine, in groups of 100 through the daemon.
 
+        Through the daemon, refusals are isolated without stopping the queue.
         Errors carry no partial results. Recheck validity before splitting a
         failed group, so deleted paths never enter another delete request.
         Singleton refusals get one final lap for cross-group referrers.
@@ -708,17 +702,14 @@ class Collector:
             if client is not None:
                 await client.send(line)
 
-        async def recheck(conn: Connection | None, paths: Sequence[str]) -> list[str]:
+        async def recheck(conn: Connection, paths: Sequence[str]) -> list[str]:
             # Bypass the caches: a failed delete can already invalidate paths.
             with anyio.fail_after(_DELETE_TIMEOUT_S):
-                if collecting is not None:
-                    valid = {str(path) for path in await collecting.engine.query_valid_paths(paths)}
-                else:
-                    response = await _wire(conn).call(
-                        QueryValidPathsRequest(paths={StorePath(path) for path in paths}, substitute=0),
-                        raise_on_error=True,
-                    )
-                    valid = {str(path) for path in response.paths}
+                response = await conn.call(
+                    QueryValidPathsRequest(paths={StorePath(path) for path in paths}, substitute=0),
+                    raise_on_error=True,
+                )
+                valid = {str(path) for path in response.paths}
             gone = set(paths) - valid
             deleted.update(gone)
             recovered.update(gone)
@@ -727,19 +718,13 @@ class Collector:
             return [path for path in paths if path in valid]
 
         await local.probe()
-        collecting = local if isinstance(local, LocalDBStore) and local.router.engine_collects() else None
+        if isinstance(local, LocalDBStore) and local.router.engine_collects():
+            return self._answered(await self._delete_on_engine(local, batch, physical, say, client), lines)
 
-        def connection() -> AbstractAsyncContextManager[Connection | None]:
-            # The engine deletes and rechecks with no connection, and a store with no daemon has none to give.
-            return nullcontext() if collecting is not None else local.transfer_conn()
-
-        async def delete(conn: Connection | None, group: list[str]) -> CollectGarbageResponse:
+        async def delete(conn: Connection, group: list[str]) -> CollectGarbageResponse:
             request = _request(GCAction.DELETE_SPECIFIC, {StorePath(path) for path in group})
             with anyio.fail_after(_DELETE_TIMEOUT_S):
-                if collecting is not None:
-                    # Each request is a whole collection: Nix's `.links` sweep would list every entry each time.
-                    return await collecting.router.collect_garbage(request, links=LinksCleanup.DYING)
-                response: CollectGarbageResponse = await _wire(conn).call(request, raise_on_error=True)
+                response: CollectGarbageResponse = await conn.call(request, raise_on_error=True)
                 return response
 
         pending = list(dict.fromkeys(batch))
@@ -751,22 +736,20 @@ class Collector:
             queue = deque(list(group) for group in batched(pending, _DELETE_BATCH_SIZE, strict=False))
             retry: list[str] = []
             while queue:
-                async with connection() as conn:
+                async with local.transfer_conn() as conn:
                     while queue:
                         group = queue.popleft()
                         await say(f"deleting '{group[0]}'" if len(group) == 1 else f"deleting {len(group)} paths")
                         try:
                             response = await delete(conn, group)
                         except PynixdError as exc:
-                            # The daemon refuses with `BackendError`, the engine with `PathInUse`.
                             log.warning("gc_chunk_refused", paths=len(group), reason=str(exc))
                             try:
                                 remaining = await recheck(conn, group)
                             except (BackendError, TimeoutError, ConnectionError, EOFError):
                                 log.warning("gc_chunk_recheck_failed", paths=len(group), exc_info=True)
                                 uncertain.update(group)
-                                if conn is not None:
-                                    conn.dirty = True
+                                conn.dirty = True
                                 break
                             if len(group) == 1:
                                 retry.extend(remaining)
@@ -781,8 +764,7 @@ class Collector:
                             uncertain.update(group)
                             if isinstance(exc, TimeoutError):
                                 timed_out.update(group)
-                            if conn is not None:
-                                conn.dirty = True
+                            conn.dirty = True
                             break
                         finally:
                             for path in group:
@@ -804,13 +786,12 @@ class Collector:
             pending = [path for path in retry if path not in deleted]
 
         for group in (list(members) for members in batched(sorted(uncertain), _DELETE_BATCH_SIZE, strict=False)):
-            async with connection() as conn:
+            async with local.transfer_conn() as conn:
                 try:
                     await recheck(conn, group)
                 except (BackendError, TimeoutError, ConnectionError, EOFError):
                     log.warning("gc_chunk_recheck_failed", paths=len(group), exc_info=True)
-                    if conn is not None:
-                        conn.dirty = True
+                    conn.dirty = True
 
         refused = len(set(pending) - deleted)
         if physical is not None and deleted == set(batch):
@@ -842,6 +823,68 @@ class Collector:
             PynixdCollectGarbageResponse(store_paths={StorePath(path) for path in deleted}, bytes=freed),
             lines,
         )
+
+    async def _delete_on_engine(
+        self,
+        local: LocalDBStore,
+        batch: list[str],
+        physical: int | None,
+        say: Callable[[str], Awaitable[None]],
+        client: ClientConn | None,
+    ) -> PynixdCollectGarbageResponse:
+        """The whole batch in one collection: Nix's `DELETE_DEAD` within named paths.
+
+        The daemon route sends groups of 100 and bisects a refusal, because one
+        Nix call over a whole batch goes silent for minutes (#10). The engine
+        has no daemon to go silent, and each request is a whole collection:
+        the lock, the roots socket, the walk of the roots. One request pays
+        them once. `DELETE_DEAD` keeps a path that a root, a temporary root or
+        an unnamed referrer needs, where `DELETE_SPECIFIC` refuses the request.
+        """
+        if not batch:
+            raise ValueError("an empty DELETE_DEAD is the whole store")
+        request = CollectGarbageRequest(
+            action=GCAction.DELETE_DEAD,
+            paths_to_delete=set(),
+            gc_paths=GCPaths(paths={StorePath(path) for path in batch}),
+            ignore_liveness=0,
+            max_freed=_MAX_FREED,
+            obsolete1=0,
+            obsolete2=0,
+            obsolete3=0,
+        ).with_both_shapes()
+        await say(f"deleting {len(batch)} paths")
+        try:
+            response = await local.router.collect_garbage(request, conn=client, links=LinksCleanup.DYING)
+            deleted = {str(path) for path in response.paths_deleted}
+            freed = response.bytes_freed
+            failed = False
+        except PynixdError:
+            # A failed unlink stops the collection with the paths before it gone, as Nix's does.
+            log.warning("gc_engine_collection_failed", paths=len(batch), exc_info=True)
+            valid = {str(path) for path in await local.engine.query_valid_paths(batch)}
+            deleted = set(batch) - valid
+            freed = 0
+            failed = True
+        finally:
+            for path in batch:
+                local.forget_path_info(path)
+        if physical is not None:
+            remaining = (
+                0
+                if deleted == set(batch)
+                else await run_sync(physical_batch_total, set(batch) - deleted, self.planner().real_store_dir)
+            )
+            if remaining is not None:
+                freed = max(0, physical - remaining)
+        kept = len(batch) - len(deleted)
+        log.info("gc_pass_done", deleted=len(deleted), kept=kept, failed=failed, bytes=freed, paths=sorted(deleted))
+        if failed:
+            await say("the collection stopped at an error; the next pass takes what it left")
+        if kept:
+            await say(f"kept {kept} paths that a root or a referrer still needs")
+        await say(f"deleted {len(deleted)} paths, {freed} bytes freed")
+        return PynixdCollectGarbageResponse(store_paths={StorePath(path) for path in deleted}, bytes=freed)
 
     @staticmethod
     def _disk_usage(local: LocalStore | LocalDBStore) -> tuple[int, int] | None:

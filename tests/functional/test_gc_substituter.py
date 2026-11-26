@@ -267,9 +267,10 @@ def _record_deletes(monkeypatch: pytest.MonkeyPatch, record: Callable[[CollectGa
 
 
 @pytest.mark.parametrize("route", [OpRoute.pynixd, OpRoute.daemon])
-async def test_a_real_store_deletes_205_paths_in_three_requests(
+async def test_a_real_store_deletes_205_paths_in_the_requests_of_its_route(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: OpRoute
 ) -> None:
+    """Three requests through the daemon, one collection on the engine: each engine request walks the roots again."""
     store_path = tmp_path / "chunk-store"
     store_path.mkdir()  # noqa: ASYNC240 -- test setup
     paths = []
@@ -288,7 +289,7 @@ async def test_a_real_store_deletes_205_paths_in_three_requests(
     async with _pynixd(lab, None, op_routes={"CollectGarbage": route}) as server:
         response = await Collector(server.ctx)._delete(paths, {}, [], None)
     assert {str(path) for path in response.store_paths} == set(paths)
-    assert calls == [100, 100, 5]
+    assert calls == ([205] if route is OpRoute.pynixd else [100, 100, 5])
     assert await _valid(store_path) == set()
 
 
@@ -296,6 +297,7 @@ async def test_a_real_store_deletes_205_paths_in_three_requests(
 async def test_execute_orders_cross_group_referrers_before_deletion(
     lab: _Lab, monkeypatch: pytest.MonkeyPatch, route: OpRoute
 ) -> None:
+    """Through the daemon the referrer goes in an earlier group; the engine's one collection orders them itself."""
     monkeypatch.setattr("pynixd.gc._DELETE_BATCH_SIZE", 1)
     monkeypatch.setattr("pynixd.gc.by_weight", lambda weights, pressure: [lab.child, lab.parent])
     calls: list[set[str]] = []
@@ -305,4 +307,4 @@ async def test_execute_orders_cross_group_referrers_before_deletion(
         monkeypatch.setattr(collector, "plan", AsyncMock(return_value={StorePath(lab.child), StorePath(lab.parent)}))
         response = await collector.run(PynixdGCAction.EXECUTE)
     assert {str(path) for path in response.store_paths} == {lab.child, lab.parent}
-    assert calls == [{lab.parent}, {lab.child}]
+    assert calls == ([{lab.child, lab.parent}] if route is OpRoute.pynixd else [{lab.parent}, {lab.child}])

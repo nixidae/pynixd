@@ -24,11 +24,13 @@ import aiosqlite
 import pytest
 
 from nix_daemon_protocol.ids import StoreId
+from nix_daemon_protocol.protocol import GCAction
 from pynixd import Server
 from pynixd.daemon_extensions import PynixdGCAction
 from pynixd.gc import Collector
 from pynixd.op_routes import OpRoute
 from pynixd.store import LocalDBStore, Store
+from pynixd_store.collect import GCOptions, LinksCleanup
 from pynixd_store.db_migrations import PATH_ACCESS_TABLE
 from pynixd_store.engine import StoreEngine
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
@@ -227,8 +229,9 @@ async def test_execute_deletes_on_the_route_of_collect_garbage(
     """Op 101 deletes as op 20 does: on the engine on `pynixd`, through the daemon on `daemon`.
 
     Both delete the same set, so only the engine's own count tells them apart.
+    The engine takes the whole batch in one collection, which frees `.links` entries one by one.
     """
-    calls: list[object] = []
+    calls: list[tuple[Any, ...]] = []
     real = StoreEngine.collect_garbage
 
     async def counted(self: StoreEngine, *args: Any, **kwargs: Any) -> Any:
@@ -244,4 +247,12 @@ async def test_execute_deletes_on_the_route_of_collect_garbage(
 
     assert {str(path) for path in resp.store_paths} == {lab.stale, lab.parent, lab.child}
     assert await _valid(lab.store_path) == {lab.fresh, lab.rooted}
-    assert bool(calls) is (route is OpRoute.pynixd)
+    if route is OpRoute.daemon:
+        assert calls == []
+        return
+    assert len(calls) == 1
+    options = calls[0][0]
+    assert isinstance(options, GCOptions)
+    assert options.action == GCAction.DELETE_DEAD
+    assert options.paths == {lab.stale, lab.parent, lab.child}
+    assert options.links is LinksCleanup.DYING
