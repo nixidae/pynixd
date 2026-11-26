@@ -18,6 +18,7 @@ import structlog
 
 from nix_daemon_protocol.ensure_path import EnsurePathRequest, EnsurePathResponse
 from nix_daemon_protocol.logs import LogNext
+from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest
 from pynixd_store.hintfmt import magenta
 from pynixd_store.store_path import StorePath
 
@@ -30,8 +31,6 @@ from .query_missing import daemon_substitutes
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
-
-    from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest
 
     from ..connection import ClientConn
     from ..store import Store
@@ -94,6 +93,21 @@ async def substitute_paths(
         text = no_substituter(failed[0]) if len(failed) == 1 else f"build of {magenta(names)} failed"
         await client.send(LogNext(text=warning_text(text)))
     return request.model_copy(update={"substitute": 0})
+
+
+async def valid_substituting(
+    engine: GoalEngine, store: Store, queue: SubstitutionQueue | None, paths: Iterable[StorePath]
+) -> set[StorePath]:
+    """Which of *paths* *store* holds once it substituted them, by the route a client's query takes.
+
+    pynixd's goals substitute when they stand for the store's substituters; else the daemon does, and a
+    daemonless store refuses the query.
+    """
+    request = QueryValidPathsRequest(paths=set(paths), substitute=1)
+    if await pynixd_substitutes(store, None, queue):
+        request = await substitute_paths(engine, request, None, None)
+    response = await store.execute(request, client=None)
+    return {StorePath(str(path)) for path in response.paths}
 
 
 async def substitute(

@@ -78,7 +78,6 @@ if TYPE_CHECKING:
     from ..config import BuildPodStoreSpec
     from ..connection import ClientConn, Connection
     from ..provisioning.kubernetes import KubernetesProvider
-    from .base import Store
 
 log = structlog.get_logger(__name__)
 
@@ -254,14 +253,15 @@ class BuildPodStore(ScheduledStore):
         grants: Grants,
         host_key: str,
         kubernetes: KubernetesProvider,
-        local: Store,
+        held: Callable[[set[StorePath]], Awaitable[set[StorePath]]],
         owner_pod: OwnerPod | None = None,
     ) -> None:
         """Take what the server has only once it runs: the grants, central's SSH host key, the provider, and
         central's own pod, which owns each build pod.
 
         A store whose pods take a farm refuses to start here, not at its first build: a template without the
-        farm's volume, or a store path a template names that *local* cannot give a node, fails every build.
+        farm's volume, or a store path a template names that central cannot give a node, fails every build.
+        *held* answers which paths central's store holds once it substituted them.
         """
         self.grants = grants
         self.central_host_key = host_key
@@ -278,12 +278,9 @@ class BuildPodStore(ScheduledStore):
             farm_volume(template.pod, self.spec.farm.volume)
         paths = {name: template_store_paths(template) for name, template in templates.items()}
         wanted = frozenset().union(*paths.values())
-        # `substitute`: central fetches what its caches hold, as a node asks central for it next.
-        valid = await local.execute(
-            QueryValidPathsRequest(paths={StorePath(path) for path in wanted}, substitute=1), client=None
-        )
-        held = {str(StorePath(str(path)).with_store_prefix()) for path in valid.paths}
-        if missing := sorted(wanted - held):
+        # Central fetches what its caches hold, as a node asks central for it next.
+        valid = await held({StorePath(path) for path in wanted})
+        if missing := sorted(wanted - {str(path.with_store_prefix()) for path in valid}):
             raise RuntimeError(
                 f"store {self.store_id}: its templates name {', '.join(missing)}, which a farm needs"
                 " and central's store and caches lack"

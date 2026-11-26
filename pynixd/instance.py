@@ -37,6 +37,8 @@ from .context import PynixdContext
 from .exceptions import GCNotPermittedError, error_text
 from .execution import output_paths
 from .gc import Collector
+from .goals import GoalEngine
+from .goals.substitute_paths import valid_substituting
 from .handover import HandoverControl, ListenerName, local_store_key, raw_socket
 from .health import HealthReport, LoopLagMonitor, StallWatchdog
 from .liveness_watch import DirtyFlag, StableRootsWatch
@@ -66,6 +68,8 @@ if TYPE_CHECKING:
     import asyncssh
     from aiohttp import web
     from anyio.abc import TaskStatus
+
+    from pynixd_store.store_path import StorePath
 
     from .build_queue import QueuedBuild
     from .daemon_extensions.pynixd_collect_garbage import PynixdCollectGarbageResponse
@@ -481,15 +485,16 @@ class Server:
         owner_pod = None
         if settings.pod_name is not None and settings.pod_uid is not None:
             owner_pod = OwnerPod(name=settings.pod_name, uid=settings.pod_uid)
+        local = self.ctx.stores[LOCAL_STORE_ID]
+        queue = self.ctx.scheduler.substitution_queue if self.ctx.scheduler is not None else None
+
+        async def held(paths: set[StorePath]) -> set[StorePath]:
+            # Not `local.execute` with `substitute=1`: a store with no daemon refuses that, and central crashed.
+            return await valid_substituting(GoalEngine(self.ctx), local, queue, paths)
+
         for store in self.ctx.stores.values():
             if isinstance(store, BuildPodStore):
-                await store.arm(
-                    self.ctx.grants,
-                    host_key,
-                    KubernetesProvider(kubernetes),
-                    self.ctx.stores[LOCAL_STORE_ID],
-                    owner_pod,
-                )
+                await store.arm(self.ctx.grants, host_key, KubernetesProvider(kubernetes), held, owner_pod)
                 # A successor of a hand-over sweeps nothing: the old process still drains its builds.
                 if self._inherited is None:
                     self._spawn(store.sweep)
