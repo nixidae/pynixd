@@ -28,6 +28,7 @@ from pynixd_store.builder.site import (
     SiblingSite,
     VmSite,
     choose_site,
+    pid_namespace,
 )
 from pynixd_store.builder.users import BuildUser
 from pynixd_store.builder.vm import BuildVm
@@ -123,6 +124,27 @@ def test_a_pods_sandbox_container_runs_every_build(chroot: bool) -> None:
     """A build without the chroot too: in the daemon's container it could read the pod's job key."""
     sibling = SiblingSandbox(Path("/build/sibling"))
     assert _choose(vm=sibling, chroot=chroot) == (SiblingSite(sibling), None)
+
+
+@pytest.mark.parametrize(
+    ("fresh_proc", "build_user", "own"),
+    [
+        (True, None, True),
+        (True, (30001, 30000), True),
+        # sg1's static builders: the container masks its /proc, so a fresh one fails every build.
+        (False, (30001, 30000), False),
+        # No build user would end what the build leaves: the build keeps its pid namespace, and fails as Nix's.
+        (False, None, True),
+    ],
+)
+def test_a_sandbox_in_a_container_that_masks_proc_binds_the_container_s(
+    fresh_proc: bool, build_user: tuple[int, int] | None, own: bool
+) -> None:
+    assert pid_namespace(fresh_proc, build_user) is own
+    site = HostSite(chroot=True, fresh_proc=fresh_proc)
+    spec: dict[str, object] = {"chroot": True, "pid_namespace": True, "build_user": build_user}
+    site.configure(spec, 0.0)  # type: ignore[arg-type]  # the keys configure reads, not a whole ChildSpec
+    assert spec["pid_namespace"] is own
 
 
 @pytest.mark.parametrize(

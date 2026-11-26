@@ -768,7 +768,8 @@ def run(spec_path: str, status_fd: int, control: socket.socket | None, *, parent
     # The sandbox's pid 1 reaps its orphans, so its usage holds theirs too.
     _pid, status, rusage = os.wait4(pid, 0)
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    if not spec["chroot"] and spec["build_user"] is not None:
+    # Without a pid namespace of its own, the build's processes outlive its pid 1.
+    if (not spec["chroot"] or not spec["pid_namespace"]) and spec["build_user"] is not None:
         try:
             _kill_sandbox(spec, spec["build_user"][0])
         except SetupError as e:

@@ -315,11 +315,16 @@ def main() -> None:
     command, *rest = sys.argv[1:]
     if command == "run":
         run(Path(rest[0]))
+    elif command == "fresh-proc":
+        # For a process with threads, which must not fork without an exec: `site.fresh_proc_here`.
+        sys.exit(0 if fresh_proc_allowed(Path(rest[0])) else 1)
     elif command == "wait":
         rendezvous, spec_file, top, *flags = rest
         _exit_like(wait(Path(rendezvous), Path(spec_file), Path(top), recursive="recursive" in flags))
     else:
-        raise SystemExit(f"usage: sibling run DIR | sibling wait DIR SPEC TOP [recursive]; not {command!r}")
+        raise SystemExit(
+            f"usage: sibling run DIR | sibling wait DIR SPEC TOP [recursive] | sibling fresh-proc DIR; not {command!r}"
+        )
 
 
 if __name__ == "__main__":

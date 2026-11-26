@@ -208,6 +208,33 @@ class BuildSite(ABC):
         """What the build used, once it has ended."""
 
 
+_fresh_proc: bool | None = None
+
+
+async def fresh_proc_here(scratch: Path) -> bool:
+    """Whether a sandbox on this host may mount a `/proc` of its own (`sibling.fresh_proc_allowed`). Asked once per
+    process, in a process of its own: the probe forks, and this one has threads."""
+    global _fresh_proc
+    if _fresh_proc is None:
+        argv = [sys.executable, "-I", "-m", "pynixd_store.builder.sibling", "fresh-proc", str(scratch)]
+        _fresh_proc = (await anyio.run_process(argv, check=False)).returncode == 0
+    return _fresh_proc
+
+
+def pid_namespace(fresh_proc: bool, build_user: tuple[int, int] | None) -> bool:
+    """Whether the sandbox gets a pid namespace and a fresh `/proc` of its own.
+
+    NIX-DEVIATION (#27): `prepareSandbox` (`linux-derivation-builder.cc:745`) mounts a fresh `/proc` in every
+    sandbox, and the kernel refuses it in a container that masks paths of its own `/proc`: every build fails.
+    pynixd binds the container's `/proc` and keeps its pid namespace, as the sibling sandbox does. A build user
+    then ends the build's processes (`killUser`); without one they would outlive the build, so the build keeps
+    the pid namespace and fails as Nix's does. Measured: sg1's static builders, under the build pods' seccomp
+    profile, which allows the namespaces. To reverse: a pod with `procMount: Unmasked`, which needs
+    `hostUsers: false`, and nixkube's store volume refuses that pod while the kernel cannot idmap an overlay.
+    """
+    return fresh_proc or build_user is None
+
+
 @dataclass
 class HostSite(BuildSite):
     """The helper runs on the host's kernel, in namespaces with the chroot, or as a plain process without it."""
@@ -215,6 +242,8 @@ class HostSite(BuildSite):
     chroot: bool
     waits_for_exit: bool = True
     samples_on_host: bool = True
+    fresh_proc: bool = True
+    """A sandbox here may mount a `/proc` of its own; `start` asks."""
 
     async def endpoint(
         self,
@@ -243,8 +272,14 @@ class HostSite(BuildSite):
         await anyio.to_thread.run_sync(build_users.chown_to, user, paths.tmp / SOCKET_NAME)
         return Endpoint(listener, restriction, control)
 
+    async def start(self, stack: contextlib.AsyncExitStack, paths: BuildPaths) -> None:
+        if self.chroot and sys.platform == "linux":
+            self.fresh_proc = await fresh_proc_here(paths.top.parent)
+
     def configure(self, spec: ChildSpec, sample_seconds: float) -> None:
         """The job keeps `build()`'s cgroup and samples nothing: the parent samples the host cgroup itself."""
+        if spec["chroot"]:
+            spec["pid_namespace"] = pid_namespace(self.fresh_proc, spec["build_user"])
 
     async def launch(self, paths: BuildPaths, spec_file: Path, cgroup: Path | None, *, recursive: bool) -> Launch:
         status_read, status_write = os.pipe()
