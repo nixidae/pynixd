@@ -14,6 +14,7 @@ import tempfile
 from typing import IO, TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
 SPILL_BYTES: Final = 1 << 20
@@ -63,6 +64,14 @@ class LiveLog:
         index = bisect.bisect_right(self._marks, offset)
         end = self._marks[index] if index < len(self._marks) else self._size
         return bytes(self._view()[offset:end])
+
+    def pieces(self) -> Iterator[bytes]:
+        """The whole log, a piece at a time, for a reader that runs once the appends have ended."""
+        offset = 0
+        while offset < self._size:
+            piece = self.piece(offset)
+            offset += len(piece)
+            yield piece
 
     def get_bytes(self) -> bytes:
         return bytes(self._view()[: self._size])

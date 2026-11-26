@@ -441,12 +441,13 @@ class StoreEngine:
             raise RuntimeError(f"store {self._name}: pynixd cannot write the store database")
         await self.db.nix.register_drv_output(drv, output_name, out_path, sigs, by_path=by_path)
 
-    async def add_build_log(self, drv: str, log: bytes) -> None:
+    async def add_build_log(self, drv: str, log: bytes | Iterable[bytes]) -> None:
         """`LocalStore::addBuildLog` (`local-store.cc:1645`): record *drv*'s build log under `logDir`.
 
         *drv* is the derivation's base name, as the wire carries it. The write
         touches no database, so it reads no `writable`: like a root, it needs
-        the file system, and the router gates the route.
+        the file system, and the router gates the route. *log* may come in pieces, which the worker thread reads
+        and compresses one at a time.
         """
         await anyio.to_thread.run_sync(build_log.add_build_log, self.layout.log_dir, drv, log)
 

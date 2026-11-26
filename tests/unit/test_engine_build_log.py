@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from pynixd_store import build_log
+from pynixd_store import build_log, live_log
 from pynixd_store.engine import StoreEngine
 from pynixd_store.store_layout import StoreLayout
 
@@ -32,6 +32,20 @@ def test_a_log_is_written_bzip2_compressed(tmp_path: Path) -> None:
     build_log.add_build_log(tmp_path, DRV, LOG)
     written = build_log.log_path(tmp_path, DRV)
     assert bz2.decompress(written.read_bytes()) == LOG
+
+
+def test_a_log_in_pieces_reads_back_whole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The sandbox hands its `LiveLog` over in pieces, past the size where it moved to a file."""
+    monkeypatch.setattr(live_log, "SPILL_BYTES", 64)
+    monkeypatch.setattr(live_log, "PIECE_BYTES", 32)
+    log = live_log.LiveLog(tmp_path)
+    for index in range(100):
+        log.append(f"line {index}\n".encode())
+
+    build_log.add_build_log(tmp_path, DRV, log.pieces())
+
+    expected = "".join(f"line {index}\n" for index in range(100)).encode()
+    assert bz2.decompress(build_log.log_path(tmp_path, DRV).read_bytes()) == expected
 
 
 def test_a_log_already_present_is_kept(tmp_path: Path) -> None:

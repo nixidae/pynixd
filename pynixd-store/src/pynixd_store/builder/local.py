@@ -40,6 +40,7 @@ from ..add import PathLock, delete_path, release_locks, sync_store_path
 from ..content_address import Method, fixed_output_address, output_method
 from ..drv_parser import BUILDER_RPC as BUILDER_RPC
 from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta, missing_feature, show_error
+from ..live_log import LiveLog
 from ..s3_url import S3URLError, parse as parse_s3_url
 from ..signing import fingerprint, read_secret_keys
 from . import buildenv, cgroup as build_cgroup, darwin, hooks, users as build_users
@@ -985,11 +986,13 @@ async def build(
             )
             spec["external"] = [external.program, *external.args, str(job)]
         start = int(time.time())
-        log = bytearray()
+        # Past 1 MiB a file-backed map, not the heap. A return that skips `close` below drops the last reference,
+        # and the map and its file close with it.
+        log = LiveLog()
         lines = BuildLog(settings.log_lines)
 
         async def keep(piece: bytes) -> None:
-            log.extend(piece)
+            log.append(piece)
             await on_lines(lines.feed(piece))
 
         control: socket.socket | None = None
@@ -1085,8 +1088,11 @@ async def build(
             await on_lines(lines.flush())
         # Empty too: `openLogFile` (`derivation-building-goal.cc:793`) makes the file before a line arrives,
         # and none without `keep-build-log` (`:1184`).
-        if settings.keep_build_log:
-            await engine.add_build_log(drv_path.name, bytes(log))
+        try:
+            if settings.keep_build_log:
+                await engine.add_build_log(drv_path.name, log.pieces())
+        finally:
+            log.close()
         if isinstance(failure, BuilderFailed):
             disk_full = await anyio.to_thread.run_sync(_disk_full, layout.real_store_dir, paths.tmp)
             failure = BuildFailure(
