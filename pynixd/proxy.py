@@ -60,7 +60,7 @@ from .serde import (
 from .serde.auth import Role
 from .serde.context import ReadContext, RequestContext as RequestContext, WriteContext
 from .serde.protocol import OptTrusted, Verbosity
-from .tracing import SessionIdentity
+from .tracing import NO_OP_TRACE, OpTrace, SessionIdentity
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
@@ -176,6 +176,7 @@ class DaemonProxy:
         """Returns when the client hangs up. `None` watches nothing."""
         self.connected_at = time.monotonic()
         self.current_op: tuple[str, float] | None = None
+        self.op_trace: OpTrace = NO_OP_TRACE
         """The operation this session runs now, and when it began. `pynixd
         state` reads it to say what each client waits on. Issue #92."""
         self.w = client_w
@@ -554,6 +555,7 @@ class DaemonProxy:
             op_trace = self.ctx.tracing.op(
                 op_name, self.identity, self._client_traceparent, always=op_num in _TRACED_OPS
             )
+            self.op_trace = op_trace
             # The builds the operation enqueues and the backend it calls nest under its span.
             self.client.traceparent = op_trace.traceparent() or self._client_traceparent
             result = "ok"
@@ -590,6 +592,7 @@ class DaemonProxy:
                     break
             finally:
                 op_trace.ended(error)
+                self.op_trace = NO_OP_TRACE
                 self.current_op = None
                 elapsed = time.monotonic() - t0
                 count, acc = self._op_timing.get(op_num, (0, 0.0))

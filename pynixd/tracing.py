@@ -85,6 +85,9 @@ class OpTrace:
         """The W3C `traceparent` of the operation's span, for what it starts; empty when it has none yet."""
         return ""
 
+    def annotate(self, key: str, value: int | float | str) -> None:
+        """Record *key* on the operation's span: what it moved, to read beside its time."""
+
     def ended(self, error: str | None = None) -> None:
         """The operation answered, with *error* when it failed."""
 

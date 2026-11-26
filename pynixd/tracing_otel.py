@@ -71,6 +71,9 @@ class OtelOpTrace(OpTrace):
     def traceparent(self) -> str:
         return self._traceparent
 
+    def annotate(self, key: str, value: int | float | str) -> None:
+        self._span.set_attribute(key, value)
+
     def ended(self, error: str | None = None) -> None:
         if error is not None:
             self._span.set_status(Status(StatusCode.ERROR, error))
@@ -80,7 +83,7 @@ class OtelOpTrace(OpTrace):
 class SlowOpTrace(OpTrace):
     """An operation that becomes a span only when it ends slow or failed, with the time it started."""
 
-    __slots__ = ("_identity", "_monotonic", "_name", "_parent", "_started_ns", "_tracing")
+    __slots__ = ("_annotations", "_identity", "_monotonic", "_name", "_parent", "_started_ns", "_tracing")
 
     def __init__(self, tracing: OtelTracing, name: str, identity: SessionIdentity, parent: str) -> None:
         self._tracing = tracing
@@ -89,12 +92,19 @@ class SlowOpTrace(OpTrace):
         self._parent = parent
         self._started_ns = time.time_ns()
         self._monotonic = time.monotonic()
+        self._annotations: dict[str, int | float | str] = {}
+
+    def annotate(self, key: str, value: int | float | str) -> None:
+        self._annotations[key] = value
 
     def ended(self, error: str | None = None) -> None:
         if error is None and time.monotonic() - self._monotonic < self._tracing.slow_op_seconds:
             return
         span = self._tracing.tracer.start_span(
-            self._name, _context(self._parent), attributes=self._identity.attributes(), start_time=self._started_ns
+            self._name,
+            _context(self._parent),
+            attributes={**self._identity.attributes(), **self._annotations},
+            start_time=self._started_ns,
         )
         if error is not None:
             span.set_status(Status(StatusCode.ERROR, error))

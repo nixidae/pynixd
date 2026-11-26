@@ -277,6 +277,25 @@ async def test_a_build_operation_is_a_span_of_the_session_under_the_client_s_tra
     assert sent.split("-")[2] == f"{span.context.span_id:016x}", "what the operation starts nests under its span"
 
 
+async def test_an_operation_s_annotations_reach_its_span() -> None:
+    tracing, exporter = await _ops(TracingSettings(slow_op_seconds=0.05))
+    always = tracing.op("AddMultipleToStore", IDENTITY, always=True)
+    always.annotate("pynixd.nar_bytes", 8)
+    always.ended()
+    slow = tracing.op("QueryMissing", IDENTITY)
+    slow.annotate("pynixd.paths", 2)
+    await anyio.sleep(0.06)
+    slow.ended()
+    await anyio.to_thread.run_sync(tracing.close)
+
+    by_name = {span.name: span for span in exporter.get_finished_spans()}
+    assert by_name["AddMultipleToStore"].attributes is not None
+    assert by_name["AddMultipleToStore"].attributes["pynixd.nar_bytes"] == 8
+    assert by_name["QueryMissing"].attributes is not None
+    assert by_name["QueryMissing"].attributes["pynixd.paths"] == 2, "a span made at the end keeps them too"
+    assert by_name["QueryMissing"].attributes["pynixd.user"] == "alice"
+
+
 async def test_another_operation_is_a_span_only_when_slow_or_failed() -> None:
     tracing, exporter = await _ops(TracingSettings(slow_op_seconds=0.05))
     fast = tracing.op("IsValidPath", IDENTITY, CLIENT_TRACEPARENT)

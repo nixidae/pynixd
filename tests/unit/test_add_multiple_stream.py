@@ -11,6 +11,7 @@ import contextlib
 import struct
 from typing import TYPE_CHECKING
 
+import anyio
 import pytest
 
 from nix_daemon_protocol import FEATURE_PROVENANCE, FEATURE_VERSIONED_ADD_TO_STORE_MULTIPLE, PROTOCOL_VERSION
@@ -21,7 +22,7 @@ from nix_daemon_protocol.path_info import UnkeyedValidPathInfo
 from nix_daemon_protocol.store_path import StorePath
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from nix_daemon_protocol.wire_time import Time
-from pynixd.handlers.add_multiple_to_store import _paths
+from pynixd.handlers.add_multiple_to_store import Tally, _paths
 from pynixd.wire import BytesReader, BytesWriter, FramedReader, send_framed, send_raw
 from pynixd_store.source import Pieces
 
@@ -72,6 +73,22 @@ async def test_each_nar_ends_before_the_next_info(frame: int) -> None:
     assert seen == [A, B]
     assert out.get_bytes() == b"AAAAABBB"
     assert await frames.read(1) == b""
+
+
+async def test_the_tally_counts_each_path_and_its_nar_bytes() -> None:
+    frames = FramedReader(BytesReader(_framed(await _stream(), 7)))
+    count = await frames.read_uint64()
+    tally = Tally()
+
+    async def pull(_references: object, _done: object) -> None:
+        await anyio.sleep(0.01)
+
+    stream = _paths(frames, count, UNVERSIONED_PATH_INFO, frozenset(), pull=pull, tally=tally)
+    async with contextlib.aclosing(stream) as paths:
+        async for _info, _nar in paths:
+            pass
+    assert (tally.paths, tally.nar_bytes) == (2, 8)
+    assert tally.pull_seconds >= 0.02
 
 
 async def test_a_nar_left_unread_is_skipped() -> None:

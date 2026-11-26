@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import functools
+import time
 from typing import TYPE_CHECKING, ClassVar
 
 import anyio
@@ -39,6 +41,15 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+@dataclasses.dataclass(slots=True)
+class Tally:
+    """What one AddMultipleToStore stream carried, for its span."""
+
+    paths: int = 0
+    nar_bytes: int = 0
+    pull_seconds: float = 0.0
+
+
 class AddMultipleToStoreHandler(Handler):
     """Server handler for AddMultipleToStore: pynixd imports each path on its route, else the daemon does."""
 
@@ -63,12 +74,14 @@ class AddMultipleToStoreHandler(Handler):
 
         frames = FramedReader(ctx.proxy.r)
         added: dict[str, UnkeyedValidPathInfo] = {}
+        tally = Tally()
         try:
             count = await frames.read_uint64()
             version, features = path_info_version(ctx.proxy.version, ctx.proxy.standard_features)
             pull = functools.partial(pull_backend_references, ctx)
             permit = None if grant is None else grant.check_add
-            async with contextlib.aclosing(_paths(frames, count, version, features, added, pull, permit)) as paths:
+            stream = _paths(frames, count, version, features, added, pull, permit, tally)
+            async with contextlib.aclosing(stream) as paths:
                 await write_router(ctx.proxy.local_store).add_multiple_to_store(
                     Write(op=req.name, repair=bool(req.repair) or ctx.proxy.repairs_adds),
                     count,
@@ -81,6 +94,11 @@ class AddMultipleToStoreHandler(Handler):
             # stream, however long, so the session goes on after the error.
             await frames.ensure_eof()
             raise
+        finally:
+            op_trace = ctx.proxy.op_trace
+            op_trace.annotate("pynixd.paths", tally.paths)
+            op_trace.annotate("pynixd.nar_bytes", tally.nar_bytes)
+            op_trace.annotate("pynixd.pull_seconds", round(tally.pull_seconds, 3))
         # Every path is read, and only the end frame is left.
         try:
             with anyio.fail_after(10):
@@ -101,6 +119,7 @@ async def _paths(
     seen: dict[str, UnkeyedValidPathInfo] | None = None,
     pull: Callable[[Iterable[StorePath], Container[str]], Awaitable[None]] | None = None,
     permit: Callable[[ValidPathInfo], None] | None = None,
+    tally: Tally | None = None,
 ) -> AsyncGenerator[tuple[ValidPathInfo, Source]]:
     """The paths of a client's AddMultipleToStore stream, each NAR `Bounded`.
 
@@ -117,8 +136,14 @@ async def _paths(
             permit(info)
         done.add(str(info.path))
         if pull is not None:
+            pulling = time.monotonic()
             await pull(info.info.references, done)
             done.update(map(str, info.info.references))
+            if tally is not None:
+                tally.pull_seconds += time.monotonic() - pulling
+        if tally is not None:
+            tally.paths += 1
+            tally.nar_bytes += info.info.nar_size
         nar = Bounded(frames, info.info.nar_size)
         if seen is not None:
             seen[str(info.path)] = info.info
