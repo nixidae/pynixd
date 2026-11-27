@@ -1906,6 +1906,10 @@ class PynixdSettings(BaseSettings):
     # The span the check looks back over. A stall must stop counting once the
     # process is serving again, or one bad transfer holds the pod unhealthy.
     health_loop_lag_window: float = 30.0
+    # How long a no-op may wait for a worker thread before `/healthz` fails.
+    # A full pool under load clears in seconds; a pool of threads blocked in
+    # `flock` never does (nixidae/nixidae#1647).
+    health_worker_wait_max: float = 30.0
     # Dump every thread's Python stack when the loop stops beating for this
     # long. 0 disables it. `None` is half of `health_loop_lag_max`
     # (`stall_traceback_threshold`).

@@ -40,7 +40,7 @@ from .gc import Collector
 from .goals import GoalEngine
 from .goals.substitute_paths import valid_substituting
 from .handover import HandoverControl, ListenerName, local_store_key, raw_socket
-from .health import HealthReport, LoopLagMonitor, StallWatchdog
+from .health import HealthReport, LoopLagMonitor, StallWatchdog, WorkerThreadMonitor
 from .liveness_watch import DirtyFlag, StableRootsWatch
 from .placement import StartFailure
 from .provisioning.ec2 import Ec2Provider
@@ -273,6 +273,7 @@ class Server:
             window=self.settings.health_loop_lag_window,
             watchdog=self.stall_watchdog,
         )
+        self.worker_threads = WorkerThreadMonitor()
         self.http_bound_port: int | None = None
         self.https_server: web.AppRunner | None = None
         self.https_bound_port: int | None = None
@@ -973,7 +974,18 @@ class Server:
         lag_ok = lag < limit
         checks["event_loop"] = f"lag {lag:.3f}s" if lag_ok else f"stalled, lag {lag:.3f}s over {limit}s"
 
-        ok = lag_ok and all(state == "serving" for name, state in checks.items() if name != "event_loop")
+        wait_limit = s.health_worker_wait_max
+        waited = self.worker_threads.waiting
+        threads_ok = waited < wait_limit
+        checks["worker_threads"] = "free" if threads_ok else f"stuck, none free for {waited:.0f}s over {wait_limit}s"
+
+        ok = (
+            lag_ok
+            and threads_ok
+            and all(
+                state == "serving" for name, state in checks.items() if name not in {"event_loop", "worker_threads"}
+            )
+        )
         return HealthReport(ok=ok, checks=checks)
 
     async def __aenter__(self) -> Server:
@@ -1153,6 +1165,7 @@ class Server:
             self.stall_watchdog.beat()
             self.stall_watchdog.start(asyncio.get_running_loop())
         self._spawn(self.loop_lag.run)
+        self._spawn(self.worker_threads.run)
         self._spawn(self._warn_silent_upstreams)
         if self.ctx.session_builders is not None:
             self._spawn(self.ctx.session_builders.run)

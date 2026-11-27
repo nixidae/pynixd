@@ -354,6 +354,56 @@ def _await_chain(awaitable: object) -> Iterator[FrameType]:
         )
 
 
+class WorkerThreadMonitor:
+    """Time how long a no-op waits for one of anyio's worker threads.
+
+    Every file call goes through that pool. With each thread blocked, the loop
+    still runs and the lag check passes, but nothing touching the store
+    finishes: sg1's central said ok through two `flock` deadlocks
+    (nixidae/nixidae#1647).
+
+    A background probe, not one per request: `/healthz` stays synchronous, and
+    a probe stuck in the queue is itself the measurement.
+    """
+
+    def __init__(self, interval: float = 5.0, clock: Callable[[], float] = time.monotonic) -> None:
+        self._interval = interval
+        self._clock = clock
+        self._waiting_since: float | None = None
+        self._stop = anyio.Event()
+        self.started = anyio.Event()
+        """Set once the first probe is waiting for a thread."""
+        self._sampled = anyio.Event()
+
+    @property
+    def waiting(self) -> float:
+        """How long the probe in flight has waited; 0 between probes."""
+        return 0.0 if self._waiting_since is None else self._clock() - self._waiting_since
+
+    async def wait_for_sample(self) -> None:
+        """Return once a probe finishes."""
+        self._sampled = anyio.Event()
+        await self._sampled.wait()
+
+    async def run(self) -> None:
+        """Probe until stopped. Intended to run as a background task."""
+        while not self._stop.is_set():
+            self._waiting_since = self._clock()
+            self.started.set()
+            await anyio.to_thread.run_sync(_nothing)
+            self._waiting_since = None
+            self._sampled.set()
+            with anyio.move_on_after(self._interval):
+                await self._stop.wait()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+
+def _nothing() -> None:
+    pass
+
+
 class LoopLagMonitor:
     """Sample how long the event loop goes without running a ready callback.
 

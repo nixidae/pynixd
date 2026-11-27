@@ -11,12 +11,15 @@ code, and it is where the logic is.
 
 from __future__ import annotations
 
+import threading
 import time
 
 import anyio
+import anyio.lowlevel
+import anyio.to_thread
 
 from pynixd.config import PynixdSettings
-from pynixd.health import HealthReport, LoopLagMonitor
+from pynixd.health import HealthReport, LoopLagMonitor, WorkerThreadMonitor
 from pynixd.instance import Server
 
 
@@ -54,6 +57,50 @@ def test_a_healthy_report_still_lists_its_checks() -> None:
 
     assert text.startswith("ok")
     assert "ssh: serving" in text
+
+
+async def test_health_fails_while_no_worker_thread_is_free() -> None:
+    """sg1, 2026-11-26: every worker thread sat in `flock`, and `/healthz` said ok through two deadlocks.
+
+    The loop kept running, so the lag check passed; every file call waited for a thread forever.
+    """
+    clock = _Clock()
+    server = Server(settings=_stock())
+    server.worker_threads = WorkerThreadMonitor(interval=0.01, clock=clock)
+    limiter = anyio.to_thread.current_default_thread_limiter()
+    before = limiter.total_tokens
+    limiter.total_tokens = 1
+    release = threading.Event()
+
+    def hold() -> None:
+        release.wait()
+
+    try:
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(anyio.to_thread.run_sync, hold)
+            await anyio.lowlevel.checkpoint()
+            tg.start_soon(server.worker_threads.run)
+            await server.worker_threads.started.wait()
+            clock.now += server.settings.health_worker_wait_max + 1
+            stuck = server.health()
+            release.set()
+            await server.worker_threads.wait_for_sample()
+            freed = server.health()
+            server.worker_threads.stop()
+    finally:
+        release.set()
+        limiter.total_tokens = before
+    assert not stuck.ok, stuck.as_text()
+    assert stuck.checks["worker_threads"].startswith("stuck"), stuck.as_text()
+    assert freed.ok, freed.as_text()
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
 
 
 async def test_the_monitor_records_a_stall_it_can_see() -> None:
