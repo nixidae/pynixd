@@ -87,6 +87,10 @@ class FakeLocal:
     def forget_path_info(self, path: str) -> None:
         return None
 
+    async def read_nix_config(self) -> dict[str, Any]:
+        """Nix's defaults: the lab database has no `DerivationOutputs` for `keep-outputs` to read."""
+        return {}
+
     async def execute(self, request: Any, **_kwargs: Any) -> Any:
         if isinstance(request, QueryAllValidPathsRequest):
             return QueryAllValidPathsResponse(

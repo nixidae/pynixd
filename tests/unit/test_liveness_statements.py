@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from pynixd_store import liveness, register
+from pynixd_store.collect import GCSettings
 from pynixd_store.postgres_db import PostgresBackend
 
 if TYPE_CHECKING:
@@ -20,8 +21,15 @@ DEAD = "/nix/store/00000000000000000000000000000005-dead"
 SIZE = 1 << 33
 
 
+CA_DRV = "/nix/store/00000000000000000000000000000006-ca.drv"
+CA_OUT = "/nix/store/00000000000000000000000000000007-ca"
+
+
 def _registration(
-    path: str, references: frozenset[str] = frozenset(), deriver: str | None = None
+    path: str,
+    references: frozenset[str] = frozenset(),
+    deriver: str | None = None,
+    outputs: dict[str, str] | None = None,
 ) -> register.Registration:
     return register.Registration(
         path=path,
@@ -33,7 +41,7 @@ def _registration(
         sigs=(),
         ca=None,
         references=references,
-        derivation_outputs={},
+        derivation_outputs=outputs or {},
     )
 
 
@@ -65,6 +73,41 @@ async def test_the_live_set_walks_references_and_derivers(store_db: LocalStoreDB
 
     assert liveness.refresh_roots(database, {})
     assert liveness.query_live_set(database, set()) == set()
+
+
+async def _built(db: LocalStoreDB) -> None:
+    """`hello.drv` names `hello` in `DerivationOutputs`; `ca.drv` names `ca` only in its build trace."""
+    await db.nix.register_valid_paths(
+        [
+            _registration(SRC),
+            _registration(DRV, frozenset({SRC}), outputs={"out": HELLO}),
+            _registration(LIBC),
+            _registration(HELLO, frozenset({LIBC}), deriver=DRV),
+            _registration(CA_DRV),
+            _registration(CA_OUT, deriver=CA_DRV),
+        ]
+    )
+    await db.nix.register_drv_output(CA_DRV.removeprefix("/nix/store/"), "out", CA_OUT, [], by_path=True)
+
+
+async def test_keep_outputs_keeps_what_a_live_derivation_built(store_db: LocalStoreDB) -> None:
+    """nixidae/nixidae#1639: Nix's `markAlive` follows a derivation to its outputs under `keep-outputs` (`misc.cc:57`)."""
+    await _built(store_db)
+    database = store_db.backend.database()
+    liveness.refresh_roots(database, {"/roots/drv": (DRV, "gcroot"), "/roots/ca": (CA_DRV, "gcroot")})
+
+    assert liveness.query_live_set(database, set()) == {DRV, SRC, CA_DRV}
+    kept = liveness.query_live_set(database, set(), GCSettings(keep_outputs=True))
+    assert kept == {DRV, SRC, HELLO, LIBC, CA_DRV, CA_OUT}
+
+
+async def test_keep_derivations_off_drops_the_deriver_edge(store_db: LocalStoreDB) -> None:
+    await _built(store_db)
+    database = store_db.backend.database()
+    liveness.refresh_roots(database, {"/roots/hello": (HELLO, "gcroot")})
+
+    assert liveness.query_live_set(database, set()) == {HELLO, LIBC, DRV, SRC}
+    assert liveness.query_live_set(database, set(), GCSettings(keep_derivations=False)) == {HELLO, LIBC}
 
 
 async def test_the_snapshot_keeps_each_path_s_first_epoch(store_db: LocalStoreDB) -> None:

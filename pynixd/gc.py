@@ -38,7 +38,7 @@ from nix_daemon_protocol import (
 )
 from nix_daemon_protocol.collect_garbage import GCPaths
 from nix_daemon_protocol.query_path_infos import QueryPathInfosRequest
-from pynixd_store.collect import LinksCleanup
+from pynixd_store.collect import GCSettings, LinksCleanup
 from pynixd_store.db_migrations import HELD_BY_TABLE
 from pynixd_store.gc import (
     SPACE_TIME,
@@ -516,9 +516,24 @@ class Collector:
                 log.info("gc_plan_cold", store_id=tier.cold.store_id, kept_uncovered=kept, droppable=plan.size)
             yield plan
 
+    async def _mirror_live(self) -> set[str] | None:
+        """The mirror's live set over the edges the store's `keep-outputs` and `keep-derivations` keep, or `None`.
+
+        A whole-store collection keeps those edges (`gc.cc:598`), and the
+        `DELETE_SPECIFIC` or named `DELETE_DEAD` a pass sends does not: the
+        mirror is the only place they hold. A config that cannot be read
+        keeps both, the safe side.
+        """
+        try:
+            settings = GCSettings.from_nix_config(await self.ctx.local_store.read_nix_config(), {})
+        except Exception:
+            log.warning("gc_settings_unreadable", exc_info=True)
+            settings = GCSettings(keep_outputs=True, keep_derivations=True)
+        return await self.planner().live(settings)
+
     async def _live_paths(self, local: Store) -> set[str]:
         """The mirror's live set, refreshed just now, or Nix's when there is no mirror."""
-        mirror = await self.planner().live()
+        mirror = await self._mirror_live()
         if mirror is not None:
             return mirror
         return {str(path) for path in (await local.call(_request(GCAction.RETURN_LIVE, set()))).paths_deleted}
@@ -655,7 +670,7 @@ class Collector:
             log.error("gc_closure_incomplete", asked=len(unheld), answered=len(keep))
             return set()
 
-        mirror = await self.planner().live()
+        mirror = await self._mirror_live()
         if mirror is None:
             live: set[StorePath] = (await local.call(_request(GCAction.RETURN_LIVE, set()))).paths_deleted
         else:
@@ -678,7 +693,7 @@ class Collector:
         if not all_paths:
             return set()
 
-        live_paths = await self.planner().live()
+        live_paths = await self._mirror_live()
         if live_paths is None:
             live = {str(path) for path in (await local.call(_request(GCAction.RETURN_LIVE, set()))).paths_deleted}
         else:

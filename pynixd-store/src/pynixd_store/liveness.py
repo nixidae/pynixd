@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from .collect import GCSettings
 from .database import DatabaseError
 from .temp_roots import PYNIXD_TEMP_ROOTS_PREFIX
 
@@ -534,18 +535,25 @@ def walk_roots(
     return checked, walk.temporary
 
 
-def query_live_set(db: Database, volatile: set[str]) -> set[str]:
-    """The live set: one closure over the table roots plus `volatile`.
+def query_live_set(db: Database, volatile: set[str], settings: GCSettings | None = None) -> set[str]:
+    """The live set: one closure over the table roots plus `volatile`, over the edges *settings* keep.
 
     Read-only, and the only graph query in the design: stable roots come
     from the table, living roots join as a parameter. Seconds on hundreds
-    of thousands of paths, where per-root closures take minutes.
+    of thousands of paths, where per-root closures take minutes. Without
+    *settings*, Nix's defaults: derivers kept, outputs not.
     """
+    settings = settings or GCSettings()
     with db.sync_session() as session:
-        return {
-            row[0]
-            for row in session.fetchall(session.sql.liveness.live_set, (session.sql.codec.path_set(sorted(volatile)),))
-        }
+        sql = session.sql.liveness
+        edges = sql.deriver_edge if settings.keep_derivations else ""
+        if settings.keep_outputs:
+            edges += sql.output_edge
+            row = session.fetchone(sql.has_build_trace)
+            if row is not None and row[0]:
+                edges += sql.build_trace_edge
+        statement = sql.live_set.format(edges=edges)
+        return {row[0] for row in session.fetchall(statement, (session.sql.codec.path_set(sorted(volatile)),))}
 
 
 def db_fingerprint(db: Database) -> tuple[int, int]:
@@ -635,11 +643,19 @@ class RootsTracker:
     before anything plans from this.
     """
 
-    def __init__(self, state_dir: Path, store_dir: str, db: Database, proc_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        state_dir: Path,
+        store_dir: str,
+        db: Database,
+        proc_dir: Path | None = None,
+        settings: GCSettings | None = None,
+    ) -> None:
         self.state_dir = state_dir
         self.store_dir = store_dir
         self.db = db
         self.proc_dir = proc_dir
+        self.settings = settings
         self.fingerprint: tuple[int, int] | None = None
         self.last_volatile: set[str] = set()
         self.live: set[str] = set()
@@ -652,7 +668,7 @@ class RootsTracker:
         fingerprint = db_fingerprint(self.db)
         if not dirty and volatile == self.last_volatile and fingerprint == self.fingerprint and self.live:
             return self.live
-        self.live = query_live_set(self.db, volatile)
+        self.live = query_live_set(self.db, volatile, self.settings)
         self.epoch = int(time.time())
         write_snapshot(self.db, self.live, self.epoch)
         self.last_volatile = volatile

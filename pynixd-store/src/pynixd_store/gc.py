@@ -26,6 +26,7 @@ from .local_store_db import LocalStoreDB
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
 
+    from .collect import GCSettings
     from .store_layout import StoreLayout
 
 log = structlog.get_logger(__name__)
@@ -247,8 +248,8 @@ class GarbagePlanner:
             return set()
         return walk_volatile(self.layout.state_dir, str(self.layout.store_dir))
 
-    async def live(self) -> set[str] | None:
-        """The tracker's live set, refreshed just now, or `None` with no mirror.
+    async def live(self, settings: GCSettings | None = None) -> set[str] | None:
+        """The tracker's live set over the edges *settings* keep, refreshed just now, or `None` with no mirror.
 
         The tracker reads roots and SQLite in a worker thread.
         Missing state or a failed refresh returns `None`; callers then ask Nix.
@@ -257,7 +258,7 @@ class GarbagePlanner:
             db = self.db
             if self.layout is None or not isinstance(db, LocalStoreDB) or not db.active:
                 return None
-            tracker = RootsTracker(self.layout.state_dir, str(self.layout.store_dir), db)
+            tracker = RootsTracker(self.layout.state_dir, str(self.layout.store_dir), db, settings=settings)
             return await run_sync(tracker.refresh)
         except Exception:
             log.warning("gc_mirror_refresh_failed", exc_info=True)

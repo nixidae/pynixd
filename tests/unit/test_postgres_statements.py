@@ -64,14 +64,16 @@ SETUP: dict[str, tuple[str, ...]] = {
 
 
 def _filled(group: object, statement: str) -> str:
-    """*statement* with what a caller fills in: one of the collector's tables, the default delete order."""
+    """*statement* with what a caller fills in: one of the collector's tables, every edge, the default order."""
+    if isinstance(group, liveness.LivenessSql):
+        statement = statement.replace("{edges}", group.deriver_edge + group.output_edge + group.build_trace_edge)
     if isinstance(group, gc.GcSql):
         statement = statement.replace("{score}", group.score(SPACE_TIME))
     return statement.replace("{table}", "gc_live")
 
 
 def _statements(group: object) -> dict[str, str]:
-    """The group's statements, each filled as its caller fills it."""
+    """The group's statements, each filled as its caller fills it; a `Fragment` field is parsed inside one."""
     assert dataclasses.is_dataclass(group)
     return {f.name: _filled(group, getattr(group, f.name)) for f in dataclasses.fields(group) if f.type == "str"}
 

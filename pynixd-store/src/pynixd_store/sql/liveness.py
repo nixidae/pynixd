@@ -6,10 +6,23 @@ from dataclasses import dataclass
 
 from ..db_migrations import LIVENESS_ROOT_TABLE, LIVENESS_STREAK_TABLE, LIVENESS_TABLE
 
+type Fragment = str
+"""A piece of a statement, not one: `test_postgres_statements` parses each `str` field alone."""
+
 
 @dataclass(frozen=True, slots=True)
 class LivenessSql:
     live_set: str
+    """The closure of the roots table plus a parameter of living roots, over `Refs` and the `{edges}` the
+    settings add: Nix's `markAlive` closure (`gc.cc:598`, `computeFSClosure` in `misc.cc:48`)."""
+    deriver_edge: Fragment
+    """`keep-derivations`: a path keeps its valid deriver."""
+    output_edge: Fragment
+    """`keep-outputs`: a derivation keeps its valid outputs, as `DerivationOutputs` records them."""
+    build_trace_edge: Fragment
+    """`keep-outputs`: a derivation keeps the valid outputs its build trace records (`BuildTraceV3`)."""
+    has_build_trace: str
+    """Whether the database has `BuildTraceV3`: a store that never enabled `ca-derivations` may not."""
     fingerprint: str
     roots: str
     delete_root: str
@@ -25,7 +38,7 @@ class LivenessSql:
     create_root_hits: str
     fill_root_hits: str
     root_full_counts: str
-    """One root's closure over the same edges `live_set` walks: references, derivers, and deriver references.
+    """One root's closure over references and derivers: `live_set` at Nix's default settings.
     The report runs it once per distinct seed set."""
     mark_root_hits: str
     root_exclusive_counts: str
@@ -62,21 +75,29 @@ WITH RECURSIVE closure(id) AS (
         SELECT value FROM json_each(?)
     )
     UNION
-    SELECT r.reference FROM closure c JOIN Refs r ON c.id = r.referrer
-    UNION
-    SELECT deriver_vp.id FROM closure c
-    JOIN ValidPaths current_vp ON c.id = current_vp.id
-    JOIN ValidPaths deriver_vp ON current_vp.deriver = deriver_vp.path
-    WHERE current_vp.deriver IS NOT NULL
-    UNION
-    SELECT r.reference FROM closure c
-    JOIN ValidPaths current_vp ON c.id = current_vp.id
-    JOIN ValidPaths deriver_vp ON current_vp.deriver = deriver_vp.path
-    JOIN Refs r ON deriver_vp.id = r.referrer
-    WHERE current_vp.deriver IS NOT NULL
+    SELECT r.reference FROM closure c JOIN Refs r ON c.id = r.referrer{{edges}}
 )
 SELECT path FROM ValidPaths WHERE id IN (SELECT id FROM closure)
 """,
+    deriver_edge="""
+    UNION
+    SELECT deriver_vp.id FROM closure c
+    JOIN ValidPaths current_vp ON c.id = current_vp.id
+    JOIN ValidPaths deriver_vp ON current_vp.deriver = deriver_vp.path""",
+    output_edge="""
+    UNION
+    SELECT output_vp.id FROM closure c
+    JOIN DerivationOutputs d ON d.drv = c.id
+    JOIN ValidPaths output_vp ON output_vp.path = d.path""",
+    # `drvPath` is the derivation's base name. `rtrim` by every character of the path but `/` leaves its directory.
+    build_trace_edge="""
+    UNION
+    SELECT output_vp.id FROM closure c
+    JOIN ValidPaths drv_vp ON drv_vp.id = c.id
+    JOIN BuildTraceV3 b ON b.drvPath = substr(drv_vp.path, length(rtrim(drv_vp.path, replace(drv_vp.path, '/', ''))) + 1)
+    JOIN ValidPaths output_vp ON output_vp.path = b.outputPath
+    WHERE substr(drv_vp.path, -4) = '.drv'""",
+    has_build_trace="SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'BuildTraceV3'",
     fingerprint="SELECT COUNT(*), COALESCE(MAX(id), 0) FROM ValidPaths",
     roots=f"SELECT link, target, kind FROM {LIVENESS_ROOT_TABLE}",
     delete_root=f"DELETE FROM {LIVENESS_ROOT_TABLE} WHERE link = ?",
@@ -146,10 +167,27 @@ WITH RECURSIVE closure(id) AS (
         SELECT unnest(%s::text[])
     )
     UNION
-    {_POSTGRES_STEP}
+    SELECT step.id FROM closure c
+    JOIN ValidPaths current_vp ON current_vp.id = c.id
+    CROSS JOIN LATERAL (
+        SELECT r.reference AS id FROM Refs r WHERE r.referrer = c.id{{edges}}
+    ) AS step
 )
 SELECT path FROM ValidPaths WHERE id IN (SELECT id FROM closure)
 """,
+    deriver_edge="""
+        UNION ALL
+        SELECT deriver_vp.id FROM ValidPaths deriver_vp WHERE deriver_vp.path = current_vp.deriver""",
+    output_edge="""
+        UNION ALL
+        SELECT output_vp.id FROM DerivationOutputs d JOIN ValidPaths output_vp ON output_vp.path = d.path
+        WHERE d.drv = c.id""",
+    # No `LIKE`: a `%` in a statement with parameters is a placeholder to psycopg.
+    build_trace_edge="""
+        UNION ALL
+        SELECT output_vp.id FROM BuildTraceV3 b JOIN ValidPaths output_vp ON output_vp.path = b.outputPath
+        WHERE right(current_vp.path, 4) = '.drv' AND b.drvPath = substring(current_vp.path FROM '[^/]*$')""",
+    has_build_trace="SELECT CASE WHEN to_regclass('buildtracev3') IS NULL THEN 0 ELSE 1 END",
     fingerprint="SELECT COUNT(*), COALESCE(MAX(id), 0) FROM ValidPaths",
     roots=f"SELECT link, target, kind FROM {LIVENESS_ROOT_TABLE}",
     delete_root=f"DELETE FROM {LIVENESS_ROOT_TABLE} WHERE link = %s",
