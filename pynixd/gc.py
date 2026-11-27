@@ -238,7 +238,9 @@ class Collector:
         lines.append(line)
         if client is not None:
             await client.send(line)
-        return self._answered(response, lines)
+        # A fresh response: `response` already carries every line before this one, and `_answered` appends.
+        stopped = PynixdCollectGarbageResponse(store_paths=response.store_paths, bytes=response.bytes)
+        return self._answered(stopped, lines)
 
     async def _until_under_target(
         self,

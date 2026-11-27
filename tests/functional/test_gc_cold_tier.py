@@ -16,6 +16,7 @@ import pytest
 
 from nix_daemon_protocol.ensure_path import EnsurePathRequest
 from nix_daemon_protocol.ids import StoreId
+from nix_daemon_protocol.logs import LogNext
 from nix_daemon_protocol.store_path import StorePath
 from pynixd import Server, cold_tier, metrics
 from pynixd.cold_tier import ColdTier, ColdUploader
@@ -181,6 +182,10 @@ async def test_over_the_target_it_stops_short_of_what_the_bucket_lacks(
     assert {str(path) for path in deleted.store_paths} == {lab.stale}
     assert counted == 1
     assert await _valid(lab.store_path) == {lab.parent, lab.child, lab.fresh, lab.rooted}
+    # One pass deleted, so its summary is in the response once: the stop line must not repeat the pass's lines.
+    texts = [message.text for message in deleted.logs.messages if isinstance(message, LogNext)]
+    assert sum(text.endswith("bytes freed") for text in texts) == 1
+    assert texts[-1].endswith("stopping short")
 
 
 async def test_a_drive_waits_for_the_uploader_and_then_deletes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
