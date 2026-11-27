@@ -44,6 +44,7 @@ from pynixd_store.db_migrations import HELD_BY_TABLE
 from pynixd_store.gc import (
     GarbagePlanner,
     by_weight,
+    freed_ratio,
     over_target,
     physical_batch_total,
     take_until_below_target,
@@ -118,7 +119,7 @@ class _MemoryPlan:
         ordered = by_weight(weights, pressure)
         if bound is not None:
             ordered = take_until_below_target(
-                [(path, weights[path][0]) for path in ordered], bound.used, bound.total, bound.target
+                [(path, weights[path][0]) for path in ordered], bound.used, bound.total, bound.target, bound.ratio
             )
         if limit is not None:
             ordered = ordered[:limit]
@@ -217,7 +218,9 @@ class Collector:
                 await client.send(line)
             return self._answered(PynixdCollectGarbageResponse(store_paths=set(), bytes=0), lines)
         tier = ColdTier.of(self.ctx)
-        response = await self._pass(action, client, limit, target, usage, lines, tier)
+        response, planned = await self._pass(action, client, limit, target, usage, lines, tier)
+        if action == PynixdGCAction.EXECUTE and target is not None and usage is not None and limit is None:
+            response = await self._until_under_target(response, planned, usage, target, client, lines, tier)
         if tier is None or action != PynixdGCAction.EXECUTE or target is None or local.gc_max_age is None:
             return response
         usage = await run_sync(self._disk_usage, local)
@@ -237,6 +240,60 @@ class Collector:
             await client.send(line)
         return self._answered(response, lines)
 
+    async def _until_under_target(
+        self,
+        response: PynixdCollectGarbageResponse,
+        planned: int,
+        usage: tuple[int, int],
+        target: float,
+        client: ClientConn | None,
+        lines: list[LogNext],
+        tier: ColdTier | None,
+    ) -> PynixdCollectGarbageResponse:
+        """Pass again while a settled reading of the disk stays over *target*.
+
+        A pass plans by NAR size, which overstates what a delete frees. A
+        bounded pass ends where its plan expects the target, so only there
+        the file system commits once (`syncfs`) and `statvfs` says where the
+        disk is. Still over: the share of NAR bytes that
+        reached the disk (`freed_ratio`) scales the next plan, so a run takes
+        a sync per pass and few passes. A pass that frees nothing ends the
+        run: a snapshot may hold the blocks, and the next run tries again.
+        """
+        local = self.ctx.local_store
+        deleted = {str(path) for path in response.store_paths}
+        freed_bytes = response.bytes
+        last = response
+        said = len(lines)
+        while last.store_paths:
+            settled = await run_sync(self._settled_usage, local)
+            if settled is None or not over_target(settled, target):
+                break
+            ratio = freed_ratio(usage[0] - settled[0], planned)
+            if ratio is None:
+                log.warning("gc_freed_nothing", planned=planned, used=settled[0], total=settled[1])
+                line = LogNext(text=f"usage {settled[0] / settled[1]:.3f}: the last pass freed nothing on disk")
+                lines.append(line)
+                if client is not None:
+                    await client.send(line)
+                break
+            log.info("gc_freed_ratio", ratio=ratio, freed=usage[0] - settled[0], planned=planned)
+            usage = settled
+            last, planned = await self._pass(PynixdGCAction.EXECUTE, client, None, target, usage, lines, tier, ratio)
+            deleted |= {str(path) for path in last.store_paths}
+            freed_bytes += last.bytes
+        if len(lines) == said:
+            return response
+        # A fresh response: `_answered` appends, and `response` already carries the lines up to `said`.
+        merged = PynixdCollectGarbageResponse(store_paths={StorePath(path) for path in deleted}, bytes=freed_bytes)
+        return self._answered(merged, lines)
+
+    @classmethod
+    def _settled_usage(cls, local: LocalStore | LocalDBStore) -> tuple[int, int] | None:
+        """`_disk_usage` after the store's file system commits what it owes. Blocks: call it in a thread."""
+        _planner_of(local).sync()
+        return cls._disk_usage(local)
+
     async def _pass(
         self,
         action: PynixdGCAction,
@@ -246,8 +303,13 @@ class Collector:
         usage: tuple[int, int] | None,
         lines: list[LogNext],
         tier: ColdTier | None,
-    ) -> PynixdCollectGarbageResponse:
-        """One plan and its deletes. With *tier*, a planned path goes only when the tier covers its closure."""
+        ratio: float = 1.0,
+    ) -> tuple[PynixdCollectGarbageResponse, int]:
+        """One plan and its deletes, and the NAR bytes of the paths it deleted.
+
+        With *tier*, a planned path goes only when the tier covers its closure.
+        *ratio* is the share of NAR bytes a delete frees on disk (`freed_ratio`).
+        """
         volatile = await run_sync(self.planner().volatile_roots)
         vetoed = await self._veto_closure(volatile)
         if usage is None:
@@ -266,7 +328,7 @@ class Collector:
         # not read as clean. Issue #73. An execute pass reaching here is
         # over its target, so the bound has a nonzero total.
         bound = (
-            Bound(used=usage[0], total=usage[1], target=target)
+            Bound(used=usage[0], total=usage[1], target=target, ratio=ratio)
             if action == PynixdGCAction.EXECUTE and target is not None and usage is not None
             else None
         )
@@ -283,19 +345,20 @@ class Collector:
                 now = int(time.time())
                 rows = await plan.weighed(pressure=pressure, now=now, bound=bound, limit=limit)
                 if rows is None:
-                    return self._answered(empty, lines)
+                    return self._answered(empty, lines), 0
                 if bound is not None:
                     log.info(
                         "gc_bounded_pass",
                         target=bound.target,
                         usage=bound.used / bound.total,
+                        ratio=bound.ratio,
                         batch=len(rows),
                         planned=plan.size,
                     )
                 weights = {path: (size, age) for path, size, age in rows}
                 batch = [path for path, _, _ in rows]
                 if not batch:
-                    return self._answered(empty, lines)
+                    return self._answered(empty, lines), 0
                 if not plan.whole(batch):
                     # Slicing breaks the referrer closure the planners promise, and
                     # gc.cc refuses a batch whose referrer rides below the slice.
@@ -305,23 +368,22 @@ class Collector:
                     weights |= await plan.weights_of([path for path in batch if path not in weights], now)
                 if action != PynixdGCAction.EXECUTE:
                     self._log_top(batch, weights, pressure)
+                    nar_bytes = sum(weights[path][0] for path in batch)
                     return self._answered(
-                        PynixdCollectGarbageResponse(
-                            store_paths={StorePath(path) for path in batch},
-                            bytes=sum(weights[path][0] for path in batch),
-                        ),
+                        PynixdCollectGarbageResponse(store_paths={StorePath(path) for path in batch}, bytes=nar_bytes),
                         lines,
-                    )
+                    ), nar_bytes
                 batch = await plan.order_batch(batch)
         except DatabaseError:
             # Fail closed: a plan the database could not finish deletes nothing.
             log.warning("gc_plan_failed", exc_info=True)
-            return self._answered(empty, lines)
+            return self._answered(empty, lines), 0
         # The plan's connection is closed by here: the deletes below must not
         # run under its read transaction.
         if tier is not None and not await self._cold_still_holds(tier, batch, lines, client):
-            return self._answered(empty, lines)
-        return await self._delete(batch, weights, lines, client)
+            return self._answered(empty, lines), 0
+        response = await self._delete(batch, weights, lines, client)
+        return response, sum(weights[str(path)][0] for path in response.store_paths if str(path) in weights)
 
     async def _cold_still_holds(
         self, tier: ColdTier, batch: list[str], lines: list[LogNext], client: ClientConn | None

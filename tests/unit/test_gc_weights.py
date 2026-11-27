@@ -9,7 +9,14 @@ only decide.
 
 from __future__ import annotations
 
-from pynixd_store.gc import by_weight, take_until_below_target
+from typing import TYPE_CHECKING
+
+import pytest
+
+from pynixd_store.gc import FREED_RATIO_FLOOR, by_weight, freed_ratio, sync_filesystem, take_until_below_target
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # A small old path against a big young one: size norms (0.6, 1.0), age
 # norms (1.0, 0.1). Empty disk scores B 1.0 over A 0.1; full disk scores A
@@ -51,6 +58,29 @@ def test_the_walk_stops_at_the_first_prefix_at_or_under_target() -> None:
     have emptied at once."""
     ordered = [("big", 40), ("mid", 30), ("small", 20)]
     assert take_until_below_target(ordered, used=95, total=100, target=0.5) == ["big", "mid"]
+
+
+def test_a_ratio_under_one_takes_a_longer_prefix() -> None:
+    """Half of each NAR byte reaches the disk: 40 and 30 free 35, not 70, and 20 more reach the target."""
+    ordered = [("big", 40), ("mid", 30), ("small", 20), ("tiny", 10)]
+    assert take_until_below_target(ordered, used=95, total=100, target=0.5) == ["big", "mid"]
+    assert take_until_below_target(ordered, used=95, total=100, target=0.5, ratio=0.5) == ["big", "mid", "small"]
+
+
+def test_freed_ratio_is_the_share_reaching_the_disk() -> None:
+    assert freed_ratio(25, 100) == 0.25
+    assert freed_ratio(0, 100) is None
+    assert freed_ratio(-5, 100) is None
+    assert freed_ratio(10, 0) is None
+    # More than the NAR bytes is someone else's free in the same window.
+    assert freed_ratio(500, 100) == 1.0
+    assert freed_ratio(1, 10**9) == FREED_RATIO_FLOOR
+
+
+def test_sync_filesystem_commits_a_directory(tmp_path: Path) -> None:
+    sync_filesystem(tmp_path)
+    with pytest.raises(FileNotFoundError):
+        sync_filesystem(tmp_path / "gone")
 
 
 def test_a_target_no_prefix_meets_takes_everything() -> None:

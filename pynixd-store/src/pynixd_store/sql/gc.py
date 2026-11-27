@@ -23,7 +23,7 @@ class GcSql:
     order, so the two agree to the bit: size and age each normalised against
     the candidates, blended by pressure, path string breaking ties. `before`
     is what the rows ahead of this one free, which is what
-    `take_until_below_target` tests before it takes a row."""
+    `take_until_below_target` tests before it takes a row, times the bound's ratio."""
     clear_batch: str
     batch_count: str
     batch_referrers: str
@@ -95,7 +95,7 @@ WITH w AS (
     FROM scored
 )
 SELECT path, size, age FROM ordered
-WHERE :total IS NULL OR 1.0 * (:used - before) / :total > :target
+WHERE :total IS NULL OR (:used - :ratio * before) / :total > :target
 ORDER BY score DESC, path
 LIMIT :limit
 """,
@@ -209,7 +209,8 @@ WITH w AS (
     FROM scored
 )
 SELECT path, size, age FROM ordered
-WHERE %(total)s::bigint IS NULL OR (%(used)s::bigint - before)::float8 / %(total)s::bigint > %(target)s::float8
+WHERE %(total)s::bigint IS NULL
+    OR (%(used)s::bigint - %(ratio)s::float8 * before) / %(total)s::bigint > %(target)s::float8
 ORDER BY score DESC, path
 LIMIT NULLIF(%(limit)s::bigint, -1)
 """,

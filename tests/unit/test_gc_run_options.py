@@ -41,6 +41,7 @@ from pynixd.daemon_extensions import (
 )
 from pynixd.gc import Collector
 from pynixd.serde import ValidPathInfo
+from pynixd_store.gc import GarbagePlanner
 from tests.unit.temp_root_owner import live_temp_root
 
 A = "/nix/store/00000000000000000000000000000000-a"
@@ -115,7 +116,7 @@ class FakeLocal:
         self.calls.append(type(request).__name__)
         self.marks.append((type(request).__name__, bool(_kwargs.get("mark", True))))
         if isinstance(request, QueryAllValidPathsRequest):
-            return QueryAllValidPathsResponse(paths={StorePath(A), StorePath(B)})
+            return QueryAllValidPathsResponse(paths={StorePath(path) for path in (A, B) if path not in self.deleted})
         if isinstance(request, QueryClosureRequest):
             if not self.answers_closure:
                 return QueryClosureResponse(paths=set())
@@ -324,6 +325,63 @@ async def test_target_usage_override_wins_over_the_store(tmp_path: Path, monkeyp
 
     assert {str(path) for path in resp.store_paths} == {B}
     assert local.deleted == [B]
+
+
+def _readings(monkeypatch: pytest.MonkeyPatch, *usages: tuple[int, int]) -> list[str]:
+    """Disk readings in order, the last one repeating; returns the log of syncs."""
+    queue = list(usages)
+    syncs: list[str] = []
+
+    def reading(_local: Any) -> tuple[int, int]:
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    monkeypatch.setattr(Collector, "_disk_usage", staticmethod(reading))
+    monkeypatch.setattr(GarbagePlanner, "sync", lambda _self: syncs.append("sync"))
+    return syncs
+
+
+@pytest.mark.anyio
+async def test_a_pass_that_frees_less_than_planned_plans_again_by_the_freed_share(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """30 NAR bytes freed 5 on disk: the second pass plans at a sixth, and syncs once per pass.
+
+    By NAR size `B` alone reaches the target. The settled reading says the
+    disk is still over, so the next pass takes `A` as well. The third plan
+    is empty and deletes nothing, so no third sync follows.
+    """
+    syncs = _readings(monkeypatch, (80, 100), (75, 100), (70, 100))
+    collector, local, _state_dir = _collector(tmp_path, gc_target_usage=0.5, sizes={A: 30, B: 30})
+
+    resp = await collector.run(PynixdGCAction.EXECUTE)
+
+    assert local.deleted == [B, A]
+    assert {str(path) for path in resp.store_paths} == {A, B}
+    assert syncs == ["sync", "sync"]
+
+
+@pytest.mark.anyio
+async def test_a_pass_that_frees_nothing_on_disk_ends_the_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A snapshot holds the blocks: the run says so and stops instead of emptying the plan."""
+    syncs = _readings(monkeypatch, (80, 100))
+    collector, local, _state_dir = _collector(tmp_path, gc_target_usage=0.5, sizes={A: 30, B: 30})
+
+    resp = await collector.run(PynixdGCAction.EXECUTE)
+
+    assert local.deleted == [B]
+    assert syncs == ["sync"]
+    assert _texts(resp)[-1] == "usage 0.800: the last pass freed nothing on disk"
+
+
+@pytest.mark.anyio
+async def test_a_settled_disk_under_target_ends_the_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    syncs = _readings(monkeypatch, (80, 100), (40, 100))
+    collector, local, _state_dir = _collector(tmp_path, gc_target_usage=0.5, sizes={A: 30, B: 30})
+
+    await collector.run(PynixdGCAction.EXECUTE)
+
+    assert local.deleted == [B]
+    assert syncs == ["sync"]
 
 
 @pytest.mark.anyio

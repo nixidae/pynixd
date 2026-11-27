@@ -58,11 +58,15 @@ def referrer_first(ordered: Sequence[str], references: Mapping[str, set[str]]) -
 
 @dataclass(frozen=True, slots=True)
 class Bound:
-    """Delete in weight order until `used - freed` over `total` is at most `target`."""
+    """Delete in weight order until `used - freed` over `total` is at most `target`.
+
+    A path frees its NAR size times `ratio` (`pynixd_store.gc.freed_ratio`).
+    """
 
     used: int
     total: int
     target: float
+    ratio: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +157,7 @@ class SqlPlan:
             "used": bound.used if bound else None,
             "total": bound.total if bound else None,
             "target": bound.target if bound else None,
+            "ratio": bound.ratio if bound else 1.0,
             "limit": -1 if limit is None else limit,
         }
         return [(path, size, age) for path, size, age in await self._session.fetchall(self._sql.weighed, params)]

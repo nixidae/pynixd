@@ -8,6 +8,7 @@ client and deletes through the daemon.
 
 from __future__ import annotations
 
+import ctypes
 import os
 import stat
 import time
@@ -27,6 +28,45 @@ if TYPE_CHECKING:
     from .store_layout import StoreLayout
 
 log = structlog.get_logger(__name__)
+
+_LIBC = ctypes.CDLL(None, use_errno=True)
+
+FREED_RATIO_FLOOR = 0.001
+"""The smallest share of its NAR bytes a pass is taken to free: past it, the next pass plans the whole plan anyway."""
+
+
+def sync_filesystem(directory: str | Path) -> None:
+    """Commit what the file system holding *directory* still owes, so `statvfs` counts freed blocks.
+
+    btrfs returns a deleted file's extents at the next transaction commit,
+    30 s after by default, and ZFS at the next transaction group. `syncfs`
+    commits one file system; `sync` (macOS has no `syncfs`) commits all.
+    """
+    syncfs = getattr(_LIBC, "syncfs", None)
+    if syncfs is None:
+        os.sync()
+        return
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        if syncfs(fd) != 0:
+            errno = ctypes.get_errno()
+            raise OSError(errno, os.strerror(errno), str(directory))
+    finally:
+        os.close(fd)
+
+
+def freed_ratio(freed: int, planned_nar_bytes: int) -> float | None:
+    """The share of its NAR bytes a pass freed on disk, or `None` when the pass freed nothing.
+
+    A NAR size overstates what a delete frees: a compressing file system
+    stores less, and a file `.links` shares with a live path frees nothing.
+    On dynhetz (btrfs, zstd), passes planned 1-2 paths to reach the target
+    and freed 72-144 MB. More than the NAR bytes reads as one: blocks freed
+    by someone else in the same window.
+    """
+    if freed <= 0 or planned_nar_bytes <= 0:
+        return None
+    return max(FREED_RATIO_FLOOR, min(1.0, freed / planned_nar_bytes))
 
 
 def pressure_usage(directory: str | Path) -> tuple[int, int]:
@@ -81,21 +121,25 @@ def by_weight(weights: Mapping[str, tuple[int, int]], pressure: float) -> list[s
     return [path for path, _ in sorted(scored.items(), key=lambda item: (-item[1], item[0]))]
 
 
-def take_until_below_target(ordered: Sequence[tuple[str, int]], used: int, total: int, target: float) -> list[str]:
+def take_until_below_target(
+    ordered: Sequence[tuple[str, int]], used: int, total: int, target: float, ratio: float = 1.0
+) -> list[str]:
     """The leading paths whose removal projects usage under `target`.
 
     Pure, for the same reason. `ordered` is `(path, size)` heaviest first;
-    the walk stops at the first prefix whose freed bytes bring `used / total`
-    to or under the fraction. A target already met takes nothing; a target
-    no prefix meets takes everything.
+    the walk stops at the first prefix whose freed bytes, `size * ratio`
+    each (`freed_ratio`), bring `used / total` to or under the fraction. A
+    target already met takes nothing; a target no prefix meets takes
+    everything.
     """
     batch: list[str] = []
-    freed = 0
+    before = 0
     for path, size in ordered:
-        if (used - freed) / total <= target:
+        # `ratio * before`, as the SQL plan computes it, so both cut at the same row.
+        if (used - ratio * before) / total <= target:
             break
         batch.append(path)
-        freed += size
+        before += size
     return batch
 
 
@@ -192,6 +236,16 @@ class GarbagePlanner:
         except Exception:
             log.warning("gc_mirror_refresh_failed", exc_info=True)
             return None
+
+    def sync(self) -> None:
+        """`sync_filesystem` on the store's file system; a failure only leaves the next reading stale."""
+        directory = getattr(self.layout, "real_store_dir", None)
+        if directory is None:
+            return
+        try:
+            sync_filesystem(directory)
+        except OSError:
+            log.warning("gc_sync_failed", exc_info=True)
 
     def disk_usage(self) -> tuple[int, int] | None:
         """`(used, total)` bytes of pressure on the filesystem holding the store."""
