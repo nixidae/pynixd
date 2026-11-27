@@ -117,12 +117,24 @@ def _words(raw: Any) -> list[str]:
     return raw.split() if isinstance(raw, str) else list(raw or ())
 
 
+@dataclass(slots=True)
+class _Gate:
+    """This process's tasks that want one path lock, queued on the event loop."""
+
+    lock: anyio.Lock = field(default_factory=anyio.Lock)
+    users: int = 0
+
+
+_GATES: dict[str, _Gate] = {}
+
+
 @dataclass
 class PathLock:
     """`PathLocks` of one path (`pathlocks.cc:71`): `flock` on `<path>.lock`, retried while stale."""
 
     path: Path
     _fd: int = field(default=-1, init=False)
+    _gate: _Gate | None = field(default=None, init=False)
 
     @property
     def lock_path(self) -> str:
@@ -131,6 +143,37 @@ class PathLock:
     def acquire(self) -> None:
         """Blocks until the lock is held. Call it from a worker thread."""
         self._lock(wait=True)
+
+    async def acquire_async(self) -> None:
+        """`acquire` in a worker thread, after this process's other holders and waiters for the path.
+
+        Two `flock`s of one file from one process conflict like two processes'. A waiter blocks a worker
+        thread, and the holder needs worker threads to finish: 40 imports of one path filled anyio's 40
+        threads and deadlocked sg1's central. So only one task per path waits in `flock`, and the others
+        wait on the event loop. Release with `release_locks`, from the same task.
+        """
+        key = self.lock_path
+        gate = _GATES.setdefault(key, _Gate())
+        gate.users += 1
+        try:
+            await gate.lock.acquire()
+            try:
+                # Not cancellable: an abandoned `flock` would hold the lock with no owner to release it.
+                await anyio.to_thread.run_sync(self.acquire)
+            except BaseException:
+                gate.lock.release()
+                raise
+        except BaseException:
+            _leave(key, gate)
+            raise
+        self._gate = gate
+
+    def open_gate(self) -> None:
+        """Let this process's next waiter for the path try `flock`; nothing for a lock taken without a gate."""
+        gate, self._gate = self._gate, None
+        if gate is not None:
+            gate.lock.release()
+            _leave(self.lock_path, gate)
 
     def try_acquire(self) -> bool:
         """`lockPaths(..., wait = false)`: `False` when another process holds the lock."""
@@ -162,6 +205,12 @@ class PathLock:
         self._fd = -1
 
 
+def _leave(key: str, gate: _Gate) -> None:
+    gate.users -= 1
+    if gate.users == 0:
+        _GATES.pop(key, None)
+
+
 RELEASE_SECONDS = 30.0
 """How long a caller waits for its path locks to go; past it the worker thread goes on and releases them."""
 
@@ -180,8 +229,12 @@ async def release_locks(locks: Iterable[PathLock], *, delete: bool) -> None:
         for lock in held:
             lock.release(delete=delete)
 
-    with anyio.CancelScope(shield=True), anyio.move_on_after(RELEASE_SECONDS):
-        await anyio.to_thread.run_sync(release, abandon_on_cancel=True)
+    try:
+        with anyio.CancelScope(shield=True), anyio.move_on_after(RELEASE_SECONDS):
+            await anyio.to_thread.run_sync(release, abandon_on_cancel=True)
+    finally:
+        for lock in held:
+            lock.open_gate()
 
 
 @dataclass
@@ -540,8 +593,7 @@ async def add_staged(
     if not repair and await engine.is_valid_path_uncached(path):
         return
     lock = PathLock(real)
-    # Not cancellable: an abandoned `flock` would hold the lock with no owner to release it.
-    await anyio.to_thread.run_sync(lock.acquire)
+    await lock.acquire_async()
     delete_lock = False
     try:
         if not repair and await engine.is_valid_path_uncached(path):
@@ -719,8 +771,7 @@ async def add_dump(
                 return path
         real = engine.layout.real_store_dir / path.rsplit("/", 1)[-1]
         lock = PathLock(real)
-        # Not cancellable: an abandoned `flock` would hold the lock with no owner to release it.
-        await anyio.to_thread.run_sync(lock.acquire)
+        await lock.acquire_async()
         delete_lock = False
         try:
             if repair or not await engine.is_valid_path_uncached(path):

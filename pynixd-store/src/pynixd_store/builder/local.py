@@ -752,8 +752,7 @@ async def build(
     held = {path: PathLock(layout.real_path(path)) for path in known.values()}
     locks = list(held.values())
     for lock in locks:
-        # Not cancellable: an abandoned `flock` would hold the lock with no owner to release it.
-        await anyio.to_thread.run_sync(lock.acquire)
+        await lock.acquire_async()
     paths: BuildPaths | None = None
     user: build_users.BuildUser | None = None
     # Nix deletes the build directory only after a build that succeeded (`cleanupBuild(true)`, `:246`).
