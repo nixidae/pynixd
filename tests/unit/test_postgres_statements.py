@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 import psycopg
 import pytest
 
+from pynixd_store.gc import SPACE_TIME
 from pynixd_store.postgres_db import PostgresBackend
 from pynixd_store.postgres_schema import migrate
 from pynixd_store.sql import (
@@ -62,14 +63,17 @@ SETUP: dict[str, tuple[str, ...]] = {
 """What a group's statements need on their connection first: the TEMP tables of the session."""
 
 
+def _filled(group: object, statement: str) -> str:
+    """*statement* with what a caller fills in: one of the collector's tables, the default delete order."""
+    if isinstance(group, gc.GcSql):
+        statement = statement.replace("{score}", group.score(SPACE_TIME))
+    return statement.replace("{table}", "gc_live")
+
+
 def _statements(group: object) -> dict[str, str]:
-    """The group's statements; `{table}` names the table a caller fills in, here one of the collector's."""
+    """The group's statements, each filled as its caller fills it."""
     assert dataclasses.is_dataclass(group)
-    return {
-        f.name: getattr(group, f.name).replace("{table}", "gc_live")
-        for f in dataclasses.fields(group)
-        if f.type == "str"
-    }
+    return {f.name: _filled(group, getattr(group, f.name)) for f in dataclasses.fields(group) if f.type == "str"}
 
 
 def test_the_postgres_set_holds_every_twin() -> None:
