@@ -15,6 +15,8 @@ class LivenessSql:
     live_set: str
     """The closure of the roots table plus a parameter of living roots, over `Refs` and the `{edges}` the
     settings add: Nix's `markAlive` closure (`gc.cc:598`, `computeFSClosure` in `misc.cc:48`)."""
+    closure: str
+    """`live_set` of the parameter's paths alone: a collection's own roots, with no roots table."""
     deriver_edge: Fragment
     """`keep-derivations`: a path keeps its valid deriver."""
     output_edge: Fragment
@@ -44,6 +46,25 @@ class LivenessSql:
     root_exclusive_counts: str
     drop_root_hits: str
 
+    def edges(self, *, keep_derivations: bool, keep_outputs: bool, build_trace: bool) -> str:
+        """The `{edges}` of `live_set` and `closure` for these settings; *build_trace* when `BuildTraceV3` exists."""
+        edges = self.deriver_edge if keep_derivations else ""
+        if keep_outputs:
+            edges += self.output_edge
+            if build_trace:
+                edges += self.build_trace_edge
+        return edges
+
+
+_SQLITE_CLOSURE = """
+WITH RECURSIVE closure(id) AS (
+    SELECT vp.id FROM ValidPaths vp
+    WHERE vp.path IN ({seeds})
+    UNION
+    SELECT r.reference FROM closure c JOIN Refs r ON c.id = r.referrer{{edges}}
+)
+SELECT path FROM ValidPaths WHERE id IN (SELECT id FROM closure)
+"""
 
 _SQLITE_ROOT_CLOSURE_OF_SEEDS = """
     WITH RECURSIVE closure(id) AS (
@@ -66,19 +87,10 @@ _SQLITE_ROOT_CLOSURE_OF_SEEDS = """
 """
 
 SQLITE = LivenessSql(
-    live_set=f"""
-WITH RECURSIVE closure(id) AS (
-    SELECT vp.id FROM ValidPaths vp
-    WHERE vp.path IN (
-        SELECT target FROM {LIVENESS_ROOT_TABLE}
-        UNION
-        SELECT value FROM json_each(?)
-    )
-    UNION
-    SELECT r.reference FROM closure c JOIN Refs r ON c.id = r.referrer{{edges}}
-)
-SELECT path FROM ValidPaths WHERE id IN (SELECT id FROM closure)
-""",
+    live_set=_SQLITE_CLOSURE.format(
+        seeds=f"SELECT target FROM {LIVENESS_ROOT_TABLE} UNION SELECT value FROM json_each(?)"
+    ),
+    closure=_SQLITE_CLOSURE.format(seeds="SELECT value FROM json_each(?)"),
     deriver_edge="""
     UNION
     SELECT deriver_vp.id FROM closure c
@@ -156,16 +168,10 @@ _POSTGRES_ROOT_CLOSURE_OF_SEEDS = f"""
     SELECT id FROM closure
 """
 
-# `SUM` of a BIGINT is `numeric`; the casts keep each count an integer, as SQLite answers it.
-POSTGRES = LivenessSql(
-    live_set=f"""
+_POSTGRES_CLOSURE = """
 WITH RECURSIVE closure(id) AS (
     SELECT vp.id FROM ValidPaths vp
-    WHERE vp.path IN (
-        SELECT target FROM {LIVENESS_ROOT_TABLE}
-        UNION
-        SELECT unnest(%s::text[])
-    )
+    WHERE vp.path IN ({seeds})
     UNION
     SELECT step.id FROM closure c
     JOIN ValidPaths current_vp ON current_vp.id = c.id
@@ -174,7 +180,14 @@ WITH RECURSIVE closure(id) AS (
     ) AS step
 )
 SELECT path FROM ValidPaths WHERE id IN (SELECT id FROM closure)
-""",
+"""
+
+# `SUM` of a BIGINT is `numeric`; the casts keep each count an integer, as SQLite answers it.
+POSTGRES = LivenessSql(
+    live_set=_POSTGRES_CLOSURE.format(
+        seeds=f"SELECT target FROM {LIVENESS_ROOT_TABLE} UNION SELECT unnest(%s::text[])"
+    ),
+    closure=_POSTGRES_CLOSURE.format(seeds="SELECT unnest(%s::text[])"),
     deriver_edge="""
         UNION ALL
         SELECT deriver_vp.id FROM ValidPaths deriver_vp WHERE deriver_vp.path = current_vp.deriver""",

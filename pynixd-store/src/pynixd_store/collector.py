@@ -186,12 +186,52 @@ class Collection:
         layout = self.engine.layout
         store_dir = str(layout.store_dir)
         names = await anyio.to_thread.run_sync(collect.store_dir_entries, layout.real_store_dir, layout.links_dir.name)
+        if not self.deletes:
+            await self._answer_whole_store(names)
+            return
         for name in names:
             await checkpoint()
             if collect.store_base_name(f"{store_dir}/{name}", store_dir) is not None:
                 await self._maybe_delete_referrers_closure(f"{store_dir}/{name}")
             else:
                 await self._delete_from_store(name, known=False)
+
+    async def _answer_whole_store(self, names: list[str]) -> None:
+        """`RETURN_LIVE` and `RETURN_DEAD` of the whole store: the walk's answer from closure queries.
+
+        The walk asks the database once per path and per edge, about 1 ms each: 40+ minutes on dynhetz's
+        436k paths, under the exclusive GC lock (nixidae/nixidae#1655). The walk keeps a path when a chain of
+        its referrers reaches a root, so the live paths are the `markAlive` closure of the roots, one query.
+        A valid row with no directory is dead when the walk would reach it as a referrer of a dead entry.
+
+        NIX-DEVIATION (#27): a valid root with no directory counts as live here. Nix's walk (`gc.cc:821`)
+        meets such a root only through a referrer, so its answer can call a path dead that the root keeps.
+        Measure: a store whose valid rows all have a directory answers as Nix does.
+        """
+        store_dir = str(self.engine.layout.store_dir)
+        entries: set[str] = set()
+        for name in names:
+            await checkpoint()
+            path = f"{store_dir}/{name}"
+            if collect.store_base_name(path, store_dir) is not None:
+                entries.add(path)
+            else:
+                # `deleteFromStore` runs for every action (`gc.cc:821`): Nix's read-only walk deletes these too.
+                await self._delete_from_store(name, known=False)
+        seeds = set(self.roots)
+        if not self.ignores_temp_roots:
+            held = self.server.temp_roots
+            seeds |= {path for path in entries if _hash_part(path) in held}
+        keep = self.settings.keep_derivations, self.settings.keep_outputs
+        self.alive = await self._closure(seeds, *keep) | (seeds & entries)
+        self.dead = entries - self.alive
+        valid = {path.path for path in await self.engine.query_all_valid_paths()}
+        for path in sorted(valid - self.alive - entries):
+            if await self._closure({path}, *keep) & self.dead:
+                self.dead.add(path)
+
+    async def _closure(self, seeds: set[str], keep_derivations: bool, keep_outputs: bool) -> set[str]:
+        return await self.engine.db.query_closure(seeds, keep_derivations=keep_derivations, keep_outputs=keep_outputs)
 
     async def _maybe_delete_referrers_closure(self, start: str) -> None:
         """`maybeDeleteReferrersClosure` (`gc.cc:581`): delete *start* and its referrers, or none of them."""

@@ -546,12 +546,10 @@ def query_live_set(db: Database, volatile: set[str], settings: GCSettings | None
     settings = settings or GCSettings()
     with db.sync_session() as session:
         sql = session.sql.liveness
-        edges = sql.deriver_edge if settings.keep_derivations else ""
-        if settings.keep_outputs:
-            edges += sql.output_edge
-            row = session.fetchone(sql.has_build_trace)
-            if row is not None and row[0]:
-                edges += sql.build_trace_edge
+        trace = settings.keep_outputs and bool((row := session.fetchone(sql.has_build_trace)) and row[0])
+        edges = sql.edges(
+            keep_derivations=settings.keep_derivations, keep_outputs=settings.keep_outputs, build_trace=trace
+        )
         statement = sql.live_set.format(edges=edges)
         return {row[0] for row in session.fetchall(statement, (session.sql.codec.path_set(sorted(volatile)),))}
 

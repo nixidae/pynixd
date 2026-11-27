@@ -101,6 +101,18 @@ async def test_keep_outputs_keeps_what_a_live_derivation_built(store_db: LocalSt
     assert kept == {DRV, SRC, HELLO, LIBC, CA_DRV, CA_OUT}
 
 
+async def test_a_closure_follows_the_edges_it_is_given(store_db: LocalStoreDB) -> None:
+    """`query_closure` is `live_set` of its seeds alone, the roots table aside."""
+    await _built(store_db)
+    liveness.refresh_roots(store_db.backend.database(), {"/roots/hello": (HELLO, "gcroot")})
+
+    assert await store_db.query_closure({DRV}, keep_derivations=True, keep_outputs=False) == {DRV, SRC}
+    kept = await store_db.query_closure({DRV, CA_DRV}, keep_derivations=True, keep_outputs=True)
+    assert kept == {DRV, SRC, HELLO, LIBC, CA_DRV, CA_OUT}
+    assert await store_db.query_closure({HELLO}, keep_derivations=False, keep_outputs=False) == {HELLO, LIBC}
+    assert await store_db.query_closure(set(), keep_derivations=True, keep_outputs=True) == set()
+
+
 async def test_keep_derivations_off_drops_the_deriver_edge(store_db: LocalStoreDB) -> None:
     await _built(store_db)
     database = store_db.backend.database()

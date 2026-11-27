@@ -316,6 +316,50 @@ async def test_live_and_dead_are_answered_and_nothing_goes(tmp_path: Path) -> No
     assert store.real(C).exists()
 
 
+def _mixed(root: Path) -> _Store:
+    """Derivers, outputs, a valid row with no directory on either side of a dead entry, an invalid entry."""
+    store = _Store(root)
+    lib, out, out_drv = (f"/nix/store/{index:032d}-{name}" for index, name in ((5, "lib"), (6, "out"), (7, "o.drv")))
+    gone_dead, gone_live, invalid = (
+        f"/nix/store/{index:032d}-{name}" for index, name in ((8, "gd"), (9, "gl"), (10, "i"))
+    )
+    store.add(B)
+    store.add(A, refs=(B,))
+    store.add(C)
+    store.add(lib)
+    store.add(out_drv, refs=(lib,))
+    store.add(out, refs=(lib,), deriver=out_drv)
+    store.output(out_drv, "out", out)
+    store.add(DRV, refs=(C,))
+    store.add(gone_dead, refs=(C,))
+    store.add(gone_live)
+    for path in (gone_dead, gone_live):
+        store.real(path).chmod(0o755)
+        (store.real(path) / "data").unlink()
+        store.real(path).rmdir()
+    store.real(invalid).mkdir()
+    store.root(A)
+    store.root(out_drv, "drv")
+    return store
+
+
+@pytest.mark.parametrize("keep_outputs", [False, True])
+async def test_the_dead_answer_is_what_a_delete_takes(tmp_path: Path, *, keep_outputs: bool) -> None:
+    """`RETURN_DEAD` answers from closure queries, `DELETE_DEAD` walks: the same paths (nixidae/nixidae#1655)."""
+    settings = GCSettings(keep_outputs=keep_outputs)
+    asked = _mixed(tmp_path / "asked")
+    dead, _ = await _collect(asked, GCOptions(GCAction.RETURN_DEAD), _Lines(), settings)
+    live, _ = await _collect(asked, GCOptions(GCAction.RETURN_LIVE), _Lines(), settings)
+    deleted, _ = await _collect(_mixed(tmp_path / "deleted"), GCOptions(GCAction.DELETE_DEAD), _Lines(), settings)
+
+    assert dead == deleted
+    assert not dead & live
+    assert f"/nix/store/{8:032d}-gd" in dead, "a referrer of a dead entry goes with it"
+    assert f"/nix/store/{9:032d}-gl" not in dead, "no entry reaches it"
+    assert (f"/nix/store/{6:032d}-out" in live) == keep_outputs
+    assert asked.valid(C)
+
+
 async def test_max_freed_stops_the_collection(tmp_path: Path) -> None:
     store = _Store(tmp_path)
     store.add(A)

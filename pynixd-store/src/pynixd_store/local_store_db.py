@@ -501,6 +501,15 @@ class LocalStoreDB:
             log.debug("query_roots_report_failed", exc_info=True)
             return None
 
+    async def query_closure(self, paths: Iterable[str], *, keep_derivations: bool, keep_outputs: bool) -> set[str]:
+        """The valid paths Nix's `markAlive` keeps for *paths* (`gc.cc:598`), in one query."""
+        sql = self.sql.liveness
+        async with self.connection() as db:
+            trace = keep_outputs and bool((row := await db.fetchone(sql.has_build_trace)) and row[0])
+            edges = sql.edges(keep_derivations=keep_derivations, keep_outputs=keep_outputs, build_trace=trace)
+            rows = await db.fetchall(sql.closure.format(edges=edges), (self.sql.codec.path_set(sorted(paths)),))
+        return {row[0] for row in rows}
+
     async def query_referrer_closure(self, paths: Iterable[str]) -> set[str] | None:
         """The paths that reference `paths`, transitively, seeds included.
 
