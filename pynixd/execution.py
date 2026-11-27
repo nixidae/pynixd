@@ -890,7 +890,14 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
                 template = await store.pick_template()
                 farm_root, runner_root = await self._farm_root(build, store, template, held)
                 built, times = await store.build(
-                    build.request, line, farm_root, build.depth, template, runner_root=runner_root, size=size
+                    build.request,
+                    line,
+                    farm_root,
+                    build.depth,
+                    template,
+                    runner_root=runner_root,
+                    size=size,
+                    traceparent=build.trace.traceparent(),
                 )
                 resp = without_error_prefix(built)
         except PodUnplaced:

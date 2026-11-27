@@ -418,6 +418,7 @@ class BuildPodStore(ScheduledStore):
         template: str | None = None,
         runner_root: str | None = None,
         size: PodSize | None = None,
+        traceparent: str = "",
     ) -> tuple[BuildDerivationResponse, PodTimes]:
         """Build *request* in a pod, and say when each step of the pod ended; `InfrastructureError` when the pod,
         not the build, failed.
@@ -426,7 +427,8 @@ class BuildPodStore(ScheduledStore):
         *depth* is the build's in recursive Nix, which picks the pod's PriorityClass. *template* is what
         `pick_template` gave for the farm root; `None`: the first. *runner_root*, for a runner template, makes the
         runner's own store in the farm (`runner_references`); the farm root refers to it. *size* gives the build's
-        cores and the pod's requests; `None`: the store's cores and the template's requests.
+        cores and the pod's requests; `None`: the store's cores and the template's requests. *traceparent* is the
+        build attempt's, which nixkube's spans of the pod's volume join.
         """
         if size is None:
             size = size_pod(cores=self.spec.pod_cores, memory_bytes=None, model=None, cores_used=None)
@@ -485,7 +487,15 @@ class BuildPodStore(ScheduledStore):
             priority = self.spec.priority_class(depth)
             times = PodTimes(asked=time.monotonic())
             await self.kubernetes.start_build_pod(
-                template, name, self.owner, secret, farm, priority_class=priority, runner=fill, size=size
+                template,
+                name,
+                self.owner,
+                secret,
+                farm,
+                priority_class=priority,
+                runner=fill,
+                size=size,
+                traceparent=traceparent,
             )
             times.created = time.monotonic()
             log.info(

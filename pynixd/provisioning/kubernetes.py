@@ -48,6 +48,8 @@ if TYPE_CHECKING:
 MANAGED_LABEL: Final = "app.kubernetes.io/managed-by"
 MANAGED_VALUE: Final = "pynixd"
 TAGS_ANNOTATION: Final = "pynixd.nixidae.org/tags"
+TRACEPARENT_ANNOTATION: Final = "pynixd.nixidae.org/traceparent"
+"""A build pod's annotation: the W3C `traceparent` of the build attempt it runs, for readers of the pod."""
 TICKET_KEY: Final = "ticket"
 TICKET_VOLUME: Final = "pynixd-join-ticket"
 _NAME_PREFIX: Final = "pynixd-"
@@ -299,6 +301,7 @@ class KubernetesProvider:
         priority_class: str | None = None,
         runner: RunnerFill | None = None,
         size: PodSize | None = None,
+        traceparent: str = "",
     ) -> None:
         """A pod for one build of *owner*, with *job* in a Secret it owns (nixidae/nixidae#1560, spike).
 
@@ -307,7 +310,9 @@ class KubernetesProvider:
         """
         spec = self._template(template)
         api = await self._client()
-        manifest = build_pod_manifest(spec, name, owner, farm, priority_class=priority_class, runner=runner, size=size)
+        manifest = build_pod_manifest(
+            spec, name, owner, farm, priority_class=priority_class, runner=runner, size=size, traceparent=traceparent
+        )
         pod = Pod(manifest, api=api)
         with failing(f"creating build pod {name}"):
             try:
@@ -565,6 +570,9 @@ _STORE_PATH: Final = re.compile(r"/nix/store/[0-9a-df-np-sv-z]{32}-[A-Za-z0-9+\-
 FARM_PRESENTATION: Final = {"presentation": "farm"}
 """nixkube's CSI attribute for one read-only bind per closure path (`nixkube/pkgs/nixkube/src/presentation.py`)."""
 RUNNER_STORE_ATTRIBUTE: Final = "runnerStore"
+TRACEPARENT_ATTRIBUTE: Final = "traceparent"
+"""A farm volume's attribute: the build attempt's `traceparent`, which nixkube's `NodePublishVolume` receives
+and opens its span under (nixkube `tracing.TRACEPARENT_ATTRIBUTE`). nixidae/nixidae#1654."""
 """nixkube's CSI attribute for the runner's own store in the farm: the closure of this path's references, at the
 runner's chroot (`RunnerSandboxSpec.root`)."""
 
@@ -719,9 +727,11 @@ def build_pod_manifest(
     priority_class: str | None = None,
     runner: RunnerFill | None = None,
     size: PodSize | None = None,
+    traceparent: str = "",
 ) -> Manifest:
     """The template's pod for one build of *owner*: no tags, *owner*'s labels, and the job Secret at `JOB_DIR`
     in its container. *size*'s requests replace the template's on the container the build runs in.
+    *traceparent*, when not empty, goes on the pod and on its farm volume, so nixkube's spans join the build's.
 
     With *farm*, its CSI volume asks nixkube for a farm of the build's root path. nixkube keys the path by the
     node's system, not the derivation's: an i686 build on an x86_64 node reads the x86_64 key.
@@ -734,6 +744,7 @@ def build_pod_manifest(
             **dict.fromkeys(sorted(farm.systems), farm.root),
             **FARM_PRESENTATION,
             **({} if farm.runner_root is None else {RUNNER_STORE_ATTRIBUTE: farm.runner_root}),
+            **({TRACEPARENT_ATTRIBUTE: traceparent} if traceparent else {}),
         }
     pod["apiVersion"] = "v1"
     pod["kind"] = "Pod"
@@ -741,6 +752,8 @@ def build_pod_manifest(
     metadata["name"] = name
     metadata.pop("generateName", None)
     metadata.setdefault("labels", {}).update(owner.labels())
+    if traceparent:
+        metadata.setdefault("annotations", {})[TRACEPARENT_ANNOTATION] = traceparent
     if owner.pod is not None:
         metadata["ownerReferences"] = [*(metadata.get("ownerReferences") or []), owner.pod.reference()]
     spec = pod.setdefault("spec", {})

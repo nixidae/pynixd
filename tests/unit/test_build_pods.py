@@ -51,6 +51,8 @@ from pynixd.pod_size import size_pod
 from pynixd.provisioning.kubernetes import (
     BUILD_STORE_LABEL,
     RUNNER_STORE_ATTRIBUTE,
+    TRACEPARENT_ANNOTATION,
+    TRACEPARENT_ATTRIBUTE,
     BuildPodEnd,
     BuildPodOwner,
     BuildPodWatch,
@@ -198,6 +200,21 @@ def test_a_runner_s_store_holds_the_inputs_and_the_shell_alone() -> None:
 
     assert runner_references(request, shell) == {INPUT, shell}
     assert runner_references(request, None) == {INPUT}
+
+
+def test_a_build_pod_carries_its_attempt_s_traceparent_to_nixkube() -> None:
+    root = "/nix/store/00000000000000000000000000000008-pynixd-build-inputs"
+    farm = FarmVolume(volume="nix", root=root, systems=frozenset({"x86_64-linux"}))
+    traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+
+    pod = build_pod_manifest(FARM_TEMPLATE, "pynixd-build-x", OWNER, farm, traceparent=traceparent)
+    untraced = build_pod_manifest(FARM_TEMPLATE, "pynixd-build-y", OWNER, farm)
+
+    (volume,) = (v for v in pod["spec"]["volumes"] if v["name"] == "nix")
+    assert volume["csi"]["volumeAttributes"][TRACEPARENT_ATTRIBUTE] == traceparent
+    assert pod["metadata"]["annotations"][TRACEPARENT_ANNOTATION] == traceparent
+    (bare,) = (v for v in untraced["spec"]["volumes"] if v["name"] == "nix")
+    assert TRACEPARENT_ATTRIBUTE not in bare["csi"]["volumeAttributes"]
 
 
 def test_a_runner_pod_names_its_own_store_beside_the_farm() -> None:
