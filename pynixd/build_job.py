@@ -106,6 +106,8 @@ class CentralPart(StrEnum):
 
     CREATE = "create"
     """The pod and its Secret, until the API server took both."""
+    PLACE = "place"
+    """From the API server's answer until the watch saw a node take the pod. `START` holds it."""
     START = "start"
     """Until the container ran: scheduling, the volumes, the image, the container start."""
     FIRST_LINE = "first-line"

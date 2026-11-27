@@ -124,6 +124,7 @@ class PodTimes:
 
     asked: float
     created: float | None = None
+    placed: float | None = None
     ran: float | None = None
     first_line: float | None = None
     last_line: float | None = None
@@ -143,6 +144,7 @@ class PodTimes:
         """The seconds of each part central saw end."""
         spans = {
             CentralPart.CREATE: (self.asked, self.created),
+            CentralPart.PLACE: (self.created, self.placed),
             CentralPart.START: (self.created, self.ran),
             CentralPart.FIRST_LINE: (self.ran, self.first_line),
             CentralPart.END: (self.last_line, self.ended),
@@ -160,6 +162,13 @@ class PodTimes:
             return None
         copies = self.pod.get(PodPart.INPUTS.value, 0.0) + self.pod.get(PodPart.OUTPUTS.value, 0.0)
         return self.ended - self.asked - self.pod[PodPart.BUILD.value] - copies
+
+    def attributes(self) -> dict[str, float]:
+        """The parts central saw, the pod's own and the fixed cost, as attributes of the build's attempt span."""
+        seen = {f"pynixd.pod.central.{part}": seconds for part, seconds in self.parts().items()}
+        own = {f"pynixd.pod.own.{part}": seconds for part, seconds in (self.pod or {}).items()}
+        fixed = self.fixed()
+        return seen | own | ({"pynixd.pod.fixed": fixed} if fixed is not None else {})
 
 
 def runner_refusal(request: BuildDerivationRequest) -> str | None:
@@ -499,6 +508,7 @@ class BuildPodStore(ScheduledStore):
                 watching.start_soon(self._watch, self.kubernetes, name, watch)
                 with anyio.move_on_after(self.spec.schedule_seconds):
                     await watch.placed.wait()
+                    times.placed = time.monotonic()
                 watch.unplaced(self.spec.schedule_seconds)
                 await watch.settled.wait()
                 times.ran = time.monotonic()

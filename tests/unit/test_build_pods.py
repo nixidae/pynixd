@@ -213,7 +213,7 @@ def test_a_runner_pod_names_its_own_store_beside_the_farm() -> None:
 
 def test_a_build_pod_says_what_each_part_of_its_fixed_cost_took() -> None:
     pod_line = seconds_line(POD_SECONDS, {PodPart.PYTHON: 2.4, PodPart.BUILD: 1.25, PodPart.SHUTDOWN: 0.2})
-    times = PodTimes(asked=100.0, created=100.1, ran=101.5)
+    times = PodTimes(asked=100.0, created=100.1, placed=100.6, ran=101.5)
 
     times.saw("building...")
     times.first_line = 103.0
@@ -225,6 +225,7 @@ def test_a_build_pod_says_what_each_part_of_its_fixed_cost_took() -> None:
     assert times.parts() == pytest.approx(
         {
             CentralPart.CREATE: 0.1,
+            CentralPart.PLACE: 0.5,
             CentralPart.START: 1.4,
             CentralPart.FIRST_LINE: 1.5,
             CentralPart.END: 0.5,
@@ -233,6 +234,11 @@ def test_a_build_pod_says_what_each_part_of_its_fixed_cost_took() -> None:
     )
     # The cost beyond the build is what the placement adds for the store.
     assert times.fixed() == pytest.approx(6.25)
+    # The attempt span carries every part, so a trace store can say where a slow pod's time went.
+    attributes = times.attributes()
+    assert attributes["pynixd.pod.central.place"] == pytest.approx(0.5)
+    assert attributes["pynixd.pod.own.python"] == pytest.approx(2.4)
+    assert attributes["pynixd.pod.fixed"] == pytest.approx(6.25)
     assert PodTimes(asked=0.0, ended=1.0).fixed() is None
     # The process started before this test did, and not before the machine booted.
     assert 0 < time.monotonic() - process_started() < time.clock_gettime(time.CLOCK_BOOTTIME)

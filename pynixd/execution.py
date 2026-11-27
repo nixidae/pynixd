@@ -903,6 +903,7 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
             build.reset_for_disruption()
             self.trigger()
             return
+        build.trace.annotate(times.attributes())
         # The build alone: the store's `setup_seconds` holds the pod's fixed cost, and the ranking adds both.
         pod_build = (times.pod or {}).get(PodPart.BUILD.value)
         observation.build_ms = ms_since(build.started_at) if pod_build is None else int(pod_build * 1000)

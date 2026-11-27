@@ -175,6 +175,9 @@ class OtelBuildTrace(BuildTrace):
     def event(self, name: str, attributes: Mapping[str, AttributeValue]) -> None:
         (self._attempt or self._root).add_event(name, dict(attributes))
 
+    def annotate(self, attributes: Mapping[str, AttributeValue]) -> None:
+        (self._attempt or self._root).set_attributes(dict(attributes))
+
     def traceparent(self) -> str:
         return _traceparent(self._phase_context or self._attempt_context)
 

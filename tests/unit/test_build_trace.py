@@ -152,6 +152,17 @@ async def test_a_retry_ends_its_attempt_and_the_next_attempt_is_a_sibling(traced
     assert root.status.description == "it failed"
 
 
+async def test_an_attempt_carries_what_the_build_annotated(traced: Traced) -> None:
+    build = await traced.enqueue()
+    build.trace.assigned("buildpods", attempt=0, cores=8, expected_peak_bytes=None, reason=None)
+    build.trace.annotate({"pynixd.pod.fixed": 19.5})
+    await traced.queue.complete(build.build_id, _built())
+
+    attempt = _one(await traced.spans(), "attempt")
+    assert attempt.attributes is not None
+    assert attempt.attributes["pynixd.pod.fixed"] == 19.5
+
+
 async def test_close_ends_an_open_build_as_stopped(traced: Traced) -> None:
     await traced.enqueue()
     await anyio.to_thread.run_sync(traced.tracing.close)

@@ -120,6 +120,9 @@ class BuildTrace:
     def event(self, name: str, attributes: Mapping[str, AttributeValue]) -> None:
         """A point in time on the running attempt, or on the build when none runs."""
 
+    def annotate(self, attributes: Mapping[str, AttributeValue]) -> None:
+        """Attributes of the running attempt, or of the build when none runs."""
+
     def traceparent(self) -> str:
         """The W3C `traceparent` of the innermost open span, for the store that builds; empty when none."""
         return ""
