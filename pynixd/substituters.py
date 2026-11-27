@@ -35,6 +35,10 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
+class _StartFailed(Exception):
+    """A backend whose start failed on a store with no daemon: it is left out while it cools down."""
+
+
 class ClientSubstituters:
     """The backends for the substituters clients name, made on first use and kept.
 
@@ -44,9 +48,17 @@ class ClientSubstituters:
     across clients.
     """
 
-    def __init__(self, settings: PynixdSettings, *, now: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        settings: PynixdSettings,
+        *,
+        now: Callable[[], float] = time.monotonic,
+        runs_daemon: Callable[[], bool] = lambda: True,
+    ) -> None:
+        """*runs_daemon* answers whether a Nix daemon takes the ops a backend cannot; it is asked at a failed start."""
         self._settings = settings
         self._now = now
+        self._runs_daemon = runs_daemon
         self._made: dict[object, Store] = {}
         self._dropped: set[object] = set()
         self._unopened: dict[object, Cooldown] = {}
@@ -79,7 +91,7 @@ class ClientSubstituters:
                 continue
             try:
                 store = await self._backend(url, backends)
-            except (StoreDirMismatch, CacheUnopened):
+            except (StoreDirMismatch, CacheUnopened, _StartFailed):
                 continue
             if store is None:
                 log.debug("client_substituter_only_the_daemon_reaches", url=url)
@@ -128,11 +140,20 @@ class ClientSubstituters:
                 cooldown = self._unopened.setdefault(key, Cooldown(now=self._now))
                 log.warning("client_substituter_unopened", url=url, retry_in=cooldown.failed(), exc_info=True)
                 raise
-            except Exception:
+            except Exception as e:
                 # Another store opens without a connection: `RemoteStore`'s pool connects on first use
                 # (`remote-store.cc:35`), so Nix keeps a dead ssh-ng host. The daemon answers for this one.
-                log.warning("client_substituter_start_failed", url=url, exc_info=True)
-                return None
+                if self._runs_daemon():
+                    log.warning("client_substituter_start_failed", url=url, exc_info=True)
+                    return None
+                # NIX-DEVIATION (#27): Nix keeps the dead store (`remote-store.cc:35`), and each op fails when it
+                # uses it. pynixd has no daemon here to answer for it, so `None` would fail every substituting op
+                # with `NoDaemonError`. It leaves the backend out for every client while a `Cooldown` runs, and
+                # starts it again after: the op answers without that substituter. Measure how often a start
+                # succeeds on the first try after its cooldown to reverse it. nixidae/nixidae#1665.
+                cooldown = self._unopened.setdefault(key, Cooldown(now=self._now))
+                log.warning("client_substituter_start_failed", url=url, retry_in=cooldown.failed(), exc_info=True)
+                raise _StartFailed(url) from e
             self._unopened.pop(key, None)
             self._made[key] = store
             return store
@@ -156,6 +177,10 @@ class ClientSubstituters:
         finally:
             if self._made.get(key) is store:
                 del self._made[key]
+
+    def start_failed(self, url: str) -> float:
+        """Count a failed start of a backend for *url* made elsewhere, and return the wait before one starts here."""
+        return self._unopened.setdefault(reference_key(url), Cooldown(now=self._now)).failed()
 
     def stores(self) -> tuple[Store, ...]:
         return tuple(self._made.values())

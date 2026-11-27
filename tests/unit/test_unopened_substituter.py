@@ -18,12 +18,15 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import anyio
+import pytest
 from aiohttp import web
+from structlog.testing import capture_logs
 
 from pynixd.config import PynixdSettings
 from pynixd.cooldown import Cooldown
 from pynixd.instance import _add_substituter_stores
 from pynixd.store.http_binary_cache import HTTPBinaryCacheStore
+from pynixd.store_url import spec_for
 from pynixd.substituters import ClientSubstituters
 from pynixd.substitution_queue import SubstitutionQueue
 
@@ -130,3 +133,31 @@ async def test_a_configured_cache_that_fails_to_open_is_absent_until_it_opens() 
             assert store.cache_info["Priority"] == "40"
     assert asked[0] == 500
     assert asked[-1] == 200
+
+
+@pytest.mark.parametrize("runs_daemon", [True, False], ids=["daemon", "daemonless"])
+async def test_a_configured_ssh_ng_store_that_fails_its_start_starts_again_with_no_daemon(runs_daemon: bool) -> None:
+    """Nothing listens on port 1. With no daemon, the daemon's list asks the URL again after a cooldown, nixidae/nixidae#1665."""
+    url = "ssh-ng://127.0.0.1:1"
+    settings = PynixdSettings()
+    failed = spec_for(url)
+    assert failed is not None
+    ctx = SimpleNamespace(
+        settings=settings,
+        stores={},
+        trust=SimpleNamespace(substituters=[url]),
+        local_store=SimpleNamespace(daemon_client=SimpleNamespace(runs_daemon=runs_daemon)),
+    )
+    queue = SubstitutionQueue(cast("PynixdContext", ctx))
+    clock = [0.0]
+    queue.client_substituters = ClientSubstituters(settings, now=lambda: clock[0], runs_daemon=lambda: runs_daemon)
+    async with queue.running():
+        queue.note_failed_start(failed.to_store("ssh-ng"))
+        with capture_logs() as logs:
+            cooling = await queue.substituters_for(None)
+            clock[0] = 60
+            after = await queue.substituters_for(None)
+    starts = [entry for entry in logs if entry["event"] == "client_substituter_start_failed"]
+    assert (cooling, after) == ((), ())
+    assert queue.restarting == (() if runs_daemon else (url,))
+    assert len(starts) == (0 if runs_daemon else 1), "no start while the first cooldown runs"

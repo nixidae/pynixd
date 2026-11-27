@@ -31,7 +31,9 @@ def _client(*, use_substitutes: bool = True, **overrides: str) -> ClientConn:
 
 
 def _queue(stores: dict[Any, Store] | None = None, settings: PynixdSettings | None = None) -> SubstitutionQueue:
-    ctx = SimpleNamespace(settings=settings or PynixdSettings(), stores=stores or {})
+    # A daemon runs: a backend whose start fails leaves the client to it.
+    daemon = SimpleNamespace(daemon_client=SimpleNamespace(runs_daemon=True))
+    ctx = SimpleNamespace(settings=settings or PynixdSettings(), stores=stores or {}, local_store=daemon)
     return SubstitutionQueue(cast("PynixdContext", ctx))
 
 

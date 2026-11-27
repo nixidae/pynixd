@@ -6,15 +6,19 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import getpass
 import os
 import shlex
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import anyio
+import anyio.to_thread
 import asyncssh
 import structlog
+from asyncssh.config import SSHClientConfig
 
 from .. import wire
 from ..agent import AgentMonitor, AgentUnavailableError, agent_for
@@ -24,14 +28,20 @@ from ..config import (
     SSHSubprocessStoreSpec,
 )
 from ..connection import Connection
-from ..constants import SSH_ENCRYPTION_ALGS, SSH_KEEPALIVE_COUNT_MAX, SSH_KEEPALIVE_INTERVAL
+from ..constants import (
+    OPENSSH_GLOBAL_KNOWN_HOSTS,
+    OPENSSH_USER_KNOWN_HOSTS,
+    SSH_ENCRYPTION_ALGS,
+    SSH_KEEPALIVE_COUNT_MAX,
+    SSH_KEEPALIVE_INTERVAL,
+)
 from ..monitor import DummyResourceMonitor, GenericResourcePoller, ResourceMonitor
 from ..psi import DiskSpace
 from ..wire import SSHNixReader, SSHNixWriter
 from .daemon import SSHD_DEFAULT_MAX_SESSIONS, DaemonStore
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
     from asyncssh.known_hosts import KnownHostsArg
 
@@ -45,6 +55,60 @@ AGENT_DIR = ".cache/pynixd"
 """Where `pynixd-agent` goes on a builder, relative to the login's home."""
 
 
+@dataclass(frozen=True, slots=True)
+class OpenSSHConfig:
+    """What OpenSSH's config files set for one host, as files that exist."""
+
+    files: tuple[str, ...]
+    """The config files to hand `asyncssh`, which applies `HostName`, `User` and `Port`."""
+    known_hosts: tuple[str, ...]
+    identity_files: tuple[str, ...] | None
+    """`None` when no file sets `IdentityFile`: `asyncssh` then tries `~/.ssh/id_*`, as OpenSSH does."""
+
+
+def _present(paths: Sequence[str]) -> tuple[str, ...]:
+    """*paths* that exist, `~` expanded: OpenSSH skips a missing file, and `asyncssh` raises on one."""
+    expanded = (Path(path).expanduser() for path in paths)
+    return tuple(str(path) for path in expanded if path.is_file())
+
+
+def read_openssh_config(files: Sequence[str], host: str, port: int | None, username: str | None) -> OpenSSHConfig:
+    """The settings *files* give *host*, as `ssh` reads them; a missing file is skipped. Blocking: run it in a thread."""
+    present = _present(files)
+    config = SSHClientConfig.load(
+        None,
+        [Path(path) for path in present],
+        False,
+        False,
+        False,
+        getpass.getuser(),
+        () if username is None else username,
+        host,
+        () if port is None else port,
+    )
+
+    def named(option: str, default: Sequence[str]) -> list[str]:
+        value = config.get(option)
+        if value is None:
+            return list(default)
+        if not isinstance(value, list):
+            raise TypeError(f"{option} is {value!r}, not a list of files")
+        # `UserKnownHostsFile none` gives `[]`: that setting names no file.
+        return [str(item) for item in value]
+
+    identity = config.get("IdentityFile")
+    return OpenSSHConfig(
+        files=present,
+        known_hosts=_present(
+            [
+                *named("UserKnownHostsFile", OPENSSH_USER_KNOWN_HOSTS),
+                *named("GlobalKnownHostsFile", OPENSSH_GLOBAL_KNOWN_HOSTS),
+            ]
+        ),
+        identity_files=None if identity is None else _present(named("IdentityFile", ())),
+    )
+
+
 class SSHStore(DaemonStore):
     """Shared SSH connection management with exponential backoff reconnection.
 
@@ -52,7 +116,7 @@ class SSHStore(DaemonStore):
     """
 
     host: str
-    port: int
+    port: int | None
     username: str | None
     client_keys: list[str | Path | asyncssh.SSHKey] | None
     conn: asyncssh.SSHClientConnection | None
@@ -75,9 +139,11 @@ class SSHStore(DaemonStore):
         host_public_key: str | None = None,
         compress: bool = False,
         connect_timeout: float | None = None,
+        ssh_config: list[str] | None = None,
     ) -> None:
         """Initialise SSH connection state, backoff, and resource monitor settings."""
         self.persistent_connection = persistent_connection
+        self.ssh_config = ssh_config or []
         # The spec has no default for this, so a configuration answered it.
         # `None` is `asyncssh`'s "accept any host key", and it is now written
         # rather than implied. Issue nixidae/nixidae#204.
@@ -304,18 +370,25 @@ class SSHStore(DaemonStore):
                     host=self.host,
                     port=self.port,
                 )
+                openssh = await self._openssh_config()
                 connect_kwargs: dict[str, Any] = {
                     "host": self.host,
-                    "port": self.port,
-                    "known_hosts": await self._known_hosts(),
+                    "known_hosts": await self._known_hosts(openssh),
                     "encryption_algs": SSH_ENCRYPTION_ALGS,
                     "keepalive_interval": SSH_KEEPALIVE_INTERVAL,
                     "keepalive_count_max": SSH_KEEPALIVE_COUNT_MAX,
                 }
+                if openssh is not None:
+                    connect_kwargs["config"] = list(openssh.files)
+                if self.port is not None:
+                    connect_kwargs["port"] = self.port
                 if self.username is not None:
                     connect_kwargs["username"] = self.username
                 if self.client_keys is not None:
                     connect_kwargs["client_keys"] = self.client_keys
+                elif openssh is not None and openssh.identity_files is not None:
+                    # `None` offers no key: each file `IdentityFile` names is missing.
+                    connect_kwargs["client_keys"] = list(openssh.identity_files) or None
                 if self.compress:
                     connect_kwargs["compression_algs"] = ["zlib@openssh.com", "zlib"]
                 if self.connect_timeout is not None:
@@ -341,18 +414,28 @@ class SSHStore(DaemonStore):
             else:
                 return self.conn
 
-    async def _known_hosts(self) -> KnownHostsArg:
+    async def _openssh_config(self) -> OpenSSHConfig | None:
+        """What `ssh_config` sets for this host; `None` without one."""
+        if not self.ssh_config:
+            return None
+        files, host, port, username = self.ssh_config, self.host, self.port, self.username
+        return await anyio.to_thread.run_sync(lambda: read_openssh_config(files, host, port, username))
+
+    async def _known_hosts(self, openssh: OpenSSHConfig | None = None) -> KnownHostsArg:
         """What `asyncssh` checks the host key against.
 
         A list keeps the files that exist: `asyncssh` raises on a missing one,
         and OpenSSH skips it. With none left, an empty set accepts no key;
         `()` would read only `~/.ssh/known_hosts` (nixidae/nixidae#1172).
+        With *openssh*, its files follow, and `None` is never the answer:
+        `asyncssh` reads that as "accept any key".
         """
         if self.host_public_key is not None:
             return ([asyncssh.import_public_key(self.host_public_key)], [], [], [], [], [], [])
-        if not isinstance(self.known_hosts, list):
+        if openssh is None and not isinstance(self.known_hosts, list):
             return self.known_hosts
-        paths = [Path(path).expanduser() for path in self.known_hosts]
+        named = [self.known_hosts] if isinstance(self.known_hosts, str) else list(self.known_hosts or ())
+        paths = [Path(path).expanduser() for path in [*named, *(openssh.known_hosts if openssh else ())]]
         present = [str(path) for path in paths if await anyio.Path(path).exists()]
         return present or asyncssh.import_known_hosts("")
 
@@ -437,6 +520,7 @@ class SSHSubprocessStore(SSHStore):
             host_public_key=spec.host_public_key,
             compress=spec.compress,
             connect_timeout=spec.connect_timeout,
+            ssh_config=spec.ssh_config,
         )
         self.remote_command = spec.remote_command
         self.ssh_processes: list[asyncssh.SSHClientProcess[bytes]] = []

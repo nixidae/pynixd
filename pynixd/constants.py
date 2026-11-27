@@ -99,6 +99,12 @@ SSH_ENCRYPTION_ALGS: Final[str] = "^aes256-gcm@openssh.com,aes128-gcm@openssh.co
 SSH_KEEPALIVE_INTERVAL: Final[float] = 15.0
 SSH_KEEPALIVE_COUNT_MAX: Final[int] = 4
 
+# OpenSSH's defaults (`ssh_config(5)`), which Nix's `ssh` reads. The first value a file sets wins, so the user's
+# file comes first. asyncssh reads `GlobalKnownHostsFile` only beside a `UserKnownHostsFile`, so pynixd reads both.
+OPENSSH_CONFIG_FILES: Final = ("~/.ssh/config", "/etc/ssh/ssh_config")
+OPENSSH_USER_KNOWN_HOSTS: Final = ("~/.ssh/known_hosts", "~/.ssh/known_hosts2")
+OPENSSH_GLOBAL_KNOWN_HOSTS: Final = ("/etc/ssh/ssh_known_hosts", "/etc/ssh/ssh_known_hosts2")
+
 
 # ── Stderr message types ──────────────────────────────────────────
 

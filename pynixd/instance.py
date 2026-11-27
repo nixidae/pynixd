@@ -393,6 +393,8 @@ class Server:
             if self.ctx._stores.get(store.store_id) is store:
                 del self.ctx._stores[store.store_id]
             self.ctx.failed_starts[store.store_id] = StartFailure(store, error_text(exc))
+            if self.ctx.scheduler is not None:
+                self.ctx.scheduler.substitution_queue.note_failed_start(store)
             return False
         return host is not None
 

@@ -1416,13 +1416,16 @@ class SSHSubprocessStoreSpec(StoreSpecBase):
 
     type: Literal["ssh-subprocess"] = "ssh-subprocess"
     host: str
-    port: int = 22
+    port: int | None = 22
+    """`null` takes the `Port` of `ssh_config`, else 22."""
     username: str | None = None
     known_hosts: str | list[str] | None
     """The file that names the host key of this builder, or `null` for none.
 
     A list names files read when they exist, as OpenSSH reads its defaults.
-    No file existing accepts no key.
+    No file existing accepts no key. With `ssh_config`, the files it names
+    are read after these, and `null` adds no file: no key is accepted
+    unchecked.
 
     **This field has no default, so a configuration has to answer it.** A Nix
     build store sees the whole content of every build that a client pushes,
@@ -1482,6 +1485,15 @@ class SSHSubprocessStoreSpec(StoreSpecBase):
     """SSH compression, as Nix's `compress` (`ssh.cc:107`)."""
     connect_timeout: float | None = None
     """Seconds to reach the host and log in; `None` waits on TCP."""
+    ssh_config: list[str] = Field(default_factory=list)
+    """OpenSSH client config files, read at each connect as Nix's `ssh` reads them; a missing one is skipped.
+
+    For this host they set `HostName`, `User`, `Port`, `IdentityFile`,
+    `UserKnownHostsFile` and `GlobalKnownHostsFile`, where this spec sets
+    none, with OpenSSH's defaults for the host key files. Empty keeps the
+    host key files of `known_hosts` alone, and `asyncssh` reads
+    `~/.ssh/config` for the other settings.
+    """
 
     def reference_key(self) -> object | None:
         """Every setting an `ssh-ng://` URL names, and `no_schedule`, so a configured builder is never a substituter's store."""
@@ -1491,6 +1503,7 @@ class SSHSubprocessStoreSpec(StoreSpecBase):
             self.host,
             self.port,
             tuple(self.known_hosts) if isinstance(self.known_hosts, list) else self.known_hosts,
+            tuple(self.ssh_config),
             self.host_public_key,
             tuple(str(key) for key in self.client_keys),
             tuple(self.remote_command or ()),

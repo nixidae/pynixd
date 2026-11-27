@@ -3,7 +3,8 @@
 The far side is a second pynixd, serving a store that holds the paths over
 its SSH listener: it answers `nix-daemon --stdio` as `sshd` and a remote
 `nix-daemon` would. Its host key is in the URL
-(`base64-ssh-public-host-key`), so the check is real.
+(`base64-ssh-public-host-key`), or in a known hosts file an OpenSSH config
+file names, so the check is real.
 """
 
 from __future__ import annotations
@@ -13,11 +14,12 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 import asyncssh
+import pytest
 
 from nix_daemon_protocol.ensure_path import EnsurePathRequest
 from nix_daemon_protocol.ids import StoreId
 from nix_daemon_protocol.store_path import StorePath
-from pynixd import Server
+from pynixd import Server, store_url
 from pynixd.config import PynixdSettings
 from pynixd.connection import Connection
 from pynixd.serde import SetOptionsRequest
@@ -82,27 +84,96 @@ async def _source(tmp_path: Path) -> AsyncIterator[tuple[Server, asyncssh.SSHKey
         yield server, host_key, parent
 
 
-async def test_a_client_named_ssh_ng_substituter_fetches_the_closure(tmp_path: Path) -> None:
+_CONFIGURED_URL = "ssh-ng://pynixd-source?trusted=1"
+"""nixkube's shape: the URL names no key and no host key, and `/etc/ssh/ssh_config` names both."""
+
+
+def _ssh_config(tmp_path: Path, port: int, host_key: asyncssh.SSHKey) -> Path:
+    """An OpenSSH config that leads `pynixd-source` to *port*, with *host_key* in its global known hosts file."""
+    known = tmp_path / "global_known_hosts"
+    known.write_text(f"[127.0.0.1]:{port} {host_key.export_public_key().decode().strip()}\n")
+    config = tmp_path / "ssh_config"
+    config.write_text(
+        "Host pynixd-source\n"
+        "  HostName 127.0.0.1\n"
+        f"  Port {port}\n"
+        "  User admin-user\n"
+        f"  IdentityFile {SESSION_SSH_KEYS / 'id_admin'}\n"
+        f"  UserKnownHostsFile {tmp_path / 'absent_known_hosts'}\n"
+        f"  GlobalKnownHostsFile {tmp_path / 'absent_global_known_hosts'} {known}\n"
+    )
+    return config
+
+
+async def _ensure(tmp_path: Path, target: Path, url: str, parent: str, *, daemon: bool) -> int:
+    """EnsurePath of *parent* in a fresh store at *target* whose client names *url*, through one ssh-ng backend.
+
+    A store with no daemon writes the substituted paths itself: `pynixd_writes`.
+    """
+    spec = (
+        make_test_spec(store_id="local", store_path=target, no_probe=True)
+        if daemon
+        else make_test_spec(store_id="local", store_path=target, no_probe=True, daemon=False, pynixd_writes=True)
+    )
+    stores: dict[StoreId, Store] = {StoreId("local"): LocalDBStore(spec)}
+    socket = tmp_path / "target.sock"
+    async with Server(stores=stores, unix_path=socket, ssh_port=None, http_port=None) as server:
+        link = await open_unix_connection(socket)
+        conn = Connection(UnixNixReader(link, identifier="t"), UnixNixWriter(link, identifier="t"), "t")
+        await conn.connect()
+        try:
+            await conn.call(_options(substituters=url), raise_on_error=True)
+            response = await conn.call(EnsurePathRequest(path=StorePath(path=parent)), raise_on_error=True)
+        finally:
+            await conn.close()
+        assert server.ctx.scheduler is not None
+        backends = server.ctx.scheduler.substitution_queue.client_substituters.stores()
+    assert [type(store) for store in backends] == [SSHSubprocessStore]
+    value: int = response.value
+    return value
+
+
+@pytest.mark.parametrize("daemon", [True, False], ids=["daemon", "daemonless"])
+async def test_a_client_named_ssh_ng_substituter_fetches_the_closure(tmp_path: Path, daemon: bool) -> None:
     target = tmp_path / "target"
     async with _source(tmp_path) as (source, host_key, parent):
-        stores: dict[StoreId, Store] = {
-            StoreId("local"): LocalDBStore(make_test_spec(store_id="local", store_path=target, no_probe=True)),
-        }
-        socket = tmp_path / "target.sock"
-        async with Server(stores=stores, unix_path=socket, ssh_port=None, http_port=None) as server:
-            link = await open_unix_connection(socket)
-            conn = Connection(UnixNixReader(link, identifier="t"), UnixNixWriter(link, identifier="t"), "t")
-            await conn.connect()
-            try:
-                await conn.call(_options(substituters=_url(source.port, host_key)), raise_on_error=True)
-                response = await conn.call(EnsurePathRequest(path=StorePath(path=parent)), raise_on_error=True)
-            finally:
-                await conn.close()
-            assert server.ctx.scheduler is not None
-            backends = server.ctx.scheduler.substitution_queue.client_substituters.stores()
-    assert response.value == 1
-    assert [type(store) for store in backends] == [SSHSubprocessStore]
+        answer = await _ensure(tmp_path, target, _url(source.port, host_key), parent, daemon=daemon)
+    assert answer == 1
     assert await _valid(target) == await _valid(tmp_path / "source")
+
+
+async def test_the_openssh_config_names_the_key_the_host_and_its_host_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nix's `ssh` reads `ssh_config`, and so does pynixd: the key, the user, the address and the known hosts file."""
+    target = tmp_path / "target"
+    async with _source(tmp_path) as (source, host_key, parent):
+        config = _ssh_config(tmp_path, source.port, host_key)
+        monkeypatch.setattr(store_url, "SSH_NG_CONFIG_FILES", (str(tmp_path / "absent_config"), str(config)))
+        answer = await _ensure(tmp_path, target, _CONFIGURED_URL, parent, daemon=False)
+    assert answer == 1
+    assert await _valid(target) == await _valid(tmp_path / "source")
+
+
+async def test_a_host_key_the_openssh_config_does_not_list_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A known hosts file that lists another key refuses the host; with no daemon the URL is skipped, not sent on."""
+    other = asyncssh.generate_private_key("ssh-ed25519")
+    async with _source(tmp_path) as (source, host_key, _parent):
+        wrong, right = tmp_path / "wrong", tmp_path / "right"
+        wrong.mkdir()
+        right.mkdir()
+        monkeypatch.setattr(store_url, "SSH_NG_CONFIG_FILES", (str(_ssh_config(wrong, source.port, other)),))
+        substituters = ClientSubstituters(PynixdSettings(), runs_daemon=lambda: False)
+        async with substituters.running():
+            refused = await substituters.resolve([_CONFIGURED_URL], [])
+            made_after_refusal = substituters.stores()
+            monkeypatch.setattr(store_url, "SSH_NG_CONFIG_FILES", (str(_ssh_config(right, source.port, host_key)),))
+            accepted = await substituters.resolve([_CONFIGURED_URL], [])
+    assert (refused, made_after_refusal) == ((), ())
+    assert accepted is not None
+    assert [type(store) for store in accepted] == [SSHSubprocessStore]
 
 
 async def test_a_host_key_that_does_not_match_gets_no_backend(tmp_path: Path) -> None:

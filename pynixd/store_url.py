@@ -33,6 +33,7 @@ from .config import (
     S3BinaryCacheSpec,
     SSHSubprocessStoreSpec,
 )
+from .constants import OPENSSH_CONFIG_FILES
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -202,13 +203,8 @@ def _s3(ref: StoreReference) -> StoreSpecBase | None:
 _SSH_NG_PARAMS: Final = frozenset(
     {"ssh-key", "base64-ssh-public-host-key", "compress", "remote-program", "remote-store"}
 )
-OPENSSH_KNOWN_HOSTS: Final = (
-    "~/.ssh/known_hosts",
-    "~/.ssh/known_hosts2",
-    "/etc/ssh/ssh_known_hosts",
-    "/etc/ssh/ssh_known_hosts2",
-)
-"""OpenSSH's `UserKnownHostsFile` and `GlobalKnownHostsFile` defaults, which Nix's `ssh` reads."""
+SSH_NG_CONFIG_FILES: tuple[str, ...] = OPENSSH_CONFIG_FILES
+"""The OpenSSH config files an `ssh-ng://` substituter reads, as Nix's `ssh` does; a test points it elsewhere."""
 SSH_NG_CONNECT_TIMEOUT: Final = 10.0
 """A dead host fails a substituter's start in this many seconds, not TCP's two minutes."""
 
@@ -242,7 +238,7 @@ def _ssh_ng(ref: StoreReference) -> StoreSpecBase | None:
         return None
     try:
         authority = urlsplit(f"//{ref.authority}")
-        host, port = authority.hostname, authority.port or 22
+        host, port = authority.hostname, authority.port
         host_public_key = _host_public_key(ref.params.get("base64-ssh-public-host-key"))
     except ValueError:
         return None
@@ -257,7 +253,9 @@ def _ssh_ng(ref: StoreReference) -> StoreSpecBase | None:
             "host": host,
             "port": port,
             "username": authority.username,
-            "known_hosts": list(OPENSSH_KNOWN_HOSTS),
+            # A URL names no host key file. The config files' apply, and OpenSSH's defaults where they name none.
+            "known_hosts": [],
+            "ssh_config": list(SSH_NG_CONFIG_FILES),
             "host_public_key": host_public_key,
             "client_keys": [key] if key is not None else [],
             "remote_command": command,

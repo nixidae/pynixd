@@ -7,6 +7,7 @@ from pathlib import Path
 
 import asyncssh
 import pytest
+from structlog.testing import capture_logs
 
 from pynixd.config import (
     ExternalUnixStoreSpec,
@@ -15,9 +16,10 @@ from pynixd.config import (
     PynixdSettings,
     SSHSubprocessStoreSpec,
 )
+from pynixd.constants import OPENSSH_CONFIG_FILES
 from pynixd.store.daemon import DaemonStore
-from pynixd.store.ssh import SSHSubprocessStore
-from pynixd.store_url import OPENSSH_KNOWN_HOSTS, spec_for
+from pynixd.store.ssh import OpenSSHConfig, SSHSubprocessStore, read_openssh_config
+from pynixd.store_url import spec_for
 from pynixd.substituters import ClientSubstituters
 
 HOST_KEY = asyncssh.generate_private_key("ssh-ed25519").export_public_key().decode().strip()
@@ -42,12 +44,14 @@ def test_a_substituter_gets_no_probe_builds(url: str) -> None:
 def test_nixkubes_substituter_is_a_store_that_only_substitutes() -> None:
     """`nixkube/kubenix/config.nix` names `ssh-ng://nix@pynixd?trusted=1`."""
     spec = _ssh("ssh-ng://nix@pynixd?trusted=1")
-    assert (spec.username, spec.host, spec.port) == ("nix", "pynixd", 22)
+    assert (spec.username, spec.host, spec.port) == ("nix", "pynixd", None)
     assert spec.trusted
     assert spec.priority == 0
     assert (spec.no_schedule, spec.gc_enabled, spec.monitor) == (True, False, False)
     assert spec.remote_command == ["nix-daemon", "--stdio"]
-    assert spec.known_hosts == list(OPENSSH_KNOWN_HOSTS)
+    # nixkube's `/etc/ssh/ssh_config` names the key and the host key file (`nixkube/kubenix/secret.nix`).
+    assert spec.ssh_config == list(OPENSSH_CONFIG_FILES)
+    assert spec.known_hosts == []
     assert spec.host_public_key is None
     assert spec.client_keys == []
 
@@ -158,12 +162,63 @@ async def test_a_named_host_key_is_the_only_key() -> None:
     assert not any(rest)
 
 
-async def test_a_dead_host_leaves_the_client_op_to_the_daemon() -> None:
-    """Nothing listens on port 1: the start fails, and the client op does not."""
+def test_the_config_files_name_the_host_key_files_and_the_keys(tmp_path: Path) -> None:
+    """`ssh_config(5)`: the first value wins, a `Host` block applies to its host, and OpenSSH's defaults fill the rest."""
+    key, known = tmp_path / "id", tmp_path / "global_known_hosts"
+    key.write_text("")
+    known.write_text("")
+    user = tmp_path / "user_config"
+    user.write_text(
+        f"Host pynixd\n  IdentityFile {key}\n  IdentityFile {tmp_path / 'absent_key'}\n  GlobalKnownHostsFile {known}\n"
+    )
+    system = tmp_path / "system_config"
+    system.write_text(f"Host *\n  GlobalKnownHostsFile {tmp_path / 'not_read'}\n  UserKnownHostsFile none\n")
+    files = [str(user), str(tmp_path / "absent_config"), str(system)]
+
+    config = read_openssh_config(files, "pynixd", None, "nix")
+    other = read_openssh_config(files, "elsewhere", None, None)
+
+    assert config == OpenSSHConfig(
+        files=(str(user), str(system)), known_hosts=(str(known),), identity_files=(str(key),)
+    )
+    assert (other.identity_files, other.known_hosts) == (None, ())
+
+
+async def test_the_config_names_no_host_key_file_and_no_key_is_accepted(tmp_path: Path) -> None:
+    """`known_hosts: null` is `asyncssh`'s "accept any key"; beside a config it adds no file, and a key is still checked."""
+    spec = _ssh("ssh-ng://builder").model_copy(update={"known_hosts": None})
+    openssh = OpenSSHConfig(files=(), known_hosts=(), identity_files=None)
+    known = await SSHSubprocessStore(spec)._known_hosts(openssh)
+    assert isinstance(known, asyncssh.SSHKnownHosts)
+    assert not any(known.match("builder", "", 22)[:3])
+
+
+async def test_a_dead_host_leaves_the_client_op_to_the_daemon_where_one_runs() -> None:
+    """Nothing listens on port 1: the start fails, and the client op does not. Nix keeps the store (`remote-store.cc:35`)."""
     substituters = ClientSubstituters(PynixdSettings())
     async with substituters.running():
         assert await substituters.resolve(["ssh-ng://127.0.0.1:1"], []) is None
         assert substituters.stores() == ()
+
+
+async def test_a_dead_host_is_skipped_and_cools_down_with_no_daemon() -> None:
+    """The NIX-DEVIATION of `ClientSubstituters._backend`: no daemon answers, so the op answers without the host."""
+    clock = [0.0]
+    substituters = ClientSubstituters(PynixdSettings(), now=lambda: clock[0], runs_daemon=lambda: False)
+    url = "ssh-ng://127.0.0.1:1"
+    async with substituters.running():
+        with capture_logs() as logs:
+            first = await substituters.resolve([url], [])
+            cooling = await substituters.resolve([url], [])
+            starts_while_cooling = sum(entry["event"] == "client_substituter_start_failed" for entry in logs)
+            clock[0] = 60
+            after = await substituters.resolve([url], [])
+            starts = sum(entry["event"] == "client_substituter_start_failed" for entry in logs)
+        assert substituters.stores() == ()
+
+    assert (first, cooling, after) == ((), (), ())
+    assert starts_while_cooling == 1, "a resolve during the cooldown starts nothing"
+    assert starts == 2, "the cooldown ends, and the backend starts again"
 
 
 @pytest.mark.parametrize(

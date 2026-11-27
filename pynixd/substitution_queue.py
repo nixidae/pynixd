@@ -229,7 +229,28 @@ class SubstitutionQueue:
         """The path behind each hash `negative` holds, so a `.narinfo` request can find it."""
         self.uncovered: tuple[str, ...] = ()
         """The daemon's substituters that no backend stands for: `ssh://`, a `file://` cache pynixd cannot read."""
-        self.client_substituters = ClientSubstituters(settings)
+        self.client_substituters = ClientSubstituters(settings, runs_daemon=self._runs_daemon)
+        self.restarting: tuple[str, ...] = ()
+        """The daemon's substituters whose configured backend failed its start, on a store with no daemon."""
+
+    def _runs_daemon(self) -> bool:
+        client = self.ctx.local_store.daemon_client
+        return client is None or client.runs_daemon
+
+    def note_failed_start(self, store: Store) -> None:
+        """*store*, a configured backend, failed its start: with no daemon, its URLs start again after a cooldown.
+
+        The deviation of `ClientSubstituters._backend`: a daemon answers for a
+        backend that is not there, and on a store with none, the queries
+        answer without it until it starts.
+        """
+        if not store.no_schedule or store.reference_key is None or self._runs_daemon():
+            return
+        urls = [url for url in self.ctx.trust.substituters if reference_key(url) == store.reference_key]
+        for url in urls:
+            retry_in = self.client_substituters.start_failed(url)
+            log.warning("substituter_restarts_later", store_id=store.store_id, url=url, retry_in=retry_in)
+        self.restarting = (*self.restarting, *(url for url in urls if url not in self.restarting))
 
     def note_daemon_substituters(self, substituters: Iterable[str]) -> None:
         """Remember which of the daemon's *substituters* the backends do not stand for.
@@ -263,7 +284,13 @@ class SubstitutionQueue:
         overrides = options.overrides if options is not None else {}
         named = overrides.get("substituters", overrides.get("binary-caches"))
         if named is None:
-            return None if self.uncovered else tuple(self.substituter_stores())
+            if self.uncovered:
+                return None
+            configured = tuple(self.substituter_stores())
+            if not self.restarting:
+                return configured
+            restarted = await self.client_substituters.resolve(self.restarting, self.ctx.stores.items())
+            return (*configured, *(store for store in restarted or () if store not in configured))
         resolved = await self.client_substituters.resolve(named.split(), self.ctx.stores.items())
         joining = tuple(store for store in self.substituter_stores() if store.joins_every_client)
         if resolved is None or not joining:
