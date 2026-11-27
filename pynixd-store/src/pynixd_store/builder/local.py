@@ -109,6 +109,8 @@ DISK_FULL_BYTES = 8 * 1024 * 1024
 """Less free space than this after a failure is a full disk (`decideWhetherDiskFull`, `derivation-builder.cc:304`)."""
 
 DEV_FILES = ("/dev/full", "/dev/null", "/dev/random", "/dev/tty", "/dev/urandom", "/dev/zero")
+KVM_DEVICE = "/dev/kvm"
+"""Bound into every chroot when the store's features name `kvm` (`linux-derivation-builder.cc:755`)."""
 
 DARWIN = sys.platform == "darwin"
 """`DarwinDerivationBuilder`: never a chroot; `useSandbox` picks the sandbox profile instead."""
@@ -598,6 +600,11 @@ def _binds(
     if "/dev" not in binds:
         for name in DEV_FILES:
             binds.setdefault(name, (name, False))
+        if "kvm" in settings.system_features:
+            if Path(KVM_DEVICE).exists():
+                binds.setdefault(KVM_DEVICE, (KVM_DEVICE, False))
+            else:
+                _log.warning("kvm_feature_without_device", device=KVM_DEVICE)
     if not sandboxed:
         (root / "etc/nsswitch.conf").write_text(NETWORK_NSSWITCH)
     else:

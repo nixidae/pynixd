@@ -62,6 +62,8 @@ async def test_the_sandbox_proves_the_system_nix_conf_names(tmp_path: Path) -> N
         assert features <= set(probing["features"]), "a feature nix.conf does not name is never advertised"
         if not os.access("/dev/kvm", os.W_OK):
             assert "kvm" not in features, "kvm is a feature the sandbox proves with a build"
+        elif "kvm" in probing["features"]:
+            assert "kvm" in features, "the sandbox binds /dev/kvm, so its probe proves kvm (nixidae/nixidae#1648)"
     # A store waits for its probes before it serves: a build for every feature took a median of 21 s.
     [built] = _events(logs, "features_probed")
     for features in built["feature_matrix"].values():
