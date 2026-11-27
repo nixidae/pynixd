@@ -148,6 +148,9 @@ class FakeEngine:
         self.ctx = FakeContext(valid)
         self.build_goals: list[FakeBuildGoal] = []
 
+    async def hold_what_it_made(self, result: Any) -> None:
+        del result
+
     async def get_build_derivation_goal(self, request: BuildDerivationRequest) -> FakeBuildGoal:
         goal = FakeBuildGoal(request)
         self.build_goals.append(goal)

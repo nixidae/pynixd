@@ -50,6 +50,9 @@ class FakeOuterGoal:
 class FakeEngine:
     ctx = None
 
+    async def hold_what_it_made(self, result: Any) -> None:
+        del result
+
     async def get_ensure_derived_path_goal(
         self, dp: Any, build_mode: int, substituter_ids: Any, *, keys: object = ()
     ) -> FakeOuterGoal:

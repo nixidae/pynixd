@@ -80,6 +80,9 @@ class FakeGoalEngine:
         self.build_goals: list[FakeBuildGoal] = []
         self.child_goals: list[FakeChildGoal] = []
 
+    async def hold_what_it_made(self, result: Any) -> None:
+        del result
+
     async def get_build_derivation_goal(self, request: BuildDerivationRequest) -> FakeBuildGoal:
         goal = FakeBuildGoal(request)
         self.build_goals.append(goal)

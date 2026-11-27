@@ -219,6 +219,9 @@ class FakeEngine:
         self.response = response
         self.build_goals: list[FakeBuildGoal] = []
 
+    async def hold_what_it_made(self, result: Any) -> None:
+        del result
+
     async def get_build_derivation_goal(self, request: BuildDerivationRequest) -> FakeBuildGoal:
         goal = FakeBuildGoal(self.local_store, request, self.response)
         self.build_goals.append(goal)

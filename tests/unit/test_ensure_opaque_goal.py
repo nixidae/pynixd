@@ -64,6 +64,9 @@ class FakeEngine:
         self.ctx = ctx
         self.substitutions_attempted = 0
 
+    async def hold_what_it_made(self, result: Any) -> None:
+        del result
+
     async def get_substitute_path_goal(
         self,
         path: StorePath,
