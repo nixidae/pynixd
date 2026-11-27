@@ -25,7 +25,7 @@ from nix_daemon_protocol.ids import StoreId
 from pynixd import Server
 from pynixd.daemon_extensions import PynixdGCAction
 from pynixd.gc import Collector
-from pynixd.store import LocalDBStore
+from pynixd.store import LocalDBStore, Store
 from pynixd_store.collect import SYNC_AFTER_ROOTS
 from tests._conftest.nix_config import for_test_store
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
@@ -60,9 +60,8 @@ async def _serve(tmp_path: Path, **spec_args: Any) -> AsyncIterator[tuple[str, S
         nix_config=for_test_store(substituters=()),
         **spec_args,
     )
-    async with Server(
-        stores={StoreId("local"): LocalDBStore(spec)}, unix_path=socket, ssh_port=None, http_port=None
-    ) as s:
+    stores: dict[StoreId, Store] = {StoreId("local"): LocalDBStore(spec)}
+    async with Server(stores=stores, unix_path=socket, ssh_port=None, http_port=None) as s:
         yield f"unix://{socket}?root={root}", s
 
 
@@ -131,6 +130,26 @@ async def test_a_path_copied_during_a_collection_stays(tmp_path: Path, hold: Pat
         valid = await _valid(url)
     assert before not in valid
     assert copied in valid
+
+
+async def test_a_path_substituted_during_a_collection_stays(tmp_path: Path, hold: Path) -> None:
+    """A substitution goal roots its path (`substitution-goal.cc`) before it fetches."""
+    source, cache = f"local?root={tmp_path / 'source'}", tmp_path / "cache"
+    fetched = await _add(source, tmp_path, "fetched")
+    await run_subproc([NIX_BIN, "copy", "--no-check-sigs", "--from", source, "--to", f"file://{cache}", fetched])
+    # The client names the cache: the guest's own configuration sends an empty `substituters`, which a
+    # trusted client's override puts in place of the store's, as nix-daemon does.
+    substituters = ("--option", "substituters", f"file://{cache}?trusted=1")
+    async with _serve(tmp_path) as (url, _server):
+        before = await _add(url, tmp_path, "before")
+        assert fetched not in await _valid(url)
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(_collect, url)
+            async with _held(hold):
+                await run_subproc([NIX_STORE, "--store", url, *substituters, "--realise", fetched])
+        valid = await _valid(url)
+    assert before not in valid
+    assert fetched in valid
 
 
 async def test_a_build_during_a_collection_keeps_its_inputs_and_outputs(tmp_path: Path, hold: Path) -> None:
