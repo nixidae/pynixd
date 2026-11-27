@@ -88,7 +88,9 @@ async def test_the_tally_counts_each_path_and_its_nar_bytes() -> None:
         async for _info, _nar in paths:
             pass
     assert (tally.paths, tally.nar_bytes) == (2, 8)
-    assert tally.pull_seconds >= 0.02
+    # Two pulls of 0.01 s each. uvloop keeps timers in whole milliseconds, so each sleep can end up to 1 ms
+    # early on `time.monotonic` (measured: 0.0199).
+    assert tally.pull_seconds >= 0.015
 
 
 async def test_a_nar_left_unread_is_skipped() -> None:
