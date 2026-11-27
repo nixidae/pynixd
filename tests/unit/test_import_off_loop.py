@@ -11,6 +11,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
+import anyio
 import anyio.to_thread
 import pytest
 
@@ -114,6 +115,39 @@ async def test_add_nar_makes_no_file_call_on_the_loop(tmp_path: Path) -> None:
             await add_nar(engine, info, Pieces(_pieces(nar)), repair=False, auto_optimise=False, fsync=False)
         assert await engine.is_valid_path_uncached(str(path))
     assert loop.calls == []
+
+
+async def test_imports_of_one_path_past_the_thread_limit_finish(tmp_path: Path) -> None:
+    """sg1's central deadlocked when 40 uploads of one path filled anyio's 40 worker threads waiting for its lock."""
+    nar = _tree(tmp_path / "src")
+    info = _info(nar)
+    threads = 2
+    limiter = anyio.to_thread.current_default_thread_limiter()
+    before = limiter.total_tokens
+    limiter.total_tokens = threads
+    deadlocked = False
+
+    async def watchdog() -> None:
+        # A thread in `flock` takes no cancellation: only more threads end the deadlock.
+        nonlocal deadlocked
+        await anyio.sleep(10)
+        deadlocked = True
+        limiter.total_tokens = before
+
+    async def upload() -> None:
+        await add_nar(engine, info, Pieces(_pieces(nar)), repair=False, auto_optimise=False, fsync=False)
+
+    try:
+        async with _engine(tmp_path / "root") as engine, anyio.create_task_group() as outer:
+            outer.start_soon(watchdog)
+            async with anyio.create_task_group() as tg:
+                for _ in range(threads + 4):
+                    tg.start_soon(upload)
+            outer.cancel_scope.cancel()
+            assert await engine.is_valid_path_uncached(str(PATH))
+    finally:
+        limiter.total_tokens = before
+    assert not deadlocked, "the import holding the path lock found no worker thread"
 
 
 async def test_add_dump_makes_no_file_call_on_the_loop(tmp_path: Path) -> None:
