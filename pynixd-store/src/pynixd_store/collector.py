@@ -272,7 +272,9 @@ class Collection:
         """The deletion loop of `maybeDeleteReferrersClosure` (`gc.cc:715`): referrers before references."""
         infos = await self.engine.query_path_infos(visited)
         references = {info.path.path: {ref.path for ref in info.info.references} for info in infos}
-        for path in collect.topo_sort_paths(visited, references):
+        # A closure of thousands of referrers sorted on the loop stalled it 2.7 s (nixidae/nixidae#1655).
+        ordered = await anyio.to_thread.run_sync(collect.topo_sort_paths, visited, references)
+        for path in ordered:
             if path in self.dead:
                 continue
             self.dead.add(path)
