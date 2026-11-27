@@ -13,7 +13,7 @@ import anyio.to_thread
 import pytest
 
 from pynixd_store import add
-from pynixd_store.add import PathLock, release_locks
+from pynixd_store.add import PathLock, acquire_all, release_locks
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -65,6 +65,23 @@ async def test_waiters_past_the_thread_limit_leave_the_holder_a_thread(tmp_path:
         outer.cancel_scope.cancel()
     assert not deadlocked, "the holder found no worker thread"
     assert sorted(order) == list(range(THREADS + 2))
+    assert add._GATES == {}
+
+
+async def test_a_build_cancelled_between_its_output_locks_releases_the_first(tmp_path: Path) -> None:
+    first, second = tmp_path / "out", tmp_path / "dev"
+    other = PathLock(second)
+    await other.acquire_async()
+
+    async def give_up() -> None:
+        with anyio.move_on_after(0.05):
+            await acquire_all([PathLock(first), PathLock(second)])
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(give_up)
+    later = PathLock(first)
+    assert later.try_acquire(), "the cancelled build still holds its first output's lock"
+    await release_locks([later, other], delete=False)
     assert add._GATES == {}
 
 

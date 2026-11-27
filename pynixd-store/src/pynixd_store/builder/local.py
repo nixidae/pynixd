@@ -36,7 +36,7 @@ from nix_daemon_protocol.store_path import StorePath
 
 from .. import optimise
 from ..active_builds import ActiveBuild
-from ..add import PathLock, delete_path, release_locks, sync_store_path
+from ..add import PathLock, acquire_all, delete_path, release_locks, sync_store_path
 from ..content_address import Method, fixed_output_address, output_method
 from ..drv_parser import BUILDER_RPC as BUILDER_RPC
 from ..hintfmt import ANSI_BOLD, ANSI_NORMAL, ANSI_RED, magenta, missing_feature, show_error
@@ -751,8 +751,7 @@ async def build(
     known = known_paths(drv, realised, drv_name)
     held = {path: PathLock(layout.real_path(path)) for path in known.values()}
     locks = list(held.values())
-    for lock in locks:
-        await lock.acquire_async()
+    await acquire_all(locks)
     paths: BuildPaths | None = None
     user: build_users.BuildUser | None = None
     # Nix deletes the build directory only after a build that succeeded (`cleanupBuild(true)`, `:246`).

@@ -205,6 +205,18 @@ class PathLock:
         self._fd = -1
 
 
+async def acquire_all(locks: Iterable[PathLock]) -> None:
+    """`acquire_async` each of *locks* in order. A failure or a cancel releases those already held, so the
+    caller's own `release_locks` need only cover a call that returned."""
+    held = list(locks)
+    try:
+        for lock in held:
+            await lock.acquire_async()
+    except BaseException:
+        await release_locks(held, delete=False)
+        raise
+
+
 def _leave(key: str, gate: _Gate) -> None:
     gate.users -= 1
     if gate.users == 0:
