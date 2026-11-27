@@ -27,7 +27,7 @@ class GcSql:
     weighed: str
     """`by_weight`'s order: formatted with the `{score}` of a `DeleteOrder` in this dialect.
     `before` is what the rows ahead of this one free, which is what
-    `take_until_below_target` tests before it takes a row, times the bound's ratio."""
+    `take_until_below_target` tests before it takes a row."""
     score: Callable[[DeleteOrder], str]
     """This dialect's spelling of a `DeleteOrder`."""
     clear_batch: str
@@ -97,7 +97,7 @@ WITH w AS (
     FROM scored
 )
 SELECT path, size, age FROM ordered
-WHERE :total IS NULL OR (:used - :ratio * before) / :total > :target
+WHERE :total IS NULL OR 1.0 * (:used - before) / :total > :target
 ORDER BY score DESC, size DESC, path
 LIMIT :limit
 """,
@@ -207,8 +207,7 @@ WITH w AS (
     FROM scored
 )
 SELECT path, size, age FROM ordered
-WHERE %(total)s::bigint IS NULL
-    OR (%(used)s::bigint - %(ratio)s::float8 * before) / %(total)s::bigint > %(target)s::float8
+WHERE %(total)s::bigint IS NULL OR (%(used)s::bigint - before)::float8 / %(total)s::bigint > %(target)s::float8
 ORDER BY score DESC, size DESC, path
 LIMIT NULLIF(%(limit)s::bigint, -1)
 """,

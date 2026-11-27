@@ -48,6 +48,12 @@ A = "/nix/store/00000000000000000000000000000000-a"
 B = "/nix/store/11111111111111111111111111111111-b"
 
 
+@pytest.fixture(autouse=True)
+def _nar_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fake store has no files to count, so a bound falls back to NAR sizes; `test_gc_weights` counts real ones."""
+    monkeypatch.setattr(GarbagePlanner, "take_until_freed", lambda _self, _ordered, _need: None)
+
+
 def _weighed(path: str, nar_size: int) -> ValidPathInfo:
     """A path info carrying only what the collector weighs: size."""
     return ValidPathInfo(
@@ -341,16 +347,17 @@ def _readings(monkeypatch: pytest.MonkeyPatch, *usages: tuple[int, int]) -> list
 
 
 @pytest.mark.anyio
-async def test_a_pass_that_frees_less_than_planned_plans_again_by_the_freed_share(
+async def test_a_pass_that_frees_less_than_counted_plans_again_from_the_settled_reading(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """30 NAR bytes freed 5 on disk: the second pass plans at a sixth, and syncs once per pass.
+    """30 bytes counted freed 5 on disk: the next pass plans from 75, and the run syncs once per pass.
 
-    By NAR size `B` alone reaches the target. The settled reading says the
-    disk is still over, so the next pass takes `A` as well. The third plan
-    is empty and deletes nothing, so no third sync follows.
+    Readings: the run's, then per pass the one ahead of the deletes and the
+    settled one. `B` alone reaches the target by count; the settled reading
+    says the disk is still over, so the next pass takes `A` as well. The
+    third plan is empty and deletes nothing, so no third sync follows.
     """
-    syncs = _readings(monkeypatch, (80, 100), (75, 100), (70, 100))
+    syncs = _readings(monkeypatch, (80, 100), (80, 100), (75, 100), (75, 100), (70, 100))
     collector, local, _state_dir = _collector(tmp_path, gc_target_usage=0.5, sizes={A: 30, B: 30})
 
     resp = await collector.run(PynixdGCAction.EXECUTE)
@@ -375,13 +382,28 @@ async def test_a_pass_that_frees_nothing_on_disk_ends_the_run(tmp_path: Path, mo
 
 @pytest.mark.anyio
 async def test_a_settled_disk_under_target_ends_the_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    syncs = _readings(monkeypatch, (80, 100), (40, 100))
+    syncs = _readings(monkeypatch, (80, 100), (80, 100), (40, 100))
     collector, local, _state_dir = _collector(tmp_path, gc_target_usage=0.5, sizes={A: 30, B: 30})
 
     await collector.run(PynixdGCAction.EXECUTE)
 
     assert local.deleted == [B]
     assert syncs == ["sync"]
+
+
+@pytest.mark.anyio
+async def test_a_disk_that_grew_since_the_deletes_reads_as_freed_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A writer outran the delete: the run stops instead of planning more from a reading it cannot trust."""
+    syncs = _readings(monkeypatch, (80, 100), (80, 100), (82, 100))
+    collector, local, _state_dir = _collector(tmp_path, gc_target_usage=0.5, sizes={A: 30, B: 30})
+
+    resp = await collector.run(PynixdGCAction.EXECUTE)
+
+    assert local.deleted == [B]
+    assert syncs == ["sync"]
+    assert _texts(resp)[-1] == "usage 0.820: the last pass freed nothing on disk"
 
 
 @pytest.mark.anyio

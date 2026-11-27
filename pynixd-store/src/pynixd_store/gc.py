@@ -32,9 +32,6 @@ log = structlog.get_logger(__name__)
 
 _LIBC = ctypes.CDLL(None, use_errno=True)
 
-FREED_RATIO_FLOOR = 0.001
-"""The smallest share of its NAR bytes a pass is taken to free: past it, the next pass plans the whole plan anyway."""
-
 
 def sync_filesystem(directory: str | Path) -> None:
     """Commit what the file system holding *directory* still owes, so `statvfs` counts freed blocks.
@@ -54,20 +51,6 @@ def sync_filesystem(directory: str | Path) -> None:
             raise OSError(errno, os.strerror(errno), str(directory))
     finally:
         os.close(fd)
-
-
-def freed_ratio(freed: int, planned_nar_bytes: int) -> float | None:
-    """The share of its NAR bytes a pass freed on disk, or `None` when the pass freed nothing.
-
-    A NAR size overstates what a delete frees: a compressing file system
-    stores less, and a file `.links` shares with a live path frees nothing.
-    On dynhetz (btrfs, zstd), passes planned 1-2 paths to reach the target
-    and freed 72-144 MB. More than the NAR bytes reads as one: blocks freed
-    by someone else in the same window.
-    """
-    if freed <= 0 or planned_nar_bytes <= 0:
-        return None
-    return max(FREED_RATIO_FLOOR, min(1.0, freed / planned_nar_bytes))
 
 
 def pressure_usage(directory: str | Path) -> tuple[int, int]:
@@ -132,26 +115,58 @@ def by_weight(weights: Mapping[str, tuple[int, int]], order: DeleteOrder = SPACE
     return sorted(scored, key=lambda path: (-scored[path], -weights[path][0], path))
 
 
-def take_until_below_target(
-    ordered: Sequence[tuple[str, int]], used: int, total: int, target: float, ratio: float = 1.0
-) -> list[str]:
+def take_until_below_target(ordered: Sequence[tuple[str, int]], used: int, total: int, target: float) -> list[str]:
     """The leading paths whose removal projects usage under `target`.
 
     Pure, for the same reason. `ordered` is `(path, size)` heaviest first;
-    the walk stops at the first prefix whose freed bytes, `size * ratio`
-    each (`freed_ratio`), bring `used / total` to or under the fraction. A
-    target already met takes nothing; a target no prefix meets takes
-    everything.
+    the walk stops at the first prefix whose freed bytes bring `used / total`
+    to or under the fraction. A target already met takes nothing; a target
+    no prefix meets takes everything.
     """
     batch: list[str] = []
-    before = 0
+    freed = 0
     for path, size in ordered:
-        # `ratio * before`, as the SQL plan computes it, so both cut at the same row.
-        if (used - ratio * before) / total <= target:
+        if (used - freed) / total <= target:
             break
         batch.append(path)
-        before += size
+        freed += size
     return batch
+
+
+def take_until_freed(ordered: Iterable[str], store_dir: Path, need: int) -> tuple[list[str], int]:
+    """The leading paths whose deletes free *need* bytes on disk, and the bytes they free.
+
+    A NAR size is no measure of that: two sparse images on dynhetz held
+    17.2 GB of NAR and 144 MB of blocks, and a file `.links` shares with a
+    live path frees nothing. So the walk counts `st_blocks` of each inode
+    once the prefix holds every name of it but one: the last is its `.links`
+    entry, which the collector unlinks with it (`dying_links`). Compression
+    still overstates the bytes; the run's settled reading answers for that.
+    Reads the file system: call it in a thread.
+    """
+    names: dict[tuple[int, int], int] = {}
+    batch: list[str] = []
+    freed = 0
+    for top in ordered:
+        if freed >= need:
+            break
+        batch.append(top)
+        pending = [store_dir / Path(top).name]
+        while pending:
+            current = pending.pop()
+            try:
+                st = os.lstat(current)
+            except FileNotFoundError:
+                continue
+            if stat.S_ISDIR(st.st_mode):
+                freed += st.st_blocks * 512
+                pending.extend(current / name for name in os.listdir(current))
+                continue
+            key = (st.st_dev, st.st_ino)
+            names[key] = names.get(key, 0) + 1
+            if names[key] == max(1, st.st_nlink - 1):
+                freed += st.st_blocks * 512
+    return batch, freed
 
 
 def physical_batch_total(top_paths: Iterable[str], store_dir: Path | None) -> int | None:
@@ -268,6 +283,13 @@ class GarbagePlanner:
         except Exception:
             log.warning("gc_disk_usage_failed", exc_info=True)
             return None
+
+    def take_until_freed(self, ordered: Iterable[str], need: int) -> tuple[list[str], int] | None:
+        """`take_until_freed` over the store's real directory, or `None` without one. Blocks: call it in a thread."""
+        directory = getattr(self.layout, "real_store_dir", None)
+        if directory is None:
+            return None
+        return take_until_freed(ordered, Path(directory), need)
 
     async def weigh(self, paths: Iterable[str]) -> dict[str, tuple[int, int]] | None:
         """`(nar_size, age_seconds)` per planned path, or `None` when unknown.

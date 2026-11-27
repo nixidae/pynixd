@@ -221,17 +221,15 @@ async def test_the_order_agrees_past_int64_and_on_rounded_ties(tmp_path: Path, c
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("ratio", [1.0, 0.7])
 @pytest.mark.parametrize("seed", SEEDS)
-async def test_the_bound_takes_what_python_took(tmp_path: Path, conninfo: str | None, seed: int, ratio: float) -> None:
-    """At a ratio under one each row frees less, so the same target takes a longer prefix."""
+async def test_the_bound_takes_what_python_took(tmp_path: Path, conninfo: str | None, seed: int) -> None:
     store = await _store(tmp_path, seed, conninfo)
     planned = _python_plan(store, None)
     weights = {path: (store.size[path], max(0, NOW - store.seen[path])) for path in planned - store.vetoed}
     ordered = by_weight(weights, SPACE_TIME)
     total = 10**11
     freeable = sum(size for size, _ in weights.values())
-    bound = Bound(used=int(total * 0.8), total=total, target=0.8 - freeable / total / 2, ratio=ratio)
+    bound = Bound(used=int(total * 0.8), total=total, target=0.8 - freeable / total / 2)
 
     async with SqlPlan.open(store.database) as plan:
         await plan.plan(live=store.live, vetoed=store.vetoed, cutoff=None)
@@ -239,7 +237,7 @@ async def test_the_bound_takes_what_python_took(tmp_path: Path, conninfo: str | 
         limited = await plan.weighed(order=SPACE_TIME, now=NOW, bound=bound, limit=3)
 
     expected = take_until_below_target(
-        [(path, weights[path][0]) for path in ordered], bound.used, bound.total, bound.target, bound.ratio
+        [(path, weights[path][0]) for path in ordered], bound.used, bound.total, bound.target
     )
     assert [path for path, _, _ in rows] == expected
     assert [path for path, _, _ in limited] == expected[:3]

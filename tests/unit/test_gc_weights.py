@@ -9,11 +9,12 @@ only decide.
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 import pytest
 
-from pynixd_store.gc import FREED_RATIO_FLOOR, by_weight, freed_ratio, sync_filesystem, take_until_below_target
+from pynixd_store.gc import by_weight, sync_filesystem, take_until_below_target, take_until_freed
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -58,21 +59,55 @@ def test_the_walk_stops_at_the_first_prefix_at_or_under_target() -> None:
     assert take_until_below_target(ordered, used=95, total=100, target=0.5) == ["big", "mid"]
 
 
-def test_a_ratio_under_one_takes_a_longer_prefix() -> None:
-    """Half of each NAR byte reaches the disk: 40 and 30 free 35, not 70, and 20 more reach the target."""
-    ordered = [("big", 40), ("mid", 30), ("small", 20), ("tiny", 10)]
-    assert take_until_below_target(ordered, used=95, total=100, target=0.5) == ["big", "mid"]
-    assert take_until_below_target(ordered, used=95, total=100, target=0.5, ratio=0.5) == ["big", "mid", "small"]
+def _store(tmp_path: Path) -> tuple[Path, dict[str, int]]:
+    """An optimised store: `shared` is one inode with `live` and a `.links` entry, `unique` has its entry, `plain` none.
+
+    Returns the store directory and the block bytes of each dead path's file.
+    """
+    store = tmp_path / "store"
+    links = store / ".links"
+    links.mkdir(parents=True)
+    (store / "aaa-live").write_bytes(os.urandom(20_000))
+    os.link(store / "aaa-live", store / "bbb-shared")
+    os.link(store / "aaa-live", links / "shared-entry")
+    (store / "ccc-unique").write_bytes(os.urandom(30_000))
+    os.link(store / "ccc-unique", links / "unique-entry")
+    (store / "ddd-plain").write_bytes(os.urandom(40_000))
+    blocks = {name: (store / name).stat().st_blocks * 512 for name in ("bbb-shared", "ccc-unique", "ddd-plain")}
+    return store, blocks
 
 
-def test_freed_ratio_is_the_share_reaching_the_disk() -> None:
-    assert freed_ratio(25, 100) == 0.25
-    assert freed_ratio(0, 100) is None
-    assert freed_ratio(-5, 100) is None
-    assert freed_ratio(10, 0) is None
-    # More than the NAR bytes is someone else's free in the same window.
-    assert freed_ratio(500, 100) == 1.0
-    assert freed_ratio(1, 10**9) == FREED_RATIO_FLOOR
+def test_a_file_a_live_path_shares_frees_nothing(tmp_path: Path) -> None:
+    store, blocks = _store(tmp_path)
+    ordered = ["/nix/store/bbb-shared", "/nix/store/ccc-unique", "/nix/store/ddd-plain"]
+
+    batch, freed = take_until_freed(ordered, store, need=10**12)
+
+    assert batch == ordered
+    assert freed == blocks["ccc-unique"] + blocks["ddd-plain"]
+
+
+def test_the_walk_stops_once_the_counted_blocks_cover_the_need(tmp_path: Path) -> None:
+    """`shared` counts nothing, so the walk goes on to `unique`, which covers the need alone."""
+    store, blocks = _store(tmp_path)
+    ordered = ["/nix/store/bbb-shared", "/nix/store/ccc-unique", "/nix/store/ddd-plain"]
+
+    assert take_until_freed(ordered, store, need=blocks["ccc-unique"]) == (ordered[:2], blocks["ccc-unique"])
+    assert take_until_freed(ordered, store, need=0) == ([], 0)
+
+
+def test_a_file_a_path_holds_twice_counts_once(tmp_path: Path) -> None:
+    """Two names in the path and its `.links` entry: one inode, counted when the second name joins."""
+    store = tmp_path / "store"
+    (store / ".links").mkdir(parents=True)
+    path = store / "eee-twice"
+    path.mkdir()
+    (path / "one").write_bytes(os.urandom(50_000))
+    os.link(path / "one", path / "two")
+    os.link(path / "one", store / ".links" / "entry")
+    expected = path.stat().st_blocks * 512 + (path / "one").stat().st_blocks * 512
+
+    assert take_until_freed(["/nix/store/eee-twice"], store, need=10**12) == (["/nix/store/eee-twice"], expected)
 
 
 def test_sync_filesystem_commits_a_directory(tmp_path: Path) -> None:
