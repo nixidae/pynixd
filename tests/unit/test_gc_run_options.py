@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import structlog
 
 from nix_daemon_protocol import (
     GCAction,
@@ -382,13 +383,17 @@ async def test_a_pass_that_frees_nothing_on_disk_ends_the_run(tmp_path: Path, mo
 
 @pytest.mark.anyio
 async def test_a_settled_disk_under_target_ends_the_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The reading that ends the run is logged: it is the evidence the pass reached its target."""
     syncs = _readings(monkeypatch, (80, 100), (80, 100), (40, 100))
     collector, local, _state_dir = _collector(tmp_path, gc_target_usage=0.5, sizes={A: 30, B: 30})
 
-    await collector.run(PynixdGCAction.EXECUTE)
+    with structlog.testing.capture_logs() as logs:
+        await collector.run(PynixdGCAction.EXECUTE)
 
     assert local.deleted == [B]
     assert syncs == ["sync"]
+    settled = [entry for entry in logs if entry["event"] == "gc_settled"]
+    assert [(entry["freed"], entry["usage"]) for entry in settled] == [(40, 0.4)]
 
 
 @pytest.mark.anyio

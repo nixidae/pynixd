@@ -268,7 +268,17 @@ class Collector:
         said = len(lines)
         while last is not None and last.store_paths:
             settled = await run_sync(self._settled_usage, local)
-            if settled is None or not over_target(settled, target):
+            if settled is None:
+                break
+            log.info(
+                "gc_settled",
+                freed=before[0] - settled[0],
+                usage=settled[0] / settled[1],
+                target=target,
+                used=settled[0],
+                total=settled[1],
+            )
+            if not over_target(settled, target):
                 break
             if settled[0] >= before[0]:
                 log.warning("gc_freed_nothing", before=before[0], used=settled[0], total=settled[1])
@@ -277,7 +287,6 @@ class Collector:
                 if client is not None:
                     await client.send(line)
                 break
-            log.info("gc_settled", freed=before[0] - settled[0], used=settled[0], total=settled[1])
             last, again = await self._pass(PynixdGCAction.EXECUTE, client, None, target, settled, lines, tier)
             deleted |= {str(path) for path in last.store_paths}
             freed_bytes += last.bytes
