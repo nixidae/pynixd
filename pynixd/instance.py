@@ -709,8 +709,8 @@ class Server:
     async def _gc_tick(self) -> None:
         """Watch the disk on a short cadence, collect on pressure or schedule.
 
-        Over the high watermark a drive starts at once, and the store's target ends it. A drive that freed
-        nothing starts no other until the store changes (`Collector.store_state`). The scheduled pass
+        Over the high watermark a drive starts at once, and the store's target ends it. A drive that ends
+        over the target starts no other until the store changes (`Collector.store_state`). The scheduled pass
         collects below the watermark at `gc_interval`.
         """
         settings = self.ctx.settings
@@ -736,9 +736,10 @@ class Server:
                 state = await collector.store_state()
                 if idle_at is None or state != idle_at:
                     async with self._singleton_pass():
-                        freed = await self._drive_to_target()
-                    # The state from before the drive: what the drive's own uploads change starts the next one.
-                    idle_at = None if freed else state
+                        reached = await self._drive_to_target()
+                    # The state after the drive: its own deletes change the count, and a stalled disk (a
+                    # snapshot holds the blocks) must not start a drive per poll that deletes and frees nothing.
+                    idle_at = None if reached else await collector.store_state()
                     continue
                 metrics.GC_TRIGGER_SKIPPED.labels(reason="unchanged").inc()
             else:
@@ -760,31 +761,24 @@ class Server:
         await uploader.run()
 
     async def _drive_to_target(self) -> bool:
-        """Bounded passes back to back until pressure drops or progress stops; whether any pass deleted.
+        """Collect until the store's target, waiting on the cold tier between runs; whether it reached the target.
 
-        One watermark pass relieves a little; a flood needs many, and a
-        poll interval between each turns minutes of deleting into hours of
-        waiting. So the drive re-checks pressure right after each pass and
-        runs the next while still over the store's target, up to
-        `gc_watermark_max_passes` passes. Issue #71.
-
-        A pass that frees nothing waits for the cold tier to cover what the next one would delete
-        (`_wait_for_cover`). Without a tier, more passes change nothing until the world does, so the
-        drive ends. nixidae/nixidae#1600.
+        A run passes until the disk reaches the target or a pass frees nothing on disk
+        (`Collector.run`), so the drive starts another only once the world changed: the cold tier
+        covered what the next run would delete (`_wait_for_cover`). Without a tier the drive ends.
+        At most `gc_drive_max_runs` runs. nixidae/nixidae#1600.
         """
-        cap = self.ctx.settings.gc_watermark_max_passes
-        freed = False
+        cap = self.ctx.settings.gc_drive_max_runs
+        if not await anyio.to_thread.run_sync(self._over_gc_target):
+            return True
         for _ in range(cap):
+            await self._gc_pass("watermark")
             if not await anyio.to_thread.run_sync(self._over_gc_target):
-                return freed
-            resp = await self._gc_pass("watermark")
-            if resp is not None and resp.store_paths:
-                freed = True
-                continue
+                return True
             if self.cold_uploader is None or not await self._wait_for_cover(self.cold_uploader):
-                return freed
+                return False
         log.info("gc_drive_capped", cap=cap)
-        return freed
+        return False
 
     async def _wait_for_cover(self, uploader: ColdUploader) -> bool:
         """Put the uncovered paths the next pass would delete first in the upload queue, and wait for half.

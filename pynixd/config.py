@@ -2021,16 +2021,14 @@ class PynixdSettings(BaseSettings):
     gap is the hysteresis. Without a target the triggered pass is
     unbounded, like the scheduled one.
     """
-    gc_watermark_max_passes: int = 20
-    """Bounded passes per watermark drive before the watch reads the disk again.
+    gc_drive_max_runs: int = 20
+    """Collector runs per watermark drive before the watch reads the disk again.
 
-    One pass relieves a little; a flood that lands all at once needs many,
-    and a poll interval between each turns minutes of deleting into hours
-    of waiting. The drive runs back to back while pressure stays over the
-    store's target. A pass that frees nothing waits for the cold tier to
-    cover what the next one would delete; without a cold tier the drive
-    ends, and no new one starts until the store changes. Twenty covered a
-    95%-to-70% relief with room.
+    A run passes back to back until the store's target or until a pass
+    frees nothing on disk. A run that ends over the target waits for the
+    cold tier to cover what the next one would delete, then the drive
+    starts the next run; without a cold tier the drive ends, and no new
+    one starts until the store changes.
     """
     gc_cold_ahead: float | None = None
     """The disk fraction a stalled drive puts first in the cold tier's upload queue.
