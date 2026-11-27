@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 
     from .database import Database, Session
+    from .gc import DeleteOrder
 
 log = structlog.get_logger(__name__)
 
@@ -148,11 +149,10 @@ class SqlPlan:
         return len(batch) == self.size - self.spared
 
     async def weighed(
-        self, *, pressure: float, now: int, bound: Bound | None, limit: int | None
+        self, *, order: DeleteOrder, now: int, bound: Bound | None, limit: int | None
     ) -> list[tuple[str, int, int]]:
-        """`(path, nar_size, age_seconds)` of the planned, unvetoed paths, heaviest first, cut by *bound*."""
+        """`(path, nar_size, age_seconds)` of the planned, unvetoed paths in *order*, cut by *bound*."""
         params = {
-            "pressure": pressure,
             "now": now,
             "used": bound.used if bound else None,
             "total": bound.total if bound else None,
@@ -160,7 +160,8 @@ class SqlPlan:
             "ratio": bound.ratio if bound else 1.0,
             "limit": -1 if limit is None else limit,
         }
-        return [(path, size, age) for path, size, age in await self._session.fetchall(self._sql.weighed, params)]
+        statement = self._sql.weighed.format(score=self._sql.score(order))
+        return [(path, size, age) for path, size, age in await self._session.fetchall(statement, params)]
 
     async def _set_batch(self, batch: Iterable[str]) -> None:
         await self._session.execute(self._sql.clear_batch)

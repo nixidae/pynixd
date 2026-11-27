@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from ..db_migrations import HELD_BY_TABLE, PATH_ACCESS_TABLE
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from ..gc import DeleteOrder
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,11 +25,11 @@ class GcSql:
     is dead unless the mirror is wrong, so the filter only guards that case."""
     counts: str
     weighed: str
-    """The weight `by_weight` computes, in the same operations and the same
-    order, so the two agree to the bit: size and age each normalised against
-    the candidates, blended by pressure, path string breaking ties. `before`
-    is what the rows ahead of this one free, which is what
+    """`by_weight`'s order: formatted with the `{score}` of a `DeleteOrder` in this dialect.
+    `before` is what the rows ahead of this one free, which is what
     `take_until_below_target` tests before it takes a row, times the bound's ratio."""
+    score: Callable[[DeleteOrder], str]
+    """This dialect's spelling of a `DeleteOrder`."""
     clear_batch: str
     batch_count: str
     batch_referrers: str
@@ -81,24 +87,21 @@ WITH w AS (
     SELECT d.path, d.size, CASE WHEN d.seen IS NULL THEN 0 ELSE max(0, :now - d.seen) END AS age
     FROM gc_planned p JOIN gc_dead d USING (id)
     WHERE p.id NOT IN (SELECT id FROM gc_veto)
-), n AS (
-    SELECT max(size) AS big, max(age) AS old FROM w
 ), scored AS (
-    SELECT w.path, w.size, w.age,
-        :pressure * (CASE WHEN n.big THEN 1.0 * w.size / n.big ELSE 0.0 END)
-        + (1.0 - :pressure) * (CASE WHEN n.old THEN 1.0 * w.age / n.old ELSE 0.0 END) AS score
-    FROM w, n
+    SELECT w.path, w.size, w.age, {score} AS score FROM w
 ), ordered AS (
     SELECT path, size, age, score,
-        COALESCE(sum(size) OVER (ORDER BY score DESC, path ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0)
-            AS before
+        COALESCE(
+            sum(size) OVER (ORDER BY score DESC, size DESC, path ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0
+        ) AS before
     FROM scored
 )
 SELECT path, size, age FROM ordered
 WHERE :total IS NULL OR (:used - :ratio * before) / :total > :target
-ORDER BY score DESC, path
+ORDER BY score DESC, size DESC, path
 LIMIT :limit
 """,
+    score=lambda order: order.sqlite,
     clear_batch="DELETE FROM gc_batch",
     batch_count="SELECT count(*) FROM gc_batch",
     batch_referrers="""
@@ -194,26 +197,22 @@ WITH w AS (
     SELECT d.path, d.size, CASE WHEN d.seen IS NULL THEN 0 ELSE greatest(0, %(now)s::bigint - d.seen) END AS age
     FROM gc_planned p JOIN gc_dead d USING (id)
     WHERE p.id NOT IN (SELECT id FROM gc_veto)
-), n AS (
-    SELECT max(size) AS big, max(age) AS old FROM w
 ), scored AS (
-    SELECT w.path, w.size, w.age,
-        %(pressure)s::float8 * (CASE WHEN n.big <> 0 THEN w.size::float8 / n.big ELSE 0.0::float8 END)
-        + (1.0::float8 - %(pressure)s::float8) * (CASE WHEN n.old <> 0 THEN w.age::float8 / n.old ELSE 0.0::float8 END)
-        AS score
-    FROM w, n
+    SELECT w.path, w.size, w.age, {score} AS score FROM w
 ), ordered AS (
     SELECT path, size, age, score,
-        COALESCE(sum(size) OVER (ORDER BY score DESC, path ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0)::bigint
-            AS before
+        COALESCE(
+            sum(size) OVER (ORDER BY score DESC, size DESC, path ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0
+        )::bigint AS before
     FROM scored
 )
 SELECT path, size, age FROM ordered
 WHERE %(total)s::bigint IS NULL
     OR (%(used)s::bigint - %(ratio)s::float8 * before) / %(total)s::bigint > %(target)s::float8
-ORDER BY score DESC, path
+ORDER BY score DESC, size DESC, path
 LIMIT NULLIF(%(limit)s::bigint, -1)
 """,
+    score=lambda order: order.postgres,
     clear_batch="DELETE FROM gc_batch",
     batch_count="SELECT count(*) FROM gc_batch",
     batch_referrers="""

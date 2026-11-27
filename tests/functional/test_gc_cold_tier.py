@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from pynixd.nix_config import NixConfig
+    from pynixd_store.gc import DeleteOrder
 
 
 async def _nix(*args: str, stdin: bytes | None = None) -> str:
@@ -234,8 +235,8 @@ async def test_the_cold_window_names_what_the_pressed_pass_takes(
     dead = {lab.stale, lab.parent, lab.child, lab.fresh}
     with s3_bucket(monkeypatch, tmp_path / "xdg-cache") as bucket:
         async with _pynixd(lab, tmp_path, bucket.endpoint, target=1e-9) as (server, tier):
-            assert await Collector(server.ctx).cold_window(tier, 0, 1.0) == []
-            window = await Collector(server.ctx).cold_window(tier, 2**62, 1.0)
+            assert await Collector(server.ctx).cold_window(tier, 0) == []
+            window = await Collector(server.ctx).cold_window(tier, 2**62)
             assert set(window) == dead
             async with _uploading(tier) as uploader:
                 await _cover(uploader, set(window))
@@ -256,16 +257,16 @@ async def test_the_cold_window_takes_the_referrers_a_covered_window_waits_on(
     weighed = SqlPlan.weighed
 
     async def child_first(
-        self: SqlPlan, *, pressure: float, now: int, bound: Bound | None, limit: int | None
+        self: SqlPlan, *, order: DeleteOrder, now: int, bound: Bound | None, limit: int | None
     ) -> list[tuple[str, int, int]]:
-        rows = await weighed(self, pressure=pressure, now=now, bound=bound, limit=limit)
+        rows = await weighed(self, order=order, now=now, bound=bound, limit=limit)
         return sorted(rows, key=lambda row: row[0] != lab.child)
 
     monkeypatch.setattr(SqlPlan, "weighed", child_first)
     with s3_bucket(monkeypatch, tmp_path / "xdg-cache") as bucket:
         async with _pynixd(lab, tmp_path, bucket.endpoint, target=1e-9) as (server, tier):
             await tier.upload_closure({StorePath(lab.child)})
-            assert await Collector(server.ctx).cold_window(tier, 1, 1.0) == [lab.parent]
+            assert await Collector(server.ctx).cold_window(tier, 1) == [lab.parent]
 
 
 @pytest.mark.parametrize("signer", ["trusted-key", "own-key", "foreign-key"])

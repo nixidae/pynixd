@@ -803,11 +803,10 @@ class Server:
         ahead = settings.gc_cold_ahead
         if ahead is None:
             ahead = watermark - target if watermark is not None and target is not None else 0.05
-        pressure = max(used / total, watermark or 0.0)
         try:
             # At least what the next pass must free to reach the target.
             budget = max(int(total * ahead), used - int(total * (target or 0.0)))
-            window = await Collector(self.ctx).cold_window(uploader.tier, budget, pressure)
+            window = await Collector(self.ctx).cold_window(uploader.tier, budget)
             pending = await uploader.urge(window)
         except DatabaseError:
             log.warning("gc_cold_window_failed", exc_info=True)

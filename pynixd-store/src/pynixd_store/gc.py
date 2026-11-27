@@ -13,6 +13,7 @@ import os
 import stat
 import time
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -23,7 +24,7 @@ from .liveness import RootsTracker, walk_volatile
 from .local_store_db import LocalStoreDB
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
 
     from .store_layout import StoreLayout
 
@@ -92,33 +93,43 @@ def over_target(usage: tuple[int, int] | None, target: float | None) -> bool:
     return total > 0 and used / total > target
 
 
-def by_weight(weights: Mapping[str, tuple[int, int]], pressure: float) -> list[str]:
-    """The paths in delete order: size matters more the fuller the disk is.
+@dataclass(frozen=True, slots=True)
+class DeleteOrder:
+    """The score a pass deletes by, highest first: one rule in three spellings.
 
-    Pure, so the order a pass deletes in is asserted without a daemon.
-    `weights` maps the path string to `(nar_size, age_seconds)`; `pressure`
-    is the disk usage fraction. Both axes normalise against the candidate
-    set, and the score blends them by pressure:
-
-        score = pressure * size_norm + (1 - pressure) * age_norm
-
-    An empty disk collects oldest first, a full disk biggest first, and
-    every pressure between moves continuously: no threshold flips the order
-    between two passes. Descending score, path string breaking ties so the
-    order is stable run to run.
+    `score` takes `(nar_size, age_seconds)`. `sqlite` and `postgres` are SQL
+    expressions over `w.size` and `w.age` that must compute the same double:
+    the SQL plan and the in-memory plan cut the same prefix only when they
+    agree to the bit. Equal scores fall to the bigger path, then to the path
+    string. `tests/unit/test_gc_sql_plan.py` holds every order to that.
     """
-    sizes = {path: size for path, (size, _) in weights.items()}
-    ages = {path: age for path, (_, age) in weights.items()}
-    biggest = max(sizes.values(), default=0)
-    oldest = max(ages.values(), default=0)
-    scored = {
-        path: (
-            pressure * (size / biggest if biggest else 0.0)
-            + (1.0 - pressure) * (ages[path] / oldest if oldest else 0.0)
-        )
-        for path, size in sizes.items()
-    }
-    return [path for path, _ in sorted(scored.items(), key=lambda item: (-item[1], item[0]))]
+
+    name: str
+    score: Callable[[int, int], float]
+    sqlite: str
+    postgres: str
+
+
+SPACE_TIME = DeleteOrder(
+    name="space-time",
+    score=lambda size, age: float(size) * float(age),
+    # A float product, not an integer one: 100 GB idle for 3 years passes
+    # int64, where SQLite turns to REAL and Postgres raises.
+    sqlite="1.0 * w.size * w.age",
+    postgres="w.size::float8 * w.age::float8",
+)
+"""Bytes times seconds since a client last referenced the path: what keeping it has cost.
+
+A big idle path goes first and a big path in use goes last. Disk pressure
+decides how much a pass deletes, not the order: under a size-led order a
+full disk deleted vllm on sg1 minutes after its last use. nixidae/nixidae#1650.
+"""
+
+
+def by_weight(weights: Mapping[str, tuple[int, int]], order: DeleteOrder = SPACE_TIME) -> list[str]:
+    """The paths in delete order. `weights` maps the path string to `(nar_size, age_seconds)`."""
+    scored = {path: order.score(size, age) for path, (size, age) in weights.items()}
+    return sorted(scored, key=lambda path: (-scored[path], -weights[path][0], path))
 
 
 def take_until_below_target(

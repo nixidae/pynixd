@@ -10,11 +10,10 @@ collector names every path that it deletes.
 Age is the second rule, and it is here: `gc_max_age` on the local store
 plans the dead paths nothing referenced for that many seconds, with no
 substituter needed. Age yields to pressure: over `gc_target_usage`, every
-dead path is planned, the way `nix store gc --max-freed` plans. Size is
-the third: every pass deletes in weight order, `(nar_size, age)` blended
-by disk pressure, so an empty disk collects
-oldest first and a full disk biggest first. `gc_target_usage` bounds a
-pass by pressure instead of emptying the plan at once.
+dead path is planned, the way `nix store gc --max-freed` plans. Every
+pass deletes in a `DeleteOrder`, by default bytes times idle seconds
+(`SPACE_TIME`). `gc_target_usage` bounds a pass by pressure instead of
+emptying the plan at once: pressure decides how much goes, never the order.
 """
 
 from __future__ import annotations
@@ -42,6 +41,8 @@ from nix_daemon_protocol.query_path_infos import QueryPathInfosRequest
 from pynixd_store.collect import LinksCleanup
 from pynixd_store.db_migrations import HELD_BY_TABLE
 from pynixd_store.gc import (
+    SPACE_TIME,
+    DeleteOrder,
     GarbagePlanner,
     by_weight,
     freed_ratio,
@@ -110,13 +111,13 @@ class _MemoryPlan:
         self.spared = len(planned & vetoed)
 
     async def weighed(
-        self, *, pressure: float, now: int, bound: Bound | None, limit: int | None
+        self, *, order: DeleteOrder, now: int, bound: Bound | None, limit: int | None
     ) -> list[tuple[str, int, int]] | None:
         weights = await self._collector.planner().weigh(self._planned - self._vetoed)
         if weights is None:
             return None
         self._weights = weights
-        ordered = by_weight(weights, pressure)
+        ordered = by_weight(weights, order)
         if bound is not None:
             ordered = take_until_below_target(
                 [(path, weights[path][0]) for path in ordered], bound.used, bound.total, bound.target, bound.ratio
@@ -141,8 +142,9 @@ class _MemoryPlan:
 class Collector:
     """Chooses what leaves the local store, and asks Nix to delete it."""
 
-    def __init__(self, ctx: PynixdContext) -> None:
+    def __init__(self, ctx: PynixdContext, order: DeleteOrder = SPACE_TIME) -> None:
         self.ctx = ctx
+        self.order = order
 
     def planner(self) -> GarbagePlanner:
         """The reads of the local store's roots, database and disk."""
@@ -166,12 +168,10 @@ class Collector:
         must not lose its libraries to this pass. The veto is fail-closed:
         a closure the daemon cannot answer falls back to the seeds.
 
-        The pass deletes in weight order, so a bounded pass frees the most
-        with the fewest deletes, and a dry-run lists what goes first. The
-        pressure bound narrows execute passes only: a dry-run answers the
-        whole plan, so an under-target disk does not read as clean (#73).
-        The weight blends size and age by disk pressure: an empty disk collects
-        oldest first, a full disk biggest first. `limit` takes the head of
+        The pass deletes in `self.order`, and a dry-run lists what goes
+        first. The pressure bound narrows execute passes only: a dry-run
+        answers the whole plan, so an under-target disk does not read as
+        clean (#73). `limit` takes the head of
         that order, and `target_usage` overrides the store's bound for one
         pass; both narrow only, and neither is plannable below zero.
 
@@ -315,15 +315,7 @@ class Collector:
         volatile = await run_sync(self.planner().volatile_roots)
         vetoed = await self._veto_closure(volatile)
         if usage is None:
-            # Unknown reads as half full: with no information neither axis
-            # earns the lead. The bound still defaults to unbounded on top
-            # of this, so a missing reading changes the order only, never
-            # the set.
             log.warning("gc_no_disk_usage")
-            pressure = 0.5
-        else:
-            used, total = usage
-            pressure = used / total if total else 0.5
         # A dry-run answers the plan, not the pressure: the store's
         # `gc_target_usage` bounds what an execute pass deletes, but a
         # dry-run reports what is droppable, so an under-target disk does
@@ -345,7 +337,7 @@ class Collector:
                     await client.send(veto)
                 log.info("gc_volatile_veto", fresh=len(volatile), spared=plan.spared)
                 now = int(time.time())
-                rows = await plan.weighed(pressure=pressure, now=now, bound=bound, limit=limit)
+                rows = await plan.weighed(order=self.order, now=now, bound=bound, limit=limit)
                 if rows is None:
                     return self._answered(empty, lines), 0
                 if bound is not None:
@@ -369,7 +361,7 @@ class Collector:
                     batch = await plan.close_batch(batch)
                     weights |= await plan.weights_of([path for path in batch if path not in weights], now)
                 if action != PynixdGCAction.EXECUTE:
-                    self._log_top(batch, weights, pressure)
+                    self._log_top(batch, weights)
                     nar_bytes = sum(weights[path][0] for path in batch)
                     return self._answered(
                         PynixdCollectGarbageResponse(store_paths={StorePath(path) for path in batch}, bytes=nar_bytes),
@@ -411,10 +403,10 @@ class Collector:
             await client.send(line)
         return False
 
-    async def cold_window(self, tier: ColdTier, budget: int, pressure: float) -> list[str]:
+    async def cold_window(self, tier: ColdTier, budget: int) -> list[str]:
         """The uncovered paths a pressed pass would delete first, up to *budget* bytes: what to upload first.
 
-        The plan is the pressed one, every dead path in weight order at *pressure*: the pass the
+        The plan is the pressed one, every dead path in `self.order`: the pass the
         watermark starts. Covered paths count toward the budget and cost nothing. The window then
         takes its planned referrers, whatever their weight: a pass keeps a covered path while an
         uncovered referrer stays.
@@ -428,7 +420,7 @@ class Collector:
         live = await self._live_paths(local)
         async with SqlPlan.open(db) as plan:
             await plan.plan(live=live, vetoed=vetoed, cutoff=None)
-            rows = await plan.weighed(pressure=pressure, now=int(time.time()), bound=None, limit=None)
+            rows = await plan.weighed(order=self.order, now=int(time.time()), bound=None, limit=None)
             window: list[str] = []
             total = 0
             for path, size, _ in rows:
@@ -545,9 +537,7 @@ class Collector:
         # the seeds alone dropped 404 of 705 paths from the veto. #1098.
         return closed | volatile
 
-    def _log_top(
-        self, ordered: list[str], weights: dict[str, tuple[int, int]], pressure: float, count: int = 10
-    ) -> None:
+    def _log_top(self, ordered: list[str], weights: dict[str, tuple[int, int]], count: int = 10) -> None:
         """The first planned paths, for the dry-run to show first.
 
         The response carries a set, which has no order, so the ranking
@@ -556,7 +546,7 @@ class Collector:
         """
         log.info(
             "gc_weights_top",
-            pressure=round(pressure, 3),
+            order=self.order.name,
             top=[{"path": path, "bytes": weights[path][0], "age_s": weights[path][1]} for path in ordered[:count]],
         )
 

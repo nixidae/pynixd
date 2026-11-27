@@ -1,4 +1,4 @@
-"""The collector blends size and age by disk pressure, and pressure bounds the pass.
+"""The collector deletes by bytes times idle seconds, and pressure bounds the pass.
 
 `by_weight` and `take_until_below_target` are pure on purpose: the order
 a pass deletes in, and where a bounded pass stops, are asserted here,
@@ -18,34 +18,32 @@ from pynixd_store.gc import FREED_RATIO_FLOOR, by_weight, freed_ratio, sync_file
 if TYPE_CHECKING:
     from pathlib import Path
 
-# A small old path against a big young one: size norms (0.6, 1.0), age
-# norms (1.0, 0.1). Empty disk scores B 1.0 over A 0.1; full disk scores A
-# 1.0 over B 0.7. The same two paths flip with pressure, which is the
-# whole point of the blend.
-OLD_SMALL = {"old": (60, 1000), "young": (100, 10)}
+GB = 10**9
+DAY = 86_400
 
 
-def test_empty_disk_collects_oldest_first() -> None:
-    assert by_weight(OLD_SMALL, pressure=0.0) == ["old", "young"]
+def test_a_big_path_used_a_minute_ago_goes_after_an_idle_one() -> None:
+    """nixidae/nixidae#1650: the size-led blend deleted vllm on sg1 first at 97% full.
+
+    20 GB idle 60 s costs 1.2e12 byte-seconds; 1 GB idle 90 days costs 7.8e15.
+    """
+    weights = {"vllm": (20 * GB, 60), "stale": (1 * GB, 90 * DAY)}
+    assert by_weight(weights) == ["stale", "vllm"]
 
 
-def test_full_disk_collects_biggest_first() -> None:
-    assert by_weight(OLD_SMALL, pressure=1.0) == ["young", "old"]
+def test_a_big_idle_path_goes_before_a_small_idle_one() -> None:
+    weights = {"small": (1 * GB, 30 * DAY), "big": (20 * GB, 30 * DAY)}
+    assert by_weight(weights) == ["big", "small"]
 
 
-def test_half_pressure_scores_both_axes() -> None:
-    """0.5 scores 0.8 against 0.505: the old path still leads, by less."""
-    assert by_weight(OLD_SMALL, pressure=0.5) == ["old", "young"]
-
-
-def test_equal_weights_break_ties_by_path() -> None:
-    """One candidate normalises to (1.0, 1.0) at any pressure; two identical
-    ones need a stable order that is not input order."""
-    assert by_weight({"b": (100, 100), "a": (100, 100)}, pressure=0.7) == ["a", "b"]
+def test_equal_scores_go_bigger_first_then_by_path() -> None:
+    """Age 0 (registered this second) and size 0 both score 0: the bigger path still goes first."""
+    weights = {"b": (100, 100), "a": (100, 100), "fresh-big": (500, 0), "fresh-small": (400, 0), "empty": (0, 100)}
+    assert by_weight(weights) == ["a", "b", "fresh-big", "fresh-small", "empty"]
 
 
 def test_empty_weights_delete_nothing() -> None:
-    assert by_weight({}, pressure=0.9) == []
+    assert by_weight({}) == []
 
 
 def test_a_target_already_met_takes_nothing() -> None:

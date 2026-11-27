@@ -20,7 +20,7 @@ import pytest
 
 from pynixd_store.database import DatabaseError
 from pynixd_store.db_migrations import PATH_ACCESS_TABLE, apply_migrations
-from pynixd_store.gc import by_weight, take_until_below_target
+from pynixd_store.gc import SPACE_TIME, by_weight, take_until_below_target
 from pynixd_store.gc_sql import Bound, SqlPlan, referrer_first
 from pynixd_store.postgres_db import PostgresBackend, PostgresDatabase
 from pynixd_store.sql import POSTGRES, SQLITE
@@ -169,18 +169,55 @@ async def test_the_plan_and_its_order_match_python(
     cutoff = None if pressed else NOW - MAX_AGE
     planned = _python_plan(store, cutoff)
     weights = {path: (store.size[path], max(0, NOW - store.seen[path])) for path in planned - store.vetoed}
-    pressure = random.Random(seed).random()
 
     async with SqlPlan.open(store.database) as plan:
         counts = await plan.plan(live=store.live, vetoed=store.vetoed, cutoff=cutoff)
-        rows = await plan.weighed(pressure=pressure, now=NOW, bound=None, limit=None)
+        rows = await plan.weighed(order=SPACE_TIME, now=NOW, bound=None, limit=None)
 
     assert counts.planned == len(planned)
     assert counts.spared == len(planned & store.vetoed)
     # Every dead path the veto leaves, whatever the age rule: what a full collection could free.
     assert counts.reclaimable_bytes == sum(store.size[path] for path in set(store.paths) - store.live - store.vetoed)
-    assert [path for path, _, _ in rows] == by_weight(weights, pressure)
+    assert [path for path, _, _ in rows] == by_weight(weights, SPACE_TIME)
     assert {path: (size, age) for path, size, age in rows} == weights
+
+
+# (size, age) rows past what an int64 product holds, and pairs whose products differ as integers
+# but round to the same double: the order agrees only when every spelling multiplies in floats.
+EDGES = {
+    "huge-a": (2**40, 10**9),
+    "huge-b": (2**40 - 1, 10**9 + 1),
+    "tie-a": (3 * 2**51, 2),
+    "tie-b": (3 * 2**52 + 1, 1),
+    "tie-c": (2**52 + 1, 3),
+    "tie-d": (3 * 2**52 + 4, 1),
+    "zero-big": (500, 0),
+    "zero-small": (400, 0),
+    "zero-empty": (0, 100),
+}
+
+
+@pytest.mark.anyio
+async def test_the_order_agrees_past_int64_and_on_rounded_ties(tmp_path: Path, conninfo: str | None) -> None:
+    names = sorted(EDGES)
+    paths = {name: f"/nix/store/{index:032d}-{name}" for index, name in enumerate(names)}
+    rows = [(index + 1, paths[name], NOW - EDGES[name][1], EDGES[name][0]) for index, name in enumerate(names)]
+    if conninfo is None:
+        database = await _sqlite(tmp_path / "edges.sqlite", rows, [], [])
+    else:
+        database = await _postgres(conninfo, rows, [], [])
+    weights = {paths[name]: weight for name, weight in EDGES.items()}
+    assert SPACE_TIME.score(*EDGES["tie-a"]) == SPACE_TIME.score(*EDGES["tie-b"])
+    assert SPACE_TIME.score(*EDGES["tie-c"]) == SPACE_TIME.score(*EDGES["tie-d"])
+
+    async with SqlPlan.open(database) as plan:
+        await plan.plan(live=set(), vetoed=set(), cutoff=None)
+        weighed = await plan.weighed(order=SPACE_TIME, now=NOW, bound=None, limit=None)
+
+    assert [path for path, _, _ in weighed] == by_weight(weights, SPACE_TIME)
+    assert [path.split("-", 1)[1] for path in by_weight(weights, SPACE_TIME)] == [
+        "huge-b", "huge-a", "tie-d", "tie-c", "tie-b", "tie-a", "zero-big", "zero-small", "zero-empty",
+    ]  # fmt: skip
 
 
 @pytest.mark.anyio
@@ -191,15 +228,15 @@ async def test_the_bound_takes_what_python_took(tmp_path: Path, conninfo: str | 
     store = await _store(tmp_path, seed, conninfo)
     planned = _python_plan(store, None)
     weights = {path: (store.size[path], max(0, NOW - store.seen[path])) for path in planned - store.vetoed}
-    ordered = by_weight(weights, 0.8)
+    ordered = by_weight(weights, SPACE_TIME)
     total = 10**11
     freeable = sum(size for size, _ in weights.values())
     bound = Bound(used=int(total * 0.8), total=total, target=0.8 - freeable / total / 2, ratio=ratio)
 
     async with SqlPlan.open(store.database) as plan:
         await plan.plan(live=store.live, vetoed=store.vetoed, cutoff=None)
-        rows = await plan.weighed(pressure=0.8, now=NOW, bound=bound, limit=None)
-        limited = await plan.weighed(pressure=0.8, now=NOW, bound=bound, limit=3)
+        rows = await plan.weighed(order=SPACE_TIME, now=NOW, bound=bound, limit=None)
+        limited = await plan.weighed(order=SPACE_TIME, now=NOW, bound=bound, limit=3)
 
     expected = take_until_below_target(
         [(path, weights[path][0]) for path in ordered], bound.used, bound.total, bound.target, bound.ratio
@@ -214,7 +251,7 @@ async def test_a_cut_batch_recloses_and_orders_as_python_did(tmp_path: Path, con
     store = await _store(tmp_path, seed, conninfo)
     planned = _python_plan(store, None)
     weights = {path: (store.size[path], max(0, NOW - store.seen[path])) for path in planned - store.vetoed}
-    head = by_weight(weights, 0.5)[: max(1, len(weights) // 3)]
+    head = by_weight(weights, SPACE_TIME)[: max(1, len(weights) // 3)]
 
     async with SqlPlan.open(store.database) as plan:
         await plan.plan(live=store.live, vetoed=store.vetoed, cutoff=None)
@@ -309,7 +346,7 @@ async def test_the_cover_keeps_each_uncovered_path_and_its_closure(
     async with SqlPlan.open(store.database) as plan:
         await plan.plan(live=store.live, vetoed=store.vetoed, cutoff=None)
         dropped = await plan.cover({COLD})
-        rows = await plan.weighed(pressure=0.5, now=NOW, bound=None, limit=None)
+        rows = await plan.weighed(order=SPACE_TIME, now=NOW, bound=None, limit=None)
 
     assert {path for path, _, _ in rows} == expected - store.vetoed
     assert dropped == len(planned - expected)
