@@ -37,13 +37,21 @@ let
     buildCommand = "echo hello > $out";
   };
 
+  # Content-addressed, so the produced copy may differ from it and still name no output path.
+  helloCA = mkCADrv {
+    name = "hello";
+    buildCommand = "echo hello > $out";
+  };
+
+  # Not a byte copy: identical text would land on `helloCA`'s own path, which this derivation references, and no
+  # collection could delete the produced `.drv`. Nix master refuses a non-canonical copy (a trailing newline).
   producingDrv = mkCADrv {
     name = "hello.drv";
     hashMode = "text";
     buildCommand = ''
       while IFS= read -r line || [ -n "$line" ]; do
-        printf '%s\n' "$line"
-      done < "${builtins.unsafeDiscardOutputDependency hello.drvPath}" > $out
+        printf '%s' "''${line//\"${ts}\"/\"${ts}-produced\"}"
+      done < "${builtins.unsafeDiscardOutputDependency helloCA.drvPath}" > $out
     '';
   };
 
@@ -92,7 +100,7 @@ let
         : "$line"
       done < "${caFloat.outPath}"
       while IFS= read -r line || [ -n "$line" ]; do
-        printf '%s\n' "$line"
+        printf '%s' "$line"
       done < "${builtins.unsafeDiscardOutputDependency deferredTarget.drvPath}" > $out
     '';
   };
@@ -130,7 +138,7 @@ let
     hashMode = "text";
     buildCommand = ''
       while IFS= read -r line || [ -n "$line" ]; do
-        printf '%s\n' "$line"
+        printf '%s' "$line"
       done < "${builtins.unsafeDiscardOutputDependency target.drvPath}" > $out
     '';
   };
@@ -179,7 +187,7 @@ let
     hashMode = "text";
     buildCommand = ''
       while IFS= read -r line || [ -n "$line" ]; do
-        printf '%s\n' "$line"
+        printf '%s' "$line"
       done < "${builtins.unsafeDiscardOutputDependency baseA.drvPath}" > $out
     '';
   };
@@ -189,7 +197,7 @@ let
     hashMode = "text";
     buildCommand = ''
       while IFS= read -r line || [ -n "$line" ]; do
-        printf '%s\n' "$line"
+        printf '%s' "$line"
       done < "${builtins.unsafeDiscardOutputDependency baseB.drvPath}" > $out
     '';
   };
@@ -257,7 +265,7 @@ let
     hashMode = "text";
     buildCommand = ''
       while IFS= read -r line || [ -n "$line" ]; do
-        printf '%s\n' "''${line//\"${ts}\"/\"${ts}-produced\"}"
+        printf '%s' "''${line//\"${ts}\"/\"${ts}-produced\"}"
       done < "${builtins.unsafeDiscardOutputDependency caWrapper.drvPath}" > $out
     '';
   };

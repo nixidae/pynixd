@@ -80,6 +80,8 @@ def test_what_nix_refuses_is_refused(outputs: dict[str, DerivationOutput], reaso
         canonical_derivation(drv, "probe")
 
 
-def test_an_unknown_escape_drops_its_backslash() -> None:
-    """`derivations.cc:188-205`: only `\\n`, `\\r` and `\\t` map; `\\x` reads `x`."""
-    assert _Parser('"a\\bc\\qd\\n"').parse_string() == "abcqd\n"
+def test_an_unknown_escape_is_refused() -> None:
+    """`parseString` (`aterm.cc:143`, NixOS/nix#16284): Nix 2.35 read `\\x` as `x`; master refuses it."""
+    with pytest.raises(ValueError, match="unknown escape"):
+        _Parser('"a\\bc"').parse_string()
+    assert _Parser('"a\\\\b\\"c\\n"').parse_string() == 'a\\b"c\n'

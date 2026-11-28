@@ -223,7 +223,7 @@ class LocalHost(ScheduledStore):
 
     async def read_derivation(self, drv_store_path: StorePath | str) -> Derivation | None:
         """Fast-path: read .drv file directly from the filesystem."""
-        from pynixd_store.drv_parser import parse_drv_bytes
+        from pynixd_store.drv_parser import drv_name, parse_drv_bytes
 
         # `on_disk` and not `self.store_path / "nix" / "store" / ...`.
         # `real_store_dir()` is where the files of the store are, and a chroot
@@ -235,7 +235,7 @@ class LocalHost(ScheduledStore):
         except (FileNotFoundError, OSError):
             return await self._read_derivation_without_file(drv_store_path)
 
-        return await parse_drv_bytes(contents)
+        return await parse_drv_bytes(contents, drv_name(drv_store_path))
 
     async def _read_derivation_without_file(self, drv_store_path: StorePath | str) -> Derivation | None:
         """A derivation whose file is not there: nothing else holds it."""

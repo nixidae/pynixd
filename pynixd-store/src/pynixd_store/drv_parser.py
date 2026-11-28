@@ -36,14 +36,23 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypedDict, overload
+from typing import TYPE_CHECKING, Any, TypedDict
 
 import anyio
+import msgspec
 
 from nix_daemon_protocol.basic_derivation import BasicDerivation, bool_attr, required_features_of
 from nix_daemon_protocol.derivation_output import DerivationOutput, OutputKind
+from nix_daemon_protocol.store_dir import store_dir
 
-from .content_address import ContentAddress, fixed_output_address
+from .content_address import (
+    HASH_SIZES,
+    ContentAddress,
+    check_name,
+    content_addressed_path,
+    fixed_output_address,
+    output_method,
+)
 from .errors import PynixdError
 from .hintfmt import magenta
 from .store_path import DrvOutput, StorePath
@@ -690,10 +699,18 @@ class Derivation:
         return {o.name: h for o in self.outputs}
 
 
-_STRING_BODY = re.compile(r'(?:[^"\\]++|\\.)*+', re.DOTALL)
+_STRING_BODY = re.compile(r'(?:[^"\\\n\r\t]++|\\[nrt\\"])*+')
+"""What `parseString` (`aterm.cc:123`) takes: a character that needs no escape, or one of its five escapes.
+
+It stops in front of an unknown escape and of a raw LF, CR or TAB; `_string_error` says which.
+"""
 _ESCAPED = re.compile(r"\\(.)", re.DOTALL)
-_ESCAPES = {"n": "\n", "r": "\r", "t": "\t"}
-"""`parseString` at `derivations.cc:188-205` maps these three, and any other `\\x` to `x`."""
+_ESCAPES = {"n": "\n", "r": "\r", "t": "\t", "\\": "\\", '"': '"'}
+"""`escapes` (`aterm.cc:80`)."""
+
+_HASH_LEN = 32
+_NIX32_CHARS = frozenset("0123456789abcdfghijklmnpqrsvwxyz")
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 _PIECE = 1 << 20
@@ -738,12 +755,106 @@ def _unescape_piece(body: str) -> str:
     if "\\" not in body:
         return body
     if "\0" in body:
-        return _ESCAPED.sub(lambda m: _ESCAPES.get(m[1], m[1]), body)
+        return _ESCAPED.sub(lambda m: _ESCAPES[m[1]], body)
     text = body.replace("\\\\", "\0").replace('\\"', '"').replace("\\n", "\n").replace("\\r", "\r")
-    text = text.replace("\\t", "\t")
-    if "\\" in text:
-        text = _ESCAPED.sub(r"\1", text)
-    return text.replace("\0", "\\")
+    return text.replace("\\t", "\t").replace("\0", "\\")
+
+
+def _string_error(text: str, pos: int) -> ValueError:
+    """Why `parseString` (`aterm.cc:123`) refuses the string at *pos*, where `_STRING_BODY` stopped."""
+    if pos >= len(text) or (text[pos] == "\\" and pos + 1 >= len(text)):
+        return ValueError("unterminated string in derivation")
+    if text[pos] == "\\":
+        return ValueError(f"unknown escape '\\{magenta(text[pos + 1])}'")
+    return ValueError("invalid character in string")
+
+
+def parse_store_path_canonical(path: str) -> StorePath:
+    """`StoreDirConfig::parseStorePathCanonical` (`store-dir-config.cc:30`) and `StorePath::StorePath` (`path.cc:49`).
+
+    NixOS/nix#16287: a store path in a derivation has one spelling, so `/nix/store/x/../y` is refused.
+    """
+    directory = store_dir()
+    if not path.startswith(directory) or path[len(directory) : len(directory) + 1] != "/":
+        raise ValueError(f"path '{magenta(path)}' is not in the Nix store")
+    base = path[len(directory) + 1 :]
+    if len(base) < _HASH_LEN + 1:
+        raise ValueError(f"'{magenta(base)}' is too short to be a valid store path basename")
+    for char in base[:_HASH_LEN]:
+        if char not in _NIX32_CHARS:
+            raise ValueError(
+                f"store path basename '{magenta(base)}' contains illegal base-32 character '{magenta(char)}'"
+            )
+    if base[_HASH_LEN] != "-":
+        raise ValueError(f"'{magenta(base)}' can't name a store path because the hash part is not followed by a '-'")
+    try:
+        check_name(base[_HASH_LEN + 1 :])
+    except ValueError as error:
+        # `checkPathName` (`path.cc:40`) quotes the inner message uncoloured.
+        raise ValueError(f"path '{magenta(base)}' is not a valid store path: {_ANSI.sub('', str(error))}") from None
+    return StorePath(base)
+
+
+def _check_output(drv_name: str | None, output: DrvOutput) -> None:
+    """`parseOutput` (`aterm.cc:308`): the combinations of path, method and hash that name an output.
+
+    NIX-DEVIATION (#27): Nix also requires an experimental feature here (`xpSettings.require` at
+    `aterm.cc:322`, `:325`, `:361`, and `DrvWithVersion` at `:469`), from the settings of the process that
+    parses. pynixd parses files a daemon already admitted, and holds no client's settings at this point, so it
+    leaves the feature to the daemon that builds. Reverse it if a derivation that needs a disabled feature
+    builds through pynixd and fails through nix-daemon. nixidae/nixidae#416.
+
+    A fixed output's path is compared with its content address only when *drv_name* is known.
+    """
+    path, algo_text, hash_text = output.path, output.hash_algo, output.hash_value
+    if not algo_text:
+        if hash_text:
+            raise ValueError("hash specified without hash algorithm")
+        if path:
+            parse_store_path_canonical(path)
+        return
+    _, algo = output_method(algo_text)
+    if algo not in HASH_SIZES:
+        raise ValueError(
+            f"unknown hash algorithm '{magenta(algo)}', expect 'blake3', 'md5', 'sha1', 'sha256', or 'sha512'"
+        )
+    if hash_text == "impure":
+        if path:
+            raise ValueError("impure derivation output should not specify output path")
+        return
+    if not hash_text:
+        if path:
+            raise ValueError("content-addressing derivation output should not specify output path")
+        return
+    parse_store_path_canonical(path)
+    address = fixed_output_address(algo_text, hash_text)
+    if drv_name is None:
+        return
+    name = drv_name if output.output_name == "out" else f"{drv_name}-{output.output_name}"
+    if content_addressed_path(address, name, [], store_dir()) != path:
+        raise ValueError(
+            f"derivation output '{magenta(output.output_name)}' has path '{magenta(path)}', "
+            "which does not match its content address"
+        )
+
+
+def _check_structured_attrs(env: dict[str, str]) -> None:
+    """`StructuredAttrs::parse` (`parsed-derivations.cc:12`): `__json`, when present, is JSON.
+
+    Validated into `msgspec.Raw`, which builds no object: `json.loads` of a 23.8 MB `__json` held the GIL long
+    enough to stall the event loop 0.31 s, against 0.015 s for the rest of the parse. msgspec, like nlohmann,
+    refuses `NaN` and a lone surrogate escape; it takes invalid UTF-8, which the strict encode refuses. The text
+    after the colon is msgspec's, not nlohmann's.
+    """
+    encoded = env.get("__json")
+    if encoded is None:
+        return
+    try:
+        msgspec.json.decode(encoded.encode(), type=msgspec.Raw)
+    except UnicodeEncodeError:
+        raise ValueError(f"cannot process {magenta('__json')} attribute: invalid UTF-8") from None
+    except msgspec.DecodeError as error:
+        raise ValueError(f"cannot process {magenta('__json')} attribute: {error}") from None
 
 
 def _check_monotonic(last: str | None, key: str, describe: Callable[[], str]) -> None:
@@ -763,34 +874,72 @@ def _check_monotonic(last: str | None, key: str, describe: Callable[[], str]) ->
 
 
 class _Parser:
-    """Simple recursive-descent ATerm parser for .drv files."""
+    """`derivation::parse` of Nix master (`aterm.cc:442`): one spelling per derivation, so no whitespace anywhere.
 
-    def __init__(self, text: str) -> None:
+    NIX-DEFECT (#23): Nix 2.35's parser (`derivations.cc:224-275`) skips no whitespace either, but takes any
+    `\\x` as `x`, a raw LF in a string, an escape in a store path, a non-canonical store path and trailing input,
+    so one derivation has several encodings and the text that hashes is not the text on disk. pynixd refuses
+    them on every version, as master does since NixOS/nix#16284 and NixOS/nix#16287. nixidae/nixidae#1671.
+    """
+
+    def __init__(self, text: str, drv_name: str | None = None) -> None:
         self._text = text
         self._pos = 0
+        self._drv_name = drv_name
 
     def _peek(self) -> str:
-        if self._pos >= len(self._text):
-            raise ValueError("Unexpected end of input")
-        return self._text[self._pos]
+        """`StringViewStream::peek`; the empty string at the end of input."""
+        return self._text[self._pos : self._pos + 1]
 
-    def _advance(self) -> str:
-        ch = self._peek()
+    def _expect(self, char: str) -> None:
+        if self._peek() != char:
+            raise ValueError(f"expected '{magenta(char)}' character")
         self._pos += 1
-        return ch
 
-    def _expect(self, s: str) -> None:
-        for ch in s:
-            got = self._advance()
-            if got != ch:
-                raise ValueError(f"Expected {ch!r} at pos {self._pos - 1}, got {got!r}")
+    def _expect_string(self, text: str) -> None:
+        if not self._text.startswith(text, self._pos):
+            raise ValueError(f"expected string '{magenta(text)}'")
+        self._pos += len(text)
 
-    def _skip_ws(self) -> None:
-        while self._pos < len(self._text) and self._text[self._pos] in " \t\n\r":
+    def _list[T](self, item: Callable[[], T]) -> list[T]:
+        """`parseList` (`aterm.cc:205`)."""
+        self._expect("[")
+        result: list[T] = []
+        if self._peek() == "]":
             self._pos += 1
+            return result
+        while True:
+            result.append(item())
+            char = self._peek()
+            self._pos += 1
+            if char == "]":
+                return result
+            if char != ",":
+                raise ValueError("invalid list")
+
+    def _map[K, V](
+        self, parse_key: Callable[[], K], parse_value: Callable[[K], V], describe: Callable[[K], str]
+    ) -> list[tuple[K, V]]:
+        """`parseMap` (`aterm.cc:273`): `(key,value)` pairs, keys sorted and unique."""
+        pairs: list[tuple[K, V]] = []
+
+        def pair() -> None:
+            self._expect("(")
+            key = parse_key()
+            self._expect(",")
+            value = parse_value(key)
+            _check_monotonic(str(pairs[-1][0]) if pairs else None, str(key), lambda: describe(key))
+            pairs.append((key, value))
+            self._expect(")")
+
+        self._list(pair)
+        return pairs
 
     def parse_string(self) -> str:
-        """Parse a quoted ATerm string with escape handling."""
+        """`parseString` (`aterm.cc:123`): the builder, its arguments and the environment.
+
+        Only `\\n`, `\\r`, `\\t`, `\\\\` and `\\"` are escapes, and a character that has one must use it.
+        """
         self._expect('"')
         text = self._text
         start = end = self._pos
@@ -802,323 +951,177 @@ class _Parser:
             if scanned < len(text) and text[scanned] == '"':
                 break
             if scanned == end:
-                raise ValueError(f"Unterminated string starting at pos {start}")
+                raise _string_error(text, scanned)
             end = scanned
         self._pos = scanned + 1
         return _unescape(text[start:scanned])
 
-    @overload
-    def parse_string_list(self) -> list[str]: ...
+    def parse_unquoted_string(self) -> str:
+        """`parseUnquotedString` (`aterm.cc:166`): output names, store paths and the platform, verbatim.
 
-    @overload
-    def parse_string_list[T](self, tp: Callable[[str], T]) -> list[T]: ...
+        NIX-DEFECT (#23): Nix checks nothing else here, so an output name or a platform may hold a NUL, a DEL or
+        a raw LF (the FIXME at `external-formats.cc:52`), and `printUnquotedString` writes a `"` in one that the
+        parser then cannot read back. pynixd copies it: a stricter parser refuses a `.drv` that nix-daemon builds.
+        nixidae/nixidae#1671.
+        """
+        self._expect('"')
+        end = self._text.find('"', self._pos)
+        if end < 0:
+            raise ValueError("unterminated string in derivation")
+        content = self._text[self._pos : end]
+        self._pos = end + 1
+        if "\\" in content:
+            raise ValueError("unexpected escape sequence in unquoted string")
+        return content
 
-    def parse_string_list[T](self, tp: Callable[[str], T] | None = None) -> list[Any]:
-        """Parse [str, str, ...]."""
-        self._expect("[")
-        result: list[Any] = []
-        convert: Callable[[str], Any] = tp if tp is not None else str
-        self._skip_ws()
-        while self._peek() != "]":
-            if result:
-                self._expect(",")
-            self._skip_ws()
-            result.append(convert(self.parse_string()))
-            self._skip_ws()
-        self._expect("]")
-        return result
+    def parse_store_path(self) -> StorePath:
+        """`parseStorePath` (`aterm.cc:197`)."""
+        return parse_store_path_canonical(self.parse_unquoted_string())
+
+    def parse_string_list(self) -> list[str]:
+        """The builder's arguments."""
+        return self._list(self.parse_string)
 
     def parse_string_set(self) -> list[str]:
-        """`parseStrings`: a list of strings, sorted and with no duplicate."""
-        items = self.parse_string_list()
-        for last, item in zip([None, *items], items, strict=False):
-            _check_monotonic(last, item, lambda item=item: f"set item '{item}'")
+        """`parseStrings` (`aterm.cc:286`): output names, verbatim, sorted and with no duplicate."""
+        items: list[str] = []
+
+        def item() -> str:
+            content = self.parse_unquoted_string()
+            _check_monotonic(items[-1] if items else None, content, lambda: f"set item '{content}'")
+            items.append(content)
+            return content
+
+        self._list(item)
         return items
 
     def parse_store_path_set(self) -> list[StorePath]:
-        """`parseStorePaths`: store paths, sorted and with no duplicate."""
-        items = self.parse_string_list()
-        for last, item in zip([None, *items], items, strict=False):
-            _check_monotonic(last, item, lambda item=item: f"store path '{item}'")
-        return [StorePath(item) for item in items]
+        """`parseStorePaths` (`aterm.cc:297`): store paths, sorted and with no duplicate."""
+        items: list[StorePath] = []
+
+        def item() -> StorePath:
+            path = self.parse_store_path()
+            _check_monotonic(str(items[-1]) if items else None, str(path), lambda: f"store path '{path}'")
+            items.append(path)
+            return path
+
+        self._list(item)
+        return items
+
+    def _parse_output(self, output_name: str) -> DrvOutput:
+        """The value of one output (`aterm.cc:488`): path, method and hash, checked by `parseOutput`."""
+        path = self.parse_unquoted_string()
+        self._expect(",")
+        hash_algo = self.parse_string()
+        self._expect(",")
+        hash_value = self.parse_string()
+        output = DrvOutput(hash_algo=hash_algo, hash_value=hash_value, output_name=output_name, path=path)
+        _check_output(self._drv_name, output)
+        return output
 
     def parse_outputs(self) -> list[DrvOutput]:
-        """Parse [("name","path","hashAlgo","hash"), ...] into DrvOutput list."""
-        self._expect("[")
-        result: list[DrvOutput] = []
-        self._skip_ws()
-        while self._peek() != "]":
-            if result:
-                self._expect(",")
-            self._skip_ws()
-            self._expect("(")
-            name = self.parse_string()
-            self._expect(",")
-            path = self.parse_string()
-            self._expect(",")
-            hash_algo = self.parse_string()
-            self._expect(",")
-            hash_value = self.parse_string()
-            _check_monotonic(
-                result[-1].output_name if result else None, name, lambda name=name: f"output name '{name}'"
-            )
-            self._expect(")")
-            result.append(
-                DrvOutput(
-                    hash_algo=hash_algo,
-                    hash_value=hash_value,
-                    output_name=name,
-                    path=path,
-                ),
-            )
-            self._skip_ws()
-        self._expect("]")
-        return result
+        """The outputs (`aterm.cc:484`): `(name,path,hashAlgo,hash)` per output, by name."""
+        pairs = self._map(self.parse_unquoted_string, self._parse_output, lambda name: f"output name '{name}'")
+        return [output for _, output in pairs]
 
-    def parse_input_drvs_simple(self) -> dict[StorePath, list[str]]:
-        """Parse [("drvPath",["out",...]), ...] - traditional format."""
-        self._expect("[")
-        result: dict[StorePath, list[str]] = {}
-        last: str | None = None
-        self._skip_ws()
-        while self._peek() != "]":
-            if result:
-                self._expect(",")
-            self._skip_ws()
-            self._expect("(")
-            key = self.parse_string()
-            self._expect(",")
-            outputs = self.parse_string_set()
-            _check_monotonic(last, key, lambda key=key: f"input derivation '{key}'")
-            last = key
-            self._expect(")")
-            result[StorePath(key)] = outputs
-            self._skip_ws()
-        self._expect("]")
-        return result
+    def _parse_input_drv_path(self) -> StorePath:
+        """An input derivation's path (`aterm.cc:505`): canonical, and a derivation's."""
+        path = self.parse_store_path()
+        if not path.name.endswith(".drv"):
+            raise ValueError(f"store path '{magenta(path.name)}' is not a valid derivation path")
+        return path
 
-    def _parse_child_value(self) -> ChildMapNode:
-        """Parse a child value in a DerivedPathMapNode.
+    def _parse_node(self, *, dynamic: bool) -> ChildMapNode:
+        """`parseDerivedPathMapNode` (`aterm.cc:400`): `[outs]`, or with dynamic derivations `([outs],[(name,node)])`.
 
-        A child value can be either:
-        - Leaf: ``[out1,out2]`` — flat output names
-        - Nested: ``([flat_outs],[(name,child),...])`` — recursive node
+        NIX-DEFECT (#23): a child's output name goes through `parseString` (`aterm.cc:426`), so it takes escapes,
+        while `unparseDerivedPathMapNode` writes it with `printUnquotedString` and every other output name is
+        verbatim. pynixd copies it. nixidae/nixidae#1671.
         """
-        if self._peek() == "[":
-            # Leaf: flat list of output names
-            outputs = self.parse_string_set()
-            return ChildMapNode(outputs=outputs)
-        if self._peek() == "(":
-            # Nested: recursive DerivedPathMapNode
-            return self._parse_child_map_node()
-        raise ValueError(
-            f"Expected '[' or '(' at pos {self._pos}, got {self._peek()!r}",
-        )
-
-    def _parse_child_map_node(self) -> ChildMapNode:
-        """Parse a ``DerivedPathMapNode`` recursively.
-
-        Wire format: ``([flat_outs],[(output_name, child_value), ...])``
-        where child_value is either a flat list ``[out]`` or a nested
-        ``DerivedPathMapNode`` ``([outs],[children])``.
-        """
-        self._advance()  # '('
-        self._skip_ws()
+        if not dynamic or self._peek() == "[":
+            return ChildMapNode(outputs=self.parse_string_set())
+        if self._peek() != "(":
+            raise ValueError("invalid inputDrvs entry in derivation")
+        self._expect("(")
         outputs = self.parse_string_set()
         self._expect(",")
-        self._expect("[")  # Start of children list
-        children: dict[str, ChildMapNode] = {}
-        last: str | None = None
-        self._skip_ws()
-        while self._peek() != "]":
-            if children:
-                self._expect(",")
-            self._skip_ws()
-            self._expect("(")
-            child_name = self.parse_string()
-            self._expect(",")
-            # Parse child value (leaf or nested)
-            child_node = self._parse_child_value()
-            _check_monotonic(last, child_name, lambda child_name=child_name: f"output name '{child_name}'")
-            last = child_name
-            children[child_name] = child_node
-            self._expect(")")
-            self._skip_ws()
-        self._expect("]")  # End of children list
-        self._expect(")")  # End of this node
-        return ChildMapNode(outputs=outputs, children=children)
+        children = self._map(
+            self.parse_string, lambda _name: self._parse_node(dynamic=True), lambda name: f"output name '{name}'"
+        )
+        self._expect(")")
+        return ChildMapNode(outputs=outputs, children=dict(children))
 
-    def parse_input_drvs_dynamic(
-        self,
-    ) -> tuple[dict[StorePath, list[str]], dict[StorePath, ChildMapNode]]:
-        """Parse dynamic input drvs format (DrvWithVersion).
-
-        Each input drv is either:
-        - Simple: ``(drvPath,[out1,out2])`` — non-dynamic dependency
-        - Dynamic: ``(drvPath,([flat_outs],[(name,child),...]))`` — recursive
-
-        Returns:
-            (simple_map, dynamic_map) where:
-            - simple_map: {drv_path: [output_name, ...]} for non-dynamic inputs
-            - dynamic_map: {drv_path: ChildMapNode} for dynamic inputs
-        """
-        self._expect("[")
+    def parse_input_drvs(self, *, dynamic: bool) -> tuple[dict[StorePath, list[str]], dict[StorePath, ChildMapNode]]:
+        """The input derivations (`aterm.cc:501`): those that name outputs only, and those with a child map."""
         simple: dict[StorePath, list[str]] = {}
-        dynamic: dict[StorePath, ChildMapNode] = {}
-        last: str | None = None
-        self._skip_ws()
-        while self._peek() != "]":
-            if simple or dynamic:
-                self._expect(",")
-            self._skip_ws()
-            self._expect("(")
-            key = self.parse_string()
-            drv_path = StorePath(key)
-            self._expect(",")
-            self._skip_ws()
+        nested: dict[StorePath, ChildMapNode] = {}
 
-            if self._peek() == "[":
-                # Non-dynamic: simple list of output names
-                outputs = self.parse_string_set()
-                simple[drv_path] = outputs
-            elif self._peek() == "(":
-                # Dynamic: recursive ChildMapNode
-                node = self._parse_child_map_node()
-                dynamic[drv_path] = node
+        def value(path: StorePath) -> tuple[bool, ChildMapNode]:
+            is_nested = dynamic and self._peek() == "("
+            node = self._parse_node(dynamic=dynamic)
+            # Nix never writes one, and the flat inputs set cannot hold it (`aterm.cc:511`).
+            if not node.outputs and not node.children:
+                raise ValueError(f"inputDrvs entry for '{magenta(path)}' specifies no outputs")
+            return is_nested, node
+
+        for path, (is_nested, node) in self._map(
+            self._parse_input_drv_path, value, lambda path: f"input derivation '{magenta(path)}'"
+        ):
+            if is_nested:
+                nested[path] = node
             else:
-                raise ValueError(
-                    f"Expected '[' or '(' at pos {self._pos}, got {self._peek()!r}",
-                )
-            _check_monotonic(last, key, lambda key=key: f"input derivation '{key}'")
-            last = key
-            self._expect(")")
-            self._skip_ws()
-        self._expect("]")
-        return simple, dynamic
+                simple[path] = node.outputs
+        return simple, nested
 
     def parse_env(self) -> dict[str, str]:
-        """Parse [("key","value"), ...]."""
-        self._expect("[")
-        result: dict[str, str] = {}
-        last: str | None = None
-        self._skip_ws()
-        while self._peek() != "]":
-            if result:
-                self._expect(",")
-            self._skip_ws()
-            self._expect("(")
-            key = self.parse_string()
-            self._expect(",")
-            value = self.parse_string()
-            _check_monotonic(last, key, lambda key=key: f"environment variable '{key}'")
-            last = key
-            self._expect(")")
-            result[key] = value
-            self._skip_ws()
-        self._expect("]")
-        return result
+        """The environment (`aterm.cc:534`), with `__json` parsed as `StructuredAttrs::tryExtract` does."""
+        env = dict(
+            self._map(self.parse_string, lambda _key: self.parse_string(), lambda key: f"environment variable '{key}'")
+        )
+        _check_structured_attrs(env)
+        return env
 
     def parse_derivation(self) -> Derivation:
-        """Parse the full Derive(...) or DrvWithVersion(...) term."""
-        self._skip_ws()
-
-        # Check for dynamic derivation format
-        if self._text[self._pos :].startswith("DrvWithVersion("):
-            return self._parse_dynamic_derivation()
-        return self._parse_traditional_derivation()
-
-    def _parse_traditional_derivation(self) -> Derivation:
-        """Parse Derive(...) term."""
-        self._expect("Derive(")
-        self._skip_ws()
-
+        """`derivation::parse` (`aterm.cc:442`)."""
+        self._expect("D")
+        match self._peek():
+            case "e":
+                self._expect_string("erive(")
+                dynamic = False
+            case "r":
+                self._expect_string("rvWithVersion(")
+                version = self.parse_string()
+                if version != "xp-dyn-drv":
+                    raise ValueError(f"unknown derivation ATerm format version '{magenta(version)}'")
+                self._expect(",")
+                dynamic = True
+            case _:
+                raise ValueError("derivation does not start with 'Derive' or 'DrvWithVersion'")
         outputs = self.parse_outputs()
         self._expect(",")
-        self._skip_ws()
-
-        input_drvs = self.parse_input_drvs_simple()
+        input_drvs, dynamic_input_drvs = self.parse_input_drvs(dynamic=dynamic)
         self._expect(",")
-        self._skip_ws()
-
-        input_srcs_list = self.parse_store_path_set()
+        input_srcs = self.parse_store_path_set()
         self._expect(",")
-        self._skip_ws()
-
-        platform = self.parse_string()
+        platform = self.parse_unquoted_string()
         self._expect(",")
-        self._skip_ws()
-
         builder = self.parse_string()
         self._expect(",")
-        self._skip_ws()
-
         args = self.parse_string_list()
         self._expect(",")
-        self._skip_ws()
-
         env = self.parse_env()
-        self._skip_ws()
         self._expect(")")
-
+        if self._pos < len(self._text):
+            raise ValueError(f"expected end of file, found '{magenta(self._text[self._pos :])}'")
         return Derivation(
             outputs=outputs,
             input_drvs=input_drvs,
-            input_srcs=set(input_srcs_list),
+            input_srcs=set(input_srcs),
             platform=platform,
             builder=builder,
             args=args,
             env=env,
-            is_dynamic=False,
-        )
-
-    def _parse_dynamic_derivation(self) -> Derivation:
-        """Parse DrvWithVersion("xp-dyn-drv",...) term."""
-        self._expect("DrvWithVersion(")
-        self._skip_ws()
-
-        version = self.parse_string()
-        if version != "xp-dyn-drv":
-            raise ValueError(f"Unknown derivation ATerm version: {version!r}")
-        self._expect(",")
-        self._skip_ws()
-
-        outputs = self.parse_outputs()
-        self._expect(",")
-        self._skip_ws()
-
-        input_drvs, dynamic_input_drvs = self.parse_input_drvs_dynamic()
-        self._expect(",")
-        self._skip_ws()
-
-        input_srcs_list = self.parse_store_path_set()
-        self._expect(",")
-        self._skip_ws()
-
-        platform = self.parse_string()
-        self._expect(",")
-        self._skip_ws()
-
-        builder = self.parse_string()
-        self._expect(",")
-        self._skip_ws()
-
-        args = self.parse_string_list()
-        self._expect(",")
-        self._skip_ws()
-
-        env = self.parse_env()
-        self._skip_ws()
-        self._expect(")")
-
-        return Derivation(
-            outputs=outputs,
-            input_drvs=input_drvs,
-            input_srcs=set(input_srcs_list),
-            platform=platform,
-            builder=builder,
-            args=args,
-            env=env,
-            is_dynamic=True,
+            is_dynamic=dynamic,
             dynamic_input_drvs=dynamic_input_drvs,
         )
 
@@ -1205,16 +1208,25 @@ def from_basic_derivation(basic: BasicDerivation) -> Derivation:
     )
 
 
-def parse_drv(content: str) -> Derivation:
-    """Parse a .drv file's content into a Derivation."""
-    return _Parser(content).parse_derivation()
+def parse_drv(content: str, name: str | None = None) -> Derivation:
+    """`derivation::parse`: a `.drv` file's text as a `Derivation`, or `ValueError` with Nix's message.
+
+    *name* is the derivation's name, which a fixed output's path is checked against. A file read from a store
+    goes through `parse_drv_bytes`, which always has it.
+    """
+    return _Parser(content, name).parse_derivation()
+
+
+def drv_name(drv_path: StorePath | str) -> str:
+    """`Derivation::nameFromPath` (`derivations.cc`): the name of a `.drv` path, without hash and extension."""
+    return StorePath(str(drv_path)).name[_HASH_LEN + 1 :].removesuffix(".drv")
 
 
 _INLINE_PARSE_BYTES = 256 * 1024
 """Below this a parse takes under a millisecond, less than the thread hop."""
 
 
-async def parse_drv_bytes(raw: bytes) -> Derivation:
+async def parse_drv_bytes(raw: bytes, name: str) -> Derivation:
     """`parse_drv` of a `.drv` file's bytes, off the event loop when it is large.
 
     A 23 MB `.drv` parses in 0.29 s. On a worker thread the loop waited at
@@ -1222,12 +1234,12 @@ async def parse_drv_bytes(raw: bytes) -> Derivation:
     `_PIECE` bounds that call (nixidae/nixidae#1139).
     """
     if len(raw) < _INLINE_PARSE_BYTES:
-        return parse_drv(drv_text(raw))
-    return await anyio.to_thread.run_sync(_parse_bytes, raw)
+        return parse_drv(drv_text(raw), name)
+    return await anyio.to_thread.run_sync(_parse_bytes, raw, name)
 
 
-def _parse_bytes(raw: bytes) -> Derivation:
-    return parse_drv(drv_text(raw))
+def _parse_bytes(raw: bytes, name: str) -> Derivation:
+    return parse_drv(drv_text(raw), name)
 
 
 class DerivationFormatError(PynixdError):
@@ -1276,6 +1288,6 @@ async def read_drv_file(drv_store_path: StorePath | str, layout: StoreLayout) ->
             raise ValueError("file is empty (possible filesystem corruption)")
         if not base.endswith(".drv"):
             raise ValueError(f"store path '{magenta(base)}' is not a valid derivation path")
-        return await parse_drv_bytes(raw)
+        return await parse_drv_bytes(raw, drv_name(base))
     except ValueError as error:
         raise DerivationFormatError(f"error parsing derivation '{magenta(name)}': {error}") from error

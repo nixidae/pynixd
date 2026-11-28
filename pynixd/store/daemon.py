@@ -22,7 +22,7 @@ from nix_daemon_protocol.build_result import DUMMY_DRV_HASH
 from nix_daemon_protocol.store_dir import store_prefix
 from nix_daemon_protocol.unkeyed_realisation import UnkeyedRealisation
 from nix_daemon_protocol.wire_ops import WireRequest
-from pynixd_store.drv_parser import drv_bytes, parse_drv_bytes
+from pynixd_store.drv_parser import drv_bytes, drv_name, parse_drv_bytes
 from pynixd_store.hintfmt import magenta
 
 from .. import metrics, wire
@@ -969,7 +969,7 @@ class DaemonStore(ScheduledStore):
             log.warning("drv_not_found", drv_path=str(drv_store_path), reason="not_regular_file")
             return None
 
-        return await parse_drv_bytes(node.contents)
+        return await parse_drv_bytes(node.contents, drv_name(drv_store_path))
 
 
 for _op, _method_name in {

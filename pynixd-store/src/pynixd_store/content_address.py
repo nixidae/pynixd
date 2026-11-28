@@ -52,14 +52,17 @@ def parse_digest(text: str, algo: str) -> bytes:
     """`Hash::parseNonSRIUnprefixed`: Base16, Nix32 or Base64, told apart by length."""
     size = HASH_SIZES.get(algo)
     if size is None:
-        raise ValueError(f"unknown hash algorithm '{algo}'")
+        raise ValueError(
+            f"unknown hash algorithm '{magenta(algo)}', expect 'blake3', 'md5', 'sha1', 'sha256', or 'sha512'"
+        )
     if len(text) == 2 * size:
         return bytes.fromhex(text)
     if len(text) == (size * 8 - 1) // 5 + 1:
         return nix32_decode(text)
     if len(text) == 4 * ((size + 2) // 3):
         return base64.b64decode(text)
-    raise ValueError(f"hash '{text}' has the wrong length for its algorithm")
+    # `baseFromSize` (`hash.cc:140`).
+    raise ValueError(f"hash '{magenta(text)}' has wrong length for hash algorithm '{magenta(algo)}'")
 
 
 @dataclass(frozen=True)

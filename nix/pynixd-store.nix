@@ -7,6 +7,7 @@
   anyio,
   blake3,
   libarchive-c,
+  msgspec,
   psycopg,
   psycopg-pool,
   pycurl,
@@ -36,6 +37,7 @@ pythonBuilder (finalAttrs: {
     anyio
     blake3
     libarchive-c
+    msgspec
     psycopg
     psycopg-pool
     pycurl

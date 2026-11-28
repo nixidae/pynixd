@@ -18,6 +18,9 @@ dependencies = [
     "anyio",
     "blake3",
     "libarchive-c",
+    # Validates a derivation's `__json` without building Python objects: 16 ms for 16.8 MB, so the parse
+    # thread holds the GIL briefly. `json.loads` and `pydantic_core.from_json` held it 0.3 s (nixidae/nixidae#1671).
+    "msgspec",
     "nix-daemon-protocol>=0.1.0",
     # A store database on PostgreSQL (nixidae/nixidae#1209). Imported by `postgres_db.py` alone.
     "psycopg",

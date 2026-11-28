@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from nix_daemon_protocol.store_dir import on_disk
-from pynixd_store.drv_parser import parse_drv_bytes
+from pynixd_store.drv_parser import drv_name, parse_drv_bytes
 from pynixd_store.store_path import StorePath
 
 from ..connection import Connection
@@ -62,4 +62,4 @@ class ExternalUnixStore(DaemonStore):
         except (FileNotFoundError, OSError):
             return await super().read_derivation(drv_store_path)
 
-        return await parse_drv_bytes(contents)
+        return await parse_drv_bytes(contents, drv_name(drv_store_path))

@@ -34,6 +34,10 @@ _PROBES_NIX = Path(__file__).parent.parent.parent / "tests" / "nix" / "drv-probe
 
 type Probes = dict[str, tuple[str, str, dict[str, Any]]]
 
+FOO = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-foo"
+DEP = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-dep.drv"
+SIMPLE = "/nix/store/cccccccccccccccccccccccccccccccc-simple.drv"
+
 
 # ── Session-scoped fixture: evaluate drv-probes.nix once ───────────────────
 
@@ -262,12 +266,12 @@ class TestManufacturedExamples:
         assert parsed.output_kinds() == [OutputKind.DEFERRED]
 
     def test_empty_env(self) -> None:
-        parsed = parse_drv('Derive([("out","/nix/store/abc-foo","","")],[],[],"x86_64-linux","/bin/sh",[],[])')
+        parsed = parse_drv(f'Derive([("out","{FOO}","","")],[],[],"x86_64-linux","/bin/sh",[],[])')
         assert parsed.env == {}
 
     def test_escaped_strings(self) -> None:
         parsed = parse_drv(
-            'Derive([("out","/nix/store/abc-foo","","")]'
+            f'Derive([("out","{FOO}","","")]'
             ',[],[],"x86_64-linux"'
             ',"/bin/sh",["-c","echo \\"hello\\""]'
             ',[("desc","line1\\nline2\\ttab"),("name","esc")])'
@@ -286,13 +290,12 @@ class TestManufacturedExamples:
             "\\\\\\n",
             '\\\\\\"',
             "\\n\\r\\t",
-            "\\a\\z\\$\\'",
-            "\\\\\\\\\\x",
-            "nul\0and\\\\\\n\\q",
+            "\\\\\\\\\\t",
+            "nul\0and\\\\\\n\\r",
         ],
     )
     def test_escapes_read_as_nix_reads_them(self, body: str) -> None:
-        """`parseString` at `derivations.cc:188-205`, one escape at a time.
+        """`parseString` at `aterm.cc:123`, one escape at a time.
 
         The parser unescapes by `str.replace` (nixidae/nixidae#1139); this is
         the loop it must agree with, NUL fallback included.
@@ -302,12 +305,10 @@ class TestManufacturedExamples:
         for ch in chars:
             if ch == "\\":
                 esc = next(chars)
-                expected.append({"n": "\n", "r": "\r", "t": "\t"}.get(esc, esc))
+                expected.append({"n": "\n", "r": "\r", "t": "\t", "\\": "\\", '"': '"'}[esc])
             else:
                 expected.append(ch)
-        parsed = parse_drv(
-            f'Derive([("out","/nix/store/abc-foo","","")],[],[],"x86_64-linux","/bin/sh",[],[("v","{body}")])'
-        )
+        parsed = parse_drv(f'Derive([("out","{FOO}","","")],[],[],"x86_64-linux","/bin/sh",[],[("v","{body}")])')
         assert parsed.env["v"] == "".join(expected)
 
     @pytest.mark.parametrize("piece", [1, 2, 3, 5, 8])
@@ -316,14 +317,10 @@ class TestManufacturedExamples:
 
         Every cut lands inside some escape for one of these sizes.
         """
-        body = '\\\\a\\"b\\\\\\nc\\t\\\\\\\\\\"d\\q' * 3
-        whole = parse_drv(
-            f'Derive([("out","/nix/store/abc-foo","","")],[],[],"x86_64-linux","/bin/sh",[],[("v","{body}")])'
-        )
+        body = '\\\\a\\"b\\\\\\nc\\t\\\\\\\\\\"d\\r' * 3
+        whole = parse_drv(f'Derive([("out","{FOO}","","")],[],[],"x86_64-linux","/bin/sh",[],[("v","{body}")])')
         monkeypatch.setattr(drv_parser, "_PIECE", piece)
-        cut = parse_drv(
-            f'Derive([("out","/nix/store/abc-foo","","")],[],[],"x86_64-linux","/bin/sh",[],[("v","{body}")])'
-        )
+        cut = parse_drv(f'Derive([("out","{FOO}","","")],[],[],"x86_64-linux","/bin/sh",[],[("v","{body}")])')
         assert cut.env["v"] == whole.env["v"]
 
     async def test_a_large_drv_parses_off_the_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -331,21 +328,21 @@ class TestManufacturedExamples:
         threads: list[int] = []
         parse = drv_parser.parse_drv
 
-        def recording(content: str) -> Derivation:
+        def recording(content: str, name: str | None = None) -> Derivation:
             threads.append(threading.get_ident())
-            return parse(content)
+            return parse(content, name)
 
         monkeypatch.setattr(drv_parser, "parse_drv", recording)
         value = "x" * (drv_parser._INLINE_PARSE_BYTES + 1)
-        raw = f'Derive([("out","/nix/store/abc-foo","","")],[],[],"x86_64-linux","/bin/sh",[],[("v","{value}")])'
-        parsed = await drv_parser.parse_drv_bytes(raw.encode())
+        raw = f'Derive([("out","{FOO}","","")],[],[],"x86_64-linux","/bin/sh",[],[("v","{value}")])'
+        parsed = await drv_parser.parse_drv_bytes(raw.encode(), "foo")
         assert parsed.env["v"] == value
         assert threads
         assert threading.get_ident() not in threads
 
     def test_multiple_outputs(self) -> None:
         parsed = parse_drv(
-            'Derive([("lib","/nix/store/a-lib","",""),("out","/nix/store/a-out","","")]'
+            f'Derive([("lib","{FOO}-lib","",""),("out","{FOO}","","")]'
             ',[],[],"x86_64-linux"'
             ',"/bin/sh",["-c","make"]'
             ',[("name","multi"),("outputs","out lib")])'
@@ -354,7 +351,7 @@ class TestManufacturedExamples:
 
     def test_required_system_features(self) -> None:
         parsed = parse_drv(
-            'Derive([("out","/nix/store/a-foo","","")]'
+            f'Derive([("out","{FOO}","","")]'
             ',[],[],"x86_64-linux"'
             ',"/bin/sh",["-c","true"]'
             ',[("name","feat"),("requiredSystemFeatures","kvm big-parallel")])'
@@ -373,20 +370,20 @@ class TestDrvWithVersion:
         parsed = parse_drv(
             'DrvWithVersion("xp-dyn-drv",'
             '[("out","","text:sha256","")]'
-            ',[("/nix/store/dep.drv",([],[])),'
-            '("/nix/store/simple.drv",["out"])]'
+            f',[("{DEP}",(["out"],[])),'
+            f'("{SIMPLE}",["out"])]'
             ",[]"
             ',"x86_64-linux"'
             ',"/bin/sh",["-c","true"]'
             ',[("name","dyn")])'
         )
         assert parsed.is_dynamic
-        assert StorePath("/nix/store/dep.drv") in parsed.dynamic_input_drvs
-        assert StorePath("/nix/store/simple.drv") in parsed.input_drvs
-        assert parsed.input_drvs[StorePath("/nix/store/simple.drv")] == ["out"]
+        assert StorePath(DEP) in parsed.dynamic_input_drvs
+        assert StorePath(SIMPLE) in parsed.input_drvs
+        assert parsed.input_drvs[StorePath(SIMPLE)] == ["out"]
         from pynixd_store.drv_parser import ChildMapNode
 
-        assert parsed.dynamic_input_drvs[StorePath("/nix/store/dep.drv")] == ChildMapNode()
+        assert parsed.dynamic_input_drvs[StorePath(DEP)] == ChildMapNode(outputs=["out"])
 
     @pytest.mark.parametrize(
         "inputs",
@@ -413,11 +410,11 @@ class TestDrvWithVersion:
         """`hasDynamicDrvDep` (`derivations.cc:632`) asks for a node with children, so Nix writes `Derive(`."""
         parsed = parse_drv(
             'DrvWithVersion("xp-dyn-drv",[("out","/nix/store/cccccccccccccccccccccccccccccccc-x","","")],'
-            '[("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-dep.drv",([],[]))],[],"x86_64-linux","/bin/sh",[],[])'
+            '[("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-dep.drv",(["out"],[]))],[],"x86_64-linux","/bin/sh",[],[])'
         )
         assert parsed.unparse() == (
             'Derive([("out","/nix/store/cccccccccccccccccccccccccccccccc-x","","")],'
-            '[("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-dep.drv",[])],[],"x86_64-linux","/bin/sh",[],[])'
+            '[("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-dep.drv",["out"])],[],"x86_64-linux","/bin/sh",[],[])'
         )
 
 
@@ -570,11 +567,11 @@ class TestParseDrvEdgeCases:
             parse_drv("Derive(invalid")
 
     def test_unterminated_string(self) -> None:
-        with pytest.raises(ValueError, match="Unterminated string"):
+        with pytest.raises(ValueError, match="unterminated string in derivation"):
             parse_drv('Derive([("out","abc')
 
     def test_unknown_version(self) -> None:
-        with pytest.raises(ValueError, match="Unknown derivation ATerm version"):
+        with pytest.raises(ValueError, match="unknown derivation ATerm format version"):
             parse_drv('DrvWithVersion("unknown-version",[]')
 
     def test_empty_text(self) -> None:
@@ -641,10 +638,10 @@ class TestSerialize:
 
     def test_traditional_roundtrip(self) -> None:
         text = (
-            'Derive([("dev","/nix/store/dev","",""),'
-            '("out","/nix/store/result","","")],'
-            '[("/nix/store/dep.drv",["out"])],'
-            '["/nix/store/src"],'
+            f'Derive([("dev","{FOO}-dev","",""),'
+            f'("out","{FOO}","","")],'
+            f'[("{DEP}",["out"])],'
+            f'["{FOO}-src"],'
             '"x86_64-linux","/bin/bash",["-c","true"],'
             '[("key","value"),("name","test")])'
         )
@@ -656,9 +653,9 @@ class TestSerialize:
     def test_dynamic_roundtrip(self) -> None:
         text = (
             'DrvWithVersion("xp-dyn-drv",'
-            '[("out","/nix/store/result","","")],'
-            '[("/nix/store/dep.drv",([],[])),'
-            '("/nix/store/simple.drv",["out"])],'
+            f'[("out","{FOO}","","")],'
+            f'[("{DEP}",(["out"],[])),'
+            f'("{SIMPLE}",["out"])],'
             '[],"x86_64-linux","/bin/sh",["-c","true"],'
             '[("name","dyn")])'
         )

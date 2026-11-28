@@ -662,7 +662,7 @@ in derivation {
   name = "nested-inner.drv"; system = builtins.currentSystem; builder = "/bin/sh";
   __contentAddressed = true; outputHashMode = "text"; outputHashAlgo = "sha256";
   args = [ "-c" ''
-    while IFS= read -r l || [ -n "$l" ]; do printf '%s\\n' "$l"; done < ${builtins.unsafeDiscardOutputDependency inner.drvPath} > $out
+    while IFS= read -r l || [ -n "$l" ]; do printf '%s' "$l"; done < ${builtins.unsafeDiscardOutputDependency inner.drvPath} > $out
   '' ];
 }
 """
