@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
     from ..connection import ClientConn
     from ..store.base import Store
-    from ..substitution_queue import SubstitutionCandidate
+    from ..substitution_queue import SubstitutionCandidate, SubstitutionQueue
     from .engine import GoalEngine
 
 log = structlog.get_logger(__name__)
@@ -148,7 +148,9 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
 
         queue = scheduler.substitution_queue
         stores = queue.stores_with_ids(self.substituter_ids)
-        candidate, checked = await self._first_signed(await queue.get_substituters(self.path, stores, ca=self.ca))
+        candidate, checked = await self._first_signed(
+            queue, await queue.get_substituters(self.path, stores, ca=self.ca)
+        )
         if candidate is None:
             log.info("substitute_path_miss", path=str(self.path))
             return SubstituteAttempt(
@@ -225,7 +227,9 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
         result.resolved_outputs["out"] = self.path
         return SubstituteAttempt(found=True, result=result)
 
-    async def _first_signed(self, candidates: list[SubstitutionCandidate]) -> tuple[SubstitutionCandidate | None, bool]:
+    async def _first_signed(
+        self, queue: SubstitutionQueue, candidates: list[SubstitutionCandidate]
+    ) -> tuple[SubstitutionCandidate | None, bool]:
         """The first of *candidates* the client's keys accept, and whether pynixd checked it (`substitution-goal.cc:116`).
 
         Nix checks before the download and warns for each substitute it skips, then tries the next substituter.
@@ -237,6 +241,7 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
             verdict = await router.signatures(candidate.path_info, dict(self.keys))
             if verdict is not Signatures.UNTRUSTED:
                 return candidate, verdict is Signatures.TRUSTED
+            queue.forget_refused(self.path, candidate.store.store_id)
             text = (
                 f"ignoring substitute for '{magenta(self.path)}' from '{magenta(candidate.store.human_readable_uri())}',"
                 " as it's not signed by any of the keys in 'trusted-public-keys'"

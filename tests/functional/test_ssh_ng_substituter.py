@@ -10,6 +10,7 @@ file names, so the check is real.
 from __future__ import annotations
 
 import base64
+import contextlib
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
@@ -22,6 +23,7 @@ from nix_daemon_protocol.store_path import StorePath
 from pynixd import Server, store_url
 from pynixd.config import PynixdSettings
 from pynixd.connection import Connection
+from pynixd.exceptions import BackendError
 from pynixd.serde import SetOptionsRequest
 from pynixd.store import LocalDBStore, SSHSubprocessStore, Store
 from pynixd.substituters import ClientSubstituters
@@ -29,6 +31,7 @@ from pynixd.unix_socket import open_unix_connection
 from pynixd.wire import UnixNixReader, UnixNixWriter
 from tests._conftest.client_options import set_options
 from tests._conftest.nix_cli_store import nix_cli_store
+from tests._conftest.nix_config import for_test_store
 from tests._conftest.ssh_keys import SESSION_SSH_KEYS
 from tests.conftest import NIX_BIN, make_test_spec, run_subproc
 
@@ -140,6 +143,55 @@ async def test_a_client_named_ssh_ng_substituter_fetches_the_closure(tmp_path: P
         answer = await _ensure(tmp_path, target, _url(source.port, host_key), parent, daemon=daemon)
     assert answer == 1
     assert await _valid(target) == await _valid(tmp_path / "source")
+
+
+def _public_key(secret: str) -> str:
+    """`nix key convert-secret-to-public`: an ed25519 secret key holds the public key in its last 32 bytes."""
+    name, _, encoded = secret.strip().partition(":")
+    return f"{name}:{base64.b64encode(base64.b64decode(encoded)[32:]).decode()}"
+
+
+async def test_a_signature_added_after_a_refusal_is_seen(tmp_path: Path) -> None:
+    """nixidae/nixidae#1674: sg1's nodes asked pynixd before ekn signed the path, and refused it until a restart."""
+    target = tmp_path / "target"
+    _rc, secret, _stderr, _both = await run_subproc(
+        [str(NIX_BIN), "key", "generate-secret", "--key-name", "cluster-1"], verbose=False
+    )
+    key_file = tmp_path / "cluster.key"
+    key_file.write_text(secret)
+    socket = tmp_path / "target.sock"
+    async with contextlib.AsyncExitStack() as stack:
+        source, host_key, parent = await stack.enter_async_context(_source(tmp_path))
+        url = _url(source.port, host_key).removesuffix("&trusted=1")
+        # The node's shape: the substituter and the cluster key in the server's own configuration.
+        config = for_test_store(substituters=(url,), trusted_public_keys=(_public_key(secret),), require_sigs=True)
+        spec = make_test_spec(
+            store_id="local", store_path=target, no_probe=True, daemon=False, pynixd_writes=True, nix_config=config
+        )
+        await stack.enter_async_context(
+            Server(stores={StoreId("local"): LocalDBStore(spec)}, unix_path=socket, ssh_port=None, http_port=None)
+        )
+        options = _options()
+
+        async def ensure() -> bool:
+            link = await open_unix_connection(socket)
+            conn = Connection(UnixNixReader(link, identifier="t"), UnixNixWriter(link, identifier="t"), "t")
+            await conn.connect()
+            try:
+                await conn.call(options, raise_on_error=True)
+                await conn.call(EnsurePathRequest(path=StorePath(path=parent)), raise_on_error=True)
+            except BackendError:
+                return False
+            finally:
+                await conn.close()
+            return True
+
+        unsigned = await ensure()
+        await run_subproc(
+            [str(NIX_BIN), "store", "sign", "--store", url, "--key-file", key_file, "--recursive", parent]
+        )
+        signed = await ensure()
+    assert (unsigned, signed) == (False, True)
 
 
 async def test_the_openssh_config_names_the_key_the_host_and_its_host_key(

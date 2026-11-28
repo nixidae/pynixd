@@ -454,6 +454,16 @@ class SubstitutionQueue:
         per_store[result.store_id] = result
         self.health_for(result.store_id).record(query_succeeded=result.query_succeeded)
 
+    def forget_refused(self, path: StorePath, store_id: StoreId) -> None:
+        """Drop *store_id*'s answer for *path*, whose signatures a client refused: the next request asks again.
+
+        A signature added there later is then seen at once, not after `substitution_positive_ttl`. sg1,
+        2026-11-28: ekn signed a path the nodes had asked about, and every node refused it until it restarted.
+        nixidae/nixidae#1674.
+        """
+        if (per_store := self.positive.get(path)) is not None:
+            per_store.pop(store_id, None)
+
     def health_for(self, store_id: StoreId) -> SubstitutionHealthLog:
         log = self.health.get(store_id)
         if log is None:
