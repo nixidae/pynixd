@@ -125,6 +125,11 @@ class SubstitutePathGoal(ExecutionGoal[SubstituteAttempt]):
 
     async def _run(self) -> SubstituteAttempt:
         log.debug("substitute_path_start", path=str(self.path), substituters=self.substituter_ids)
+        # The session's root, before the check, as `PathSubstitutionGoal::init` takes it (`substitution-goal.cc:33`).
+        # Without it a reference that is valid, or that its goal imported under a root of the import alone, has no
+        # root until the request answers, and a collector of a shared store deletes it while the referrer downloads.
+        if self.engine.hold is not None:
+            await self.engine.hold([self.path])
         if not self.repair and await self._is_valid_local_path(self.path):
             log.debug("substitute_path_already_valid", path=str(self.path))
             result = goal_success()

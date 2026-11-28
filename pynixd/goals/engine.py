@@ -470,15 +470,17 @@ class GoalEngine:
 
         Each goal writes its copy and its failure to *client*.
 
-        *hold* roots each path the goals made valid for the client's session,
-        as the substitution goal of Nix does (`substitution-goal.cc:33`).
-        nixidae/nixidae#1007. Without *substitutes* a valid path still
-        succeeds: the goal asks the store before any substituter
-        (`substitution-goal.cc:36`), and `use-substitutes` off leaves it none
-        (`worker.cc:32`).
+        *hold* roots each path a goal visits for the client's session, before
+        the goal asks whether it is valid, as the substitution goal of Nix does
+        (`substitution-goal.cc:33`): references included. nixidae/nixidae#1007.
+        Without *substitutes* a valid path still succeeds: the goal asks the
+        store before any substituter (`substitution-goal.cc:36`), and
+        `use-substitutes` off leaves it none (`worker.cc:32`).
         """
         if not substitutes:
             return await self._valid_or_missed(paths, hold)
+        if hold is not None:
+            self.hold = hold
         if ids is None:
             ids = self.substituter_ids()
         # One query, and no goal for a path the store holds: a builder is asked for hundreds of valid paths per build.

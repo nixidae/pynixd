@@ -22,10 +22,10 @@ from pynixd.config import LocalSocketStoreSpec
 from pynixd.exceptions import BackendError
 from pynixd.goals.engine import GoalEngine
 from pynixd.goals.results import goal_failure, goal_success
-from pynixd.goals.substitute import SubstituteAttempt
+from pynixd.goals.substitute import SubstituteAttempt, SubstitutePathGoal
 from pynixd.goals.substitute_paths import ensure_path, no_substituter, pynixd_substitutes, substitute_paths
 from pynixd.op_routes import OpRoute
-from pynixd.serde import QueryValidPathsResponse, StorePath as WirePath
+from pynixd.serde import IsValidPathRequest, IsValidPathResponse, QueryValidPathsResponse, StorePath as WirePath
 from pynixd.store.local_db import LocalDBStore
 from pynixd_store.hintfmt import magenta
 from pynixd_store.store_path import StorePath
@@ -268,3 +268,51 @@ class TestHeldPaths:
         assert attempts[HELD].result.produced_paths == {HELD}
         assert holds.paths == [HELD]
         assert len(store.requests) == 1
+
+
+class _Journal:
+    """The store's validity checks and the session's roots, in the order they came."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str]] = []
+
+    async def hold(self, paths: Collection[StorePath]) -> None:
+        self.events.extend(("root", str(path)) for path in paths)
+
+    async def execute(self, request: Any, mark: bool = True) -> Any:
+        if isinstance(request, IsValidPathRequest):
+            self.events.append(("valid?", str(request.path)))
+            return IsValidPathResponse(valid=str(request.path) == str(HELD))
+        self.events.append(("valid?", ",".join(sorted(str(path) for path in request.paths))))
+        return QueryValidPathsResponse(paths={path for path in request.paths if str(path) == str(HELD)})
+
+
+@pytest.mark.anyio
+class TestGoalRoots:
+    """`PathSubstitutionGoal::init` roots its path for the session, then asks whether it is valid (`substitution-goal.cc:33`).
+
+    A goal runs for each reference of a path it substitutes. A host-store node shares `/nix` with the
+    host's daemon, whose collector deletes a valid reference that nothing roots while the referrer
+    still downloads; the referrer's registration then fails, as the reference is not valid.
+    """
+
+    async def test_a_valid_reference_is_rooted_before_the_check(self) -> None:
+        journal = _Journal()
+        engine = GoalEngine(SimpleNamespace(local_store=journal, scheduler=None))  # type: ignore[arg-type]  # the store is all this reads
+        engine.hold = journal.hold
+        async with engine.running():
+            attempt = await SubstitutePathGoal(engine, HELD, ()).result()
+        assert attempt.found
+        assert journal.events == [("root", str(HELD)), ("valid?", str(HELD))]
+
+    async def test_a_request_gives_its_goals_the_session_root(self) -> None:
+        journal = _Journal()
+        engine = GoalEngine(SimpleNamespace(local_store=journal, scheduler=None, stores={}))  # type: ignore[arg-type]  # the store is all this reads
+        attempts = await engine.substitute_paths([MISSING], hold=journal.hold, ids=())
+        assert not attempts[MISSING].result.produced_paths
+        assert journal.events == [
+            ("root", str(MISSING)),
+            ("valid?", str(MISSING)),
+            ("root", str(MISSING)),
+            ("valid?", str(MISSING)),
+        ]
