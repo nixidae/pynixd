@@ -1361,12 +1361,18 @@ class LocalDBStore(Store):
         return reader if reader is not None and reader.db_path == self.db.db_path else None
 
     async def own_query_path_info(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
-        """QueryPathInfo: the path-info cache, then the engine."""
+        """QueryPathInfo: the engine's database, never the path-info cache.
+
+        Another process writes the same database: the host's daemon on a node
+        that shares the host's `/nix`, and its collector deletes paths this
+        process never hears of. A cached entry then answers valid for up to
+        300 s for a path that is gone (nixkube's `ciStoreServer` guest test,
+        2026-11-28). The session reader answers in microseconds, so the cache
+        buys nothing here.
+        """
         from pynixd.serde import QueryPathInfoResponse
 
-        info = self.get_path_info(request.path) or await self.engine.query_path_info(
-            str(request.path), reader=self._session_reader(client)
-        )
+        info = await self.engine.query_path_info(str(request.path), reader=self._session_reader(client))
         if info is None:
             return QueryPathInfoResponse.fast(valid=False)
         return QueryPathInfoResponse.fast(valid=True, info=info.info)
@@ -1740,20 +1746,11 @@ class LocalDBStore(Store):
         return QueryActiveBuildsResponse(builds=json.dumps(builds, separators=(",", ":")))
 
     async def query_path_infos(self, request: Any, client: Any = None, suppress_last: bool = False) -> Any:
-        """QueryPathInfos: the path-info cache for each path, then the engine for the rest."""
+        """QueryPathInfos: the engine's database, never the path-info cache (`own_query_path_info` says why)."""
         from pynixd.serde import QueryPathInfosResponse
 
-        cached: list[ValidPathInfo] = []
-        uncached: list[str] = []
-        for path in request.paths:
-            info = self.get_path_info(path)
-            if info is not None:
-                cached.append(info)
-            else:
-                uncached.append(str(path))
-        if not uncached:
-            return QueryPathInfosResponse(infos=cached)
-        return QueryPathInfosResponse(infos=[*cached, *await self.engine.query_path_infos(uncached)])
+        paths = [str(path) for path in request.paths]
+        return QueryPathInfosResponse(infos=await self.engine.query_path_infos(paths) if paths else [])
 
     async def query_derivation_output_map_batch(
         self, request: Any, client: Any = None, suppress_last: bool = False

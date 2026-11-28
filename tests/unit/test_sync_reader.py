@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 import pytest
 from cachetools import TTLCache
 
+from nix_daemon_protocol.query_path_infos import QueryPathInfosRequest
 from nix_daemon_protocol.valid_path_info import ValidPathInfo
 from pynixd.serde import IsValidPathRequest, QueryPathInfoRequest, StorePath
 from pynixd.store.local_db import LocalDBStore
@@ -257,6 +258,25 @@ class TestTheStoreUsesTheReaderForPathInfo:
             assert {str(r) for r in held.info.references} == {LIBC}
             assert str(held.info.nar_hash) != ""
             assert gone.valid is False
+
+    async def test_a_path_another_process_deleted_is_not_valid(self, tmp_path: Path) -> None:
+        """The database answers, never the path-info cache.
+
+        A host-store node shares `db.sqlite` with the host's daemon, whose collector deletes a path
+        and tells pynixd nothing. nixkube's `ciStoreServer.pynixd-daemonless-hoststore-cache` guest test
+        measured `nix path-info` valid through the node's pynixd after the host deleted the path.
+        """
+        _store_db_with_info(tmp_path)
+        async with await LocalStoreDB.open(StoreLayout.chroot(tmp_path)) as db:
+            store = _store(db, tmp_path)
+            held = await store.own_query_path_info(QueryPathInfoRequest(path=StorePath(path=HELLO)))
+            store.path_info_cache[GONE] = ValidPathInfo(path=StorePath(path=GONE), info=held.info)
+
+            single = await store.own_query_path_info(QueryPathInfoRequest(path=StorePath(path=GONE)))
+            batch = await store.query_path_infos(QueryPathInfosRequest(paths={StorePath(path=GONE)}))
+
+            assert single.valid is False
+            assert batch.infos == []
 
     async def test_the_reader_matches_the_pooled_connection(self, tmp_path: Path) -> None:
         """Both paths land in one builder, so their answers are identical."""
