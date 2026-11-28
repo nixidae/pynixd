@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import base64
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import nacl.signing
 import pytest
 
 from nix_daemon_protocol.ids import LOCAL_STORE_ID, StoreId
+from nix_daemon_protocol.query_valid_paths import QueryValidPathsRequest, QueryValidPathsResponse
 from nix_daemon_protocol.signature import Signature
 from pynixd.build_queue import BuildQueue
 from pynixd.config import LocalSocketStoreSpec
@@ -33,17 +34,21 @@ from pynixd.serde import (
     ValidPathInfo,
 )
 from pynixd.serde.auth import Role
+from pynixd.store.build_pods import PodTimes
 from pynixd.store.local_db import LocalDBStore
 from pynixd_store.add import ImportSettings
 from pynixd_store.signing import PublicKey, check_signatures
-from tests._conftest.execution import FakeSandbox, Streamed, fake_executor, queued
+from tests._conftest.execution import FakeLocal, FakeSandbox, Streamed, fake_executor, queued
 from tests._conftest.placement import FakeStore
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
 
+    from nix_daemon_protocol.wire_ops import WireRequest
+    from pynixd.connection import ClientConn
     from pynixd.serde.context import RequestContext
+    from pynixd.store.build_pods import BuildPodStore
 
 OUTPUT = "/nix/store/00000000000000000000000000000001-out"
 BUILDER = StoreId("sg1-n1")
@@ -85,6 +90,42 @@ class TestTheExecutor:
         sandbox = await _collect(local, {LOCAL_STORE_ID: local})
 
         assert sandbox.signed == []
+
+
+class _PodStore:
+    """A build pod store whose pod builds at once: it has added the outputs to the local store by then."""
+
+    store_id = StoreId("pods")
+    spec = SimpleNamespace(pod_cores=1, pod_memory_bytes=None, farm=None)
+
+    async def pick_template(self) -> str:
+        return "template"
+
+    async def build(self, *_args: object, **_kwargs: object) -> tuple[BuildDerivationResponse, PodTimes]:
+        return BuildDerivationResponse(result=BuildResult(status=BuildResultStatus.BUILT)), PodTimes(asked=0.0)
+
+
+class _Holding(FakeLocal):
+    """The local store, which holds every path a pod added."""
+
+    async def execute(self, request: WireRequest, client: ClientConn | None = None) -> Any:  # noqa: ANN401 -- the base's
+        del client
+        if isinstance(request, QueryValidPathsRequest):
+            return QueryValidPathsResponse(paths=set(request.paths))
+        return await super().execute(request)
+
+
+@pytest.mark.anyio
+async def test_the_executor_signs_the_outputs_of_a_build_pod() -> None:
+    """sg1, 2026-11-28: a vivarium database built in a pod reached the nodes unsigned, and no node took it."""
+    queue = BuildQueue()
+    build = await queued(queue, outputs={"out": OUTPUT})
+    sandbox = FakeSandbox()
+    executor = fake_executor(queue, {}, local=_Holding(), here=sandbox)
+
+    await executor.build_in_pod(build, cast("BuildPodStore", _PodStore()))
+
+    assert sandbox.signed == [{StorePath(OUTPUT)}]
 
 
 def _key(tmp_path: Path, name: str) -> tuple[Path, PublicKey]:

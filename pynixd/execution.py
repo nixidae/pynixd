@@ -923,6 +923,10 @@ class Executor[S: Builder, L: Answers, H: Sandbox]:
                 await self.queue.fail(build.build_id, reason)
                 self.trigger()
                 return
+            # A pod is pynixd's own builder, as `collect_outputs` signs for one. sg1, 2026-11-28: 1941 pod
+            # outputs were unsigned, and a node that trusts only the cluster key refused them.
+            if self.here is not None:
+                await self.here.sign_pulled(outputs)
             await self._record_observation(build, resp)
         await self.queue.complete(build.build_id, resp)
         self.trigger()
