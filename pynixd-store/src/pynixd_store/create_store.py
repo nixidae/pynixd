@@ -139,6 +139,41 @@ PROVENANCE_COLUMN = "alter table ValidPaths add column provenance text"
 
 _RESERVED_SIZE = 8 * 1024 * 1024  # `gc-reserved-space` (`local-settings.hh:46`)
 
+#: The Nix releases, as (major, minor), whose database pynixd writes as that Nix does: `supportedNixFloor` up to the
+#: `git` lane. 2.36's `upgradeDBSchema` and `nixSchemaVersion` are 2.35's. A later release can add a migration.
+SHARED_DATABASE_NIX = ((2, 34), (2, 36))
+
+
+def _major_minor(nix_version: str) -> tuple[int, int] | None:
+    parts = nix_version.strip().split(".")[:2]
+    if len(parts) < 2 or not all(part.isdigit() for part in parts):
+        return None
+    return int(parts[0]), int(parts[1])
+
+
+def shared_database_refusal(own_nix: str, other_nix: str) -> str | None:
+    """Why pynixd, writing a store's database as a Nix of *own_nix*, must not share it with a Nix of *other_nix*.
+
+    None when both are in `SHARED_DATABASE_NIX` and on one side of 2.35, where every branch of this module, of
+    `engine` and of `no_daemon` turns. Across it, one writes realisations and self-reference hashes the other reads
+    differently, and pynixd runs a migration of Nix's tables that the other Nix does not run. pynixd's own tables
+    need no rule: Nix reads its tables by name and never sees them.
+    """
+    low, high = SHARED_DATABASE_NIX
+    for role, version in (("pynixd's", own_nix), ("the other", other_nix)):
+        found = _major_minor(version)
+        if found is None or not low <= found <= high:
+            return (
+                f"pynixd writes the database of Nix {low[0]}.{low[1]} to {high[0]}.{high[1]}, "
+                f"and {role} Nix is {version.strip() or 'unknown'}"
+            )
+    if nix_at_least(own_nix, 2, 35) != nix_at_least(other_nix, 2, 35):
+        return (
+            f"pynixd writes the database as Nix {own_nix.strip()} does, and Nix {other_nix.strip()} "
+            "is on the other side of 2.35, which changed the database"
+        )
+    return None
+
 
 def _value(config: Mapping[str, Any], name: str, default: Any) -> Any:
     entry = config.get(name)

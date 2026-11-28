@@ -8,6 +8,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import signal
 import sys
@@ -17,8 +18,10 @@ import anyio
 import structlog
 import uvloop
 
+from pynixd_store.create_store import shared_database_refusal
 from pynixd_store.limits import bump_file_limit
 from pynixd_store.mount_namespace import enter_private as enter_private_mount_namespace
+from pynixd_store.nix_config import read_nix_version
 
 from .cli.base import load_settings, setup_logging
 from .cli.gc import register as register_gc
@@ -106,6 +109,14 @@ def handover_main(args: argparse.Namespace) -> None:
     raise SystemExit(anyio.run(lambda: hand_over(settings.handover_path, command, Offer.of(settings), unit=args.unit)))
 
 
+def shares_store_main(args: argparse.Namespace) -> None:
+    """CLI entry point for ``pynixd shares-store``: `shared_database_refusal` as JSON, exit 1 on a refusal."""
+    own = anyio.run(read_nix_version, args.nix_bin, dict(os.environ))
+    refusal = shared_database_refusal(own, args.other_nix)
+    print(json.dumps({"pynixd_nix": own, "other_nix": args.other_nix, "refusal": refusal}))  # noqa: T201
+    raise SystemExit(0 if refusal is None else 1)
+
+
 def main() -> None:
     """Top-level CLI entry point: parse args and dispatch to subcommand handlers."""
     parser = argparse.ArgumentParser(description="pynixd — Nix daemon protocol proxy")
@@ -120,6 +131,13 @@ def main() -> None:
     handover_parser.add_argument("--unit", help="Restart this unit when the running daemon cannot hand over")
     handover_parser.add_argument("command", nargs=argparse.REMAINDER, help="-- the successor's command")
     handover_parser.set_defaults(func=handover_main)
+
+    shares_parser = root_sub.add_parser(
+        "shares-store", help="Whether a daemonless pynixd may write a store database that a Nix of OTHER_NIX opens"
+    )
+    shares_parser.add_argument("other_nix", metavar="OTHER_NIX", help="That Nix's version, such as 2.35.3")
+    shares_parser.add_argument("--nix-bin", default="nix", help="The Nix pynixd writes the database as (default: nix)")
+    shares_parser.set_defaults(func=shares_store_main)
 
     register_gc(root_sub)
     register_gha_cache(root_sub)
