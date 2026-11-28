@@ -1231,12 +1231,20 @@ class LocalDBStore(Store):
         content-addressed add, whose path fixes its content. A path already
         valid is skipped unread, so a stored NAR hash or reference set that
         differs is someone else's, and stays unsigned: the signature covers both.
+        One that matches is signed: an admin's `AddToStoreNar` of a valid path
+        is how a path that an untrusted client added gets this store's
+        signature (ekn's `storecheck.resend_unsigned`; `nix copy` skips a valid path).
 
-        NIX-DIVERGENCE: Nix signs build outputs alone (`derivation-builder.cc:1605`).
-        A store that others build in hands back what its admins pushed too, and
-        a client that trusts only this store's key refuses it unsigned. The
-        caller checks the role: an untrusted client's path carries no
-        attestation of pynixd's key (nixidae/nixidae#1009).
+        NIX-DEVIATION (#27): Nix signs build outputs alone (`derivation-builder.cc:1605`),
+        and its add of a valid path changes nothing (`LocalStore::addToStore`,
+        `local-store.cc:1046`). A store that others build in hands back what its
+        admins pushed too, and a client that trusts only this store's key refuses
+        it unsigned: on sg1 on 2026-11-28 one path of a node environment's 371
+        had no signature, and no node took it. The caller checks the role: an
+        untrusted client's path carries no attestation of pynixd's key
+        (nixidae/nixidae#1009). Off unless `sign_added_paths` is set. To reverse
+        it, show a client that trusts this store's key and must not trust what
+        its admins add.
         """
         if self.settings.sign_added_paths:
             await self.sign_paths(sent.keys(), expected=sent)
