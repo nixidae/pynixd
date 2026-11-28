@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import re
 import threading
 import time
 from typing import TYPE_CHECKING
@@ -62,6 +63,33 @@ async def test_a_root_reaches_the_file(tmp_path: Path, writer: RootWriter) -> No
         assert read_roots(roots.path) == [PATH_A]
     finally:
         await roots.close()
+
+
+@pytest.mark.anyio
+async def test_a_roots_file_name_starts_with_the_pid(writer: RootWriter) -> None:
+    """Nix 2.34's `findTempRoots` reads a pid from each name with `std::stoi` (`gc.cc:171`).
+
+    `std::stoi` takes the leading digits and throws on a name with none. Measured with Nix 2.34.9:
+    `nix-store --gc` on a store whose `temproots` held `pynixd-123-0` ended `error: stoi` and
+    deleted nothing; with `123-pynixd-0` it reaped the stale file and collected.
+    """
+    roots = writer.session()
+    await roots.add(PATH_A)
+    try:
+        leading = re.match(r"\d+", roots.path.name)
+        assert leading is not None
+        assert int(leading.group()) == os.getpid()
+        assert temp_roots.pynixd_roots_file(roots.path.name)
+    finally:
+        await roots.close()
+
+
+def test_pynixd_owns_its_roots_files_in_both_names() -> None:
+    """The reaper takes a stale `pynixd-<pid>-<n>` as well: that name stops Nix 2.34's collector."""
+    assert temp_roots.pynixd_roots_file("123-pynixd-0")
+    assert temp_roots.pynixd_roots_file("pynixd-123-0")
+    assert not temp_roots.pynixd_roots_file("123")
+    assert not temp_roots.pynixd_roots_file("123-other-0")
 
 
 @pytest.mark.anyio

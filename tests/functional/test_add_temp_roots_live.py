@@ -57,7 +57,7 @@ async def test_add_temp_roots_batch(tmp_path: Path) -> None:
         assert resp.value == 1
 
         roots_dir = store_path / "nix" / "var" / "nix" / "temproots"
-        held = "".join(path.read_text() for path in roots_dir.glob("pynixd-*"))
+        held = "".join(path.read_text() for path in roots_dir.glob("*-pynixd-*"))
         for path in paths:
             assert str(path) in held
         await conn.close()

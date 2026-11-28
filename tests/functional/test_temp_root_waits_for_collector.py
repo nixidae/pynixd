@@ -91,7 +91,7 @@ async def test_a_root_waits_while_a_dying_collector_holds_the_lock(tmp_path: Pat
                     await answered.wait()
             assert not isinstance(outcome[0], Exception), outcome[0]
             # Read before the session ends: its end deletes the file.
-            held = "".join(f.read_text() for f in (state / "temproots").glob("pynixd-*"))
+            held = "".join(f.read_text() for f in (state / "temproots").glob("*-pynixd-*"))
             assert path in held
             await conn.close()
         finally:

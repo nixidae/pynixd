@@ -25,7 +25,7 @@ from pynixd_store.temp_roots import (
     COLLECTOR_ACK,
     GC_LOCK_FILE,
     GC_SOCKET_PATH,
-    PYNIXD_TEMP_ROOTS_PREFIX,
+    PYNIXD_TEMP_ROOTS_INFIX,
     RETRY_DELAY,
     TEMP_ROOTS_DIR,
     WAIT_REPORTED_AFTER,
@@ -63,7 +63,7 @@ class InlineRoots:
         self.state = state
         self.read_only = read_only
         self.dir = state / TEMP_ROOTS_DIR
-        self.path = self.dir / f"{PYNIXD_TEMP_ROOTS_PREFIX}{os.getpid()}-{next(_names)}"
+        self.path = self.dir / f"{os.getpid()}{PYNIXD_TEMP_ROOTS_INFIX}{next(_names)}"
         self._fd: int | None = None
         self._gc_lock_fd: int | None = None
         self._socket: socket.socket | None = None

@@ -8,9 +8,12 @@ byte, appended to the file.
 
 `LocalStore::findTempRoots` reads that directory. A file it can write-lock
 belongs to a process that is gone, so the collector deletes the file. A file
-it cannot write-lock gives it one root for each path inside. The name of the
-file means nothing to the collector, which uses the name for a log line only,
-so pynixd is free to write one file for each client session.
+it cannot write-lock gives it one root for each path inside. Nix 2.35 uses
+the name for a log line only (`gc.cc:214`). Nix 2.34 reads a pid from it with
+`std::stoi` (`gc.cc:171`), which takes the leading digits and throws on a
+name with none: the whole collection then fails with `error: stoi`. So
+pynixd writes one file for each client session, and each name starts with
+pynixd's pid: `<pid>-pynixd-<n>`.
 
 **pynixd forwarded `AddTempRoot` to the upstream daemon, and that is the
 defect of issue #20.** The root then belonged to the upstream connection,
@@ -71,8 +74,11 @@ TEMP_ROOTS_DIR = "temproots"
 # The collector answers one byte for each root that it takes.
 COLLECTOR_ACK = b"1"
 
-PYNIXD_TEMP_ROOTS_PREFIX = "pynixd-"
-"""The name of pynixd's own temporary-roots files starts with this."""
+PYNIXD_TEMP_ROOTS_INFIX = "-pynixd-"
+"""pynixd's own temporary-roots files are `<pid>-pynixd-<n>`; the module docstring says why the pid is first."""
+
+PID_LESS_TEMP_ROOTS_PREFIX = "pynixd-"
+"""`pynixd-<pid>-<n>`, a name a stale pynixd file may carry. It stops Nix 2.34's collector, so pynixd reaps it."""
 
 RETRY_DELAY = 0.1
 """How long a root waits before it asks the collector again, with no limit, as `addTempRoot` does (`gc.cc:95-135`).
@@ -91,6 +97,12 @@ SHUTDOWN_SECONDS: Final = 30.0
 """How long the writer's owner waits for queued jobs at exit; a frozen filesystem can hold them for longer."""
 
 _names = itertools.count()
+
+
+def pynixd_roots_file(name: str) -> bool:
+    """Whether *name* is one of pynixd's own temporary-roots files, in either form."""
+    pid, infix, number = name.partition(PYNIXD_TEMP_ROOTS_INFIX)
+    return (bool(infix) and pid.isdigit() and number.isdigit()) or name.startswith(PID_LESS_TEMP_ROOTS_PREFIX)
 
 
 class Outcome(enum.Enum):
@@ -363,7 +375,13 @@ class TempRoots:
         self.state = state
         self.read_only = read_only
         self.dir = state / TEMP_ROOTS_DIR
-        self.path = self.dir / f"{PYNIXD_TEMP_ROOTS_PREFIX}{os.getpid()}-{next(_names)}"
+        # NIX-DEVIATION (#27): Nix writes one file per process, `temproots/<pid>`
+        # (`gc.cc:55`, `createTempRootsFile`). pynixd writes one per client session,
+        # so a session's roots end with the session (issue #20). The pid comes first
+        # because Nix 2.34's collector reads it with `std::stoi` (`gc.cc:171`) and
+        # fails on a name that starts with no digit. Reverse it only if a session can
+        # release its roots another way: the daemon protocol removes no root.
+        self.path = self.dir / f"{os.getpid()}{PYNIXD_TEMP_ROOTS_INFIX}{next(_names)}"
         self._writer = writer
         self._fd: int | None = None
         self._gc_lock_fd: int | None = None

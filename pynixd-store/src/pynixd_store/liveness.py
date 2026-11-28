@@ -44,7 +44,7 @@ import structlog
 
 from .collect import GCSettings
 from .database import DatabaseError
-from .temp_roots import PYNIXD_TEMP_ROOTS_PREFIX
+from .temp_roots import pynixd_roots_file
 
 if TYPE_CHECKING:
     from .database import Database
@@ -269,12 +269,12 @@ def _walk_temp_roots_grouped(
     reaped: list[str] = []
     for entry in entries:
         # A process's file is named by its pid, and pynixd's own by
-        # `pynixd-<pid>-<n>`, which holds its clients' roots. `findTempRoots`
-        # reads every name but a dotfile (`gc.cc:166`); a foreign name is
-        # not this reaper's to unlink, so it stays out.
+        # `<pid>-pynixd-<n>` (`pynixd_roots_file`), which holds its clients' roots.
+        # `findTempRoots` reads every name but a dotfile (`gc.cc:166`); a foreign
+        # name is not this reaper's to unlink, so it stays out.
         if entry.name.startswith(".") or not entry.is_file(follow_symlinks=False):
             continue
-        ours = entry.name.isdigit() or entry.name.startswith(PYNIXD_TEMP_ROOTS_PREFIX)
+        ours = entry.name.isdigit() or pynixd_roots_file(entry.name)
         if not (ours or every_name):
             continue
         try:
